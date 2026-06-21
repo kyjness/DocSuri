@@ -19,7 +19,7 @@
 | **BR-6 (relevance 표시값)** | 카드 `relevance`=**순위 파생 비-raw 표시 신호**. **내부 raw/RRF 점수·디버그 비노출(SEC-9)**. 구체 표시 형태는 U5 UI 연동. | FR-3/4, SEC-9, Q3=A |
 | **BR-7 (근거화 단일 권위 — INV-1)** | U2는 `enforce`를 **호출하지 않는다**. 유일 invocation = U6 게이트웨이 post-handler. U2는 `toGroundingInput`(정형)·`mapDecision`(verdict 매핑)만 — 독자 차단·인시던트 발행 없음. | FR-5, US-D5, INV-1 |
 | **BR-8 (verdict 매핑)** | `verdict=pass`→GroundedResults; `verdict=abstain\|block`→AbstainResult(날조 0건). 내부 위반 상세 비노출. | FR-5, US-D5/D6, Q4=A |
-| **BR-9 (종단 상태·기권 vs 빈 결과)** | 종단 상태 결정(Q4=A): 검증실패→ValidationError; **verdict=abstain/block 또는 후보 0/무매치→AbstainDTO**("관련 논문 없음"); pass&결과≥1&NORMAL→SearchResultPage; pass&결과≥1&저하→DegradedResult. **빈 cards 성공 페이지 금지**(조용한 빈 결과 금지). | FR-11, US-D6/D7, Q4=A |
+| **BR-9 (종단 상태·기권 vs 빈 결과)** | 종단 상태 결정: 검증실패→ValidationError; **verdict=abstain/block→AbstainDTO**(근거화 거부 — 날조 0건); **후보 0/무매치(또는 근거화 통과 후 전량 필터)→SearchResultPageDTO(cards=[], resultCount=0)** — 명시적 빈 페이지(*조용한 결과 아님*); pass&결과≥1&NORMAL→SearchResultPage; pass&결과≥1&저하→DegradedResult. **기권 ≠ 빈 결과**(U5 B3-a): 다른 메시지·다른 분기. (개정: 종전 "무매치→AbstainDTO"를 대체 — 빈 결과는 abstain이 아니라 count:0 명시 페이지로 종단.) | FR-11, US-D6/D7 |
 | **BR-10 (기권 우선순위)** | degradeMode 활성 중에도 `verdict=abstain/block`이면 **기권 우선**(날조 금지 최우선) — 저하 카드 미발행. | FR-5, NFR-R1, Q4=A |
 | **BR-11 (저하 매트릭스)** | `getBudgetState().degradeMode`(U6 단일 권위 조회): NORMAL=hybrid; RERANK_OFF=리랭킹 생략(U2 baseline상 무변화이나 배너 표면화); LEXICAL_ONLY=임베딩 생략·BM25 폴백. 저하는 `ResultMeta.degraded`/`mode`로 명시(US-R2/R3). | NFR-C1, NFR-R2, US-R2/R3, Q6=A |
 | **BR-12 (비용 단일 권위)** | U2는 비용/예산을 **독자 판정하지 않는다**. `getBudgetState` 조회·분기만. 누적/임계/서킷 전이는 U6 내부. | NFR-C1, Q6=A, Q8=A |

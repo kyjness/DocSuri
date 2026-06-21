@@ -79,7 +79,7 @@ backend/modules/discovery/
 
 - **RRF(BR-4)**: `score = Σ 1/(k + rank_i)`(k 기본값 상수, NFR 튜닝); **PaperId 단위 디덥**(같은 논문 복수 청크→최고 RRF 1건). 멱등·결과셋 보존(PBT-07).
 - **relevance 표시값(BR-6/Q3)**: 카드 `relevance` = **1-based 순위 위치(표시 신호)**, raw/RRF 점수 비노출(SEC-9). (display 형태는 U5 연동 — 순위로 단순화.)
-- **종단 상태(BR-9/Q4)**: 검증실패→ValidationErrorDTO; verdict=abstain/block 또는 **후보 0/무매치→AbstainDTO**(빈 성공 금지); pass&결과≥1&NORMAL→SearchResultPageDTO; pass&결과≥1&저하→DegradedResultDTO. 기권 우선(BR-10).
+- **종단 상태(BR-9/Q4)**: 검증실패→ValidationErrorDTO; **verdict=abstain/block→AbstainDTO**(근거화 거부 전용); **후보 0/무매치→SearchResultPageDTO(cards=[], resultCount=0)**(명시적 빈 페이지 — 기권 ≠ 빈 결과, U5 B3-a); pass&결과≥1&NORMAL→SearchResultPageDTO; pass&결과≥1&저하→DegradedResultDTO. 무매치는 enforce 이전에 종단(기권 아님); 기권 우선은 enforce 후 verdict에만 적용(BR-10).
 - **degrade 매트릭스(BR-11/Q6)**: get_budget_state().degrade_mode → NORMAL/RERANK_OFF(무변화·배너)/LEXICAL_ONLY(임베딩 생략·BM25). 의존성 장애 폴백(임베딩→lexical)은 degrade와 별개(BR-16/Q1·Q2).
 - **인증(BR-13/Q5)**: orchestrator는 RequestContext.auth_session.user_id 신뢰(게이트웨이 강제); user_id로 SearchExecuted 발행.
 - **fail-fast(Q1)**: 동기 외부 호출 재시도 최소; 임베딩 타임아웃→lexical 폴백, 인덱스 타임아웃→fail-closed. (mock은 결정적; 폴트 인젝션 테스트로 검증.)

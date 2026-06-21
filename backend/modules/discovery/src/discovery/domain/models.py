@@ -115,9 +115,17 @@ class GroundedResults:
 
 @dataclass(frozen=True, slots=True)
 class AbstainResult:
-    """map_decision(verdict=abstain|block) or no-match output (BR-8/9)."""
+    """map_decision(verdict=abstain|block) output — a grounding *refusal* (BR-8). NOT used for
+    a no-match: an empty retrieval is a NoMatchResult (explicit empty page), not an abstain."""
 
     reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class NoMatchResult:
+    """Genuine zero-result outcome — retrieval (or a grounding pass that filtered out every
+    candidate) left nothing to show, but the request was NOT refused. Assembled as an explicit
+    empty page (resultCount=0), distinct from AbstainResult (BR-9 / U5 B3-a: 기권 ≠ 빈 결과)."""
 
 
 @dataclass(frozen=True, slots=True)

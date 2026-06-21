@@ -67,7 +67,7 @@
 | **SearchResultPageDTO** | 성공 | `cards: ResultCardVM[]`, `meta: ResultMeta` | 정렬 순서 보존 상위 N 카드(verdict=pass & 결과≥1). 카드 배열=랭킹 순서(PBT-03). |
 | **ResultMeta** | 값 | `resultCount: int`, `degraded: bool`, `degradationMode?: DegradationMode` | 결과 수·저하 배너 힌트. 내부 점수/타이밍 비노출(SEC-9). |
 | **ResultCardVM** | 카드(값) | (§5.1 7필드) | 단일 논문 폰 카드. U5 `ResultCard.render` 소비. |
-| **AbstainDTO** | 기권 | `reason` | **Q4=A**: verdict=abstain/block **또는 후보 0/무매치** → 기권("관련 논문 없음"). **빈 cards 성공 페이지는 만들지 않음**(조용한 빈 결과 금지). |
+| **AbstainDTO** | 기권 | `reason` | **근거화 거부 전용**: verdict=abstain/block → 기권(날조 0건). **무매치는 abstain이 아님** — count:0 명시 빈 페이지(SearchResultPageDTO)로 종단(BR-9 / U5 B3-a: 기권 ≠ 빈 결과). |
 | **DegradedResultDTO** | 저하 | `cards: ResultCardVM[]`, `meta`(degraded=true), `mode: DegradationMode` | **Q6=A**: degradeMode 활성 & 결과 반환(NFR-C1/US-R2/R3). 카드 형상은 성공과 동일. |
 | **ValidationErrorDTO** | 검증오류 | `field?: string`, `message: string` | **INV-3(SEC-15)**: FR-1/SEC-5 검증 실패 인라인 에러(비기술·내부정보 차단, fail-closed). |
 
@@ -126,9 +126,10 @@ RankedResults{ranked[], rankingMode=baseline}
 GroundingInput ──[U6 enforce]──▶ GroundingDecision{verdict, violations[]}
    │
    ▼ GroundingAdapter.mapDecision
-GroundedResults | AbstainResult (Q4=A: verdict=abstain/block 또는 후보 0 → AbstainResult)
-   │
+GroundedResults | AbstainResult (verdict=pass → GroundedResults; verdict=abstain/block → AbstainResult)
+   │  (후보 0/무매치는 enforce 이전 단계에서 NoMatchResult로 종단 — mapDecision 미경유)
    ▼ ResultAssembler.assemble (FR-4 카드 · FR-11 상태 · SEC-9 비노출, PBT-09)
+                              입력: GroundedResults | AbstainResult | NoMatchResult
 SearchResponse = SearchResultPageDTO | AbstainDTO | DegradedResultDTO | ValidationErrorDTO
    │
    └─(응답 후, 비차단 Q11) SearchOrchestrationService.publishSearchExecuted ─event▶ U4

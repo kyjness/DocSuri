@@ -24,7 +24,7 @@ def run_search(
 ) -> SearchResponse:
     outcome = orchestrator.plan_and_retrieve(request, ctx)
     if outcome.response is not None:
-        return outcome.response  # validation error or no-match abstain (terminal already)
+        return outcome.response  # validation error or no-match empty page (terminal already)
 
     pending = outcome.pending
     assert pending is not None  # noqa: S101 — outcome is response XOR pending by construction

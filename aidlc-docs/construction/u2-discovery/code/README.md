@@ -42,8 +42,8 @@
 ## 핵심 설계 준수
 - **INV-1(단일 근거화 게이트)**: orchestrator(도메인 코어)는 `enforce`를 호출하지 않는다. `api/gateway_seam.run_search`(U6 게이트웨이 대역)가 `plan_and_retrieve`와 `finalize` 사이에서 주입된 후크로 단일 호출.
 - **INV-2(SEC-9)**: 카드는 7필드(`title·authors·year·arxivId·abstractSnippet·relevance·arxivUrl`)만; raw/RRF 점수·vector·chunkId 비노출. (테스트가 카드 키 집합 검증.)
-- **INV-3(fail-closed)**: 인덱스 장애→`SearchUnavailable`(503 일반화); 검증 실패→ValidationErrorDTO. 빈 성공 페이지 금지(무매치→AbstainDTO).
-- **cross-lingual(TD-3)**: mock 임베딩이 KO/EN 동의어를 동일 차원에 매핑 → 한국어 질의가 영어 논문 검색(테스트 검증). lexical-only(BM25)는 비-cross-lingual이라 한국어는 기권.
+- **INV-3(fail-closed)**: 인덱스 장애→`SearchUnavailable`(503 일반화); 검증 실패→ValidationErrorDTO. 무매치→명시적 빈 페이지(SearchResultPageDTO·resultCount=0); 근거화 거부→AbstainDTO.
+- **cross-lingual(TD-3)**: mock 임베딩이 KO/EN 동의어를 동일 차원에 매핑 → 한국어 질의가 영어 논문 검색(테스트 검증). lexical-only(BM25)는 비-cross-lingual이라 한국어는 무매치 → 빈 페이지(resultCount=0).
 - **fail-fast(Q1)**: 임베딩 장애→lexical 폴백(저하), 인덱스 장애→fail-closed.
 
 ## 보안/복원력 준수 요약 (FD/NFR 고도)

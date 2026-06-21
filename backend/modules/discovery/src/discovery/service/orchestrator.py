@@ -4,7 +4,7 @@ The synchronous pipeline is SPLIT at the grounding seam so this U2 domain core N
 ``enforce`` (INV-1):
 
   * ``plan_and_retrieve`` — validate → derive degrade → expand (embedding fallback) →
-    retrieve → (no-match → abstain terminal) → rank → shape grounding input.
+    retrieve → (no-match → empty-page terminal) → rank → shape grounding input.
   * ``finalize`` — map the U6 verdict → assemble → publish SearchExecuted (non-blocking).
 
 The ``enforce`` call BETWEEN them is performed by the gateway seam (``discovery.api``,
@@ -31,10 +31,10 @@ from ..domain.assembler import ResultAssembler
 from ..domain.expander import QueryUnderstandingExpander
 from ..domain.grounding_adapter import GroundingAdapter
 from ..domain.models import (
-    AbstainResult,
     DegradationSignal,
     DegradeMode,
     GroundingInput,
+    NoMatchResult,
     RankedResults,
     RequestContext,
 )
@@ -50,7 +50,6 @@ from ..ports.search_ports import (
 
 # Generic, non-technical messages (SEC-9/SEC-15 — no internal detail).
 _VALIDATION_MESSAGE = "Your search could not be processed. Please revise and try again."
-_NO_MATCH = "no_results"
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,10 +142,12 @@ class SearchOrchestrationService:
             raise SearchUnavailable("search index unavailable") from exc
 
         if not candidates.candidates:
-            # No-match is an abstain too (nothing to ground against) — emit so the dashboard
-            # abstain rate isn't blind to zero-result queries, which never reach finalize. (US-R4)
-            response = self._assembler.assemble(AbstainResult(reason=_NO_MATCH), degrade_mode)
-            self._emit_grounding_health("abstain")
+            # No-match: nothing retrieved to ground against. This is an explicit empty page
+            # (resultCount=0), NOT a grounding abstain (BR-9 / U5 B3-a: 기권 ≠ 빈 결과). It does
+            # not emit grounding-health — that metric tracks real enforce verdicts only, so a
+            # zero-result query no longer inflates the hallucination/abstain rate. Zero-result
+            # visibility comes from the SearchExecuted event (resultCount=0) below. (US-R4)
+            response = self._assembler.assemble(NoMatchResult(), degrade_mode)
             self._publish(ctx.auth_session.user_id, request.query, 0)
             return SearchOutcome(response=response)
 
@@ -177,10 +178,11 @@ class SearchOrchestrationService:
         """Emit the grounding-health signal — the 'hallucination' AI-incident class (US-R4).
 
         ``verdict`` is one of "pass" | "block" | "abstain" (docsuri_shared.ports): a ``block``
-        means the grounding gate caught a fabricated arXiv reference; ``abstain`` means nothing
-        grounded — including the no-match path, which returns before the gate runs (so the
-        dashboard abstain rate stays complete). One metric tagged by verdict so a CloudWatch
-        alarm can route the block/abstain rate to the IR process.
+        means the grounding gate caught a fabricated arXiv reference; ``abstain`` means the gate
+        refused on no grounded evidence. Emitted ONLY for real enforce verdicts — the no-match
+        path returns before the gate and is an empty page (not an abstain), so it is excluded
+        and the abstain rate reflects grounding refusals only. One metric tagged by verdict so a
+        CloudWatch alarm can route the block/abstain rate to the IR process.
         Must NOT raise — observability is advisory and off the response-correctness path.
         """
         try:

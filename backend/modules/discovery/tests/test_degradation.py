@@ -1,8 +1,8 @@
-"""Degrade matrix (BR-11/Q6): RERANK_OFF banner, LEXICAL_ONLY fallback, KO lexical-only abstain."""
+"""Degrade matrix (BR-11/Q6): RERANK_OFF banner, LEXICAL_ONLY fallback, KO no-match empty page."""
 
 from __future__ import annotations
 
-from docsuri_shared.dtos import AbstainDTO, DegradedResultDTO
+from docsuri_shared.dtos import DegradedResultDTO
 
 from discovery.api import run_search
 from discovery.domain.models import AuthSession, RequestContext
@@ -38,13 +38,15 @@ def test_lexical_only_english_returns_degraded_results() -> None:
     assert resp.root.mode.root == "lexical-only"
 
 
-def test_lexical_only_korean_abstains() -> None:
-    # Lexical (English) cannot match a Korean query → no candidates → abstain (not silent empty).
-    from docsuri_shared.dtos import SearchRequest
+def test_lexical_only_korean_is_empty_page() -> None:
+    # Lexical (English) cannot match a Korean query → no candidates → explicit empty page
+    # (resultCount=0), NOT an abstain (BR-9 / U5 B3-a: 기권 ≠ 빈 결과).
+    from docsuri_shared.dtos import SearchRequest, SearchResultPageDTO
 
     bundle = build_mock_orchestrator(degrade_mode="lexical-only")
     resp = run_search(
         bundle.orchestrator, bundle.grounding_hook,
         SearchRequest(query="확산 모델 단백질"), _ctx(),
     )
-    assert isinstance(resp.root, AbstainDTO)
+    assert isinstance(resp.root, SearchResultPageDTO)
+    assert resp.root.meta.resultCount == 0

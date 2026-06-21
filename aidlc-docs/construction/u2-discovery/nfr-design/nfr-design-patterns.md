@@ -91,7 +91,7 @@ graph TD
 - Bedrock 임베딩 타임아웃/장애 주입 → **lexical 폴백** 검증(§1.1/1.2).
 - OpenSearch 장애 주입 → **fail-closed** 검증(NFR-R1).
 - `getBudgetState` 스텁 degradeMode 토글 → **저하 배너(DegradedResultDTO·mode)** 검증.
-- 빈/무매치 → **기권(AbstainDTO)** 경로(BR-9), 검증 실패 → ValidationError.
+- 빈/무매치 → **명시적 빈 페이지(SearchResultPageDTO·resultCount=0)** 경로(BR-9); 근거화 거부(verdict=abstain/block) → AbstainDTO; 검증 실패 → ValidationError.
 - 실행은 Build & Test/Operations.
 
 ---

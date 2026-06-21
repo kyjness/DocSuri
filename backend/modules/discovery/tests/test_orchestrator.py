@@ -38,13 +38,16 @@ def test_success_returns_ranked_page_and_publishes() -> None:
     assert bundle.event_publisher.events[0].resultCount == len(resp.root.cards)
 
 
-def test_no_match_is_abstain_not_empty_page() -> None:
+def test_no_match_is_empty_page_not_abstain() -> None:
+    # A no-match is an explicit empty page (resultCount=0), NOT an abstain (BR-9 / U5 B3-a).
     bundle = build_mock_orchestrator()
     resp = run_search(
         bundle.orchestrator, bundle.grounding_hook,
         SearchRequest(query="zzz nonsense token"), _ctx(),
     )
-    assert isinstance(resp.root, AbstainDTO)  # BR-9: no empty success page
+    assert isinstance(resp.root, SearchResultPageDTO)
+    assert resp.root.cards == []
+    assert resp.root.meta.resultCount == 0
     assert bundle.event_publisher.events[0].resultCount == 0
 
 

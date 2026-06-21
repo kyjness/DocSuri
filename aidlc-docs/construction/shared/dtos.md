@@ -22,10 +22,10 @@
 |---|---|---|---|---|---|
 | `SearchRequest` | 요청 | `query: string`, `options?` _(타입명 잠정 — SSOT는 `options?` 필드만)_ | 동기 검색 진입 입력. `query`는 FR-1/SEC-5 검증(빈값·≤500자·새니타이즈). `options`는 선택(타입 정제 시 확정). | 🟡 PROVISIONAL | FR-1, SEC-5, US-H1 |
 | `SearchResponse` | 응답(union) | `SearchResultPageDTO \| AbstainDTO \| DegradedResultDTO \| ValidationErrorDTO` | 종단 상태 명시 합집합. `QueryIntakeController.search` 반환·U5 `ApiClient.search`가 분기 처리(FR-11 상태 표면화). | 🟡 PROVISIONAL | FR-11, US-D1..D7 |
-| `SearchResultPageDTO` | 응답(성공) | `cards: ResultCardVM[]`, `meta: ResultMeta` | 정렬 순서 보존 상위 N건 카드 페이지(FR-3). 카드 배열은 **랭킹 순서**(PBT-03). | 🟡 PROVISIONAL(카드 FROZEN-인접) | FR-3, FR-4 |
+| `SearchResultPageDTO` | 응답(성공/빈 페이지) | `cards: ResultCardVM[]`, `meta: ResultMeta` | 정렬 순서 보존 상위 N건 카드 페이지(FR-3). 카드 배열은 **랭킹 순서**(PBT-03). **`cards=[]`·`resultCount=0`이면 명시적 빈 페이지** — 무매치/코퍼스 밖(및 근거화 통과 후 전량 필터)이 여기로 종단한다(기권 ≠ 빈 결과, U5 B3-a). | 🟡 PROVISIONAL(카드 FROZEN-인접) | FR-3, FR-4, US-D6 |
 | `ResultMeta` | 값 | `resultCount: int`, `degraded: boolean`, `degradationMode?: DegradationMode` | 결과 수·저하 여부 배너 힌트. 내부 점수/타이밍 비노출(SEC-9). | 🟡 PROVISIONAL | FR-11, QT-3 |
 | `ResultCardVM` | 카드(값) | (§1.1 카드 필드) | 단일 논문 폰 카드 뷰모델. U5 `ResultCard.render(card)` 소비. **6개 필드는 vector-spec IndexRecord 카드 필드의 투영 + `relevance`(파생 표시값)**. | 🟡 FROZEN-인접 | FR-4, FR-5 |
-| `AbstainDTO` | 응답(기권) | `reason` _(사유 코드; 타입명 잠정 — SSOT는 `AbstainResult{reason}`)_ | 근거화 기권/코퍼스 밖 — 비기술 메시지, **날조 결과 없음**(U6 verdict=abstain 매핑). 내부 위반 상세 비노출. | 🟡 PROVISIONAL | FR-5, US-D5, US-D6 |
+| `AbstainDTO` | 응답(기권) | `reason` _(사유 코드; 타입명 잠정 — SSOT는 `AbstainResult{reason}`)_ | **근거화 거부 전용**(U6 verdict=abstain/block 매핑) — 비기술 메시지, **날조 결과 없음**, 내부 위반 상세 비노출. **무매치/코퍼스 밖은 여기 해당 없음** — 빈 페이지(`SearchResultPageDTO`, resultCount=0)로 종단(BR-9 / U5 B3-a). | 🟡 PROVISIONAL | FR-5, US-D5 |
 | `DegradedResultDTO` | 응답(저하) | `cards: ResultCardVM[]`, `meta: ResultMeta`(degraded=true), `mode: DegradationMode` | 부분/lexical-only 폴백 결과를 저하 명시와 함께 반환(NFR-C1/US-R2). 카드 형상은 성공과 동일. | 🟡 PROVISIONAL | NFR-C1, US-R2, US-R3, QT-3 |
 | `ValidationErrorDTO` | 응답(검증) | `field?: string`, `message: string` | FR-1/SEC-5 검증 실패 인라인 에러(비기술·내부정보 차단, fail-closed). | 🟡 PROVISIONAL | FR-1, SEC-5, FR-11 |
 

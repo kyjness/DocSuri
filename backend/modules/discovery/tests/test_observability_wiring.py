@@ -65,10 +65,11 @@ def test_injected_hub_receives_grounding_health_metric() -> None:
     assert "pass" in name or "pass" in tags.values()
 
 
-def test_no_match_emits_abstain_grounding_health() -> None:
-    """Zero-candidate (no-match) queries are abstains too — they never reach finalize, so the
-    no-match branch must still emit grounding-health or the dashboard abstain rate is blind
-    to zero-result queries. (US-R4)"""
+def test_no_match_does_not_emit_grounding_health() -> None:
+    """A no-match is an empty page, NOT a grounding abstain (BR-9 / U5 B3-a), so it must NOT
+    emit a grounding-health metric — that signal tracks real enforce verdicts only, and a
+    zero-result query must not inflate the hallucination/abstain rate. Zero-result visibility
+    comes from the SearchExecuted event (resultCount=0) instead. (US-R4)"""
     hub = RecordingHub()
     bundle = build_mock_orchestrator(observability=hub)
     run_search(
@@ -78,6 +79,4 @@ def test_no_match_emits_abstain_grounding_health() -> None:
         _ctx(),
     )
     grounding = [m for m in hub.metrics if "grounding" in m[0]]
-    assert any(m[2].get("verdict") == "abstain" for m in grounding), (
-        "no-match path must emit a grounding-health metric with verdict=abstain"
-    )
+    assert grounding == [], "no-match must not emit a grounding-health metric"
