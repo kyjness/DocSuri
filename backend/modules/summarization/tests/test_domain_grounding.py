@@ -41,3 +41,28 @@ def test_schema_incomplete_fails(sample_paper: str, valid_draft: SummaryDraft) -
     verdict = GroundingValidator().validate(_gi(bad, sample_paper))
     assert not verdict.ok
     assert any(v.kind == "schema_incomplete" for v in verdict.violations)
+
+
+def test_truncated_fails(sample_paper: str, valid_draft: SummaryDraft) -> None:
+    bad = replace(valid_draft, truncated=True)
+    verdict = GroundingValidator().validate(_gi(bad, sample_paper))
+    assert not verdict.ok
+    assert any(v.kind == "truncated" for v in verdict.violations)
+
+
+def test_anchor_label_missing_fails(sample_paper: str, valid_draft: SummaryDraft) -> None:
+    from summarization.domain.models import Anchor, AnchorTarget
+    bad = replace(
+        valid_draft,
+        anchors=(
+            Anchor(
+                field_name="results",
+                target=AnchorTarget.SECTION,
+                span="95.3% accuracy on ImageNet",
+                label="Non Existent Section 9.9"
+            ),
+        )
+    )
+    verdict = GroundingValidator().validate(_gi(bad, sample_paper))
+    assert not verdict.ok
+    assert any(v.kind == "anchor_missing" for v in verdict.violations)

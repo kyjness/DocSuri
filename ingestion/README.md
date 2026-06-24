@@ -53,9 +53,6 @@ Optional policy controls:
 - `DOCSURI_INDEX_STATS_TTL_SECONDS` defaults to `60`
 - `DOCSURI_ARXIV_RATE_PER_SECOND` defaults to `0.33`
 - `DOCSURI_REQUEST_TIMEOUT_SECONDS` defaults to `30`
-- `DOCSURI_MAX_CHUNKS_PER_PAPER` defaults to `128`
-- `DOCSURI_MAX_CHUNK_CHARS` defaults to `2400`
-- `DOCSURI_CHUNK_OVERLAP_CHARS` defaults to `240`
 
 ## Supply Chain Checks
 

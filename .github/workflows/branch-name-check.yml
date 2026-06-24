@@ -1,0 +1,32 @@
+name: Branch name check
+
+# Enforces the branch-naming convention documented in CONVENTIONS.md.
+# Fails a PR whose source branch doesn't use an approved prefix, so the
+# feat/ vs feature/ drift can't creep back in.
+
+on:
+  pull_request:
+    types: [opened, reopened, edited, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate source branch name
+        env:
+          BRANCH: ${{ github.head_ref }}
+        run: |
+          # ponytail: add bot prefixes (e.g. 'dependabot/') to the allowlist here
+          # if automated PRs are introduced — they won't match the team prefixes.
+          # 'develop' is allowed so develop -> main release-promotion PRs pass.
+          if echo "$BRANCH" | grep -qE '^(develop|(feature|fix|ci|chore|docs|infra)/.+)$'; then
+            echo "PASS: '$BRANCH' matches the branch-naming convention."
+          else
+            echo "FAIL: branch '$BRANCH' does not match the convention."
+            echo "  Allowed prefixes: feature/  fix/  ci/  chore/  docs/  infra/"
+            echo "  Example: feature/u8-export-pdf   (see CONVENTIONS.md)"
+            exit 1
+          fi

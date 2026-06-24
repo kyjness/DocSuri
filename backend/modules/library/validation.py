@@ -16,15 +16,20 @@ import unicodedata
 from collections.abc import Callable
 from datetime import datetime
 from typing import TypeVar
+from uuid import uuid4
+
+from backend.modules.accounts.models import Principal
 
 from .models import HistoryEntry, LibraryItem, SavedSearch, ValidationException
 from .schemas import (
     HistoryEntry as HistoryEntryDTO,
 )
 from .schemas import (
+    LibraryItemCreateDTO,
     LibraryItemDTO,
     LibraryItemMeta,
     PageParams,
+    SavedSearchCreateDTO,
     SavedSearchDTO,
 )
 
@@ -182,3 +187,34 @@ def build_page(
     items = [to_dto(r) for r in rows]
     next_cursor = encode_cursor(key_of(rows[-1])) if (has_more and rows) else None
     return page_ctor(items=items, nextCursor=next_cursor)
+
+
+class UserDataDTOAndValidation:
+    @staticmethod
+    def validate_and_map(
+        dto: SavedSearchCreateDTO | LibraryItemCreateDTO,
+        principal: Principal,
+    ) -> SavedSearch | LibraryItem:
+        if isinstance(dto, SavedSearchCreateDTO):
+            query = validate_query(dto.query)
+            label = validate_label(dto.label)
+            normalized = normalize_query(query)
+            return SavedSearch(
+                id=str(uuid4()),
+                owner_id=principal.user_id,
+                query=query,
+                normalized_query=normalized,
+                label=label,
+            )
+        elif isinstance(dto, LibraryItemCreateDTO):
+            arxiv_id = validate_arxiv_id(dto.arXivId)
+            meta = validate_meta(dto.meta)
+            return LibraryItem(
+                id=str(uuid4()),
+                owner_id=principal.user_id,
+                arxiv_id=arxiv_id,
+                meta=meta,
+            )
+        else:
+            raise ValidationException("Unsupported DTO type")
+

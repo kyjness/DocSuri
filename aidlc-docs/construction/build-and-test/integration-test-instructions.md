@@ -165,3 +165,26 @@ Cleanup:
 - Delete test OpenSearch records by `paperId`.
 - Purge test SQS messages.
 - Reset control-plane rows for the test `paperId`.
+# U9 Personalization Integration Test Instructions — 2026-06-23
+
+Run backend integration/app-shell checks with local path packages:
+
+```powershell
+$env:PYTHONPATH='shared/python/src;ops/src;backend/modules/discovery/src'
+python -m pytest backend/tests/test_personalization.py backend/tests/test_app_shell.py -q
+python -m pytest backend/tests -q
+```
+
+Observed results:
+
+- U9 + app-shell: 25 passed
+- backend tests: 57 passed, 1 skipped
+
+Key scenarios:
+
+- U9 module appears in app-shell registry.
+- U9 endpoints are feature-flag gated by default.
+- U9 routes work when `PERSONALIZATION_ENABLED=true`.
+- Existing backend app-shell routes continue to mount with local source packages present.
+
+---

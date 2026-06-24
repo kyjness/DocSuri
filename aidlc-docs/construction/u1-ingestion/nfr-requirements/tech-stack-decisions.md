@@ -56,6 +56,50 @@
 
 ---
 
+## 멀티모달 자산 추출 ADR (FR-17 — 표시 전용, 2026-06-22 확장)
+
+> 상속: TD-1 Python·TD-7 S3·TD-8 Hypothesis·TD-9 컨테이너·TD-10 패키징. TD-3/4(임베딩·OpenSearch)는 **무관**(자산 검색 비대상). NFR 계획 Q1~Q7=A.
+>
+> **피벗 재검토 (2026-06-23, doc-model — SSOT=`construction/plans/docmodel-foundation-pivot-plan.md`)**: 표시 전용 → **콘텐츠 1급화**. **표 = PDF 크롭(TD-12) 폐기 → HTML 구조화 데이터**(D8); **수식 = MathML→LaTeX**; HTML 결정적 파서 스택 신규(**TD-16**). **그림 webp 추출·정규화(TD-13/14/15)는 유지**(doc-model이 `assetId`로 참조). PDF 크롭(TD-11)은 **최후 폴백**으로 강등.
+
+## TD-11 — PDF 페이지 크롭(page-crop) 도구: **permissive 스택 휴리스틱** (Q1=A)
+> **피벗 강등 (2026-06-23, D8/Q6)**: doc-model 전환으로 page-crop은 **HTML 전무(~9%) 논문의 최후 폴백**으로 강등(`native HTML → ar5iv → e-print LaTeX → (최후) PDF`). 주 추출은 HTML 파서(TD-16). **표는 더 이상 크롭하지 않음**(데이터로, TD-12) — page-crop은 PDF밖에 없는 논문의 **그림** 확보용으로만 유지.
+> **정정 (2026-06-22, Code Generation Q1=A)**: 초안의 **PyMuPDF(fitz)는 AGPL-3.0**라 "프로덕션·공개 모바일 웹"에 전파 위험 → **permissive 스택으로 대체**: **`pypdfium2`(Apache-2.0/BSD-3, PDF 렌더) + `pdfplumber`/`pdfminer.six`(MIT, 텍스트·rect·캡션 레이아웃)**. 알고리즘(내장 이미지 객체 + 캡션 근접 매칭 + page-crop)은 동일.
+- **근거**: 내장 이미지 객체 + 캡션("Figure N"/"Table N") 근접 영역 크롭을 **CPU·ML 없이** 수행. permissive 라이선스, 오프라인 배치·$1600 전역 상한에 적합. distinct 논문×버전 1회(BR-22)라 처리량 bounded.
+- **대안**: ~~PyMuPDF(AGPL — 기각)~~; 레이아웃 분석 ML 모델(pdffigures2[Java]/deepfigures[GPU]) — 검출 정밀도 우수하나 컴퓨트·운영 복잡도↑.
+- **전환 비용**: 낮음 — 추출은 `AssetExtractor` 뒤 추상화. 정밀도 부족 시 차기 사이클 ML 검출로 교체(재추출은 NEW/CHANGED 재처리로 흡수).
+
+## TD-12 — doc-model 구조화 추출: **arXiv HTML 결정적 파싱(표=데이터·수식=LaTeX) + 그림=HTML/e-print 그래픽**, PDF 크롭은 최후 폴백 (재검토 2026-06-23, D1/D8)
+> **재검토 사유**: 기존 결정(표=PDF 크롭)은 표를 **이미지**로 박제 → 텍스트 에이전트·요약에 표 숫자가 깜깜이(근거형성이 표 충실도에 의존). doc-model 피벗에서 **표를 데이터로 승격**(D8).
+- **근거**: 표/수식은 소스 HTML에 **데이터로 존재**한다. ar5iv/native HTML의 `<table class="ltx_tabular">`에서 **행/열(rows/cols) 구조 결정적 추출**(스파이크: 표 보유 시 전부 `ltx_tabular`). 수식은 `<math>`(MathML, HTML 보유분 94%) → **LaTeX 변환**(TD-16). 그림은 HTML `<img>` 또는 e-print(`/e-print/{id}`) tarball의 `\includegraphics` 그래픽 직접 취득(**원본 화질**) → **webp 정규화(TD-13) 유지**, doc-model이 `assetId`로 참조. 커버리지: HTML(native+ar5iv) 90%(Q1 스파이크).
+- **표=PDF 크롭 폐기(D8)**: 표 이미지는 텍스트 에이전트에 깜깜이; LLM 추출도 금지(표 숫자 환각, D1) → **결정적 HTML 파싱만**.
+- **폴백 사다리(Q6)**: `native HTML → ar5iv → e-print LaTeX → (최후) PDF 파싱(TD-11)`. HTML 전무 ~9%에서만 PDF 단계 발동; 그때 표가 크롭으로만 잡히면 webp 이미지로 두되 **주 표현은 데이터**.
+- **대안**: ~~표=PDF 크롭(기존 TD-12 — 기각, D8)~~; LaTeX→이미지 TeX 컴파일(복잡·비용 과다); LLM 표 추출(환각 — 기각 D1).
+- **전환 비용**: 중. 표 경로가 PDF 크롭 → HTML 파서로 전환(신규 `DocModelParser`, TD-16). 그림·webp·저장(TD-13/14/15)은 불변 재사용.
+
+## TD-16 — doc-model HTML 파서 스택: **lxml/BeautifulSoup(HTML·표) + MathML→LaTeX 변환** (피벗 2026-06-23, D1)
+- **근거**: 결정적 파싱(**LLM 추출 금지**, D1). HTML/XML = **`lxml`**(빠름·견고, XPath로 `ltx_*` 클래스 타겟) + 보조 **`BeautifulSoup`**(관용 파싱·구조 손상 내성). 표 `ltx_tabular`/`<table>` → rows/cols + colspan/rowspan 보존. 수식 `<math>`(MathML) → **LaTeX 변환**(예: `mathml-to-latex`/XSLT류, permissive). 그림 참조 → `assetId` 매핑(기존 자산 연결, 재추출 0). 전부 결정적(동일 HTML→동일 doc-model, P7).
+- **입력 보안**: 외부 HTML = **파싱 공격 표면** → 안전 파서·**엔티티 확장/외부 DTD 차단**·문서 크기 상한(billion-laughs 가드, TD-15 정신 상속). 외부 fetch는 fail-closed(BR-18)·타임아웃(RES-9)·SSRF 방어 상속.
+- **대안**: LLM 추출(거부 — 표 숫자 환각 D1); headless 브라우저 렌더(과중·비결정성); 표=PDF 크롭(D8 기각).
+- **전환 비용**: 낮~중. 신규 의존성(permissive)·신규 `DocModelParser` 컴포넌트. 파서 라이브러리 핀·MathML 변환 정확도 임계는 NFR Design.
+
+## TD-13 — 이미지 포맷·정규화: **WebP 재인코딩 + 치수/픽셀 상한 + 메타데이터 스트립** (Q3=A)
+- **근거**: 모든 자산을 안전 디코더로 **재인코딩(WebP)** — 모바일 대역폭 절감 + 원본 바이트 비서빙(보안 TD-15). 최대 치수·총 픽셀 상한(decompression-bomb 가드), EXIF/메타 스트립. 구체 수치(해상도·DPI·상한·품질)는 NFR Design.
+- **대안**: 원본 포맷 보존(재인코딩 없음) — 보안·대역폭 불리.
+- **전환 비용**: 낮음(인코딩 파라미터).
+
+## TD-14 — 자산 저장: **S3 별도 prefix/버킷(private·SSE) + 매니페스트/메타 = 공유 RDS PostgreSQL** (Q5=A)
+- **근거**: 바이너리는 기존 S3(TD-7) 자산 prefix(공개 차단 SEC-9·at-rest SEC-1), 매니페스트/자산 메타는 **공유 RDS PostgreSQL**(U3/U4 계정·라이브러리, U7 용어집 자산) — 읽기 측(U7)이 RDS 조회 후 서명 URL 발급(인셉션 Q3=A). **신규 스토어 0.**
+- **대안**: 매니페스트도 S3(JSON) — RDS 미사용. U7 조회·갱신 일관성에 불리.
+- **전환 비용**: 낮음(포트 `AssetStorePort` 뒤). RDS 스키마·마이그레이션은 Infra Design.
+
+## TD-15 — 이미지 보안 재인코딩(외부 소스 파싱 방어): **안전 디코더 경유 강제** (Q3=A 보안 측)
+- **근거**: 외부 소스(arXiv 그래픽/PDF) 이미지는 **파싱 공격 표면**. 신뢰 디코더(예: Pillow/안전 옵션)로 재디코드·재인코딩, 치수/픽셀 상한으로 decompression bomb 차단, 메타 스트립. **원본 바이트를 그대로 저장·서빙하지 않는다.** 외부 fetch는 기존 fail-closed(BR-18)·타임아웃(RES-9) 상속(SSRF/지연 방어).
+- **대안**: 원본 패스스루 — 위험(거부).
+- **전환 비용**: 낮음.
+
+---
+
 ## 비용·상한 주석 (NFR-C1)
 - **NFR-C1 월 상한 = $1600/월**(2026-06-16 팀 결정 — 팀 AWS 크레딧 전액). **시스템 전역 상한**: U1 임베딩+스토리지뿐 아니라 전 유닛 AWS 지출(Bedrock 임베딩·U2 Bedrock LLM 근거화·OpenSearch·RDS·컴퓨트·S3) 합계가 $1600/월 이내. U1은 그 슬라이스 하나이며 **U6.CostGuardCircuitBreaker가 시스템 상한 강제**(80% 경보/100% 전 저하). 임베딩 1회(시드) 비용은 디덥(BR-4)·본문 크기 정책(BR-21)으로 통제.
 - _주의(팀 확인): $1600이 일회성 크레딧 풀이면 런웨이=풀÷월지출; 월 한도 자체는 지시대로 $1600._

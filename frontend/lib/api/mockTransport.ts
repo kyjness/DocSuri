@@ -13,13 +13,17 @@ import {
   emptyResponse,
   abstainResponse,
   degradedResponse,
+  validationErrorResponse,
 } from '@/mocks/searchFixtures';
 import {
   summaryResponse,
   beginnerSummaryResponse,
   abstractTranslationResponse,
   fullTranslationResponse,
-  fullTextResponse,
+  docModelResponse,
+  assetsResponse,
+  mockUpsertGlossaryTerm,
+  mockListGlossaryTerms,
 } from '@/mocks/summarizeFixtures';
 import { mockPaperMeta } from '@/mocks/paperFixtures';
 import {
@@ -38,10 +42,12 @@ import {
   mockListHistory,
   mockClearHistory,
 } from '@/mocks/libraryFixtures';
+import { mockCitationTree } from '@/mocks/citationGraphFixtures';
 import type {
   SavedSearchCreateDTO,
   LibraryItemCreateDTO,
 } from '@/types/generated';
+import type { CitationNode } from '@/types/citationGraph';
 
 function matches(q: string, ...needles: string[]): boolean {
   const lower = q.toLowerCase();
@@ -70,6 +76,7 @@ export class MockTransport implements Transport {
       if (matches(query, '없음', 'empty')) return { status: 200, body: emptyResponse };
       if (matches(query, '기권', 'abstain')) return { status: 200, body: abstainResponse };
       if (matches(query, '저하', 'degraded')) return { status: 200, body: degradedResponse };
+      if (matches(query, '유효', 'invalid')) return { status: 400, body: validationErrorResponse };
       return { status: 200, body: pageResponse };
     }
 
@@ -87,8 +94,52 @@ export class MockTransport implements Transport {
         body: body.persona === 'beginner' ? beginnerSummaryResponse : summaryResponse,
       };
     }
-    if (/^\/api\/papers\/[^/]+\/full-text$/.test(path) && req.method === 'GET') {
-      return { status: 200, body: fullTextResponse };
+    if (req.path === '/api/glossary' && req.method === 'GET') {
+      return { status: 200, body: { status: 'ok', terms: mockListGlossaryTerms() } };
+    }
+    if (req.path === '/api/glossary' && req.method === 'POST') {
+      const body = (req.body ?? {}) as { termFrom?: unknown; termTo?: unknown };
+      const termFrom = String(body.termFrom ?? '').trim();
+      const termTo = String(body.termTo ?? '').trim();
+      if (!termFrom || !termTo) return { status: 400, body: { message: '용어를 입력해 주세요.' } };
+      return { status: 201, body: mockUpsertGlossaryTerm(termFrom, termTo) };
+    }
+    if (/^\/api\/papers\/[^/]+\/assets$/.test(path) && req.method === 'GET') {
+      return { status: 200, body: assetsResponse };
+    }
+    if (/^\/api\/papers\/[^/]+\/doc-model$/.test(path) && req.method === 'GET') {
+      return { status: 200, body: docModelResponse };
+    }
+    const citationTree = path.match(/^\/api\/papers\/([^/]+)\/citation-tree$/);
+    if (citationTree && req.method === 'GET') {
+      return {
+        status: 200,
+        body: mockCitationTree(
+          decodeURIComponent(citationTree[1]),
+          sp.get('expandNodeId') ?? undefined,
+        ),
+      };
+    }
+    const citationSave = path.match(/^\/api\/papers\/([^/]+)\/citation-tree\/save$/);
+    if (citationSave && req.method === 'POST') {
+      const node = ((req.body ?? {}) as { node?: CitationNode }).node;
+      if (!node?.saveable || !node.arxivId) {
+        return { status: 422, body: { message: '저장할 수 없는 인용입니다.' } };
+      }
+      return {
+        status: 201,
+        body: mockAddLibrary({
+          arXivId: node.arxivId,
+          meta: {
+            title: node.title,
+            authors: [],
+            year: node.year ?? null,
+            arxivId: node.arxivId,
+            abstractSnippet: null,
+            arxivUrl: node.url ?? null,
+          },
+        }),
+      };
     }
     const metaMatch = path.match(/^\/api\/papers\/([^/]+)$/);
     if (metaMatch && req.method === 'GET') {

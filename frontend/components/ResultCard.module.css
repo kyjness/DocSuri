@@ -1,4 +1,5 @@
 .card {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -8,11 +9,23 @@
   background: var(--color-surface);
 }
 
+/* Save-to-library control, pinned to the card's top-right corner. */
+.bookmark {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+}
+
 .titleLink,
 .snippetLink {
   display: block;
   text-decoration: none;
   color: inherit;
+}
+
+/* Leave room for the top-right bookmark so a long title never sits under it. */
+.titleLink {
+  padding-right: 44px;
 }
 
 .titleLink:hover .title {

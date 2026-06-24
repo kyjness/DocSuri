@@ -29,7 +29,17 @@ describe('ResultCard', () => {
     expect(screen.getByTestId('result-card-authors')).toHaveTextContent('A. Vaswani, N. Shazeer');
     expect(screen.getByTestId('result-card-year')).toHaveTextContent('2017');
     expect(screen.getByTestId('result-card-arxiv-id')).toHaveTextContent('1706.03762v5');
-    expect(screen.getByTestId('result-card-relevance')).toHaveTextContent('높음');
+  });
+
+  it('never renders the internal relevance score (SEC-9)', () => {
+    render(<ResultCard card={base} />);
+    expect(screen.queryByTestId('result-card-relevance')).toBeNull();
+    expect(screen.queryByText(/관련도/)).toBeNull();
+  });
+
+  it('renders the top-right bookmark slot when provided', () => {
+    render(<ResultCard card={base} bookmark={<button data-testid="bm">담기</button>} />);
+    expect(screen.getByTestId('bm')).toBeInTheDocument();
   });
 
   it('links title and snippet to the paper detail route', () => {

@@ -67,3 +67,23 @@ Run shared package tests when shared schemas change:
 $env:PYTHONPATH="shared/python/src"
 python -m pytest shared/python/tests
 ```
+# U9 Personalization Contract Test Instructions — 2026-06-23
+
+U9 v1 contracts are backend-local. Shared DTO promotion is deferred until U2/U7/U5 integration requires it.
+
+Current contract checks:
+
+```powershell
+python -m pytest backend/tests/test_personalization.py -q
+```
+
+Covered contracts:
+
+- behavior event request shape
+- metadata allowlist
+- decision response shape
+- settings/delete/reset response shape
+
+Future contract tests should be added when U2/U7/U5 call U9 directly.
+
+---

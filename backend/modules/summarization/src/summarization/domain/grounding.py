@@ -42,20 +42,37 @@ class GroundingValidator:
         draft, refined = gi.draft, gi.refined
         violations: list[Violation] = []
 
-        # (4) empty / truncation
+        # (4) empty / truncation (Step 33)
         if not draft.tldr.strip() or not draft.method.strip():
             violations.append(Violation("empty", "tldr/method"))
+        if getattr(draft, "truncated", False):
+            violations.append(Violation("truncated", "draft"))
 
         # (3) schema completeness
         if "code" not in draft.reproducibility or "data" not in draft.reproducibility:
             violations.append(Violation("schema_incomplete", "reproducibility"))
 
-        # (1) anchor existence — span (and label, if present) must be in the source
+        # (1) anchor existence — span (and label, if present) must be in the source (Step 35)
         haystack = refined.body
         captions = "\n".join(refined.captions)
+        # preserved (Appendix/Supplementary, Step 36) is source content too — include it so an
+        # anchor into an appendix span/label is not falsely flagged anchor_missing.
+        preserved = "\n".join(refined.preserved)
+        section_labels = {s.label.strip() for s in refined.sections if s.label.strip()}
         for a in draft.anchors:
             span = a.span.strip()
-            if span and span not in haystack and span not in captions:
+            label = a.label.strip()
+            # Verify span
+            span_ok = not span or (span in haystack or span in captions or span in preserved)
+            # Verify label
+            label_ok = not label or (
+                label in haystack
+                or label in captions
+                or label in section_labels
+                or label in preserved
+            )
+            
+            if not span_ok or not label_ok:
                 violations.append(Violation("anchor_missing", a.field_name))
 
         # (2) numeric match — result numbers must appear in the source

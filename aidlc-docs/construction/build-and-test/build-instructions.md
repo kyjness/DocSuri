@@ -211,3 +211,36 @@ python3 -c "from backend.modules.accounts.controller import router; print('Route
 #### 3.2. Redis-py 비동기 모듈 Import 실패
 - **원인**: 구버전 `redis` 패키지가 설치되어 `redis.asyncio`가 노출되지 않는 경우.
 - **해결책**: `pip install --upgrade redis`를 실행하여 redis 패키지 버전을 5.0 이상으로 수집 및 동기화해 주십시오.
+# U9 Personalization Build Instructions — 2026-06-23
+
+## Prerequisites
+
+- Python runtime available as `python`.
+- Existing local source packages on `PYTHONPATH` for app-shell tests:
+
+```powershell
+$env:PYTHONPATH='shared/python/src;ops/src;backend/modules/discovery/src'
+```
+
+## Build Steps
+
+```powershell
+python -m compileall backend/modules/personalization backend/wiring.py backend/app.py ops/cdk/stacks/compute_stack.py
+```
+
+Expected result: compileall completes without syntax errors.
+
+## CDK Build Note
+
+CDK synth requires the Python dependencies from `ops/cdk/requirements.txt` and a Node runtime usable by `jsii`.
+
+```powershell
+cd ops/cdk
+python -m pip install -r requirements.txt
+$env:JSII_NODE="$env:USERPROFILE\scoop\apps\nodejs-lts\current\node.exe"
+cdk synth
+```
+
+Verified result on 2026-06-23: `cdk synth` completed successfully and synthesized templates to `ops/cdk/cdk.out`. The CDK CLI emitted existing construct warnings for cross-stack reference strength, ECS `minHealthyPercent`, and security group egress; no U9 synth blocker remained.
+
+---

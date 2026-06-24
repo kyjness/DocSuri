@@ -1,9 +1,11 @@
-"""LengthRouter — single-call vs map-reduce branch (BR-S6 / Q3).
+"""LengthRouter — single-call vs map-reduce vs over-cap branch (BR-S6 / Q3).
 
-Shape only: the concrete token budget / chunk size / async-job switchover are runtime
-tunes (NFR/Code-gen). The default budget keeps the common paper (~13K, up to ~40K tokens)
-on the single-call path; map-reduce is the bounded outlier path (v1 stays synchronous,
-TD-S9). An input token cap bounds extreme outliers.
+Shape only: the concrete token budget / chunk size are runtime tunes (NFR/Code-gen). The
+default budget keeps the common paper (~13K, up to ~40K tokens) on the single-call path.
+The MAP_REDUCE band (CONTEXT_BUDGET~INPUT_CAP) is the long-paper path: when enabled it runs
+section-aware map-reduce as a background job (BR-S8, MapReduceSummarizer + summary worker),
+so the request is dispatched (``pending``) rather than blocking. Beyond INPUT_CAP (OVER_CAP)
+the extreme outlier is rejected (``input_too_long``) — not partial-summarized.
 """
 
 from __future__ import annotations

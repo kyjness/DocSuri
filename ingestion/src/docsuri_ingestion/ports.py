@@ -4,8 +4,10 @@ from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 
+from docsuri_shared.dtos import DocModel, SourceTier
 from docsuri_shared.events import NewArxivEvent
 
+from .domain.assets import AssetManifest, ExtractedAsset
 from .domain.enums import DedupDecision, JobKind
 from .domain.models import (
     CategoryFilter,
@@ -114,6 +116,53 @@ class QueuePort(Protocol):
     def send_to_dlq(self, payload: Mapping[str, Any], *, reason: str) -> None: ...
 
     def parse_new_arxiv_event(self, payload: Mapping[str, Any]) -> NewArxivEvent: ...
+
+
+@runtime_checkable
+class AssetSourcePort(Protocol):
+    """FR-17 figure/table source bytes. Fetched lazily for NEW|CHANGED papers only."""
+
+    def fetch_eprint(self, metadata: MetadataRecord) -> bytes | None: ...
+
+    def fetch_pdf(self, metadata: MetadataRecord) -> bytes | None: ...
+
+
+@runtime_checkable
+class AssetStorePort(Protocol):
+    """FR-17 asset persistence: binary→S3, manifest→RDS (write-order S3 then RDS, P8)."""
+
+    def store_assets(
+        self, paper_id: str, version: int, assets: Sequence[ExtractedAsset]
+    ) -> AssetManifest: ...
+
+    def remove_assets(self, paper_id: str) -> None: ...
+
+
+@runtime_checkable
+class DocModelSourcePort(Protocol):
+    """BR-30 doc-model source: fetch deterministic-parseable HTML across the fallback ladder.
+
+    Returns ``(html, source_tier)`` for the first rung that yields HTML (native arXiv HTML →
+    ar5iv), or ``None`` when no rung produced HTML (→ source_unavailable). Q6's e-print/PDF
+    rungs are an additive extension behind the same port.
+    """
+
+    def fetch_html_source(self, arxiv_id: str) -> tuple[str, SourceTier] | None: ...
+
+
+@runtime_checkable
+class DocModelStorePort(Protocol):
+    """BR-30 doc-model cache: lazy-built JSON keyed (paperId, version) at the doc-model/ prefix.
+
+    ``put`` derives its key from ``doc.meta`` (paperId/version); ``remove`` drops every cached
+    version for a paper (tombstone/version-change invalidation, BLM §7).
+    """
+
+    def get(self, paper_id: str, version: int) -> DocModel | None: ...
+
+    def put(self, doc: DocModel) -> str: ...
+
+    def remove(self, paper_id: str) -> None: ...
 
 
 @runtime_checkable

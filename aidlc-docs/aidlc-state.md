@@ -4,7 +4,7 @@
 - **프로젝트명**: DocSuri (연구 지원 애플리케이션)
 - **프로젝트 유형**: Greenfield(그린필드)
 - **시작일**: 2026-06-15T04:36:30Z
-- **현재 단계**: CONSTRUCTION - US-R4 구현 완료. **[2026-06-18: U6 관측성 텔레메트리 연동(US-R4) 피처 구현, 대시보드 및 인시던트 API 엔드포인트 구현, 단위 및 통합 테스트 검증 및 린트 통과 완료]** **[2026-06-18: U7(요약/번역) CONSTRUCTION 진입 — Functional Design 계획·질문 게이트(17문) 작성, 브랜치 `feature/u7-v2`·PR #115, 리뷰/답변 대기. 산출물·코드 미생성.]**
+- **현재 단계**: INCEPTION - Cohere Embed v4.0 마이그레이션 Workflow Planning 완료. 다음: NFR Design.
 - **문서 언어**: 한국어(`aidlc-docs/` 산출물). 업스트림 룰셋(`AGENTS.md`, `.aidlc-rule-details/`)은 영어 유지.
 
 ## ⚠️ 검증 재기준선 (Verification Re-baseline) — 2026-06-16
@@ -39,6 +39,14 @@
 - **ci.yml 헤더 주석 stale (Low)**: 1~5행 주석이 "tests/accounts 미연결"이라 표기하나 현 `root-suites` 잡이 해당 스위트를 실행.
 - **테스트 수 드리프트 (Info·benign)**: 스위트 증가로 문서 수치 stale(U1 23→26·U6 31→34·U4 컴포넌트 분할·U2 42+1skip). 회귀 아님.
 - **Operations 프레임워크 갭**: AI-DLC 룰셋은 Build and Test에서 종료(Operations=placeholder)이나 실 AWS 프로덕션 배포가 프레임워크 밖에서 수행됨 — 운영 런북/롤백/모니터링 문서 미수립(§OPERATIONS 참조).
+
+## 사후 결정 / 핫픽스 (Post-Construction — 규범은 각 유닛 BR·plan `사후 결정` Q)
+
+- **U1 전문 추출 결함 정정 (2026-06-23, #139·커밋 `0ced380`·브랜치 `fix/summarization-pipeline`)**: arXiv e-print(gzip/tar) 미해제 디코딩으로 전문 ~44% 깨짐(�) → **arXiv HTML(native→ar5iv) 우선 + PDF 폴백**으로 교체(결정 D = U1 FD plan Q18 · BR-29). 보관=정규화 평문 1종, 뷰어=평문(앵커 유지). 리치 HTML 렌더/보관은 에셋 패널(FR-17)과 그림·표 겹쳐 에이전트 단계로 분리. `pdfplumber` 코어 승격.
+- **U7 번역 입력 정렬 (2026-06-23, P2·커밋 `4039bde`·브랜치 `fix/summarization-pipeline`)**: 전문 번역(scope=full)이 정제 안 한 원문을 초록 프롬프트에 전송 + 길이판정(`refined`)↔전송(`raw`) 불일치 → 번역 입력=`refined.body` 통일·프롬프트 scope 분기(결정 A = U7 FD plan Q18 · BR-S2).
+- **🧭 DocModel 기반 전환 — 결정 게이트 수립 (2026-06-23, 미착수·브랜치 예정 `feat/docmodel-foundation`)**: "요약/번역 입력을 평문→구조화 문서모델(doc-model)로 전환 + 자체 리치뷰 + 에이전트 준비" 피벗의 단일 진실원천 게이트 작성 → `construction/plans/docmodel-foundation-pivot-plan.md`. **확정 결정 D1~D8**: doc-model=arXiv HTML 결정적 파싱 JSON(표=데이터·수식=LaTeX·그림=webp 참조)·U7 입력 평문→doc-model 교체(로직 불변)·PDF 원문 미저장(다운로드 버튼 없음)·자체 리치뷰=doc-model 콘텐츠 재렌더(PDF.js 아님)·비전=batch 아닌 에이전트 on-demand 툴·생성 lazy+`(paperId,ver)` 캐시·소스 무관 설계·TD-12(표=PDF크롭) 재검토. **저장**: `doc-model/{id}/v{ver}.json`(구조화 통합) + 기존 `assets/*.webp`(이미지 분리·참조) + 기존 `paper_asset` RDS. **열린 Q1~Q8**(코드 전 확정): ⚠️Q1 arXiv HTML 커버리지 스파이크(배포 확정 선결)·Q3 doc-model 스키마·Q7 요구사항 재진입 여부·Q8 P3(맵리듀스)=doc-model 후속. `:159-162` 비전 항목은 본 doc-model 기반으로 흡수. **blast-radius=기존 U1/U7/U5 FD·TD-12·requirements *편집*(신규 문서는 게이트뿐)**.
+- **🧭 DocModel 전환 — blast-radius 기존 문서 편집 (2026-06-23, 브랜치 예정 `feat/docmodel-foundation`)**: 게이트 D1~D8·Q권장안 기준으로 §3 기존 유닛 문서 *편집* 진행(신규=게이트뿐). **U1**: BLM `business-logic-model`(스코프 피벗 노트·§7 doc-model lazy 생성·캐시 단계 신설·§6.3 철회 무효화 연동) · `business-rules`(BR-29 carve-out 뒤집기 — 리치 렌더 범위 안 + ar5iv 필수 / **BR-30 신설** doc-model 구조·생성) · `tech-stack-decisions`(**TD-12 재작성** 표=PDF크롭→HTML 데이터 · **TD-16 신설** HTML 파서 lxml/BeautifulSoup·MathML→LaTeX·입력 보안 · TD-11 최후폴백 강등) · `infrastructure-design`(§1.1b `doc-model/` prefix·SSE-KMS·lazy 캐시 라이프사이클 + IAM 빌더/읽기 역할). **U7**: `domain-entities`(SourceText=doc-model·RefinedSource **+tables[]**·docModelRef) · `business-logic-model`(SourceSelector·InputRefiner doc-model 직접 취득·프롬프트 표=데이터·수식 LaTeX) · `business-rules`(BR-S2/S3) — **로직 불변, 입력만 업그레이드(D2)**. **U5 리치뷰**: 실제 컴포넌트가 사는 `u7-summarization-frontend` `FullTextViewer`→**`DocModelViewer`** 본문화(목차·KaTeX·표 컴포넌트·webp 그림·앵커; `getFullText`→`getDocModel` lazy) + U5 `frontend-components §6`(AssetGallery=그림 전용 축소·**표 크롭 폐기→표 컴포넌트** D8·앵커 매처 재사용). **미편집(잔여)**: requirements.md(FR-12/리치뷰 1급화/§12 — Q7 재진입 결과 대기) · `shared/dtos/`(Q3 doc-model 스키마 SSOT) · U7 NFR/Infra 어댑터 경량 정합. **다음=코드**(`feat/docmodel-foundation`). _커밋·push 보류(사용자 승인 후)._
+- **🧭 DocModel 전환 — Q3 스키마 + Q7 요구사항 재진입 완료 (2026-06-23, `fix/summarization-pipeline`, 미푸시)**: **Q3(커밋 `ff258f7`)** — doc-model 계약 확정: **중첩 섹션 트리 + 결정적 블록 id 앵커**. `shared/dtos/docmodel.schema.json`(JSON Schema 2020-12·20 defs·양성/음성 검증) + 스펙 SSOT `construction/shared/docmodel.md` + overview/README 등재(계약 5번째). 루트=getDocModel 응답 union, 아티팩트=DocModel(meta+sections[]); 블록 6종(paragraph·table·formula·figure·list·code); 표=rows/cols·수식=latex·그림=AssetRef(assetId 참조, url 없음 SEC-9); provenance(sourceTier 사다리). **Q7(미커밋)** — 요구사항 재진입: 질문지 `inception/requirements/requirement-verification-questions-docmodel.md` Q1~Q7(전부 게이트 권장안 + 리치뷰=신규 FR-18) → `requirements.md` 등재: **FR-12 개정**(입력=doc-model·앵커=doc-model id)·**FR-17 개정**(그림=이미지·표=데이터 D8)·**FR-18 신설**(자체 리치뷰 1급 D4)·§12 doc-model 카브아웃(PDF 미저장 D3·비전 제외 유지 D5·외부소스 일괄캐시 제외 D7)·QT-5 앵커 보강·§13 추적성. **다음=코드**(`feat/docmodel-foundation`): U1 DocModelBuilder(ar5iv 사다리·lxml)·getDocModel API·U7 입력 어댑터·DocModelViewer + summarization.schema Anchor.target 의미 명확화. _push·PR 보류(승인 후)._
 
 ## 워크스페이스 상태
 - **기존 코드**: 없음(워킹 트리 블랭크 슬레이트; 이전 데모 사이클 폐기, git `ba3b6a9`로 복구 가능)
@@ -76,6 +84,14 @@ _Resiliency 옵트인은 `requirements.md` 확정 전에 필수 요구사항 명
 - [ ] Units Generation — **EXECUTE** (예비 유닛: U1 인제스천, U2 디스커버리 API, U3 계정/인증, U4 검색저장/라이브러리, U5 모바일 웹, U6 신뢰성/운영)
 - [x] **사용자 스토리 개정 — U7(요약/번역) 에픽 추가 (2026-06-18, 팀 합의·`feature/u7`·PR #108)**: `stories.md`에 **에픽 6 — 요약/번역**(US-S1 구조화 요약·US-S2 한국어 번역·US-S3 출처보기+기권·US-S4 개인화·US-S5 온디맨드 응답·US-S6 비용게이트+근거화 운영) 6 스토리 추가 → 총 27 스토리/7 에픽. P1(US-S1..S5)·OP(US-S6) 매핑, FR-12..14·NFR-P2·QT-5 전수 커버. 페르소나 무변경(P1·OP가 U7 커버).
 - [x] **Units Generation 개정 — U7 정식 등재 (2026-06-18, 팀 합의·`feature/u7`·PR #108)**: `unit-of-work.md`(U7 Summarization 유닛 정의·배포 단위 ①+③옵션·코드트리 `backend/modules/summarization/`·확장 트랙)·`unit-of-work-dependency.md`(U7 행/열 추가, U7→U1 capability read·U7→U6 `shared/ports` lib·U5→U7/U6→U7 sync, **코드 DAG 비순환 유지 검증**, 온디맨드 요약 ASCII 흐름)·`unit-of-work-story-map.md`(US-S1..S5 Owner=U7·US-S6 Owner=U6 기여=U7, 전수 27 스토리 검증) 갱신. **7 유닛·4 배포 단위(U7=API 모듈, 초장문만 비동기 잡 옵션).** 리뷰 게이트 대기. **다음: U7 Construction 유닛 루프(Functional Design부터).**
+- [x] **요구사항 개정 — 신규 유닛 U8(인용 그래프/각주 트리) 편입 (2026-06-19)**: 명확화 `requirement-verification-questions-citation-graph.md` 22문 답변 확정(Q3/Q10=X, Q4/Q14=B, 나머지 권장안) → `requirements.md`에 **FR-15(각주 트리/backward references)·FR-16(노드 저장/연동)·NFR-P3(온디맨드 비-SLA)·QT-6(인용 엣지 정확도+그래프 불변식)·§12 카브아웃** 등재. v1은 논문 상세보기 페이지의 backward references 각주 트리로 한정, FE 구현·forward citations·3-hop 이상은 제외.
+- [x] **요구사항 개정 — Cohere Embed v4.0 마이그레이션 편입 (2026-06-23)**: 명확화 `requirement-verification-questions-v4-migration.md` 4문 전수 답변(A) 반영 → `requirements.md`에 **FR-17(듀얼 라이트)·NFR-M2(Blue/Green 마이그레이션)·NFR-S2(v4 모델 컷오버)** 등재. 기존 v3 인덱스와의 비호환성을 무중단으로 해결하기 위해 신규 인덱스 백필, 듀얼 라이트, 그리고 Instant Cutover 전략을 확정.
+- [x] **요구사항 개정 — 신규 유닛 연구 에이전트(대화형 문헌탐색·근거형성 / 아이디어 novelty) 편입 (2026-06-24, 브랜치 `feature/research-agent`·PR #170)**: 명확화 `requirement-verification-questions-research-agent.md`(인셉션 고도 18문항; **Q5=B·Q7=A[재현성 판정 제외]·Q13=X·Q14=B·Q18=A, 나머지 권장**) → `requirements.md`에 **FR-22(대화형 근거형성·모드 A·v1)·FR-23(novelty 비교·모드 B·차기 구현)·FR-24(대화형 입력+첨부)·FR-25(결과·세션 영속+전용 네비 진입)·NFR-P5(온디맨드 비-SLA·비차단)·NFR-C1 Agent 비용 보강·QT-8(근거·novelty 인수)·§12 Agent 카브아웃·C-2 추출·비교 경계** + 성공기준 #7·추적성 9행 등재. **v1=모드 A 구현, 모드 B(novelty)는 다음 사이클**(Q4=A). 생성 산문·재현성 판정 제외(C-2). 설계 입력 `summarization-translation-pipeline.md`(line 374 "파이프라인 재사용 + 유사논문 검색 노드"). **HOW(코퍼스 확장·외부 API·출력 스키마·근거표 컬럼·LLM 모델·멀티턴·네비/세션 UI)는 Construction(Functional/NFR/Infra Design) 라운드로 이월.** 유닛 번호 미배정(마이페이지 U10·개인화추천·트렌드/알림·구독제 이후). **Q18=A → Requirements 등재 완료; User Stories는 별도 승인으로 진행, Units·Construction은 후속.**
+- [x] **사용자 스토리 개정 — 연구 에이전트 에픽 추가 (2026-06-24, `feature/research-agent`·PR #170)**: PART 1 평가(`research-agent-user-stories-assessment.md`) + 스토리 생성 계획(`research-agent-story-generation-plan.md`, PQ1~6 **전부 권장안 A 승인**) → PART 2: `stories.md`에 **에픽 9 — 연구 에이전트 / 문헌탐색·근거형성**(US-RA1 전용 진입+모드선택+입력·US-RA2 문서 첨부·US-RA3 다논문 근거 정리[모드A]·US-RA4 근거화·기권·US-RA5 결과·세션 영속+전용 메뉴 재열람·US-RA6 온디맨드 진행상태·비차단 저하·US-RA7 비용게이트+근거화 운영[OP]·US-RA8 novelty 비교[모드B·**다음 사이클** Q4=A]) 8 스토리 추가 → 총 48 스토리/10 에픽. `personas.md` P1/OP 보강. FR-22~25·NFR-P5·NFR-C1 Agent·QT-8 전수 커버, §12 카브아웃·C-2 경계·제외 범위(생성 산문·재현성 판정·모드B v1빌드) 인수 기준 명시. **다음(별도 승인): Units Generation(신규 유닛 등재·번호 배정) → Construction.**
+- [x] **Units Generation 개정 — 연구 에이전트 정식 등재 (2026-06-24, `feature/research-agent`·PR #170)**: 분해 계획(`research-agent-unit-of-work-plan.md`, UQ1~5 **전부 권장안 A 승인**; **UQ2=A → 유닛 번호 U11**). 원본(U1~U6)·U9 분해 계획 모두 참고. **U10=마이페이지(타 팀원 구현 중·커밋 전)를 가정**하고 번호 점유로 처리(AI-DLC 관례: 번호=정식 생성 시점 부여) → 신규 유닛 **U11 Research Agent**(`backend/modules/research_agent/`). `unit-of-work.md`(U11 정의·U10 자리 주석·U11 주석[v1=모드A·모드B 차기·추출 경계·HOW 이월]·배포 단위 ① API+긴 분석 비동기 잡·코드 조직·빌드 순서 확장)·`unit-of-work-dependency.md`(U11 행/열 추가, U11→U2/U3/U6/U7 의존[+모드B 차기 U8·U9 비차단], `shared/ports` 의존성 역전으로 U11↔U6 순환 없음, 비순환 DAG 검증, 온디맨드 다논문 ASCII 흐름)·`unit-of-work-story-map.md`(US-RA1~6·RA8 Owner=U11·US-RA7 Owner=U6 기여=U11, 48 스토리 전수 매핑·미할당 0) 갱신. **10 유닛(U1~U9+U11)·4 배포 단위(U11=API 모듈+긴 분석 비동기 잡 옵션).** v1=모드 A, 모드 B(novelty)는 다음 사이클. **다음(별도 승인): Construction(U11 Functional/NFR/Infra Design 라운드 — 근거표 컬럼·외부 API·LLM 모델·멀티턴·UI 결정).**
+- [x] **Workflow Planning — Cohere Embed v4.0 마이그레이션 (2026-06-23)**: `execution-plan.md` 업데이트 완료. 리버스 엔지니어링, 애플리케이션 설계, 유닛 생성, 기능 설계, NFR 요구사항 SKIP. **NFR 설계, 인프라 설계, 코드 생성, 빌드 & 테스트 EXECUTE 확정**.
+- [x] **사용자 스토리 개정 — U8 에픽 추가 (2026-06-19)**: `stories.md`에 **에픽 7 — 인용 그래프 / 각주 트리**(US-CG1 상세보기 각주 트리·US-CG2 깊이/노드 메타·US-CG3 unresolved 분리·US-CG4 라이브러리 저장·US-CG5 실패/쿼터 저하·US-CG6 운영 관측성) 6 스토리 추가 → 총 33 스토리/8 에픽. P1(US-CG1..CG5)·OP(US-CG6) 매핑, FR-15..16·NFR-P3·QT-6 커버.
+- [x] **Units Generation 개정 — U8 정식 등재 (2026-06-19)**: `unit-of-work.md`(U8 Citation Graph 유닛 정의·배포 단위 ① API 모듈·코드트리 `backend/modules/citation_graph/`)·`unit-of-work-dependency.md`(U8 행/열 추가, U8→U3/U6 로그인·게이트웨이, U8→U4 저장 계약, U7→U8 출처 연동, 코드 DAG 비순환 검증, 각주 트리 ASCII 흐름)·`unit-of-work-story-map.md`(US-CG1..CG5 Owner=U8·US-CG6 Owner=U6 기여=U8, 전수 33 스토리 검증) 갱신. **8 유닛·4 배포 단위(U8=API 모듈).** **후속: U8 Construction Functional Design 질문 게이트 진입 완료, 답변 대기.**
 
 ### 🟢 CONSTRUCTION 단계 (유닛별 루프)
 
@@ -124,6 +140,49 @@ _Resiliency 옵트인은 `requirements.md` 확정 전에 필수 요구사항 명
 - [x] Infrastructure Design — **완료·승인 (2026-06-19)**. 계획서 9문 전수 A. 산출물 `construction/u7-summarization/infrastructure-design/`(infrastructure-design·deployment-architecture). **신규 관리형 서비스 0**(전부 기존 자산 재사용): 컴퓨트=기존 ECS Fargate 모듈·S3 `summaries/` 프리픽스·Redis `sum:` 키스페이스+TTL·RDS `user_glossary` 테이블(마이그레이션)·Bedrock IAM(모델 ARN 스코프)·CloudWatch/Budget 비용 라인·CI 통합 게이트 레인. 비동기 잡 v1 미프로비저닝. 증분 비용≈Bedrock 토큰(가변). **조율 존**(task role·CI·IaC·마운트)=@ELSAPHABA/Infra. 앱 코드 미생성. _승인 완료(2026-06-19)._
 - [x] Code Generation — **Part 1·2 완료·검증 (2026-06-19, 브랜치 `feature/u7-v2`·PR #115)**. 계획서 18단계 전부 [x]. 코드 `backend/modules/summarization/`(src-layout, real-first): 도메인 9컴포넌트(models·refiner·source_selector·cache_key·length_router·glossary·grounding·assembler·orchestrator)·실 어댑터 단일본(bedrock_llm 스트리밍·s3_redis_store·s3_full_text·rds_glossary)·api(router `/api/summarize`·gateway_seam)·prompts(본문 격리)·real_wiring·`migrations/001_create_user_glossary.sql`. **검증: `pytest` 29 passed + 1 skip(통합 self-skip)·`ruff` clean.** Q4 U7 고유 결정적 근거화·Q5 버퍼-검증·저하 3계층·Q8 후치환(한국어 조사 안전)·real-first(Production Mock Adapter 없음·테스트 Fixture/Stub). **⚠️ 마운트=조율 존**: `backend/wiring.py` 미변경(쉘 테스트 보호) — mounter 스니펫을 `code/README.md`에 사인오프-레디로 제시. 인프라 증분(IAM·마이그레이션·CI)=@Infra. _승인 완료(2026-06-19)._
 - [x] Build & Test — **완료 (2026-06-19)**. 산출물 `construction/u7-summarization/build-and-test/`(build-instructions·unit-test·integration-test·security-test·build-and-test-summary). **검증: `pytest` 29 passed + 1 skip(통합 게이트 self-skip)·`ruff` clean·임포트 스모크 OK.** 통합 5 시나리오 정의(게이트 레인 전용·real-first). 성능=N/A(NFR-P2 온디맨드). **U7 CONSTRUCTION 종료.** Operations 전 last-mile(프레임워크 밖): app-shell 마운트(@ELSAPHABA)·인프라 증분(@Infra)·`shared/dtos/summarization` 승격·비동기 잡 fast-follow.
+- [x] **개인 용어집 편집 후속 (2026-06-22, 브랜치 `feature/u5-frontend-ux`·PR #121)**: BR-S4의 "사용자 용어 수정→upsert"를 사용자 경로로 노출. 백엔드 **`GET/POST /api/glossary`**(owner-scoped·입력 검증·fail-closed, 저장 시 `glossary_ver++`→해당 사용자 캐시 무효화) + 프론트 `TranslationView` keptTerms 배지 탭→저장·미리채우기(**BR-SF-17**). 후치환을 함수 치환으로 보강(사용자 입력의 정규식 역참조 해석 차단). 문서 정합: `nfr-design/logical-components`·`infrastructure-design/deployment-architecture`·프론트 `functional-design/frontend-components`·`business-rules` 갱신. **검증: 프론트 68·백엔드(summarization) 42 통과·lint/ruff clean.** 후속(Phase 2-b): 마이페이지 "내 용어집" 보기·수정·삭제 + `DELETE` 엔드포인트.
+- [x] **프론트 카드·내비 UX 패스 (Phase A) (2026-06-22, 브랜치 `feature/u5-card-nav-ux`)**: 프론트 로컬 UX 정리(계약·DTO 불변). ① 상세 요약 단락명 `기여/방법/결과`→`핵심 기여/연구 방법/주요 결과`(+tldr 라벨 `한 줄 요약`). ② **카드 [요약]/tldr 피크 기능 폐지**(`SummaryAction`/`SummaryInline` 제거 — 요약은 상세로 일원화; **Q1·Q2 카드 인라인 결정 대체**). ③ 담기 버튼→카드 **우상단 북마크 아이콘** + 상세 제목 옆 북마크(저장 계약 불변·멱등). ④ 카드 `relevance` **표시 제거**(계약엔 유지) + **클라 정렬 토글(관련도순/최신순)**. ⑤ **하단 고정 탭바(`BottomNav`)** 검색/마이페이지(모바일 우선; 상단 `AppHeader`는 브랜드+로그아웃만 유지. 에이전트 탭은 기능 생길 때·인용수 표시는 U8 머지 후 보류). 추가 미세조정(검색 '논문 검색' 라벨 제거→aria-label·'검색 저장'→'검색어 저장'·저장/정렬 한 툴바·상세 헤더 간격·구분선 축소). 문서 정합: u5 `functional-design/business-rules`(BR-U5-4/5/23)·`domain-entities`·`frontend-components`, u7-frontend `functional-design/frontend-components`·`nfr-design`. **검증: `tsc` 0·`next lint` clean·`vitest` 70 passed·`next build` OK.** 보류 트랙(별건): 그림·도표(멀티모달=요구사항 개정) → **2026-06-22 인셉션 진입**(아래 멀티모달 표시 항목)·필터.
+
+- [~] **doc-model 실데이터 완성 — PR-1 (2026-06-24, 브랜치 `feature/docmodel-realdata`, base `feature/docmodel-foundation`/#161 스택)**: doc-model 피벗 기반(#161: 생산·읽기 API·리치뷰) 위에 실데이터 경로를 비동기로 완성. **① 파서 충실도**(`ltx_appendix` 섹션 인식 — 부록 하위 flatten 해소; `_inline_text`가 `ltx_note` 각주 skip — 본문 오염 제거; theorem 본문은 paragraph로 보존). **② lazy 빌드 트리거(경계 B·비동기)**: 읽기 미스 → U7이 U1 큐에 `BUILD_DOC_MODEL` 잡 enqueue(빌더 직접 의존 X) → 워커가 `DocModelBuilder.build` 실행·캐시 → 읽기 API `building`(폴링) 반환(BR-30/§7.2). **③ 긴 논문 요약 맵리듀스 + 비동기 잡(BR-S6/BR-S12, #135)**: 40K~120K = `MapReduceSummarizer`(섹션 청킹·오버랩·reduce), API enqueue→`PendingDTO`→폴링→요약 워커 inline 생성→write-through; **>120K = 거절(degraded 폐기, 모바일 결정)**; 번역 맵리듀스는 PR-2. 게이트 `DOCSURI_MAP_REDUCE_ENABLED`/`DOCSURI_SUMMARY_JOB_QUEUE_URL`/doc-model 빌드 큐 **기본 OFF → 라이브 무변경**. 공유계약: `docmodel.schema.json` **building**·`summarization.schema.json` **pending** 신설(재생성). 프론트: `useDocModel`/`useSummarize` 폴링(retryAfterMs·상한). **④ CDK 인프라(slice 6, synth 검증·배포 X)**: `infrastructure-design.md`(단일 버킷 prefix·요약 큐+빌드큐 재사용·요약 워커 배포 단위 ④·IAM 3역할) + `compute_stack`(API task role: doc-model GetObject·summary R/W·두 큐 SendMessage·Bedrock·큐 URL env — 활성화는 팀 deploy) + 신규 `summarization_stack`(요약 잡 큐+DLQ + 요약 워커 Fargate, API 이미지 재사용) + app.py 등록. **doc-model 빌드 잡=ingestion 큐+워커 재사용**(신규 큐 불요). **⑤ OA 게이트(slice 7)**: OA 신호 = U1 인제스션 검증(CC만 저장·비-OA 거부, BR-1) → 코퍼스 전부 OA·인앱 렌더 안전 → 게이트는 운영 토글(논문별 라이선스 조회 불요·오버엔지니어링 회피); 주석·문서 정합, 활성화는 팀 deploy. 문서 정합: U1 BLM §7.2·U7 BR-S6/S9/S12·BLM §3.6·NFR TD-S9·shared docmodel §5·infrastructure-design·length_router. **검증: 백엔드 summarization·ingestion·shared(drift 0)·프론트(tsc/lint/93)·`cdk synth`(6스택) 전부 green.** 후속: 번역 구조화(PR-2)·각주 footnote 블록·앵커 id 계약·doc-model 빌드 실패 네거티브캐시.
+
+- [~] **구조화 번역 — PR-2 (2026-06-24, 브랜치 `feature/docmodel-structured-translation`, base `feature/docmodel-realdata` 스택 — #163 머지 시 develop retarget)**: 번역 영역 전부(PR-1 의도적 미룸). doc-first. 설계 게이트 확정: **① 출력 = 번역본 doc-model**(자기완결 — 본문 번역 = 본문과 동일 구조화 형식; `summarization.schema.json` `TranslationDraft` `{koreanText}`→`{docModel: DocModel, keptTerms}`로 개정, `docmodel.schema.json#/$defs/DocModel`을 **크로스파일 `$ref`**로 복제 회피·생성기 지원 확인). **② 긴 번역 = 비동기**(요약 잡 큐·워커 재사용, `task=translate`). **번역 단위**: 섹션 제목·문단·리스트·표/그림 캡션만 번역; **표 셀·수식 LaTeX·코드·블록 id·그림 assetRef = verbatim 보존**(D8). **재조립**: LLM은 id→번역텍스트로 받아 소스 doc-model 구조에 주입해 결정적 재조립(누락 id=원문 보존); 출력이 자기완결이라 parserVersion 캐시키 불요(요약과 동일). **긴 본문 map-only**: MAP_REDUCE 밴드 translate = 섹션별 번역→이어붙이기(reduce 없음), OVER_CAP 거절 유지. 잡 큐·워커는 task-agnostic(요약·번역 공용). 프론트: `DocModelViewer` 렌더부 `DocModelBody`로 분리 → `TranslationView`가 번역본 doc-model 구조 렌더(keptTerms 유지·그림 자산 로드). 문서 정합(doc-first): BR-S18 신설·BR-S2/S6/S9/S12·FR-13·domain-entities·BLM §3.6/3.7·plan PR-2 절. **검증: summarization pytest·ruff 베이스라인·shared drift 0·프론트 tsc/lint/vitest 93 green.** 후속: 표 셀 번역·각주 블록·앵커 id 계약·빌드 실패 네거티브캐시.
+
+- [~] **멀티모달 표시(그림·도표) — INCEPTION 진행 (2026-06-22, 브랜치 `feature/multimodal-display`)**: 보류 트랙 "그림·도표"를 Requirements Analysis 재진입으로 착수. 명확화 질문지 `inception/requirements/requirement-verification-questions-multimodal-display.md` Q1~Q7 확정(**Q2=C 혼합 추출, 나머지 A**) → `requirements.md` 등재(**FR-17** 그림·도표 자산 추출·표시 + FR-12 앵커 자산 연결 보강 + **§12 "그림·도표" 제외를 "비전 추론만 제외"로 한정** + §13 추적성). **범위: 표시 전용**(자산 추출·저장·렌더; 요약/번역 LLM 입력은 텍스트+캡션 유지, 이미지 비전 추론은 차기 사이클). 영향: U1(자산 추출·저장, 소스 가용성 혼합)·공유계약·U7(통과 + 백/프론트 정합 갭 3건 흡수: `summarization.schema.json` SSOT 수립·`validation_error`/`unauthorized` 상태 매핑)·U5(렌더).
+  - [x] **U1 Functional Design — 완료 (2026-06-22)**. 계획서 `construction/plans/u1-ingestion-multimodal-functional-design-plan.md` Q1~Q7 전부 권장안 A. 기존 U1 FD 확장: `domain-entities`(§10 FigureTableAsset·AssetManifest·AssetStorePort), `business-logic-model`(§6 ingestOne 자산 추출·저장 — Q1=A parse 추출+dedup 후 NEW\|CHANGED 저장, Q2=C 혼합, Q4=A best-effort·비차단, tombstone/CHANGED 정리), `business-rules`(§7 BR-22~28·P7/P8·FailureReason·추적성). **표시 전용**: 인덱싱/임베딩/IndexRecord 경로 불변(자산 검색 비대상). **앱 코드 미생성.**
+  - [x] **U1 NFR Requirements — 완료 (2026-06-22)**. 계획서 `construction/plans/u1-ingestion-multimodal-nfr-requirements-plan.md` Q1~Q7 전부 권장안 A. 기존 U1 NFR 확장: `tech-stack-decisions`(**TD-11** PyMuPDF 휴리스틱 PDF 크롭·**TD-12** e-print 그래픽 직접+표 크롭·**TD-13** WebP 재인코딩·치수상한·메타스트립·**TD-14** S3 prefix+공유 RDS 매니페스트·**TD-15** 이미지 보안 재인코딩), `nfr-requirements`(§11 성능·보안·복원력·비용). 상속: Python·S3·Hypothesis. **ML/GPU 없음**(CPU 배치, $1600 내 흡수). **앱 코드 미생성.**
+  - [x] **U1 NFR Design — 완료 (2026-06-22)**. 계획서 `construction/plans/u1-ingestion-multimodal-nfr-design-plan.md` Q1~Q5 전부 권장안 A. 기존 U1 NFR Design 확장: `logical-components`(§5 AssetExtractor·Image Normalizer·AssetStore 컴포넌트 + 토폴로지 + `paper_asset` RDS 상태), `nfr-design-patterns`(§7 page-crop 검출·캡션 매칭 알고리즘·이미지 정규화 파이프라인·best-effort 격리·매니페스트 write-order 정합 P8·보안 + 추적성 행). 기존 인덱스/원자성 토폴로지 불변. **앱 코드 미생성.**
+  - [x] **U1 Infrastructure Design — 완료 (2026-06-22)**. 계획서 `construction/plans/u1-ingestion-multimodal-infrastructure-design-plan.md` Q1~Q5 전부 권장안 A. **U1 최초 Infra 산출물**(멀티모달 범위로 한정): `infrastructure-design/infrastructure-design.md`(S3 `assets/` prefix·SSE-KMS·만료없음·`paper_asset` RDS 스키마/마이그레이션·최소권한 IAM·presigned 만료·비용 라인) + `deployment-architecture.md`(워커 co-location·메모리 헤드룸·토폴로지·전달 경로). 기존 전문 S3·공유 RDS 재사용(신규 버킷·DB 0), presigned S3 직접(CloudFront 후속). **선결 상속(미결)**: 워커 런타임 타깃(ECS/Lambda)·리전·CD. **앱 코드 미생성.**
+  - [x] **U1 Code Generation — 완료 (2026-06-22)**. 계획 Q1=A(permissive 스택 pypdfium2·pdfplumber·Pillow — PyMuPDF/AGPL 회피, TD-11/13 정정). 브라운필드 `ingestion/`: 신규 `domain/assets.py`·`asset_extraction.py`(caption_kind·finalize P7·ImageNormalizer·AssetExtractor 혼합)·`adapters/assets.py`(ArxivAssetSource·S3RdsAssetStore write-order P8)·`migrations/postgres/002_paper_asset.sql`; 수정 `enums.py`·`ports.py`(AssetSource/StorePort)·`application.py`(best-effort 비차단 자산 단계·tombstone 정리·포트 주입 미주입=off)·`settings.py`(MULTIMODAL_ASSETS_ENABLED off 기본)·`pyproject.toml`(assets extra). 테스트 `tests/test_assets.py`(PBT P7·normalizer)·`tests/test_asset_wiring.py`(기본 off·성공·실패 비차단). **인덱스 경로 코드 불변.** **검증**: compileall·순수 로직 스모크 통과(전체 테스트=Build & Test).
+  - [x] **U1 Build & Test — 완료 (2026-06-22)**. `uv sync --extra assets`(pypdfium2·pdfplumber·Pillow 설치) → `pytest` **42 passed/0 failed**, `ruff` **clean**(B904/E501 정정). 자산 신규 테스트(caption·finalize **PBT P7**·ImageNormalizer bomb 가드·best-effort 비차단 wiring) + 인덱스 경로 회귀 통과. 실 추출(`_page_crop`/`_structured`)·`S3RdsAssetStore`는 env-gated 통합으로 이연. 산출물 `construction/u1-ingestion/build-and-test/`(build·unit-test·summary). **U1(생산자) 멀티모달 슬라이스 종결.** 다음(멀티모달 트랙): 공유계약 → U7 → U5.
+  - [x] **U7 Functional Design — 완료 (2026-06-22)**. 계획서 `construction/plans/u7-summarization-multimodal-functional-design-plan.md`(위임 진행, 게이트 결정 D1~D5 확정). 기존 U7 FD 확장: `domain-entities §9`(AssetRef·PaperAssetsResponse union·`GET /api/papers/{id}/assets` 엔드포인트·AssetManifestReadPort/AssetUrlSigner·앵커↔자산 연결·갭#1 SSOT·갭#2/#3 상태), `business-rules`(BR-S15 자산 읽기·OA 게이트·presign SEC-9, BR-S16 SSOT 수립, BR-S17 상태 매핑, PBT-S6). **U7은 읽기 측**(생산=U1), 요약/번역 생성·근거화·캐시 불변. **앱 코드 미생성.** 다음: U7 Code(shared schema·`/assets` 엔드포인트·갭 수정·frontend types/classify).
+  - [x] **U7 Code Generation + Build & Test — 완료 (2026-06-22)**. 공유: `shared/dtos/summarization.schema.json` **SSOT 수립**(갭#1). 백엔드(`backend/modules/summarization`): `StoredAsset`/`AssetRef`(SEC-9 서명 URL만)·`AssetReadPort`·orchestrator `list_assets`·**`GET /api/papers/{id}/assets`**(인증·OA 게이트·presign)·`adapters/rds_assets.py`(RDS 읽기+S3 presign)·**갭#2** `validation_error` message. 프론트: `summarize.ts`(AssetRef·PaperAssetsResponse·unauthorized/validation_error)·`classifyAssetsResponse`+**갭#2/#3 매핑**·`apiClient.getAssets`. NFR/Infra는 경량 폴드(읽기 포트·presign TTL·`assets_enabled` 게이트). **검증: 백엔드 summarization 48 passed/1skip·자산 7 passed·ruff clean; 프론트 tsc 0·next lint clean·vitest 75 passed(+5).** 요약/번역 생성·근거화·캐시 불변. **U7(읽기 측) 멀티모달 슬라이스 종결.** 다음: U5(상세/뷰어 자산 렌더 컴포넌트).
+  - [x] **U5 Code Generation + Build & Test — 완료 (2026-06-22)**. 프론트: `lib/assetAnchor.ts`(순수 매처 — figure/table 앵커↔자산)·`lib/useAssets.ts`(페치 훅)·`components/AssetGallery.tsx`(+css; lazy·치수예약·캡션 이스케이프·서명 URL img·로딩/에러/빈·라이선스 미표시·활성 앵커 스크롤)·`PaperDetailIsland`(자산 섹션+앵커 전달)·mock(`/assets`+SVG 픽스처). 테스트 `test/assetAnchor.test.ts`·`test/assetGallery.test.tsx`. **검증: tsc 0·next lint clean·vitest 80 passed(+5)·next build OK.** 코드 요약 `construction/u5-frontend/code/u5-multimodal-asset-render-code-summary.md`.
+  - **✅ 멀티모달 표시(FR-17) 트랙 완결**: U1(추출·저장) → 공유계약/U7(노출·정합 갭 3건) → U5(렌더). 비전 LLM 추론은 차기 사이클. 9커밋 `feature/multimodal-display`(미push). 배포(Operations)는 push/PR·승인 후.
+  - [x] **표시 UX 정제 + 자산 점등 코드 배선 (2026-06-22, 브랜치 `feature/multimodal-display`)**: FR-17 표시 슬라이스 후속 패스.
+    - **갤러리 UX**: `AssetGallery`를 큰 인라인 이미지 → **컴팩트 썸네일 그리드(모바일 3·데스크톱 4) + 탭하면 전체화면 라이트박스**로 전환(신규 `AssetLightbox`+css; ‹이전/다음›·카운터·ESC/배경/✕ 닫기·←→ 키보드·바디 스크롤 락·포커스). 모바일에서 큰 이미지가 본문을 가리는 문제 + 수십 장 세로 열거 문제를 동시 해소(썸네일 `cover`·라이트박스 `contain`). figure/table 앵커 "출처 보기"=썸네일 스크롤+라이트박스 자동 오픈. **신규 라이브러리 0**.
+    - **북마크 토글 버그 수정**: `SaveToLibraryButton`이 저장 후 `disabled`라 취소 불가였음 → 멱등 add가 반환하는 item id 보관 → 재클릭 시 `removeFromLibrary`로 **토글(담기↔빼기)**, 진행 중에만 비활성. (`/library/items` DELETE는 U4 라이브 경로 — 인프라 불필요.)
+    - **자산 점등 코드 배선(옵션 B)**: "인프라만 깔면 켜짐" 상태로 배선하되 **기본 OFF 유지**(인프라 없이 안전 머지). 읽기측(U7): `SummarizationSettings.assets_enabled`(`DOCSURI_MULTIMODAL_ASSETS_ENABLED`)·`asset_url_ttl_seconds` 추가 → `real_wiring`가 플래그+DSN 있을 때 `RdsS3AssetReader` 주입 → `_mount_summarization`이 `assets_enabled`를 라우터에 전달. 쓰기측(U1): `build_production_runtime`이 `multimodal_assets_enabled` 시 `AssetExtractor`/`ArxivAssetSource`/`S3RdsAssetStore` 주입(셋 모두 주입돼야 추출 동작). **검증: 프론트 tsc 0·lint clean·vitest 83·build OK; 백 summarization 54 passed/1skip·ruff clean; ingestion 43 passed·ruff clean.**
+    - [ ] **🔌 자산 점등 체크리스트 — 실 인프라 배포 (담당 팀원, 승인·비용 결정 후)**: 코드 배선(옵션 B) 완료 → 아래만 하면 프로덕션 점등.
+      1. **인프라 프로비저닝(CDK, `ops/cdk/stacks/ingestion_stack.py` 등)**: S3 `assets/` prefix + SSE-KMS 키, presign용 최소권한 IAM(워커=S3 put+RDS write / BFF task role=S3 get+presign). `paper_asset` 마이그레이션은 `backend/migrations/__main__.py` 경로에 이미 포함(배포 시 적용).
+      2. **워커 이미지**: ingestion `assets` extra 설치(pypdfium2·pdfplumber·Pillow).
+      3. **환경변수 ON**: 워커 `DOCSURI_MULTIMODAL_ASSETS_ENABLED=true`(+`DOCSURI_S3_BUCKET`·`DOCSURI_CONTROL_PLANE_DSN`·`DOCSURI_ASSET_KMS_KEY_ID`); BFF `DOCSURI_MULTIMODAL_ASSETS_ENABLED=true`(+`DATABASE_URL`·`DOCSURI_SUMMARY_BUCKET`·`DOCSURI_ASSET_URL_TTL_SECONDS`).
+      4. **백필(비용 결정)**: 추출은 신규 인제스천만 자산 생성 → 기존 코퍼스(수십만 편)는 재인제스천 필요(CPU+S3 비용). 점진 백필 권장.
+    - [x] **자산 통합 테스트 A·B (2026-06-22)** — 점등 전 env-gated 구간을 실제로 검증(AWS·비용 0). **A(실 추출, 오프라인)**: `ingestion/tests/test_asset_extraction_real.py` — 합성 텍스트-레이어 PDF로 **실 pdfplumber 캡션 검출 + pypdfium2 렌더 + 크롭 + WebP 정규화** 왕복(figure/table·page-crop·hybrid Q2=C e-print 우선) + 합성 e-print tar로 structured 경로. AWS·네트워크·외부 PDF 픽스처 0. **B(실 SQL, 실 Postgres)**: `ingestion/tests/test_asset_store_real.py`(`S3RdsAssetStore` 쓰기 — S3 put[웹P·SSE]→`paper_asset` 행→P8 write-order→CHANGED 멱등 재저장→remove; S3는 monkeypatch 가짜)·`backend/.../tests/test_assets_rds_real.py`(`RdsS3AssetReader` 읽기 — SELECT 컬럼 매핑·JSONB bbox·null·presign; S3는 주입 가짜). **`DOCSURI_TEST_PG_DSN` 게이트**(미설정 시 스킵 — `test_integration_real.py` 관례), Docker 임시 PG16 netns-공유로 **실행 green 확인**. **C(실 인프라/스테이징 E2E)는 위 점등 체크리스트로 팀원 위임.** **검증: ingestion 47 passed/1skip(B 게이트)·summarization 54 passed/3skip(B 게이트)·ruff clean.**
+  - [ ] **🔮 보류 트랙 — 비전 추론(멀티모달 요약·근거화) [차기 사이클 후보]**: `requirements.md` §12 멀티모달 카브아웃(2026-06-22)·FR-17이 명시적으로 **제외 유지**한 범위. 이미지(그림·도표)를 비전 LLM으로 읽어 **요약·근거에 반영**하는 작업. 현재 v1은 요약/번역 LLM 입력이 **텍스트+캡션**으로 한정(이미지 비전 추론 없음).
+    - **기반 준비됨**: FR-17 표시 전용 슬라이스가 자산을 이미 S3에 추출·저장(U1)하고 서명 URL로 노출(U7)·렌더(U5)한다 → 비전은 **재인제스천 없이** 기존 자산을 읽는 **추론 레이어 추가**이지 데이터 파이프라인 재작업이 아님.
+    - **범위 영향(예상)**: U7 요약 노드 모델 교체(비전 가능 모델·비용/지연 ↑·NFR-C1 비용 상한 재산정)·이미지 앵커 grounding 재설계(FR-5/QT-5 근거화 경계 확장)·Prompt Injection 무해화(이미지 경유 포함). **요구사항 재진입(승인 게이트) 필요** — C-2 생성 경계·FR-5 근거화 정신 유지 확인.
+    - **선후 권고**: "차별화/근거형성 에이전트"(`summarization-translation-pipeline.md` #9·#12 — 파이프라인 6~7단계 재사용 + '유사논문 검색' 노드 추가)와는 **독립 트랙**(의존성 없음). 에이전트는 현재 텍스트+캡션 근거화로 동작 가능 → **에이전트 먼저 검증 → 비전을 리프 요약 노드 품질 업그레이드로 후속 도입** 권장(에이전트가 같은 노드를 재사용하므로 근거 품질이 자동 상승; 미검증 흐름에 N배 비용 곱 방지).
+
+**U8 Citation Graph** (인용 그래프/각주 트리 — 2026-06-19 편입 유닛, FE 구현 제외 API 모듈):
+- [x] Functional Design — **완료·승인 (2026-06-19)**. 계획서 `construction/plans/u8-citation-graph-functional-design-plan.md` Q1~Q12 전부 권장안(A) 반영 및 체크박스 완료. 산출물 `construction/u8-citation-graph/functional-design/` 3문서(`domain-entities.md`, `business-logic-model.md`, `business-rules.md`) 생성. **앱 코드·FE 미생성.**
+- [x] NFR Requirements / NFR Design / Infrastructure Design / Code Generation / Build&Test — **완료 (2026-06-21)**. U8 backend-only citation graph slice 생성 및 검증 완료.
+- [~] Cross-Review 반영 — **진행 (2026-06-22)**. 브랜치명은 `feature/u8-v1`로 CI prefix 조건 충족. 코드 수정: 죽은 `depth` 쿼리 제거, provider/cache 중복 제거, save year 범위 밖 값 null 처리, telemetry `emit_log` 방어 및 `depthRequested` 분리. 문서 수정: Redis 단언을 현재 process-local in-memory snapshot seam + production Redis target으로 정정.
+
+**v4-migration** (Cohere Embed v4.0 Migration):
+- [x] NFR Design — **완료·승인 (2026-06-23)**. `nfr-design-patterns.md`, `logical-components.md` 생성 완료. Fail-Open 듀얼 라이트 및 arXiv API 기반 Idempotent 백필 전략 승인.
+- [x] Infrastructure Design — **완료·승인 (2026-06-23)**. `infrastructure-design.md`, `deployment-architecture.md` 생성 완료. Local execution 및 Automated Cutover 맵핑 확정.
+- [x] Code Generation — **완료 (2026-06-23)**. U1 Ingestion 듀얼 라이트 로직, U2 Discovery alias 설정 및 Ops 백필/컷오버 스크립트 작성 완료.
+- [x] Build & Test — **완료 (2026-06-23)**. 빌드 및 테스트 가이드 산출 완료.
 
 **공통 후속 단계** (per-unit 또는 횡단):
 - [x] 병렬 개발 조율 (2026-06-16 반영) — `shared/` 공용 규약 선행 작성 및 3개 독립 트랙 병렬 진행 확정
@@ -146,3 +205,278 @@ _Resiliency 옵트인은 `requirements.md` 확정 전에 필수 요구사항 명
 ## 비고
 - 이번 사이클은 클린 재시작이다. 폐기된 사이클 1(U1·U2·U4 데모)은 AWS Bedrock(Claude Haiku), Amazon Comprehend, S3 Vectors 기반 Bedrock Knowledge Base, Amplify 호스팅, Python 백엔드, Next.js 프런트엔드를 사용했다. 그중 어느 선택도 기본 계승하지 않으며 선행 사례(prior art)로만 참조한다.
 - 브랜치: `develop` (4 트랙 PR + 후속 크리티컬 패스 ①~⑦ PR 전부 머지 완료). **2026-06-18 기준: CONSTRUCTION 코드·인프라 종결·AWS 프로덕션 배포 완료(§크리티컬 패스 종결). 잔여 = 문서 정합·루트 `tests/` 린트 사각(F401 9건)·Operations 런북 결정.**
+## U8 Citation Graph — NFR Requirements Complete / NFR Design In Progress
+
+- Date: 2026-06-21
+- Unit: U8 Citation Graph
+- Completed: NFR Requirements answers Q1~Q12 all set to recommended option A.
+- Completed artifacts:
+  - `aidlc-docs/construction/u8-citation-graph/nfr-requirements/nfr-requirements.md`
+  - `aidlc-docs/construction/u8-citation-graph/nfr-requirements/tech-stack-decisions.md`
+- Next stage entered:
+  - `aidlc-docs/construction/plans/u8-citation-graph-nfr-design-plan.md`
+- Current gate: U8 NFR Design questions Q1~Q5 awaiting answers.
+- Code/FE generated: no.
+
+## U8 Citation Graph — NFR Design Complete / Infrastructure Design In Progress
+
+- Date: 2026-06-21
+- Unit: U8 Citation Graph
+- Completed: NFR Design answers Q1~Q5 all set to recommended option A.
+- Completed artifacts:
+  - `aidlc-docs/construction/u8-citation-graph/nfr-design/logical-components.md`
+  - `aidlc-docs/construction/u8-citation-graph/nfr-design/patterns.md`
+  - `aidlc-docs/construction/u8-citation-graph/nfr-design/runtime-architecture.md`
+  - `aidlc-docs/construction/u8-citation-graph/nfr-design/test-strategy.md`
+- Next stage entered:
+  - `aidlc-docs/construction/plans/u8-citation-graph-infrastructure-design-plan.md`
+- Current gate: U8 Infrastructure Design questions Q1~Q3 awaiting answers.
+- Code/FE generated: no.
+
+## U8 Citation Graph — Infrastructure Design Complete / Code Generation Plan Ready
+
+- Date: 2026-06-21
+- Unit: U8 Citation Graph
+- Completed: Infrastructure Design answers Q1~Q3 all set to recommended option A.
+- Completed artifacts:
+  - `aidlc-docs/construction/u8-citation-graph/infrastructure-design/infrastructure-components.md`
+  - `aidlc-docs/construction/u8-citation-graph/infrastructure-design/deployment-topology.md`
+  - `aidlc-docs/construction/u8-citation-graph/infrastructure-design/configuration.md`
+- Next gate:
+  - `aidlc-docs/construction/plans/u8-citation-graph-code-generation-plan.md`
+- Current gate: Code Generation approval question awaiting answer.
+- Code/FE generated: no.
+
+## U8 Citation Graph — Code Generation and Build/Test Complete
+
+- Date: 2026-06-21
+- Unit: U8 Citation Graph
+- Completed: Code Generation plan approved as option A.
+- Code generated:
+  - `backend/modules/citation_graph/__init__.py`
+  - `backend/modules/citation_graph/controller.py`
+  - `backend/wiring.py`
+  - `backend/tests/test_citation_graph.py`
+  - `backend/tests/test_app_shell.py`
+- Verification:
+  - `python -m pytest backend/tests/test_citation_graph.py backend/tests/test_app_shell.py -q` -> 15 passed
+  - `python -m pytest backend/tests -q` -> 33 passed, 1 skipped
+  - `python -m ruff check backend/modules/citation_graph backend/wiring.py backend/tests/test_citation_graph.py backend/tests/test_app_shell.py` -> pass
+  - `python -m compileall backend/modules/citation_graph backend/wiring.py` -> pass
+- FE generated: no.
+- Current gate: user review/approval, commit, or PR direction required.
+
+## U8 Citation Graph — Cross-Review Follow-up
+
+- Date: 2026-06-22
+- Branch: `feature/u8-v1` (branch-name CI prefix compliant)
+- Code changes:
+  - removed dead `depth` query from citation tree API and cache key
+  - kept lazy 2-hop controlled by `expandNodeId`
+  - nulls out-of-range library save year values before U4 validation
+  - guards telemetry against observability objects without `emit_log`
+  - keeps `depthRequested` distinct from `depthReturned`
+- Documentation changes:
+  - corrected Redis wording: current implementation is process-local in-memory TTL seam; Redis remains production adapter target
+- Current gate: user review/approval, commit, or PR direction required.
+
+## U9 Personalization — Requirements Questions Created
+
+- Date: 2026-06-23
+- Candidate unit: U9 Personalization / Behavior Intelligence
+- Trigger: 사용자 행동 로그를 기록하고 분석해 개인화 맞춤 서비스를 제공하는 기능.
+- Created artifact:
+  - `aidlc-docs/inception/requirements/requirement-verification-questions-u9-personalization.md`
+- Completed: questions Q1~Q20 set to recommended answers (Q13=B, all others A).
+- Requirements updated:
+  - `aidlc-docs/inception/requirements/requirements.md`
+  - Added FR-18 behavior event logging, FR-19 user interest profile, FR-20 personalization application, NFR-P4, QT-7, U9 scope exclusions, traceability.
+- Current gate: Requirements review/approval. Next recommended stage: User Stories revision for U9.
+- Code generated: no.
+
+## U9 Personalization — User Stories Plan Ready
+
+- Date: 2026-06-23
+- Stage: INCEPTION / User Stories Part 1
+- Assessment completed:
+  - `aidlc-docs/inception/plans/u9-personalization-user-stories-assessment.md`
+- Plan created:
+  - `aidlc-docs/inception/plans/u9-personalization-story-generation-plan.md`
+- Decision: execute User Stories for U9 because the change is user-facing, touches behavior data/privacy controls, and affects search/summary/translation workflows.
+- Completed: Story generation plan questions PQ1~PQ6 set to recommended answer A.
+- Generated artifacts:
+  - `aidlc-docs/inception/user-stories/stories.md`
+  - `aidlc-docs/inception/user-stories/personas.md`
+- Story update: added Epic 8 Personalization / Behavior Intelligence with US-P1..US-P7; updated persona map and FR/NFR/QT traceability.
+- Current gate: User Stories review/approval. Next recommended stage: Units Generation revision for U9.
+- Code generated: no.
+
+## U9 Personalization — Units Generation Plan Ready
+
+- Date: 2026-06-23
+- Stage: INCEPTION / Units Generation Part 1
+- Plan created:
+  - `aidlc-docs/inception/plans/u9-personalization-unit-of-work-plan.md`
+- Recommended decomposition: add U9 as `backend/modules/personalization/` in the existing API deployment; keep US-P1..P6 Owner=U9 and US-P7 Owner=U6 with U9 as signal source.
+- Completed: Unit decomposition questions UQ1~UQ5 set to recommended answer A.
+- Updated artifacts:
+  - `aidlc-docs/inception/application-design/unit-of-work.md`
+  - `aidlc-docs/inception/application-design/unit-of-work-dependency.md`
+  - `aidlc-docs/inception/application-design/unit-of-work-story-map.md`
+- Unit update: added U9 Personalization as an API module at `backend/modules/personalization/`; story map now covers 40 stories with unassigned=0.
+- Current gate: Units Generation review/approval. Next recommended stage: U9 Construction Functional Design.
+- Code generated: no.
+
+## U9 Personalization — Functional Design Plan Ready
+
+- Date: 2026-06-23
+- Stage: CONSTRUCTION / U9 Functional Design Part 1
+- Plan created:
+  - `aidlc-docs/construction/plans/u9-personalization-functional-design-plan.md`
+- Decision: execute Functional Design because U9 introduces behavior event entities, interest profile aggregation rules, user controls, and non-blocking personalization failure rules.
+- Completed: Functional Design questions Q1~Q12 set to recommended answer A.
+- Generated artifacts:
+  - `aidlc-docs/construction/u9-personalization/functional-design/domain-entities.md`
+  - `aidlc-docs/construction/u9-personalization/functional-design/business-logic-model.md`
+  - `aidlc-docs/construction/u9-personalization/functional-design/business-rules.md`
+- Design summary: defined BehaviorEvent envelope, 7 event types, owner-scoped UserInterestProfile, bounded personalization decisions, user controls, fail-open default behavior, and QT-7 property candidates.
+- Current gate: Functional Design review/approval. Next recommended stage: U9 NFR Requirements.
+- Code generated: no.
+
+## U9 Personalization — NFR Requirements Plan Ready
+
+- Date: 2026-06-23
+- Stage: CONSTRUCTION / U9 NFR Requirements Part 1
+- Plan created:
+  - `aidlc-docs/construction/plans/u9-personalization-nfr-requirements-plan.md`
+- Decision: execute NFR Requirements because U9 stores user behavior data and must define persistence, privacy, latency, degradation, observability, and QT-7 test boundaries.
+- Completed: Q1~Q12 set to recommended answer A after plan_feedback.md correction; Q7 now uses direct active-table delete with no backup table.
+- Generated artifacts:
+  - `aidlc-docs/construction/u9-personalization/nfr-requirements/nfr-requirements.md`
+  - `aidlc-docs/construction/u9-personalization/nfr-requirements/tech-stack-decisions.md`
+- NFR summary: existing RDS/backend/U6 reuse, best-effort non-blocking recording, lazy/on-demand aggregation, allowlisted metadata, direct active-table delete with no backup table, scheduled purge requirement, U6 observability, Hypothesis QT-7 tests.
+- Current gate: NFR Requirements review/approval. Next recommended stage: U9 NFR Design.
+- Code generated: no.
+
+## U9 Personalization — NFR Design Plan Ready
+
+- Date: 2026-06-23
+- Stage: CONSTRUCTION / U9 NFR Design Part 1
+- Plan created:
+  - `aidlc-docs/construction/plans/u9-personalization-nfr-design-plan.md`
+- Decision: execute NFR Design because U9 needs concrete fail-open, lazy aggregation, active repository, direct delete, retention cleanup, metadata validation, and U6 observability patterns.
+- Completed: NFR Design questions Q1~Q5 set to recommended answer A.
+- Generated artifacts:
+  - `aidlc-docs/construction/u9-personalization/nfr-design/logical-components.md`
+  - `aidlc-docs/construction/u9-personalization/nfr-design/nfr-design-patterns.md`
+- Design summary: fail-open personalization, bounded profile read, read-through lazy aggregation, direct active-table delete, scheduled idempotent retention cleanup, recorder-level metadata allowlist, and U6 operational telemetry.
+- Current gate: NFR Design review/approval. Next recommended stage: U9 Infrastructure Design assessment.
+- Code generated: no.
+
+## U9 Personalization — Infrastructure Design Plan Ready
+
+- Date: 2026-06-23
+- Stage: CONSTRUCTION / U9 Infrastructure Design Part 1
+- Plan created:
+  - `aidlc-docs/construction/plans/u9-personalization-infrastructure-design-plan.md`
+- Decision: execute Infrastructure Design because U9 adds RDS tables, deletion/retention cleanup, API deployment mapping, scheduled maintenance task mapping, and U6 observability integration.
+- Recommended direction: reuse existing backend ECS/API deployment, RDS PostgreSQL, U6 gateway/observability, and CloudWatch; avoid a new service, queue, cache, analytics lake, or ML pipeline for v1.
+- Current gate: U9 Infrastructure Design questions Q1~Q6 awaiting answers.
+- Code generated: no.
+
+## U9 Personalization — Infrastructure Design Complete / Code Generation Plan Next
+
+- Date: 2026-06-23
+- Stage: CONSTRUCTION / U9 Infrastructure Design
+- Feedback applied:
+  - `plan_feedback.md`
+- Corrected prior design:
+  - Removed U9 backup table for raw behavior log deletion.
+  - User raw-log deletion now directly deletes owner-scoped active rows.
+  - Retention cleanup is an idempotent daily EventBridge scheduled ECS task.
+  - Retention purge failure must emit U6 telemetry and trigger alerting.
+- Completed: Infrastructure Design questions Q1~Q6 resolved to the revised recommended path.
+- Generated artifacts:
+  - `aidlc-docs/construction/u9-personalization/infrastructure-design/infrastructure-design.md`
+  - `aidlc-docs/construction/u9-personalization/infrastructure-design/deployment-architecture.md`
+- Current gate: Infrastructure Design review/approval. Next recommended stage: U9 Code Generation planning.
+- Code generated: no.
+
+## U9 Personalization — Code Generation Plan Ready
+
+- Date: 2026-06-23
+- Stage: CONSTRUCTION / U9 Code Generation Part 1
+- Infrastructure Design approval:
+  - User requested progress up to just before code generation.
+- Plan created:
+  - `aidlc-docs/construction/plans/u9-personalization-code-generation-plan.md`
+- Planned scope:
+  - backend-only U9 module, RDS migrations, app-shell wiring, idempotent retention cleanup command, scheduled ECS cleanup infrastructure, tests, and code summary docs.
+- Guardrails:
+  - No frontend UI, no queue, no new always-on service, no analytics lake, no ML pipeline, and no `user_behavior_event_backup` table.
+- Current gate: Code Generation plan approval. Actual app code has not been generated.
+- Code generated: no.
+
+## U9 Personalization — Code Generation Complete
+
+- Date: 2026-06-23
+- Stage: CONSTRUCTION / U9 Code Generation
+- Completed plan:
+  - `aidlc-docs/construction/plans/u9-personalization-code-generation-plan.md`
+- Created application code:
+  - `backend/modules/personalization/`
+  - `backend/modules/personalization/migrations/001_create_personalization_tables.sql`
+  - `backend/tests/test_personalization.py`
+- Modified application/infrastructure code:
+  - `backend/app.py`
+  - `backend/migrations/__main__.py`
+  - `backend/wiring.py`
+  - `backend/tests/test_app_shell.py`
+  - `ops/cdk/stacks/compute_stack.py`
+- Code summary:
+  - `aidlc-docs/construction/u9-personalization/code/summary.md`
+- Verification:
+  - `python -m pytest backend/tests/test_personalization.py -q` -> 11 passed
+  - `python -m ruff check backend/modules/personalization backend/wiring.py backend/app.py backend/migrations/__main__.py backend/tests/test_personalization.py backend/tests/test_app_shell.py ops/cdk/stacks/compute_stack.py` -> pass
+  - `python -m compileall backend/modules/personalization backend/wiring.py backend/app.py ops/cdk/stacks/compute_stack.py` -> pass
+  - Combined `backend/tests/test_personalization.py backend/tests/test_app_shell.py` attempted but local shell lacks existing `docsuri_shared`, `discovery`, and `docsuri_ops` imports required by pre-existing app-shell assertions.
+- Current gate: Code Generation review/approval. Next recommended stage: Build and Test after approval.
+- Code generated: yes.
+
+## U9 Personalization — Build and Test Complete
+
+- Date: 2026-06-23
+- Stage: CONSTRUCTION / Build and Test
+- Build/test documents updated:
+  - `aidlc-docs/construction/build-and-test/build-instructions.md`
+  - `aidlc-docs/construction/build-and-test/unit-test-instructions.md`
+  - `aidlc-docs/construction/build-and-test/integration-test-instructions.md`
+  - `aidlc-docs/construction/build-and-test/performance-test-instructions.md`
+  - `aidlc-docs/construction/build-and-test/contract-test-instructions.md`
+  - `aidlc-docs/construction/build-and-test/security-test-instructions.md`
+  - `aidlc-docs/construction/build-and-test/build-and-test-summary.md`
+- Verification:
+  - `python -m pytest backend/tests/test_personalization.py -q` -> 11 passed
+  - `$env:PYTHONPATH='shared/python/src;ops/src;backend/modules/discovery/src'; python -m pytest backend/tests/test_personalization.py backend/tests/test_app_shell.py -q` -> 25 passed
+  - `$env:PYTHONPATH='shared/python/src;ops/src;backend/modules/discovery/src'; python -m pytest backend/tests -q` -> 57 passed, 1 skipped
+  - `python -m ruff check backend/modules/personalization backend/wiring.py backend/app.py backend/migrations/__main__.py backend/tests/test_personalization.py backend/tests/test_app_shell.py ops/cdk/stacks/compute_stack.py` -> pass
+  - `python -m compileall backend/modules/personalization backend/wiring.py backend/app.py ops/cdk/stacks/compute_stack.py` -> pass
+  - `python -m pip install -r ops/cdk/requirements.txt` -> pass
+  - `$env:JSII_NODE="$env:USERPROFILE\scoop\apps\nodejs-lts\current\node.exe"; cdk synth` from `ops/cdk` -> pass, synthesized to `ops/cdk/cdk.out`
+- Current gate: Build and Test review/approval. Next stage per AI-DLC is Operations placeholder.
+
+## Research Agent — Requirements Registered
+
+- Date: 2026-06-24
+- Candidate unit: Research Agent (대화형 문헌탐색·근거형성 / 아이디어 novelty); 유닛 번호 미배정 (마이페이지 U10·개인화추천·트렌드/알림·구독제 이후)
+- Trigger: 네비바 검색↔마이페이지 사이의 대화형 연구 보조 — 여러 논문 교차확인 근거 정리(모드 A) + 내 주제 기존성 유사논문 비교(모드 B). 설계 입력 `summarization-translation-pipeline.md` line 374.
+- Branch / PR: `feature/research-agent` / PR #170 (base develop)
+- Created artifact:
+  - `aidlc-docs/inception/requirements/requirement-verification-questions-research-agent.md` (인셉션 고도 18문항; 1차 답변 기록)
+- Answers: Q5=B(커버리지 확장)·Q7=A(재현성 판정 제외)·Q13=X(전용 네비 메뉴+세션 리스트)·Q14=B(무기한 보관)·Q18=A(Requirements까지만), 나머지 권장.
+- Requirements updated:
+  - `aidlc-docs/inception/requirements/requirements.md`
+  - Added FR-22 (대화형 근거형성, 모드 A, v1), FR-23 (novelty 비교, 모드 B, 다음 사이클), FR-24 (대화형 입력+첨부), FR-25 (결과·세션 영속+전용 진입), NFR-P5, NFR-C1 Agent 보강, QT-8, §12 Agent 카브아웃, C-2 경계, 성공기준 #7, traceability 9 rows.
+- Scope boundary: v1 = 모드 A 구현; novelty(모드 B)는 다음 사이클(Q4=A). 생성 산문·재현성 판정 제외(C-2). HOW(코퍼스 확장·외부 API·출력 스키마·근거표 컬럼·모델·멀티턴·네비/세션 UI)는 Construction 라운드로 이월.
+- Current gate: Requirements review/approval (PR #170). Next stage (별도 승인): User Stories → Units Generation → Construction.
+- Code generated: no.

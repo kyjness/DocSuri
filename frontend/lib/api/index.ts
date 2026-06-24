@@ -14,7 +14,11 @@ import type { Transport } from './transport';
 export { ApiClient } from './apiClient';
 export { UserFacingError } from './errors';
 export type { SearchOutcome } from './classify';
-export type { SummarizeOutcome, FullTextOutcome } from './classifySummarize';
+export type {
+  SummarizeOutcome,
+  DocModelOutcome,
+  AssetsOutcome,
+} from './classifySummarize';
 export type { Transport } from './transport';
 
 // Public flag (inlined at build per Next): present => real BFF path, absent => mock.

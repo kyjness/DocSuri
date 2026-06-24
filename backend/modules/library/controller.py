@@ -40,6 +40,7 @@ from .schemas import (
 from .services.history import SearchHistoryService
 from .services.library import LibraryService
 from .services.saved_search import SavedSearchService
+from .validation import validate_limit
 
 
 # ── DI seams (overridable by the app-shell; default = mock-first singletons) ──
@@ -108,23 +109,28 @@ saved_router = APIRouter(prefix="/library/saved-searches", tags=["Library/SavedS
 @saved_router.post("", response_model=SavedSearchDTO, status_code=201)
 async def create_saved_search(
     dto: SavedSearchCreateDTO,
+    response: Response,
     principal: Principal = Depends(get_principal),
     svc: SavedSearchService = Depends(get_saved_search_service),
 ) -> SavedSearchDTO:
     try:
-        return svc.save(principal, dto)
+        dto_out = svc.save(principal, dto)
+        if not getattr(dto_out, "was_created", True):
+            response.status_code = 200
+        return dto_out
     except DomainException as exc:
         raise _to_http(exc) from exc
 
 
 @saved_router.get("", response_model=SavedSearchPageDTO)
 async def list_saved_searches(
-    limit: int = Query(default=20, ge=1),
+    limit: int = Query(default=20),
     cursor: str | None = Query(default=None),
     principal: Principal = Depends(get_principal),
     svc: SavedSearchService = Depends(get_saved_search_service),
 ) -> SavedSearchPageDTO:
     try:
+        validate_limit(limit)
         return svc.list(principal, PageParams(limit=limit, cursor=cursor))
     except DomainException as exc:
         raise _to_http(exc) from exc
@@ -162,23 +168,28 @@ library_router = APIRouter(prefix="/library/items", tags=["Library/Items"])
 @library_router.post("", response_model=LibraryItemDTO, status_code=201)
 async def add_library_item(
     dto: LibraryItemCreateDTO,
+    response: Response,
     principal: Principal = Depends(get_principal),
     svc: LibraryService = Depends(get_library_service),
 ) -> LibraryItemDTO:
     try:
-        return svc.add(principal, dto)
+        dto_out = svc.add(principal, dto)
+        if not getattr(dto_out, "was_created", True):
+            response.status_code = 200
+        return dto_out
     except DomainException as exc:
         raise _to_http(exc) from exc
 
 
 @library_router.get("", response_model=LibraryPageDTO)
 async def list_library(
-    limit: int = Query(default=20, ge=1),
+    limit: int = Query(default=20),
     cursor: str | None = Query(default=None),
     principal: Principal = Depends(get_principal),
     svc: LibraryService = Depends(get_library_service),
 ) -> LibraryPageDTO:
     try:
+        validate_limit(limit)
         return svc.list(principal, PageParams(limit=limit, cursor=cursor))
     except DomainException as exc:
         raise _to_http(exc) from exc
@@ -203,12 +214,13 @@ history_router = APIRouter(prefix="/library/history", tags=["Library/History"])
 
 @history_router.get("", response_model=HistoryPageDTO)
 async def list_history(
-    limit: int = Query(default=20, ge=1),
+    limit: int = Query(default=20),
     cursor: str | None = Query(default=None),
     principal: Principal = Depends(get_principal),
     svc: SearchHistoryService = Depends(get_history_service),
 ) -> HistoryPageDTO:
     try:
+        validate_limit(limit)
         return svc.list(principal, PageParams(limit=limit, cursor=cursor))
     except DomainException as exc:
         raise _to_http(exc) from exc

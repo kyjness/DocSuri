@@ -12,6 +12,7 @@ from .integrations.recaptcha import RecaptchaClient
 from .models import (
     DomainException,
     SessionExpiredException,
+    SessionStoreUnavailableException,
     UnauthorizedException,
 )
 from .repository.credential import CredentialRepository
@@ -28,6 +29,25 @@ router = APIRouter(prefix="/auth", tags=["Accounts/Auth"])
 # U3-내부 관리자 MFA DTO (공유 SSOT 계약 아님 — admin MFA는 U3-private이라 docsuri_shared에 없음).
 class MfaVerifyRequest(BaseModel):
     code: str
+
+# 인증 메일 재발송 요청 DTO (U3-내부 — 가입 후 메일 미수신 복구 경로용).
+class ResendVerificationRequest(BaseModel):
+    email: str
+
+
+def _verification_link_base(request: Request) -> str:
+    """이메일 인증 링크의 공개(클릭 가능) 베이스 URL을 만든다.
+
+    프로덕션: 브라우저는 백엔드 호스트를 알 수 없고 `request.base_url`은 CloudFront/BFF/ALB
+    뒤의 내부 호스트라 메일에 그대로 넣으면 클릭 불가 링크가 된다. 따라서 공개 앱 URL
+    (`PUBLIC_APP_URL`, 예: https://docsuri.org)의 **프런트엔드 인증 페이지**(`/verify-email`)로
+    링크한다 → 사용자가 클릭하면 프런트 페이지가 BFF 경유로 백엔드 GET /auth/verify-email를
+    호출하고 친화적 결과 UI를 보여준다(원시 JSON 노출 금지). 로컬/개발: `PUBLIC_APP_URL`
+    미설정 시 백엔드를 직접 부르는 기존 동작으로 폴백."""
+    public = os.getenv("PUBLIC_APP_URL", "").strip().rstrip("/")
+    if public:
+        return f"{public}/verify-email"
+    return str(request.base_url) + "auth/verify-email"
 
 # DB 세션 디펜던시 스텁 (메인 App shell에서 오버라이드 예정)
 def get_db_session() -> Session:
@@ -59,24 +79,29 @@ def get_session_manager(repo: SessionRepository = Depends(get_session_repo)) -> 
     return SessionManager(repo)
 
 def get_signup_service(
+    request: Request,
     repo: CredentialRepository = Depends(get_credential_repo),
 ) -> SignupService:
     # 메인 App Shell 또는 DI 컨테이너에서 설정 주입. default는 로컬 모킹 클라이언트.
     # 프로덕션(ENV!=local·SES_MOCK!=true)은 SES — 발신자(SES_SENDER_EMAIL)·리전을 주입한다.
     # 발신자 미설정 시 SES Source가 비어 발송 실패하므로 검증된 도메인 주소를 기본값으로 둔다.
+    observability = getattr(request.app.state, "observability", None)
     email_client = get_email_client(
         env=os.getenv("ENV", "local"),
         sender_email=os.getenv("SES_SENDER_EMAIL", "no-reply@docsuri.org"),
         region=os.getenv("SES_REGION", "ap-northeast-2"),
+        observability_hub=observability,
     )
-    return SignupService(repo, email_client)
+    return SignupService(repo, email_client, observability_hub=observability)
 
 def get_auth_service(
+    request: Request,
     repo: CredentialRepository = Depends(get_credential_repo),
     manager: SessionManager = Depends(get_session_manager),
     recaptcha: RecaptchaClient = Depends(get_recaptcha_client)
 ) -> AuthenticationService:
-    return AuthenticationService(repo, manager, recaptcha)
+    observability = getattr(request.app.state, "observability", None)
+    return AuthenticationService(repo, manager, recaptcha, observability_hub=observability)
 
 def get_totp_service(
     repo: CredentialRepository = Depends(get_credential_repo),
@@ -95,8 +120,8 @@ async def signup(
     일반 사용자 공개 회원가입 (US-A1)
     가입 성공 시 PENDING 계정이 생성되며 이메일 인증 발송 처리됩니다.
     """
-    # 호스트 이름을 동적으로 파악해 메일 인증용 베이스 링크 생성
-    base_url = str(request.base_url) + "auth/verify-email"
+    # 메일 인증용 공개(클릭 가능) 베이스 링크 생성 (프로덕션은 PUBLIC_APP_URL→BFF 경유)
+    base_url = _verification_link_base(request)
 
     try:
         account_id = await signup_svc.register(
@@ -150,6 +175,16 @@ async def login(
 
         return {"status": "success", "message": "로그인에 성공했습니다."}
 
+    except SessionStoreUnavailableException as e:
+        # 세션 저장소(Redis) 장애는 인증 실패가 아니라 인프라 가용성 장애다. 자격증명은 이미 검증됐으므로
+        # 401(자격증명 오류)로 위장해선 안 된다 — 사용자에겐 "정상 자격증명인데 거부"로 보이고 운영은 장애를
+        # 놓친다. SessionStoreUnavailableException은 DomainException 서브클래스이므로 반드시 401 핸들러보다
+        # 먼저 잡아 503(일시적 서비스 불가)로 매핑한다 (Fail-Closed지만 올바른 상태코드).
+        db.rollback()
+        raise HTTPException(
+            status_code=503,
+            detail="일시적으로 로그인할 수 없습니다. 잠시 후 다시 시도해 주세요. (세션 저장소 장애)",
+        ) from e
     except DomainException as e:
         db.rollback()
         # 자격증명 비노출(SEC-BR-2): "이메일 또는 비밀번호가 올바르지 않습니다." 등으로 일반화된 401 반환
@@ -176,6 +211,30 @@ async def verify_email(
     except Exception:
         db.rollback()
         raise HTTPException(status_code=500, detail="이메일 검증 처리 중 서버 장애가 발생했습니다.") from None
+
+
+@router.post("/resend-verification")
+async def resend_verification(
+    req: ResendVerificationRequest,
+    request: Request,
+    signup_svc: SignupService = Depends(get_signup_service),
+    db: Session = Depends(get_db_session),
+):
+    """PENDING 계정에 인증 메일을 재발송한다 (US-A1 복구 경로 — 가입했지만 메일 미수신 시).
+
+    계정 열거 방지(SEC): 입력 이메일의 가입/상태와 무관하게 항상 동일한 일반 응답을 반환한다.
+    재발송 가능 여부(부존재/이미 활성 등)는 노출하지 않는다."""
+    base_url = _verification_link_base(request)
+    try:
+        await signup_svc.resend_verification(req.email, base_url)
+        db.commit()
+    except Exception:
+        # 어떤 경우에도 계정 존재/상태를 추론할 단서를 주지 않는다 (Fail-Closed, 일반 응답 유지).
+        db.rollback()
+    return {
+        "status": "success",
+        "message": "해당 이메일이 가입되어 있고 인증 전이라면 인증 메일을 다시 보냈습니다. 메일함을 확인해 주세요.",
+    }
 
 
 @router.get("/session", response_model=SessionInfo)

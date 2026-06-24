@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from argon2.exceptions import InvalidHash, VerificationError
 
 from ..integrations.recaptcha import RecaptchaClient
-from ..models import AccountStatus, DomainException, Principal, UserRole
+from ..models import AccountStatus, DomainException, Principal, UserRole, normalize_email
 from ..password import get_password_hasher
 from ..repository.credential import CredentialRepository
 from .session_manager import SessionManager
@@ -37,8 +37,11 @@ class AuthenticationService:
         사용자 자격증명을 검증하고 보안 세션을 발급합니다.
         실패 횟수에 따라 지수 백오프 및 reCAPTCHA 검증을 강제합니다. (BR-A4)
         """
+        # 트러스트 바운더리 정규화: 저장/조회 이메일을 동일 규칙(trim+lowercase)으로 맞춰
+        # 대소문자 차이로 정상 자격증명이 거부되는 사일런트 401을 막는다 (normalize_email).
+        email = normalize_email(email)
         account = self._repo.get_by_email(email)
-        
+
         # 1. 봇 및 브루트포스 남용 방어: reCAPTCHA 검증 강제 (실패 횟수 >= 임계치) (BR-A4)
         if account and account.failure_count >= CAPTCHA_THRESHOLD:
             if not recaptcha_token:

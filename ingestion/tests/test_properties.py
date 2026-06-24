@@ -15,7 +15,7 @@ from .strategies import parsed_paper_strategy
 @given(parsed_paper_strategy())
 @settings(max_examples=25, derandomize=True)
 def test_p2_chunking_is_deterministic(paper) -> None:
-    chunker = Chunker(max_chunk_chars=240, overlap_chars=24)
+    chunker = Chunker()
     assert chunker.chunk(paper) == chunker.chunk(paper)
 
 
@@ -33,7 +33,7 @@ def test_p3_upsert_is_idempotent(paper) -> None:
 @given(parsed_paper_strategy())
 @settings(max_examples=25, derandomize=True)
 def test_p4_no_loss_no_duplicate_records(paper) -> None:
-    chunk_set = Chunker(max_chunk_chars=240, overlap_chars=24).chunk(paper)
+    chunk_set = Chunker().chunk(paper)
     batch = assemble_batch(paper)
     assert len(batch.records) == len(chunk_set.chunks)
     assert len({record.chunkId for record in batch.records}) == len(batch.records)
@@ -42,7 +42,7 @@ def test_p4_no_loss_no_duplicate_records(paper) -> None:
 @given(parsed_paper_strategy())
 @settings(max_examples=25, derandomize=True)
 def test_p5_embedding_alignment_preserved(paper) -> None:
-    chunk_set = Chunker(max_chunk_chars=240, overlap_chars=24).chunk(paper)
+    chunk_set = Chunker().chunk(paper)
     vectors = FakeEmbeddingPort().embed_documents([chunk.text for chunk in chunk_set.chunks])
     embedding_batch = EmbeddingBatch(
         chunk_ids=tuple(chunk.chunk_id for chunk in chunk_set.chunks),
@@ -65,7 +65,7 @@ def test_p6_watermark_monotonic(offsets) -> None:
 
 
 def assemble_batch(paper):
-    chunk_set = Chunker(max_chunk_chars=240, overlap_chars=24).chunk(paper)
+    chunk_set = Chunker().chunk(paper)
     vectors = FakeEmbeddingPort().embed_documents([chunk.text for chunk in chunk_set.chunks])
     embedding_batch = EmbeddingBatch(
         chunk_ids=tuple(chunk.chunk_id for chunk in chunk_set.chunks),

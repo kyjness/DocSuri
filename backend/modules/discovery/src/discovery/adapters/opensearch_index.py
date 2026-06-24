@@ -28,6 +28,7 @@ class OpenSearchClientFactory:
     def build(
         *,
         endpoint: str,
+        region_name: str | None = None,
         username: str | None = None,
         password: str | None = None,
         use_ssl: bool = True,
@@ -35,12 +36,28 @@ class OpenSearchClientFactory:
     ) -> Any:
         from opensearchpy import OpenSearch
 
-        http_auth = (username, password) if username and password else None
+        # Auth order mirrors the U1 writer (ingestion.build_opensearch_client): basic-auth if
+        # both creds are given (local/override), else SigV4 (``Urllib3AWSV4SignerAuth``, service
+        # ``es``) when a region is set — the managed VPC domain authorizes the ECS task role by
+        # resource policy, so signed requests are required — else unsigned (local open cluster).
+        http_auth: Any
+        if username and password:
+            http_auth = (username, password)
+        elif region_name:
+            import boto3
+            from opensearchpy import Urllib3AWSV4SignerAuth
+
+            http_auth = Urllib3AWSV4SignerAuth(
+                boto3.Session().get_credentials(), region_name, "es"
+            )
+        else:
+            http_auth = None
         return OpenSearch(
             hosts=[endpoint],
             http_auth=http_auth,
             use_ssl=use_ssl,
             verify_certs=verify_certs,
+            timeout=10,
         )
 
 

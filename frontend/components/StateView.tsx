@@ -21,6 +21,7 @@ interface StateViewProps {
   title?: string;
   message?: string;
   onRetry?: () => void;
+  field?: string;
 }
 
 const COPY: Record<StateViewKind, { title: string; body: string }> = {
@@ -48,7 +49,7 @@ const COPY: Record<StateViewKind, { title: string; body: string }> = {
 
 const RETRYABLE: ReadonlySet<StateViewKind> = new Set(['error', 'degraded']);
 
-export function StateView({ kind, title, message, onRetry }: StateViewProps) {
+export function StateView({ kind, title, message, onRetry, field }: StateViewProps) {
   const copy = COPY[kind];
   return (
     <div
@@ -57,6 +58,7 @@ export function StateView({ kind, title, message, onRetry }: StateViewProps) {
       aria-live="polite"
       aria-busy={kind === 'loading'}
       data-testid={`state-view-${kind}`}
+      data-field={field}
     >
       {kind === 'loading' ? (
         <div className={styles.spinner} aria-hidden="true" />

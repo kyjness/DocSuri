@@ -118,3 +118,43 @@ Last observed results:
 
 - U3 Accounts의 소스 코드와 테스트 스펙이 모두 합격하였으므로, develop 브랜치로의 병합 PR을 준비합니다.
 - operations 단계로 진입하여 인프라 프로비저닝 스크립트(Terraform 등) 및 ECS Fargate 배포 태스크 세팅을 계획합니다.
+# U9 Personalization Build and Test Summary — 2026-06-23
+
+## Build Status
+
+- **Build tool**: Python `compileall`, pytest, ruff, AWS CDK.
+- **Build status**: PASS for U9/backend code syntax, lint, tests, and CDK synth.
+- **CDK synth**: PASS after installing `ops/cdk/requirements.txt` and running with `JSII_NODE` pinned to the Scoop `nodejs-lts` executable.
+
+## Test Execution Summary
+
+| Category | Command | Result |
+| --- | --- | --- |
+| U9 unit tests | `python -m pytest backend/tests/test_personalization.py -q` | 11 passed |
+| U9 + app-shell | `$env:PYTHONPATH='shared/python/src;ops/src;backend/modules/discovery/src'; python -m pytest backend/tests/test_personalization.py backend/tests/test_app_shell.py -q` | 25 passed |
+| Backend tests | `$env:PYTHONPATH='shared/python/src;ops/src;backend/modules/discovery/src'; python -m pytest backend/tests -q` | 57 passed, 1 skipped |
+| Lint | `python -m ruff check backend/modules/personalization backend/wiring.py backend/app.py backend/migrations/__main__.py backend/tests/test_personalization.py backend/tests/test_app_shell.py ops/cdk/stacks/compute_stack.py` | PASS |
+| Compile | `python -m compileall backend/modules/personalization backend/wiring.py backend/app.py ops/cdk/stacks/compute_stack.py` | PASS |
+| CDK synth | `$env:JSII_NODE="$env:USERPROFILE\scoop\apps\nodejs-lts\current\node.exe"; cdk synth` from `ops/cdk` | PASS; synthesized to `ops/cdk/cdk.out` |
+
+## U9 Coverage
+
+- Event DTO roundtrip.
+- Metadata allowlist rejection.
+- Dedupe.
+- Owner isolation.
+- Deterministic aggregation.
+- Direct raw-log delete.
+- Profile reset.
+- Fail-open decision behavior.
+- Idempotent retention purge.
+- App-shell module registry inclusion.
+
+## Overall Status
+
+- **Build**: PASS for Python/backend code and CDK synth.
+- **Tests**: PASS for U9 and backend test suite with local source package `PYTHONPATH`.
+- **CDK notes**: `python -c "import aws_cdk"` passed after dependency installation. The CDK CLI emitted existing construct warnings for cross-stack reference strength, ECS `minHealthyPercent`, and security group egress, but synthesis completed successfully.
+- **Ready for Operations**: Yes for review.
+
+---

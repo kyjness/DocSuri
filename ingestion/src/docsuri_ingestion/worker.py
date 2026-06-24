@@ -45,6 +45,30 @@ def main(argv: list[str] | None = None) -> int:
 
 def process_message(runtime, message) -> None:
     queue = runtime.queue
+
+    message_type = message_type_from_payload(message.body)
+
+    if message_type == "schedule_tick":
+        queued = runtime.refresh.on_schedule_tick()
+        log.info("schedule_tick completed, queued %d papers", queued)
+        queue.ack(message)
+        return
+
+    if message_type != "ingest_paper":
+        error = PermanentIngestionError(
+            "invalid queue payload",
+            reason=FailureReason.POISON_EVENT,
+            stage="queue",
+        ).public_error()
+        runtime.observability.emit_failure_signal(
+            getattr(message, "message_id", "unknown"),
+            stage="queue",
+            error=error,
+        )
+        queue.send_to_dlq(message.body, reason=error)
+        queue.ack(message)
+        return
+
     try:
         job = job_from_payload(message.body)
     except IngestionError as exc:
@@ -59,12 +83,25 @@ def process_message(runtime, message) -> None:
         return
 
     try:
-        runtime.pipeline.ingest_one(job)
+        if job.kind is JobKind.BUILD_DOC_MODEL:
+            # Lazy doc-model build (BR-30/D6) — separate from the index pipeline.
+            runtime.pipeline.build_doc_model(job)
+        else:
+            runtime.pipeline.ingest_one(job)
     except IngestionError as exc:
         if exc.failure_class is FailureClass.PERMANENT:
             queue.ack(message)
     else:
         queue.ack(message)
+
+
+def message_type_from_payload(payload) -> str | None:
+    if payload.get("action") == "schedule_tick":
+        return "schedule_tick"
+    message_type = payload.get("type")
+    if message_type is None:
+        return "ingest_paper"
+    return message_type
 
 
 def job_from_payload(payload) -> IngestionJob:
@@ -88,4 +125,12 @@ def job_from_payload(payload) -> IngestionJob:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    # A step arg (provision|backfill|cutover) runs the v4 migration runner once and exits;
+    # no arg runs the normal SQS-polling worker. Lets one-off ECS run-task reuse this image
+    # (entrypoint is fixed to this module) without a separate task definition.
+    _args = sys.argv[1:]
+    if _args:
+        from .migrate import run_step
+
+        raise SystemExit(run_step(_args[0]))
+    raise SystemExit(main())

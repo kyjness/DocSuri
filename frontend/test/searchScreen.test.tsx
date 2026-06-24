@@ -29,6 +29,24 @@ describe('SearchScreen state machine', () => {
     expect(screen.getByTestId('search-inline-error')).toBeInTheDocument();
   });
 
+  it('disables the clear (✕) button while the field is empty', () => {
+    expect(screen.getByTestId('search-clear')).toBeDisabled();
+  });
+
+  it('clears the query and returns focus when ✕ is clicked', async () => {
+    const user = userEvent.setup();
+    const input = screen.getByTestId('search-input');
+    await user.type(input, 'transformer');
+    expect(input).toHaveValue('transformer');
+
+    const clear = screen.getByTestId('search-clear');
+    expect(clear).toBeEnabled();
+    await user.click(clear);
+
+    expect(input).toHaveValue('');
+    expect(input).toHaveFocus();
+  });
+
   it('renders a result list for a normal query', async () => {
     await submit('transformer attention');
     expect(await screen.findByTestId('result-list')).toBeInTheDocument();
@@ -52,5 +70,23 @@ describe('SearchScreen state machine', () => {
     await submit('오류 keyword');
     expect(await screen.findByTestId('state-view-error')).toBeInTheDocument();
     expect(screen.getByTestId('state-view-retry')).toBeInTheDocument();
+  });
+
+  it('surfaces backend validation errors inline and sets aria-invalid', async () => {
+    const input = screen.getByTestId('search-input');
+    await submit('유효 keyword');
+    
+    // 1. Should display the validation error message inline
+    const inlineError = await screen.findByTestId('search-inline-error');
+    expect(inlineError).toBeInTheDocument();
+    expect(inlineError).toHaveTextContent('검색어를 확인해 주세요.');
+    
+    // 2. Input field should have aria-invalid="true"
+    expect(input).toHaveAttribute('aria-invalid', 'true');
+    
+    // 3. StateView for invalid should also be in the document and contain the field name as an attribute
+    const stateView = await screen.findByTestId('state-view-invalid');
+    expect(stateView).toBeInTheDocument();
+    expect(stateView).toHaveAttribute('data-field', 'query');
   });
 });

@@ -126,6 +126,7 @@ def _apply_startup_migrations(database_url: str) -> None:
         [
             "backend/modules/accounts/migrations",
             "backend/modules/library/migrations",
+            "backend/modules/personalization/migrations",
         ],
     )
     log.info("startup migrations: applied=%s", applied or "(none pending)")

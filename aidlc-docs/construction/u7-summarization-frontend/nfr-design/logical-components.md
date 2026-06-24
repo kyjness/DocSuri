@@ -23,7 +23,7 @@ PaperDetailIsland (Client) ........................ activeView·persona·anchorT
 └─ StateView ...................................... 비-해피 공유(degraded·sourceUnavailable·licenseUnavailable 확장)
 
 [검색/라이브러리 표면 — 기존]
-ResultCard.action → SummaryAction ................. [요약]→tldr 인라인(SummaryInline) + 상세 링크 (P2)
+ResultCard ........................................ 카드=상세 진입(제목 링크)·우상단 저장 — 카드 요약/tldr 피크 폐지(2026-06-22 UX 패스)
 
 [공유 레이어 — 트리 밖]
 ApiClient ......................................... summarize() / getFullText()

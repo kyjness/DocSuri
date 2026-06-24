@@ -7,6 +7,7 @@
   --color-border: #d9dde3;
   --color-accent: #2f6df6;
   --color-accent-contrast: #ffffff;
+  --color-accent-soft-bg: #eaf1ff;
   --color-danger: #c0362c;
   --color-danger-bg: #fdecea;
   --color-warn-bg: #fff4e0;
@@ -23,6 +24,7 @@
     --color-border: #2c313a;
     --color-accent: #5b8bff;
     --color-accent-contrast: #0b0c0e;
+    --color-accent-soft-bg: #1b2742;
     --color-danger: #ff7a70;
     --color-danger-bg: #3a1d1a;
     --color-warn-bg: #3a2e16;
@@ -56,6 +58,21 @@ body {
 
 a {
   color: inherit;
+}
+
+/* Browsers repaint autofilled inputs with their own light background, which
+   breaks dark mode (white box on type/fill). Repaint to the theme surface via
+   the inset box-shadow hack; covers search + auth forms app-wide. */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus,
+input:-webkit-autofill:active {
+  -webkit-text-fill-color: var(--color-text);
+  -webkit-box-shadow: 0 0 0 1000px var(--color-surface) inset;
+  box-shadow: 0 0 0 1000px var(--color-surface) inset;
+  caret-color: var(--color-text);
+  /* long delay keeps the override from flashing back to the UA color */
+  transition: background-color 9999s ease-in-out 0s;
 }
 
 :focus-visible {

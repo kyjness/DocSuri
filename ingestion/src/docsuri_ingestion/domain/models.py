@@ -51,7 +51,7 @@ class MetadataRecord:
 @dataclass(frozen=True, slots=True)
 class RawDocument:
     metadata: MetadataRecord
-    text: str
+    text: str  # normalized plain text (BR-29: from HTML-preferred source, PDF fallback)
     source_url: str
     content_type: str = "text/plain"
 
@@ -67,7 +67,7 @@ class ParsedPaper:
     updated_at: datetime
     year: int
     arxiv_url: str
-    full_text: str
+    full_text: str  # normalized plain text (BR-29)
     license_url: str
     withdrawal_detected: bool = False
     stored_full_text_ref: str | None = None

@@ -19,7 +19,7 @@ COPY backend /app/backend
 
 # Install: shared → ops → discovery → backend deps (no backend package itself — PYTHONPATH).
 RUN python -m pip install --upgrade pip==24.2 \
-    && python -m pip install /app/shared/python /app/ops /app/discovery \
+    && python -m pip install /app/shared/python /app/ops "/app/discovery[real]" \
     && python -m pip install -r /app/backend/requirements-deploy.txt
 
 USER docsuri

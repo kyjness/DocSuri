@@ -1,7 +1,7 @@
 .root {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 12px;
 }
 
 .form {
@@ -21,10 +21,17 @@
   gap: 8px;
 }
 
+.inputWrap {
+  position: relative;
+  flex: 1;
+  display: flex;
+}
+
 .input {
   flex: 1;
   min-height: 48px;
-  padding: 0 14px;
+  /* right padding leaves room for the clear (✕) button */
+  padding: 0 44px 0 14px;
   border: 1px solid var(--color-border);
   border-radius: 12px;
   background: var(--color-surface);
@@ -33,6 +40,42 @@
 }
 
 .input:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+.clear {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* generous touch target (mobile-first) */
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.clear:hover {
+  color: var(--color-text);
+}
+
+.clear:disabled {
+  /* shown for visual symmetry but inert while the field is empty */
+  opacity: 0.35;
+  cursor: default;
+}
+
+.clear:focus-visible {
   outline: 2px solid var(--color-accent);
   outline-offset: 1px;
 }
@@ -65,6 +108,54 @@
   gap: 8px;
   flex-wrap: wrap;
   margin: 4px 0;
+}
+
+/* Toolbar above results: 검색어 저장 (left) · 정렬 (pushed to the right end). */
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* Slightly smaller buttons here than the shared library action size — scoped to
+   this toolbar so the library screens keep their own sizing. */
+.toolbar button {
+  min-height: 34px;
+  padding: 0 12px;
+  font-size: 13px;
+}
+
+.sort {
+  display: inline-flex;
+  align-self: flex-start;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-surface);
+}
+
+.sortOption {
+  min-height: 36px;
+  padding: 0 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.sortOption[data-active='true'] {
+  background: var(--color-accent);
+  color: var(--color-accent-contrast);
+}
+
+.sortOption:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
 }
 
 .results {

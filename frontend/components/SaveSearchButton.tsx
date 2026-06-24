@@ -20,7 +20,7 @@ export function SaveSearchButton({ query }: { query: string }) {
     }
   };
 
-  const label = state === 'saved' ? '저장됨' : state === 'error' ? '재시도' : '검색 저장';
+  const label = state === 'saved' ? '저장됨' : state === 'error' ? '재시도' : '검색어 저장';
   return (
     <button
       type="button"

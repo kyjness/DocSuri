@@ -1,0 +1,301 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://docsuri.dev/shared/dtos/docmodel.schema.json",
+  "title": "DocModelResponse",
+  "description": "doc-model contract (DocModel pivot — SSOT spec: aidlc-docs/construction/shared/docmodel.md; gate: construction/plans/docmodel-foundation-pivot-plan.md, D1/D2/D4/D6/D8). The ROOT schema is DocModelResponse — the union (oneOf) returned by getDocModel and branched by U5 ApiClient to surface status (ok | building | license_unavailable | source_unavailable). The bare DocModel artifact (the JSON stored at doc-model/{paperId}/v{version}.json and consumed as the U7 summary input) is defined at #/$defs/DocModel. STATUS: PROVISIONAL (owning unit U1 FD in progress). Trace: FR-12, FR-17, BR-30, BR-S2.",
+  "oneOf": [
+    { "$ref": "#/$defs/DocModelResultDTO" },
+    { "$ref": "#/$defs/BuildingDTO" },
+    { "$ref": "#/$defs/LicenseUnavailableDTO" },
+    { "$ref": "#/$defs/SourceUnavailableDTO" }
+  ],
+  "$defs": {
+    "DocModelRequest": {
+      "type": "object",
+      "title": "DocModelRequest",
+      "description": "Request to fetch (and lazily build+cache on miss) the doc-model for a paper version. Trace: BR-30 (lazy on-demand + (paperId, version) cache), D6.",
+      "properties": {
+        "paperId": { "type": "string", "description": "arXiv ID. Trace: FR-12." },
+        "version": { "type": "integer", "description": "Paper version; doc-model cache key is (paperId, version). Trace: D6, BR-30." }
+      },
+      "required": ["paperId", "version"],
+      "additionalProperties": false
+    },
+
+    "DocModelResultDTO": {
+      "type": "object",
+      "title": "DocModelResultDTO",
+      "description": "Successful response carrying the structured doc-model. Trace: D4 (self rich-view render), BR-S2 (summary input).",
+      "properties": {
+        "status": { "const": "ok" },
+        "cached": { "type": "boolean", "description": "True if served from the (paperId, version) cache; false if built on this request (lazy). Trace: D6, BR-30." },
+        "docModel": { "$ref": "#/$defs/DocModel" }
+      },
+      "required": ["status", "docModel"],
+      "additionalProperties": false
+    },
+    "BuildingDTO": {
+      "type": "object",
+      "title": "BuildingDTO",
+      "description": "The doc-model is being built asynchronously (lazy on-demand, D6/BR-30): a cache miss enqueued a build job and the client should poll getDocModel again after retryAfterMs. Distinct from source_unavailable (a build that ran and failed every source tier) — building is transient/in-flight. Trace: BR-30, BR-S8 (async job), D6.",
+      "properties": {
+        "status": { "const": "building" },
+        "retryAfterMs": { "type": "integer", "description": "Suggested client poll backoff in milliseconds before re-requesting." }
+      },
+      "required": ["status"],
+      "additionalProperties": false
+    },
+    "LicenseUnavailableDTO": {
+      "type": "object",
+      "title": "LicenseUnavailableDTO",
+      "description": "OA license does not permit in-app rich rendering of this paper; client links out to arXiv instead. Trace: BR-SF-11, SEC-9.",
+      "properties": {
+        "status": { "const": "license_unavailable" },
+        "reason": { "type": "string", "description": "Non-technical reason for the license gate (display copy)." },
+        "arxivUrl": { "type": "string", "description": "Safe arXiv link-out target (http/https). Trace: BR-U5-7." }
+      },
+      "required": ["status"],
+      "additionalProperties": false
+    },
+    "SourceUnavailableDTO": {
+      "type": "object",
+      "title": "SourceUnavailableDTO",
+      "description": "doc-model could not be produced from any source tier (HTML/ar5iv/e-print/PDF all failed). Trace: Q6 fallback ladder.",
+      "properties": {
+        "status": { "const": "source_unavailable" },
+        "reason": { "type": "string", "description": "Non-technical reason (display copy)." }
+      },
+      "required": ["status"],
+      "additionalProperties": false
+    },
+
+    "DocModel": {
+      "type": "object",
+      "title": "DocModel",
+      "description": "The structured paper artifact: a nested section tree of typed content blocks. Tables are DATA (rows/cols), formulas are LaTeX, figures/table-images are webp references by assetId (pixels are NOT embedded — base64 bloat avoided; reuse assets/{paperId}/{version}/{assetId}.webp). Deterministic: same source HTML -> same DocModel (LLM extraction forbidden). Trace: D1, D8, P7.",
+      "properties": {
+        "meta": { "$ref": "#/$defs/DocModelMeta" },
+        "sections": {
+          "type": "array",
+          "description": "Top-level sections in reading order; each may nest subsections (recursive). The rich-view DocTOC and the summary map-reduce split (P3) both consume this tree. Trace: Q1-decision (nested section tree).",
+          "items": { "$ref": "#/$defs/Section" }
+        }
+      },
+      "required": ["meta", "sections"],
+      "additionalProperties": false
+    },
+
+    "DocModelMeta": {
+      "type": "object",
+      "title": "DocModelMeta",
+      "description": "doc-model identity, title/abstract, and provenance.",
+      "properties": {
+        "paperId": { "type": "string", "description": "arXiv ID. Trace: FR-12." },
+        "version": { "type": "integer", "description": "Paper version; doc-model is keyed (paperId, version). Trace: D6." },
+        "title": { "type": "string", "description": "Paper title (rendered as document title in the rich view)." },
+        "abstract": { "type": "string", "description": "Optional abstract plain text (translate task uses the abstract directly; rich view shows it). Trace: BR-S2." },
+        "provenance": { "$ref": "#/$defs/Provenance" }
+      },
+      "required": ["paperId", "version", "title", "provenance"],
+      "additionalProperties": false
+    },
+    "Provenance": {
+      "type": "object",
+      "title": "Provenance",
+      "description": "How this doc-model was produced — for cache invalidation, debugging, and coverage telemetry. No PII (SEC-3).",
+      "properties": {
+        "sourceTier": { "$ref": "#/$defs/SourceTier" },
+        "parserVersion": { "type": "string", "description": "Deterministic parser build identifier; bumping it invalidates cached doc-models. Trace: BR-30, TD-16." },
+        "schemaVersion": { "type": "string", "description": "doc-model schema version for additive evolution (consumers ignore unknown fields). Trace: shared/README Versioning." },
+        "generatedAt": { "type": "string", "format": "date-time", "description": "UTC timestamp of generation." }
+      },
+      "required": ["sourceTier", "parserVersion", "schemaVersion", "generatedAt"],
+      "additionalProperties": false
+    },
+    "SourceTier": {
+      "type": "string",
+      "enum": ["native_html", "ar5iv", "eprint_latex", "pdf"],
+      "description": "Which rung of the fallback ladder produced this doc-model: native arXiv HTML -> ar5iv -> e-print LaTeX -> (last resort) PDF parse. Trace: Q6, BR-29, TD-11."
+    },
+
+    "Section": {
+      "type": "object",
+      "title": "Section",
+      "description": "A heading-delimited section. `id` is the deterministic anchor handle (see Anchor binding in the spec). Subsections recurse via `sections`. Trace: Q1-decision (nested tree), Q2-decision (block id anchors).",
+      "properties": {
+        "id": { "type": "string", "description": "Deterministic section id / anchor handle, e.g. \"s3\", \"s3.2\". Stable across rebuilds of the same source (P7). Anchor.target may reference this id. Trace: Q2-decision, BR-S7." },
+        "title": { "type": "string", "description": "Heading text; may be empty when source headings are absent (span-only section). Trace: BR-S3 (section derivation)." },
+        "blocks": {
+          "type": "array",
+          "description": "Ordered content blocks directly in this section (before any subsection).",
+          "items": { "$ref": "#/$defs/Block" }
+        },
+        "sections": {
+          "type": "array",
+          "description": "Nested subsections (recursive).",
+          "items": { "$ref": "#/$defs/Section" }
+        }
+      },
+      "required": ["id", "title", "blocks"],
+      "additionalProperties": false
+    },
+
+    "Block": {
+      "title": "Block",
+      "description": "A content block, discriminated by `type`. Headings are NOT blocks — they are carried by Section.title.",
+      "oneOf": [
+        { "$ref": "#/$defs/ParagraphBlock" },
+        { "$ref": "#/$defs/TableBlock" },
+        { "$ref": "#/$defs/FormulaBlock" },
+        { "$ref": "#/$defs/FigureBlock" },
+        { "$ref": "#/$defs/ListBlock" },
+        { "$ref": "#/$defs/CodeBlock" }
+      ]
+    },
+
+    "ParagraphBlock": {
+      "type": "object",
+      "title": "ParagraphBlock",
+      "description": "Body text. Inline mathematics is embedded as LaTeX delimited by \\( ... \\) within `text` (KaTeX renders it; the summary prompt and agents read the LaTeX verbatim). Trace: D1.",
+      "properties": {
+        "id": { "type": "string", "description": "Deterministic block id / anchor handle, e.g. \"s3.p2\". Trace: Q2-decision." },
+        "type": { "const": "paragraph" },
+        "text": { "type": "string", "description": "Paragraph text; may contain inline LaTeX in \\( ... \\) delimiters. Rendered escaped except for trusted KaTeX (SEC-5)." }
+      },
+      "required": ["id", "type", "text"],
+      "additionalProperties": false
+    },
+
+    "TableBlock": {
+      "type": "object",
+      "title": "TableBlock",
+      "description": "A table as STRUCTURED DATA (rows/cols), NOT a cropped image — so table numbers are visible to the summary LLM, grounding numeric-match, and agents (D8). A crop image may be carried in `assetRef` ONLY as a last-resort fallback (e.g. pdf source tier). Trace: D8, TD-12.",
+      "properties": {
+        "id": { "type": "string", "description": "Deterministic block id / anchor handle, e.g. \"s3.tbl2\". Trace: Q2-decision." },
+        "type": { "const": "table" },
+        "caption": { "type": "string", "description": "Table caption text (preserved — a results-number source). Trace: BR-S3 (preserve captions)." },
+        "anchorLabel": { "type": "string", "description": "Human label as it appears in the paper, e.g. \"Table 3\" — used by the asset-anchor matcher and AnchorChip display. Trace: FR-12." },
+        "rows": {
+          "type": "array",
+          "description": "All rows in order; header rows are marked via cell.isHeader.",
+          "items": { "$ref": "#/$defs/TableRow" }
+        },
+        "assetRef": {
+          "$ref": "#/$defs/AssetRef",
+          "description": "Optional table crop image (page-crop fallback only). The PRIMARY representation is `rows` data; this is a degraded fallback for non-HTML sources. Trace: TD-11 (last-resort), D8."
+        }
+      },
+      "required": ["id", "type", "rows"],
+      "additionalProperties": false
+    },
+    "TableRow": {
+      "type": "object",
+      "title": "TableRow",
+      "description": "A table row.",
+      "properties": {
+        "cells": { "type": "array", "items": { "$ref": "#/$defs/TableCell" } }
+      },
+      "required": ["cells"],
+      "additionalProperties": false
+    },
+    "TableCell": {
+      "type": "object",
+      "title": "TableCell",
+      "description": "A table cell. `text` may contain inline LaTeX in \\( ... \\) delimiters.",
+      "properties": {
+        "text": { "type": "string", "description": "Cell content as text (inline LaTeX allowed)." },
+        "isHeader": { "type": "boolean", "description": "True for header (th) cells." },
+        "colspan": { "type": "integer", "minimum": 1, "description": "Column span (default 1)." },
+        "rowspan": { "type": "integer", "minimum": 1, "description": "Row span (default 1)." }
+      },
+      "required": ["text"],
+      "additionalProperties": false
+    },
+
+    "FormulaBlock": {
+      "type": "object",
+      "title": "FormulaBlock",
+      "description": "A display (block-level) equation as LaTeX. Inline math lives in ParagraphBlock.text instead. Trace: D1.",
+      "properties": {
+        "id": { "type": "string", "description": "Deterministic block id / anchor handle, e.g. \"s3.eq2\". Trace: Q2-decision." },
+        "type": { "const": "formula" },
+        "latex": { "type": "string", "description": "LaTeX (converted from source MathML when needed; HTML-borne <math> coverage ~94% per Q1 spike). Rendered by KaTeX/MathJax. Trace: D1, TD-16." },
+        "display": { "type": "boolean", "description": "Always true for a FormulaBlock (display/block equation); present for renderer clarity." },
+        "anchorLabel": { "type": "string", "description": "Equation number as in the paper, e.g. \"(3)\"." },
+        "mathmlSource": { "type": "string", "description": "Optional original MathML, retained for fidelity/debugging." }
+      },
+      "required": ["id", "type", "latex"],
+      "additionalProperties": false
+    },
+
+    "FigureBlock": {
+      "type": "object",
+      "title": "FigureBlock",
+      "description": "A figure: a webp image referenced by assetId (pixels reused from the FR-17 assets pipeline; reuses U5 AssetGallery + asset-anchor matcher for render). Trace: FR-17, D5.",
+      "properties": {
+        "id": { "type": "string", "description": "Deterministic block id / anchor handle, e.g. \"s3.fig1\". Trace: Q2-decision." },
+        "type": { "const": "figure" },
+        "assetRef": { "$ref": "#/$defs/AssetRef" },
+        "caption": { "type": "string", "description": "Figure caption text (preserved). Trace: BR-S3." },
+        "anchorLabel": { "type": "string", "description": "Human label, e.g. \"Figure 2\" — used by the asset-anchor matcher. Trace: FR-12." }
+      },
+      "required": ["id", "type", "assetRef"],
+      "additionalProperties": false
+    },
+
+    "ListBlock": {
+      "type": "object",
+      "title": "ListBlock",
+      "description": "An ordered or unordered list. Nested lists are an additive future extension.",
+      "properties": {
+        "id": { "type": "string", "description": "Deterministic block id, e.g. \"s3.list1\"." },
+        "type": { "const": "list" },
+        "ordered": { "type": "boolean", "description": "True for an ordered (numbered) list." },
+        "items": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ListItem" }
+        }
+      },
+      "required": ["id", "type", "ordered", "items"],
+      "additionalProperties": false
+    },
+    "ListItem": {
+      "type": "object",
+      "title": "ListItem",
+      "properties": {
+        "text": { "type": "string", "description": "List item text; inline LaTeX allowed in \\( ... \\) delimiters." }
+      },
+      "required": ["text"],
+      "additionalProperties": false
+    },
+
+    "CodeBlock": {
+      "type": "object",
+      "title": "CodeBlock",
+      "description": "A verbatim/code/algorithm block (rendered monospace, not interpreted).",
+      "properties": {
+        "id": { "type": "string", "description": "Deterministic block id, e.g. \"s3.code1\"." },
+        "type": { "const": "code" },
+        "text": { "type": "string", "description": "Verbatim text." },
+        "language": { "type": "string", "description": "Optional language hint." }
+      },
+      "required": ["id", "type", "text"],
+      "additionalProperties": false
+    },
+
+    "AssetRef": {
+      "type": "object",
+      "title": "AssetRef",
+      "description": "A REFERENCE to a stored image asset — assetId, not pixels and not an object_ref. The read API (getDocModel / GET /api/papers/{id}/assets) issues a short-lived signed URL at read time; the doc-model artifact never stores the URL or object_ref (SEC-9). Mirrors the existing AssetRef in summarization.schema.json minus the runtime-only `url`. Trace: FR-17, SEC-9, D8/D5.",
+      "properties": {
+        "assetId": { "type": "string", "description": "Deterministic asset id keying assets/{paperId}/{version}/{assetId}.webp and the paper_asset row. Trace: FR-17." },
+        "type": { "type": "string", "enum": ["figure", "table"], "description": "Asset kind." },
+        "ordinal": { "type": "integer", "description": "Display order within its type (figure/table). Trace: FR-17." },
+        "caption": { "type": "string", "description": "Caption (mirrors the parent block caption; convenience for asset-only views)." },
+        "sourceMode": { "type": "string", "enum": ["structured", "page-crop"], "description": "How the image was obtained: structured graphic extraction or page-crop fallback. Trace: TD-11/TD-12." }
+      },
+      "required": ["assetId", "type", "ordinal"],
+      "additionalProperties": false
+    }
+  }
+}

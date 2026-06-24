@@ -81,6 +81,41 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
         timeout_seconds=settings.request_timeout_seconds,
     )
     failure_handler = IngestFailureHandler(queue, observability)
+    # FR-17 multimodal assets (display-only). Wired only when the flag is on — the three
+    # adapters are injected together (the pipeline gates extraction on all three being
+    # present), so the base worker is unaffected when off. Best-effort: never blocks indexing.
+    asset_extractor = asset_store = asset_source = None
+    if settings.multimodal_assets_enabled:
+        from .adapters.assets import ArxivAssetSource, S3RdsAssetStore
+        from .asset_extraction import AssetExtractor, ImageNormalizer
+
+        asset_extractor = AssetExtractor(
+            normalizer=ImageNormalizer(
+                max_longest_side=settings.asset_max_longest_side,
+                max_pixels=settings.asset_max_pixels,
+                webp_quality=settings.asset_webp_quality,
+            )
+        )
+        asset_source = ArxivAssetSource(timeout_seconds=settings.asset_fetch_timeout_seconds)
+        asset_store = S3RdsAssetStore(
+            bucket=settings.s3_bucket or "",
+            control_plane_dsn=settings.control_plane_dsn or "",
+            prefix=settings.asset_s3_prefix,
+            kms_key_id=settings.asset_kms_key_id,
+        )
+    # Lazy on-demand doc-model builder (BR-30/D6): reuses the arXiv source (HTML→ar5iv tier)
+    # and the single bucket's doc-model/ prefix. Drives BUILD_DOC_MODEL jobs only — the index
+    # hot path is unaffected.
+    from .adapters.aws import S3DocModelStore
+    from .docmodel import DocModelBuilder
+
+    doc_model_builder = DocModelBuilder(
+        source=arxiv,
+        store=S3DocModelStore(
+            bucket=settings.s3_bucket or "",
+            kms_key_id=settings.asset_kms_key_id,
+        ),
+    )
     pipeline = IngestionPipelineService(
         arxiv=arxiv,
         full_text_store=S3FullTextStore(bucket=settings.s3_bucket or ""),
@@ -91,12 +126,27 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
         vector_index=OpenSearchVectorIndex(
             endpoint=settings.opensearch_endpoint or "",
             index_name=settings.opensearch_index,
+            region_name=settings.aws_region,
             stats_ttl_seconds=settings.index_stats_ttl_seconds,
         ),
         control_plane=control,
         observability=observability,
         resilience=resilience,
         failure_handler=failure_handler,
+        asset_extractor=asset_extractor,
+        asset_store=asset_store,
+        asset_source=asset_source,
+        doc_model_builder=doc_model_builder,
+        embedding_v2=BedrockCohereEmbeddingPort(
+            model_id=settings.bedrock_model_id_v2,
+            region_name=settings.aws_region,
+        ) if settings.bedrock_model_id_v2 else None,
+        vector_index_v2=OpenSearchVectorIndex(
+            endpoint=settings.opensearch_endpoint or "",
+            index_name=settings.opensearch_index_v2,
+            region_name=settings.aws_region,
+            stats_ttl_seconds=settings.index_stats_ttl_seconds,
+        ) if settings.bedrock_model_id_v2 else None,
     )
     refresh = RefreshOrchestrationService(
         arxiv=arxiv,

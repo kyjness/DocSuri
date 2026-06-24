@@ -1,10 +1,10 @@
-/* Provisional — curated ahead of shared/dtos/summarization.schema.json.
- * Producer: U7 Summarization. Consumer: U7 frontend slice. SEC-9: only the fields
- * below are exposed (no tokens/cost/cache-key/model id).
- *
- * NOTE (Q5=C, 2026-06-19): `scope`, `getFullText`/FullText* are a NEW backend
- * contract. These shapes are provisional; re-align via `pnpm gen:types` once the
- * backend full-text-return API + `scope` param are finalized (plan §6). */
+/* Curated from shared/dtos/summarization.schema.json (SSOT — established 2026-06-22,
+ * FR-17 / FD §8). Producer: U7 Summarization. Consumer: U7/U5 frontend. SEC-9: only the
+ * fields below are exposed (no tokens/cost/cache-key/model id; assets expose a signed url
+ * only — never object_ref). Run `pnpm gen:types` to refresh the raw schema dump under
+ * types/.schema-raw/ for drift review. */
+
+import type { DocModel } from './docModel';
 
 export type SummarizeTask = 'summary' | 'translate';
 /** translate only; summary is fixed `full`. */
@@ -47,9 +47,14 @@ export interface SummaryVM {
   anchors: AnchorVM[];
 }
 
-/** Korean translation (abstract or full per scope). keptTerms = untranslated terms. */
+/** Structured Korean translation as a "translated doc-model" mirroring the source structure
+ * (FR-13): section titles, paragraphs, list items, and table/figure captions are translated,
+ * while structural/verbatim fields (block & section ids, formula LaTeX, table numeric cells,
+ * figure assetRefs) are copied from the source unchanged. Block/section ids mirror the source
+ * doc-model so it renders with the SAME rich viewer as the original body. keptTerms = terms
+ * kept untranslated. */
 export interface TranslationVM {
-  koreanText: string;
+  docModel: DocModel;
   keptTerms: string[];
 }
 
@@ -78,6 +83,12 @@ export interface TranslationOkDTO {
   scope?: SummarizeScope;
 }
 
+/** Long summary running as a background job (BR-S6/BR-S8): client polls again after the hint. */
+export interface SummaryPendingDTO {
+  status: 'pending';
+  retryAfterMs?: number;
+}
+
 export interface SummaryAbstainDTO {
   status: 'abstain';
   reason: unknown;
@@ -93,36 +104,56 @@ export interface SourceUnavailableDTO {
   reason: unknown;
 }
 
+/** Gap #2: validation failure carries a non-technical `message` (→ "check your input").
+ * Named distinctly from search's ValidationErrorDTO (status-discriminated here). */
+export interface SummarizeValidationErrorDTO {
+  status: 'validation_error';
+  field?: string;
+  message: string;
+}
+
+/** Gap #3: auth required (401). */
+export interface UnauthorizedDTO {
+  status: 'unauthorized';
+}
+
 export type SummarizeResponseDTO =
   | SummaryOkDTO
   | TranslationOkDTO
+  | SummaryPendingDTO
   | SummaryAbstainDTO
   | CostDegradedDTO
-  | SourceUnavailableDTO;
+  | SourceUnavailableDTO
+  | SummarizeValidationErrorDTO
+  | UnauthorizedDTO;
 
-// ---- Full-text return (Q5=C, provisional) ----
+// ---- Figure/table assets (FR-17, display-only) ----
 
-export interface FullTextRequest {
-  paperId: string;
-  version: number;
+/** A single figure/table for the detail/viewer. SEC-9: `url` is a short-lived signed URL;
+ * the S3 object_ref / internal manifest fields are NEVER exposed. Produced by U1, presigned
+ * by U7. Anchors (AnchorVM.target = figure|table) link by matching label/caption + ordinal. */
+export interface AssetRef {
+  assetId: string;
+  type: 'figure' | 'table';
+  ordinal: number;
+  caption: string;
+  sourceMode: 'structured' | 'page-crop';
+  url: string;
+  pageRef?: number | null;
+  bbox?: number[] | null;
 }
 
-export interface FullTextOkDTO {
+export interface AssetsOkDTO {
   status: 'ok';
-  /** Normalized full text (references/author info stripped — BR-SF-12). */
-  text: string;
+  assets: AssetRef[];
 }
 
-/** OA license not permitted → viewer not opened; arXiv link-out instead (BR-SF-11). */
-export interface FullTextLicenseDTO {
+/** OA license not permitted (or assets not configured) → no assets shown (BR-SF-11). */
+export interface AssetsLicenseUnavailableDTO {
   status: 'license_unavailable';
 }
 
-export interface FullTextSourceUnavailableDTO {
-  status: 'source_unavailable';
-}
-
-export type FullTextResponseDTO =
-  | FullTextOkDTO
-  | FullTextLicenseDTO
-  | FullTextSourceUnavailableDTO;
+export type PaperAssetsResponseDTO =
+  | AssetsOkDTO
+  | AssetsLicenseUnavailableDTO
+  | UnauthorizedDTO;

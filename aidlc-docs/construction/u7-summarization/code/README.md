@@ -63,4 +63,4 @@ ruff check src tests                                           # clean
   (마운트 시 `test_app_shell.py`의 모듈 집합 단언에 `"summarization"` 추가 필요 = 쉘 소유 변경.)
 - **인프라 증분(@Infra 사인오프, infrastructure-design 연계)**: ECS task role Bedrock/S3 IAM · `user_glossary` 마이그레이션 적용 · Redis `sum:` TTL 구성 · CloudWatch/Budget U7 라인 · CI 통합 게이트 레인(스코프 CI 역할).
 - **신규 DTO 계약** `shared/dtos/summarization`(PROVISIONAL): 현재 모듈 로컬 응답 DTO로 대체; 별도 shared PR로 승격(U4 library 선례).
-- **비동기 잡(초장문 map-reduce)**: v1 미프로비저닝(TD-S9 fast-follow) — `LengthRouter`가 OVER_CAP을 기권으로 처리.
+- **비동기 잡(초장문 map-reduce)**: v1 미프로비저닝(TD-S9 fast-follow, #135) — `LengthRouter`가 OVER_CAP·MAP_REDUCE 밴드를 모두 기권으로 처리.

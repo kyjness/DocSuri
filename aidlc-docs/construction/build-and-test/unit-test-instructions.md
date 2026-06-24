@@ -114,3 +114,28 @@ pytest tests/accounts/test_hash_pbt.py -v
 - **Hypothesis 기본 설정**:
   - 각 PBT 함수는 기본적으로 `100`가지의 임의 무작위 시나리오 케이스를 생성하여 평가합니다.
   - 만약 반례(Counter-example)가 발견되면, Hypothesis가 입력을 최소화(Shrinking)하여 콘솔 터미널에 실패 원인 입력 패턴을 상세 출력합니다. 이 패턴을 참조하여 `password.py` 또는 `models.py`를 보정해야 합니다.
+# U9 Personalization Unit Test Instructions — 2026-06-23
+
+Run U9 unit tests:
+
+```powershell
+python -m pytest backend/tests/test_personalization.py -q
+```
+
+Observed result:
+
+- 11 passed
+
+Coverage focus:
+
+- event DTO roundtrip
+- metadata allowlist rejection
+- dedupe
+- owner isolation
+- deterministic aggregation
+- direct raw-log delete
+- profile reset
+- fail-open decision behavior
+- idempotent retention purge
+
+---

@@ -20,7 +20,7 @@ _TRUTHY = {"1", "true", "yes", "on"}
 # Defaults live at module scope (NOT referenced via ``cls.<field>``): with ``slots=True`` the
 # class attribute is the slot descriptor, not the default value, so ``cls.opensearch_index``
 # would yield the descriptor — not the string.
-_DEFAULT_INDEX = "docsuri-corpus-v1"
+_DEFAULT_INDEX = "docsuri-corpus"
 _DEFAULT_USE_SSL = True
 _DEFAULT_VERIFY_CERTS = True
 _DEFAULT_CACHE_TTL_SECONDS = 300.0

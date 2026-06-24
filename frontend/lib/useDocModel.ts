@@ -1,0 +1,90 @@
+'use client';
+
+// useDocModel (D4, BR-SF-11) — fetches the structured doc-model for the rich view.
+// real-first transport, in-flight dedup, OA-license-gated (same shape as useAssets).
+//
+// Lazy build (BR-30/D6): a cache miss returns `building` while U1 produces the doc-model
+// asynchronously. The hook then POLLS — re-requesting with the server's `retryAfterMs`
+// backoff — up to a bounded number of times, then gives up with a retryable message. The cap
+// keeps a paper with no rich source (the ~10% non-HTML case, which never finishes building)
+// from spinning forever, and keeps mobile from polling indefinitely.
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { getApiClient, type DocModelOutcome } from '@/lib/api';
+import type { DocModelRequest } from '@/types/generated';
+
+const MAX_BUILD_POLLS = 6;
+const DEFAULT_POLL_BACKOFF_MS = 2000;
+
+export type DocModelState =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'done'; outcome: DocModelOutcome };
+
+export function useDocModel() {
+  const [state, setState] = useState<DocModelState>({ status: 'idle' });
+  const activeKey = useRef<string | null>(null);
+  const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pollCount = useRef(0);
+
+  const clearTimer = () => {
+    if (pollTimer.current !== null) {
+      clearTimeout(pollTimer.current);
+      pollTimer.current = null;
+    }
+  };
+
+  // One request cycle; on `building` it schedules the next poll (bounded) instead of settling.
+  const fetchOnce = useCallback(async (req: DocModelRequest, key: string) => {
+    try {
+      const outcome = await getApiClient().getDocModel(req);
+      if (activeKey.current !== key) return; // superseded by a newer load()
+      if (outcome.kind === 'building') {
+        pollCount.current += 1;
+        if (pollCount.current >= MAX_BUILD_POLLS) {
+          // Gave up waiting for the lazy build — terminal but retryable (onRetry → load()).
+          activeKey.current = null;
+          setState({
+            status: 'done',
+            outcome: { kind: 'error', message: '본문을 준비 중이에요. 잠시 후 다시 시도해 주세요.' },
+          });
+          return;
+        }
+        setState({ status: 'done', outcome });
+        const delay = outcome.retryAfterMs ?? DEFAULT_POLL_BACKOFF_MS;
+        pollTimer.current = setTimeout(() => void fetchOnce(req, key), delay);
+        return;
+      }
+      setState({ status: 'done', outcome });
+    } catch {
+      if (activeKey.current !== key) return;
+      // Clear the dedup key so a retry (StateView onRetry → load(same req)) can re-fetch.
+      activeKey.current = null;
+      setState({ status: 'done', outcome: { kind: 'error', message: '본문을 불러올 수 없어요.' } });
+    }
+  }, []);
+
+  const load = useCallback(
+    async (req: DocModelRequest) => {
+      const key = JSON.stringify(req);
+      if (activeKey.current === key && state.status !== 'idle') return; // dedup / already loaded
+      activeKey.current = key;
+      clearTimer();
+      pollCount.current = 0;
+      setState({ status: 'loading' });
+      await fetchOnce(req, key);
+    },
+    [state.status, fetchOnce],
+  );
+
+  const reset = useCallback(() => {
+    activeKey.current = null;
+    clearTimer();
+    pollCount.current = 0;
+    setState({ status: 'idle' });
+  }, []);
+
+  // Cancel any pending poll on unmount.
+  useEffect(() => () => clearTimer(), []);
+
+  return { state, load, reset };
+}

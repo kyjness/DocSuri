@@ -5,22 +5,24 @@ import type { ResultCardVM } from '@/types/generated';
 
 // ResultCard (LC-6, FR-4/5, SEC-9) — single paper, phone-optimized.
 // Renders ONLY the exposed fields (BR-U5-4). External text is escaped by React
-// (BR-U5-6). relevance is the display value U2 provides — U5 never derives a score
-// (BR-U5-5). Title and abstract snippet link to the paper detail route (/paper/[id]).
-// `action` is an optional footer slot (e.g. [요약], save/remove) so the same card
-// serves both live results and the library.
+// (BR-U5-6). The internal relevance score is never rendered (SEC-9); result ordering
+// is conveyed by the list's sort control instead. Title and abstract snippet link to
+// the paper detail route (/paper/[id]). `bookmark` is an optional top-right control
+// (save to library); `action` is an optional footer slot, so the same card serves
+// both live results and the library.
 
 interface ResultCardProps {
   card: ResultCardVM;
+  bookmark?: ReactNode;
   action?: ReactNode;
 }
 
-export function ResultCard({ card, action }: ResultCardProps) {
-  const relevance = card.relevance == null ? null : String(card.relevance);
+export function ResultCard({ card, bookmark, action }: ResultCardProps) {
   const detailHref = `/paper/${encodeURIComponent(card.arxivId)}`;
 
   return (
     <article className={styles.card} data-testid="result-card">
+      {bookmark ? <div className={styles.bookmark}>{bookmark}</div> : null}
       <Link className={styles.titleLink} href={detailHref} data-testid="result-card-title">
         <h3 className={styles.title}>{card.title}</h3>
       </Link>
@@ -40,16 +42,7 @@ export function ResultCard({ card, action }: ResultCardProps) {
           <p className={styles.snippet}>{card.abstractSnippet}</p>
         </Link>
       ) : null}
-      <div className={styles.footer}>
-        {relevance ? (
-          <span className={styles.relevance} data-testid="result-card-relevance">
-            관련도 {relevance}
-          </span>
-        ) : (
-          <span />
-        )}
-        <span className={styles.footerActions}>{action}</span>
-      </div>
+      {action ? <div className={styles.footer}>{action}</div> : null}
     </article>
   );
 }

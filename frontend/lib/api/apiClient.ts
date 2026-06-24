@@ -8,14 +8,16 @@ import { UserFacingError, normalizeHttpError } from './errors';
 import { classifySearchResponse, type SearchOutcome } from './classify';
 import {
   classifySummarizeResponse,
-  classifyFullTextResponse,
+  classifyDocModelResponse,
+  classifyAssetsResponse,
   type SummarizeOutcome,
-  type FullTextOutcome,
+  type DocModelOutcome,
+  type AssetsOutcome,
 } from './classifySummarize';
 import { recordPath } from '../observability';
 import type {
   SummarizeRequest,
-  FullTextRequest,
+  DocModelRequest,
   SearchRequest,
   SignupRequest,
   SignupResult,
@@ -30,6 +32,13 @@ import type {
   HistoryPageDTO,
 } from '@/types/generated';
 import type { PaperMetaVM } from '@/types/paperMeta';
+import type {
+  GlossaryTermUpsertDTO,
+  GlossaryUpsertResultDTO,
+  GlossaryTermDTO,
+  GlossaryListDTO,
+} from '@/types/glossary';
+import type { CitationNode, CitationTreeQuery, CitationTreeResponse } from '@/types/citationGraph';
 
 export interface ApiClientOptions {
   timeoutMs?: number;
@@ -72,7 +81,7 @@ export class ApiClient {
     if (res.status === 200 || res.status === 400) {
       return classifySearchResponse(res.body);
     }
-    throw normalizeHttpError(res.status, pick(res.body, 'message'));
+    throw normalizeHttpError(res.status, serverMessage(res.body));
   }
 
   // ---- summarization slice (US-S1/S2/S3/S5, FR-12~14) ------------------
@@ -89,7 +98,7 @@ export class ApiClient {
     if (res.status === 200 || res.status === 400) {
       return classifySummarizeResponse(res.body);
     }
-    throw normalizeHttpError(res.status, pick(res.body, 'message'));
+    throw normalizeHttpError(res.status, serverMessage(res.body));
   }
 
   /** Paper header metadata (title/authors/abstract) for the detail route. Backed by the
@@ -105,20 +114,87 @@ export class ApiClient {
     });
     if (res.status === 200) return res.body as PaperMetaVM;
     if (res.status === 404) return null;
-    throw normalizeHttpError(res.status, pick(res.body, 'message'));
+    throw normalizeHttpError(res.status, serverMessage(res.body));
   }
 
-  /** Normalized full text for the in-app viewer (Q5=C; OA license-gated). PROVISIONAL
-   * contract — re-align when the backend full-text-return API is finalized (plan §6). */
-  async getFullText(req: FullTextRequest): Promise<FullTextOutcome> {
-    const path = `/api/papers/${encodeURIComponent(req.paperId)}/full-text?version=${encodeURIComponent(
+  /** U8 citation tree for the paper detail page. GET is idempotent and can be cached by
+   * the gateway/backend; save is a user-scoped library mutation. */
+  async getCitationTree(
+    paperId: string,
+    params: CitationTreeQuery = {},
+  ): Promise<CitationTreeResponse> {
+    const sp = new URLSearchParams();
+    if (params.expandNodeId) sp.set('expandNodeId', params.expandNodeId);
+    if (params.refresh) sp.set('refresh', 'true');
+    const query = sp.toString();
+    const res = await this.request({
+      method: 'GET',
+      path: `/api/papers/${encodeURIComponent(paperId)}/citation-tree${query ? `?${query}` : ''}`,
+      idempotent: true,
+    });
+    if (res.status === 200) return res.body as CitationTreeResponse;
+    throw normalizeHttpError(res.status, serverMessage(res.body));
+  }
+
+  async saveCitationNode(paperId: string, node: CitationNode): Promise<LibraryItemDTO> {
+    const res = await this.request({
+      method: 'POST',
+      path: `/api/papers/${encodeURIComponent(paperId)}/citation-tree/save`,
+      body: { node },
+      idempotent: false,
+    });
+    if (res.status === 200 || res.status === 201) return res.body as LibraryItemDTO;
+    throw normalizeHttpError(res.status, serverMessage(res.body));
+  }
+
+  /** Structured doc-model for the rich view (D4; replaces the old full-text viewer). OA license-gated.
+   * url-free (SEC-9) — figures join the /assets signed urls by assetId. On a cache miss the
+   * backend reads-only (lazy build is a separate step); a not-yet-built artifact → source_unavailable. */
+  async getDocModel(req: DocModelRequest): Promise<DocModelOutcome> {
+    const path = `/api/papers/${encodeURIComponent(req.paperId)}/doc-model?version=${encodeURIComponent(
       String(req.version),
     )}`;
     const res = await this.request({ method: 'GET', path, idempotent: true });
     if (res.status === 200 || res.status === 400) {
-      return classifyFullTextResponse(res.body);
+      return classifyDocModelResponse(res.body);
+    }
+    throw normalizeHttpError(res.status, serverMessage(res.body));
+  }
+
+  /** Figure/table assets for the detail/viewer (FR-17, display-only; OA license-gated).
+   * Returns signed URLs only (SEC-9). Independent of the full-text viewer. */
+  async getAssets(paperId: string, version: number): Promise<AssetsOutcome> {
+    const path = `/api/papers/${encodeURIComponent(paperId)}/assets?version=${encodeURIComponent(
+      String(version),
+    )}`;
+    const res = await this.request({ method: 'GET', path, idempotent: true });
+    if (res.status === 200 || res.status === 401) {
+      return classifyAssetsResponse(res.body);
     }
     throw normalizeHttpError(res.status, pick(res.body, 'message'));
+  }
+
+  /** The user's saved personal terms (Phase 2a), to pre-fill the badge editor. Idempotent
+   * GET. The caller treats any failure as "no saved terms" (pre-fill is optional). */
+  async listGlossaryTerms(): Promise<GlossaryTermDTO[]> {
+    const res = await this.request({ method: 'GET', path: '/api/glossary', idempotent: true });
+    if (res.status === 200) return (res.body as GlossaryListDTO).terms ?? [];
+    throw normalizeHttpError(res.status, serverMessage(res.body));
+  }
+
+  /** Add/override a personal glossary term (Phase 1, badge-tap). State-changing, so
+   * NOT idempotent (no auto-retry — a double POST would just re-upsert the same term).
+   * A successful upsert bumps the user's glossary version server-side, invalidating
+   * their cached summaries/translations so the next request reflects the new term. */
+  async upsertGlossaryTerm(req: GlossaryTermUpsertDTO): Promise<GlossaryUpsertResultDTO> {
+    const res = await this.request({
+      method: 'POST',
+      path: '/api/glossary',
+      body: req,
+      idempotent: false,
+    });
+    if (res.status === 200 || res.status === 201) return res.body as GlossaryUpsertResultDTO;
+    throw normalizeHttpError(res.status, serverMessage(res.body));
   }
 
   async signup(req: SignupRequest): Promise<SignupResult> {
@@ -129,7 +205,7 @@ export class ApiClient {
       idempotent: false,
     });
     if (res.status === 200 || res.status === 201) return res.body as SignupResult;
-    throw normalizeHttpError(res.status, pick(res.body, 'message'));
+    throw normalizeHttpError(res.status, serverMessage(res.body));
   }
 
   /**
@@ -147,7 +223,39 @@ export class ApiClient {
       idempotent: false,
     });
     if (res.status === 200 || res.status === 204) return;
-    throw normalizeHttpError(res.status, pick(res.body, 'message'));
+    throw normalizeHttpError(res.status, serverMessage(res.body));
+  }
+
+  /**
+   * Activate a PENDING account from the emailed link's token (US-A1, BR-A5). Hits the
+   * backend GET /auth/verify-email via the BFF; resolves on 200, throws a
+   * UserFacingError on an expired/invalid token (4xx) so the page can show a retry path.
+   */
+  async verifyEmail(token: string): Promise<void> {
+    const res = await this.request({
+      method: 'GET',
+      path: `/auth/verify-email?token=${encodeURIComponent(token)}`,
+      idempotent: true,
+    });
+    if (res.status === 200) return;
+    throw normalizeHttpError(res.status, serverMessage(res.body));
+  }
+
+  /**
+   * Resend the account-verification email (US-A1 recourse). The backend returns a
+   * generic success regardless of whether the address exists / is still PENDING
+   * (no account enumeration), so this resolves on 200 and only throws on transport
+   * or non-2xx failures.
+   */
+  async resendVerification(email: string): Promise<void> {
+    const res = await this.request({
+      method: 'POST',
+      path: '/auth/resend-verification',
+      body: { email },
+      idempotent: false,
+    });
+    if (res.status === 200 || res.status === 204) return;
+    throw normalizeHttpError(res.status, serverMessage(res.body));
   }
 
   async logout(): Promise<void> {
@@ -172,7 +280,7 @@ export class ApiClient {
       idempotent: true,
     });
     if (res.status === 200) return res.body as SavedSearchPageDTO;
-    throw normalizeHttpError(res.status, pick(res.body, 'message'));
+    throw normalizeHttpError(res.status, serverMessage(res.body));
   }
 
   async saveSearch(req: SavedSearchCreateDTO): Promise<SavedSearchDTO> {
@@ -183,7 +291,7 @@ export class ApiClient {
       idempotent: false,
     });
     if (res.status === 200 || res.status === 201) return res.body as SavedSearchDTO;
-    throw normalizeHttpError(res.status, pick(res.body, 'message'));
+    throw normalizeHttpError(res.status, serverMessage(res.body));
   }
 
   async deleteSavedSearch(id: string): Promise<void> {
@@ -193,7 +301,7 @@ export class ApiClient {
       idempotent: false,
     });
     if (res.status === 204 || res.status === 200) return;
-    throw normalizeHttpError(res.status, pick(res.body, 'message'));
+    throw normalizeHttpError(res.status, serverMessage(res.body));
   }
 
   /** Re-run a saved search through the gateway (U6 -> U2); classified like search. */
@@ -211,7 +319,7 @@ export class ApiClient {
       idempotent: true,
     });
     if (res.status === 200) return res.body as LibraryPageDTO;
-    throw normalizeHttpError(res.status, pick(res.body, 'message'));
+    throw normalizeHttpError(res.status, serverMessage(res.body));
   }
 
   /** Idempotent add; returns the same item shape whether new or already present. */
@@ -223,7 +331,7 @@ export class ApiClient {
       idempotent: false,
     });
     if (res.status === 200 || res.status === 201) return res.body as LibraryItemDTO;
-    throw normalizeHttpError(res.status, pick(res.body, 'message'));
+    throw normalizeHttpError(res.status, serverMessage(res.body));
   }
 
   async removeFromLibrary(id: string): Promise<void> {
@@ -233,7 +341,7 @@ export class ApiClient {
       idempotent: false,
     });
     if (res.status === 204 || res.status === 200) return;
-    throw normalizeHttpError(res.status, pick(res.body, 'message'));
+    throw normalizeHttpError(res.status, serverMessage(res.body));
   }
 
   // ---- search history (US-L3/FR-10) -----------------------------------
@@ -246,7 +354,7 @@ export class ApiClient {
       idempotent: true,
     });
     if (res.status === 200) return res.body as HistoryPageDTO;
-    throw normalizeHttpError(res.status, pick(res.body, 'message'));
+    throw normalizeHttpError(res.status, serverMessage(res.body));
   }
 
   /** Re-run a history entry through the gateway (U6 -> U2); classified like search. */
@@ -256,9 +364,13 @@ export class ApiClient {
 
   /** Clear the user's entire search history. */
   async clearHistory(): Promise<void> {
-    const res = await this.request({ method: 'DELETE', path: '/library/history', idempotent: false });
+    const res = await this.request({
+      method: 'DELETE',
+      path: '/library/history',
+      idempotent: false,
+    });
     if (res.status === 204 || res.status === 200) return;
-    throw normalizeHttpError(res.status, pick(res.body, 'message'));
+    throw normalizeHttpError(res.status, serverMessage(res.body));
   }
 
   // ---- internals ------------------------------------------------------
@@ -269,9 +381,8 @@ export class ApiClient {
     if (res.status === 200 || res.status === 400) {
       return classifySearchResponse(res.body);
     }
-    throw normalizeHttpError(res.status, pick(res.body, 'message'));
+    throw normalizeHttpError(res.status, serverMessage(res.body));
   }
-
 
   private async request(req: TransportRequest): Promise<TransportResponse> {
     const key = `${req.method} ${req.path} ${JSON.stringify(req.body ?? null)}`;
@@ -335,5 +446,16 @@ function delay(ms: number): Promise<void> {
 }
 
 function pick(body: unknown, key: string): unknown {
-  return typeof body === 'object' && body !== null ? (body as Record<string, unknown>)[key] : undefined;
+  return typeof body === 'object' && body !== null
+    ? (body as Record<string, unknown>)[key]
+    : undefined;
+}
+
+// Backend error envelopes disagree on the key: the U6 gateway/middleware emit {message}
+// (errors.ts, auth.py, gateway.py), but FastAPI module HTTPExceptions serialize the curated,
+// user-safe reason as {detail} (e.g. "이미 등록된 이메일 주소입니다.", the BR-A1 password rules).
+// Reading only `message` swallowed every module 4xx reason into the generic "문제가 발생했습니다."
+// Read both — message first, then detail. (5xx still maps to a generic message in normalizeHttpError.)
+function serverMessage(body: unknown): unknown {
+  return pick(body, 'message') ?? pick(body, 'detail');
 }

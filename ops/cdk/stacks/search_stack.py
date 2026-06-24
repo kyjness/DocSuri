@@ -23,7 +23,9 @@ class SearchStack(Stack):
         self.domain = opensearch.Domain(
             self, "PapersDomain",
             domain_name="docsuri-papers",
-            version=opensearch.EngineVersion.OPENSEARCH_2_11,
+            # 2.19 for disk-based vector search (mode=on_disk, compression_level=4x) — ~4x k-NN
+            # RAM cut for full-body multi-chunk indexing, with NO app-side byte-vector plumbing.
+            version=opensearch.EngineVersion.open_search("2.19"),
             vpc=vpc,
             vpc_subnets=[ec2.SubnetSelection(subnet_type=ec2.SubnetType.PRIVATE_ISOLATED)],
             security_groups=[self._sg],

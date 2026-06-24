@@ -60,7 +60,7 @@ SessionContext (AppShell 제공) ── useSession()
 - **책임**: 질의 입력(≤500자)·동기 검색 트리거·상태 표시.
 - **state(로컬)**: `query`, `screenState`(idle|loading|page|empty|abstain|degraded|invalid|error), `response?`.
 - **메서드**: `submitQuery`, `renderState`, `validateInput`.
-- **상호작용**: 입력 → 클라 검증(BR-U5-1) → 제출(로딩, 버튼 비활성·디듀프) → union 분기 렌더.
+- **상호작용**: 입력 → 클라 검증(BR-U5-1) → 제출(로딩, 버튼 비활성·디듀프) → union 분기 렌더. 결과가 있으면 **검색어 저장 + 정렬 토글(관련도순/최신순)** 을 한 툴바로 노출(정렬=클라 측, 받은 top-N 재정렬, BR-U5-5).
 - **API 통합점**: `ApiClient.search(SearchRequest)` → `SearchResponse` union.
 - **근거**: FR-1, SEC-5, NFR-U1, NFR-P1, FR-11, US-H1.
 
@@ -71,10 +71,15 @@ SessionContext (AppShell 제공) ── useSession()
 - **근거**: FR-3, FR-11, US-D7.
 
 ### 2.7 ResultCard
-- **책임**: 단일 논문 폰 카드 — **7필드만**(가로 스크롤 없음).
-- **props**: `card: ResultCardVM`.
-- **상호작용**: `arxivUrl` 외부 링크(http/https + noopener, BR-U5-7); (후속) 라이브러리 저장 진입점.
-- **규칙**: BR-U5-4/5/6. 근거: FR-4, FR-5, NFR-U1, SEC-9.
+- **책임**: 단일 논문 폰 카드(가로 스크롤 없음). `relevance`는 계약 유지·**화면 미표시**(2026-06-22 UX 패스, BR-U5-4/5).
+- **props**: `card: ResultCardVM`, `bookmark?`(우상단 저장 슬롯), `action?`(푸터 슬롯 — 라이브러리 제거 등).
+- **상호작용**: `arxivUrl` 외부 링크(http/https + noopener, BR-U5-7); **우상단 북마크 아이콘 = 라이브러리 저장**(`SaveToLibraryButton`, 멱등 add, BR-U5-23). 카드의 tldr 요약 피크 기능은 폐지(요약은 상세로 일원화 — u7-frontend FD §0 참조).
+- **규칙**: BR-U5-4/5/6/23. 근거: FR-4, FR-5, NFR-U1, SEC-9, US-L2.
+
+### 2.8a BottomNav (하단 탭바, 2026-06-22 UX 패스)
+- **책임**: 인증 상태에서만 노출되는 **모바일 우선 하단 고정 탭바**. 화면 이동(검색/마이페이지) 담당. 상단 `AppHeader`는 브랜드+로그아웃만.
+- **탭**: `검색`(/search) · `마이페이지`(/library). 현재 경로로 활성 표시(`aria-current`). "에이전트" 탭은 해당 기능이 생긴 뒤 추가(빈 목적지 탭 금지).
+- **규칙**: 인증(`status==='authenticated'`)에서만 렌더. 콘텐츠가 바에 가리지 않도록 in-flow 스페이서로 공간 확보. 근거: US-H1, 모바일 우선.
 
 ### 2.8 StateView
 - **책임**: 빈/기권/저하/로딩/에러 비기술 공유 표시.
@@ -117,3 +122,13 @@ SearchScreen.submitQuery ─validateInput─▶ ApiClient.search ─▶ union �
 | (후속) Library/History | list*/save*/add* | library.schema.json(커서) |
 
 > 후속 패스: LibraryScreen/HistoryScreen 컴포넌트 상세, 커서 무한스크롤 상호작용, 검색 저장 진입점 — 본 슬라이스에선 계약/자리만 명시.
+
+---
+
+## 6. doc-model 리치뷰 — 멀티모달 자산 연계 (피벗 2026-06-23, D4)
+
+> **SSOT**: `construction/plans/docmodel-foundation-pivot-plan.md`(D4·D8). 본 파일은 히어로/검색 슬라이스 소유 — **자체 리치뷰의 컴포넌트 계약은 상세 표면을 소유한 `u7-summarization-frontend` `DocModelViewer`(구 `FullTextViewer`, §2.10)에 본문화**한다. 여기서는 U5가 보유한 멀티모달 자산 코드와의 연계만 정리.
+
+- **`AssetGallery`(U5 코드, FR-17)·앵커 매처(`lib/assetAnchor.ts`) 재사용**: 리치뷰 **그림(figure)** 은 기존 webp 썸네일 그리드+라이트박스를 그대로 재사용하고, figure 앵커는 기존 `matchAssetForAnchor`로 매칭한다(재구현 0).
+- **표(table)는 더 이상 크롭 이미지가 아니다(D8)**: 기존 `AssetGallery`가 "그림·**도표** 썸네일 그리드"로 표를 크롭 이미지로 보여주던 것을 폐기 → 표는 `DocModelViewer`의 **구조화 표 컴포넌트(rows/cols)** 로 인라인 렌더. `AssetGallery`는 **그림 전용**으로 좁힌다(표 크롭이 폴백으로 남는 비-HTML 논문에 한해서만 이미지 표시).
+- **수식·목차·앵커 점프**는 `DocModelViewer` 책임(KaTeX·`DocTOC`). U5 측 변경은 `AssetGallery` 스코프 축소(그림 전용) + 앵커 매처 공유뿐.

@@ -9,7 +9,7 @@
 ## 1. 컴퓨트 / 배포 (Q1)
 
 - **U7 = 기존 ECS Fargate(배포 ① backend 모놀리스) 내 모듈** — 신규 서비스/태스크 0.
-- `backend/modules/summarization/`(독립 pyproject) → app-shell 마운트(`backend/wiring.py`, **⚠️ 조율 존**), U6 게이트웨이 경유(`/api/summarize`).
+- `backend/modules/summarization/`(독립 pyproject) → app-shell 마운트(`backend/wiring.py`, **⚠️ 조율 존**), U6 게이트웨이 경유(`/api/summarize` · `/api/glossary`[개인 용어집 조회·저장, BR-S4]).
 - 오토스케일·태스크 사양 = 기존 모놀리스 구성 계승(온디맨드 LLM 대기는 async I/O 흡수). 별도 스케일링 정책 불요(LLM 동시성은 Bedrock 쿼터·CostGuard로 경계).
 
 ```

@@ -14,6 +14,7 @@
                    ▼
         ┌──────────────────────────────────────────────┐
         │  FastAPI U7 Router (SummarizationController)   │  POST /api/summarize (task=summary|translate)
+        │                                                │  GET/POST /api/glossary (개인 용어집 조회·저장, BR-S4)
         └──────────────────────────────────────────────┘
                    ▼
         ┌──────────────────────────────────────────────┐

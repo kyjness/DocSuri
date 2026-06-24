@@ -1,0 +1,39 @@
+.bookmark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* generous touch target (mobile-first) */
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.bookmark:hover {
+  color: var(--color-accent);
+}
+
+.bookmark[data-state='saved'] {
+  color: var(--color-accent);
+}
+
+.bookmark[data-state='error'] {
+  color: var(--color-danger);
+}
+
+.bookmark:disabled {
+  cursor: default;
+}
+
+.bookmark:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+.icon {
+  display: block;
+}

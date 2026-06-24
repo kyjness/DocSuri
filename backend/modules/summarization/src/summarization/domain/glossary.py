@@ -43,6 +43,25 @@ class GlossaryResolver:
             user_overrides=tuple(overrides),
         )
 
+    def list_user_terms(self, user_id: str) -> Sequence[TermMapping]:
+        """Return the user's personal term overrides (owner-scoped, SEC-8). Empty when no
+        repository is configured — used to pre-fill the badge editor (read-only)."""
+        if self._repo is None:
+            return ()
+        return tuple(self._repo.get_user_glossary(user_id))
+
+    def upsert_term(
+        self, user_id: str, term_from: str, term_to: str, *, prompt_enforced: bool = False
+    ) -> int:
+        """Persist a personal term override (owner-scoped, SEC-8); return the bumped
+        ``glossary_ver``. Phase 1 default ``prompt_enforced=False`` → simple-noun
+        post-substitution (translation only). Raises when no repository is configured."""
+        if self._repo is None:
+            raise RuntimeError("glossary repository is not configured")
+        return self._repo.upsert_term(
+            user_id, term_from, term_to, prompt_enforced=prompt_enforced
+        )
+
     @staticmethod
     def post_substitute(text: str, glossary: Glossary) -> str:
         """Deterministic post-substitution for user-preference simple nouns (no LLM re-call).
@@ -55,5 +74,10 @@ class GlossaryResolver:
             # Leading boundary only: Korean attaches particles directly to the noun
             # ("어텐션을/어텐션이"), so a trailing ``(?!\w)`` would block the swap. Matching at a
             # left boundary replaces just the noun and leaves the particle intact (particle-safe).
-            text = re.sub(rf"(?<!\w){re.escape(m.term_from)}", m.term_to, text)
+            # The replacement is a function (not a string) so a user-supplied ``term_to`` is
+            # inserted literally — backslash sequences (e.g. ``\g<0>``) are NOT interpreted as
+            # regex backreferences (input-injection safe now that term_to is user-writable).
+            text = re.sub(
+                rf"(?<!\w){re.escape(m.term_from)}", lambda _match, repl=m.term_to: repl, text
+            )
         return text

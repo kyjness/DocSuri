@@ -114,3 +114,53 @@ flowchart TD
 - **주 목표**: 매직 모먼트(자연어 의도 → 폰에서 수초 내 근거화된 arXiv 결과)를 충족하는 프로덕션급 디스커버리 MVP.
 - **핵심 산출물**: 인제스천 파이프라인, 디스커버리/검색 API(엄격 근거화), 계정, 검색 저장/라이브러리, 모바일 웹 UI(폰 목업 프레임), 관측성·비용 가드·AI 인시던트 탐지.
 - **품질 게이트**: 날조 인용 0건(QT-1), 관련도 평가셋(QT-2), 우아한 저하(QT-3), PBT(QT-4), 활성 확장(Security/Resiliency/PBT) 각 단계 준수.
+
+---
+
+# Cohere Embed v4.0 Migration Execution Plan
+
+**일자**: 2026-06-23 · **프로젝트 유형**: Brownfield (Migration)
+
+## 1. 상세 분석 요약
+
+### 변경 영향 평가 (Change Impact Assessment)
+- **사용자 대면 변경**: 아니오 (백엔드 모델 및 인덱스 업그레이드만 진행. 단, 검색 품질은 개선됨)
+- **구조 변경**: 아니오
+- **데이터 모델 변경**: 아니오 (인덱스 매핑은 동일하나 벡터 차원만 다름)
+- **API 변경**: 아니오 (API 계약은 동일)
+- **NFR 영향**: 예 — NFR-M2 (Blue/Green 무중단 마이그레이션), NFR-S2 (v4 모델 컷오버)
+
+### 리스크 평가 (Risk Assessment)
+- **리스크 수준**: 중간(Medium) — 신규 인덱스 전환 시나리오에 따른 데이터 누락 및 듀얼 라이트 문제 발생 가능성.
+- **롤백 복잡도**: 쉬움(Easy) — 문제 발생 시 기존 `docsuri-corpus-v1` 인덱스(alias)로 즉시 롤백 가능.
+
+## 2. 모듈 간 조정 분석 (Multi-Module Coordination Analysis)
+
+- **Update Approach**: Sequential/Hybrid
+- **Sequence**:
+  1. **Infrastructure**: 신규 v4 인덱스(`docsuri-corpus-v2`) 생성 및 Alias 구성.
+  2. **U1 Ingestion (Code Gen)**: v4 모델 호출 로직 추가 및 v3, v4 듀얼 라이트(Dual-write) 구현.
+  3. **Operations (Code Gen)**: 기존 v3 데이터 전체를 v4 모델로 재임베딩하여 v2 인덱스에 백필(Backfill)하는 마이그레이션 스크립트.
+  4. **U2 Discovery (Code Gen)**: 검색 API가 v4 모델을 사용하도록 컷오버(Instant Cutover).
+
+## 3. 실행할 단계 (Phases to Execute)
+
+### 🔵 INCEPTION 단계
+- [x] 워크스페이스 탐지 (완료)
+- [x] 요구사항 분석 (완료)
+- [x] 사용자 스토리 (건너뜀 — 기술적 마이그레이션)
+- [x] 워크플로 계획 (진행 중 — 본 문서)
+- [ ] 애플리케이션 설계 — **건너뜀(SKIP)** (신규 기능 없음)
+- [ ] 유닛 생성 — **건너뜀(SKIP)** (신규 유닛 없음)
+
+### 🟢 CONSTRUCTION 단계 (Migration Track)
+- [ ] 기능 설계 — **건너뜀(SKIP)** (비즈니스 로직 없음)
+- [ ] NFR 요구사항 — **건너뜀(SKIP)** (요구사항 분석에서 확정)
+- [ ] **NFR 설계 — 실행(EXECUTE)**
+  - **근거**: Blue/Green 마이그레이션, 듀얼 라이트, 백필 재임베딩 스크립트 전략 확정.
+- [ ] **인프라 설계 — 실행(EXECUTE)**
+  - **근거**: 신규 인덱스(v2) 셋업 및 Alias 전환 방식 설계.
+- [ ] **코드 생성 — 실행(EXECUTE, 항상)**
+  - **근거**: 인덱스 생성, 듀얼 라이트, 마이그레이션 스크립트, v4 컷오버 로직 구현.
+- [ ] **빌드 & 테스트 — 실행(EXECUTE, 항상)**
+  - **근거**: 마이그레이션 스크립트 테스트 및 듀얼 라이트 검증.

@@ -58,7 +58,9 @@ shared/
 ├── dtos/                         ← 🟡 PROVISIONAL API↔client DTOs (JSON Schema per DTO group)
 │   ├── search.schema.json        ← U2 search/card DTOs (cards FROZEN-adjacent)
 │   ├── accounts.schema.json      ← U3 account/auth DTOs
-│   └── library.schema.json       ← U4 saved-searches / library / history DTOs
+│   ├── library.schema.json       ← U4 saved-searches / library / history DTOs
+│   ├── summarization.schema.json ← U7 summarize/translate/asset DTOs
+│   └── docmodel.schema.json      ← doc-model (U1 builder → U7/U5/agent; pivot 2026-06-23)
 ├── events/                       ← 🟡 partially-FROZEN event-backbone contracts (JSON Schema)
 │   ├── search-executed.schema.json  ← 🔒 SearchExecutedEvent (U2 → U4)
 │   ├── ingestion.schema.json        ← NewArxivEvent (consume) + IngestionFailureSignal (U1 → U6)
@@ -149,6 +151,7 @@ The authoritative specifications (already merged to `develop`) live in
 - [`dtos.md`](../aidlc-docs/construction/shared/dtos.md) — U2 search/card, U3 account, U4 library DTOs.
 - [`events.md`](../aidlc-docs/construction/shared/events.md) — SearchExecutedEvent, NewArxivEvent, U3 signals, U1 failure signal, U6 incidents.
 - [`ports.md`](../aidlc-docs/construction/shared/ports.md) — GroundingEnforcementHook, CostGuardCircuitBreaker, ObservabilityHub interfaces.
+- [`docmodel.md`](../aidlc-docs/construction/shared/docmodel.md) — 🟡 doc-model structured-document contract (U1 builder → U7 summary input / U5 rich view / agent; pivot 2026-06-23).
 
 Every field/name in this package traces back to these specs (and the FR/NFR/SEC/BR
 trace IDs they cite). Do not introduce fields that are not in the specs.

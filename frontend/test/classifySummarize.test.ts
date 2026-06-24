@@ -1,8 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import {
-  classifySummarizeResponse,
-  classifyFullTextResponse,
-} from '@/lib/api/classifySummarize';
+import { classifySummarizeResponse } from '@/lib/api/classifySummarize';
 
 // Test-only literal fixtures (real-first: no production mock adapter).
 const summaryOk = {
@@ -25,7 +22,13 @@ const translationOk = {
   task: 'translate',
   meta: { source: 'abstract' },
   cached: true,
-  translation: { koreanText: '한국어', keptTerms: ['Transformer'] },
+  translation: {
+    docModel: {
+      meta: { paperId: '1', version: 1, title: '', provenance: {} },
+      sections: [{ id: 's1', title: '', blocks: [{ id: 's1.p1', type: 'paragraph', text: '한국어' }] }],
+    },
+    keptTerms: ['Transformer'],
+  },
 };
 
 describe('classifySummarizeResponse — exhaustive status mapping (BR-SF-14)', () => {
@@ -49,6 +52,13 @@ describe('classifySummarizeResponse — exhaustive status mapping (BR-SF-14)', (
     );
   });
 
+  it('pending -> pending with the poll-backoff hint (long summary background job)', () => {
+    const out = classifySummarizeResponse({ status: 'pending', retryAfterMs: 3000 });
+    expect(out.kind).toBe('pending');
+    if (out.kind === 'pending') expect(out.retryAfterMs).toBe(3000);
+    expect(classifySummarizeResponse({ status: 'pending' }).kind).toBe('pending');
+  });
+
   it('validation error (message) -> invalid', () => {
     expect(classifySummarizeResponse({ field: 'task', message: 'bad' }).kind).toBe('invalid');
   });
@@ -58,14 +68,5 @@ describe('classifySummarizeResponse — exhaustive status mapping (BR-SF-14)', (
     expect(classifySummarizeResponse(42).kind).toBe('error');
     expect(classifySummarizeResponse({ status: 'ok' }).kind).toBe('error'); // ok without payload
     expect(classifySummarizeResponse({ status: 'weird' }).kind).toBe('error');
-  });
-});
-
-describe('classifyFullTextResponse (Q5=C)', () => {
-  it('maps ok / license / source / error', () => {
-    expect(classifyFullTextResponse({ status: 'ok', text: 'body' }).kind).toBe('page');
-    expect(classifyFullTextResponse({ status: 'license_unavailable' }).kind).toBe('licenseUnavailable');
-    expect(classifyFullTextResponse({ status: 'source_unavailable' }).kind).toBe('sourceUnavailable');
-    expect(classifyFullTextResponse(null).kind).toBe('error');
   });
 });

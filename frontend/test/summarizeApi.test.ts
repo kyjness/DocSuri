@@ -51,14 +51,4 @@ describe('ApiClient.summarize (real-first transport seam)', () => {
     const out = await client.summarize({ task: 'summary', paperId: 'x', version: 1 });
     expect(out.kind).toBe('invalid');
   });
-
-  it('getFullText GETs the versioned full-text path', async () => {
-    const t = transportOf(async () => ({ status: 200, body: { status: 'ok', text: 'body' } }));
-    const client = new ApiClient(t, fast);
-    const out = await client.getFullText({ paperId: '2401.00001', version: 1 });
-    expect(out.kind).toBe('page');
-    expect(t.last?.method).toBe('GET');
-    expect(t.last?.path).toContain('/api/papers/2401.00001/full-text');
-    expect(t.last?.path).toContain('version=1');
-  });
 });

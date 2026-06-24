@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import re
 
-from .models import RefinedSource, Section
+from docsuri_shared.dtos import DocModel
+
+from .models import RefinedSource, Section, SourceText, Table
 
 # A references/bibliography heading ends the body (everything after is noise).
 _REFERENCES_RE = re.compile(r"^\s*(references|bibliography)\s*$", re.IGNORECASE | re.MULTILINE)
@@ -31,6 +33,9 @@ _SECTION_RE = re.compile(
 _CAPTION_RE = re.compile(r"^\s*(table|figure|fig\.?)\s*\d+[:.]\s.*$", re.IGNORECASE | re.MULTILINE)
 _FORMULA_RE = re.compile(
     r"\$[^$]+\$|\\\[[^\]]+\\\]|\\begin\{equation\}.*?\\end\{equation\}", re.DOTALL
+)
+_PRESERVED_RE = re.compile(
+    r"(?i)\b(appendix|supplementary results|supplementary material|supplementary information)\b.*"
 )
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
@@ -55,7 +60,108 @@ def _estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4)
 
 
+def _clean(text: str) -> str:
+    """Strip control characters from a doc-model text value (parity with the regex path)."""
+    return _CONTROL_RE.sub("", text)
+
+
+def _render_table(label: str, caption: str, rows: tuple[tuple[str, ...], ...]) -> str:
+    """Render a doc-model table as readable pipe-delimited data so its numbers are visible
+    to the LLM and the grounding numeric-match (D8 — not a blind cropped image)."""
+    header = f"[{label}] {caption}".strip()
+    lines = [header or "[Table]"]
+    lines.extend(" | ".join(cell for cell in row) for row in rows)
+    return "\n".join(lines)
+
+
 class InputRefiner:
+    def refine_source(self, source: SourceText) -> RefinedSource:
+        """Dispatch on the selected source (D2): a structured doc-model is taken directly;
+        a legacy plain-text source (or abstract) goes through the regex path. Logic downstream
+        (length route, generation, grounding, cache) is identical either way."""
+        if source.doc_model is not None:
+            return self.refine_doc_model(source.doc_model)
+        return self.refine(source.raw)
+
+    def refine_doc_model(self, doc: DocModel) -> RefinedSource:
+        """Project a doc-model into the LLM input + structured fields (D2/D8).
+
+        Sections/tables/formulas/captions come straight from the doc-model (reliable — no
+        heading/caption regex guessing). The flattened ``body`` embeds tables as DATA and
+        formulas as LaTeX, so table numbers are visible to the LLM and the grounding gate
+        (D8). Section spans index into ``body`` so anchor-existence checks resolve (BR-S7)."""
+        parts: list[str] = []
+        sections: list[Section] = []
+        tables: list[Table] = []
+        captions: list[str] = []
+        formulas: list[str] = []
+        pos = 0
+
+        def emit(text: str) -> None:
+            # Strip control chars (parity with the legacy regex path: parsed arXiv HTML can
+            # carry control bytes that must not reach the LLM prompt / summary cache). Done
+            # before measuring so section spans index into the sanitized body.
+            nonlocal pos
+            clean = _CONTROL_RE.sub("", text)
+            parts.append(clean)
+            pos += len(clean)
+
+        def walk(dsec: object) -> None:
+            nonlocal pos
+            title = _CONTROL_RE.sub("", (getattr(dsec, "title", "") or "").strip())
+            if title:
+                start = pos
+                emit(title)
+                sections.append(Section(label=title, start=start, end=pos))
+                emit("\n\n")
+            for block in getattr(dsec, "blocks", []):
+                _emit_block(block.root)
+            for sub in getattr(dsec, "sections", None) or []:
+                walk(sub)
+
+        def _emit_block(b: object) -> None:
+            kind = getattr(b, "type", "")
+            if kind == "paragraph":
+                emit(b.text.strip() + "\n\n")
+            elif kind == "formula":
+                formulas.append(_clean(b.latex))
+                emit(b.latex + "\n\n")
+            elif kind == "table":
+                label = _clean(b.anchorLabel or "")
+                caption = _clean(b.caption or "")
+                rows = tuple(tuple(_clean(c.text) for c in row.cells) for row in b.rows)
+                tables.append(Table(label=label, rows=rows, caption=caption, anchor=b.id))
+                if caption:
+                    captions.append(f"{label}: {caption}".strip(": ").strip() or caption)
+                emit(_render_table(label, caption, rows) + "\n\n")
+            elif kind == "figure":
+                label = _clean(b.anchorLabel or "")
+                caption = _clean(b.caption or "")
+                line = f"{label}: {caption}".strip(": ").strip()
+                if caption:
+                    captions.append(line or caption)
+                if line:
+                    emit(line + "\n\n")
+            elif kind == "list":
+                for item in b.items:
+                    emit(f"- {item.text}\n")
+                emit("\n")
+            elif kind == "code":
+                emit(b.text.strip() + "\n\n")
+
+        for top in doc.sections:
+            walk(top)
+
+        body = "".join(parts).rstrip()
+        return RefinedSource(
+            body=body,
+            sections=tuple(sections),
+            tables=tuple(tables),
+            captions=tuple(captions),
+            formulas=tuple(formulas),
+            token_count=_estimate_tokens(body),
+        )
+
     def refine(self, raw: str) -> RefinedSource:
         # Sanitize first (control chars; injection-isolation happens in the prompt layer).
         text = _CONTROL_RE.sub("", raw)
@@ -70,6 +176,7 @@ class InputRefiner:
 
         captions = tuple(m.group(0).strip() for m in _CAPTION_RE.finditer(body))
         formulas = tuple(m.group(0).strip() for m in _FORMULA_RE.finditer(body))
+        preserved = tuple(m.group(0).strip() for m in _PRESERVED_RE.finditer(body))
         sections = self._derive_sections(body)
 
         return RefinedSource(
@@ -77,6 +184,7 @@ class InputRefiner:
             sections=sections,
             captions=captions,
             formulas=formulas,
+            preserved=preserved,
             token_count=_estimate_tokens(body),
         )
 

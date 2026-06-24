@@ -537,3 +537,20 @@ The Operations stage will eventually include:
 - Application code: Workspace root (NEVER in aidlc-docs/)
 - Documentation: aidlc-docs/ only
 - Project structure: See code-generation.md for patterns by project type
+
+## Workflow Skills (On-Demand, Tool-Neutral)
+
+Reusable AI-DLC workflow helpers. The content is plain Markdown — **any coding agent
+can use them**, not just Claude Code:
+
+- **Claude Code** auto-discovers them as skills (frontmatter `name`/`description`) and
+  invokes by name (`/aidlc-git-merge`) or by matching the description.
+- **Other agents** (Codex, Cursor, Aider, Zed, Gemini CLI, Copilot) read the file at the
+  listed path and follow it when the trigger matches. Do **not** copy these into per-agent
+  rule files — these paths are the single source of truth.
+
+| Skill | Path | Use when |
+|-------|------|----------|
+| `aidlc-requirements-generator` | `.claude/skills/aidlc-requirements-generator/SKILL.md` | INCEPTION / Requirements Analysis — turning informal docs (Figma, PDFs, notes) into `FR/NFR/C` entries in `aidlc-docs/inception/requirements/` |
+| `aidlc-git-merge` | `.claude/skills/aidlc-git-merge/SKILL.md` | A git merge/rebase across unit branches conflicts — union-merge state files, classify code conflicts, escalate contract changes |
+| `aidlc-unit-review` | `.claude/skills/aidlc-unit-review/SKILL.md` | Before merging a unit branch — review the diff against that unit's own design/requirements/constraints |

@@ -4,6 +4,7 @@
 **근거**: 계획서(프로덕션 재스코핑) — Q1=D·Q2=C·Q12=B·Q13=B·그 외 A.
 **원칙**: 기술 무관 알고리즘 수준. 타임아웃·동시성 수치·큐/스토어 구현은 NFR/Infra.
 **프로덕션 스코프**: 전문 수집·다중 청크·이벤트 경로·철회 tombstone·전문 오브젝트 보관 전부 활성.
+**피벗(2026-06-23, doc-model)**: 보관물이 평문(`.txt`) 1종 → **+ 구조화 doc-model**(§7)로 확장(BR-29 확장). doc-model은 **lazy on-demand 생성·캐시**라 §1.1 인덱스 hot path 밖이며 **인덱스/검색 경로는 불변**. 근거 SSOT = `construction/plans/docmodel-foundation-pivot-plan.md`(D1·D2·D6·Q5).
 
 ---
 
@@ -14,7 +15,7 @@
 
 ```
 ingestOne(record, job):
-  1. raw ← ArxivSourceClient.fetchFullText(arxivId)                  # Q2=C 전문 취득(활성)
+  1. raw ← ArxivSourceClient.fetchFullText(arxivId)                  # Q2=C 전문 취득 · BR-29: HTML 우선(native→ar5iv)→PDF 폴백; raw.text=정규화 평문(인덱스 입력). 동일 HTML 소스가 doc-model 입력(§7)
   2. parsed | rejected ← FetchParseProcessor.parse(raw)              # 메타+전문 본문 정규화
        rejected → IngestionResilienceService.handle(PERMANENT, reason)
   3. validation ← FetchParseProcessor.validate(parsed)              # SEC-5 필수필드/형식
@@ -24,7 +25,7 @@ ingestOne(record, job):
   5. decision ← DeduplicationGuard.isNew(parsed)                    # Q6=A paperId+version
        DUPLICATE → return SKIPPED (단락, 재임베딩 0 — NFR-C1)
        NEW | CHANGED → 계속
-  6. (Q2=C) 전문 원천 보관: StoredFullText(objectRef) ← ObjectStorage.put(raw)   # SEC-9 공개 차단, 재구축 재사용
+  6. (Q2=C) 전문 원천 보관: StoredFullText(objectRef) ← ObjectStorage.put(raw)   # SEC-9 공개 차단, 재구축 재사용 · BR-29: 정규화 평문(.txt) — 인덱스 청킹·검색 투영용 유지(Q4: doc-model 진실원천, .txt는 파생 평문). doc-model은 여기서 eager 생성 안 함(§7 lazy)
   7. chunkSet ← Chunker.chunk(parsed)                               # 섹션 인지 다중 청크, 결정적
   8. embeddings ← EmbeddingGatewayAdapter.embedBatch(chunkSet)      # 공유 VectorSpec(NFR PIN); 비용 텔레메트리
   9. records ← assemble IndexRecordBatch (IndexRecord[] = 논문 전 청크, Q4=A)   # 논문 단위 원자 커밋 단위
@@ -136,5 +137,103 @@ fetchFullText(Q2=C) ─▶ RawDocument ─(parse)─▶ ParsedPaper{abstract, bo
 - **소비자**: U6.HealthCheckService.deepCheck(RES-6, 벡터 스토어 연결성·규모) + **RES-2 재구축 완전성 검증**(시드 후 docCount/vectorCount가 기대 코퍼스 규모 도달).
 - **`lastWrite`**: 성공 upsert/tombstone 커밋 시 전진(인제스천 건강도·정체 탐지, RES-7).
 - **운영 재구축 런북**(AS-5): triggerFullRebuild 진입점 정의; 절차·실행자·검증은 Infra/Operations.
+
+---
+
+## 6. 멀티모달 자산 추출·저장 (FR-17 — 표시 전용, 2026-06-22 확장)
+
+> **근거**: FR-17 · FD 계획 Q1~Q7=A(Q2=C 혼합). **표시 전용** — §1.1 인덱싱 경로(chunk·embed·upsert·INV-1 원자성)는 **불변**. 자산은 **best-effort 보조 산출**로 인덱스 커밋과 **분리**(Q4=A).
+
+### 6.1 `ingestOne` 삽입 지점 (Q1=A: parse 추출 + dedup 이후 NEW|CHANGED 저장)
+
+```
+ingestOne(record, job):
+  ...
+  2. parsed ← FetchParseProcessor.parse(raw)
+       # (FR-17) 메타+전문 정규화에 더해 그림·도표 자산 디스커버리:
+       #   assets[] ← AssetExtractor.extract(raw, parsed)        # Q2=C 혼합(아래 6.2)
+       #   parsed.assets = FigureTableAsset[](바이너리+메타, 캡션은 본문 캡션 참조)
+  ...
+  5. decision ← DeduplicationGuard.isNew(parsed)
+       DUPLICATE → return SKIPPED   # 자산도 재추출·재저장 0 (Q1=A, NFR-C1 정신)
+       NEW | CHANGED → 계속
+  6. (Q2=C) StoredFullText ← ObjectStorage.put(raw)             # 기존
+  6'. ── (FR-17, NEW|CHANGED만) 자산 저장: best-effort, 인덱스 원자성과 분리 (Q4=A) ──
+       if parsed.oaStatus == OA (BR-1 게이트 통과):              # 비-OA는 자산 미저장(전문과 동일)
+         for asset in parsed.assets:
+           objectRef ← AssetStorePort.put_asset(asset.binary)    # S3, SEC-9 비공개
+         AssetStorePort.put_manifest(AssetManifest(paperId, version, assets-meta))   # RDS (Q6=A)
+         if CHANGED: AssetStorePort.replace_assets(paperId, version)   # 이전 버전 stale 교체/정리
+       # 실패 시: emitFailureSignal(jobId, ASSET_*) → 관측·재시도 신호. 논문 인덱싱 비차단(Q4=A).
+  7..10. chunk → embed → upsert(INV-1 원자) → markIngested → advanceWatermark   # 불변, 자산과 독립
+```
+
+- **위치(Q1=A)**: 추출은 `parse`에 동반(디스커버리), **저장은 dedup 이후 NEW|CHANGED만** — DUPLICATE는 자산 재추출·재저장 0.
+- **원자성 경계(Q4=A)**: 자산 저장은 **INV-1 원자 커밋(인덱스) 밖**. 자산 실패는 `markIngested`/워터마크 전진을 **막지 않는다**(표시 전용; 검색 정합은 인덱스가 권위). 자산 실패는 `IngestionResilienceService`로 관측·재시도(별도 신호, FailureReason `ASSET_EXTRACT_FAILURE`/`ASSET_STORE_FAILURE`).
+
+### 6.2 혼합 추출 — `AssetExtractor.extract` (Q2=C)
+
+```
+extract(raw, parsed):
+  if raw.eprintSource(LaTeX) 가용:
+      assets ← structuredExtract(eprint)        # \includegraphics 그림 파일 + table 환경, sourceMode=structured
+      if assets 성공(비어있지 않음·검증 통과): return assets
+  # 폴백(소스 없음/추출 실패):
+  assets ← pageCropExtract(pdf, layout)          # 페이지 렌더 후 그림/표 영역 크롭, sourceMode=page-crop, pageRef/bbox 기록
+  return assets
+```
+- **결정성(P7)**: 동일 `raw/parsed` → 동일 자산 집합·동일 `assetId`(순서·type별 ordinal 안정). 추출 라이브러리·bbox 검출 임계·이미지 포맷/해상도는 **NFR/Infra**.
+- **캡션**: 본문에 보존된 캡션을 참조/연결(중복 추출 안 함, BR-25). `sectionRef`+`ordinal`로 앵커 매칭 좌표 부여.
+
+### 6.3 철회(tombstone) 연동 (Q4=A)
+
+`ingestOne` step 4 tombstone 경로(BR-14)에 자산 정리 추가:
+```
+... → VectorIndexWriter.tombstone(paperId)            # 기존(전 청크 제거)
+    → AssetStorePort.remove_assets(paperId)           # (FR-17) 자산·매니페스트 제거 (best-effort, 비차단)
+    → invalidate doc-model 캐시(paperId)              # (피벗 §7) doc-model/{paperId}/* 무효화 (best-effort, 비차단)
+    → markIngested(paperId+vN) → advanceWatermark
+```
+
+### 6.4 데이터 흐름 ASCII (자산 분기 추가)
+
+```
+parse(Q2=C) ─▶ ParsedPaper{abstract, body/sections, assets[](FR-17)}
+   │ assets = AssetExtractor.extract: e-print 있으면 structured, 없/실패면 page-crop 폴백
+   ▼
+isNew ─DUPLICATE─▶ SKIPPED(자산 재저장 0)
+   │ NEW|CHANGED
+   ├─[인덱스 경로 불변]─▶ chunk ─▶ embed ─▶ upsert(INV-1 원자) ─▶ markIngested
+   └─[자산 경로 best-effort, OA 게이트]─▶ AssetStorePort.put_asset(S3) + put_manifest(RDS)
+                                          │ 실패 ─▶ emitFailureSignal(ASSET_*) (인덱싱 비차단)
+                                          │ CHANGED ─▶ replace_assets(stale 교체)
+철회 ─▶ tombstone(전 청크) + remove_assets(자산) ─▶ markIngested
+```
+
+---
+
+## 7. doc-model 생성·캐시 (구조화 본문 — 피벗 2026-06-23)
+
+> **근거**: 피벗 게이트 D1·D2·D6 + Q5 권장(SSOT=`construction/plans/docmodel-foundation-pivot-plan.md`). 요약/번역(U7) 입력을 `.txt` → **구조화 doc-model**로 전환(입력 업그레이드, **로직 불변** D2). **§1.1 인덱스/검색 경로(chunk·embed·upsert·INV-1 원자성)는 불변** — doc-model은 인덱스 권위가 아니라 **소비자(요약·리치뷰·에이전트) 입력 계약**.
+
+### 7.1 산출물·보관 (BR-29 확장)
+- **보관 = 평문 1종 → + doc-model.** 기존 `StoredFullText(.txt)`(정규화 평문)은 **인덱스 청킹·검색 투영**으로 유지(Q4 권장: doc-model = 진실원천, `.txt` = 파생 평문 투영). 신규 `doc-model/{paperId}/v{version}.json` = 본문(섹션/블록·앵커) + **표 = 구조화 데이터(rows/cols)** + **수식 = LaTeX(MathML 변환)** + 그림/표이미지 = webp `assetId` 참조.
+- **이미지 바이트는 doc-model에 넣지 않음** — `assetId` 포인터만(base64 부풀림·개별 presign/lazy 불가 방지). 픽셀은 기존 `assets/.../{assetId}.webp`(§6 FR-17) 재사용, 메타는 RDS `paper_asset` 재사용 — **재추출 0**.
+- **D8**: 기존 "표 = PDF 크롭"(TD-12)은 표 = 데이터로 승격(텍스트 에이전트가 표 숫자를 읽도록). 표 크롭 이미지는 있으면 webp로 두되 주 표현은 doc-model 데이터.
+
+### 7.2 생성 = lazy on-demand + 캐시 (D6, Q5)
+```
+buildDocModel(paperId, version):              # U1 도메인 능력; 소비자(U7/리치뷰/에이전트)가 lazy 호출
+  if cache hit (paperId, version): return cached         # D6 (paper_id, version) 캐시
+  html ← SourceLadder.fetch(paperId)          # native HTML → ar5iv → (최후) e-print/PDF 폴백 (Q6, BR-29)
+  doc  ← DocModelParser.parse(html)           # 결정적 파싱(LLM 추출 금지 D1): 섹션/블록/앵커 · 표 rows/cols · 수식 LaTeX
+  doc.assets ← linkExisting(paper_asset)      # webp assetId 참조 연결(재추출 0; §6 산출물 재사용)
+  ObjectStorage.put(doc-model/{paperId}/v{version}.json)  # SEC-9 비공개, doc-model/ prefix(Infra)
+  return doc
+```
+- **트리거(Q5 권장) — 비동기·경계 B(구현됨)**: 첫 **열람(리치뷰)** 시 캐시 미스면 소비자(U7)가 **빌더를 직접 호출하지 않고** U1 큐에 `BUILD_DOC_MODEL` 잡을 enqueue(읽기 측은 enqueue만, 빌더 생성은 U1 워커 — 요약↔빌더 의존 분리). 워커가 `buildDocModel`을 실행(메타 fetch→파싱→`doc-model/{id}/v{ver}.json` 캐시). 읽기 API는 미스를 **`building`**(폴링 힌트 `retryAfterMs`)으로 반환 → 클라이언트 폴링 → 캐시 히트로 렌더. 멱등(캐시 히트 단락)·인프로세스 dedup·enqueue best-effort. **요약 입력 경로는 빌드를 트리거하지 않음**(미스→`.txt` 폴백·다음 요청 자동 업그레이드). **version 변경 시 무효화**(키 = paperId+version). 전 코퍼스 eager 아님(D6 — 비용=사용량 비례).
+- **결정성(D1, P7)**: LLM 추출 금지(표 숫자 환각 방지) — 결정적 파서만. 동일 HTML → 동일 doc-model.
+- **`ingestOne`은 doc-model을 eager 생성하지 않음** — 인덱스 hot path 비차단(§6 자산과 동일하게 인덱스 원자성 밖). 빌더는 U1 소유, 호출 시점은 on-demand. 파서 라이브러리·MathML→LaTeX 변환·캐시 스토어는 **NFR/Infra**(TD-12·Infra).
+- **철회(tombstone) 연동**: §6.3 자산 정리에 doc-model 캐시 무효화 동반(`remove docModel(paperId)`, best-effort·비차단).
 
 > 결정·검증 규칙은 `business-rules.md`. 엔티티는 `domain-entities.md`.

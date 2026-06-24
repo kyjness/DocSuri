@@ -80,3 +80,29 @@ def test_length_router_branches() -> None:
     assert router.route(50) == LengthRoute.SINGLE
     assert router.route(500) == LengthRoute.MAP_REDUCE
     assert router.route(5000) == LengthRoute.OVER_CAP
+
+
+def test_source_selector_abstract_lookup_success() -> None:
+    lookup_called = []
+    def dummy_lookup(paper_id: str) -> str | None:
+        lookup_called.append(paper_id)
+        return "looked up abstract"
+
+    selector = SourceSelector(StubFullText(text=None), abstract_lookup=dummy_lookup)
+    src = selector.select(_req(Task.TRANSLATE, abstract=None, scope=Scope.ABSTRACT))
+    assert src is not None
+    assert src.kind == SourceKind.ABSTRACT
+    assert src.raw == "looked up abstract"
+    assert lookup_called == ["2401.00001"]
+
+
+def test_source_selector_fallback_with_abstract_lookup() -> None:
+    def dummy_lookup(paper_id: str) -> str | None:
+        return "looked up abstract fallback"
+
+    selector = SourceSelector(StubFullText(text=None), abstract_lookup=dummy_lookup)
+    src = selector.select(_req(Task.SUMMARY))
+    assert src is not None
+    assert src.kind == SourceKind.ABSTRACT
+    assert src.raw == "looked up abstract fallback"
+    assert src.fallback_reason == "full_text_unavailable"

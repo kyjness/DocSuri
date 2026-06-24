@@ -9,11 +9,13 @@ Usage:
 Stacks are split by lifecycle/blast-radius so a network change doesn't redeploy compute."""
 
 import aws_cdk as cdk
+from stacks.access_stack import AccessStack
 from stacks.compute_stack import ComputeStack
 from stacks.frontend_stack import FrontendStack
 from stacks.ingestion_stack import IngestionStack
 from stacks.network_stack import NetworkStack
 from stacks.search_stack import SearchStack
+from stacks.summarization_stack import SummarizationStack
 
 app = cdk.App()
 
@@ -33,6 +35,13 @@ ingestion = IngestionStack(
     opensearch_domain=search.domain,
     env=env,
 )
+# Deploy unit ④ — U7 summarization worker (long-summary async jobs, BR-S6/BR-S12). Code/synth
+# only; the team owns deploy. Reuses the docsuri-api image + papers bucket (by name).
+summarization = SummarizationStack(
+    app, "Docsuri-Summarization",
+    vpc=network.vpc,
+    env=env,
+)
 # Deploy unit ④ — U5 frontend. The BFF (server-side) calls the backend gateway over its
 # CloudFront HTTPS URL (which injects the origin-auth secret on the way to the backend ALB).
 frontend = FrontendStack(
@@ -41,5 +50,10 @@ frontend = FrontendStack(
     gateway_url=f"https://{compute.cdn.distribution_domain_name}",
     env=env,
 )
+
+# Cross-account 팀 접근 (Option B) — 신뢰할 팀원 홈 계정 (감사 가능하도록 여기서 관리).
+# 부여/회수 = 목록 수정 + PR + cdk deploy Docsuri-Access.
+TEAM_ACCOUNT_IDS = ["997784789037", "416963226971", "143495498927"]
+AccessStack(app, "Docsuri-Access", account_ids=TEAM_ACCOUNT_IDS, env=env)
 
 app.synth()

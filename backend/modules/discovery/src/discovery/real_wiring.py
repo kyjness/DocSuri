@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from docsuri_shared.ports import ObservabilityHub
+from docsuri_shared.ports import CostGuardCircuitBreaker, ObservabilityHub
 
 from .adapters.bedrock_embedding import BedrockCohereQueryEmbedder
 from .adapters.event_publisher import EventBridgeEventPublisher
@@ -48,7 +48,9 @@ class RealBundle:
 
 
 def build_real_orchestrator(
-    settings: DiscoverySettings, observability: ObservabilityHub | None = None
+    settings: DiscoverySettings,
+    observability: ObservabilityHub | None = None,
+    cost_guard: CostGuardCircuitBreaker | None = None,
 ) -> RealBundle:
     """Wire the U2 pipeline against real OpenSearch + Bedrock (production read path).
 
@@ -64,13 +66,15 @@ def build_real_orchestrator(
 
     client = OpenSearchClientFactory.build(
         endpoint=settings.opensearch_endpoint,
+        region_name=settings.aws_region,
         username=settings.opensearch_username,
         password=settings.opensearch_password,
         use_ssl=settings.opensearch_use_ssl,
         verify_certs=settings.opensearch_verify_certs,
     )
     embedding = BedrockCohereQueryEmbedder(
-        model_id=settings.bedrock_model_id, region_name=settings.aws_region
+        model_id=settings.bedrock_model_id,
+        region_name=settings.aws_region,
     )
     cache = EmbeddingCache(embedding, ttl_seconds=settings.embedding_cache_ttl_seconds)
 
@@ -94,7 +98,7 @@ def build_real_orchestrator(
         ranker=RelevanceRanker(),
         grounding_adapter=GroundingAdapter(),
         assembler=ResultAssembler(),
-        cost_guard=StubCostGuard(),
+        cost_guard=cost_guard or StubCostGuard(),
         observability=observability or NoopObservabilityHub(),
         event_publisher=publisher,
     )

@@ -1,7 +1,13 @@
 // Dev-only summarize/translate/full-text fixtures (mock transport layer, same as
 // searchFixtures). Production is real-first (real BFF) — these are never shipped;
 // they let the U7 surface be previewed in dev (NEXT_PUBLIC_DOCSURI_REAL_API unset).
-import type { SummaryOkDTO, TranslationOkDTO, FullTextOkDTO } from '@/types/generated';
+import type {
+  SummaryOkDTO,
+  TranslationOkDTO,
+  AssetsOkDTO,
+  DocModelOkDTO,
+} from '@/types/generated';
+import type { GlossaryUpsertResultDTO, GlossaryTermDTO } from '@/types/glossary';
 
 export const summaryResponse: SummaryOkDTO = {
   status: 'ok',
@@ -46,32 +52,249 @@ export const beginnerSummaryResponse: SummaryOkDTO = {
   },
 };
 
+// Structured translation (BR-S18): the translation output is a "translated doc-model" — same
+// structure/ids as the body, Korean text; formula LaTeX / table cells stay verbatim.
+const _provenance = {
+  sourceTier: 'ar5iv' as const,
+  parserVersion: 'docmodel-parser@1',
+  schemaVersion: '1.0.0',
+  generatedAt: '2026-06-23T00:00:00Z',
+};
+
 export const abstractTranslationResponse: TranslationOkDTO = {
   status: 'ok',
   task: 'translate',
   meta: { source: 'abstract' },
   cached: false,
   translation: {
-    koreanText:
-      '지배적인 시퀀스 변환 모델들은 복잡한 순환 신경망이나 합성곱 신경망에 기반한다. 우리는 순환과 합성곱을 완전히 배제하고 오직 어텐션 메커니즘에만 기반한 새로운 단순 네트워크 구조인 Transformer를 제안한다.',
+    docModel: {
+      meta: { paperId: '2401.00001', version: 1, title: '', provenance: _provenance },
+      sections: [
+        {
+          id: 's1',
+          title: '',
+          blocks: [
+            {
+              id: 's1.p1',
+              type: 'paragraph',
+              text: '지배적인 시퀀스 변환 모델들은 복잡한 순환 신경망이나 합성곱 신경망에 기반한다. 우리는 순환과 합성곱을 완전히 배제하고 오직 어텐션 메커니즘에만 기반한 새로운 단순 네트워크 구조인 Transformer를 제안한다.',
+            },
+          ],
+        },
+      ],
+    },
     keptTerms: ['Transformer', 'attention', 'BLEU'],
   },
 };
 
+// Mirrors `docModelResponse` (same ids → figures join `assetsResponse` by assetId), Korean text;
+// formula LaTeX and table cells are preserved verbatim (D8/BR-S18).
 export const fullTranslationResponse: TranslationOkDTO = {
   status: 'ok',
   task: 'translate',
   meta: { source: 'full_text' },
   cached: false,
   translation: {
-    koreanText:
-      '1. 서론\n순환 신경망, 특히 LSTM과 게이트 순환 신경망은 시퀀스 모델링과 변환 문제에서 최첨단 접근으로 확고히 자리잡았다…\n\n3. 모델 구조\n대부분의 경쟁력 있는 시퀀스 변환 모델은 인코더-디코더 구조를 갖는다. 여기서 인코더는 입력 시퀀스를 연속 표현의 시퀀스로 매핑한다…\n\n(데모용 발췌 — 실제 전문 번역은 논문 전체를 포함합니다.)',
+    docModel: {
+      meta: {
+        paperId: '2401.00001',
+        version: 1,
+        title: '어텐션만 있으면 된다',
+        provenance: _provenance,
+      },
+      sections: [
+        {
+          id: 's3',
+          title: '모델 구조',
+          blocks: [
+            {
+              id: 's3.p1',
+              type: 'paragraph',
+              text: 'Transformer는 순환 대신 스케일드 닷-프로덕트 어텐션 \\(\\mathrm{Attention}(Q,K,V)\\)을 사용한다.',
+            },
+            {
+              id: 's3.eq1',
+              type: 'formula',
+              latex: '\\mathrm{Attention}(Q,K,V)=\\mathrm{softmax}\\left(\\frac{QK^{T}}{\\sqrt{d_{k}}}\\right)V',
+              display: true,
+              anchorLabel: '(1)',
+            },
+            {
+              id: 's3.fig1',
+              type: 'figure',
+              assetRef: { assetId: '2401.00001:v1:figure:0', type: 'figure', ordinal: 0 },
+              caption: 'Transformer — 모델 구조.',
+              anchorLabel: 'Figure 1',
+            },
+          ],
+          sections: [
+            {
+              id: 's3.2',
+              title: '셀프 어텐션을 쓰는 이유',
+              blocks: [
+                {
+                  id: 's3.2.tbl1',
+                  type: 'table',
+                  caption: '최대 경로 길이와 층별 복잡도.',
+                  anchorLabel: 'Table 1',
+                  rows: [
+                    {
+                      cells: [
+                        { text: '층 종류', isHeader: true },
+                        { text: '복잡도', isHeader: true },
+                        { text: '경로 길이', isHeader: true },
+                      ],
+                    },
+                    {
+                      cells: [
+                        { text: 'Self-Attention' },
+                        { text: '\\(O(n^{2}\\cdot d)\\)' },
+                        { text: '\\(O(1)\\)' },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
     keptTerms: ['Transformer', 'encoder', 'decoder', 'self-attention'],
   },
 };
 
-export const fullTextResponse: FullTextOkDTO = {
+// Personal glossary (Phase 1/2a) — an in-memory store so the dev preview behaves like the
+// real round-trip: upsert remembers termFrom→termTo and bumps a version, and the list reads
+// it back so the badge editor pre-fills a previously saved rendering.
+const mockGlossary = new Map<string, string>();
+let mockGlossaryVer = 0;
+
+export function mockUpsertGlossaryTerm(termFrom: string, termTo: string): GlossaryUpsertResultDTO {
+  mockGlossary.set(termFrom, termTo);
+  mockGlossaryVer += 1;
+  return { status: 'ok', glossaryVer: mockGlossaryVer };
+}
+
+export function mockListGlossaryTerms(): GlossaryTermDTO[] {
+  return [...mockGlossary.entries()].map(([termFrom, termTo]) => ({ termFrom, termTo }));
+}
+
+/** Reset the in-memory glossary so tests start from a clean store (no cross-test bleed). */
+export function resetMockGlossary(): void {
+  mockGlossary.clear();
+  mockGlossaryVer = 0;
+}
+
+// FR-17 figure/table assets (dev preview). Inline SVG data URLs render without network.
+const _ph = (label: string, fill: string): string =>
+  `data:image/svg+xml;utf8,${encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="200"><rect width="100%" height="100%" fill="${fill}"/><text x="50%" y="50%" font-size="20" fill="#333" text-anchor="middle" dominant-baseline="middle">${label}</text></svg>`,
+  )}`;
+
+export const assetsResponse: AssetsOkDTO = {
   status: 'ok',
-  text:
-    'Attention Is All You Need\n\n3.2 Multi-Head Attention\nInstead of performing a single attention function with d_model-dimensional keys, values and queries, we found it beneficial to linearly project the queries, keys and values h times with different, learned linear projections…\n\n6.1 Training\nWe trained on the standard WMT 2014 English-German dataset consisting of about 4.5 million sentence pairs. Our implementation is available in the tensor2tensor repository.\n\n(데모용 정규화 발췌 — 참고문헌·저자 정보는 제거된 형태입니다.)',
+  assets: [
+    {
+      assetId: '2401.00001:v1:figure:0',
+      type: 'figure',
+      ordinal: 0,
+      caption: 'Figure 1: The Transformer — model architecture.',
+      sourceMode: 'page-crop',
+      url: _ph('Figure 1', '#e8f0fe'),
+    },
+    {
+      assetId: '2401.00001:v1:table:0',
+      type: 'table',
+      ordinal: 0,
+      caption: 'Table 1: BLEU scores on WMT 2014.',
+      sourceMode: 'page-crop',
+      url: _ph('Table 1', '#fef7e0'),
+    },
+  ],
+};
+
+// Doc-model rich-view fixture (D4). Figure assetIds match `assetsResponse` so the
+// DocModelViewer ↔ /assets join (by assetId) is exercised in the mock preview.
+export const docModelResponse: DocModelOkDTO = {
+  status: 'ok',
+  cached: false,
+  docModel: {
+    meta: {
+      paperId: '2401.00001',
+      version: 1,
+      title: 'Attention Is All You Need',
+      abstract: 'RNN·CNN 없이 어텐션만으로 시퀀스 변환을 수행하는 Transformer를 제안한다.',
+      provenance: {
+        sourceTier: 'ar5iv',
+        parserVersion: 'docmodel-parser@1',
+        schemaVersion: '1.0.0',
+        generatedAt: '2026-06-23T00:00:00Z',
+      },
+    },
+    sections: [
+      {
+        id: 's3',
+        title: 'Model Architecture',
+        blocks: [
+          {
+            id: 's3.p1',
+            type: 'paragraph',
+            text: 'The Transformer uses scaled dot-product attention \\(\\mathrm{Attention}(Q,K,V)\\) in place of recurrence.',
+          },
+          {
+            id: 's3.eq1',
+            type: 'formula',
+            latex: '\\mathrm{Attention}(Q,K,V)=\\mathrm{softmax}\\left(\\frac{QK^{T}}{\\sqrt{d_{k}}}\\right)V',
+            display: true,
+            anchorLabel: '(1)',
+          },
+          {
+            id: 's3.fig1',
+            type: 'figure',
+            assetRef: { assetId: '2401.00001:v1:figure:0', type: 'figure', ordinal: 0 },
+            caption: 'The Transformer — model architecture.',
+            anchorLabel: 'Figure 1',
+          },
+        ],
+        sections: [
+          {
+            id: 's3.2',
+            title: 'Why Self-Attention',
+            blocks: [
+              {
+                id: 's3.2.tbl1',
+                type: 'table',
+                caption: 'Maximum path lengths and per-layer complexity.',
+                anchorLabel: 'Table 1',
+                rows: [
+                  {
+                    cells: [
+                      { text: 'Layer Type', isHeader: true },
+                      { text: 'Complexity', isHeader: true },
+                      { text: 'Path Length', isHeader: true },
+                    ],
+                  },
+                  {
+                    cells: [
+                      { text: 'Self-Attention' },
+                      { text: '\\(O(n^{2}\\cdot d)\\)' },
+                      { text: '\\(O(1)\\)' },
+                    ],
+                  },
+                  {
+                    cells: [
+                      { text: 'Recurrent' },
+                      { text: '\\(O(n\\cdot d^{2})\\)' },
+                      { text: '\\(O(n)\\)' },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  },
 };

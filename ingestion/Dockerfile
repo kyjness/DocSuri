@@ -13,7 +13,7 @@ COPY shared/python /app/shared/python
 COPY ingestion /app/ingestion
 
 RUN python -m pip install --upgrade pip==24.2 \
-    && python -m pip install /app/shared/python /app/ingestion
+    && python -m pip install /app/shared/python "/app/ingestion[assets]"
 
 USER docsuri
 

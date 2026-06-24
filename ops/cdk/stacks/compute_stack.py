@@ -48,6 +48,12 @@ from aws_cdk import (
     aws_elasticloadbalancingv2 as elbv2,
 )
 from aws_cdk import (
+    aws_events as events,
+)
+from aws_cdk import (
+    aws_events_targets as targets,
+)
+from aws_cdk import (
     aws_iam as iam,
 )
 from aws_cdk import (
@@ -61,6 +67,9 @@ from aws_cdk import (
 )
 from aws_cdk import (
     aws_route53 as route53,
+)
+from aws_cdk import (
+    aws_secretsmanager as secretsmanager,
 )
 from aws_cdk import (
     aws_ses as ses,
@@ -176,9 +185,43 @@ class ComputeStack(Stack):
             "REDIS_PORT": redis_port,
             "REDIS_TLS": "1",  # ElastiCache transit_encryption_enabled=True → client TLS required
             "SES_SENDER_EMAIL": "no-reply@docsuri.org",  # via the SES domain identity below
+            # Email provider toggle. "resend" → ResendEmailClient (no SES sandbox review gate;
+            # delivers to any recipient once docsuri.org is DNS-verified in Resend). Requires the
+            # RESEND_API_KEY secret below. If the key is missing the app falls back to SES.
+            "EMAIL_PROVIDER": "resend",
+            # Public apex used to build clickable verification links in emails. Behind
+            # CloudFront/BFF/ALB the request host is internal, so the link must use this
+            # public URL pointing at the frontend verify page (controller._verification_link_base
+            # → {PUBLIC_APP_URL}/verify-email), which calls the backend via the BFF. Must match
+            # the CloudFront alias.
+            "PUBLIC_APP_URL": "https://docsuri.org",
             "OPENSEARCH_ENDPOINT": Fn.join("", [
                 "https://", opensearch_domain.domain_endpoint,
             ]),
+            # U2 discovery reader real-path wiring. DiscoverySettings.from_env reads the
+            # DOCSURI_-prefixed names, and search_enabled requires BOTH the endpoint AND the
+            # model — without these the reader silently falls back to the mock orchestrator.
+            # The model MUST match the writer's (Cohere v4) so query and corpus share one
+            # embedding space (vector-spec §4). Index defaults to the docsuri-corpus alias.
+            "DOCSURI_OPENSEARCH_ENDPOINT": Fn.join("", [
+                "https://", opensearch_domain.domain_endpoint,
+            ]),
+            "DOCSURI_BEDROCK_MODEL_ID": "global.cohere.embed-v4:0",
+            "DOCSURI_AWS_REGION": self.region,
+            # --- U7 summarization + doc-model (피벗) — queue URLs (deploy-ready config) ---
+            # The IAM below is provisioned ahead of activation. ACTIVATION is a deploy-time step the
+            # team owns: set DOCSURI_SUMMARY_BUCKET (papers bucket) + DATABASE_URL(+PGPASSWORD) [+
+            # DOCSURI_REDIS_URL] to mount the real path (summarization_enabled = bool(bucket)); the
+            # OA-license + map-reduce gates stay OFF by default. Referenced by name to avoid a
+            # cross-stack export coupling deploys (repo pattern).
+            "DOCSURI_DOCMODEL_BUILD_QUEUE_URL": (  # doc-model lazy build (BR-30, boundary B)
+                f"https://sqs.{self.region}.amazonaws.com/{self.account}/docsuri-ingestion-queue"
+            ),
+            "DOCSURI_SUMMARY_JOB_QUEUE_URL": (  # long-summary async job (BR-S12)
+                f"https://sqs.{self.region}.amazonaws.com/{self.account}/docsuri-summary-job-queue"
+            ),
+            "PERSONALIZATION_ENABLED": "false",
+            "PERSONALIZATION_RAW_EVENT_RETENTION_DAYS": "90",
         }
 
         # DB password injected from the RDS-generated secret (JSON key "password"); CDK grants
@@ -187,6 +230,14 @@ class ComputeStack(Stack):
         container_secrets = {
             "DB_PASSWORD": ecs.Secret.from_secrets_manager(self.db.secret, "password"),
         }
+        # Resend API key for transactional email (EMAIL_PROVIDER=resend). Referenced by name —
+        # the secret "docsuri/resend-api-key" (raw key as the secret value) MUST be created in
+        # Secrets Manager BEFORE deploying this stack, or the API task fails to start. CDK grants
+        # the task execution role read on it automatically via ecs.Secret.from_secrets_manager.
+        resend_secret = secretsmanager.Secret.from_secret_name_v2(
+            self, "ResendApiKey", "docsuri/resend-api-key",
+        )
+        container_secrets["RESEND_API_KEY"] = ecs.Secret.from_secrets_manager(resend_secret)
 
         # --- TLS for the origin: Route53 zone + ACM cert for origin.docsuri.org ---
         zone = route53.HostedZone.from_hosted_zone_attributes(
@@ -247,6 +298,11 @@ class ComputeStack(Stack):
             cpu=256,
             memory_limit_mib=512,
             desired_count=1,
+            # ECS Exec (SSM-backed): team assumes DocsuriCrossAccountDev → `aws ecs
+            # execute-command` into this task → psql to the private RDS. No EC2 bastion.
+            # CDK auto-grants the task role ssmmessages:*. ponytail: shell-in only; a
+            # local port-forward to RDS still needs a standing SSM host (small EC2).
+            enable_execute_command=True,
             task_image_options=ecs_patterns.ApplicationLoadBalancedTaskImageOptions(
                 image=ecs.ContainerImage.from_ecr_repository(self.api_repo, tag="latest"),
                 container_port=8000,
@@ -354,9 +410,95 @@ class ComputeStack(Stack):
             )
         )
 
+        # --- U7 summarization + doc-model IAM (피벗, infra-design §4·§7) ---
+        # Single papers bucket (Docsuri-Ingestion owns it) — referenced by ARN-by-name to avoid a
+        # cross-stack export. API reads the built doc-model and read/writes the summary cache.
+        _papers_bucket = f"arn:aws:s3:::docsuri-papers-fulltext-{self.account}"
+        self.service.task_definition.task_role.add_to_principal_policy(
+            iam.PolicyStatement(
+                actions=["s3:GetObject"],
+                resources=[f"{_papers_bucket}/doc-model/*"],
+            )
+        )
+        self.service.task_definition.task_role.add_to_principal_policy(
+            iam.PolicyStatement(
+                actions=["s3:GetObject", "s3:PutObject"],
+                resources=[f"{_papers_bucket}/summary/*"],
+            )
+        )
+        # SendMessage: doc-model build (ingestion queue, boundary B) + long-summary job queue.
+        self.service.task_definition.task_role.add_to_principal_policy(
+            iam.PolicyStatement(
+                actions=["sqs:SendMessage"],
+                resources=[
+                    f"arn:aws:sqs:{self.region}:{self.account}:docsuri-ingestion-queue",
+                    f"arn:aws:sqs:{self.region}:{self.account}:docsuri-summary-job-queue",
+                ],
+            )
+        )
+        # Bedrock InvokeModel for the U7 summary/translate models (Anthropic on Bedrock). Scoped to
+        # Anthropic foundation models + inference profiles in-region (concrete ids are app config).
+        self.service.task_definition.task_role.add_to_principal_policy(
+            iam.PolicyStatement(
+                actions=["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
+                resources=[
+                    f"arn:aws:bedrock:{self.region}::foundation-model/anthropic.*",
+                    f"arn:aws:bedrock:{self.region}:{self.account}:inference-profile/*",
+                ],
+            )
+        )
+        # U2 reader query-embedding: Bedrock invoke on the SAME model the writer uses (Cohere
+        # v4). Must match DOCSURI_BEDROCK_MODEL_ID above and ingestion_stack._BEDROCK_MODEL_ID.
+        # Without this the real read path 500s on the first search (AccessDenied at embed time).
+        self.service.task_definition.task_role.add_to_principal_policy(
+            iam.PolicyStatement(
+                actions=["bedrock:InvokeModel"],
+                resources=[
+                    # Invoked via the global inference profile (bare model id isn't on-demand
+                    # invokable); the profile can route the FM to any region — grant both.
+                    f"arn:aws:bedrock:{self.region}:{self.account}:inference-profile/global.cohere.embed-v4:0",
+                    "arn:aws:bedrock:*::foundation-model/cohere.embed-v4:0",
+                ],
+            )
+        )
+
         # Autoscaling: min 1 — max 2 (U3 spec)
         scaling = self.service.service.auto_scale_task_count(min_capacity=1, max_capacity=2)
         scaling.scale_on_cpu_utilization("CpuScale", target_utilization_percent=70)
+
+        # U9 Personalization retention cleanup: one short scheduled task, no always-on worker.
+        # Idempotent command; failures emit `personalization.retention_purge_failure`, alarmed
+        # below. Uses the same backend image/env/secrets as the API task.
+        api_container = self.service.task_definition.default_container
+        if api_container is not None:
+            events.Rule(
+                self,
+                "PersonalizationRetentionCleanup",
+                description="Daily purge of expired U9 behavior events",
+                schedule=events.Schedule.cron(hour="18", minute="0"),
+                targets=[
+                    targets.EcsTask(
+                        cluster=cluster,
+                        task_definition=self.service.task_definition,
+                        task_count=1,
+                        subnet_selection=ec2.SubnetSelection(
+                            subnet_type=ec2.SubnetType.PUBLIC
+                        ),
+                        assign_public_ip=True,
+                        security_groups=self.service.service.connections.security_groups,
+                        container_overrides=[
+                            targets.ContainerOverride(
+                                container_name=api_container.container_name,
+                                command=[
+                                    "python",
+                                    "-m",
+                                    "backend.modules.personalization.maintenance",
+                                ],
+                            )
+                        ],
+                    )
+                ],
+            )
 
         # SG: allow ECS → OpenSearch (HTTPS). Direction: egress from ECS → avoids cycle.
         self.service.service.connections.allow_to(
@@ -448,6 +590,22 @@ class ComputeStack(Stack):
             alarm_description="DocSuri API p95 latency > 2s sustained 15min",
         )
         api_latency_alarm.add_alarm_action(cw_actions.SnsAction(ops_alerts))
+
+        personalization_purge_alarm = cloudwatch.Metric(
+            namespace="DocSuri/Production",
+            metric_name="personalization.retention_purge_failure",
+            period=Duration.minutes(5),
+            statistic="Sum",
+        ).create_alarm(
+            self,
+            "PersonalizationRetentionPurgeFailureAlarm",
+            threshold=0,
+            evaluation_periods=1,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+            alarm_description="U9 behavior-event retention purge failed",
+        )
+        personalization_purge_alarm.add_alarm_action(cw_actions.SnsAction(ops_alerts))
 
         # SLO 3 — cost burn: account budget mirroring the in-app cap ($1600), notifying at the same
         # 80% warning ratio ($1280 — cost_guard.warning_ratio). Budget emails the ops alias directly

@@ -252,6 +252,7 @@ class InMemoryQueue:
                     message_id=job.job_id,
                     receipt_handle=job.job_id,
                     body={
+                        "type": "ingest_paper",
                         "jobId": job.job_id,
                         "kind": job.kind.value,
                         "arxivRef": job.arxiv_ref,

@@ -45,10 +45,10 @@
 - **결정**: **형태만** — 모델 컨텍스트 윈도우 기반 입력 토큰 예산 + 단일/맵-리듀스 분기 임계 + 입력 토큰 캡(아웃라이어 상한). **구체 수치 = Code-gen/튜닝**.
 - **근거**: 기술/수치 이연 원칙. 분기 규칙·결과 동등성(통합 출력도 §3 스키마)만 확정.
 
-## TD-S9 — 초장문 비동기 잡 v1 범위 — Q6
-- **결정**: **v1 = 동기 스트리밍 + 입력 토큰 캡**. 캡 초과 초장문 = 동기 경로 map-reduce(스트리밍 유지) 또는 명시 저하/기권. **비동기 잡 인프라(SQS+워커)는 fast-follow**(배포 ③).
-- **근거**: 대다수 논문(~13K, 길어도 ~40K 토큰) 단일/동기로 충분(§2). 비동기 인프라는 아웃라이어 과투자 → 캡으로 상한. v1 범위 bounded.
-- **전환**: 후속 비동기 잡 추가 시 동일 근거화/기권 규칙(BR-S12) 적용 — 잡 결과 STORE write-through 후 통지.
+## TD-S9 — 초장문 비동기 잡 — Q6 — **구현됨(#135, slice 5b)**
+- **결정(개정)**: 3단계(BR-S6) — 단일 콜(동기) / **map-reduce(비동기 잡)** / OVER_CAP(거절). 비동기 잡 인프라(**SQS 요약 큐 + 요약 워커**)를 구현: API가 MAP_REDUCE 밴드에서 잡 enqueue→`PendingDTO` 반환→클라이언트 폴링, 워커가 map-reduce를 inline 실행(게이트웨이 타임아웃 회피)→STORE write-through→폴링 캐시 히트.
+- **근거**: 긴 요약(LLM 3~5콜, 15~75s)은 동기 시 게이트웨이 타임아웃(~29s) 하드 실패 → 비동기 필수. 대다수 논문(~13K)은 단일/동기 유지(체감 무변경). **OVER_CAP은 부분요약 없이 거절**(모바일 결정).
+- **배포·게이트**: 요약 워커 = **별도 배포 단위**(Infra — slice 6 CDK). 게이트 `DOCSURI_MAP_REDUCE_ENABLED`(맵리듀스)·`DOCSURI_SUMMARY_JOB_QUEUE_URL`(비동기) 기본 OFF → 미설정 시 MAP_REDUCE abstain(기존). 잡도 동일 근거화/기권(BR-S12). dedup·best-effort enqueue·멱등(캐시 히트).
 
 ## TD-S10 — 재현성 추출 — Q16(FD)
 - **결정**: **정규식 힌트 + LLM 추출 병행** → `reproducibility{code, data}`. 정규식(github.com·"code available"·"dataset" 등) + LLM 문맥. 날조 링크는 근거화(BR-S7) 차단.

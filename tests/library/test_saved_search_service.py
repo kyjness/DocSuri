@@ -101,3 +101,17 @@ async def test_rerun_cross_owner_notfound(make_services, make_principal):
     created = saved.save(owner, SavedSearchCreateDTO(query="x"))
     with pytest.raises(NotFoundError):
         await saved.rerun(attacker, created.id)
+
+
+def test_audit_owner_ref_is_masked(make_services, make_principal):
+    import hashlib
+    saved, _l, _h, _repo, audit = make_services()
+    p = make_principal()
+    saved.save(p, SavedSearchCreateDTO(query="audit test"))
+    
+    events = audit.events
+    assert len(events) > 0
+    event = events[-1]
+    expected_hash = hashlib.sha256(p.user_id.encode("utf-8")).hexdigest()
+    assert event.owner_ref == expected_hash
+    assert event.owner_ref != p.user_id

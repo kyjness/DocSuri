@@ -138,6 +138,71 @@ def test_worker_does_not_duplicate_pipeline_permanent_failure_dlq() -> None:
     assert queue.acked == [message.message_id]
 
 
+def test_worker_dispatches_schedule_tick_and_acks() -> None:
+    _, _, _, queue, observability = build_test_pipeline()
+    refresh = SimpleNamespace(on_schedule_tick=lambda: 2)
+    message = SimpleNamespace(
+        message_id="tick-1",
+        receipt_handle="tick-1",
+        body={"type": "schedule_tick"},
+    )
+    runtime = SimpleNamespace(refresh=refresh, queue=queue, observability=observability)
+
+    process_message(runtime, message)
+
+    assert queue.acked == ["tick-1"]
+    assert queue.dlq == []
+
+
+def test_worker_dispatches_legacy_schedule_tick_action_and_acks() -> None:
+    _, _, _, queue, observability = build_test_pipeline()
+    refresh = SimpleNamespace(on_schedule_tick=lambda: 2)
+    message = SimpleNamespace(
+        message_id="tick-legacy",
+        receipt_handle="tick-legacy",
+        body={"action": "schedule_tick"},
+    )
+    runtime = SimpleNamespace(refresh=refresh, queue=queue, observability=observability)
+
+    process_message(runtime, message)
+
+    assert queue.acked == ["tick-legacy"]
+    assert queue.dlq == []
+
+
+def test_worker_dispatches_legacy_type_less_ingest_job() -> None:
+    _, _, _, queue, observability = build_test_pipeline()
+    seen: list[IngestionJob] = []
+    message = SimpleNamespace(
+        message_id="legacy-job",
+        receipt_handle="legacy-job",
+        body={"jobId": "job-1", "kind": "EVENT", "arxivRef": "2401.00001v1"},
+    )
+    pipeline = SimpleNamespace(ingest_one=seen.append)
+    runtime = SimpleNamespace(pipeline=pipeline, queue=queue, observability=observability)
+
+    process_message(runtime, message)
+
+    assert queue.acked == ["legacy-job"]
+    assert queue.dlq == []
+    assert seen[0].job_id == "job-1"
+
+
+def test_worker_sends_unknown_message_type_to_dlq() -> None:
+    _, _, _, queue, observability = build_test_pipeline()
+    message = SimpleNamespace(
+        message_id="bad-1",
+        receipt_handle="bad-1",
+        body={"type": "unknown"},
+    )
+    runtime = SimpleNamespace(queue=queue, observability=observability)
+
+    process_message(runtime, message)
+
+    assert queue.acked == ["bad-1"]
+    assert queue.dlq[-1]["reason"] == FailureReason.POISON_EVENT.value
+
+
 class FakeOpenSearchClient:
     def __init__(self) -> None:
         self.bulk_calls = 0
@@ -219,3 +284,31 @@ def test_rebuild_lock_defers_incremental_and_event_paths() -> None:
         type("Event", (), {"eventId": "e1", "arxivRef": "2401.00001v1"})()
     )
     assert not queue.jobs
+
+
+def test_changed_version_replaces_stale_chunks() -> None:
+    v1_meta = sample_metadata("2401.00001v1")
+    v2_meta = sample_metadata("2401.00001v2")
+
+    arxiv = FakeArxivSource(
+        metadata=[v1_meta, v2_meta],
+        full_text={
+            "2401.00001v1": "body v1",
+            "2401.00001v2": "body v2",
+        },
+    )
+
+    pipeline, control, index, _, _ = build_test_pipeline(arxiv=arxiv)
+
+    job1 = IngestionJob(job_id="job-1", kind=JobKind.EVENT, arxiv_ref="2401.00001v1")
+    assert pipeline.ingest_one(job1) is DedupDecision.NEW
+    v1_count = len(index.records)
+    assert v1_count >= 1
+    assert all(record.version == 1 for record in index.records.values())
+
+    job2 = IngestionJob(job_id="job-2", kind=JobKind.EVENT, arxiv_ref="2401.00001v2")
+    assert pipeline.ingest_one(job2) is DedupDecision.CHANGED
+    # stale v1 chunks are deleted and the new version fully replaces them — no accumulation
+    # across versions, and identical body shape yields the same chunk count (not doubled).
+    assert all(record.version == 2 for record in index.records.values())
+    assert len(index.records) == v1_count

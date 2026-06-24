@@ -15,7 +15,12 @@ const here = dirname(fileURLToPath(import.meta.url));
 const sharedDtos = resolve(here, '../../shared/dtos');
 const rawDir = resolve(here, '../types/.schema-raw');
 
-const SCHEMAS = ['search.schema.json', 'accounts.schema.json', 'library.schema.json'];
+const SCHEMAS = [
+  'search.schema.json',
+  'accounts.schema.json',
+  'library.schema.json',
+  'docmodel.schema.json',
+];
 
 await mkdir(rawDir, { recursive: true });
 

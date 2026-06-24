@@ -13,7 +13,9 @@ from __future__ import annotations
 from .models import Candidate, CandidateSet, QueryPlan, RetrievalMode
 
 # k-NN/BM25 candidate breadth before fusion (> top-N so ranking has headroom). NFR/Infra tune.
-RETRIEVAL_TOP_K = 50
+# Raised for full-body multi-chunk indexing: one paper now spans many chunks, so a fixed
+# slice collapses onto fewer distinct papers after PaperId dedup — over-fetch to refill top-N.
+RETRIEVAL_TOP_K = 150
 # RRF constant (standard default). NFR/Infra tune.
 RRF_K = 60
 
@@ -40,17 +42,27 @@ class HybridRetriever:
 def _reciprocal_rank_fusion(result_lists) -> tuple[Candidate, ...]:
     """Merge ranked lists by RRF and dedup by PaperId (BR-4; PBT-07).
 
-    score(paper) = Σ_list 1 / (RRF_K + rank_in_list). One record kept per PaperId (first
-    seen — deterministic). Sorted by (-score, paperId) so ties are deterministic.
+    Per list, a paper contributes only its BEST chunk's rank — max, not sum — so a paper with
+    many weakly-matching body chunks can't out-stack a paper with one strong hit (full-body
+    length bias). Those per-list bests are then SUMMED across the k-NN and BM25 lists, which
+    preserves the hybrid corroboration RRF is for. One record kept per PaperId: the globally
+    highest-scoring chunk's record. Sorted by (-score, paperId) so ties are deterministic.
     """
     scores: dict[str, float] = {}
     best_record: dict[str, object] = {}
+    best_contribution: dict[str, float] = {}
     for results in result_lists:
+        per_list_best: dict[str, float] = {}
         for rank, (record, _store_score) in enumerate(results):
             pid = record.paperId
-            scores[pid] = scores.get(pid, 0.0) + 1.0 / (RRF_K + rank + 1)
-            if pid not in best_record:
+            contribution = 1.0 / (RRF_K + rank + 1)
+            if pid not in per_list_best or contribution > per_list_best[pid]:
+                per_list_best[pid] = contribution
+            if pid not in best_contribution or contribution > best_contribution[pid]:
+                best_contribution[pid] = contribution
                 best_record[pid] = record
+        for pid, contribution in per_list_best.items():
+            scores[pid] = scores.get(pid, 0.0) + contribution
     ordered = sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))
     return tuple(
         Candidate(record=best_record[pid], retrieval_score=score) for pid, score in ordered

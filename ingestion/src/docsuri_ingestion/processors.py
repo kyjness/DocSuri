@@ -76,6 +76,11 @@ class FetchParseProcessor:
 
 @dataclass(frozen=True, slots=True)
 class Chunker:
+    """Full-text body chunking — abstract chunk + section-split body chunks (full-body search).
+
+    Reverses the issue-#120 abstract-only rescoping now that body semantic search is in scope.
+    """
+
     max_chunk_chars: int = 2400
     overlap_chars: int = 240
     max_chunks_per_paper: int = 128

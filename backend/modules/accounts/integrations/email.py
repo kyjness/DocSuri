@@ -3,7 +3,48 @@ import logging
 import os
 from abc import ABC, abstractmethod
 
+import httpx
+
 logger = logging.getLogger(__name__)
+
+
+def _render_verification_email(link: str) -> tuple[str, str, str]:
+    """(subject, text, html) for the account-verification email. Shared by every provider
+    so the wording and link format can't drift between SES and Resend."""
+    subject = "[DocSuri] 계정 활성화를 위한 이메일 인증 링크"
+    body_text = (
+        "안녕하세요. DocSuri 가입을 완료하려면 다음 링크를 24시간 이내에 클릭해 주세요.\n\n"
+        f"{link}"
+    )
+    body_html = f"""
+        <html>
+            <body>
+                <h3>DocSuri 가입을 환영합니다!</h3>
+                <p>아래 링크를 클릭하여 계정 활성화를 완료해 주세요 (24시간 동안 유효합니다).</p>
+                <p><a href="{link}">계정 활성화하기</a></p>
+                <p>만약 링크 클릭이 안 된다면 다음 주소를 브라우저에 복사해 넣어주세요:</p>
+                <p>{link}</p>
+            </body>
+        </html>
+    """
+    return subject, body_text, body_html
+
+
+def _emit_email_failure(observability_hub, e: Exception, provider: str) -> None:
+    """소프트 폴백 실패 신호(EmailDeliveryFailureSignal) 발행 — 공통 헬퍼."""
+    if not observability_hub:
+        return
+    try:
+        observability_hub.emit_metric("EmailDeliveryFailureSignal", 1, {"error_type": type(e).__name__})
+        observability_hub.emit_log({
+            "event": "EmailDeliveryFailureSignal",
+            "error_type": type(e).__name__,
+            "provider": provider,
+            "message": "Email dispatch failed. Account remains PENDING.",
+        })
+    except Exception as trace_err:
+        logger.critical(f"ObservabilityHub 수집기 마저 장애 상태 발생: {str(trace_err)}")
+
 
 class EmailClientInterface(ABC):
     @abstractmethod
@@ -14,7 +55,7 @@ class EmailClientInterface(ABC):
 
 class MockEmailClient(EmailClientInterface):
     """로컬 테스트를 위해 실제 이메일을 발송하지 않고 터미널 콘솔에 출력하는 Mock 이메일 클라이언트"""
-    
+
     async def send_verification_email(self, email: str, token: str, signup_link: str) -> bool:
         logger.info("================ [MOCK EMAIL DELIVERY] ================")
         logger.info(f"To: {email}")
@@ -27,8 +68,8 @@ class MockEmailClient(EmailClientInterface):
 
 class SESEmailClient(EmailClientInterface):
     """boto3를 활용해 Amazon SES를 통해 이메일을 전송하는 프로덕션 이메일 클라이언트"""
-    
-    def __init__(self, sender_email: str, region_name: str = "ap-northeast-2", observability_hub = None):
+
+    def __init__(self, sender_email: str, region_name: str = "ap-northeast-2", observability_hub=None):
         self._sender_email = sender_email
         self._region_name = region_name
         self._observability_hub = observability_hub
@@ -42,89 +83,101 @@ class SESEmailClient(EmailClientInterface):
         return self._client
 
     async def send_verification_email(self, email: str, token: str, signup_link: str) -> bool:
-        """
-        Amazon SES를 통해 인증 메일을 전송합니다.
-        실패 시 트랜잭션을 중단시키지 않는 소프트 폴백(Soft-Fallback) 정책을 적용합니다 (Q2 답변 반영).
-        이메일 발송이 실패하면 EmailDeliveryFailureSignal 경보 메트릭을 발행하고 False를 반환합니다.
-        """
+        """Amazon SES로 인증 메일 전송. 실패 시 소프트 폴백(가입 트랜잭션 유지)."""
         link = f"{signup_link}?token={token}"
-        subject = "[DocSuri] 계정 활성화를 위한 이메일 인증 링크"
-        body_text = f"안녕하세요. DocSuri 가입을 완료하려면 다음 링크를 24시간 이내에 클릭해 주세요.\n\n{link}"
-        body_html = f"""
-        <html>
-            <body>
-                <h3>DocSuri 가입을 환영합니다!</h3>
-                <p>아래 링크를 클릭하여 계정 활성화를 완료해 주세요 (24시간 동안 유효합니다).</p>
-                <p><a href="{link}">계정 활성화하기</a></p>
-                <p>만약 링크 클릭이 안 된다면 다음 주소를 브라우저에 복사해 넣어주세요:</p>
-                <p>{link}</p>
-            </body>
-        </html>
-        """
-        
+        subject, body_text, body_html = _render_verification_email(link)
         try:
             ses = self._get_client()
-
-            # boto3 SES 호출은 동기 블로킹 네트워크 I/O다. async 핸들러에서 직접 호출하면 응답 동안
-            # 이벤트 루프 전체가 멈춰 동시 요청이 정체되므로, asyncio.to_thread로 워커 스레드에 위임한다.
+            # boto3 SES 호출은 동기 블로킹 I/O → asyncio.to_thread로 이벤트 루프 비차단
             response = await asyncio.to_thread(
                 lambda: ses.send_email(
                     Source=self._sender_email,
-                    Destination={
-                        "ToAddresses": [email]
-                    },
+                    Destination={"ToAddresses": [email]},
                     Message={
-                        "Subject": {
-                            "Data": subject,
-                            "Charset": "UTF-8"
-                        },
+                        "Subject": {"Data": subject, "Charset": "UTF-8"},
                         "Body": {
-                            "Text": {
-                                "Data": body_text,
-                                "Charset": "UTF-8"
-                            },
-                            "Html": {
-                                "Data": body_html,
-                                "Charset": "UTF-8"
-                            }
-                        }
-                    }
+                            "Text": {"Data": body_text, "Charset": "UTF-8"},
+                            "Html": {"Data": body_html, "Charset": "UTF-8"},
+                        },
+                    },
                 )
             )
-            message_id = response.get("MessageId")
-            logger.info(f"Verification email sent successfully via SES to {email}. MessageId: {message_id}")
+            logger.info(
+                f"Verification email sent successfully via SES to {email}. "
+                f"MessageId: {response.get('MessageId')}"
+            )
             return True
-            
         except Exception as e:
-            # 소프트 폴백: SES 메일 발송이 실패하더라도 회원가입 DB 트랜잭션을 중단(Rollback)시키지 않음.
-            # 실패를 수집 및 경보하기 위한 신호(EmailDeliveryFailureSignal) 수집
             logger.error(f"Amazon SES 이메일 발송 실패 (Soft-Fallback 활성): {str(e)}")
-            
-            if self._observability_hub:
-                try:
-                    # docsuri_shared.ports.ObservabilityHub 포트(snake_case)로 실패 신호 전송
-                    self._observability_hub.emit_metric(
-                        "EmailDeliveryFailureSignal",
-                        1,
-                        {"error_type": type(e).__name__}
-                    )
-                    self._observability_hub.emit_log({
-                        "event": "EmailDeliveryFailureSignal",
-                        "error_type": type(e).__name__,
-                        "message": "SES email dispatch failed. Account remains PENDING."
-                    })
-                except Exception as trace_err:
-                    logger.critical(f"ObservabilityHub 수집기 마저 장애 상태 발생: {str(trace_err)}")
-            
+            _emit_email_failure(self._observability_hub, e, provider="ses")
             return False
 
 
-def get_email_client(env: str = "production", sender_email: str = "", region: str = "ap-northeast-2", observability_hub = None) -> EmailClientInterface:
-    """환경변수 혹은 스위치 설정에 따라 이메일 클라이언트 인스턴스를 스위칭하여 반환합니다."""
+class ResendEmailClient(EmailClientInterface):
+    """Resend (https://resend.com) 트랜잭셔널 이메일 클라이언트.
+
+    SES와 달리 '프로덕션 액세스' 심사 게이트가 없다 — 발신 도메인(docsuri.org)을 Resend에서 DNS로
+    검증하면 즉시 임의 수신자에게 발송 가능. HTTPS API에 API 키(Bearer)로 발송하며, httpx는 이미
+    의존성(reCAPTCHA 클라이언트)이라 새 패키지가 필요 없다. 실패 시 소프트 폴백."""
+
+    _ENDPOINT = "https://api.resend.com/emails"
+
+    def __init__(self, api_key: str, sender_email: str, observability_hub=None):
+        self._api_key = api_key
+        self._sender_email = sender_email
+        self._observability_hub = observability_hub
+
+    async def send_verification_email(self, email: str, token: str, signup_link: str) -> bool:
+        link = f"{signup_link}?token={token}"
+        subject, body_text, body_html = _render_verification_email(link)
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(
+                    self._ENDPOINT,
+                    headers={"Authorization": f"Bearer {self._api_key}"},
+                    json={
+                        "from": self._sender_email,
+                        "to": [email],
+                        "subject": subject,
+                        "html": body_html,
+                        "text": body_text,
+                    },
+                )
+            if resp.status_code in (200, 201):
+                logger.info(f"Verification email sent via Resend to {email}.")
+                return True
+            # 4xx/5xx — 소프트 폴백(가입 트랜잭션 유지) + 실패 신호
+            logger.error(f"Resend 이메일 발송 실패 status={resp.status_code} body={resp.text[:200]}")
+            _emit_email_failure(self._observability_hub, RuntimeError(f"resend_status_{resp.status_code}"), provider="resend")
+            return False
+        except Exception as e:
+            logger.error(f"Resend 이메일 발송 예외 (Soft-Fallback 활성): {str(e)}")
+            _emit_email_failure(self._observability_hub, e, provider="resend")
+            return False
+
+
+def get_email_client(
+    env: str = "production",
+    sender_email: str = "",
+    region: str = "ap-northeast-2",
+    observability_hub=None,
+) -> EmailClientInterface:
+    """환경변수/스위치에 따라 이메일 클라이언트를 반환한다.
+
+    우선순위: ``SES_MOCK=true`` 또는 ``env=local`` → Mock; ``EMAIL_PROVIDER=resend``(+``RESEND_API_KEY``)
+    → Resend; 그 외 → SES. Resend로 지정됐는데 키가 없으면 크게 경보하고 SES로 폴백한다."""
     is_mock = os.getenv("SES_MOCK", "false").lower() == "true" or env.lower() == "local"
     if is_mock:
         logger.info("Using MockEmailClient for account verification link.")
         return MockEmailClient()
-    else:
-        logger.info("Using production SESEmailClient for account verification link.")
-        return SESEmailClient(sender_email=sender_email, region_name=region, observability_hub=observability_hub)
+
+    provider = os.getenv("EMAIL_PROVIDER", "ses").strip().lower()
+    if provider == "resend":
+        api_key = os.getenv("RESEND_API_KEY", "").strip()
+        if api_key:
+            logger.info("Using Resend email client for account verification link.")
+            return ResendEmailClient(api_key=api_key, sender_email=sender_email, observability_hub=observability_hub)
+        logger.error("EMAIL_PROVIDER=resend 이지만 RESEND_API_KEY 미설정 — SES로 폴백합니다.")
+
+    logger.info("Using production SESEmailClient for account verification link.")
+    return SESEmailClient(sender_email=sender_email, region_name=region, observability_hub=observability_hub)

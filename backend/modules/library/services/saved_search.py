@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from uuid import uuid4
-
 from backend.modules.accounts.models import Action, Principal
 
 from ..audit import make_event
 from ..authz import authorize_owned
-from ..models import NotFoundError, QuotaExceededError, SavedSearch
+from ..models import NotFoundError, QuotaExceededError
 from ..ports import AuditSink, SearchGatewayPort, UserDataRepository
 from ..schemas import (
     SavedSearchCreateDTO,
@@ -17,11 +15,9 @@ from ..schemas import (
     SearchResultSetDTO,
 )
 from ..validation import (
+    UserDataDTOAndValidation,
     build_page,
-    normalize_query,
     to_saved_dto,
-    validate_label,
-    validate_query,
 )
 
 MAX_SAVED_PER_OWNER = 200  # BR-L2
@@ -36,18 +32,18 @@ class SavedSearchService:
         self._audit = audit
 
     def save(self, principal: Principal, dto: SavedSearchCreateDTO) -> SavedSearchDTO:
-        query = validate_query(dto.query)
-        label = validate_label(dto.label)
-        normalized = normalize_query(query)
+        entity = UserDataDTOAndValidation.validate_and_map(dto, principal)
         owner = principal.user_id
         repo = self._repo.saved_searches
 
         # BR-L1: idempotent on (owner, normalized_query) — re-save returns existing, may relabel.
-        existing = repo.find_by_normalized(owner, normalized)
+        existing = repo.find_by_normalized(owner, entity.normalized_query)
         if existing is not None:
-            if label is not None and label != existing.label:
-                repo.update_label(owner, existing.id, label)
-            return to_saved_dto(existing)
+            if entity.label is not None and entity.label != existing.label:
+                repo.update_label(owner, existing.id, entity.label)
+            ret_dto = to_saved_dto(existing)
+            object.__setattr__(ret_dto, "was_created", False)
+            return ret_dto
 
         # BR-L2: per-owner quota.
         if repo.count(owner) >= MAX_SAVED_PER_OWNER:
@@ -55,16 +51,11 @@ class SavedSearchService:
                 f"saved-search limit of {MAX_SAVED_PER_OWNER} reached"
             )
 
-        entity = SavedSearch(
-            id=str(uuid4()),
-            owner_id=owner,
-            query=query,
-            normalized_query=normalized,
-            label=label,
-        )
         repo.insert(entity)
         self._audit.record(make_event("saved_search.create", "saved_search", entity.id, owner))
-        return to_saved_dto(entity)
+        ret_dto = to_saved_dto(entity)
+        object.__setattr__(ret_dto, "was_created", True)
+        return ret_dto
 
     def list(self, principal: Principal, params) -> SavedSearchPageDTO:
         return build_page(

@@ -24,12 +24,15 @@ def test_content_fingerprint_is_paper_version_derived() -> None:
     assert content_fingerprint("2401.00001", 1) != content_fingerprint("2401.00001", 2)
 
 
-def test_strict_oa_license_validation_rejects_missing_or_arxiv_only_license() -> None:
+def test_oa_license_validation_rejects_missing_and_unknown_allows_arxiv_and_cc() -> None:
     processor = FetchParseProcessor()
+    # Missing/empty and unknown (non-allowlisted) licenses are still rejected.
     with pytest.raises(LicenseRejectedError):
         processor.validate_open_access(None)
     with pytest.raises(LicenseRejectedError):
-        processor.validate_open_access("http://arxiv.org/licenses/nonexclusive-distrib/1.0/")
+        processor.validate_open_access("https://example.com/proprietary-eula")
+    # Relaxed beyond CC: arXiv's default non-exclusive distribution license now passes.
+    processor.validate_open_access("http://arxiv.org/licenses/nonexclusive-distrib/1.0/")
     processor.validate_open_access("https://creativecommons.org/licenses/by/4.0/")
 
 
@@ -38,7 +41,7 @@ def test_withdrawal_detection_uses_metadata_and_full_text() -> None:
     assert detect_withdrawal(metadata, "This paper has been withdrawn by the authors.")
 
 
-def test_chunker_is_deterministic_and_contiguous() -> None:
+def test_chunker_produces_abstract_plus_body_chunks() -> None:
     processor = FetchParseProcessor()
     metadata = sample_metadata()
     raw = RawDocument(
@@ -47,11 +50,18 @@ def test_chunker_is_deterministic_and_contiguous() -> None:
         source_url="local://paper",
     )
     paper = processor.parse(raw)
-    chunker = Chunker(max_chunk_chars=300, overlap_chars=30)
+    chunker = Chunker()
     first = chunker.chunk(paper)
     second = chunker.chunk(paper)
-    assert first == second
-    assert [chunk.ordinal for chunk in first.chunks] == list(range(len(first.chunks)))
+    assert first == second  # deterministic
+    # full-body chunking: many chunks per paper, not a single abstract chunk
+    assert len(first.chunks) > 1
+    assert first.chunks[0].section == "abstract"
+    assert first.chunks[0].ordinal == 0
+    # ordinals are dense 0..N-1
+    assert [c.ordinal for c in first.chunks] == list(range(len(first.chunks)))
+    # body chunks exist beyond the abstract
+    assert {c.section for c in first.chunks} > {"abstract"}
 
 
 def test_dedup_guard_decisions_and_mark_ingested() -> None:

@@ -35,7 +35,7 @@ SearchResponse
 | `year` | integer | |
 | `arxivId` | string | 표시용(버전 포함 가능) |
 | `abstractSnippet` | string | 스니펫만(전문 초록 비노출) |
-| `relevance` | (표시 전용 파생) | U2 표시값 그대로 렌더, raw 점수 ❌(SEC-9) |
+| `relevance` | (계약 유지·미렌더) | 계약상 VM에 유지하나 **화면 미표시**(2026-06-22 UX 패스). 순서는 받은 랭킹 기반 + 클라 정렬 토글. raw 점수 ❌(SEC-9) |
 | `arxivUrl` | string | 실재 링크(FR-5 근거화) — http/https 검증 + noopener |
 
 > `additionalProperties: false` — 이 7필드 외 어떤 카드 필드도 렌더하지 않는다(SEC-9, FROZEN-adjacent).

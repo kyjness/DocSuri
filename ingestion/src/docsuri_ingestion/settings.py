@@ -18,8 +18,12 @@ class IngestionSettings(BaseModel):
     aws_region: str | None = Field(default=None, alias="DOCSURI_AWS_REGION")
     s3_bucket: str | None = Field(default=None, alias="DOCSURI_S3_BUCKET")
     bedrock_model_id: str | None = Field(default=None, alias="DOCSURI_BEDROCK_MODEL_ID")
+    bedrock_model_id_v2: str | None = Field(default=None, alias="DOCSURI_BEDROCK_MODEL_ID_V2")
     opensearch_endpoint: str | None = Field(default=None, alias="DOCSURI_OPENSEARCH_ENDPOINT")
     opensearch_index: str = Field(default="docsuri-corpus-v1", alias="DOCSURI_OPENSEARCH_INDEX")
+    opensearch_index_v2: str = Field(
+        default="docsuri-corpus-v2", alias="DOCSURI_OPENSEARCH_INDEX_V2"
+    )
     control_plane_dsn: str | None = Field(default=None, alias="DOCSURI_CONTROL_PLANE_DSN")
     sqs_queue_url: str | None = Field(default=None, alias="DOCSURI_SQS_QUEUE_URL")
     sqs_dlq_url: str | None = Field(default=None, alias="DOCSURI_SQS_DLQ_URL")
@@ -29,6 +33,18 @@ class IngestionSettings(BaseModel):
     max_chunks_per_paper: int = Field(default=128, alias="DOCSURI_MAX_CHUNKS_PER_PAPER")
     max_chunk_chars: int = Field(default=2400, alias="DOCSURI_MAX_CHUNK_CHARS")
     chunk_overlap_chars: int = Field(default=240, alias="DOCSURI_CHUNK_OVERLAP_CHARS")
+    # FR-17 multimodal assets (display-only). Safe default OFF — base worker unaffected.
+    multimodal_assets_enabled: bool = Field(
+        default=False, alias="DOCSURI_MULTIMODAL_ASSETS_ENABLED"
+    )
+    asset_s3_prefix: str = Field(default="assets", alias="DOCSURI_ASSET_S3_PREFIX")
+    asset_max_longest_side: int = Field(default=2048, alias="DOCSURI_ASSET_MAX_LONGEST_SIDE")
+    asset_max_pixels: int = Field(default=30_000_000, alias="DOCSURI_ASSET_MAX_PIXELS")
+    asset_webp_quality: int = Field(default=80, alias="DOCSURI_ASSET_WEBP_QUALITY")
+    asset_kms_key_id: str | None = Field(default=None, alias="DOCSURI_ASSET_KMS_KEY_ID")
+    asset_fetch_timeout_seconds: float = Field(
+        default=20.0, alias="DOCSURI_ASSET_FETCH_TIMEOUT_SECONDS"
+    )
 
     @classmethod
     def from_env(cls) -> IngestionSettings:

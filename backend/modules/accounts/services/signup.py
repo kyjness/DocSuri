@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from docsuri_shared.events import AccountCreated
 
 from ..integrations.email import EmailClientInterface
-from ..models import AccountStatus, DomainException, EmailAddress
+from ..models import AccountStatus, DomainException, EmailAddress, normalize_email
 from ..password import PasswordPolicy, get_password_hasher
 from ..repository.credential import CredentialRepository
 
@@ -28,8 +28,8 @@ class SignupService:
         비밀번호 정책 검증, Argon2id 해싱, PENDING 계정 영속화 및 이메일 인증 발송을 일괄 수행합니다.
         verify-all-then-commit 규칙에 따라, 모든 DB 쓰기는 flush만 수행되며 commit은 호출부의 트랜잭션 관리자가 담당합니다.
         """
-        # 이메일 주소 값 객체 검증
-        email_vo = EmailAddress(email)
+        # 이메일 주소 값 객체 검증 (저장 전 trim+lowercase 정규화 — 로그인 조회와 동일 규칙)
+        email_vo = EmailAddress(normalize_email(email))
         
         # 1. 비밀번호 정책 검증 (BR-A1)
         PasswordPolicy.evaluate(password)
@@ -80,6 +80,33 @@ class SignupService:
             self._observability_hub.emit_metric("AccountCreated", 1, {"status": account.status, "email_sent": str(email_sent)})
 
         return account.id
+
+    async def resend_verification(self, email: str, verification_link_base: str) -> bool:
+        """PENDING 계정에 한해 인증 토큰을 재발급하고 인증 메일을 재발송한다 (가입 후 메일 미수신 복구 경로).
+
+        계정 부존재/이미 활성·잠금/형식 오류는 조용히 no-op 처리한다 — 호출부가 항상 동일한
+        일반 응답을 반환하게 하여 이메일 가입 여부 열거(account enumeration)를 막는다 (SEC).
+        새 토큰 발급은 해당 이메일의 기존 토큰을 교체한다(create_verification_token가 선삭제)."""
+        try:
+            email_vo = EmailAddress(normalize_email(email))
+        except DomainException:
+            return False
+
+        account = self._repo.get_by_email(email_vo.value)
+        if not account or account.status != AccountStatus.PENDING.value:
+            # 부존재 또는 이미 활성/잠금 — 재발송하지 않음 (열거 방지 위해 호출부는 동일 응답)
+            return False
+
+        token = secrets.token_urlsafe(32)
+        expires_at = datetime.now(UTC).replace(tzinfo=None) + timedelta(hours=24)
+        self._repo.create_verification_token(email_vo.value, token, expires_at)
+
+        email_sent = await self._email_client.send_verification_email(
+            email=email_vo.value, token=token, signup_link=verification_link_base
+        )
+        if not email_sent:
+            logger.warning(f"Resend verification email failed for {email_vo.value}; account remains PENDING.")
+        return email_sent
 
     async def verify_email(self, token: str) -> bool:
         """이메일 인증 링크로 전달된 토큰을 검증하고 계정을 ACTIVE 상태로 활성화합니다."""

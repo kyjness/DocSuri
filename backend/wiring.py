@@ -112,17 +112,22 @@ def _mount_discovery(app: FastAPI, settings: Settings, result: MountResult) -> N
     # (US-R4): the factories default to NoopObservabilityHub, so without this discovery's
     # emit_metric calls were silently dropped even though the real hub existed on app.state.
     observability = getattr(app.state, "observability", None)
+    cost_guard = getattr(app.state, "cost_guard", None)
 
     discovery_settings = DiscoverySettings.from_env()
     if discovery_settings.search_enabled:
         from discovery.real_wiring import build_real_orchestrator
 
-        bundle = build_real_orchestrator(discovery_settings, observability=observability)
+        bundle = build_real_orchestrator(
+            discovery_settings,
+            observability=observability,
+            cost_guard=cost_guard,
+        )
         read_path = "real(opensearch+bedrock)"
     else:
         from discovery.mocks.wiring import build_mock_orchestrator
 
-        bundle = build_mock_orchestrator(observability=observability)
+        bundle = build_mock_orchestrator(observability=observability, cost_guard=cost_guard)
         read_path = "mock"
 
     # The grounding gate is the REAL U6 single authority (INV-1) in BOTH modes — replacing the
@@ -133,6 +138,7 @@ def _mount_discovery(app: FastAPI, settings: Settings, result: MountResult) -> N
     grounding_hook = GroundingEnforcementHook()
     app.state.discovery_bundle = bundle
     app.state.grounding_hook = grounding_hook
+
     # The paper-detail metadata endpoint (GET /api/papers/{id}) is U2-owned (corpus data); both
     # bundles expose a paper_service. getattr keeps this resilient if a bundle predates it.
     app.include_router(
@@ -211,6 +217,7 @@ def _mount_library(app: FastAPI, settings: Settings, result: MountResult) -> Non
     app.state.library_history_consumer = SearchHistoryEventConsumer(
         SearchHistoryService(consumer_repo, gateway, audit)
     )
+
     result.mounted.append("library")
 
 
@@ -232,21 +239,40 @@ def _mount_summarization(app: FastAPI, settings: Settings, result: MountResult) 
     from summarization.real_wiring import build_real_orchestrator
 
     # Reuse the process-wide U6 single authorities the shell built (cost guard + observability).
+    def abstract_lookup(paper_id: str) -> str | None:
+        discovery_bundle = getattr(app.state, "discovery_bundle", None)
+        if discovery_bundle is not None:
+            paper_service = getattr(discovery_bundle, "paper_service", None)
+            if paper_service is not None:
+                try:
+                    meta = paper_service.get_paper_meta(paper_id)
+                    if meta is not None:
+                        return meta.abstract
+                except Exception:
+                    pass
+        return None
+
     bundle = build_real_orchestrator(
         sm_settings,
         cost_guard=app.state.cost_guard,
         observability=app.state.observability,
+        abstract_lookup=abstract_lookup,
     )
     app.state.summarization_bundle = bundle
-    # The full-text viewer is OA-license-gated; the gate is passed from settings (default OFF —
-    # ``license_unavailable`` → arXiv link-out) until a confirmed license signal is wired.
+    # The doc-model rich view + assets are OA-license-gated; the gates are passed from settings
+    # (default OFF — ``license_unavailable`` → arXiv link-out) until a license signal is wired.
     app.include_router(
-        build_router(bundle.orchestrator, fulltext_enabled=sm_settings.fulltext_viewer_enabled)
+        build_router(
+            bundle.orchestrator,
+            assets_enabled=sm_settings.assets_enabled,
+            docmodel_enabled=sm_settings.docmodel_viewer_enabled,
+        )
     )
     result.mounted.append("summarization")
     log.info(
-        "app-shell: summarization mounted (fulltext_viewer=%s)",
-        sm_settings.fulltext_viewer_enabled,
+        "app-shell: summarization mounted (assets=%s, docmodel=%s)",
+        sm_settings.assets_enabled,
+        sm_settings.docmodel_viewer_enabled,
     )
 
 
@@ -261,12 +287,58 @@ def _mount_ops(app: FastAPI, settings: Settings, result: MountResult) -> None:
     result.mounted.append("ops")
 
 
+def _mount_citation_graph(app: FastAPI, settings: Settings, result: MountResult) -> None:
+    from backend.modules.citation_graph import controller as citation_graph
+
+    for router in citation_graph.routers:
+        app.include_router(router)
+    result.mounted.append("citation_graph")
+
+
+def _mount_personalization(app: FastAPI, settings: Settings, result: MountResult) -> None:
+    from backend.modules.personalization import controller as personalization
+    from backend.modules.personalization.repository import (
+        InMemoryPersonalizationRepository,
+        SqlPersonalizationRepository,
+    )
+
+    if _is_postgres(settings.database_url):
+        from .db import make_engine, make_session_factory
+
+        engine = getattr(app.state, "db_engine", None) or make_engine(settings.database_url)
+        app.state.db_engine = engine
+        session_factory = make_session_factory(engine)
+
+        def get_personalization_repo():
+            session = session_factory()
+            try:
+                yield SqlPersonalizationRepository(session)
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
+            finally:
+                session.close()
+    else:
+        repo = InMemoryPersonalizationRepository()
+
+        def get_personalization_repo():
+            return repo
+
+    app.dependency_overrides[personalization.get_repo] = get_personalization_repo
+    for router in personalization.routers:
+        app.include_router(router)
+    result.mounted.append("personalization")
+
+
 # The real registry. Each entry is a `(app, settings, result) -> None` mounter whose name
 # (minus the `_mount_` prefix) labels it in MountResult / `/readyz`.
 _INTEGRATIONS = (
     _mount_accounts,
     _mount_discovery,
     _mount_library,
-    _mount_summarization,
     _mount_ops,
+    _mount_citation_graph,
+    _mount_personalization,
+    _mount_summarization,
 )

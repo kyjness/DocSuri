@@ -183,3 +183,28 @@ If performance is below target:
 - **Redis ConnectionPool 모니터링**: 커넥션 풀 크기(50개)를 초과하여 대기 스레드/태스크 지연이 발생하지 않는지 로그 확인.
 - **Garbage Collection**: Python 런타임의 GC 스파이크로 인해 일시적으로 P99 레이턴시가 튀지 않는지 확인.
 - **비동기 이벤트 루프 차단**: 비즈니스 로직 중 비동기(async/await) 처리가 누락되어 동기식 디스크 I/O나 암호학적 해싱 연산이 메인 이벤트 루프를 블로킹하고 있는지 파악. (특히 password hashing은 CPU bound 작업이므로 로그인 API 호출 빈도를 적절히 격리 통제해야 함).
+# U9 Personalization Performance Test Instructions — 2026-06-23
+
+No standalone load test was executed for U9 in this local Build & Test pass.
+
+Performance checks for staging:
+
+- Search and summary decision reads should remain bounded profile reads.
+- U9 timeout/failure must return non-personalized defaults.
+- Retention cleanup should run as a short scheduled task, not an always-on worker.
+
+Suggested staging validation:
+
+```powershell
+# Run backend smoke/load command used by the deployment environment once U9 is enabled.
+# Target endpoints:
+# - GET /api/personalization/decision/search
+# - GET /api/personalization/decision/summary-defaults
+```
+
+Acceptance:
+
+- U9 decision read does not dominate U2/U7 latency.
+- U9 failure produces degraded/default behavior, not primary feature failure.
+
+---

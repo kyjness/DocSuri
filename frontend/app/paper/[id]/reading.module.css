@@ -1,0 +1,19 @@
+/* Full-bleed reading surface (본문 / 본문 번역). Scrolls internally with the scrollbar hidden
+   (content is not boxed). Tight top padding so it sits close under the header divider. */
+.page {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  /* No horizontal padding: the screen wrapper already insets 16px; doubling it left too much
+     side whitespace and misaligned the body from the header. */
+  padding: 4px 0 24px;
+  background: var(--color-bg);
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* legacy Edge */
+}
+
+.page::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none; /* Chrome / Safari */
+}

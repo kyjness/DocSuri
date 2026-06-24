@@ -213,6 +213,160 @@ async def test_no_account_lockout_after_many_failures(credential_repo, session_m
     assert account.status == AccountStatus.ACTIVE.value
 
 
+@pytest.mark.asyncio
+async def test_login_is_case_insensitive_on_email(credential_repo, session_manager, recaptcha_client, db_session):
+    """대소문자/공백 차이가 있어도 정상 자격증명이면 로그인된다 (normalize_email — 사일런트 401 방지)."""
+    signup_svc = SignupService(credential_repo, MockEmailClient())
+    account_id = await signup_svc.register("mixed@docsuri.dev", "ValidPassword123!", "http://localhost")
+    account = credential_repo.get_by_id(account_id)
+    account.status = AccountStatus.ACTIVE.value
+    credential_repo.update_account(account)
+    db_session.commit()
+    # 가입은 소문자로 저장됨을 먼저 확인
+    assert account.email == "mixed@docsuri.dev"
+
+    session_manager.issue.return_value = MagicMock(handle="sess_tok")
+    auth_service = AuthenticationService(credential_repo, session_manager, recaptcha_client)
+    # 로그인은 대문자+양끝 공백으로 시도 → 정규화되어 매칭
+    token = await auth_service.authenticate("  Mixed@DocSuri.DEV  ", "ValidPassword123!")
+    assert token == "sess_tok"
+
+
+@pytest.mark.asyncio
+async def test_resend_verification_pending_reissues_and_sends(credential_repo, db_session):
+    """PENDING 계정 재발송: 정규화된 주소로 새 토큰을 발급(기존 교체)하고 새 베이스 링크로 발송한다."""
+    email_client = AsyncMock()
+    email_client.send_verification_email = AsyncMock(return_value=True)
+    svc = SignupService(credential_repo, email_client)
+    await svc.register("pending@docsuri.dev", "ValidPassword123!", "http://localhost/auth/verify-email")
+    db_session.commit()
+
+    ok = await svc.resend_verification("  Pending@DocSuri.dev ", "https://docsuri.org/bff/auth/verify-email")
+    db_session.commit()
+    assert ok is True
+    sent = email_client.send_verification_email.await_args.kwargs
+    assert sent["email"] == "pending@docsuri.dev"
+    assert sent["signup_link"] == "https://docsuri.org/bff/auth/verify-email"
+    tokens = (
+        db_session.query(VerificationTokenTable)
+        .filter(VerificationTokenTable.email == "pending@docsuri.dev")
+        .all()
+    )
+    assert len(tokens) == 1  # 재발급이 기존 토큰을 교체 (중복 누적 없음)
+
+
+@pytest.mark.asyncio
+async def test_resend_verification_is_noop_for_unknown_or_active(credential_repo, db_session):
+    """계정 열거 방지: 미가입/이미 활성 계정에는 재발송하지 않고 False를 반환한다(호출부는 동일 일반 응답)."""
+    email_client = AsyncMock()
+    email_client.send_verification_email = AsyncMock(return_value=True)
+    svc = SignupService(credential_repo, email_client)
+
+    assert await svc.resend_verification("nobody@docsuri.dev", "https://x/bff/auth/verify-email") is False
+
+    aid = await svc.register("active@docsuri.dev", "ValidPassword123!", "http://localhost")
+    acc = credential_repo.get_by_id(aid)
+    acc.status = AccountStatus.ACTIVE.value
+    credential_repo.update_account(acc)
+    db_session.commit()
+    email_client.send_verification_email.reset_mock()
+    assert await svc.resend_verification("active@docsuri.dev", "https://x/bff/auth/verify-email") is False
+    email_client.send_verification_email.assert_not_awaited()
+
+
+def test_verification_link_base_prefers_public_app_url(monkeypatch):
+    """프로덕션 인증 링크는 PUBLIC_APP_URL을 BFF 경유 경로로 구성하고, 미설정 시 요청 호스트로 폴백한다."""
+    from backend.modules.accounts import controller
+
+    monkeypatch.setenv("PUBLIC_APP_URL", "https://docsuri.org/")
+    assert controller._verification_link_base(MagicMock()) == "https://docsuri.org/verify-email"
+
+    monkeypatch.delenv("PUBLIC_APP_URL", raising=False)
+    req = MagicMock()
+    req.base_url = "http://localhost:8000/"
+    assert controller._verification_link_base(req) == "http://localhost:8000/auth/verify-email"
+
+
+def test_email_factory_selects_resend_when_configured(monkeypatch):
+    """EMAIL_PROVIDER=resend + RESEND_API_KEY → ResendEmailClient; 키 없으면 SES로 폴백."""
+    from backend.modules.accounts.integrations import email as email_mod
+
+    monkeypatch.setenv("EMAIL_PROVIDER", "resend")
+    monkeypatch.setenv("RESEND_API_KEY", "re_test_key")
+    client = email_mod.get_email_client(env="production", sender_email="no-reply@docsuri.org")
+    assert isinstance(client, email_mod.ResendEmailClient)
+
+    monkeypatch.delenv("RESEND_API_KEY", raising=False)
+    fallback = email_mod.get_email_client(env="production", sender_email="no-reply@docsuri.org")
+    assert isinstance(fallback, email_mod.SESEmailClient)
+
+
+@pytest.mark.asyncio
+async def test_resend_client_posts_verification(monkeypatch):
+    """ResendEmailClient는 Resend API로 인증 링크를 POST하고 200에 True를 반환한다."""
+    from backend.modules.accounts.integrations import email as email_mod
+
+    captured = {}
+
+    class _Resp:
+        status_code = 200
+        text = '{"id":"abc"}'
+
+    class _FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, headers=None, json=None):
+            captured.update(url=url, headers=headers, json=json)
+            return _Resp()
+
+    monkeypatch.setattr(email_mod.httpx, "AsyncClient", _FakeClient)
+    client = email_mod.ResendEmailClient(api_key="re_test_key", sender_email="no-reply@docsuri.org")
+    ok = await client.send_verification_email("u@example.com", "tok123", "https://docsuri.org/verify-email")
+
+    assert ok is True
+    assert captured["url"] == "https://api.resend.com/emails"
+    assert captured["headers"]["Authorization"] == "Bearer re_test_key"
+    assert captured["json"]["to"] == ["u@example.com"]
+    assert captured["json"]["from"] == "no-reply@docsuri.org"
+    assert "tok123" in captured["json"]["html"]
+    assert "https://docsuri.org/verify-email?token=tok123" in captured["json"]["text"]
+
+
+@pytest.mark.asyncio
+async def test_resend_client_soft_fails_on_error_status(monkeypatch):
+    """Resend가 4xx를 반환하면 예외 없이 False(소프트 폴백)를 반환한다 — 가입 트랜잭션 유지."""
+    from backend.modules.accounts.integrations import email as email_mod
+
+    class _Resp:
+        status_code = 422
+        text = '{"message":"domain not verified"}'
+
+    class _FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, *a, **k):
+            return _Resp()
+
+    monkeypatch.setattr(email_mod.httpx, "AsyncClient", _FakeClient)
+    client = email_mod.ResendEmailClient(api_key="re_test_key", sender_email="no-reply@docsuri.org")
+    ok = await client.send_verification_email("u@example.com", "tok", "https://docsuri.org/verify-email")
+    assert ok is False
+
+
 def test_accounts_dtos_are_shared_ssot_not_forked():
     """SSOT 포크 제거 회귀 가드: accounts.schemas 는 docsuri_shared DTO를 재노출할 뿐 재정의하지 않는다."""
     from backend.modules.accounts import schemas

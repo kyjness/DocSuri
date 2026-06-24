@@ -1,0 +1,81 @@
+.wrap {
+  /* Static so the popover's containing block is the glossary section (which is
+     position:relative), letting the editor span the section width instead of overflowing
+     the viewport from a badge near the right edge. */
+  display: inline-flex;
+}
+
+/* Tappable kept-term chip — compact. */
+.term {
+  font-size: 0.8125rem;
+  padding: 0.25rem 0.625rem;
+  color: var(--color-accent);
+  background: var(--color-accent-soft-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.term:hover,
+.term[aria-expanded='true'] {
+  border-color: var(--color-accent);
+}
+
+.popover {
+  /* Anchored to the glossary section (not the badge), spanning its full width: the editor
+     always stays inside the viewport — never cut off, never pushing the page sideways. */
+  position: absolute;
+  top: calc(100% + 0.375rem);
+  left: 0;
+  right: 0;
+  z-index: 10;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.625rem 0.75rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 0.5rem;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.12);
+}
+
+.input {
+  flex: 1 1 6rem;
+  min-width: 0;
+  font-size: 0.875rem;
+  padding: 0.4375rem 0.625rem;
+  color: var(--color-text);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 0.375rem;
+}
+
+.save {
+  font-size: 0.8125rem;
+  padding: 0.25rem 0.625rem;
+  color: var(--color-accent-contrast);
+  background: var(--color-accent);
+  border: none;
+  border-radius: 0.375rem;
+  cursor: pointer;
+}
+
+.save:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.savedNote {
+  flex: 1 1 100%;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--color-accent);
+  white-space: nowrap;
+}
+
+.error {
+  flex-basis: 100%;
+  font-size: 0.75rem;
+  color: var(--color-danger);
+}

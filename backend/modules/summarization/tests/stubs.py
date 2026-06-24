@@ -17,10 +17,11 @@ from summarization.domain.models import (
     AnchorTarget,
     SummaryCacheKey,
     SummaryDraft,
-    TranslationDraft,
+    TranslationSegmentsResult,
 )
 from summarization.domain.refiner import InputRefiner
 from summarization.domain.source_selector import SourceSelector
+from summarization.domain.structured_translator import StructuredTranslator
 from summarization.ports.ports import LlmUnavailable
 from summarization.service.orchestrator import SummarizationOrchestrationService
 
@@ -42,6 +43,34 @@ Copyright 2025 The Authors. All rights reserved.
 """
 
 
+def tiny_doc(*, title: str = "Introduction", paragraph: str = "We propose a model."):
+    """A minimal valid doc-model (one section, title + paragraph) for translate-path tests."""
+    from docsuri_shared.dtos import DocModel
+
+    return DocModel.model_validate(
+        {
+            "meta": {
+                "paperId": "2401.1",
+                "version": 1,
+                "title": "Sample",
+                "provenance": {
+                    "sourceTier": "native_html",
+                    "parserVersion": "test",
+                    "schemaVersion": "1",
+                    "generatedAt": "1970-01-01T00:00:00Z",
+                },
+            },
+            "sections": [
+                {
+                    "id": "s1",
+                    "title": title,
+                    "blocks": [{"id": "s1.p1", "type": "paragraph", "text": paragraph}],
+                }
+            ],
+        }
+    )
+
+
 def valid_draft() -> SummaryDraft:
     return SummaryDraft(
         tldr="We propose a new method for representation learning.",
@@ -60,8 +89,9 @@ def valid_draft() -> SummaryDraft:
 @dataclass
 class StubLlm:
     draft: SummaryDraft | None = None
-    translation: TranslationDraft | None = None
     raise_n: int = 0  # raise LlmUnavailable for the first N calls
+    empty: bool = False  # emit empty translations (→ empty_translation abstain)
+    kept_terms: tuple[str, ...] = ("BERT",)
     _calls: int = 0
 
     def summarize(self, refined, request, glossary) -> SummaryDraft:
@@ -70,11 +100,16 @@ class StubLlm:
             raise LlmUnavailable("stub outage")
         return self.draft or valid_draft()
 
-    def translate(self, abstract, request, glossary) -> TranslationDraft:
+    def translate_segments(self, segments, request, glossary) -> TranslationSegmentsResult:
         self._calls += 1
         if self._calls <= self.raise_n:
             raise LlmUnavailable("stub outage")
-        return self.translation or TranslationDraft(korean_text="번역 결과", kept_terms=("BERT",))
+        # Deterministic: prefix each segment's text so the source structure/id mapping is
+        # verifiable; ``empty`` simulates a blank generation for the abstain path.
+        translations = (
+            {} if self.empty else {s.id: f"번역:{s.text}" for s in segments}
+        )
+        return TranslationSegmentsResult(translations=translations, kept_terms=self.kept_terms)
 
 
 @dataclass
@@ -137,17 +172,27 @@ def make_orchestrator(
     full_text: StubFullText | None = None,
     cost_guard: StubCostGuard | None = None,
     observability: StubObservability | None = None,
+    doc_model_reader=None,
+    doc_model_build_queue=None,
+    map_reduce_summarizer=None,
+    summary_job_queue=None,
 ) -> SummarizationOrchestrationService:
+    llm = llm or StubLlm()
     return SummarizationOrchestrationService(
         store=store or StubStore(),
         source_selector=SourceSelector(full_text or StubFullText()),
         refiner=InputRefiner(),
         glossary_resolver=GlossaryResolver(None),
         length_router=LengthRouter(),
-        llm=llm or StubLlm(),
+        llm=llm,
         grounding=GroundingValidator(),
         assembler=ResultAssembler(),
         cost_guard=cost_guard or StubCostGuard(),
         observability=observability or StubObservability(),
         model_ver="test-model",
+        doc_model_reader=doc_model_reader,
+        doc_model_build_queue=doc_model_build_queue,
+        map_reduce_summarizer=map_reduce_summarizer,
+        summary_job_queue=summary_job_queue,
+        structured_translator=StructuredTranslator(llm),
     )

@@ -1,0 +1,10 @@
+# AIDLC Code Reviewer — Tool Configuration (DocSuri)
+# checkstyle disabled: no Java in this project.
+tools:
+  - bandit
+  - ruff
+  - mypy
+  - radon
+  - vulture
+  # - semgrep
+  # - checkstyle

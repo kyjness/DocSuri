@@ -20,49 +20,42 @@ import sys
 from collections.abc import Iterable
 from typing import Any
 
-from docsuri_shared.vector_spec import DIMENSIONS, IndexRecord
+from docsuri_shared.index_spec import papers_index_body
+from docsuri_shared.vector_spec import IndexRecord
 
 from ..adapters.opensearch_index import OpenSearchClientFactory
 from ..adapters.settings import DiscoverySettings
 from ..mocks import fixtures
 
-# Mirrors the U1 writer's index shape (vector-spec §2/§3): k-NN cosine vector + BM25 text.
-INDEX_BODY: dict[str, Any] = {
-    "settings": {"index": {"knn": True}},
-    "mappings": {
-        "properties": {
-            "chunkId": {"type": "keyword"},
-            "paperId": {"type": "keyword"},
-            "version": {"type": "integer"},
-            "vector": {
-                "type": "knn_vector",
-                "dimension": DIMENSIONS,
-                "method": {
-                    "name": "hnsw",
-                    "space_type": "cosinesimil",
-                    "engine": "lucene",
-                },
-            },
-            "section": {"type": "keyword"},
-            "lexicalTerms": {"type": "text"},
-            "title": {"type": "text"},
-            "authors": {"type": "keyword"},
-            "year": {"type": "integer"},
-            "arxivId": {"type": "keyword"},
-            "abstract": {"type": "text"},
-            "abstractSnippet": {"type": "text"},
-            "arxivUrl": {"type": "keyword"},
-            "categories": {"type": "keyword"},
-        }
-    },
-}
+# papers_index_body moved to docsuri_shared.index_spec (single source — the ingestion image
+# provisions from the same body). Re-exported here so existing callers keep importing it from
+# this module.
+
+# Local seed mapping (lucene, in-memory). Production uses papers_index_body(on_disk=True).
+INDEX_BODY: dict[str, Any] = papers_index_body()
 
 
-def create_index(client: Any, index_name: str, *, recreate: bool = True) -> None:
+def create_index(
+    client: Any, index_name: str, *, recreate: bool = True, body: dict[str, Any] | None = None
+) -> None:
+    """Create a single index (default ``INDEX_BODY``). Used by ``bootstrap_papers_index`` to
+    build the production on_disk index; ``recreate`` drops an existing one first."""
     if recreate and client.indices.exists(index=index_name):
         client.indices.delete(index=index_name)
     if not client.indices.exists(index=index_name):
-        client.indices.create(index=index_name, body=INDEX_BODY)
+        client.indices.create(index=index_name, body=body or INDEX_BODY)
+
+
+def create_indices_and_alias(client: Any, alias_name: str, *, recreate: bool = True) -> None:
+    v1_index = f"{alias_name}-v1"
+    v2_index = f"{alias_name}-v2"
+    for index_name in [v1_index, v2_index]:
+        if recreate and client.indices.exists(index=index_name):
+            client.indices.delete(index=index_name)
+        if not client.indices.exists(index=index_name):
+            client.indices.create(index=index_name, body=INDEX_BODY)
+
+    client.indices.put_alias(index=v1_index, name=alias_name)
 
 
 def bulk_index(client: Any, index_name: str, records: Iterable[IndexRecord]) -> int:
@@ -89,8 +82,10 @@ def seed(settings: DiscoverySettings | None = None) -> int:
         use_ssl=settings.opensearch_use_ssl,
         verify_certs=settings.opensearch_verify_certs,
     )
-    create_index(client, settings.opensearch_index)
-    n = bulk_index(client, settings.opensearch_index, fixtures.RECORDS)
+    alias_name = settings.opensearch_index
+    v1_index = f"{alias_name}-v1"
+    create_indices_and_alias(client, alias_name)
+    n = bulk_index(client, v1_index, fixtures.RECORDS)
     return n
 
 

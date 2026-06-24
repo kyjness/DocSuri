@@ -36,6 +36,17 @@ describe('ApiClient retry policy', () => {
     expect(t.calls).toBe(1);
   });
 
+  it('surfaces a backend {detail} 400 reason (FastAPI envelope), not the generic fallback', async () => {
+    // Module HTTPExceptions serialize as {detail}; the frontend must read it (regression guard
+    // for the "signup blocked" incident where {detail} was swallowed into "문제가 발생했습니다").
+    const t = transportOf(async () => ({ status: 400, body: { detail: '이미 등록된 이메일 주소입니다.' } }));
+    const client = new ApiClient(t, fast);
+    await expect(client.signup({ email: 'a@b.co', password: 'Abcdef123!' })).rejects.toMatchObject({
+      kind: 'unknown',
+      message: '이미 등록된 이메일 주소입니다.',
+    });
+  });
+
   it('normalizes a transport throw to a network UserFacingError', async () => {
     const t = transportOf(async () => {
       throw new Error('boom');

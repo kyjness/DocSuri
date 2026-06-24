@@ -18,11 +18,12 @@
 
 | ID | 규칙 | 근거 |
 |---|---|---|
-| BR-U5-4 | ResultCard는 **7필드(title·authors·year·arxivId·abstractSnippet·relevance·arxivUrl)만** 렌더. 그 외 카드 필드·내부 점수·owner id·debug meta 렌더 금지 | SEC-9, FR-4 |
-| BR-U5-5 | `relevance`는 U2 제공 표시값 그대로 렌더. U5가 raw 점수를 계산·노출·등급화하지 않음 | SEC-9, FR-3/4 |
+| BR-U5-4 | ResultCard는 노출 허용 필드만 렌더(그 외 내부 점수·owner id·debug meta 렌더 금지). `relevance`는 계약상 VM(7필드)에 유지하되 **화면에는 렌더하지 않는다**(2026-06-22 UX 패스 — 도메인 엔티티 §1.3 비고 참조) | SEC-9, FR-4 |
+| BR-U5-5 | `relevance`(U2 표시값)는 화면에 표시하지 않는다. 결과 순서는 받은 랭킹 순서(관련도순)를 기본으로 두고, **클라이언트 정렬 토글(관련도순/최신순=연도 desc)** 로 재정렬한다(받은 top-N 내 재정렬일 뿐 코퍼스 재질의 아님). U5는 raw 점수를 계산·노출·등급화하지 않음 | SEC-9, FR-3/4 |
 | BR-U5-6 | 외부 데이터(title·authors·abstractSnippet 등)는 **텍스트로 이스케이프** 렌더. 원시 HTML 주입 금지 | SEC-5(콘텐츠 삽입) |
 | BR-U5-7 | `arxivUrl` 링크는 **http/https 스킴만** 허용 + `rel="noopener noreferrer"`. 그 외 스킴 차단 | 안전하지 않은 링크 |
 | BR-U5-8 | `degradationMode` 원문·내부 코드값은 화면 비노출. 저하는 `meta.degraded=true`일 때만 비기술 배너로 | SEC-9, QT-3 |
+| BR-U5-23 | 카드 라이브러리 저장은 카드 **우상단 북마크 아이콘**으로 노출(검색·라이브러리 재검색 공용), 상세 페이지는 제목 옆 북마크. 저장 동작·계약(멱등 add, meta 스냅샷)은 불변 — 표현·위치만 변경(2026-06-22 UX 패스) | US-L2, FR-9 |
 
 ## C. 상태 전이 규칙 (FR-11)
 

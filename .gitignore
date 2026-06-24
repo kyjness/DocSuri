@@ -3,6 +3,10 @@
 .DS_Store
 node_modules/
 
+# Local secrets
+backend/.env
+frontend/.env
+
 # Python (shared/python/ binding — backend·ingestion·ops = Python, §5-A)
 .venv/
 __pycache__/

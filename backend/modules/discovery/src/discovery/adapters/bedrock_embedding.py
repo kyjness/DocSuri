@@ -22,12 +22,22 @@ class BedrockCohereQueryEmbedder:
     """Query embedding via Bedrock (Cohere Embed Multilingual v3, reader=search_query)."""
 
     def __init__(
-        self, *, model_id: str, region_name: str | None = None, client: Any | None = None
+        self,
+        *,
+        model_id: str,
+        region_name: str | None = None,
+        client: Any | None = None,
     ) -> None:
         if client is None:
             import boto3  # lazy: only the `real` extra needs boto3
+            from botocore.config import Config
 
-            client = boto3.client("bedrock-runtime", region_name=region_name)
+            config = Config(
+                connect_timeout=5.0,
+                read_timeout=10.0,
+                retries={"max_attempts": 1},
+            )
+            client = boto3.client("bedrock-runtime", region_name=region_name, config=config)
         self._client = client
         self._model_id = model_id
 
@@ -36,6 +46,9 @@ class BedrockCohereQueryEmbedder:
             "texts": [text],
             "input_type": INPUT_TYPE_READER,  # search_query (vector-spec §1 asymmetry)
             "embedding_types": ["float"],
+            # Cohere Embed v4 defaults to 1536-dim; pin to the index width so query and index
+            # share one space (else the dimension guard below fails loud). Matches the writer.
+            "output_dimension": DIMENSIONS,
         }
         try:
             response = self._client.invoke_model(

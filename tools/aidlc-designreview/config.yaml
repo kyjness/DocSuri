@@ -1,0 +1,11 @@
+aws:
+  region: us-east-1
+  profile_name: AdministratorAccess-028317349537
+models:
+  default_model: claude-sonnet-4-6
+review:
+  severity_threshold: medium
+  enable_alternatives: true
+  enable_gap_analysis: true
+logging:
+  log_level: INFO

@@ -53,13 +53,13 @@ export function SummaryView({ summary, cached, onAnchor }: SummaryViewProps) {
       ) : null}
 
       <section className={styles.field}>
-        <h4 className={styles.label}>핵심 (TL;DR)</h4>
+        <h4 className={styles.label}>한 줄 요약</h4>
         <p className={styles.body}>{summary.tldr}</p>
         <AnchorChips field="tldr" anchors={anchors} onAnchor={onAnchor} />
       </section>
 
       <section className={styles.field}>
-        <h4 className={styles.label}>기여</h4>
+        <h4 className={styles.label}>핵심 기여</h4>
         <ul className={styles.list}>
           {summary.contributions.map((c, i) => (
             <li key={i}>{c}</li>
@@ -69,13 +69,13 @@ export function SummaryView({ summary, cached, onAnchor }: SummaryViewProps) {
       </section>
 
       <section className={styles.field}>
-        <h4 className={styles.label}>방법</h4>
+        <h4 className={styles.label}>연구 방법</h4>
         <p className={styles.body}>{summary.method}</p>
         <AnchorChips field="method" anchors={anchors} onAnchor={onAnchor} />
       </section>
 
       <section className={styles.field}>
-        <h4 className={styles.label}>결과</h4>
+        <h4 className={styles.label}>주요 결과</h4>
         <p className={styles.body}>{summary.results}</p>
         <AnchorChips field="results" anchors={anchors} onAnchor={onAnchor} />
       </section>

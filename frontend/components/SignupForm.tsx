@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import styles from './AuthForm.module.css';
 import { getApiClient, UserFacingError } from '@/lib/api';
 import { validateEmail, validateRequiredPassword } from '@/lib/api/validate';
+import { AuthField } from './AuthField';
 
 // SignupForm (LC-1, US-A1, BR-U5-2/13) — client validation mirrors
 // accounts.schema.json (presence/format). Password is input-only (SEC-12/3);
@@ -49,36 +50,26 @@ export function SignupForm() {
           {formError}
         </p>
       ) : null}
-      <div className={styles.field}>
-        <label className={styles.label} htmlFor="signup-email">
-          이메일
-        </label>
-        <input
-          id="signup-email"
-          className={styles.input}
-          type="email"
-          autoComplete="email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          data-testid="signup-email"
-        />
-        {fieldErrors.email ? <p className={styles.fieldError}>{fieldErrors.email}</p> : null}
-      </div>
-      <div className={styles.field}>
-        <label className={styles.label} htmlFor="signup-password">
-          비밀번호
-        </label>
-        <input
-          id="signup-password"
-          className={styles.input}
-          type="password"
-          autoComplete="new-password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          data-testid="signup-password"
-        />
-        {fieldErrors.password ? <p className={styles.fieldError}>{fieldErrors.password}</p> : null}
-      </div>
+      <AuthField
+        id="signup-email"
+        label="이메일"
+        type="email"
+        autoComplete="email"
+        value={email}
+        onChange={setEmail}
+        error={fieldErrors.email}
+        testId="signup-email"
+      />
+      <AuthField
+        id="signup-password"
+        label="비밀번호"
+        type="password"
+        autoComplete="new-password"
+        value={password}
+        onChange={setPassword}
+        error={fieldErrors.password}
+        testId="signup-password"
+      />
       <button type="submit" className={styles.submit} disabled={submitting} data-testid="signup-submit">
         가입하기
       </button>

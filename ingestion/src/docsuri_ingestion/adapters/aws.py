@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from docsuri_shared.dtos import DocModel
 from docsuri_shared.vector_spec import DIMENSIONS, EMBEDDING_SPEC
 
 from docsuri_ingestion.domain.enums import FailureReason
 from docsuri_ingestion.domain.errors import RetriableIngestionError, ValidationViolationError
 from docsuri_ingestion.domain.models import IndexRecordBatch, IndexStats, ParsedPaper, Tombstone
 from docsuri_ingestion.ports import QueueMessage
+
+# Cohere Embed on Bedrock accepts at most 96 texts per invoke_model call.
+_BEDROCK_EMBED_BATCH_LIMIT = 96
 
 
 class S3FullTextStore:
@@ -44,6 +49,73 @@ class S3FullTextStore:
         return f"s3://{self._bucket}/{key}"
 
 
+class S3DocModelStore:
+    """BR-30 doc-model cache on S3 (Infra §1.1b): ``doc-model/{paperId}/v{version}.json``.
+
+    Same single bucket as full-text/assets, separate ``doc-model/`` prefix; image bytes are
+    NOT stored here (the JSON references webp assets by assetId). SSE-KMS when a key is set,
+    else SSE-S3. ``get`` returns ``None`` on a cache miss; ``remove`` drops every cached
+    version for a paper (version-change / tombstone invalidation).
+    """
+
+    def __init__(
+        self, *, bucket: str, prefix: str = "doc-model", kms_key_id: str | None = None
+    ) -> None:
+        import boto3
+
+        self._client = boto3.client("s3")
+        self._bucket = bucket
+        self._prefix = prefix.strip("/")
+        self._kms_key_id = kms_key_id
+
+    def _key(self, paper_id: str, version: int) -> str:
+        return f"{self._prefix}/{paper_id}/v{version}.json"
+
+    def get(self, paper_id: str, version: int) -> DocModel | None:
+        from botocore.exceptions import ClientError
+
+        try:
+            response = self._client.get_object(
+                Bucket=self._bucket, Key=self._key(paper_id, version)
+            )
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") in {"NoSuchKey", "404", "NotFound"}:
+                return None
+            raise
+        return DocModel.model_validate_json(response["Body"].read())
+
+    def put(self, doc: DocModel) -> str:
+        key = self._key(doc.meta.paperId, doc.meta.version)
+        kwargs: dict[str, Any] = {
+            "Bucket": self._bucket,
+            "Key": key,
+            # exclude_none keeps optional fields off the wire; consumers ignore unknowns.
+            "Body": doc.model_dump_json(exclude_none=True).encode("utf-8"),
+            "ContentType": "application/json; charset=utf-8",
+            "ServerSideEncryption": "aws:kms" if self._kms_key_id else "AES256",
+            "Metadata": {
+                "paper-id": doc.meta.paperId,
+                "version": str(doc.meta.version),
+                "parser-version": doc.meta.provenance.parserVersion,
+                "schema-version": doc.meta.provenance.schemaVersion,
+            },
+        }
+        if self._kms_key_id:
+            kwargs["SSEKMSKeyId"] = self._kms_key_id
+        self._client.put_object(**kwargs)
+        return f"s3://{self._bucket}/{key}"
+
+    def remove(self, paper_id: str) -> None:
+        paginator = self._client.get_paginator("list_objects_v2")
+        keys: list[dict[str, str]] = []
+        for page in paginator.paginate(Bucket=self._bucket, Prefix=f"{self._prefix}/{paper_id}/"):
+            keys.extend({"Key": obj["Key"]} for obj in page.get("Contents", []))
+        for start in range(0, len(keys), 1000):  # DeleteObjects caps at 1000 keys per call
+            self._client.delete_objects(
+                Bucket=self._bucket, Delete={"Objects": keys[start : start + 1000]}
+            )
+
+
 class BedrockCohereEmbeddingPort:
     def __init__(self, *, model_id: str, region_name: str | None = None) -> None:
         import boto3
@@ -60,10 +132,22 @@ class BedrockCohereEmbeddingPort:
         del correlation_id
         if EMBEDDING_SPEC.input_type_writer != "search_document":
             raise RuntimeError("Bedrock writer must use search_document input type")
+        # Cohere Embed on Bedrock caps a single request at 96 texts; a long paper can chunk
+        # past that (max_chunks_per_paper=128). Sub-batch and concatenate IN ORDER — the
+        # assembler zips chunk_ids↔vectors with strict=True, so order must be preserved.
+        vectors: list[list[float]] = []
+        for start in range(0, len(texts), _BEDROCK_EMBED_BATCH_LIMIT):
+            vectors.extend(self._embed_batch(texts[start : start + _BEDROCK_EMBED_BATCH_LIMIT]))
+        return vectors
+
+    def _embed_batch(self, texts: Sequence[str]) -> list[list[float]]:
         body = {
             "texts": list(texts),
             "input_type": EMBEDDING_SPEC.input_type_writer,
             "embedding_types": ["float"],
+            # Cohere Embed v4 defaults to 1536-dim; pin to the index/spec width so vectors
+            # match docsuri-corpus-v2's mapping (v3 returned EMBEDDING_SPEC.dimensions implicitly).
+            "output_dimension": EMBEDDING_SPEC.dimensions,
         }
         response = self._client.invoke_model(
             modelId=self._model_id,
@@ -84,21 +168,53 @@ class BedrockCohereEmbeddingPort:
         return vectors
 
 
+def build_opensearch_client(
+    *,
+    endpoint: str,
+    region_name: str | None = None,
+    username: str | None = None,
+    password: str | None = None,
+    use_ssl: bool = True,
+    verify_certs: bool = True,
+):
+    """Build an opensearch-py client. Auth order: basic-auth if both creds are given
+    (local/override), else SigV4 (``Urllib3AWSV4SignerAuth``, service ``es``) when a region
+    is set — the managed VPC domain authorizes the ECS task role by resource policy, so signed
+    requests are required — else unsigned (local clusters with an open policy)."""
+    from opensearchpy import OpenSearch
+
+    if username and password:
+        http_auth = (username, password)
+    elif region_name:
+        import boto3
+        from opensearchpy import Urllib3AWSV4SignerAuth
+
+        http_auth = Urllib3AWSV4SignerAuth(
+            boto3.Session().get_credentials(), region_name, "es"
+        )
+    else:
+        http_auth = None
+    return OpenSearch(
+        hosts=[endpoint], http_auth=http_auth, use_ssl=use_ssl, verify_certs=verify_certs
+    )
+
+
 class OpenSearchVectorIndex:
     def __init__(
         self,
         *,
         endpoint: str,
         index_name: str,
+        region_name: str | None = None,
         username: str | None = None,
         password: str | None = None,
         stats_ttl_seconds: float = 60.0,
     ) -> None:
-        from opensearchpy import OpenSearch
-
-        http_auth = (username, password) if username and password else None
-        self._client = OpenSearch(
-            hosts=[endpoint], http_auth=http_auth, use_ssl=True, verify_certs=True
+        self._client = build_opensearch_client(
+            endpoint=endpoint,
+            region_name=region_name,
+            username=username,
+            password=password,
         )
         self._index_name = index_name
         self._stats_cache = IndexStatsTtlCache(ttl_seconds=stats_ttl_seconds)
@@ -124,19 +240,28 @@ class OpenSearchVectorIndex:
     def tombstone_paper(self, tombstone: Tombstone) -> None:
         # Version ordering is guarded by ControlPlaneStore. The index operation deletes
         # all existing chunks for the paper that won that CAS.
-        self._client.delete_by_query(
+        response = self._client.delete_by_query(
             index=self._index_name,
             body={"query": {"term": {"paperId": tombstone.paper_id}}},
             refresh=True,
             conflicts="proceed",
         )
+        failures = response.get("failures", [])
+        version_conflicts = response.get("version_conflicts", 0)
+        if failures or version_conflicts > 0:
+            raise RetriableIngestionError(
+                f"OpenSearch delete_by_query had {len(failures)} failures and "
+                f"{version_conflicts} version conflicts",
+                reason=FailureReason.BULK_INDEX_PARTIAL_FAILURE,
+                stage="index_tombstone",
+            )
         self._record_write()
         self._stats_cache.invalidate()
 
     def delete_stale_chunks(self, paper_id: str, keep_chunk_ids: set[str]) -> None:
         if not keep_chunk_ids:
             return
-        self._client.delete_by_query(
+        response = self._client.delete_by_query(
             index=self._index_name,
             body={
                 "query": {
@@ -149,6 +274,15 @@ class OpenSearchVectorIndex:
             refresh=True,
             conflicts="proceed",
         )
+        failures = response.get("failures", [])
+        version_conflicts = response.get("version_conflicts", 0)
+        if failures or version_conflicts > 0:
+            raise RetriableIngestionError(
+                f"OpenSearch delete_by_query (stale) had {len(failures)} failures and "
+                f"{version_conflicts} version conflicts",
+                reason=FailureReason.BULK_INDEX_PARTIAL_FAILURE,
+                stage="index_delete_stale",
+            )
         self._record_write()
         self._stats_cache.invalidate()
 
@@ -211,6 +345,7 @@ class SqsQueue:
             QueueUrl=self._queue_url,
             MessageBody=json.dumps(
                 {
+                    "type": "ingest_paper",
                     "jobId": job.job_id,
                     "kind": job.kind.value,
                     "arxivRef": job.arxiv_ref,
@@ -228,11 +363,18 @@ class SqsQueue:
         )
         messages = []
         for message in response.get("Messages", []):
+            raw_body = message["Body"]
+            try:
+                body = json.loads(raw_body)
+            except json.JSONDecodeError:
+                body = {"type": "invalid", "rawBody": raw_body}
+            if not isinstance(body, dict):
+                body = {"type": "invalid", "rawBody": raw_body}
             messages.append(
                 SqsMessage(
                     message_id=message["MessageId"],
                     receipt_handle=message["ReceiptHandle"],
-                    body=json.loads(message["Body"]),
+                    body=body,
                 )
             )
         return messages

@@ -45,6 +45,7 @@ def build_mock_orchestrator(
     lexical_index=None,
     ttl_seconds: float = 300.0,
     observability=None,
+    cost_guard=None,
 ) -> MockBundle:
     """Wire the U2 pipeline with mocks. Override any adapter (e.g. a Failing* one) for tests."""
     embedding = embedding_adapter or MockEmbeddingAdapter()
@@ -60,7 +61,7 @@ def build_mock_orchestrator(
         ranker=RelevanceRanker(),
         grounding_adapter=GroundingAdapter(),
         assembler=ResultAssembler(),
-        cost_guard=StubCostGuard(degrade_mode=degrade_mode),
+        cost_guard=cost_guard or StubCostGuard(degrade_mode=degrade_mode),
         observability=observability or NoopObservabilityHub(),
         event_publisher=publisher,
     )

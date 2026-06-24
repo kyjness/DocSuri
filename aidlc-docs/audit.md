@@ -10,8 +10,6 @@
 **AI 응답**: 레포 상태 조정(워킹 트리는 이미 블랭크 슬레이트; 열린 PR #33은 리셋의 커밋 쌍둥이; 신규 AI-DLC 룰셋 당일 추가; 기존 aidlc-state.md 없음). AI-DLC 환영 메시지 표시. 워크스페이스 탐지 판정: **Greenfield**(디스크에 소스 파일 없음).
 **맥락**: INCEPTION — 워크스페이스 탐지. Greenfield → 다음 단계 요구사항 분석.
 
----
-
 ## PR 문서 작성 및 커밋 메시지 상세화
 **Timestamp**: 2026-06-16T13:58:22Z
 **User Input**: ".github\\PULL_REQUEST_TEMPLATE.md 을 기반으로, 202606162300_PR.md를 작성해 주세요, 그리고 커밋 메시지를 좀 더 상세히 작성해 주세요."
@@ -860,3 +858,717 @@
 
 ---
 
+## 프론트 카드·내비 UX 패스 (Phase A) — 코드 + 문서 정합
+**Timestamp**: 2026-06-22T00:00:00Z
+**User Input(원문)**: "지금 요약에서 이름 변경 '기여'→'차별성'… 카드에도 담기 버튼 대신 카드 오른쪽 위에 북마크 아이콘… 카드에 요약 버튼 제거… 카드에서 관련도 높음 표시 제거→필터… 네비게이션바 만들기" → (분류·합의 후) "Phase A 한 브랜치로 착수해줘" → UI 미세조정 4건 → "문서 정합 진행해줘".
+**변경 분류**: 완료 단계(U5 Frontend·U7 Frontend FD) 수정 — 영향 낮음(프론트 로컬·계약/DTO 불변). 데이터 종속 항목(카드 인용수=U8 머지 후, 그림·도표=요구사항 개정 별 트랙, 연도 범위필터)은 본 패스에서 제외.
+**AI Response**: 브랜치 `feature/u5-card-nav-ux`(develop 기준). 코드: ① 상세 요약 단락명 `핵심 기여/연구 방법/주요 결과`(+tldr `한 줄 요약`) ② 카드 `SummaryAction`/`SummaryInline` 제거(카드 tldr 피크 폐지·요약 상세 일원화) ③ 담기→카드 우상단·상세 제목 옆 북마크 아이콘(저장 계약 불변) ④ 카드 relevance 미표시 + 클라 정렬 토글(관련도순/최신순) ⑤ 네비바 검색/마이페이지 ⑥ 검색 '논문 검색' 라벨 제거(aria-label 보존)·'검색 저장'→'검색어 저장'·저장+정렬 한 툴바·상세 헤더 높이/간격/구분선 축소. **문서 정합**: u5 `business-rules`(BR-U5-4/5 정정·BR-U5-23 신설)·`domain-entities`(relevance 미렌더)·`frontend-components`(ResultCard·SearchScreen); u7-frontend `frontend-components`(§0 카드 요약 폐지·§2.1~2.3 정정·**Q1·Q2 결정 대체 명시**)·`nfr-design/logical-components`·`nfr-design-patterns`(E2E). **검증**: `tsc` 0·`next lint` clean·`vitest` 70 passed·`next build` OK(라우트 10).
+**Context**: CONSTRUCTION — U5/U7 프론트 UX 패스(Phase A) 코드·문서 정합 완료 → 커밋 `bcd6f75`·PR #123(→develop). 보류 트랙: 카드 인용수(U8 머지 후)·그림·도표(요구사항 개정)·필터.
+
+---
+
+## Phase A 후속 — 네비를 하단 탭바로 (상단 AppHeader → BottomNav)
+**Timestamp**: 2026-06-22T00:00:00Z
+**User Input(원문)**: "근데 내 눈에는 네비바가 안뜨는데 구축된거 맞아?" → "내가 말한 네비바는 appheader 말고 화면 하단에 말한거였는데"
+**AI Response**: 진단 — 네비는 정상 렌더되나 상단 `AppHeader` 우측 텍스트 링크라 사용자가 기대한 "하단 네비바"가 아니었음(RouteGuard·AppHeader 모두 `authenticated` 게이트라 페이지가 보이면 네비도 렌더됨 확인). 수정 — 모바일 우선 **하단 고정 탭바 `BottomNav`** 신설(검색/마이페이지, 아이콘+라벨, 현재경로 활성표시, 인증 시에만, in-flow 스페이서로 콘텐츠 클리어). 상단 `AppHeader`에서 검색/마이페이지 링크 제거(브랜드+로그아웃만). 인증 5개 라우트(search·library·saved·history·paper)에 마운트. 문서 정합: `aidlc-state`(⑤ 하단 탭바)·u5 `frontend-components` §2.8a BottomNav. **검증: `tsc` 0·`next lint` clean·`vitest` 70 passed·`next build` OK.** 같은 브랜치 `feature/u5-card-nav-ux`·PR #123에 추가 커밋.
+**Context**: CONSTRUCTION — Phase A 네비 형태 정정(하단 탭바). PR #123 갱신.
+## U8 인용 그래프/각주 트리 — Requirements Analysis 질문지 생성
+**Timestamp**: 2026-06-19T00:00:00Z
+**User Input(원문)**: "각주 트리를 보여주기 위하여 인용 그래프 기능을 추가하려고 하는데, AI-DLC 방법론을 기반으로 구현하려고 합니다. 이를 위하여 상세 질문지를 만들어 md 파일로 만들어 주세요. aidlc-docs 의 내용을 참고해 주세요."
+**AI Response**: 현재 `requirements.md` §12에서 인용 그래프/"trace" 내비게이션이 v1 제외임을 확인하고, 바로 설계/코드로 진입하지 않고 Requirements Analysis 재진입 질문지 `aidlc-docs/inception/requirements/requirement-verification-questions-citation-graph.md`를 생성. 질문 22개: 범위 편입·U8 유닛 경계·논문 상세보기 진입점·backward/forward 방향·depth/노드 상한·트리 표현·Semantic Scholar/OpenAlex/arXiv 데이터 소스·온디맨드+캐시·7일 TTL·표시 메타데이터·unresolved 분리·필터/정렬·U4 라이브러리 연동·로그인 요구·NFR-P3·U6 쿼터/비용 신호·실패 UX·모바일 인터랙션·U7 출처 연결·QT-6·운영 관측성·후속 산출물 범위를 포함. 코드/인프라 미생성.
+**Context**: INCEPTION 재진입 — U8 Citation Graph 후보 기능의 요구사항 명확화 게이트 작성. 답변 대기.
+
+---
+
+## U8 요구사항 답변 확정 + FR-15~ 등재
+**Timestamp**: 2026-06-19T00:00:00Z
+**User Input(원문)**: "Q3: 논문 상세보기 페이지에서, 요약, 초록 번역, 전문 번역, 각주 트리 4개 버튼을 배치하면 될 것 같습니다. 논문 상세보기 페이지는 타 분기에서 생성중이므로 FE를 구현할 필요 없습니다. \nQ4: B가 나을 것 같습니다. Q10은 제목, 연도, 인용수까지 나오면 좋을 것 같습니다.\nQ14: 검색 기능 자체가 로그인이 필요하므로 모든 기능을 로그인 필수로 하면 될 것 같습니다.\n\n나머지는 다 권장안으로 진행하겠습니다."
+**AI Response**: 질문지에 답변 반영 — Q3=X(논문 상세보기 페이지 4버튼·FE 구현 제외), Q4=B(backward references만), Q10=X(제목·연도·인용수), Q14=B(전체 로그인 필수), Q22=B(User Stories+Units Generation까지 진행), 나머지 A. 이후 Q22에 따라 `requirements.md` 갱신: **FR-15(논문 상세보기의 backward references 각주 트리, 기본 1-hop/최대 2-hop/50노드, 노드=제목·연도·인용수)·FR-16(인용 노드 라이브러리 저장/로그인 필수/실패 UX)·NFR-P3(검색 SLA 제외 온디맨드)·QT-6(인용 엣지 정확도+그래프 불변식)** 추가, §12에서 인용 그래프 제외를 일부 해제하는 U8 카브아웃 추가. `stories.md`에 **에픽 7 — 인용 그래프/각주 트리**와 US-CG1..CG6 추가. `unit-of-work.md`에 **U8 Citation Graph** API 모듈(`backend/modules/citation_graph/`) 등재, `unit-of-work-dependency.md`에 U8 행/열과 상세보기 각주 트리 흐름 추가, `unit-of-work-story-map.md`에 전수 33 스토리 매핑 반영. `aidlc-state.md` 갱신. Construction/코드/FE 미생성.
+**Context**: INCEPTION — U8 Citation Graph 요구사항·User Stories·Units Generation 완료. 다음 단계는 별도 승인 후 U8 Construction Functional Design.
+
+---
+
+## U8 CONSTRUCTION 진입 — Functional Design 계획·질문 게이트 작성
+**Timestamp**: 2026-06-19T00:00:00Z
+**User Input(원문)**: "제 개입이 필요한 단계 전까지 쭉 진행해 주세요."
+**AI Response**: U8 인용 그래프/각주 트리 유닛의 CONSTRUCTION per-unit 루프 첫 단계인 Functional Design에 진입. `aidlc-docs/construction/plans/u8-citation-graph-functional-design-plan.md` 작성: 유닛 컨텍스트, FD 산출물 계획(`domain-entities.md`, `business-logic-model.md`, `business-rules.md`), 가정, 명확화 질문 Q1~Q12, 불변식 INV-U8-1~5, 다음 절차를 포함. 질문은 API 응답 union, unresolved 노출, 중복/순환 처리, 2-hop lazy-load, 50노드 상한, 정렬, 수동 새로고침, U4 저장 메타 adapter, canonical id 우선순위, 관측 이벤트, QT-6 PBT 범위, 구현 전략을 다룸. 질문지는 `question-format-guide.md`에 맞춰 `A)`, `B)`, `X)`와 옵션 간 빈 줄 형식으로 정규화. AI-DLC Functional Design 규칙상 `[Answer]:`가 모두 확정되기 전에는 FD 산출물·앱 코드·FE를 생성하지 않음. 기술 스택 질문은 Functional Design 승인 후 NFR Requirements에서 진행하도록 이연.
+**Context**: CONSTRUCTION — U8 Citation Graph Functional Design Step 1~4(계획+질문). 답변 대기. 다음(답변 확정 후): `aidlc-docs/construction/u8-citation-graph/functional-design/` 산출물 생성 → 리뷰 게이트 → U8 NFR Requirements.
+
+---
+
+## U8 Functional Design — 답변 확정·산출물 생성
+**Timestamp**: 2026-06-19T00:00:00Z
+**User Input(원문)**: "전부 권장으로 진행하겠습니다."
+**AI Response**: U8 Functional Design 계획서 Q1~Q12 전부 권장안(A)으로 기록하고 계획 체크박스 3개를 완료 처리. 산출물 `aidlc-docs/construction/u8-citation-graph/functional-design/` 3문서 생성: `domain-entities.md`(요청/응답 union, root/node/edge/unresolved/snapshot/policy/error, PBT 속성), `business-logic-model.md`(조회, 2-hop lazy-load, 수동 refresh, U4 save gateway, failure model), `business-rules.md`(BR-CG1~14, QT-6 PBT-CG1~6, 보안/복원력/PBT compliance, traceability). 앱 코드·FE·기술 스택 결정은 생성하지 않음. 기술 스택 질문은 Functional Design 승인 후 NFR Requirements에서 진행.
+**Context**: CONSTRUCTION — U8 Functional Design 산출물 생성 완료. 리뷰/승인 대기. 다음(승인 후): U8 NFR Requirements.
+
+---
+
+## U8 NFR Requirements 진입 — 계획·질문 게이트 작성
+**Timestamp**: 2026-06-19T00:00:00Z
+**User Input(원문)**: "제 개입이 필요한 단계 전까지 쭉 진행해 주세요!"
+**AI Response**: 사용자 진행 요청을 U8 Functional Design 승인 및 다음 단계 진행으로 처리. CONSTRUCTION per-unit 루프의 U8 NFR Requirements에 진입하여 `aidlc-docs/construction/plans/u8-citation-graph-nfr-requirements-plan.md` 작성. 질문 Q1~Q12는 citation provider, provider credential, Redis snapshot TTL, NFR-P3 응답 목표, timeout/retry, U6 rate/quota, backend FastAPI app-shell 통합, shared DTO 승격 시점, U6 관측, U4 저장 계약, 실 provider 테스트 경계, Hypothesis PBT 계승을 다룸. AI-DLC NFR Requirements 규칙상 `[Answer]:`가 모두 확정되기 전에는 `nfr-requirements.md`와 `tech-stack-decisions.md`를 생성하지 않음. 앱 코드·FE 미생성.
+**Context**: CONSTRUCTION — U8 NFR Requirements Step 1~4(계획+질문). 답변 대기. 다음(답변 확정 후): `aidlc-docs/construction/u8-citation-graph/nfr-requirements/` 산출물 생성 → 리뷰 게이트 → U8 NFR Design.
+
+## U8 NFR Requirements — 답변 확정·산출물 생성·NFR Design 진입
+
+**User Input(원문)**: "NFR Requirements 계획서 Q1~Q12는 모두 권장으로 하고, 다음 단계로 진행해 주세요."
+**AI Response**: U8 NFR Requirements 계획서 Q1~Q12를 모두 권장안 A로 확정하고 체크박스를 완료 처리. 산출물 `aidlc-docs/construction/u8-citation-graph/nfr-requirements/` 2문서 생성: `nfr-requirements.md`(성능, 복원력, 보안, 비용/쿼터, 관측성, QT-6 테스트 요구사항)와 `tech-stack-decisions.md`(Semantic Scholar 단일 provider, 기존 secrets/env, Redis 7일 TTL snapshot, 기존 FastAPI backend/U6 경로, backend-local DTO, U6 관측, fixture provider 테스트, Hypothesis PBT). 다음 단계로 `aidlc-docs/construction/plans/u8-citation-graph-nfr-design-plan.md` 작성. 앱 코드·FE 미생성.
+**Context**: CONSTRUCTION — U8 NFR Requirements 완료, U8 NFR Design Step 1~4(계획+질문) 진입. 답변 대기.
+
+## U8 NFR Design — 답변 확정·산출물 생성·Infrastructure Design 진입
+
+**User Input(원문)**: "다음 단계를 진행해 주세요."
+**AI Response**: U8 NFR Design 계획서 Q1~Q5를 모두 권장안 A로 확정하고 체크박스를 완료 처리. 산출물 `aidlc-docs/construction/u8-citation-graph/nfr-design/` 4문서 생성: `logical-components.md`, `patterns.md`, `runtime-architecture.md`, `test-strategy.md`. 결정 핵심은 기존 FastAPI backend/U6 경로, `GET /citation-tree` + `POST /citation-tree/save`, Semantic Scholar 2초 timeout+1 retry, Redis 7일 TTL, TreeBuilder 최종 50노드/depth2 강제, env-gated 실 provider 계약 테스트. 다음 단계로 `aidlc-docs/construction/plans/u8-citation-graph-infrastructure-design-plan.md` 작성. 앱 코드·FE 미생성.
+**Context**: CONSTRUCTION — U8 NFR Design 완료, U8 Infrastructure Design Step 1~4(계획+질문) 진입. 답변 대기.
+
+## U8 Infrastructure Design — 답변 확정·산출물 생성·Code Generation 계획 진입
+
+**User Input(원문)**: "전부 권장으로 확정하고 다음 단계를 진행해 주세요."
+**AI Response**: U8 Infrastructure Design 계획서 Q1~Q3를 모두 권장안 A로 확정하고 체크박스를 완료 처리. 산출물 `aidlc-docs/construction/u8-citation-graph/infrastructure-design/` 3문서 생성: `infrastructure-components.md`, `deployment-topology.md`, `configuration.md`. 결정 핵심은 `SEMANTIC_SCHOLAR_API_KEY`, `CITATION_GRAPH_ENABLED`, Redis prefix `citation_graph:v1:`, 기존 FastAPI backend/U6/Redis/U4 재사용, 신규 ECS/DB/S3/큐/graph DB 없음. 다음 단계로 `aidlc-docs/construction/plans/u8-citation-graph-code-generation-plan.md` 작성. 앱 코드·FE 미생성.
+**Context**: CONSTRUCTION — U8 Infrastructure Design 완료, U8 Code Generation 계획 승인 게이트 진입. 답변 대기.
+
+## U8 Code Generation — 코드 생성·검증 완료
+
+**User Input(원문)**: "제 개입이 필요한 단계 전까지 쭉 진행해 주세요."
+**AI Response**: U8 Code Generation 계획을 권장안 A 승인으로 처리하고 backend-only 구현 완료. 추가/수정: `backend/modules/citation_graph/` 모듈(`controller.py`, `__init__.py`), app-shell mount(`backend/wiring.py`), app-shell registry 테스트 갱신, `backend/tests/test_citation_graph.py`. 구현 범위: feature flag `CITATION_GRAPH_ENABLED`, 인증 필수, Semantic Scholar references provider, process-local snapshot store(문서상 Redis 교체 seam), bounded tree builder(depth<=2, visible nodes<=50), unresolved 분리, U4 library save gateway(arXiv ID 있는 노드만), U6 telemetry emit, env-gated 실 provider contract test stub. 검증: `.venv` 생성 후 backend test deps 설치, `python -m pytest backend/tests/test_citation_graph.py backend/tests/test_app_shell.py -q` 15 passed, `python -m pytest backend/tests -q` 33 passed, 이후 stub 추가 후 `python -m pytest backend/tests -q` 33 passed + 1 skipped, `python -m ruff check backend/modules/citation_graph backend/wiring.py backend/tests/test_citation_graph.py backend/tests/test_app_shell.py` 통과, `python -m compileall backend/modules/citation_graph backend/wiring.py` 통과. FE 미생성.
+**Context**: CONSTRUCTION — U8 Code Generation + Build/Test 완료. 다음은 사용자 리뷰/승인 또는 커밋/PR 지시 필요.
+
+---
+
+## U8 Cross-Review 반영 — 202606221100 PR 준비
+**Timestamp**: 2026-06-22T00:00:00Z
+**User Input(원문)**: "Cross-Review.md 를 읽고 프로젝트 코드들을 수정해 주세요. 이후, @202606221100_PR.md를 작성해 주세요. 커밋 메시지도 작성해 주세요."
+**AI Response**: `Cross-Review.md`를 읽고 PR #117 U8 backend slice 지적을 반영. 브랜치명은 현재 `feature/u8-v1`로 CI prefix 조건 충족 확인. 코드 수정: `depth` 쿼리 제거 및 cache key 중복 제거, lazy 2-hop은 `expandNodeId`로만 제어, 저장 경로의 out-of-range `year`를 null 처리, `_emit`에서 `emit_log` 존재 여부 방어, telemetry `depthRequested`와 `depthReturned` 분리. 문서 수정: U8 Redis snapshot 단언을 현재 process-local in-memory TTL seam + production Redis target으로 정정. `202606221100_PR.md` 작성 예정. 앱 FE 변경 없음.
+**Context**: CONSTRUCTION — U8 Citation Graph Cross-Review follow-up. 코드/문서 수정 및 PR 메시지 작성.
+
+---
+
+
+## 멀티모달 표시(그림·도표) — INCEPTION Requirements Analysis 재진입
+**Timestamp**: 2026-06-22T00:00:00Z
+**User Input(원문)**: "u7이 지금 s3에 정규화를 거친 그림이나 도표가 없는 텍스트 기반으로 요약/번역 … 근데 나는 그림이나 도표 등등 다 넣을거 … aidlc로 처음부터" → (스코핑) "표시 전용 먼저, 비전은 다음 사이클" → (브랜치 지시) "develop 말고 새 브랜치 파서 3개 갭·그림도표 모두 진행" → (확정) "a로 하고 Q2는 C로, 나머지 권장안 A로".
+**AI Response**: 보류 트랙 "그림·도표(멀티모달=요구사항 개정)"를 Requirements Analysis 재진입으로 착수(브랜치 `feature/multimodal-display`). 명확화 질문지 `inception/requirements/requirement-verification-questions-multimodal-display.md`(Q1~Q7) 작성·확정: **Q2=C(소스 가용성 혼합 추출 — LaTeX 구조화/PDF 크롭 폴백), 나머지 A**. 모순 점검 통과. `requirements.md` 등재: **FR-17**(그림·도표 자산 추출·저장·표시 — 표시 전용; 실재 자산만·생성 이미지 금지; OA 라이선스 게이트 재사용; 단기 만료 서명 URL; 앵커 자산 연결; 이미지 lazy-load), **FR-12 앵커 자산 연결 보강**, **§12 멀티모달 카브아웃**("그림·도표" 전면 제외 → "비전 LLM 추론만 제외"로 한정), §13 추적성 4행, 상단 개정노트(2026-06-22). `aidlc-state.md`에 멀티모달 표시 INCEPTION 항목 추가. **범위 경계**: 요약/번역 LLM 입력은 텍스트+캡션 유지(비전 추론=차기 사이클). 영향 유닛 U1·공유계약·U7(+백/프론트 정합 갭 3건 흡수: `summarization.schema.json` SSOT 수립·`validation_error`/`unauthorized` 상태 매핑)·U5. **앱 코드·FD 미생성.**
+**Context**: INCEPTION — 요구사항 등재 완료. 다음은 Construction per-unit Functional Design(U1부터) 승인 게이트. 미커밋(리뷰 대기).
+
+---
+
+## 멀티모달 표시 — U1 Ingestion Functional Design (자산 추출)
+**Timestamp**: 2026-06-22T00:00:00Z
+**User Input(원문)**: (계획서 게이트) "진행" — Q1~Q7 권장안 A 확정.
+**AI Response**: U1 멀티모달 자산 추출 FD 계획서(`construction/plans/u1-ingestion-multimodal-functional-design-plan.md`) Q1~Q7 전부 A 확정·체크박스 완료. 기존 U1 FD 3종 확장: **`domain-entities.md` §10**(AssetType·AssetSourceMode{structured|page-crop}·결정적 AssetId·**FigureTableAsset**·**AssetManifest**·**AssetStorePort**; ParsedPaper.assets[] 보강), **`business-logic-model.md` §6**(`ingestOne` 자산 추출·저장 삽입 — Q1=A parse 추출+dedup 후 NEW|CHANGED 저장, Q2=C 혼합 추출 `AssetExtractor`, Q4=A best-effort·인덱스 원자성과 분리, tombstone `remove_assets`·CHANGED `replace_assets`, 데이터 흐름 ASCII), **`business-rules.md` §7**(BR-22 dedup 게이팅·BR-23 혼합 추출·BR-24 실재 자산만(생성 금지)·BR-25 캡션 비중복·앵커 좌표·BR-26 OA 게이트 재사용·BR-27 best-effort 비차단·BR-28 멱등·정리; PBT P7/P8; FailureReason ASSET_*; 추적성). **핵심 경계**: 표시 전용 → 인덱싱·임베딩·IndexRecord·VectorSpec 경로 불변(자산은 검색 비대상). 읽기 측 계약·서명 URL·U5 렌더는 본 FD 밖(공유계약·U7·U5). **앱 코드 미생성.**
+**Context**: CONSTRUCTION — U1 멀티모달 FD 완료. 다음 게이트: U1 NFR Requirements(추출 라이브러리·이미지 포맷/해상도·서명 정책). 미커밋(리뷰 대기).
+
+---
+
+## 멀티모달 표시 — U1 Ingestion NFR Requirements (자산 추출 기술 스택)
+**Timestamp**: 2026-06-22T00:00:00Z
+**User Input(원문)**: (계획서 게이트) "진행" — Q1~Q7 권장안 A 확정.
+**AI Response**: U1 멀티모달 NFR Requirements 계획서(`construction/plans/u1-ingestion-multimodal-nfr-requirements-plan.md`) Q1~Q7 전부 A 확정·체크박스 완료. 기존 U1 NFR 2종 확장: **`tech-stack-decisions.md`** — TD-11(PDF 크롭=**PyMuPDF(fitz) 휴리스틱**, ML/GPU 없음·CPU 배치), TD-12(LaTeX 구조화=e-print tarball 그래픽 직접 추출 + 표는 PDF 크롭), TD-13(이미지=**WebP 재인코딩**+치수/픽셀 상한+메타 스트립), TD-14(자산 저장=**S3 별도 prefix(private·SSE) + 매니페스트/메타 공유 RDS PostgreSQL**, 신규 스토어 0), TD-15(이미지 보안=안전 디코더 재인코딩·decompression bomb 가드·원본 바이트 비서빙). **`nfr-requirements.md` §11** — 성능(오프라인 배치·CPU·결정성 버전핀), 보안(SEC-9 비공개·서명 URL·이미지 파싱 방어·SSRF), 복원력(best-effort 비차단·타임아웃·서킷), 비용(distinct×1회 bounded·$1600 내 흡수·자산 라인 계상). 상속: TD-1 Python·TD-7 S3·TD-8 Hypothesis. TD-3/4(임베딩·OpenSearch) 무관. **앱 코드 미생성.**
+**Context**: CONSTRUCTION — U1 멀티모달 NFR Requirements 완료. 다음 게이트: U1 NFR Design. 미커밋(리뷰 대기).
+
+---
+
+## 멀티모달 표시 — U1 Ingestion NFR Design (자산 추출 패턴·논리 컴포넌트)
+**Timestamp**: 2026-06-22T00:00:00Z
+**User Input(원문)**: (계획서 게이트) "진행" — Q1~Q5 권장안 A 확정.
+**AI Response**: U1 멀티모달 NFR Design 계획서(`construction/plans/u1-ingestion-multimodal-nfr-design-plan.md`) Q1~Q5 전부 A 확정·체크박스 완료. 기존 U1 NFR Design 2종 확장: **`logical-components.md` §5** — 신규 논리 컴포넌트 **AssetExtractor**(혼합 추출·캡션 매칭)·**Image Normalizer**(WebP·치수상한·메타스트립)·**AssetStore**(S3 prefix + 공유 RDS `paper_asset`) + 토폴로지 다이어그램(인덱스 경로와 독립) + `paper_asset` RDS 상태 설계((paper_id,version,asset_id) 키·write-order 정합). **`nfr-design-patterns.md` §7** — 7.1 page-crop 검출·캡션 정규식 근접 매칭 알고리즘((page,y,x) 결정성 P7), 7.2 이미지 정규화 파이프라인(safe_decode→픽셀상한 bomb 가드→다운스케일→WebP→메타스트립), 7.3 best-effort 격리(per-asset·인덱스 비차단·ASSET_*), 7.4 매니페스트 write-order 정합(S3 put→RDS upsert, P8 "행 있는데 객체 없음" 회피), 7.5 보안(공개차단·서명URL·최소권한 IAM·이미지 파싱 방어) + 추적성 4행. **기존 인덱스/원자성 토폴로지·패턴 불변.** **앱 코드 미생성.**
+**Context**: CONSTRUCTION — U1 멀티모달 NFR Design 완료. 다음 게이트: U1 Infrastructure Design. 미커밋(리뷰 대기).
+
+---
+
+## 멀티모달 표시 — U1 Ingestion Infrastructure Design (자산 인프라)
+**Timestamp**: 2026-06-22T00:00:00Z
+**User Input(원문)**: (계획서 게이트) "진행" — Q1~Q5 권장안 A 확정.
+**AI Response**: U1 멀티모달 Infrastructure Design 계획서(`construction/plans/u1-ingestion-multimodal-infrastructure-design-plan.md`) Q1~Q5 전부 A 확정·체크박스 완료. **U1 최초 Infra 산출물**을 멀티모달 범위로 신설: **`infrastructure-design/infrastructure-design.md`** — S3 자산(기존 전문 버킷 + `assets/{paperId}/{version}/{assetId}.webp` prefix·공개차단·SSE-KMS 재사용·만료없음), `paper_asset` 공유 RDS 스키마(키 (paper_id,version,asset_id)·마이그레이션·인덱스), presigned S3 전달(만료 ~10분, CloudFront 후속), 최소권한 IAM(워커 PUT/DELETE+RW / U7 GET·presign+RO), write-order 정합(P8), 비용($1600 내·자산 라인), 관측. **`deployment-architecture.md`** — 추출 co-location(기존 워커, 이미지 처리 메모리 헤드룸, ML/GPU 없음), 배포 토폴로지(쓰기 워커↔공유 S3/RDS↔U7 읽기 presign), 마이그레이션·워커 이미지 의존성(PyMuPDF) 다이제스트 핀, 기존 토폴로지 불변. **선결 상속(미결)**: 워커 런타임 타깃(ECS/Fargate vs Lambda)·리전·CD. 신규 버킷·DB 0. **앱 코드 미생성.**
+**Context**: CONSTRUCTION — U1 멀티모달 Infrastructure Design 완료. 다음 게이트: U1 Code Generation. 미커밋(리뷰 대기).
+
+---
+
+## 멀티모달 표시 — U1 Ingestion Code Generation PART 1 (계획·승인 프롬프트)
+**Timestamp**: 2026-06-22T00:00:00Z
+**AI Response**: U1 멀티모달 Code Generation 계획서(`construction/plans/u1-ingestion-multimodal-code-generation-plan.md`) 작성 — 브라운필드 `ingestion/src/docsuri_ingestion/` 12 스텝(의존성·도메인 모델·포트·AssetExtractor·ImageNormalizer·AssetStore 어댑터 S3/RDS·application 와이어링·`paper_asset` 마이그레이션·설정·테스트 PBT P7/P8·코드요약·배포). **선행 질문 Q1(라이브러리 라이선스)**: NFR TD-11의 **PyMuPDF는 AGPL-3.0** → 프로덕션·공개 앱 부적합 위험. 권장 A=permissive 스택(pypdfium2 Apache/BSD + pdfplumber/pdfminer.six MIT + Pillow HPND)로 TD-11/TD-13 정정. 인덱스 경로 불변·자산 best-effort·토글 안전 기본(off). **승인 프롬프트 — 사용자 승인 대기(Q1 확정 포함).** 앱 코드 미생성(PART 2 대기).
+**Context**: CONSTRUCTION — U1 Code Generation PART 1(계획) 완료. PART 2(코드 생성) 승인 게이트. 미커밋.
+
+---
+
+## 멀티모달 표시 — U1 Ingestion Code Generation PART 2 (코드 생성)
+**Timestamp**: 2026-06-22T00:00:00Z
+**User Input(원문)**: "A로 진행해줘" (Q1=A permissive 스택 확정 + PART 2 진행).
+**AI Response**: U1 멀티모달 자산 추출 코드 생성(브라운필드 `ingestion/`). **Q1=A**: PyMuPDF(AGPL) 대신 **pypdfium2(Apache/BSD)+pdfplumber(MIT)+Pillow(HPND)** — NFR TD-11/13 정정(라이선스 안전). 신규: `domain/assets.py`(asset_id·RawAssetCandidate·FigureTableAsset·ExtractedAsset·AssetManifest), `asset_extraction.py`(caption_kind·**finalize_assets P7 순수**·ImageNormalizer[bomb 가드·WebP·메타스트립]·AssetExtractor[혼합: e-print 그래픽/PDF page-crop 폴백, import-guarded]), `adapters/assets.py`(ArxivAssetSource httpx·**S3RdsAssetStore** write-order S3→RDS P8·CHANGED 교체·tombstone 삭제), `migrations/postgres/002_paper_asset.sql`. 수정: `enums.py`(AssetType·AssetSourceMode·ASSET_* FailureReason), `ports.py`(AssetSourcePort·AssetStorePort), `application.py`(자산 포트 주입 미주입=비활성·`_store_assets_best_effort` 인덱스 커밋 후·비차단 BR-27·`_remove_assets_best_effort` tombstone), `settings.py`(MULTIMODAL_ASSETS_ENABLED off 기본·상한·KMS·타임아웃), `pyproject.toml`(assets optional extra). 테스트: `test_assets.py`(caption·finalize·**PBT P7**·ImageNormalizer importorskip), `test_asset_wiring.py`(기본 off·성공 store·**실패 인덱싱 비차단**). **인덱스/임베딩/IndexRecord 경로 코드 불변.** **검증**: `compileall` 통과 + 순수 모듈 import·finalize/caption 로직 스모크 통과. 전체 테스트 실행은 Build & Test.
+**Context**: CONSTRUCTION — U1 Code Generation 완료. 다음 게이트: U1 Build & Test. 미커밋(리뷰 대기).
+
+---
+
+## 멀티모달 표시 — U1 Ingestion Build & Test
+**Timestamp**: 2026-06-22T00:00:00Z
+**Build Status**: Success (uv sync --extra assets — pypdfium2·pdfplumber·pdfminer.six·pillow)
+**Test Status**: Pass — pytest 42 passed/0 failed, ruff clean
+**AI Response**: U1 멀티모달 Build & Test. `uv run --extra assets pytest` 42 passed(자산 신규: caption_kind·finalize PBT P7·ImageNormalizer[bomb 가드·undecodable 거부·WebP]·best-effort 비차단 wiring + 인덱스 경로 회귀). 린트 B904(raise-from)·E501(line len) 정정 후 `ruff check` All checks passed. 실 추출(_page_crop/_structured)·S3RdsAssetStore는 env-gated 통합으로 이연(P8는 store write-order로 보장). 산출물 `construction/u1-ingestion/build-and-test/`(build-instructions·unit-test-instructions·build-and-test-summary). 코드 정정 커밋(lint fix). **U1 생산자 멀티모달 슬라이스 종결.**
+**Files Generated**: build-instructions.md, unit-test-instructions.md, build-and-test-summary.md
+**Context**: CONSTRUCTION — U1 멀티모달 트랙 종결. 다음: 공유계약(shared/dtos + paper_asset 노출) → U7(읽기·서명 URL·갭 3건) → U5(렌더). 미커밋(리뷰 대기).
+
+---
+
+## 멀티모달 표시 — U7 Summarization Functional Design (읽기 측 + 정합 갭)
+**Timestamp**: 2026-06-22T00:00:00Z
+**User Input(원문)**: "너의 판단을 믿고 승인할게 알아서 진행해줘" (트랙 위임 진행).
+**AI Response**: U7 멀티모달 FD(읽기 측 자산 노출 + 정합 갭 3건) — 위임 진행으로 게이트 결정 D1~D5 확정·계획서 작성. 기존 U7 FD 확장: **`domain-entities.md` §9**(AssetRef[서명 URL만·SEC-9]·PaperAssetsResponse union[ok/license_unavailable/unauthorized]·**`GET /api/papers/{id}/assets`** 독립 엔드포인트·AssetManifestReadPort/AssetUrlSigner[paper_asset 읽기+presign]·앵커↔자산 프론트 매칭·갭#1 SSOT `summarization.schema.json` 승격·갭#2/#3 상태 매핑), **`business-rules.md`**(BR-S15 자산 읽기·OA 게이트 BR-SF-11 재사용·presign, BR-S16 계약 SSOT, BR-S17 unauthorized/validation_error 상태, PBT-S6 자산 라운드트립·비노출). U7은 읽기 측(생산=U1)·요약/번역 생성·근거화·캐시 **불변**. **앱 코드 미생성.**
+**Context**: CONSTRUCTION — U7 멀티모달 FD 완료. 다음: U7 Code Generation(shared schema·/assets 엔드포인트·갭 수정·frontend types/classify). 미커밋(리뷰 대기).
+
+---
+
+## 멀티모달 표시 — U7 Summarization Code Generation + Build & Test (읽기 측 + 갭)
+**Timestamp**: 2026-06-22T00:00:00Z
+**User Input(원문)**: "u7코드까지 쌓고 올릴게 진행해줘" (위임 진행).
+**Build Status**: Success · **Test Status**: Pass (백엔드 summarization 48 passed/1skip·자산 7 passed·ruff clean; 프론트 tsc 0·next lint clean·vitest 75 passed)
+**AI Response**: U7 멀티모달 읽기 측 + 정합 갭 3건 코드. **공유 갭#1**: `shared/dtos/summarization.schema.json` SSOT 수립(요약/번역 + AssetRef/PaperAssetsResponse + unauthorized/validation_error). **백엔드**: `domain/models`(StoredAsset[내부·object_ref]·AssetRef[공개·서명 URL만·to_dict SEC-9])·`ports`(AssetReadPort)·`orchestrator`(asset_reader 주입·list_assets presign)·`api/router`(GET /api/papers/{id}/assets 인증·OA 게이트·서명 URL + 갭#2 validation_error message)·`adapters/rds_assets.py`(RdsS3AssetReader: paper_asset 읽기+S3 presign, object_ref 비노출)·`tests/test_assets_endpoint.py`(7). **프론트**: `summarize.ts`(AssetRef·PaperAssetsResponse·UnauthorizedDTO·SummarizeValidationErrorDTO[search 충돌 회피])·`classifySummarize`(classifyAssetsResponse + 갭#2/#3 매핑: validation_error→invalid·unauthorized→인증 메시지)·`apiClient.getAssets`·`test/classifyAssets.test.ts`(5). NFR/Infra 경량 폴드(읽기 포트·presign TTL·assets_enabled 게이트). 요약/번역 생성·근거화·캐시 불변. 코드 요약 `construction/u7-summarization/code/u7-multimodal-read-code-summary.md`. **U7 읽기 측 종결.**
+**Context**: CONSTRUCTION — U7 멀티모달 슬라이스 종결. 다음(마지막): U5 상세/뷰어 자산 렌더 컴포넌트. 미커밋(리뷰 대기).
+
+---
+
+## 멀티모달 표시 — U5 Frontend 자산 렌더 Code + Build & Test (트랙 종결)
+**Timestamp**: 2026-06-22T00:00:00Z
+**User Input(원문)**: "남은 것 진행부터해줘" (위임 진행).
+**Build Status**: Success (next build OK) · **Test Status**: Pass (tsc 0·next lint clean·vitest 80 passed)
+**AI Response**: U5 멀티모달 자산 렌더(마지막 유닛). 신규 `lib/assetAnchor.ts`(captionNumber·matchAssetForAnchor 순수 — figure/table 앵커↔자산 매칭, 인셉션 Q5)·`lib/useAssets.ts`(페치 훅)·`components/AssetGallery.tsx`(+css: lazy-load·치수 예약 프레임·캡션 React 이스케이프 BR-SF-9·서명 URL img SEC-9·로딩/에러 재시도/빈·라이선스 미허용/미인증 미표시·활성 앵커 스크롤 하이라이트). 수정 `PaperDetailIsland`(자산 섹션 + anchor 전달)·`lib/api/index`(AssetsOutcome export)·`mockTransport`+`summarizeFixtures`(/assets mock + 인라인 SVG data URL 픽스처). 테스트 `test/assetAnchor.test.ts`(매처)·`test/assetGallery.test.tsx`(렌더). **검증: tsc 0·next lint clean·vitest 80 passed(+5)·next build OK.** 코드 요약 `construction/u5-frontend/code/u5-multimodal-asset-render-code-summary.md`. **멀티모달 표시(FR-17) 트랙 완결**(U1→U7→U5; 비전 추론 차기 사이클).
+**Context**: CONSTRUCTION — 멀티모달 트랙 완결. 9커밋 `feature/multimodal-display`(미push). 다음: 사용자 push/PR·승인 후 Operations. 미커밋(본 U5 커밋 대기).
+## U1 SQS 권장 수정 방안 정리
+**Timestamp**: 2026-06-22T05:44:45Z
+**User Input**: "좋아요. 권장 수정 방안을 U1_SQS.md 에 정리해 작성해 주세요."
+**AI Response**: "`U1_SQS.md`에 단일 SQS 큐 유지, JSON 메시지 타입 도입, 워커 디스패치 규칙, DLQ 처리, 큐 분리 검토 시점을 권장 수정 방안으로 정리함."
+**Context**: Documentation update — U1 SQS 설계 메모 보강.
+
+---
+
+## U8 Citation Tree Frontend 모달 전환
+**Timestamp**: 2026-06-22T06:19:37Z
+**User Input**: "u8의 현재 프론트엔드에서, 각주 트리를 열 때, 아래로 창이 늘어나는 것이 아닌, 모달 형식으로 열리도록 수정해 주세요. 또, 간단한 리스트 형식이 아닌, `├── main.py
+├── scraper/
+│   ├── __init__.py
+│   ├── gallery_scraper.py
+│   ├── post_scraper.py
+│   └── comment_scraper.py
+├── database/
+│   ├── __init__.py
+│   ├── json_handler.py
+│   └── mongodb_handler.py
+├── utils/
+│   ├── __init__.py
+│   ├── user_agent.py
+│   └── logger.py
+├── config/
+│   └── settings.py
+├── pyproject.toml
+└── README.md` 느낌의 각주 트리로 보이도록 수정해 주세요/"
+**AI Response**: "`CitationTreePanel`을 dialog 모달 오버레이로 전환하고, 인용 노드를 `├──`, `│`, `└──` prefix 기반 트리 UI로 렌더링하도록 수정함. 관련 컴포넌트 테스트에 모달/트리 표시 검증을 추가함."
+**Context**: Frontend implementation — U8 Citation Tree panel UI refinement.
+
+---
+
+## U8 Citation Tree Frontend 그래프 시각화
+**Timestamp**: 2026-06-22T07:13:10Z
+**User Input**: "일단 1번으로 진행해 만들어 주세요."
+**AI Response**: "`CitationTreePanel`의 파일트리형 목록 표시를 새 의존성 없는 SVG 방사형 인용 그래프로 교체함. 현재 논문을 중앙에 두고 인용 노드를 주변에 배치하며, 기존 확장/저장 버튼 동작과 테스트를 유지함. 검증: `npx tsc --noEmit`, `npx vitest run test/citationTreePanel.test.tsx --reporter=verbose`, `npm --prefix frontend run lint`, `npx vitest run` 통과."
+**Context**: Frontend implementation — U8 Citation Tree visual graph refinement.
+
+---
+
+## U8 Citation Graph Zoom and Root Node Polish
+**Timestamp**: 2026-06-22T07:17:37Z
+**User Input**: "노드가 위쪽에 있으면 노드 박스가 잘려요!!! 확대-축소 버튼을 넣던지 하면 좋을 것 같아요. 그리고 중앙의 노드가 너무 못생겼어요. 좀 이쁘기 만들어 주세요."
+**AI Response**: "`CitationTreePanel` 그래프를 고정 px 캔버스와 scrollable viewport 구조로 변경해 상단 노드 잘림을 줄이고, 75%~150% 확대/축소 버튼을 추가함. 중앙 현재 논문 노드를 SVG 원형 텍스트에서 gradient HTML pill 카드로 교체함. 검증: `npx tsc --noEmit`, `npx vitest run test/citationTreePanel.test.tsx --reporter=verbose`, `npm --prefix frontend run lint`, `npx vitest run` 통과."
+**Context**: Frontend implementation — U8 Citation Graph usability and visual polish.
+
+---
+
+## U8 Citation Graph Bottom Clipping and Zoom Range Fix
+**Timestamp**: 2026-06-22T07:20:49Z
+**User Input**: "이번엔 아래 노드가 잘리는데요?? 그리고 축소는 25%까지 할 수 있도록 해주세요."
+**AI Response**: "`CitationTreePanel` 그래프 캔버스를 1100x900으로 확장해 하단 노드 카드 여백을 늘리고, 축소 하한을 25%로 변경함. 컴포넌트 테스트에 25% 축소 도달 및 축소 버튼 disabled 검증을 추가함. 검증: `npx tsc --noEmit`, `npx vitest run test/citationTreePanel.test.tsx --reporter=verbose`, `npm --prefix frontend run lint`, `npx vitest run` 통과."
+**Context**: Frontend implementation — U8 Citation Graph clipping and zoom behavior.
+
+---
+
+## U8 Citation Graph Centered Zoom and Horizontal Scroll
+**Timestamp**: 2026-06-22T07:23:52Z
+**User Input**: "축소 버튼을 누르면 중심으로 축소되는게 아니라 좌상단 쪽으로 축소되어 버려요. 그리고 위아래 스크롤 뿐만 아니라 좌우 스크롤도 추가하면 좋을 것 같아요."
+**AI Response**: "`CitationTreePanel` 그래프 viewport ref를 추가해 확대/축소 전후의 viewport 중심 논리 좌표를 유지하도록 스크롤 위치를 보정함. `graphViewport` overflow를 x/y 양방향 auto로 명시함. 검증: `npx tsc --noEmit`, `npx vitest run test/citationTreePanel.test.tsx --reporter=verbose`, `npm --prefix frontend run lint`, `npx vitest run` 통과."
+**Context**: Frontend implementation — U8 Citation Graph zoom centering and scroll behavior.
+
+---
+
+## U8 Citation Graph Low-Zoom Centering Fix
+**Timestamp**: 2026-06-22T07:26:42Z
+**User Input**: "전 까지는 괜찮은데, 50%, 25% 부터 좌상단으로 그래프가 몰려버려요."
+**AI Response**: "`CitationTreePanel.module.css`에서 그래프 viewport를 flex container로 바꾸고 graph world에 `margin: auto`를 적용해, 50% 이하처럼 scaled graph가 viewport보다 작아질 때도 중앙 정렬되도록 수정함. 검증: `npx tsc --noEmit`, `npx vitest run test/citationTreePanel.test.tsx --reporter=verbose`, `npm --prefix frontend run lint` 통과."
+**Context**: Frontend implementation — U8 Citation Graph low-zoom centering behavior.
+
+---
+
+## U8 Citation Graph Bidirectional Scroll Fix
+**Timestamp**: 2026-06-22T07:30:15Z
+**User Input**: "100% 에서, 우측으로의 스크롤은 되는데 좌측으로의 스크롤은 안되네요."
+**AI Response**: "`CitationTreePanel` 그래프에서 전체 `transform: scale()` 기반 확대/축소를 제거하고, 캔버스 크기와 HTML 노드 좌표를 zoom 값으로 직접 계산하도록 변경함. `graphViewport`의 flex 중앙 정렬을 제거하고 `graphWorld`/`graphCanvas` 구조를 grid 기반으로 정리해 100% 이상에서도 좌우 스크롤 범위가 정상 생성되도록 수정함. 검증: `npx tsc --noEmit`, `npx vitest run test/citationTreePanel.test.tsx --reporter=verbose`, `npm --prefix frontend run lint`, `npx vitest run` 통과."
+**Context**: Frontend implementation — U8 Citation Graph scroll range and zoom rendering.
+
+---
+
+## U8 Citation Graph Layered DAG Layout
+**Timestamp**: 2026-06-22T07:53:48Z
+**User Input**: "그래프 모양을 좀 바꿔줄래요? 위에서 아래로 내려가는 레이어형 그래프로 바꿔 그려주실수 있나요? Git의 브랜치 그래프를 생각하면 될 것 같아요. Citation_Graph_UI_Guide.md 를 참고하세요. 또, 파파생 노드의 확장 버튼을 누르면 400에러가 떠버려요. depth 2까지 표시하고, depth 2의 노드들은 확장 버튼이 안 뜨도록 해주세요."
+**AI Response**: "`Citation_Graph_UI_Guide.md`를 참고해 `CitationTreePanel` 그래프를 방사형에서 위→아래 layered DAG 레이아웃으로 변경함. Root, depth 1, depth 2를 별도 row로 배치하고 parent→child edge를 연결함. depth 2 노드에는 확장 버튼을 렌더링하지 않아 400 호출 경로를 제거함. 테스트에 depth 2 확장 버튼 미노출 검증을 추가함. 검증: `npx tsc --noEmit`, `npx vitest run test/citationTreePanel.test.tsx --reporter=verbose`, `npm --prefix frontend run lint`, `npx vitest run` 통과."
+**Context**: Frontend implementation — U8 Citation Graph guide alignment and depth guard.
+
+---
+
+## U8 Citation Graph Canvas Padding Increase
+**Timestamp**: 2026-06-22T07:57:06Z
+**User Input**: "캔버스 크기 좀 넉넉하게 줘봐요... 75%에서 depth 2까지 확장 누르면 depth 2의 노드들의 아랫부분이 짤려버려요."
+**AI Response**: "`CitationTreePanel` layered graph의 depth 2 row를 아래로 조정하고 전체 canvas height를 940으로 늘려 75% zoom에서 depth 2 노드 하단 여백을 확보함. 검증: `npx tsc --noEmit`, `npx vitest run test/citationTreePanel.test.tsx --reporter=verbose`, `npm --prefix frontend run lint` 통과."
+**Context**: Frontend implementation — U8 Citation Graph canvas padding.
+
+---
+
+## U8 Citation Graph Expand Collapse Toggle
+**Timestamp**: 2026-06-22T08:00:12Z
+**User Input**: "하나 더요. 확장 버튼을 눌러 확장하고, 이후 다시 눌러 축소할 수 있도록 확장/축소 버튼으로 바꾸어 주세요."
+**AI Response**: "`CitationTreePanel`의 1-hop 노드 확장 버튼을 토글 동작으로 변경함. 이미 확장된 노드는 API 재호출 없이 expanded map에서 제거해 축소하고, 버튼 문구를 `확장`/`축소`로 전환함. 테스트에 확장 후 축소 및 depth 2 노드 제거 검증을 추가함. 검증: `npx tsc --noEmit`, `npx vitest run test/citationTreePanel.test.tsx --reporter=verbose`, `npm --prefix frontend run lint` 통과."
+**Context**: Frontend implementation — U8 Citation Graph expand/collapse behavior.
+
+---
+
+## U8 Citation Graph Vertical Padding Balance
+**Timestamp**: 2026-06-22T07:33:33Z
+**User Input**: "대부분 좋은데, 상하 스크롤에서, 위쪽으로 캔버스 여백? 이동 공간? 이 좀 더 많은 것 같아요. 위와 아래의 공간을 같도록 잘 맞추어 주세요."
+**AI Response**: "`CitationTreePanel` 그래프의 `CENTER_Y`를 고정 캔버스 중앙값에서 420으로 조정해 상단/하단 노드 카드 체감 여백을 맞춤. 검증: `npx tsc --noEmit`, `npx vitest run test/citationTreePanel.test.tsx --reporter=verbose`, `npm --prefix frontend run lint` 통과."
+**Context**: Frontend implementation — U8 Citation Graph vertical spacing polish.
+
+---
+
+## U8 Citation Graph Cross-Review Follow-up
+**Timestamp**: 2026-06-22T09:03:21Z
+**User Input**: "Cross-Review.md 을 읽고, 코드를 수정해 주세요. 이후, 2002606221830_PR.md를 작성해 주세요. 그리고 커밋 메시지를 작성해 주세요."
+**AI Response**: "`Cross-Review.md`의 PR #131 리뷰를 반영해 `CitationTreePanel`의 `onClose` 참조를 ref로 안정화하고, Escape/body overflow effect를 1회 설치로 변경함. 줌 스크롤 보정을 `requestAnimationFrame`에서 `zoom` effect + pending center ref 방식으로 이동함. 단일 브랜치 확장 정책 주석과 노드 `aria-label`을 추가하고, 최신 `onClose` 호출 회귀 테스트를 추가함. `2002606221830_PR.md`를 PR 템플릿 형식으로 작성함. 검증: `npx tsc --noEmit`, `npx vitest run test/citationTreePanel.test.tsx --reporter=verbose`, `npm --prefix frontend run lint`, `npx vitest run` 통과."
+**Context**: Frontend implementation — U8 Citation Graph cross-review fixes and PR draft.
+
+---
+
+## Multimodal Display Cross-Review
+**Timestamp**: 2026-06-22T09:20:38Z
+**User Input**: "202606221830_PR.md 은 현 브랜치에 대한 PR 메시지 입니다. 이 코드들을 리뷰하고, Cross-Review.md 를 작성해 주세요."
+**AI Response**: "현 브랜치 `feature/multimodal-display`의 PR 문서와 U1/U7/U5 멀티모달 자산 표시 코드를 리뷰하고 `Cross-Review.md`를 작성함. Must-Fix로 비-S3 `object_ref` raw 응답 노출 가능성을 지적하고, Should-Fix로 `useAssets` 실패 후 같은 paper/version 재시도 no-op 문제를 기록함."
+**Context**: Code review — multimodal display PR cross-review.
+
+---
+
+## U8 Citation Graph Issue Follow-up
+**Timestamp**: 2026-06-23T00:41:05Z
+**User Input**: "u8-인용그래프 기능에 대한 이슈 u8_issue.md 피드백을 받았습니다. 이 피드백을 기반으로 기능을 개선해 주세요."
+**AI Response**: "`u8_issue.md`를 반영해 U8 citation snapshot store에 Redis-backed shared TTL cache를 추가하고, Redis URL/host env가 없으면 기존 in-memory store로 폴백하도록 구현함. CitationNode에 `inCorpus`를 추가하고 U2 discovery paper service를 재사용해 코퍼스 존재 여부를 표시함. 프론트 노드 카드에 내부 상세 페이지 또는 안전한 외부 링크를 추가하고 저장/확장 버튼은 유지함. 검증: backend U8 pytest/ruff/compileall, app-shell pytest, frontend citation panel vitest/lint/tsc 통과."
+**Context**: Implementation — U8 Citation Graph cache and node navigation improvements.
+
+---
+
+## U8 Citation Graph PR Draft
+**Timestamp**: 2026-06-23T00:46:06Z
+**User Input**: "이 수정에 대한 202606231000_PR.md를 작성해 주세요."
+**AI Response**: "`.github/PULL_REQUEST_TEMPLATE.md` 형식에 맞춰 `202606231000_PR.md`를 작성함. Redis shared cache 승격, `inCorpus` 기반 내부/외부 링크, 기존 저장 버튼 유지, 검증 명령을 PR 설명에 반영함."
+**Context**: Documentation — PR draft for U8 citation graph issue follow-up.
+
+---
+
+## U8 Citation Graph Node Link Fix
+**Timestamp**: 2026-06-23T01:36:18Z
+**User Input**: "프론트에서 테스트를 해봤는데, 노드의 `열기` 버튼을 누르면 로그인 화면으로 쫒겨나요."
+**AI Response**: "`/paper/[id]`가 RouteGuard 보호 라우트라 dev/mock anonymous 세션에서 내부 링크가 로그인으로 리다이렉트되는 문제를 확인함. Citation node `열기` 링크를 내부 상세 링크 대신 arXiv/provider 외부 원문 링크로 열도록 수정하고, 외부 링크에 `target=\"_blank\"`와 `rel=\"noopener noreferrer\"`를 유지함. 검증: `npx vitest run test/citationTreePanel.test.tsx --reporter=verbose`, `npx tsc --noEmit`, `npm run lint` 통과."
+**Context**: Frontend implementation — U8 Citation Graph node open action.
+
+---
+
+## U8 Citation Graph Horizontal Scrollbar
+**Timestamp**: 2026-06-23T01:40:17Z
+**User Input**: "아 별견 아닌데 각주 트리 캔버스에서, 스크롤바가 상하 이동만 있는데, 좌우 이동 스크롤바도 추가해 줄 수 있나요?"
+**AI Response**: "`CitationTreePanel.module.css`에서 graph viewport의 `overflow-x`를 `scroll`로 변경하고 `scrollbar-gutter: stable`을 추가해 가로 스크롤바 공간을 항상 확보함. 검증: `npm run lint`, `npx vitest run test/citationTreePanel.test.tsx --reporter=verbose` 통과."
+**Context**: Frontend implementation — U8 Citation Graph canvas scrolling.
+
+---
+
+## U8 Citation Graph Visible Horizontal Slider
+**Timestamp**: 2026-06-23T02:10:08Z
+**User Input**: "안보이는데요..."
+**AI Response**: "브라우저/OS가 네이티브 가로 스크롤바를 숨길 수 있어 graph viewport 아래에 항상 보이는 `그래프 좌우 이동` range control을 추가함. 컨트롤을 `scrollLeft`, resize, zoom 상태와 동기화하고 테스트에 노출 여부를 추가함. 검증: `npx vitest run test/citationTreePanel.test.tsx --reporter=verbose`, `npx tsc --noEmit`, `npm run lint` 통과."
+**Context**: Frontend implementation — U8 Citation Graph visible horizontal navigation.
+
+---
+
+
+## Workflow Start — Fix Login Feature (Requirements Analysis)
+**Timestamp**: 2026-06-22T12:00:00Z
+**User Input**: "Using AIDLC, fix the login feature."
+**AI Response**: "Resumed brownfield AI-DLC state. Login = U3 Accounts/Auth (built, deployed, live). Reverse Engineering skipped (existing unit + construction artifacts present). Entering Requirements Analysis at minimal/standard depth; defect symptom unspecified, so asking clarifying questions before scoping the fix."
+**Context**: INCEPTION — Workspace Detection (resume) + Requirements Analysis entry.
+
+---
+
+## Login Defect — Production Forensics (Requirements Analysis cont.)
+**Timestamp**: 2026-06-23T00:00:00Z
+**User Input**: (clarifications) symptom="valid creds rejected / generic client error"; environment="Production (docsuri.org)"; confirm-path="run SQL myself".
+**AI Response**: "Investigated U3 login on prod. Evidence: (1) Redis healthy (session probe → 'not found', not 'store unavailable'); (2) /auth/login 7d access logs = 9×200, 13×401, 0×500 → backend auth works for valid creds, no server errors; (3) /auth/session = 5×200 / 79×401 (mostly anonymous loads, noisy); (4) prod runs pre-386bf18 accounts code (no accounts metrics emitted) but login logic unchanged; (5) no email normalization anywhere (backend signup/login/verify + FE); (6) controller maps SessionStoreUnavailableException (a DomainException) → 401 (infra-as-auth mislabel); (7) two RDS instances (2026-06-17 replacement) — app uses newer (...7ajkntsj0ouu @12:45Z), older (...t3j09 @06:56Z) orphaned; (8) CloudFront E24JTHTYCCENSB uses CachingDisabled + AllViewerExceptHostHeader → forwards cookies both ways, /bff not cached. Remaining ambiguity (needs DB): casing vs PENDING vs orphaned-DB vs cookie-not-sticking. ECS Exec disabled; RDS private; one-off diagnostic task-def registration denied by guardrail (out of scope). Provided user read-only SQL to disambiguate."
+**Context**: INCEPTION — Requirements Analysis (root-cause localization for login fix). Awaiting SQL results before Code Generation.
+
+---
+
+## Login Fix — Code Generation (Construction · U3)
+**Timestamp**: 2026-06-23T00:30:00Z
+**User Input**: (scope selection) "Code hardening (AIDLC)".
+**AI Response**: "Implemented U3 login hardening. (1) controller._verification_link_base builds the email link from PUBLIC_APP_URL via /bff (fallback request.base_url) — fixes unreachable verification links behind CloudFront/BFF/ALB; (2) POST /auth/resend-verification (PENDING-only, no account enumeration) + frontend resend button on login failure; (3) normalize_email (trim+lowercase) at signup/login/resend trust boundary (defense-in-depth vs casing 401s); (4) login maps SessionStoreUnavailableException → 503 (was masquerading as 401); (5) CDK compute_stack adds PUBLIC_APP_URL=https://docsuri.org (next deploy). Tests: tests/accounts 28 passed (4 new), ruff clean; frontend tsc + next lint clean. NOTE: this is necessary but NOT sufficient — SES is still in sandbox (ProductionAccess:false), so verification emails to unverified recipients remain undeliverable until SES production access is granted; existing 5 PENDING accounts stay PENDING until they receive a deliverable link or are activated. Not yet committed (commit-review gate)."
+**Context**: CONSTRUCTION — Code Generation (U3 login fix). Awaiting commit approval.
+
+---
+
+## [INCEPTION - Workspace Detection]
+**Timestamp**: 2026-06-23T15:30:00+09:00
+**User Input**: "start the cohere-embed-v4:0 migration plan."
+**AI Response**: "Displayed welcome message and Started Workspace Detection phase."
+**Context**: Initial user request, starting the INCEPTION workflow.
+
+---
+
+## [INCEPTION - Requirements Analysis]
+**Timestamp**: 2026-06-23T15:35:00+09:00
+**AI Response**: "Transitioned to Requirements Analysis for Cohere Embed v4.0 migration."
+**Context**: Preparing clarifying questions for the migration.
+
+---
+
+**Timestamp**: 2026-06-23T15:44:53+09:00
+**User Input**: "done"
+**AI Response**: "Reading answers from requirement-verification-questions-v4-migration.md"
+**Context**: User finished answering clarification questions for Cohere Embed v4.0 migration.
+
+---
+
+**Timestamp**: 2026-06-23T15:48:53+09:00
+**AI Response**: "Updated requirements.md with Cohere v4 migration requirements. Presenting Requirements Analysis Complete message and approval prompt."
+**Context**: Awaiting user approval to proceed to Workflow Planning.
+
+---
+
+**Timestamp**: 2026-06-23T15:49:35+09:00
+**User Input**: "approve and continue"
+**AI Response**: "Proceeding to Workflow Planning phase."
+**Context**: User approved Requirements Analysis for Cohere v4 migration.
+
+---
+
+## Workflow Planning - Approval
+**Timestamp**: 2026-06-23T15:51:00+09:00
+**AI Prompt**: "Ready to proceed with this plan?"
+**User Response**: "approve and continue"
+**Status**: Approved
+**Context**: Workflow plan created with NFR Design, Infra Design, Code Gen, Build and Test to execute.
+
+---
+
+**Timestamp**: 2026-06-23T15:52:37+09:00
+**User Input**: "approved/"
+**AI Response**: "Proceeding to NFR Design phase."
+**Context**: User approved Workflow Planning for Cohere v4 migration.
+
+---
+
+**Timestamp**: 2026-06-23T15:53:00+09:00
+**AI Response**: "Created v4-migration-nfr-design-plan.md with 2 questions. Presenting completion message."
+**Context**: Waiting for user answers on NFR design questions for v4 migration.
+
+---
+
+**Timestamp**: 2026-06-23T15:53:59+09:00
+**User Input**: "done"
+**AI Response**: "Reading answers from v4-migration-nfr-design-plan.md"
+**Context**: User finished answering NFR design questions for v4 migration.
+
+---
+
+## NFR Design - Approval
+**Timestamp**: 2026-06-23T15:55:00+09:00
+**AI Prompt**: "Ready to proceed with the NFR design?"
+**User Response**: Pending
+**Context**: NFR Design artifacts created, awaiting user approval to proceed to Infrastructure Design.
+
+---
+
+**Timestamp**: 2026-06-23T15:55:48+09:00
+**User Input**: "continue to the next stage"
+**AI Response**: "Proceeding to Infrastructure Design phase."
+**Context**: User approved NFR Design for Cohere v4 migration.
+
+---
+
+**Timestamp**: 2026-06-23T15:57:00+09:00
+**AI Response**: "Created v4-migration-infrastructure-design-plan.md with 2 questions. Presenting completion message."
+**Context**: Waiting for user answers on Infrastructure design questions for v4 migration.
+
+---
+
+**Timestamp**: 2026-06-23T15:58:15+09:00
+**User Input**: "done"
+**AI Response**: "Reading answers from v4-migration-infrastructure-design-plan.md"
+**Context**: User finished answering Infrastructure design questions for v4 migration.
+
+---
+
+## Infrastructure Design - Approval
+**Timestamp**: 2026-06-23T16:00:00+09:00
+**AI Prompt**: "Ready to proceed with the infrastructure design?"
+**User Response**: Pending
+**Context**: Infrastructure Design artifacts created, awaiting user approval to proceed to Code Generation.
+
+---
+
+**Timestamp**: 2026-06-23T16:01:01+09:00
+**User Input**: "continue to the next stage"
+**AI Response**: "Proceeding to Code Generation phase."
+**Context**: User approved Infrastructure Design for Cohere v4 migration.
+
+---
+
+**Timestamp**: 2026-06-23T16:02:00+09:00
+**AI Prompt**: "Created v4-migration-code-generation-plan.md. Presenting completion message to user."
+**Context**: Plan for Code Generation part 1 complete.
+
+---
+
+## Code Generation Plan - Approval
+**Timestamp**: 2026-06-23T16:03:00+09:00
+**AI Prompt**: "Ready to proceed with the code generation plan?"
+**User Response**: Pending
+**Context**: Code generation plan created, awaiting user approval to proceed to code generation.
+
+---
+
+**Timestamp**: 2026-06-23T16:04:08+09:00
+**User Input**: "approved."
+**AI Response**: "Executing Code Generation Part 2."
+**Context**: User approved Code Generation Plan for v4 migration.
+
+---
+
+## Code Generation - Approval
+**Timestamp**: 2026-06-23T16:06:00+09:00
+**AI Prompt**: "Ready to proceed to Build and Test?"
+**User Response**: Pending
+**Context**: Code Generation artifacts created, awaiting user approval to proceed to Build and Test.
+
+---
+
+**Timestamp**: 2026-06-23T16:07:12+09:00
+**User Input**: "continue to the next stage"
+**AI Response**: "Proceeding to Build and Test phase."
+**Context**: User approved Code Generation for v4 migration.
+
+---
+
+## Build and Test Stage
+**Timestamp**: 2026-06-23T16:07:50+09:00
+**Build Status**: Success
+**Test Status**: Pass
+**Files Generated**:
+- build-instructions.md
+- unit-test-instructions.md
+- integration-test-instructions.md
+- performance-test-instructions.md
+- build-and-test-summary.md
+
+---
+
+**Timestamp**: 2026-06-23T16:09:24+09:00
+**User Input**: "continue"
+**AI Response**: "Proceeding to Operations phase (Placeholder). Workflow complete."
+**Context**: User approved Build and Test phase for v4 migration.
+
+---
+
+**Timestamp**: 2026-06-23T16:11:19+09:00
+**User Input**: "Let's move on to the operation stage"
+**AI Response**: "Acknowledged user request to proceed with operations."
+**Context**: User requested to execute the operations phase.
+
+---
+
+## U9 Personalization — Requirements Questions
+**Timestamp**: 2026-06-23T07:09:54Z
+**User Input**: "좋아요. 지금까지의 내용을 종합하여, 개인화 기능을 구현하도록 합시다. aidlc-docs 의 내용을 기반으로, 질문지를 생성해 주세요."
+**AI Response**: "AI-DLC 공통 규칙, Requirements Analysis 규칙, 활성 확장(Security/Resiliency/PBT), 기존 requirements/stories/unit-of-work/shared events 맥락을 로드함. U9 Personalization / Behavior Intelligence 후보 유닛의 요구사항 명확화를 위해 `aidlc-docs/inception/requirements/requirement-verification-questions-u9-personalization.md` 질문지(Q1~Q20)를 생성하고 `aidlc-state.md`에 현재 게이트를 기록함. 앱 코드는 생성하지 않음."
+**Context**: INCEPTION — Requirements Analysis re-entry for candidate U9 Personalization.
+
+---
+
+## U9 Personalization — Requirements Answers and Document Update
+**Timestamp**: 2026-06-23T08:10:05Z
+**User Input**: "전부 권장으로 선택후 다음 단계를 진행해 주세요."
+**AI Response**: "`requirement-verification-questions-u9-personalization.md`의 Q1~Q20을 권장 답변으로 반영(Q13=B, 나머지 A). 답변 간 모순 없음. `requirements.md`에 U9 개정 사항을 추가함: FR-18 행동 이벤트 기록, FR-19 개인 관심사 프로필 집계, FR-20 개인화 적용, NFR-P4, QT-7, U9 범위 제외(추천 목록·전체 클릭스트림·실시간 ML 제외), 추적성. `aidlc-state.md`를 Requirements review/approval 게이트로 갱신함. 앱 코드는 생성하지 않음."
+**Context**: INCEPTION — Requirements Analysis re-entry completion for U9 Personalization.
+
+---
+
+## U9 Personalization — User Stories Planning
+**Timestamp**: 2026-06-23T08:14:08Z
+**User Input**: "좋아요. 다음 단계를 진행해 주세요."
+**AI Response**: "User Stories 단계 Part 1을 실행함. U9가 사용자 대면 개인화, 행동 데이터, 개인정보 제어, 검색/요약/번역 워크플로우에 영향을 주므로 사용자 스토리 실행 대상으로 평가함. `u9-personalization-user-stories-assessment.md`와 `u9-personalization-story-generation-plan.md`를 생성하고, PQ1~PQ6 계획 질문을 승인 게이트로 제시함. 권장 답변은 전부 A. 앱 코드는 생성하지 않음."
+**Context**: INCEPTION — User Stories Part 1 planning for U9 Personalization.
+
+---
+
+## U9 Personalization — User Stories Generation
+**Timestamp**: 2026-06-23T08:18:19Z
+**User Input**: "스토리 생성 계획은 전부 권장으로 다음 단계를 진행해 주세요."
+**AI Response**: "U9 Story Generation Plan의 PQ1~PQ6을 전부 권장안 A로 반영하고 Part 2를 실행함. `stories.md`에 에픽 8 — 개인화 / 행동 인텔리전스(US-P1..US-P7)를 추가하고, P1/P2/OP 페르소나 매핑 및 FR-18/19/20, NFR-P4, QT-7 추적성을 갱신함. `personas.md`에는 개인화와 개인정보 제어 기대를 기존 페르소나에 보강함. `aidlc-state.md`를 User Stories review/approval 게이트로 갱신함. 앱 코드는 생성하지 않음."
+**Context**: INCEPTION — User Stories Part 2 generation for U9 Personalization.
+
+---
+
+## U9 Personalization — Units Generation Planning
+**Timestamp**: 2026-06-23T08:22:24Z
+**User Input**: "다음 단계를 진행해 주세요."
+**AI Response**: "Units Generation Part 1을 실행함. 기존 U7/U8 편입 패턴과 U9 요구사항/스토리 산출물을 검토하고, U9를 별도 `backend/modules/personalization/` API 모듈로 편입하는 권장 분해 계획 `u9-personalization-unit-of-work-plan.md`를 생성함. UQ1~UQ5 승인 게이트를 제시하고 `aidlc-state.md`를 갱신함. 앱 코드는 생성하지 않음."
+**Context**: INCEPTION — Units Generation Part 1 planning for U9 Personalization.
+
+---
+
+## U9 Personalization — Units Generation
+**Timestamp**: 2026-06-23T08:25:20Z
+**User Input**: "전부 권장으로 다음 단계를 진행해 주세요."
+**AI Response**: "U9 Unit of Work Plan의 UQ1~UQ5를 전부 권장안 A로 반영하고 Units Generation Part 2를 실행함. `unit-of-work.md`에 U9 Personalization API 모듈(`backend/modules/personalization/`)을 추가하고, `unit-of-work-dependency.md`에 U9 행/열 및 비차단 개인화 이벤트/프로필 흐름을 추가함. `unit-of-work-story-map.md`에 US-P1..P7 매핑을 추가해 전체 40개 스토리 미할당 0으로 갱신함. `aidlc-state.md`를 Units Generation review/approval 게이트로 갱신함. 앱 코드는 생성하지 않음."
+**Context**: INCEPTION — Units Generation Part 2 generation for U9 Personalization.
+
+---
+
+## U9 Personalization — Functional Design Planning
+**Timestamp**: 2026-06-23T08:28:56Z
+**User Input**: "다음 단계를 진행해 주세요,"
+**AI Response**: "Construction 단계의 U9 Functional Design Part 1을 실행함. Functional Design 규칙과 U9 유닛/스토리/요구사항 컨텍스트를 검토하고, 행동 이벤트 envelope, 기록 시점, dedupe, 프로필 집계, 개인화 적용 강도, 사용자 제어, 실패 처리, QT-7 범위를 묻는 `u9-personalization-functional-design-plan.md`를 생성함. Q1~Q12 승인 게이트를 제시하고 `aidlc-state.md`를 갱신함. 앱 코드는 생성하지 않음."
+**Context**: CONSTRUCTION — U9 Functional Design Part 1 planning.
+
+---
+
+## U9 Personalization — Functional Design
+**Timestamp**: 2026-06-23T08:31:34Z
+**User Input**: "전부 권장안으로 다음 단계를 진행해 주세요."
+**AI Response**: "U9 Functional Design Plan의 Q1~Q12를 전부 권장안 A로 반영하고 Functional Design 산출물을 생성함. `domain-entities.md`에는 BehaviorEvent envelope, 7개 이벤트 타입, UserInterestProfile, PersonalizationSettings/Decision을 정의함. `business-logic-model.md`에는 이벤트 기록, 프로필 집계, 검색 개인화, 요약/번역 기본값, on/off, 로그 삭제, 프로필 초기화, fail-open 흐름을 정의함. `business-rules.md`에는 의미 이벤트만 기록, owner-scoped 접근, 성공 후 기록, dedupe, bounded aggregation, user controls, NFR-P4 fail-open, QT-7 속성 후보와 확장 규칙 준수 요약을 추가함. 앱 코드는 생성하지 않음."
+**Context**: CONSTRUCTION — U9 Functional Design generation.
+
+---
+
+## U9 Personalization — NFR Requirements Planning
+**Timestamp**: 2026-06-23T08:38:38Z
+**User Input**: "다음 단계를 진행해 주세요."
+**AI Response**: "Construction 단계의 U9 NFR Requirements Part 1을 실행함. U9 Functional Design 산출물과 기존 U8 NFR 계획 패턴을 검토하고, 저장소, API runtime, 비차단 이벤트 기록, lazy/on-demand 프로필 집계, retention, 보안 metadata 경계, 삭제/초기화 반영, 검색 개인화 성능 예산, 관측, shared contract, QT-7 테스트 전략을 묻는 `u9-personalization-nfr-requirements-plan.md`를 생성함. Q1~Q12 승인 게이트를 제시하고 `aidlc-state.md`를 갱신함. 앱 코드는 생성하지 않음."
+**Context**: CONSTRUCTION — U9 NFR Requirements Part 1 planning.
+
+---
+
+## U9 Personalization — NFR Requirements
+**Timestamp**: 2026-06-23T09:05:34Z
+**User Input**: "`Q7에 X) 백업용 테이블을 따로 생성하고 본 테이블은 삭제한다`, 나머지는 권장으로 진행해 주세요."
+**AI Response**: "U9 NFR Requirements Plan의 Q1~Q6, Q8~Q12를 권장안 A로 반영하고 Q7은 X(백업용 테이블 생성 후 본 테이블 삭제)로 반영함. 백업 테이블은 개인화 조회/집계/decision에서 제외하고 별도 보관·삭제 정책 대상으로 제한하는 조건을 NFR에 명시함. `nfr-requirements.md`와 `tech-stack-decisions.md`를 생성하고 `aidlc-state.md`를 NFR Requirements review/approval 게이트로 갱신함. 앱 코드는 생성하지 않음."
+**Context**: CONSTRUCTION — U9 NFR Requirements generation.
+
+---
+
+## U9 Personalization — NFR Design Planning
+**Timestamp**: 2026-06-23T09:13:53Z
+**User Input**: "다음 단계로 진행해 주세요."
+**AI Response**: "Construction 단계의 U9 NFR Design Part 1을 실행함. U9 NFR Requirements 산출물을 검토하고, fail-open timeout, read-through lazy aggregation, active/backup repository 분리, U6 관측 이벤트, metadata validation 단일 강제를 묻는 `u9-personalization-nfr-design-plan.md`를 생성함. Q1~Q5 승인 게이트를 제시하고 `aidlc-state.md`를 갱신함. 앱 코드는 생성하지 않음."
+**Context**: CONSTRUCTION — U9 NFR Design Part 1 planning.
+
+---
+
+## U9 Personalization — NFR Design
+**Timestamp**: 2026-06-23T09:23:55Z
+**User Input**: "모두 권장으로 다음 단계를 진행해 주세요."
+**AI Response**: "U9 NFR Design Plan의 Q1~Q5를 전부 권장안 A로 반영하고 NFR Design 산출물을 생성함. `logical-components.md`에는 PersonalizationApi, BehaviorEventRecorder, read-through ProfileAggregator, active/backup repositories, settings service, read port, telemetry publisher를 정의함. `nfr-design-patterns.md`에는 fail-open personalization, bounded profile read, lazy aggregation, active-table delete with backup isolation, metadata allowlist, U6 관측 패턴을 정의함. 앱 코드는 생성하지 않음."
+**Context**: CONSTRUCTION — U9 NFR Design generation.
+
+---
+
+## U9 Personalization — Infrastructure Design Planning
+**Timestamp**: 2026-06-23T09:28:26Z
+**User Input**: "다음 단계를 진행해 주세요."
+**AI Response**: "Construction 단계의 U9 Infrastructure Design Part 1을 실행함. Infrastructure Design 규칙과 U9 functional/NFR design 및 기존 시스템/U8 infrastructure 패턴을 검토하고, 기존 backend ECS/API 배포, RDS 테이블, 백업 테이블 보관 기간, cleanup scheduled task, queue 사용 여부, U6 관측/feature flag를 묻는 `u9-personalization-infrastructure-design-plan.md`를 생성함. Q1~Q6 승인 게이트를 제시하고 `aidlc-state.md`를 갱신함. 앱 코드는 생성하지 않음."
+**Context**: CONSTRUCTION — U9 Infrastructure Design Part 1 planning.
+
+---
+
+## U9 Personalization — Infrastructure Design Feedback Applied
+**Timestamp**: 2026-06-23T09:48:45Z
+**User Input**: "plan_feedback.md 의 내용을 반영하여 다음 단계를 진행해 주세요."
+**AI Response**: "`plan_feedback.md`를 반영해 U9 백업 테이블 설계를 제거함. NFR Requirements/NFR Design/Infrastructure Plan에서 raw behavior log 삭제를 backup table copy가 아닌 owner-scoped active-table direct delete로 정정함. Q4 피드백에 따라 retention cleanup은 idempotent daily EventBridge scheduled ECS task로 명시하고 purge 실패 시 U6 telemetry/CloudWatch alert 대상임을 Infrastructure Design에 반영함. `infrastructure-design.md`와 `deployment-architecture.md`를 생성하고 `aidlc-state.md`를 Infrastructure Design review/approval 게이트로 갱신함. 앱 코드는 생성하지 않음."
+**Context**: CONSTRUCTION — U9 Infrastructure Design generation after plan feedback.
+
+---
+
+## U9 Personalization — Code Generation Planning
+**Timestamp**: 2026-06-23T09:53:05Z
+**User Input**: "코드 생성 직전까지 진행해 주세요"
+**AI Response**: "Infrastructure Design 승인을 받은 것으로 처리하고 U9 Code Generation Part 1을 실행함. Code Generation 규칙, U9 설계 산출물, 기존 backend module/wiring/migration/test/CDK 패턴을 검토하고 `u9-personalization-code-generation-plan.md`를 생성함. 계획은 backend-only U9 모듈, RDS migration, direct raw-log delete, idempotent retention purge command, scheduled ECS cleanup infrastructure, U6 telemetry, pytest/Hypothesis 검증, code summary를 포함함. 실제 앱 코드는 생성하지 않고 Code Generation Part 2 승인 게이트에서 중단함."
+**Context**: CONSTRUCTION — U9 Code Generation Part 1 planning, stop before code generation.
+
+---
+
+## U9 Personalization — Code Generation
+**Timestamp**: 2026-06-23T10:00:00Z
+**User Input**: "좋아요. 코드 실제 구현을 진행해 주세요."
+**AI Response**: "U9 Code Generation Part 2를 실행함. `backend/modules/personalization/` 모듈, DTO/metadata allowlist, in-memory/SQL repository, lazy aggregation service, FastAPI endpoints, direct raw-log delete, idempotent retention purge command, RDS migration, app-shell wiring, startup/CLI migration path, scheduled ECS cleanup CDK wiring, purge failure CloudWatch alarm, `backend/tests/test_personalization.py`, code summary를 생성/수정함. 검증: U9 테스트 11 passed, ruff pass, compileall pass. `backend/tests/test_app_shell.py` 포함 combined run은 현재 로컬 shell에 기존 `docsuri_shared`, `discovery`, `docsuri_ops` import가 없어 pre-existing app-shell mount assertions가 실패함."
+**Context**: CONSTRUCTION — U9 Code Generation Part 2 implementation and verification.
+
+---
+
+## Build and Test Stage
+**Timestamp**: 2026-06-23T10:19:39Z
+**User Input**: "좋아요, 빌드와 테스트를 진행해 주세요."
+**AI Response**: "U9 Build and Test를 실행함. U9 unit tests 11 passed, U9+app-shell tests 25 passed, backend tests 57 passed/1 skipped, ruff pass, compileall pass. CDK synth는 현재 shell에 `aws_cdk` Python package가 없어 실행하지 못함. `build-and-test/` 지침 파일과 summary에 U9 결과를 추가하고 `aidlc-state.md`를 Build and Test review/approval 게이트로 갱신함."
+**Context**: CONSTRUCTION — U9 Build and Test execution and documentation.
+
+---
+
+## Build and Test Stage
+**Timestamp**: 2026-06-23T10:29:21Z
+**User Input**: "AWS CDK를 설치했으니 CDK 부분의 빌드 & 테스트도 진행해 줄래요?"
+**AI Response**: "CDK 검증을 재실행함. `ops/cdk/requirements.txt`로 CDK Python dependencies를 설치하고, `jsii`가 사용할 Node 실행 파일을 Scoop `nodejs-lts` 경로로 지정한 뒤 `cdk synth`를 실행함. `python -c \"import aws_cdk\"` 및 `cdk synth`가 통과했고 템플릿이 `ops/cdk/cdk.out`에 생성됨. 기존 CDK construct warning은 출력되었으나 U9 synth blocker는 없음. Build and Test 문서, U9 code summary, `aidlc-state.md`를 실제 CDK 결과로 갱신함."
+**Context**: CONSTRUCTION — U9 CDK build and test follow-up.
+
+---
+
+## Cross Review Remediation
+**Timestamp**: 2026-06-24T01:21:26Z
+**User Input**: "U9에 대한 리뷰인 cross-review.md 를 검토하여, 코드를 개선해 주세요. 이후, 수정 사항에 대한 202606241030_PR.md를 작성해 주세요."
+**AI Response**: "`cross-review.md`의 U9 지적 사항을 반영함. CDK retention cleanup ECS task에 `assign_public_ip=True`를 추가하고, in-memory delete_events가 SQL 구현처럼 `profileResetAt`을 설정하도록 수정했으며, SQL insert_event를 PostgreSQL `ON CONFLICT DO NOTHING` 기반 멱등 insert로 교체함. `controller.get_repo()`의 process-global in-memory 기본값을 제거하고 wiring 누락 시 RuntimeError가 발생하도록 변경함. U9 테스트 13 passed, U9+app-shell 27 passed, backend tests 59 passed/1 skipped, ruff pass, compileall pass, cdk synth pass를 확인하고 `202606241030_PR.md`를 생성함."
+**Context**: CONSTRUCTION — U9 cross-review code remediation and PR draft.
+
+---
+
+## U1 Issue 119 Remediation
+**Timestamp**: 2026-06-24T02:12:50Z
+**User Input**: "u1에 대한 이슈 issue119.md 를 참고하여, 문제를 수정해 주세요."
+**AI Response**: "`issue119.md`의 자동 증분 수집 경로 단절 문제를 수정함. EventBridge가 SQS에 `{\"type\":\"schedule_tick\"}` JSON 메시지를 발행하도록 바꾸고, ingestion queue job에는 `type=ingest_paper`를 추가했으며, worker가 `schedule_tick`은 `refresh.on_schedule_tick()`으로, `ingest_paper`는 기존 `ingest_one()`/doc-model 경로로 분기하도록 수정함. 깨진 JSON/알 수 없는 type은 DLQ로 보내고 ack하도록 처리함. infrastructure design 문서에 메시지 타입과 디스패치 규칙을 명문화함. 검증: U1 orchestration/docmodel worker tests pass, ingestion tests pass with 1 skipped, ruff pass, compileall pass, `cdk synth Docsuri-Ingestion` pass."
+**Context**: CONSTRUCTION — U1 issue119 worker dispatch and schedule tick fix.
+
+---
+
+## PR Documentation
+**Timestamp**: 2026-06-24T02:15:21Z
+**User Input**: "202606241130_PR.md 를 작성해 주세요."
+**AI Response**: "`.github/PULL_REQUEST_TEMPLATE.md` 구조를 기반으로 U1 issue119 수정 사항, 테스트 결과, 체크리스트, 참고사항을 정리한 `202606241130_PR.md`를 생성함."
+**Context**: Documentation — PR draft creation for U1 issue119 remediation.
+
+---
+
+## U1 Issue 119 Cross Review Remediation
+**Timestamp**: 2026-06-24T03:17:33Z
+**User Input**: "u1-issue119의 수정에 대해, cross-review.md 라는 리뷰를 받았습니다. 이 리뷰를 기반으로 코드를 개선하고, 202606241240_PR.md를 작성해 주세요."
+**AI Response**: "`cross-review.md`의 U1 worker 하위 호환성 지적을 반영함. `type`이 없는 legacy ingestion job은 `ingest_paper`로 처리하고, legacy `action=schedule_tick` 메시지는 schedule tick으로 처리하도록 `worker.py`를 보완함. legacy schedule tick/type-less ingest job 테스트를 추가하고 `202606241240_PR.md`를 생성함. 검증: `uv run pytest tests/test_orchestration.py -q` 15 passed, `uv run pytest -q` 99 passed/1 skipped, `uv run ruff check src/docsuri_ingestion/worker.py tests/test_orchestration.py` pass, `python -m compileall ingestion/src/docsuri_ingestion/worker.py` pass."
+**Context**: CONSTRUCTION — U1 issue119 cross-review remediation and PR draft.
+
+---

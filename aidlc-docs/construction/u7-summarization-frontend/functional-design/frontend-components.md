@@ -15,7 +15,7 @@
 - **상세 본문** = `PaperHeader`(제목·저자·초록·arXiv 링크) + **정규화 S3 전문(`FullTextViewer`)을 본문으로 직접 표시**(앵커 없이 로드).
 - **모달(`SummaryModal`)** 은 액션 바에서 **선택된 한 가지 모드만** 렌더(모달 내부에 모드 전환 탭 없음). 제목 + 닫기(✕)만 두고, `PersonaToggle`(전문가용/입문자용)은 **요약 모달에서만** 표시.
 - **앵커 클릭**(요약 내 출처 칩) → 모달 닫힘 + 본문 `FullTextViewer`에서 해당 span 하이라이트(Q5=C 유지).
-- **카드 [요약]은 FD §2.2/2.3대로 유지** — TL;DR(전문가용 persona 고정) 인라인 펼침(모달 아님). 무거운 액션·번역·persona 전환은 상세에서(BR-SF-1).
+- **카드 [요약]/TL;DR 인라인 피크 폐지 (2026-06-22 UX 패스)** — 카드에서 `SummaryAction`/`SummaryInline`(§2.1 슬롯·§2.2·§2.3)을 제거한다. 카드 tldr 미리보기 기능 자체를 없애고 요약·번역·출처는 **상세 페이지로 일원화**(상세 [요약] 모달, BR-SF-1). **Q1·Q2의 "카드 인라인 tldr 피크" 결정은 본 패스로 대체된다.** 무거운 액션·번역·persona 전환이 상세에 있다는 원칙은 그대로(이제 가벼운 tldr 피크도 상세로 흡수).
 - `PaperHeader` 메타데이터는 **discovery(U2) 논문 메타데이터 엔드포인트**로 채운다: `PaperMetaVM` + `ApiClient.getPaperMeta` (`GET /api/papers/{id}`). 제목·저자·초록은 코퍼스/검색 인덱스 데이터라 U7이 아닌 **discovery(U2) 소관**으로 구현(OpenSearch 단건-read → `PaperMetadataService` → `PaperMetaDTO`). dev는 mock, 실연동은 discovery 엔드포인트. FD §2.5의 "검색 VM 보유분 전달" 대신 직접 진입에서도 헤더를 채우기 위함.
   - **재정합(2026-06-19)**: 프론트 `PaperMetaVM`은 discovery `PaperMetaDTO`(`{arxivId,title,authors,year,abstract,arxivUrl}`)를 1:1 미러. 현재 손수 작성 타입 — shared 스키마 승격(codegen) 시 생성 타입으로 교체 예정(잔여 작업).
 - **전문 본문 자동 로드**: `FullTextViewer`는 상세 진입 시 자동 로드(BR-SF-1 탭 트리거의 예외 — business-rules.md BR-SF-1 편차 참조). 라이선스 게이트(OA)는 그대로 적용 — 전문 표시 가능 여부는 백엔드 게이트가 결정.
@@ -31,9 +31,9 @@
 ```
 AppShell (기존 U5) ............... SSR 루트·라우팅·세션·전역 바운더리
 ├─ (검색/라이브러리 표면 — 기존)
-│  └─ ResultCard ................ 단일 논문 카드(기존, action 슬롯 보유)
-│     ├─ SummaryAction .......... [요약] 버튼 → tldr 인라인 펼침 + [상세히 보기] 링크 (Q1·Q2)
-│     └─ SummaryInline .......... tldr(3줄) 경량 뷰 — 같은 요약 1벌의 '뷰 프리셋'(재생성 0)
+│  └─ ResultCard ................ 단일 논문 카드(우상단 북마크 저장, 푸터 action 슬롯)
+│     ├─ SummaryAction .......... [폐지 2026-06-22] 카드 [요약]→tldr 피크 제거 — 요약은 상세로
+│     └─ SummaryInline .......... [폐지 2026-06-22] tldr 경량 뷰 제거
 │
 └─ (라우트) PaperDetailScreen ... /paper/[id] — 전용 상세 라우트(신규, Q1=하이브리드)
    ├─ PaperHeader ............... 제목·저자·영문 초록 + [arXiv에서 원문 보기] 링크아웃
@@ -42,7 +42,7 @@ AppShell (기존 U5) ............... SSR 루트·라우팅·세션·전역 바�
    ├─ SummaryView .............. 구조화 6필드 렌더 + 항목별 AnchorChip
    │  └─ AnchorChip ............ 출처 칩(target·label) → 클릭 시 FullTextViewer 하이라이트
    ├─ TranslationView .......... koreanText + keptTerms 배지 (초록·전문 공용)
-   ├─ FullTextViewer ........... 전문 텍스트 렌더 + 앵커 위치 하이라이트 (Q5=C, 신규)
+   ├─ FullTextViewer→DocModelViewer  doc-model 리치 렌더(목차·KaTeX 수식·표 컴포넌트·webp 그림·앵커 하이라이트) — 피벗 2026-06-23 D4 (Q5=C)
    └─ StateView ................ 로딩/기권/비용저하/소스부재/에러 공유 (기존 확장)
 
 ApiClient (공유 레이어, 트리 밖) ── transport seam → U6 게이트웨이
@@ -56,20 +56,22 @@ ApiClient (공유 레이어, 트리 밖) ── transport seam → U6 게이트�
 
 ## 2. 컴포넌트별 계약 (props · state · 상호작용 · API 통합점)
 
-### 2.1 ResultCard 확장 (기존 + action 슬롯)
-- **책임**: 기존 7필드 카드. `action` 슬롯에 `SummaryAction`을 주입(검색·라이브러리 공용 — Q2=A).
-- **props(추가)**: `action`(기존 슬롯) ← `<SummaryAction paperId version arxivUrl />`.
-- **규칙**: 카드 자체는 비싼 호출을 트리거하지 않는다 — 액션 탭 시에만(BR-SF-1). 안전 링크(`safeHref`, BR-U5-7) 유지.
-- **근거**: US-S1, Q1·Q2.
+### 2.1 ResultCard (카드 = 저장 진입점, 요약 진입 아님)
+- **책임**: 기존 카드. **카드에서 요약을 트리거하지 않는다**(2026-06-22 UX 패스 — §0). 우상단 `bookmark` 슬롯 = 라이브러리 저장, 푸터 `action` 슬롯 = 라이브러리 화면 제거 등. 요약은 카드 제목 링크로 상세 진입 후.
+- **props**: `bookmark?`(우상단 저장), `action?`(푸터). _(구 `action ← SummaryAction` 주입은 폐지.)_
+- **규칙**: 카드 자체는 비싼 호출을 트리거하지 않는다(BR-SF-1). 안전 링크(`safeHref`, BR-U5-7) 유지.
+- **근거**: US-S1, US-L2. _(Q1·Q2의 카드 tldr 피크 결정은 §0으로 대체.)_
 
-### 2.2 SummaryAction (카드 인라인 진입)
+### 2.2 SummaryAction [폐지 — 2026-06-22 UX 패스]
+> 카드 인라인 [요약]→tldr 피크는 제거됨. 요약은 상세 페이지([요약] 모달)로 일원화. 아래 계약은 이력 보존용.
 - **책임**: 카드의 [요약] 버튼. 탭 → `summarize(task:"summary")` 호출 → 결과의 `tldr`만 `SummaryInline`으로 인라인 펼침. 항상 `상세히 보기` 링크(→ `/paper/[id]`)를 동반.
 - **state(로컬)**: `screenState`(idle|loading|page|abstain|degraded|sourceUnavailable|error), `outcome?`.
 - **상호작용**: 탭 → 로딩(또는 `cached:true`면 즉시) → tldr 인라인. 전체/번역/출처는 `상세히 보기`로.
 - **API 통합점**: `ApiClient.summarize({ task:"summary", paperId, version, persona })`.
 - **규칙**: BR-SF-1(탭 트리거), BR-SF-5(캐시 표기), BR-SF-7(상태 우선순위). 근거: US-S1·S5, Q1.
 
-### 2.3 SummaryInline
+### 2.3 SummaryInline [폐지 — 2026-06-22 UX 패스]
+> 카드 tldr 경량 뷰 제거(카드 요약 피크 폐지에 수반). 아래는 이력 보존용.
 - **책임**: `tldr`(3줄) 경량 뷰. 같은 §3 출력의 **뷰 프리셋** — 추가 생성/요청 0.
 - **props**: `tldr`, `cached`.
 - **규칙**: 외부 텍스트 이스케이프(BR-SF-9). 근거: SSOT §9.2(뷰 프리셋).
@@ -110,16 +112,26 @@ ApiClient (공유 레이어, 트리 밖) ── transport seam → U6 게이트�
 
 ### 2.9 TranslationView (초록·전문 공용)
 - **책임**: `translation.koreanText` 렌더 + `keptTerms[]`(미번역 보존 용어) 배지. 전문 번역은 긴 스크롤 텍스트 블록.
+- **개인 용어집 편집(BR-SF-17, BR-S4)**: `keptTerms[]` 배지는 탭 가능 — 탭하면 인라인 편집창에서 "내 번역어"를 저장(`POST /api/glossary`)하고, 재오픈 시 저장값을 미리채운다(`GET /api/glossary`). 편집창은 동시 1개만 열리며 바깥 클릭/Esc로 닫힘(모바일 기준 폭 보정). 저장값 조회 실패는 미리채우기 생략으로 degrade.
 - **props**: `translation: TranslationVM`, `scope`('abstract'|'full'), `cached`.
+- **API 통합점**: `ApiClient.listGlossaryTerms()`(미리채우기) · `ApiClient.upsertGlossaryTerm({termFrom, termTo})`(저장). 게이트웨이 미설정 dev에서는 in-browser fixture로 미리보기.
 - **규칙**: 외부 텍스트 이스케이프(BR-SF-9). 번역은 앵커 없음(요약 전용). 근거: US-S2, Q6.
 
-### 2.10 FullTextViewer (Q5=C, 신규)
-- **책임**: 논문 **전문 텍스트**(백엔드 신규 반환 API)를 렌더하고 앵커 위치(`target`/`span`)를 하이라이트·스크롤.
+### 2.10 FullTextViewer → **DocModelViewer (자체 리치뷰, 피벗 2026-06-23)**
+> **피벗(doc-model, SSOT=`construction/plans/docmodel-foundation-pivot-plan.md` D4)**: 평문 전문 렌더 → **doc-model 자체 리치 렌더**(콘텐츠 충실; arXiv HTML(experimental) 방식, **PDF.js 픽셀 재현 아님**). 요약·번역·앵커·(후속)에이전트가 통합되는 **목적지 표면** + 로그수집·개인화 표면.
+- **책임**: 논문 **doc-model**(구조화 본문)을 렌더 — 섹션/블록·**목차(TOC)·앵커 점프**, **수식=KaTeX/MathJax(LaTeX 렌더)**, **표=구조화 표 컴포넌트(rows/cols)**, **그림=webp**(아래 AssetGallery 재사용). 요약 출처 앵커(`target`/`span`)를 doc-model 앵커로 하이라이트·스크롤.
 - **props**: `paperId`, `version`, `anchorTarget?`.
-- **state(로컬)**: `screenState`(loading|page|licenseUnavailable|sourceUnavailable|error), `fullText?`.
-- **API 통합점**: `ApiClient.getFullText({ paperId, version })` → `FullTextOutcome`.
-- **규칙**: **OA 라이선스 미허용 → 'licenseUnavailable' 상태**(뷰어 대신 arXiv 링크아웃 안내, BR-SF-11). 외부 전문 텍스트 이스케이프(BR-SF-9). 정규화 텍스트(참고문헌·저자 제거)임을 안내(BR-SF-12).
-- **근거**: US-S3, Q5=C. ⚠️ **신규 백엔드 의존**(전문 반환 API).
+- **state(로컬)**: `screenState`(loading|page|licenseUnavailable|sourceUnavailable|error), `docModel?`.
+- **API 통합점**: `ApiClient.getDocModel({ paperId, version })` → `DocModelOutcome`(cache miss 시 백엔드 lazy 생성 — U1 BR-30). 그림 자산은 기존 `GET /api/papers/{id}/assets`(서명 URL, AssetGallery 재사용).
+- **하위 렌더 요소**: `DocTOC`(섹션 목차·앵커 점프) · `FormulaBlock`(KaTeX, LaTeX) · `TableBlock`(구조화 표 — **크롭 이미지 아님**, D8) · `FigureBlock`(webp, AssetGallery/라이트박스·앵커 매처 재사용) · 블록 텍스트(이스케이프).
+- **규칙**: **OA 라이선스 미허용 → 'licenseUnavailable' 상태**(뷰어 대신 arXiv 링크아웃 안내, BR-SF-11). 외부 콘텐츠 이스케이프(BR-SF-9); **수식 LaTeX·표 데이터는 신뢰 렌더러(KaTeX·표 컴포넌트) 경유**(원시 HTML 주입 금지, SEC-5). 구조화 콘텐츠(참고문헌·저자 정규화 제거)임을 안내(BR-SF-12).
+- **근거**: US-S3, Q5=C, **D1/D4/D8**. ⚠️ **백엔드 의존 변경**: 전문 평문 API → **doc-model 반환 API**(lazy 생성·캐시).
+
+> **구현 정합 (back-sync, 2026-06-23 UX 패스)**: 구현은 §2.4의 "상세 진입 시 인라인 본문 자동 로드"에서 다음으로 이탈했고, 이 문단이 실제 형상의 SSOT다.
+> - **본문은 인라인이 아니라 별도 전체화면 in-app 라우트** `/(paper)/[id]/doc-model`로 분리(브라우저 새 탭 아님 — 같은 탭 라우트). 상세 페이지엔 메타 아래 **`본문` 링크**(+`본문 번역` 링크 = `/(paper)/[id]/translate`, `FullTranslationIsland`)만 두고, 헤더 좌상단 **← 뒤로가기**(`AppHeader back`, `router.back()`)로 복귀. 상세 페이지 헤더도 브랜드 로고 대신 ← 뒤로가기.
+> - **요약 출처 앵커** 클릭 → 모달 닫고 `router.push(.../doc-model?anchorLabel=…)`로 본문 라우트를 열어 해당 블록으로 스크롤(현재 매칭은 `anchorLabel` 기준; id 기반 앵커 계약은 후속).
+> - **그림은 `AssetGallery` 재사용이 아니라 `DocModelViewer`가 `FigureBlock`에서 인라인 `<img>`로 직접 렌더**(assetId로 `/assets` 서명 URL 조인). 별도 그림/도표 썸네일 갤러리(`AssetGallery`/`AssetLightbox`/앵커 매처)는 중복이라 **제거**. (§1·§2.4의 "AssetGallery" 언급은 본 노트로 대체.)
+> - 레거시 `FullTextViewer`/`useFullText`/`getFullText`(평문 뷰어 경로)는 `DocModelViewer`로 대체되어 **제거**.
 
 ### 2.11 StateView (기존 확장)
 - **책임**: 비-해피 상태 공유 표시. U5 `StateViewKind`에 **`degraded`·`sourceUnavailable`·`licenseUnavailable`** 추가.
@@ -129,7 +141,7 @@ ApiClient (공유 레이어, 트리 밖) ── transport seam → U6 게이트�
 ### 2.12 ApiClient 확장 (공유 레이어)
 - **신규 메서드**:
   - `summarize(req: SummarizeRequest): Promise<SummarizeOutcome>` — `POST /api/summarize`, 응답을 `classifySummarizeResponse`로 분류(status 판별).
-  - `getFullText(req: FullTextRequest): Promise<FullTextOutcome>` — Q5=C 신규 엔드포인트(라이선스 게이트).
+  - `getDocModel(req: DocModelRequest): Promise<DocModelOutcome>` — Q5=C 엔드포인트(라이선스 게이트). **피벗(D4)**: 전문 평문 → doc-model 반환(cache miss 시 백엔드 lazy 생성·캐시, U1 BR-30). (구 `getFullText` 대체.)
 - **규칙**: 단일 진입·transport seam·검증 기존 패턴 미러(`search()` 형). 토큰 클라이언트 비노출(SEC, `frontend/CLAUDE.md`). 근거: 기존 `lib/api/*`.
 
 ---
@@ -149,7 +161,7 @@ ApiClient (공유 레이어, 트리 밖) ── transport seam → U6 게이트�
 | (네트워크/5xx) | `error` | `error` | "문제가 발생했어요 · 재시도" |
 | (요청 중) | — | `loading` | "요약/번역 생성 중…" |
 
-전문뷰어(`getFullText`) 매핑: `ok`→page · `license_unavailable`→`licenseUnavailable`(arXiv 안내) · `source_unavailable`→`sourceUnavailable` · 네트워크→`error`.
+리치뷰(`getDocModel`, 구 `getFullText`) 매핑: `ok`→page(doc-model 리치 렌더) · `license_unavailable`→`licenseUnavailable`(arXiv 안내) · `source_unavailable`→`sourceUnavailable` · 네트워크→`error`.
 
 ---
 

@@ -71,20 +71,23 @@
 
 ## 3. 소스 · 정제 (§4·§6 / Q1·Q2·Q6)
 
+> **피벗(2026-06-23, doc-model)**: 요약 입력 = 평문 `.txt` → **구조화 doc-model**(SSOT=`construction/plans/docmodel-foundation-pivot-plan.md`, D2). **입력 업그레이드일 뿐 생성·근거화·캐시·길이분기 로직은 불변.** 섹션·캡션·수식·표를 U7이 정규식으로 추정하던 것을 doc-model에서 직접·신뢰성 있게 받고, **표가 데이터(rows/cols)로 들어와** 표 숫자가 LLM·근거화에 가시화(D8).
+
 ### `SourceText` (원문, 소유)
 | 필드 | 의미 |
 |---|---|
-| `kind` | `enum{full_text, abstract}` — 요약=전문(`stored_full_text_ref` read), 번역=초록 |
-| `raw` | 원문 텍스트(전문은 U1 정제 보관본; PDF 재파싱 없음) |
+| `kind` | `enum{full_text, abstract}` — 요약=전문(**doc-model** read), 번역=초록 |
+| `raw` | 전문 = **U1 doc-model**(구조화: 섹션/블록·앵커 · 표=데이터(rows/cols) · 수식=LaTeX · 그림=webp 참조). 평문 `.txt` 재파싱 아님(D2). 초록 = 메타 초록 텍스트 |
 | `fallbackReason?` | 전문 부재/라이선스X로 초록 폴백 시 사유(Q1=A·NFR-R2) |
 
 ### `RefinedSource` (정제 결과, 소유)
 | 필드 | 의미 | 근거 |
 |---|---|---|
 | `body` | 정제 본문(노이즈 제거 후) | Q2=B |
-| `sections[]` | `Section{label, span}` — **U7이 헤딩 패턴으로 도출**(U1 미영속), 실패 시 빈 라벨+span-only | Q6=A |
-| `captions[]` | 표/그림 캡션(**보존** — 결과 수치 원천) | Q2=B |
-| `formulas[]` | LaTeX 수식(**보존·번역 금지**) | §4 |
+| `sections[]` | `Section{label, span}` — **doc-model 섹션/앵커에서 직접 취득**(신뢰; 헤딩-정규식 도출은 doc-model 부재 시 폴백). 실패 시 빈 라벨+span-only | Q6=A, D2 |
+| `tables[]` | `Table{label, rows/cols 데이터, caption, anchor}` — **doc-model 구조화 표(보존)**. 표 숫자가 LLM·근거화에 가시(D8 — 크롭 이미지 깜깜이 해소) | D8 |
+| `captions[]` | 표/그림 캡션(**보존** — 결과 수치 원천; doc-model 캡션·앵커 연결) | Q2=B |
+| `formulas[]` | LaTeX 수식(**보존·번역 금지**; doc-model이 LaTeX로 직접 제공 — MathML 추정 불필요) | §4, D1 |
 | `preserved[]` | Appendix·Supplementary Results 등 실험 정보 콘텐츠(**제거 금지**) | Q2=B |
 
 > Q2=B 정제 경계: **제거** = Header/Footer·페이지번호·저작권·저자정보·참고문헌. **보존** = 캡션·Appendix·Supplementary·수식·섹션 구조.
@@ -127,8 +130,8 @@
 `{ field, target: enum{section, table, figure}, label?, span }`
 - `span`(문자 offset)은 **필수 보증**; `label`은 도출 성공 시 부여(실패 시 span-only로 저하). 라벨·span 모두 없으면 해당 주장 **기권**.
 
-### `TranslationDraft` (번역 산출물, 소유)
-`{ koreanText, keptTerms[] }` — 초록 한국어 번역 + 미번역 유지 용어 목록.
+### `TranslationDraft` (번역 산출물, 소유) — **개정 (PR-2, BR-S18)**
+`{ docModel: DocModel, keptTerms[] }` — **번역본 doc-model**(본문과 동일 구조; 섹션 제목·문단·리스트·표/그림 캡션은 한국어, 표 셀·수식 LaTeX·코드·블록 id·그림 assetRef는 원본 verbatim) + 미번역 유지 용어 목록. 평문 `koreanText` 한 덩어리에서 전환. `summarization.schema.json`이 `docmodel.schema.json#/$defs/DocModel`을 **크로스파일 `$ref`**(복제 회피). 생성: `StructuredTranslator`가 소스 doc-model에서 번역 유닛(id→text)을 추출→게이트웨이 `translate_segments`(id→번역텍스트, 청크별 map-only)→소스 구조에 재주입해 결정적 재조립. doc-model 부재(초록/레거시)는 단일-문단 doc-model로 감싸 계약 통일.
 
 ---
 
@@ -171,6 +174,45 @@
 |---|---|---|
 | `SummaryRequest`/`SummaryResponse`·`Anchor` 등 | **U7 신규 생산** | **신규 `shared/dtos/summarization.schema.json`** 신설(현재 부재). SEC-9: 내부 필드(토큰·비용·캐시키·모델/프롬프트 식별자) 외부 DTO 비노출 |
 | `BudgetState`·`GroundingDecision`·`CandidateResponse` | U6 (`shared/ports`) | 참조만 — U7 비용/관측 재구현 없음(INV-2) |
-| `PaperId`·`Version`·`stored_full_text_ref` | U1/shared | read capability(코드 의존 아님) |
+| `PaperId`·`Version`·`stored_full_text_ref`·**`docModelRef`** | U1/shared | read capability(코드 의존 아님). **요약 입력 = `docModelRef`**(lazy 생성·캐시 — U1 BR-30); `.txt`는 검색·청킹 투영(D2) |
 
 > **신규 DTO 계약(`shared/dtos/summarization`)은 PROVISIONAL** — 정제 스펙은 별도 shared PR(Track 사인오프)로 승격. 본 FD 코드 검증과는 무관하게 진행 가능(U4 library 선례).
+
+---
+
+## 9. 멀티모달 자산 읽기 계약 (FR-17 — 표시 전용, 2026-06-22 확장)
+
+> 근거: `requirements.md` FR-17·FR-12(앵커 자산 연결) · U1 FD/Infra(`paper_asset` RDS·S3 `assets/`). **U7은 읽기·노출 측**(생산=U1). 요약/번역 생성·근거화·캐시 로직 **불변**.
+
+### 9.1 자산 읽기 DTO (소유·생산 — SEC-9)
+
+| 엔티티 | 필드 | 비고 |
+|---|---|---|
+| **`AssetRef`** | `assetId` · `type`(figure\|table) · `ordinal` · `caption` · `sourceMode`(structured\|page-crop) · **`url`**(단기 만료 **서명 URL**) · `pageRef?` · `bbox?` | **SEC-9**: `object_ref`·내부 메타 비노출 — **서명 URL만**. `ordinal`=표시 순서. (D2) |
+| **`PaperAssetsResponse`** (union) | `AssetsOkDTO{status:'ok', assets: AssetRef[]}` · `AssetsLicenseDTO{status:'license_unavailable'}` · `UnauthorizedDTO{status:'unauthorized'}` | OA 미허용 → `license_unavailable`(BR-SF-11 재사용); 비인증 → `unauthorized`(갭#3). OA·자산 0 = `ok`+빈 배열. |
+
+### 9.2 엔드포인트 (D1)
+
+- **`GET /api/papers/{paperId}/assets?version=N`** (U7 라우터, full-text와 병렬·독립). 인증 필수(principal, SEC-8). OA 라이선스 게이트(BR-SF-11). 매니페스트 조회 → 각 `object_ref` 서명 URL 발급 → `AssetRef[]`(ordinal 정렬).
+- 독립 엔드포인트 = 전문 뷰어 미오픈에도 상세 그림·도표 표시 가능(관심사 분리).
+
+### 9.3 읽기 포트 (참조 — U1 생산 `paper_asset` 소비)
+
+| 포트 | 시그니처(개념) | 비고 |
+|---|---|---|
+| **`AssetManifestReadPort`** | `read_assets(paperId, version) -> StoredAssetMeta[]` | 공유 RDS `paper_asset` 조회(읽기 전용, owner 무관 공개 코퍼스). |
+| **`AssetUrlSigner`** | `presign(objectRef, ttl) -> url` | S3 `assets/` GetObject 서명(단기 만료). 내부 키 비노출. |
+
+> U7은 `paper_asset`을 **읽기만**(U1이 단일 writer). 서명 URL TTL·정책은 NFR/Infra.
+
+### 9.4 앵커 ↔ 자산 연결 (D3 / 인셉션 Q5 · FR-12)
+
+- 요약 `Anchor{ target: figure|table, label, span }`은 **불변**(백엔드 변경 없음). 프론트(U5)가 `label`("Figure 1")·순서를 `AssetRef`(`caption`·`ordinal`)에 매칭해 "출처 보기 → 해당 도표" 연결.
+
+### 9.5 계약 SSOT 수립 (갭 #1 — D4, §8 예고 이행)
+
+- 기존 **수기 `frontend/types/generated/summarize.ts`** → **`shared/dtos/summarization.schema.json` SSOT 승격**: SummarizeRequest/Response·AnchorVM·FullText* + 신규 `AssetRef`/`PaperAssetsResponse`. 프론트는 스키마에서 **생성**(드리프트 0). SEC-9 비노출 불변.
+
+### 9.6 상태 매핑 정합 (갭 #2/#3 — D5)
+
+- summarize·full-text·assets 응답 union에 **`unauthorized`**(401) 명시; **`validation_error`는 `message` 포함**(프론트 'invalid'(입력 확인) 분기 동작). 프론트 분류기가 일반 'error' 뭉개기 대신 **상태로 판정**.

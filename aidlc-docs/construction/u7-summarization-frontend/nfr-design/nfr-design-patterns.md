@@ -51,7 +51,7 @@
 
 - **단위(vitest)**: classifier union 전수성(모든 status), XSS 라운드트립, persona 멱등, 식별자 매핑 결정성, 스트림 중단/완료 일관.
 - **PBT 형태**: union→screenState 전사상(fast-check 등 생성기 — 도구는 Build & Test), 외부 텍스트 이스케이프 무해성.
-- **E2E(playwright)**: 카드 [요약]→tldr 인라인→상세 이동, 액션 3종, persona 토글 캐시히트, 앵커→전문뷰어 하이라이트, 비-해피 상태 렌더.
+- **E2E(playwright)**: 카드 제목→상세 이동(카드 [요약]/tldr 피크는 폐지 — 2026-06-22 UX 패스), 상세 액션 3종, persona 토글 캐시히트, 앵커→전문뷰어 하이라이트, 비-해피 상태 렌더.
 
 ---
 

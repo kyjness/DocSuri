@@ -6,7 +6,7 @@
 
 ## 1. 시스템 맵
 
-CDK 스택 5개 (`ops/cdk/app.py`, account/region 하드코딩 `app.py:20`):
+CDK 스택 6개 (`ops/cdk/app.py`, account/region 하드코딩 `app.py:20`):
 
 | 스택 | 배포단위 | 제공 | RemovalPolicy 트랩 |
 |---|---|---|---|
@@ -15,6 +15,7 @@ CDK 스택 5개 (`ops/cdk/app.py`, account/region 하드코딩 `app.py:20`):
 | `Docsuri-Compute` | ① API | ECS Fargate `docsuri`, RDS PG16(Multi-AZ), Redis 7.1, ALB:443, CloudFront, SES | **RDS RETAIN** (`compute_stack.py:105`) |
 | `Docsuri-Ingestion` | ② Worker | SQS+DLQ, S3 `docsuri-papers-fulltext-*`, EventBridge `docsuri-arxiv-daily`(15:00 KST), Fargate worker(desired 0) | **S3 RETAIN** (`ingestion_stack.py:81`) |
 | `Docsuri-Frontend` | ④ FE | Next.js SSR Fargate, ALB, CloudFront @ docsuri.org | 없음 |
+| `Docsuri-Access` | — | 크로스계정 팀 접근 역할 `DocsuriCrossAccountDev` (PowerUser+MFA, §9) | 없음 |
 
 > ③ Ops worker: 디텍터 코드는 `ops/src/docsuri_ops/`에 존재하나 **독립 배포 스택 없음** — 현재는 라이브러리 코드. 실배포 워커로 안 돌고 있음 (§4 갭).
 
@@ -91,3 +92,34 @@ cdk deploy Docsuri-Compute -c ops_alert_email=ops@docsuri.org
 - ☐ **알림→사람**: CloudWatch 콘솔에서 `Api5xxAlarm`을 임시로 `Set alarm state → ALARM` → ops 메일 수신 확인. 끝나면 원복.
 - ☐ **RDS 복원**: 최신 자동 스냅샷 → 새 인스턴스로 복원 테스트 1회 → 접속 확인 후 폐기. (RETAIN이라 원본은 안전.) **검증 전엔 "백업 있음"을 신뢰하지 말 것.**
 - ☐ **번인**: 며칠 실트래픽 관찰 후 §7 임계값 튜닝.
+
+## 9. 팀원 크로스계정 접근 (Cross-account onboarding) — `Docsuri-Access`
+
+Option B: 팀원의 **자체 AWS 계정**이 prod 계정(`028317349537`)으로 assume. 역할 `DocsuriCrossAccountDev` (`access_stack.py`) — 신뢰 계정은 `app.py:48` `TEAM_ACCOUNT_IDS` (버전관리 = 부여/회수가 PR diff). 권한 `PowerUserAccess`(IAM·결제 제외), **MFA 필수**, 세션 4h.
+
+> 이 역할 = **콘솔/CLI/디버그용**. 배포 권한 아님 — 실배포는 여전히 CI OIDC(`CD_ROLE_ARN`).
+
+**접근 관리자 (Access admins) — 부여/회수 권한 보유:**
+- corpseonthemission@icloud.com (계정 `028317349537` 소유자, SSO 프로필 `AdministratorAccess-028317349537`)
+
+**부여/회수 절차:**
+1. `app.py` `TEAM_ACCOUNT_IDS`에 팀원 12자리 계정 ID 추가(회수 = 제거) → PR → 머지.
+2. `cd ops/cdk && cdk deploy Docsuri-Access` (SSO 자격증명, 함정 §2.3). 출력 `CrossAccountDevRoleArn` 확인 후 팀원에게 전달.
+3. 회수: 목록에서 빼고 재배포 → 다음 assume부터 거부.
+
+**팀원 (각자 자기 계정에서 1회):**
+1. 자신의 IAM 사용자/역할에 인라인 정책 부여:
+   `{ "Effect":"Allow", "Action":"sts:AssumeRole", "Resource":"arn:aws:iam::028317349537:role/DocsuriCrossAccountDev" }`
+2. 자기 계정에 MFA 디바이스 등록 (없으면 assume 거부됨).
+3. `~/.aws/config`에 프로필 추가:
+   ```ini
+   [profile docsuri]
+   role_arn       = arn:aws:iam::028317349537:role/DocsuriCrossAccountDev
+   source_profile = <본인 프로필>
+   mfa_serial     = arn:aws:iam::<본인계정>:mfa/<본인사용자>
+   region         = ap-northeast-2
+   ```
+
+**검증:** `aws sts get-caller-identity --profile docsuri` → ARN이 `.../DocsuriCrossAccountDev/...` 면 성공 (MFA 토큰 프롬프트 뜸). 콘솔은 Switch Role로 동일 역할 진입.
+
+> **함정:** MFA 없는 세션은 trust 조건(`aws:MultiFactorAuthPresent`)에서 거부 — assume 시 "access denied"는 대개 권한이 아니라 **MFA 미사용**.

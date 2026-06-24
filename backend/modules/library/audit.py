@@ -9,6 +9,7 @@ ring buffer for tests/dev; production swaps in a sink that forwards to U6/ops.
 
 from __future__ import annotations
 
+import hashlib
 from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -38,10 +39,15 @@ class InMemoryAuditSink:
 
 
 def make_event(action: str, entity_type: str, entity_id: str | None, owner_ref: str) -> AuditEvent:
+    # Hash the owner_ref (user_id) to mask/tokenize it in internal audit payloads (SEC-9).
+    # ponytail: unsalted SHA256 is fine for an internal-only ring buffer (never on the wire);
+    # upgrade to keyed HMAC if owner_ref ever needs true de-identification (rainbow-resistant).
+    opaque_ref = hashlib.sha256(owner_ref.encode("utf-8")).hexdigest()
     return AuditEvent(
         action=action,
         entity_type=entity_type,
         entity_id=entity_id,
-        owner_ref=owner_ref,
+        owner_ref=opaque_ref,
         at=datetime.now(UTC),
     )
+

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from hypothesis import given
+from hypothesis import assume, given
 from hypothesis import strategies as st
 
 from summarization.domain.cache_key import build_cache_key
@@ -62,16 +62,91 @@ def test_pbt_keep_as_is_invariant(text: str) -> None:
     assert GlossaryResolver.post_substitute(text, Glossary()) == text
 
 
-# PBT-S4 — response to_dict round-trip exposes no internal fields (SEC-9).
-@given(korean=_text)
-def test_pbt_response_to_dict_sec9(korean: str) -> None:
-    dto = SummaryResultDTO(
-        task=Task.TRANSLATE,
-        translation=TranslationDraft(korean_text=korean, kept_terms=("BERT",)),
-        meta={"source": "abstract"},
-    )
+# PBT-S4 — response to_dict round-trip exposes no internal fields (SEC-9) for all terminal states.
+@given(
+    status=st.sampled_from(["ok_summary", "ok_translate", "abstain", "cost_degraded", "source_unavailable"]),
+    tldr=_text,
+    korean=_text,
+    reason=st.text(min_size=1, max_size=100),
+)
+def test_pbt_response_to_dict_sec9_all_states(status: str, tldr: str, korean: str, reason: str) -> None:
+    from summarization.domain.models import SummaryDraft, Anchor, AnchorTarget, AbstainDTO, CostDegradedDTO, SourceUnavailableDTO
+    if status == "ok_summary":
+        draft = SummaryDraft(
+            tldr=tldr,
+            contributions=("A",),
+            method="M",
+            results="R",
+            limitations="L",
+            reproducibility={"code": "", "data": ""},
+            anchors=(Anchor("results", AnchorTarget.SECTION, span="S", label="L"),),
+            truncated=False,
+        )
+        dto = SummaryResultDTO(task=Task.SUMMARY, summary=draft, meta={"source": "full_text"})
+    elif status == "ok_translate":
+        from tests.stubs import tiny_doc
+
+        dto = SummaryResultDTO(
+            task=Task.TRANSLATE,
+            translation=TranslationDraft(
+                doc_model=tiny_doc(paragraph=korean or "x"), kept_terms=("BERT",)
+            ),
+            meta={"source": "abstract"},
+        )
+    elif status == "abstain":
+        dto = AbstainDTO(reason=reason)
+    elif status == "cost_degraded":
+        dto = CostDegradedDTO()
+    else:
+        dto = SourceUnavailableDTO(reason=reason)
+
     out = dto.to_dict()
     flat = str(out)
-    for forbidden in ("model_ver", "prompt_ver", "cost", "token", "redis", "cache_key"):
+    for forbidden in ("model_ver", "prompt_ver", "token", "redis", "cache_key", "user_id"):
         assert forbidden not in flat
-    assert out["status"] == "ok"
+    # ponytail: "cost" is a legitimate PUBLIC abstain reason ({"status":"abstain","reason":"cost"}),
+    # not a SEC-9 internal field — the whitelisted forbidden set above is the real non-exposure check.
+
+
+# PBT-S5 — 앵커 검증 건전성 (Step 34).
+@given(
+    span=st.text(min_size=1, max_size=50),
+    ref_body=st.text(min_size=10, max_size=500),
+    is_present=st.booleans()
+)
+def test_pbt_anchor_validation_soundness(span: str, ref_body: str, is_present: bool) -> None:
+    from summarization.domain.grounding import GroundingValidator
+    from summarization.domain.models import GroundingInput, SummaryDraft, Anchor, AnchorTarget, RefinedSource
+
+    # whitespace-only spans strip to "" → the validator treats them as no-span (auto-pass);
+    # the present/absent soundness property only holds once the span is non-empty after strip.
+    assume(span.strip())
+    
+    # If is_present is True, ensure the span exists in the ref_body
+    if is_present:
+        ref_body = ref_body + span
+    else:
+        # Ensure span is NOT in ref_body
+        ref_body = ref_body.replace(span, "")
+        if span in ref_body:
+            return
+            
+    draft = SummaryDraft(
+        tldr="tldr text",
+        contributions=("C",),
+        method="method text",
+        results="results text",  # No numbers to avoid numeric mismatch
+        limitations="limitations text",
+        reproducibility={"code": "", "data": ""},
+        anchors=(Anchor("results", AnchorTarget.SECTION, span=span, label=""),),
+        truncated=False,
+    )
+    refined = RefinedSource(body=ref_body, captions=())
+    gi = GroundingInput(draft=draft, refined=refined)
+    
+    verdict = GroundingValidator().validate(gi)
+    if is_present:
+        assert not any(v.kind == "anchor_missing" for v in verdict.violations)
+    else:
+        assert not verdict.ok
+        assert any(v.kind == "anchor_missing" for v in verdict.violations)

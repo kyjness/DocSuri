@@ -22,6 +22,11 @@ def test_saved_search_crud_over_http(make_app, make_principal):
 
     r = client.post("/library/saved-searches", json={"query": "graph neural networks"})
     assert r.status_code == 201
+    
+    # Idempotent re-save returns 200
+    r_dup = client.post("/library/saved-searches", json={"query": "graph neural networks"})
+    assert r_dup.status_code == 200
+    
     item_id = r.json()["id"]
     assert r.json()["query"] == "graph neural networks"
 
@@ -45,7 +50,7 @@ def test_library_add_and_idempotency_over_http(make_app, make_principal):
     r1 = client.post("/library/items", json={"arXivId": "2401.00001", "meta": META})
     assert r1.status_code == 201
     r2 = client.post("/library/items", json={"arXivId": "2401.00001", "meta": {"title": "X", "arxivId": "2401.00001"}})
-    assert r2.status_code == 201
+    assert r2.status_code == 200
     assert r1.json()["id"] == r2.json()["id"]  # idempotent
     assert client.get("/library/items").json()["items"][0]["meta"]["title"] == "T"
 
@@ -73,6 +78,20 @@ def test_invalid_input_returns_422(make_app, make_principal):
     client = TestClient(app)
     assert client.post("/library/saved-searches", json={"query": "   "}).status_code == 422
     assert client.post("/library/items", json={"arXivId": "bad", "meta": META}).status_code == 422
+    
+    # limit < 1 returns clean validation error message instead of raw FastAPI Query validation details (Step 22)
+    r_saved = client.get("/library/saved-searches?limit=0")
+    assert r_saved.status_code == 422
+    assert r_saved.json()["detail"] == "limit must be >= 1"
+
+    r_lib = client.get("/library/items?limit=-5")
+    assert r_lib.status_code == 422
+    assert r_lib.json()["detail"] == "limit must be >= 1"
+
+    r_hist = client.get("/library/history?limit=0")
+    assert r_hist.status_code == 422
+    assert r_hist.json()["detail"] == "limit must be >= 1"
+
 
 
 def test_unauthenticated_returns_401():

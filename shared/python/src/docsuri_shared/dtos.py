@@ -19,6 +19,38 @@ from ._generated.dtos.accounts_schema import (
     SignupResult,
 )
 
+# DocModel pivot (docmodel.schema.json) — U1 producer / U7 + rich-view consumers.
+# The doc-model AssetRef is a distinct shape (no runtime `url`), so it is re-exported
+# under an explicit alias to avoid clobbering the summarization AssetRef above.
+from ._generated.dtos.docmodel_schema import (
+    AssetRef as DocModelAssetRef,
+)
+from ._generated.dtos.docmodel_schema import (
+    Block,
+    BuildingDTO,
+    CodeBlock,
+    DocModel,
+    DocModelMeta,
+    DocModelRequest,
+    DocModelResponse,
+    DocModelResultDTO,
+    FigureBlock,
+    FormulaBlock,
+    ListBlock,
+    ListItem,
+    ParagraphBlock,
+    Provenance,
+    Section,
+    SourceTier,
+    SourceUnavailableDTO,
+    TableBlock,
+    TableCell,
+    TableRow,
+)
+from ._generated.dtos.docmodel_schema import (
+    LicenseUnavailableDTO as DocModelLicenseUnavailableDTO,
+)
+
 # U4 — Saved searches / Library / History (library.schema.json)
 from ._generated.dtos.library_schema import (
     HistoryEntry,
@@ -44,6 +76,23 @@ from ._generated.dtos.search_schema import (
     SearchResponse,
     SearchResultPageDTO,
     ValidationErrorDTO,
+)
+
+# U7 — Summarization (summarization.schema.json)
+from ._generated.dtos.summarization_schema import (
+    Anchor,
+    AnchorTarget,
+    AssetRef,
+    PaperAssetsResponse,
+    Persona,
+    Reproducibility,
+    SummarizeScope,
+    SummarizeTask,
+    SummaryDraft,
+    SummaryRequest,
+    SummaryResponse,
+    SummaryResultDTO,
+    TranslationDraft,
 )
 
 __all__ = [
@@ -73,4 +122,42 @@ __all__ = [
     "HistoryEntry",
     "HistoryPageDTO",
     "SearchResultSetDTO",
+    # summarization
+    "SummaryRequest",
+    "SummaryResponse",
+    "SummaryResultDTO",
+    "SummaryDraft",
+    "TranslationDraft",
+    "Anchor",
+    "AnchorTarget",
+    "Persona",
+    "SummarizeScope",
+    "SummarizeTask",
+    "Reproducibility",
+    # summarization — FR-17 figure/table assets
+    "AssetRef",
+    "PaperAssetsResponse",
+    # doc-model pivot (docmodel.schema.json)
+    "DocModel",
+    "DocModelMeta",
+    "DocModelRequest",
+    "DocModelResponse",
+    "DocModelResultDTO",
+    "BuildingDTO",
+    "SourceUnavailableDTO",
+    "DocModelLicenseUnavailableDTO",
+    "Provenance",
+    "SourceTier",
+    "Section",
+    "Block",
+    "ParagraphBlock",
+    "TableBlock",
+    "TableRow",
+    "TableCell",
+    "FormulaBlock",
+    "FigureBlock",
+    "ListBlock",
+    "ListItem",
+    "CodeBlock",
+    "DocModelAssetRef",
 ]

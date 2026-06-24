@@ -31,8 +31,8 @@
 | **CategoryFilter** | `categories[]`, `from`/`to`(기간) | **Q1=D: `categories=[cs.LG,cs.AI,cs.CL,cs.CV,stat.ML]`, 최근 5년(수십만 건).** `resolveSliceCategories()` 산출. |
 | **PageCursor** | 불투명 페이지/하베스트 커서 | 대량 시드 하베스트 + 증분 조회 페이지네이션 상태(프로토콜=NFR Q2). |
 | **MetadataPage** | `records[]`(원천 메타), `nextCursor`, `hasMore` | 슬라이스 페이지 단위 조회 결과. |
-| **RawDocument** | `rawBody`(OA 전문 **활성**), `sourceMeta`, `oaStatus` | **Q2=C: `fetchFullText` 활성** — 전문 본문 취득. 원천은 ObjectRef로 보관(SEC-9). |
-| **ParsedPaper** | `paperId`, `version`, `title`, `authors[]`, `year`, `abstract`, **`body`/`sections[]`(전문)**, `categories[]`, `arxivUrl`, `updatedAt`, `objectRef?` | **Q2=C: 본문 전문 포함.** FetchParseProcessor.parse 산출. FR-4 카드 필드 + 전문 청킹 원천. |
+| **RawDocument** | `text`(정규화 평문), `sourceMeta`, `oaStatus` | **BR-29**: 취득 = arXiv HTML 우선(평문 변환의 최선 소스) → PDF 폴백. 산출은 **평문 1종**(뷰어·AI 공통). |
+| **ParsedPaper** | `paperId`, `version`, `title`, `authors[]`, `year`, `abstract`, **`full_text`(정규화 평문)**, `categories[]`, `arxivUrl`, `updatedAt`, `objectRef?` | **Q2=C/BR-29: 본문 전문(평문).** FetchParseProcessor.parse 산출. 요약/번역 입력 + 뷰어 렌더(평문, 앵커 하이라이트). |
 | **RejectedRecord** | `reason`(RejectReason), `sourceRef` | parse/validate 거부. **§4 RejectReason 분류.** |
 | **ValidationResult** | `ok`(bool), `violations[]` | FetchParseProcessor.validate 산출(SEC-5). ok=false → `VALIDATION_VIOLATION` / PERMANENT(BR-15). |
 | **WithdrawalMarker** | `paperId`, `detectedAt`, `signal`(철회 근거) | **Q13=B 활성.** 탐지원(프로덕션): arXiv 메타데이터 철회 표시 **+ 전문 withdrawal 공지**(BR-14). → tombstone 라우팅. |
@@ -123,5 +123,27 @@ CategoryFilter(5cat,5yr) ──(fetchMetadataPage / 대량 하베스트)──�
 IngestionJob{ SEED_REBUILD | INCREMENTAL | EVENT(Q12=B) } ── 제어 ──▶ (논문 단위 분배; Q8=A 원자성)
 실패(IngestError) ─(classify)─▶ FailureClass ─▶ RetryDecision | DLQItem ─▶ 경보
 ```
+
+---
+
+## 10. 멀티모달 자산 엔티티 (FR-17 — 표시 전용, 2026-06-22 확장)
+
+> **근거**: `requirements.md` FR-17 · 멀티모달 FD 계획 Q1~Q7=A(Q2=C 혼합 추출). **표시 전용** — 자산은 **검색 비대상**이므로 §3·§4(Chunk·EmbeddingBatch·IndexRecord·VectorSpec) **불변**. 자산은 `IndexRecord`에 포함되지 않는다.
+
+| 엔티티 | 필드(개념) | 비고 |
+|---|---|---|
+| **AssetType** | `figure` \| `table` | 값타입. |
+| **AssetSourceMode** | `structured` \| `page-crop` | **Q2=C 혼합**: `structured`=arXiv e-print(LaTeX) 직접 추출, `page-crop`=PDF 페이지 영역 크롭 폴백. 자산이 어느 경로로 나왔는지 기록(관측·품질 추적). |
+| **AssetId** | `assetId(PaperId, PaperVersion, AssetType, ordinal)` 결정적 | **Q3=A**: `ChunkId`와 동형 결정성(PBT 후보 P7). `ordinal`=문서 등장 순서(0..N), type별 분리. 재처리 멱등 키. |
+| **FigureTableAsset** | `assetId`, `paperId`, `version`, `type`(AssetType), `caption`, `sectionRef`, `ordinal`, `sourceMode`, `objectRef`, `pageRef?`/`bbox?` | **FR-17 핵심 엔티티.** `caption`=본문 보존 캡션 참조(중복 추출 안 함). `sectionRef`+`ordinal`=앵커(`AnchorVM.target=figure\|table`) 매칭 좌표(인셉션 Q5). `objectRef`=자산 바이너리의 오브젝트 스토리지 참조(SEC-9 **공개 차단**). `pageRef`/`bbox`=`page-crop` 모드 위치. **원문에서 추출된 실재 자산만**(생성·합성 금지, BR-24). |
+| **AssetManifest** | `paperId`, `version`, `assets[]`(FigureTableAsset 메타) | 논문 단위 자산 목록. **영속(Q6=A)**: 바이너리=오브젝트 스토리지(S3), **매니페스트/메타=제어 메타 저장소(RDS)** — 읽기 측(U7 full-text/paper API)이 RDS 조회 후 S3 서명 URL 발급. 구체 테이블·스키마는 NFR/Infra. |
+
+### 포트 (개념 — Q5=A)
+
+| 포트 | 시그니처(개념) | 비고 |
+|---|---|---|
+| **AssetStorePort** | `put_asset(asset_binary) -> ObjectRef` · `put_manifest(AssetManifest)` · `replace_assets(paperId, version)`(CHANGED stale 교체) · `remove_assets(paperId)`(tombstone) | **신규 분리 포트**(단일 책임), `FullTextStorePort`와 별개. OA 게이트(BR-1)·SEC-9 공개 차단 동일. 바이너리→S3, 매니페스트/메타→RDS(Q6=A). |
+
+> `ParsedPaper`에 **`assets?: FigureTableAsset[]`**(디스크립터 — 바이너리+메타) 필드가 추가된다(parse 산출, §2 표 보강). 저장은 dedup 이후 NEW\|CHANGED만(business-logic §6, Q1=A).
 
 > 결정·검증 규칙은 `business-rules.md`, 오케스트레이션은 `business-logic-model.md`.

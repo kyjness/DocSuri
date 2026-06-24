@@ -38,3 +38,4 @@
 - **BR-SF-14 (전수 매핑)**: 응답 union(ok-summary·ok-translation·abstain·cost_degraded·source_unavailable) + loading·invalid·error를 빠짐없이 screenState로 매핑(누락 0). 무한 로딩 금지.
 - **BR-SF-15 (재시도)**: `error`/`cost_degraded`는 재시도 경로 제공(`onRetry`). `abstain`/`source_unavailable`은 정상 동작이므로 자동 재시도 안 함(안내만).
 - **BR-SF-16 (토큰/내부값 비노출)**: 응답의 토큰·비용·캐시키·모델ID는 표시하지 않는다(백엔드 SEC-9 화이트리스트 준수, 클라이언트도 노출 금지).
+- **BR-SF-17 (개인 용어집 편집, BR-S4)**: `TranslationView`의 `keptTerms[]` 배지에서 "내 번역어"를 저장(`POST /api/glossary`)하고 재오픈 시 저장값을 미리채운다(`GET /api/glossary`). 동시 1개 편집창·바깥 클릭/Esc 닫힘. 저장 성공은 "다시 번역하면 반영" 안내(즉시 재번역 강제 아님), 저장값 조회 실패는 미리채우기 생략으로 degrade(무한 로딩 없음). 입력은 길이 제한·trim, 외부 텍스트 이스케이프(BR-SF-9). 적용 범위: 후치환 경로라 **번역에 반영**(요약은 프롬프트 강제 용어만, BR-S4·§3.5).

@@ -23,15 +23,45 @@ from aws_cdk import (
     aws_events_targets as targets,
 )
 from aws_cdk import (
+    aws_iam as iam,
+)
+from aws_cdk import (
     aws_opensearchservice as opensearch,
 )
 from aws_cdk import (
     aws_s3 as s3,
 )
 from aws_cdk import (
+    aws_secretsmanager as secretsmanager,
+)
+from aws_cdk import (
     aws_sqs as sqs,
 )
 from constructs import Construct
+
+# Bedrock text-embedding model for the worker (Cohere Embed v4, 1024-dim — matches the
+# discovery/search side). cohere.embed-v4:0 is NOT invokable on-demand by its bare id; it must
+# go through the global cross-region inference profile. The adapter pins output_dimension to the
+# 1024-dim spec (embed-v4 defaults to 1536). v2 dual-write targets the same profile so the
+# backfilled docsuri-corpus-v2 is a clean, uniform v4 rebuild.
+_BEDROCK_FOUNDATION_MODEL = "cohere.embed-v4:0"
+_BEDROCK_MODEL_ID = "global.cohere.embed-v4:0"  # inference profile id (used for InvokeModel)
+
+# Existing control-plane RDS (created by Docsuri-Compute) referenced by concrete id rather than
+# a CFN cross-stack import. Importing compute's L2 construct would force a compute redeploy, which
+# regenerates the per-synth X-Origin-Verify secret and briefly 403s the live API during CloudFront
+# propagation. RDS is RemovalPolicy.RETAIN so these ids are stable.
+# ponytail: hardcoded infra ids; only revisit if the RDS instance or its secret is recreated.
+_RDS_ENDPOINT = (
+    "docsuri-compute-postgres9dc8bb04-7ajkntsj0ouu"
+    ".cpegcaqmu01d.ap-northeast-2.rds.amazonaws.com"
+)
+_RDS_PORT = 5432
+_RDS_SECURITY_GROUP_ID = "sg-0633ac0c0b8c7a052"
+_RDS_SECRET_ARN = (
+    "arn:aws:secretsmanager:ap-northeast-2:028317349537:secret:"
+    "DocsuriComputePostgresSecre-9qclXydED0pl-30WA1V"
+)
 
 
 class IngestionStack(Stack):
@@ -88,7 +118,10 @@ class IngestionStack(Stack):
             schedule=events.Schedule.cron(hour="6", minute="0"),  # 06:00 UTC = 15:00 KST
             targets=[
                 targets.SqsQueue(
-                    self.queue, message=events.RuleTargetInput.from_text("on_schedule_tick")
+                    self.queue,
+                    message=events.RuleTargetInput.from_object(
+                        {"type": "schedule_tick"}
+                    ),
                 )
             ],
         )
@@ -103,14 +136,39 @@ class IngestionStack(Stack):
             cpu=512,
             memory_limit_mib=1024,
         )
+
+        # Control-plane DSN WITHOUT the password — libpq reads PGPASSWORD (injected as a secret
+        # below) for any field absent from the conninfo. Keeps the DB credential out of the
+        # plaintext task-def env, mirroring how the API injects DB_PASSWORD.
+        control_plane_dsn = f"postgresql://docsuri_admin@{_RDS_ENDPOINT}:{_RDS_PORT}/docsuri"
+        db_secret = secretsmanager.Secret.from_secret_complete_arn(
+            self, "DbSecret", _RDS_SECRET_ARN
+        )
+
         task_def.add_container(
             "worker",
             image=ecs.ContainerImage.from_ecr_repository(self.repo, tag="latest"),
             logging=ecs.LogDrivers.aws_logs(stream_prefix="ingestion"),
             environment={
-                "SQS_QUEUE_URL": self.queue.queue_url,
-                "S3_BUCKET": self.bucket.bucket_name,
-                "OPENSEARCH_ENDPOINT": f"https://{opensearch_domain.domain_endpoint}",
+                "DOCSURI_ENV": "production",
+                "DOCSURI_AWS_REGION": self.region,
+                "DOCSURI_S3_BUCKET": self.bucket.bucket_name,
+                "DOCSURI_BEDROCK_MODEL_ID": _BEDROCK_MODEL_ID,
+                "DOCSURI_OPENSEARCH_ENDPOINT": f"https://{opensearch_domain.domain_endpoint}",
+                "DOCSURI_OPENSEARCH_INDEX": "docsuri-corpus-v1",
+                # FR-21 v4 dual-write: setting *_V2 flips runtime.build_production_runtime to
+                # fan writes into the clean v2 index (Fail-Open — v2 errors never block v1).
+                "DOCSURI_BEDROCK_MODEL_ID_V2": _BEDROCK_MODEL_ID,
+                "DOCSURI_OPENSEARCH_INDEX_V2": "docsuri-corpus-v2",
+                "DOCSURI_CONTROL_PLANE_DSN": control_plane_dsn,
+                "DOCSURI_SQS_QUEUE_URL": self.queue.queue_url,
+                "DOCSURI_SQS_DLQ_URL": dlq.queue_url,
+                # FR-17 multimodal figure/table assets ON (Pillow/pypdfium2/pdfplumber baked
+                # into the image via the [assets] extra).
+                "DOCSURI_MULTIMODAL_ASSETS_ENABLED": "true",
+            },
+            secrets={
+                "PGPASSWORD": ecs.Secret.from_secrets_manager(db_secret, "password"),
             },
         )
 
@@ -140,11 +198,27 @@ class IngestionStack(Stack):
             adjustment_type=appscaling.AdjustmentType.CHANGE_IN_CAPACITY,
         )
 
-        # SG: worker → OpenSearch (HTTPS). Add egress on the worker side rather than ingress on
-        # the search stack (avoids cross-stack dependency cycle).
+        # SG: worker → OpenSearch (HTTPS) + RDS (Postgres). Egress is added on the worker side;
+        # the RDS SG is imported by id (mutable) so the ingress rule lands in THIS stack — no
+        # change to the compute stack that owns it.
         self.service.connections.allow_to(opensearch_domain.connections, ec2.Port.tcp(443))
+        rds_sg = ec2.SecurityGroup.from_security_group_id(
+            self, "RdsSg", _RDS_SECURITY_GROUP_ID, mutable=True
+        )
+        self.service.connections.allow_to(rds_sg, ec2.Port.tcp(_RDS_PORT))
 
-        # Grant SQS consume + S3 read/write + Bedrock invoke to task role
+        # Grant SQS consume + S3 read/write + Bedrock embed-model invoke to the task role
         self.queue.grant_consume_messages(task_def.task_role)
         dlq.grant_send_messages(task_def.task_role)
         self.bucket.grant_read_write(task_def.task_role)
+        task_def.add_to_task_role_policy(
+            iam.PolicyStatement(
+                actions=["bedrock:InvokeModel"],
+                resources=[
+                    # Invocation goes through the global inference profile, which can route to
+                    # the foundation model in any region — grant both.
+                    f"arn:aws:bedrock:{self.region}:{self.account}:inference-profile/{_BEDROCK_MODEL_ID}",
+                    f"arn:aws:bedrock:*::foundation-model/{_BEDROCK_FOUNDATION_MODEL}",
+                ],
+            )
+        )
