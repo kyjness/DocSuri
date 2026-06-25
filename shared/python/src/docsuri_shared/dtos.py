@@ -14,6 +14,8 @@ from __future__ import annotations
 # U3 — Accounts/Auth (accounts.schema.json)
 from ._generated.dtos.accounts_schema import (
     LoginRequest,
+    PasswordResetConfirm,
+    PasswordResetRequest,
     SessionInfo,
     SignupRequest,
     SignupResult,
@@ -65,6 +67,13 @@ from ._generated.dtos.library_schema import (
     SearchResultSetDTO,
 )
 
+# U10 — My Page subscription (mypage.schema.json, mock — no real PG/billing)
+from ._generated.dtos.mypage_schema import (
+    SubscriptionDTO,
+    SubscriptionPlan,
+    SubscriptionStatusValue,
+)
+
 # U2 — Discovery/Search (search.schema.json)
 from ._generated.dtos.search_schema import (
     AbstainDTO,
@@ -111,6 +120,8 @@ __all__ = [
     "SignupResult",
     "LoginRequest",
     "SessionInfo",
+    "PasswordResetRequest",
+    "PasswordResetConfirm",
     # library
     "PageParams",
     "SavedSearchCreateDTO",
@@ -160,4 +171,8 @@ __all__ = [
     "ListItem",
     "CodeBlock",
     "DocModelAssetRef",
+    # mypage (mypage.schema.json, mock subscription)
+    "SubscriptionDTO",
+    "SubscriptionPlan",
+    "SubscriptionStatusValue",
 ]

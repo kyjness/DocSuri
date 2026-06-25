@@ -35,14 +35,27 @@ class SessionStoreUnavailableException(DomainException):
     """Fail-Closed error when ElastiCache Redis is down"""
     pass
 
+class SocialLinkConfirmationRequired(DomainException):
+    """H1 (BR-A9): 검증된 소셜 신원의 이메일이 *비밀번호를 가진* 기존 계정과 일치할 때,
+    자동 병합하지 않고 명시적 연결(현 비밀번호/소유 확인)을 요구하기 위해 발생시킨다.
+    계정 선점(pre-hijacking) 방어 — 공격자가 선점한 비밀번호 계정에 피해자 소셜 로그인이
+    자동 병합되는 것을 차단한다."""
+    pass
+
 class AccountStatus(str, Enum):
     PENDING = "PENDING"
     ACTIVE = "ACTIVE"
     LOCKED = "LOCKED"
+    # BR-A11: 소프트 삭제(탈퇴) — 즉시 로그인 차단·유예 동안 보존(복구 가능)·유예 경과 후 영구 파기(PURGED).
+    DEACTIVATED = "DEACTIVATED"
 
 class UserRole(str, Enum):
     USER = "USER"
     ADMIN = "ADMIN"
+
+class OidcProvider(str, Enum):
+    """소셜 로그인 신원공급자 (FR-27). v1=GOOGLE; GITHUB/APPLE은 차기 사이클."""
+    GOOGLE = "GOOGLE"
 
 class Action(str, Enum):
     READ = "READ"

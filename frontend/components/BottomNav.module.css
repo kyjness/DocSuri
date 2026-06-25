@@ -1,20 +1,17 @@
-/* Fixed bottom tab bar (mobile-first). */
+/* Bottom tab bar — a sticky footer rendered as a direct flex child of the phone frame
+   (sibling of the scrolling .screen). Sticky (not fixed) pins it to the bottom of the phone
+   frame's scroll viewport on desktop instead of the whole browser window; on mobile it pins
+   to the viewport bottom the same way. `flex: 0 0 auto` keeps its height while the flex:1
+   .screen fills the frame and pushes it to the bottom when content is short. */
 .nav {
-  position: fixed;
-  left: 0;
-  right: 0;
+  position: sticky;
   bottom: 0;
   z-index: 20;
+  flex: 0 0 auto;
   display: flex;
   background: var(--color-surface);
   border-top: 1px solid var(--color-border);
   padding-bottom: env(safe-area-inset-bottom);
-}
-
-/* Reserves in-flow space so the last content scrolls clear of the fixed bar.
-   Only present on pages that mount BottomNav. */
-.spacer {
-  height: calc(56px + env(safe-area-inset-bottom));
 }
 
 .tab {

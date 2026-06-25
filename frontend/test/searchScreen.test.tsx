@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { SearchScreen } from '@/components/SearchScreen';
+import { clearSearchSnapshot } from '@/lib/search/searchCache';
 
 // SearchScreen drives the real MockTransport (mock-first), so these exercise the
 // full state machine without a backend.
@@ -21,6 +22,7 @@ async function submit(query: string) {
 describe('SearchScreen state machine', () => {
   beforeEach(() => {
     push.mockReset();
+    clearSearchSnapshot(); // isolate the module-level search cache between cases
     render(<SearchScreen />);
   });
 
@@ -88,5 +90,33 @@ describe('SearchScreen state machine', () => {
     const stateView = await screen.findByTestId('state-view-invalid');
     expect(stateView).toBeInTheDocument();
     expect(stateView).toHaveAttribute('data-field', 'query');
+  });
+});
+
+describe('SearchScreen result persistence (back-navigation)', () => {
+  beforeEach(() => {
+    push.mockReset();
+    clearSearchSnapshot();
+  });
+
+  it('restores the previous results on remount and ✕ drops them', async () => {
+    const first = render(<SearchScreen />);
+    await submit('transformer attention');
+    expect(await screen.findByTestId('result-list')).toBeInTheDocument();
+    first.unmount();
+
+    // Remount (as if returning from a paper detail) → results + input restored, no re-search.
+    const second = render(<SearchScreen />);
+    expect(screen.getByTestId('result-list')).toBeInTheDocument();
+    expect(screen.getByTestId('search-input')).toHaveValue('transformer attention');
+
+    // ✕ dismisses the whole search; the snapshot is dropped so a later remount starts blank.
+    await userEvent.setup().click(screen.getByTestId('search-clear'));
+    expect(screen.queryByTestId('result-list')).not.toBeInTheDocument();
+    second.unmount();
+
+    render(<SearchScreen />);
+    expect(screen.queryByTestId('result-list')).not.toBeInTheDocument();
+    expect(screen.getByTestId('search-input')).toHaveValue('');
   });
 });

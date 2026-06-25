@@ -15,7 +15,7 @@ describe('CitationTreePanel', () => {
     expect(screen.getByRole('button', { name: '확대' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '축소' })).toBeInTheDocument();
     expect(screen.getByLabelText('그래프 좌우 이동')).toBeInTheDocument();
-    expect(screen.getByText(/OpenReview workshop record/)).toBeInTheDocument();
+    expect(screen.queryByText('해결되지 않은 인용')).not.toBeInTheDocument();
 
     const links = screen.getAllByRole('link', { name: '열기' });
     expect(links[0]).toHaveAttribute('href', 'https://arxiv.org/abs/1706.03762');

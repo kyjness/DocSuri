@@ -86,13 +86,26 @@ class SummaryCacheKey:
     glossary_ver: int
     model_ver: str
     prompt_ver: str
+    # Owner of a personalized artifact (set only when glossary_ver > 0). glossary_ver is a
+    # per-user counter, not a content identity, so two different users can both be at ver=1
+    # with different terms — without owner scoping their keys would collide and one would be
+    # served the other's personalized translation. None for the shared baseline (ver == 0).
+    owner_id: str | None = None
 
     def object_path(self) -> str:
-        """S3 object path (infrastructure-design §2.1). Immutable → permanent (INV-5)."""
+        """S3 object path (infrastructure-design §2.1). Immutable → permanent (INV-5).
+
+        ``glossaryVer`` is part of the path so a personal-term change (glossaryVer++) yields a
+        new key → cache miss → re-translation (BR-S1: invalidation by key change, no manual
+        flush). Personalized artifacts (glossary_ver > 0) additionally carry ``owner_id`` so
+        per-user counters that share an integer don't collide across users; the baseline
+        (glossary_ver == 0, no personal terms) stays owner-agnostic and shared.
+        """
+        owner = f"_u{self.owner_id}" if self.owner_id else ""
         return (
             f"summaries/{self.paper_id}/v{self.version}/"
             f"{self.task}_{self.target_lang}_{self.scope}_{self.persona}"
-            f"_{self.model_ver}_{self.prompt_ver}.json"
+            f"_g{self.glossary_ver}{owner}_{self.model_ver}_{self.prompt_ver}.json"
         )
 
     def redis_key(self) -> str:

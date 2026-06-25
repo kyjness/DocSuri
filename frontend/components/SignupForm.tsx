@@ -37,7 +37,9 @@ export function SignupForm() {
       await getApiClient().signup({ email: email.trim(), password });
       router.push('/login?signup=1');
     } catch (err) {
-      setFormError(err instanceof UserFacingError ? err.message : '가입에 실패했습니다. 다시 시도해 주세요.');
+      setFormError(
+        err instanceof UserFacingError ? err.message : '가입에 실패했습니다. 다시 시도해 주세요.',
+      );
     } finally {
       setSubmitting(false);
     }
@@ -70,9 +72,23 @@ export function SignupForm() {
         error={fieldErrors.password}
         testId="signup-password"
       />
-      <button type="submit" className={styles.submit} disabled={submitting} data-testid="signup-submit">
+      <button
+        type="submit"
+        className={styles.submit}
+        disabled={submitting}
+        data-testid="signup-submit"
+      >
         가입하기
       </button>
+      <div className={styles.divider}>또는</div>
+      {/* 소셜 가입/로그인 — 전체 페이지 OIDC 리다이렉트(/auth/social/google/start). */}
+      <a
+        className={styles.socialButton}
+        href="/auth/social/google/start"
+        data-testid="signup-google"
+      >
+        Google로 계속하기
+      </a>
     </form>
   );
 }

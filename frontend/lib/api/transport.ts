@@ -4,7 +4,7 @@
 // (DTO-derived fixtures). When the U6 gateway + U2 real infra land, swap in
 // HttpTransport (server-only) via configuration — no component/ApiClient rewrite.
 
-export type TransportMethod = 'GET' | 'POST' | 'DELETE';
+export type TransportMethod = 'GET' | 'POST' | 'DELETE' | 'PATCH';
 
 export interface TransportRequest {
   method: TransportMethod;

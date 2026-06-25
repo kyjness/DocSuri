@@ -43,11 +43,22 @@ import {
   mockClearHistory,
 } from '@/mocks/libraryFixtures';
 import { mockCitationTree } from '@/mocks/citationGraphFixtures';
+import {
+  mockGetSubscription,
+  mockSubscribe,
+  mockCancelSubscription,
+  mockGetAccountProfile,
+  mockGetOrcidProfile,
+  mockGetRecentlyViewed,
+  mockGetConsents,
+  mockUpdateConsent,
+} from '@/mocks/mypageFixtures';
 import type {
   SavedSearchCreateDTO,
   LibraryItemCreateDTO,
 } from '@/types/generated';
 import type { CitationNode } from '@/types/citationGraph';
+import type { BehaviorEventCreate } from '@/types/personalization';
 
 function matches(q: string, ...needles: string[]): boolean {
   const lower = q.toLowerCase();
@@ -68,6 +79,14 @@ export class MockTransport implements Transport {
 
     const libraryRes = this.routeLibrary(req, path, limit, cursor);
     if (libraryRes) return libraryRes;
+
+    const mypageRes = this.routeMypage(req, path);
+    if (mypageRes) return mypageRes;
+
+    if (path === '/api/personalization/events' && req.method === 'POST') {
+      void (req.body as BehaviorEventCreate);
+      return { status: 200, body: { recorded: true, duplicate: false, reason: 'recorded' } };
+    }
 
     if (req.path === '/api/search' && req.method === 'POST') {
       const query = String((req.body as { query?: unknown })?.query ?? '');
@@ -160,6 +179,11 @@ export class MockTransport implements Transport {
       mockLogout();
       return { status: 204, body: null };
     }
+    if (req.path === '/auth/account/delete' && req.method === 'POST') {
+      // REAL U3 soft-delete (withdrawAccount) — mock clears the session like a logout.
+      mockLogout();
+      return { status: 204, body: null };
+    }
     if (req.path === '/auth/session' && req.method === 'GET') {
       const session = mockCurrentSession();
       return session ? { status: 200, body: session } : { status: 401, body: null };
@@ -217,6 +241,38 @@ export class MockTransport implements Transport {
     const histRerun = path.match(/^\/library\/history\/([^/]+)\/rerun$/);
     if (histRerun && req.method === 'POST') return { status: 200, body: pageResponse };
 
+    return null;
+  }
+
+  // U10 my-page routes. Subscription mirrors the REAL backend module (mock-only, no PG/
+  // billing). account-profile/orcid-profile/recently-viewed/consents are MOCK-ONLY placeholders
+  // for menu items whose real U3/U9 contract does not exist yet. Withdrawal is NOT here — it
+  // calls the REAL U3 POST /auth/account/delete (handled in the auth branch above).
+  private routeMypage(req: TransportRequest, path: string): TransportResponse | null {
+    if (path === '/mypage/subscription') {
+      if (req.method === 'GET') return { status: 200, body: mockGetSubscription() };
+      if (req.method === 'POST') return { status: 201, body: mockSubscribe() };
+    }
+    if (path === '/mypage/subscription/cancel' && req.method === 'POST') {
+      return { status: 200, body: mockCancelSubscription() };
+    }
+    if (path === '/mypage/account-profile' && req.method === 'GET') {
+      return { status: 200, body: mockGetAccountProfile() };
+    }
+    if (path === '/mypage/orcid-profile' && req.method === 'GET') {
+      const profile = mockGetOrcidProfile();
+      return profile ? { status: 200, body: profile } : { status: 404, body: null };
+    }
+    if (path === '/mypage/recently-viewed' && req.method === 'GET') {
+      return { status: 200, body: { items: mockGetRecentlyViewed() } };
+    }
+    if (path === '/mypage/consents') {
+      if (req.method === 'GET') return { status: 200, body: mockGetConsents() };
+      if (req.method === 'POST') {
+        const body = (req.body ?? {}) as { nightlyPushAgreed?: unknown };
+        return { status: 200, body: mockUpdateConsent(Boolean(body.nightlyPushAgreed)) };
+      }
+    }
     return null;
   }
 }

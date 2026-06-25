@@ -122,3 +122,8 @@ class SessionManager:
             except SessionStoreUnavailableException as e:
                 # 무효화 과정 중 장애 발생 시 로그 적재 후 무시 (사용자 입장에선 어차피 세션이 유실/만료된 것과 같음)
                 logger.error(f"Error invalidating session: {str(e)}")
+
+    async def invalidate_all_for_user(self, user_id: str) -> None:
+        """해당 사용자의 모든 활성 세션을 파기한다 (FR-26/BR-A8 — 비밀번호 재설정 성공 시
+        전 세션 무효화로 탈취 세션을 강제 종료한다)."""
+        await self._repo.invalidate_all_for_user(user_id)

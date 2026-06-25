@@ -28,3 +28,14 @@ export interface SessionInfo {
   /** RFC 3339 / ISO 8601 date-time. */
   expiresAt: string;
 }
+
+/** Forgot-password request input (FR-26/BR-A8). Enumeration-safe; `email` only. */
+export interface PasswordResetRequest {
+  email: string;
+}
+
+/** Forgot-password confirm input (FR-26/BR-A8). Single-use token + new password (re-validated server-side). */
+export interface PasswordResetConfirm {
+  token: string;
+  newPassword: string;
+}

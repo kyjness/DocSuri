@@ -8,6 +8,7 @@
 // does not pre-fill an existing override (the translation response carries no saved value yet).
 import { useEffect, useId, useRef, useState } from 'react';
 import { getApiClient } from '@/lib/api';
+import { recordGlossaryUpdated } from '@/lib/personalization';
 import styles from './GlossaryTermBadge.module.css';
 
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
@@ -57,7 +58,8 @@ export function GlossaryTermBadge({
     if (!termTo || status === 'saving') return;
     setStatus('saving');
     try {
-      await getApiClient().upsertGlossaryTerm({ termFrom: term, termTo });
+      const saved = await getApiClient().upsertGlossaryTerm({ termFrom: term, termTo });
+      recordGlossaryUpdated(saved.glossaryVer);
       setStatus('saved');
       onSaved?.(termTo);
     } catch {

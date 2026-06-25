@@ -171,7 +171,7 @@ def _build_snapshot_store() -> Any:
     return InMemorySnapshotStore()
 
 
-_store = _build_snapshot_store()
+_store: Any | None = None
 _provider = SemanticScholarProvider(os.getenv("SEMANTIC_SCHOLAR_API_KEY"))
 
 
@@ -182,7 +182,13 @@ def get_principal(request: Request) -> Principal:
     return principal
 
 
-def get_snapshot_store() -> InMemorySnapshotStore:
+def get_snapshot_store() -> Any:
+    global _store
+    if _store is None:
+        try:
+            _store = _build_snapshot_store()
+        except ModuleNotFoundError:
+            _store = InMemorySnapshotStore()
     return _store
 
 

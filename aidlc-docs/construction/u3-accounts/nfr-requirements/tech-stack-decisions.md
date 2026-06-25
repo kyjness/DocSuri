@@ -50,3 +50,22 @@
 ## TD-U3-6 [상속] — PBT 및 테스트 도구: **Hypothesis**
 - **결정**: 자격증명 강도 검증 및 해싱 멱등성 검사(PBT-U3-1/2)를 위해 Python의 `Hypothesis` PBT 프레임워크를 상속하여 테스트를 작성합니다.
 - **근거**: U1/U2와의 일관성 유지 및 강력한 속성 기반 수축(Shrinking) 테스트 지원.
+
+---
+
+## TD-U3-7 — 이메일 발송 인프라 정정: **Resend** (TD-U3-5 SES 대체 · 2026-06-24)
+- **결정**: SES 프로덕션 액세스 지연으로 **Resend**를 라이브 발송 채널로 확정(`EMAIL_PROVIDER=resend`). 가입 인증·**비밀번호 재설정(FR-26)**·**이메일 변경(FR-28)** 메일 모두 Resend 경유. TD-U3-5의 `MockEmailHandler` 로컬 스위칭 추상화는 유지.
+- **근거**: SES 샌드박스/프로덕션 승인 병목 우회, 발신 도메인 신뢰도 확보.
+
+## TD-U3-8 — 소셜 로그인(OIDC) 라이브러리: **httpx + python-jose(JWKS)** (Authlib 미채택) — FR-27
+- **결정**: Google OIDC Authorization Code 흐름을 `httpx`(기존 reCAPTCHA 아웃바운드 패턴 재사용) + `python-jose`(또는 PyJWT, **JWKS로 `id_token` 서명 검증**)로 구현. **Authlib 등 중량 프레임워크 미채택**(제로-신규-중량-의존 원칙).
+- **근거**: 기존 스택 일관성·의존 표면 최소화. `id_token`(서명·`nonce`·`aud`·`iss`) 검증에만 JWT/JWKS 필요.
+- **시크릿**: Google `client_id`/`client_secret` = ECS env 주입(기존 시크릿 패턴, 비로깅·SEC-3).
+
+## TD-U3-9 — 신규 영속 스키마 + state/nonce 스토어 — FR-26~28
+- **결정**: RDS PostgreSQL에 `password_reset_token`(token_hash·expires_at·used_at)·`email_change_request`·`social_identity`(provider·provider_subject·account_id, **unique**) 테이블 추가 + `account.status`에 `DEACTIVATED` + `account_deletion`(purge_after) 추가. **DB 마이그레이션**은 기존 SQL 러너 패턴. OIDC `state`/`nonce`는 **ElastiCache Redis 단명 키**(콜백 1회용·짧은 TTL).
+- **근거**: 재설정/소셜 신원은 영속·해시 저장, `state`/`nonce`는 단명 → 스토어 분리(영속 vs 캐시).
+
+## TD-U3-10 — 계정 삭제 캐스케이드: **EventBridge `AccountDeleted` + 유예 파기 잡** — FR-28
+- **결정**: 삭제 시 U3가 `AccountDeleted` 이벤트를 기존 이벤트 백본(**EventBridge**)으로 발행 → U4/U2/U11 구독자가 각자 owner-scoped 파기(직접 호출 아님 — **DAG 비순환**). 유예 파기는 **스케줄드 잡**(기존 마이그레이션/배치 러너 패턴), 멱등·재시도·**DLQ**.
+- **근거**: 의존성 역전으로 순환 회피; 기존 EventBridge/SQS 패턴 재사용(신규 인프라 최소).

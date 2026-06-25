@@ -20,7 +20,7 @@ import sys
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from .models import AccountStatus, UserRole
+from .models import AccountStatus, DomainException, UserRole
 from .password import PasswordPolicy, get_password_hasher
 from .repository.credential import AccountTable, Base, CredentialRepository
 
@@ -44,7 +44,16 @@ def seed_admin(db_session, email: str, password: str) -> str:
         db_session.flush()
         logger.info("Seeded new ADMIN account.")
     else:
-        # 멱등: 기존 계정을 ADMIN·ACTIVE로 승격(이미 그렇다면 무변경). 비밀번호는 덮어쓰지 않는다.
+        # 멱등 재실행(이미 ADMIN)은 무변경 통과. 그러나 공개 가입 등으로 *먼저 존재하던* 비-ADMIN
+        # 계정을 묻지도 않고 ADMIN으로 승격하면 권한 상승 위험이 있다(공격자가 시드 이메일을 선점
+        # 가입 → 시드 실행 시 ADMIN 획득). 따라서 비-ADMIN 기존 계정 승격은 명시적 opt-in을 요구한다.
+        already_admin = account.role == UserRole.ADMIN.value
+        promote_opt_in = os.getenv("DOCSURI_ADMIN_PROMOTE_EXISTING", "").strip().lower() in {"1", "true", "yes", "on"}
+        if not already_admin and not promote_opt_in:
+            raise DomainException(
+                "해당 이메일로 비-ADMIN 계정이 이미 존재합니다. 의도된 승격이라면 "
+                "DOCSURI_ADMIN_PROMOTE_EXISTING=true 로 다시 실행하세요 (권한 상승 방지)."
+            )
         account.role = UserRole.ADMIN.value
         account.status = AccountStatus.ACTIVE.value
         repo.update_account(account)

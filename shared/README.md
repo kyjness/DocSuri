@@ -60,7 +60,8 @@ shared/
 │   ├── accounts.schema.json      ← U3 account/auth DTOs
 │   ├── library.schema.json       ← U4 saved-searches / library / history DTOs
 │   ├── summarization.schema.json ← U7 summarize/translate/asset DTOs
-│   └── docmodel.schema.json      ← doc-model (U1 builder → U7/U5/agent; pivot 2026-06-23)
+│   ├── docmodel.schema.json      ← doc-model (U1 builder → U7/U5/agent; pivot 2026-06-23)
+│   └── mypage.schema.json        ← U10 my-page subscription DTOs (mock — no real PG/billing)
 ├── events/                       ← 🟡 partially-FROZEN event-backbone contracts (JSON Schema)
 │   ├── search-executed.schema.json  ← 🔒 SearchExecutedEvent (U2 → U4)
 │   ├── ingestion.schema.json        ← NewArxivEvent (consume) + IngestionFailureSignal (U1 → U6)

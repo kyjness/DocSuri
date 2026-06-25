@@ -10,5 +10,9 @@ This module tracks the code generation and updates implemented for the Cohere v4
 4. **Seed Script**: Updated local seeding script to mock both indices and an alias.
 5. **Ops Migration Scripts (`ops/migrations/v4_migration/`)**:
    - `provision_v2_index.py`: Creates `docsuri-corpus-v2`.
-   - `backfill_v4.py`: Fetches documents, embeds using v4, and writes to `v2`.
    - `cutover_alias.py`: Swaps the `docsuri-corpus` alias to `v2`.
+
+> **Canonical runner:** `ingestion/src/docsuri_ingestion/migrate.py`, invoked in-VPC as a one-off ECS task
+> via the worker entrypoint (`python -m docsuri_ingestion.worker {provision|backfill|cutover}`). It SigV4-signs,
+> uses the OAI harvest path, and supports a `DOCSURI_BACKFILL_START/END` window. The standalone `backfill_v4.py`
+> was **removed** — it sent unsigned requests (403) and used the rate-limited Atom re-fetch (429). Use `migrate.py`.

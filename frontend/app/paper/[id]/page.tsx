@@ -22,8 +22,8 @@ export default async function PaperPage({ params }: { params: Promise<{ id: stri
         <main className={header.main}>
           <PaperDetailIsland paperId={id} version={1} arxivUrl={arxivUrl} />
         </main>
-        <BottomNav />
       </div>
+      <BottomNav />
     </RouteGuard>
   );
 }

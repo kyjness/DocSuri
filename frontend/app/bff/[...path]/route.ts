@@ -48,7 +48,14 @@ async function proxy(req: NextRequest, path: string[]): Promise<NextResponse> {
     idempotent: method === 'GET',
   });
 
-  const out = NextResponse.json(res.body ?? null, { status: res.status });
+  // 204 No Content / 304 Not Modified must not carry a body — NextResponse.json() always
+  // attaches one, and the Response constructor then throws ("Invalid response status code
+  // 204"), turning a successful upstream DELETE (un-bookmark, delete saved search, clear
+  // history) into a 500. Relay those status-only, still forwarding any Set-Cookie.
+  const out =
+    res.status === 204 || res.status === 304
+      ? new NextResponse(null, { status: res.status })
+      : NextResponse.json(res.body ?? null, { status: res.status });
   for (const cookie of res.setCookies ?? []) out.headers.append('set-cookie', cookie);
   return out;
 }

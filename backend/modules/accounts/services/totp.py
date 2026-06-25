@@ -2,7 +2,14 @@
 
 Admins enroll a TOTP secret (returned as an ``otpauth://`` provisioning URI for a QR code), then
 prove possession via /auth/mfa/verify to elevate their session (mfa_verified=True). The plaintext
-secret is persisted on the account row and MUST NOT be logged or returned in any response (SEC-3)."""
+secret is persisted on the account row and MUST NOT be logged or returned in any response (SEC-3).
+
+SECURITY-DEBT (감사 #4, deferred to infra/KMS by decision 2026-06-25): ``totp_secret`` is stored
+**plaintext at rest** (accounts.totp_secret VARCHAR). A DB/backup/snapshot leak would expose admin
+MFA seeds and defeat the second factor. Upgrade path (infra-owned, not code): wrap the column with
+KMS/Fernet envelope encryption — provision a key in AWS Secrets Manager (same secret-via-ARN
+pattern as the OIDC secrets) and encrypt/decrypt in this service's enroll/verify. Tracked as a
+follow-up; intentionally NOT implemented here pending the key-management decision."""
 
 from __future__ import annotations
 

@@ -17,6 +17,7 @@ import { PersonaToggle } from './PersonaToggle';
 import { SummaryView } from './SummaryView';
 import { TranslationView } from './TranslationView';
 import { StateView } from './StateView';
+import { recordSourceAnchorClicked, recordSummaryRequest } from '@/lib/personalization';
 import styles from './SummaryModal.module.css';
 
 /** The three detail-page actions (요약/초록 번역/전문 번역). Each opens this modal. */
@@ -65,6 +66,11 @@ export function SummaryModal({ paperId, version, view, onClose, onAnchor }: Summ
   // Re-request on view/persona change; the backend cache returns cached results
   // instantly (BR-SF-5/6), so switching tabs/levels is cheap.
   useEffect(() => {
+    recordSummaryRequest(
+      paperId,
+      view === 'summary' ? 'summary' : 'translation',
+      view === 'summary' ? { persona } : { scope: view === 'fullTrans' ? 'full' : 'abstract' },
+    );
     void run(buildRequest(view, persona, paperId, version));
   }, [view, persona, paperId, version, run]);
 
@@ -86,6 +92,7 @@ export function SummaryModal({ paperId, version, view, onClose, onAnchor }: Summ
   const retry = () => void run(buildRequest(view, persona, paperId, version));
 
   const handleAnchor = (anchor: AnchorVM) => {
+    recordSourceAnchorClicked(paperId, anchor);
     onAnchor?.(anchor);
     onClose();
   };

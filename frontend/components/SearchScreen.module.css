@@ -24,11 +24,16 @@
 .inputWrap {
   position: relative;
   flex: 1;
+  /* Allow the field to shrink below its content width on narrow screens (a flex item's
+     default min-width is `auto`, which would otherwise refuse to shrink and force the
+     submit button to squeeze + wrap "검색" vertically). The button stays fixed (below). */
+  min-width: 0;
   display: flex;
 }
 
 .input {
   flex: 1;
+  min-width: 0;
   min-height: 48px;
   /* right padding leaves room for the clear (✕) button */
   padding: 0 44px 0 14px;
@@ -81,6 +86,10 @@
 }
 
 .submit {
+  /* Keep the button at its content size on every width — never shrink it, so "검색" stays on
+     one line (the input shrinks instead, via min-width:0 above). */
+  flex: 0 0 auto;
+  white-space: nowrap;
   min-height: 48px;
   padding: 0 18px;
   border: none;

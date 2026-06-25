@@ -113,6 +113,10 @@ class AuthenticationService:
         elif account.status == AccountStatus.LOCKED.value:
             # 자동 잠금은 BR-A4로 금지 — 이 분기는 관리자 수동 잠금 계정만 처리한다.
             raise DomainException("관리자에 의해 잠긴 계정입니다. 관리자에게 문의해 주세요.")
+        elif account.status == AccountStatus.DEACTIVATED.value:
+            # BR-A11: 소프트 삭제(탈퇴) 계정은 유예 동안 로그인 차단. 이 분기는 자격증명이 이미
+            # 검증된 뒤라(타인 도달 불가) 본인에게 비활성 상태와 복구 경로를 안내해도 열거 위험이 없다.
+            raise DomainException("탈퇴 처리된 계정입니다. 복구를 원하시면 계정 복구 절차를 이용해 주세요.")
 
         # 5. 성공 시 실패 통계 초기화
         if account.failure_count > 0:

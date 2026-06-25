@@ -42,7 +42,7 @@ Lazy cleanup alone is not allowed because inactive users may never trigger a rea
 
 | Environment variable | Purpose | Default |
 | --- | --- | --- |
-| `PERSONALIZATION_ENABLED` | Server-side feature flag for U9 route/decision behavior. | `false` until deployment is ready. |
+| `PERSONALIZATION_ENABLED` | Server-side feature flag for U9 route/decision behavior. | `true`. |
 | `PERSONALIZATION_RAW_EVENT_RETENTION_DAYS` | Active raw behavior event retention period. | `90`. |
 | `PERSONALIZATION_DECISION_TIMEOUT_MS` | U2/U7 read timeout before fail-open default. | Finalized in Code Generation. |
 
@@ -62,9 +62,8 @@ The API task role keeps existing RDS and U6 telemetry permissions. The scheduled
 
 ## Rollout
 
-1. Deploy migrations.
-2. Deploy backend with `PERSONALIZATION_ENABLED=false`.
-3. Enable scheduled retention cleanup.
-4. Enable U9 API/decision path after smoke checks.
-5. Watch U6 metrics for record failure, degraded decisions, and retention purge failures.
+1. Deploy migrations and backend with `PERSONALIZATION_ENABLED=true`.
+2. Enable scheduled retention cleanup.
+3. Smoke-test U9 API/decision path.
+4. Watch U6 metrics for record failure, degraded decisions, and retention purge failures.
 

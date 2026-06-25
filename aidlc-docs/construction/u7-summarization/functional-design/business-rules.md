@@ -9,8 +9,8 @@
 ## 1. 결정 규칙 (Business Rules, BR-S*)
 
 ### BR-S1 — 캐시 키 immutable·무효화 (§11 / Q7)
-- 신원 = `(paperId, version, task, targetLang, persona, glossaryVer, modelVer, promptVer)`. 같은 키 = 같은 산출물.
-- 개인화 분기는 `glossaryVer`가 흡수(별도 `userId` 미사용). 무효화 = 키(경로) 변경에 의한 신규 객체. 수동 flush 없음.
+- 신원 = `(paperId, version, task, targetLang, persona, glossaryVer, [ownerId], modelVer, promptVer)`. 같은 키 = 같은 산출물.
+- `glossaryVer`는 **사용자별 카운터**로, 본인 용어 편집 시 본인 캐시를 무효화한다(편집 → `glossaryVer++` → 키(경로) 변경 → 신규 객체, 수동 flush 없음). 단 카운터는 내용 식별자가 아니므로 — 서로 다른 사용자가 각자 다른 용어로 같은 정수(예 ver=1)에 도달할 수 있어 — **개인화 산출물(`glossaryVer > 0`)은 `ownerId`로도 갈라** 사용자 간 충돌(타인의 개인화 번역 수신)을 막는다. 베이스라인(`glossaryVer == 0`, 개인 용어 없음)은 owner 무관·공유.
 
 ### BR-S2 — 소스 선택·초록 폴백 (§5 / Q1=A)
 - `summary` → 전문(**doc-model read**; `.txt`→doc-model 입력 교체, D2 — 선택 로직 불변), `translate` → 초록(기본) 또는 **전문(scope=full, 프론트 노출 기능)**.

@@ -1,0 +1,15 @@
+# Keep the build context/image clean (CI builds from a fresh checkout with none of these).
+# Without this, `COPY ops` / `COPY backend` would pull local virtualenvs (mac/arm64) into the
+# linux image — bloat and wrong-arch binaries.
+**/.venv
+**/venv
+**/node_modules
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.ruff_cache
+**/.mypy_cache
+.git
+.claude
+.cdk.out
+**/cdk.out

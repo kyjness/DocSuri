@@ -23,8 +23,8 @@
 ## 2. 스토리지 (Q2·Q3·Q4)
 
 ### 2.1 S3 요약 객체 (Q2)
-- **기존 버킷 + `summaries/` 프리픽스**. 경로: `summaries/{paperId}/v{version}/{task}_{lang}_{persona}_{modelVer}_{promptVer}.json`.
-- **라이프사이클**: 현행 키 **영구 보존**(immutable·INV-5). modelVer/promptVer 변경 시 옛 객체 미참조 방치 → 선택적 라이프사이클 만료(예 미참조 90일)는 운영 옵션.
+- **기존 버킷 + `summaries/` 프리픽스**. 경로: `summaries/{paperId}/v{version}/{task}_{lang}_{scope}_{persona}_g{glossaryVer}[_u{ownerId}]_{modelVer}_{promptVer}.json`. 신원 차원은 BR-S1과 일치(`glossaryVer` 포함 → 용어 변경 시 키 변경으로 무효화; translate는 `scope`=abstract|full로 산출물 분기). `_u{ownerId}` 세그먼트는 **개인화 산출물(`glossaryVer > 0`)에만** 붙어 사용자 간 충돌을 막고, 베이스라인(`glossaryVer == 0`)은 owner 무관·공유.
+- **라이프사이클**: 현행 키 **영구 보존**(immutable·INV-5). glossaryVer/modelVer/promptVer 변경 시 옛 객체 미참조 방치 → 선택적 라이프사이클 만료(예 미참조 90일)는 운영 옵션.
 - **IAM**: U7 task role은 `s3:GetObject`/`PutObject` **프리픽스 스코프**(`arn:.../summaries/*`) + 전문 read(`GetObject` 전문 프리픽스).
 - 용량: ~2KB×30만 ≈ 600MB(무시 수준).
 

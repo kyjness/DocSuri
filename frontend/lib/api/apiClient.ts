@@ -30,8 +30,15 @@ import type {
   LibraryItemDTO,
   LibraryPageDTO,
   HistoryPageDTO,
+  SubscriptionDTO,
 } from '@/types/generated';
 import type { PaperMetaVM } from '@/types/paperMeta';
+import type {
+  AccountProfileVM,
+  ConsentSettingsVM,
+  OrcidProfileVM,
+  RecentlyViewedItemVM,
+} from '@/types/mypage';
 import type {
   GlossaryTermUpsertDTO,
   GlossaryUpsertResultDTO,
@@ -39,6 +46,7 @@ import type {
   GlossaryListDTO,
 } from '@/types/glossary';
 import type { CitationNode, CitationTreeQuery, CitationTreeResponse } from '@/types/citationGraph';
+import type { BehaviorEventCreate, EventRecordResult } from '@/types/personalization';
 
 export interface ApiClientOptions {
   timeoutMs?: number;
@@ -197,6 +205,17 @@ export class ApiClient {
     throw normalizeHttpError(res.status, serverMessage(res.body));
   }
 
+  async recordBehaviorEvent(req: BehaviorEventCreate): Promise<EventRecordResult> {
+    const res = await this.request({
+      method: 'POST',
+      path: '/api/personalization/events',
+      body: req,
+      idempotent: false,
+    });
+    if (res.status === 200) return res.body as EventRecordResult;
+    throw normalizeHttpError(res.status, serverMessage(res.body));
+  }
+
   async signup(req: SignupRequest): Promise<SignupResult> {
     const res = await this.request({
       method: 'POST',
@@ -260,6 +279,61 @@ export class ApiClient {
 
   async logout(): Promise<void> {
     await this.request({ method: 'POST', path: '/auth/logout', idempotent: false });
+  }
+
+  /**
+   * Request a password-reset email (FR-26/BR-A8). The backend returns a generic success
+   * regardless of whether the address exists / is active (no account enumeration), so this
+   * resolves on 200 and only throws on transport or non-2xx failures.
+   */
+  async requestPasswordReset(email: string): Promise<void> {
+    const res = await this.request({
+      method: 'POST',
+      path: '/auth/password-reset/request',
+      body: { email },
+      idempotent: false,
+    });
+    if (res.status === 200 || res.status === 204) return;
+    throw normalizeHttpError(res.status, serverMessage(res.body));
+  }
+
+  /** Set a new password from the emailed reset token (FR-26/BR-A8). 4xx → user-facing error
+   * (expired/invalid token or weak password) so the page can show a retry path. */
+  async confirmPasswordReset(token: string, newPassword: string): Promise<void> {
+    const res = await this.request({
+      method: 'POST',
+      path: '/auth/password-reset/confirm',
+      body: { token, newPassword },
+      idempotent: false,
+    });
+    if (res.status === 200 || res.status === 204) return;
+    throw normalizeHttpError(res.status, serverMessage(res.body));
+  }
+
+  /** Change the logged-in user's password (FR-28/BR-A10). Backend invalidates all sessions on
+   * success, so the caller must re-login afterward. */
+  async changePassword(currentPassword: string, newPassword: string): Promise<void> {
+    const res = await this.request({
+      method: 'POST',
+      path: '/auth/change-password',
+      body: { currentPassword, newPassword },
+      idempotent: false,
+    });
+    if (res.status === 200 || res.status === 204) return;
+    throw normalizeHttpError(res.status, serverMessage(res.body));
+  }
+
+  /** Request an email-change confirmation link to a new address (FR-28/BR-A10). Password
+   * accounts must re-authenticate (currentPassword). Generic success (enumeration-safe). */
+  async requestEmailChange(newEmail: string, currentPassword: string): Promise<void> {
+    const res = await this.request({
+      method: 'POST',
+      path: '/auth/email-change/request',
+      body: { newEmail, currentPassword },
+      idempotent: false,
+    });
+    if (res.status === 200 || res.status === 204) return;
+    throw normalizeHttpError(res.status, serverMessage(res.body));
   }
 
   /** Returns the current session, or null when anonymous (401 is not an error). */
@@ -370,6 +444,111 @@ export class ApiClient {
       idempotent: false,
     });
     if (res.status === 204 || res.status === 200) return;
+    throw normalizeHttpError(res.status, serverMessage(res.body));
+  }
+
+  // ---- mypage (U10) -----------------------------------------------------
+  // getSubscription/subscribe/cancelSubscription are REAL (backend/modules/mypage, mock-only
+  // PG/billing per Q10). The rest below are MOCK-ONLY placeholders — U3 is implementing the
+  // real OAuth/profile/consent/withdrawal contract separately; these methods route to the
+  // same path shape so swapping the transport later (real BFF) needs no caller changes.
+
+  async getSubscription(): Promise<SubscriptionDTO> {
+    const res = await this.request({
+      method: 'GET',
+      path: '/mypage/subscription',
+      idempotent: true,
+    });
+    if (res.status === 200) return res.body as SubscriptionDTO;
+    throw normalizeHttpError(res.status, serverMessage(res.body));
+  }
+
+  async subscribe(): Promise<SubscriptionDTO> {
+    const res = await this.request({
+      method: 'POST',
+      path: '/mypage/subscription',
+      idempotent: false,
+    });
+    if (res.status === 200 || res.status === 201) return res.body as SubscriptionDTO;
+    throw normalizeHttpError(res.status, serverMessage(res.body));
+  }
+
+  async cancelSubscription(): Promise<SubscriptionDTO> {
+    const res = await this.request({
+      method: 'POST',
+      path: '/mypage/subscription/cancel',
+      idempotent: false,
+    });
+    if (res.status === 200) return res.body as SubscriptionDTO;
+    throw normalizeHttpError(res.status, serverMessage(res.body));
+  }
+
+  /** 로그인 경로 + 가입날짜 (MOCK — U3가 계정 컬럼을 추가하기 전까지). */
+  async getAccountProfile(): Promise<AccountProfileVM> {
+    const res = await this.request({
+      method: 'GET',
+      path: '/mypage/account-profile',
+      idempotent: true,
+    });
+    if (res.status === 200) return res.body as AccountProfileVM;
+    throw normalizeHttpError(res.status, serverMessage(res.body));
+  }
+
+  /** ORCID 무료 API 공개 레코드 (MOCK). loginProvider !== 'ORCID'면 404 -> null. */
+  async getOrcidProfile(): Promise<OrcidProfileVM | null> {
+    const res = await this.request({
+      method: 'GET',
+      path: '/mypage/orcid-profile',
+      idempotent: true,
+    });
+    if (res.status === 200) return res.body as OrcidProfileVM;
+    if (res.status === 404) return null;
+    throw normalizeHttpError(res.status, serverMessage(res.body));
+  }
+
+  /** 최근 본 논문 (MOCK — U9 paper_opened 이벤트 구현 전까지). 백엔드가 아직 이 경로를
+   * 제공하지 않으면 404 → 빈 목록으로 우아하게 처리(메뉴는 비어 보일 뿐 에러 아님). */
+  async getRecentlyViewed(): Promise<RecentlyViewedItemVM[]> {
+    const res = await this.request({
+      method: 'GET',
+      path: '/mypage/recently-viewed',
+      idempotent: true,
+    });
+    if (res.status === 200) return (res.body as { items: RecentlyViewedItemVM[] }).items ?? [];
+    if (res.status === 404) return [];
+    throw normalizeHttpError(res.status, serverMessage(res.body));
+  }
+
+  /** 동의 항목 (MOCK). privacyPolicy/termsOfService는 읽기 전용(필수, 철회 불가) — nightlyPush만
+   * updateNightlyPushConsent로 갱신 가능. */
+  async getConsents(): Promise<ConsentSettingsVM> {
+    const res = await this.request({ method: 'GET', path: '/mypage/consents', idempotent: true });
+    if (res.status === 200) return res.body as ConsentSettingsVM;
+    throw normalizeHttpError(res.status, serverMessage(res.body));
+  }
+
+  async updateNightlyPushConsent(nightlyPushAgreed: boolean): Promise<ConsentSettingsVM> {
+    const res = await this.request({
+      method: 'POST',
+      path: '/mypage/consents',
+      body: { nightlyPushAgreed },
+      idempotent: false,
+    });
+    if (res.status === 200) return res.body as ConsentSettingsVM;
+    throw normalizeHttpError(res.status, serverMessage(res.body));
+  }
+
+  /** 회원탈퇴 — REAL U3 소프트 삭제 (POST /auth/account/delete): status=DEACTIVATED 전이 +
+   * 전 세션 즉시 무효화 + 유예 기간 내 복구 가능. 비밀번호 계정은 현재 비밀번호 재인증 필수
+   * (감사 H7); 소셜-only 계정은 생략 가능. 성공 시 200/204. */
+  async withdrawAccount(currentPassword?: string): Promise<void> {
+    const res = await this.request({
+      method: 'POST',
+      path: '/auth/account/delete',
+      body: currentPassword ? { currentPassword } : undefined,
+      idempotent: false,
+    });
+    if (res.status === 200 || res.status === 204) return;
     throw normalizeHttpError(res.status, serverMessage(res.body));
   }
 

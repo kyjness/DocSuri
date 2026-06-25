@@ -65,6 +65,12 @@ class SessionRepository:
         try:
             # Redis에 저장하면서 TTL 설정
             await self._redis.set(key, json.dumps(data), ex=ttl)
+            # 사용자별 세션 핸들 인덱스(전 세션 무효화용 — FR-26/BR-A8). 동일 TTL로 갱신해
+            # 자동 정리되게 한다. 인덱스에 남은 만료 핸들은 무효화 시 no-op이라 무해.
+            # ponytail: 집합 인덱스 = 사용자당 세션 수가 적다는 전제; 대규모면 핸들 TTL 동기화 필요.
+            uset = f"user_sessions:{session.user_id}"
+            await self._redis.sadd(uset, session.handle)
+            await self._redis.expire(uset, ttl)
         except (RedisConnectionError, RedisTimeoutError) as e:
             raise self._wrap_exception(e) from e
         except Exception as e:
@@ -103,6 +109,20 @@ class SessionRepository:
         except Exception as e:
             raise SessionStoreUnavailableException(f"세션 삭제 장애: {str(e)}") from e
             
+    async def invalidate_all_for_user(self, user_id: str) -> None:
+        """해당 사용자의 모든 활성 세션을 파기합니다 (FR-26/BR-A8 — 재설정 시 전 세션 무효화).
+        user_sessions 인덱스 집합을 읽어 각 핸들의 세션 키를 삭제하고 인덱스도 비운다."""
+        uset = f"user_sessions:{user_id}"
+        try:
+            handles = await self._redis.smembers(uset)
+            if handles:
+                await self._redis.delete(*[f"session:{h}" for h in handles])
+            await self._redis.delete(uset)
+        except (RedisConnectionError, RedisTimeoutError) as e:
+            raise self._wrap_exception(e) from e
+        except Exception as e:
+            raise SessionStoreUnavailableException(f"세션 일괄 파기 장애: {str(e)}") from e
+
     async def close(self) -> None:
         """커넥션 풀을 정상 종료합니다. (App shell의 shutdown 이벤트에서 1회 호출)"""
         # redis.asyncio 는 close() 를 aclose() 로 대체(deprecated)했다. 신버전을 우선 사용하고,

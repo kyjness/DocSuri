@@ -11,15 +11,22 @@ WORKDIR /app
 RUN useradd --create-home --uid 10001 docsuri
 
 # Copy shared contracts (docsuri_shared) + ops (docsuri_ops — real grounding hook) + discovery
-# (docsuri_discovery) + backend app-shell with in-tree modules (accounts, library).
+# (docsuri_discovery) + summarization (docsuri_summarization) + backend app-shell with in-tree
+# modules (accounts, library). discovery + summarization are top-level src-layout packages, so
+# they are installed (below) to land on the import path as `discovery` / `summarization`.
 COPY shared/python /app/shared/python
 COPY ops /app/ops
 COPY backend/modules/discovery /app/discovery
+COPY backend/modules/summarization /app/summarization
 COPY backend /app/backend
 
-# Install: shared → ops → discovery → backend deps (no backend package itself — PYTHONPATH).
+# Install: shared → ops → discovery → summarization → backend deps (no backend package itself —
+# PYTHONPATH). Without installing summarization the app-shell's _mount_summarization import fails
+# (ModuleNotFoundError → skip) and /api/summarize + the doc-model endpoints 404; the [real]
+# extra (boto3/redis/psycopg) is already in the closure below, so no new third-party pulls.
 RUN python -m pip install --upgrade pip==24.2 \
     && python -m pip install /app/shared/python /app/ops "/app/discovery[real]" \
+        "/app/summarization[real]" \
     && python -m pip install -r /app/backend/requirements-deploy.txt
 
 USER docsuri

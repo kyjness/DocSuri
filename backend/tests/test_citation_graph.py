@@ -137,6 +137,16 @@ def test_redis_snapshot_store_roundtrips_with_ttl(monkeypatch) -> None:
     assert fake_client.ttls["cg:root:root"] == 30
 
 
+def test_snapshot_store_falls_back_when_redis_module_is_absent(monkeypatch) -> None:
+    monkeypatch.setenv("REDIS_HOST", "cache.internal")
+    monkeypatch.setitem(sys.modules, "redis", None)
+    monkeypatch.setattr(controller, "_store", None)
+
+    store = controller.get_snapshot_store()
+
+    assert isinstance(store, controller.InMemorySnapshotStore)
+
+
 def test_feature_flag_blocks_endpoint_by_default() -> None:
     app = create_app(Settings(env="test", database_url="sqlite://"))
     assert TestClient(app).get("/api/papers/root/citation-tree").status_code == 404

@@ -1,14 +1,21 @@
 'use client';
 
-import { useCallback, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import styles from './SearchScreen.module.css';
+import {
+  clearSearchSnapshot,
+  getSearchSnapshot,
+  setSearchSnapshot,
+  type SearchSort,
+} from '@/lib/search/searchCache';
 import { StateView } from './StateView';
 import { ResultList } from './ResultList';
 import { SaveToLibraryButton } from './SaveToLibraryButton';
 import { SaveSearchButton } from './SaveSearchButton';
 import { getApiClient, UserFacingError, type SearchOutcome } from '@/lib/api';
 import { validateQuery, MAX_QUERY_LENGTH } from '@/lib/api/validate';
+import { recordSearchExecuted } from '@/lib/personalization';
 import type { ResultCardVM } from '@/types/generated';
 
 // Per-card save control (US-L2/S1, Q2=A): a bookmark icon on the card's top-right.
@@ -17,7 +24,7 @@ const renderBookmark = (card: ResultCardVM) => <SaveToLibraryButton card={card} 
 // Result sort (client-side, over the received top-N): relevance = the ranking order
 // U2 returned (PBT-03); recent = publication year desc. This only re-orders what was
 // returned — it does not re-query the corpus.
-type SortKey = 'relevance' | 'recent';
+type SortKey = SearchSort;
 
 function sortCards(cards: ResultCardVM[], sort: SortKey): ResultCardVM[] {
   if (sort !== 'recent') return cards;
@@ -42,18 +49,41 @@ type ScreenState =
 
 export function SearchScreen() {
   const router = useRouter();
-  const [query, setQuery] = useState('');
-  const [state, setState] = useState<ScreenState>({ tag: 'idle' });
-  const [executedQuery, setExecutedQuery] = useState<string | null>(null);
+  // Restore the last in-session search (set when navigating away to a paper detail). A fresh
+  // page load has no snapshot → starts idle, so SSR and first client render agree.
+  const [query, setQuery] = useState(() => getSearchSnapshot()?.query ?? '');
+  const [state, setState] = useState<ScreenState>(() => {
+    const snap = getSearchSnapshot();
+    return snap ? { tag: 'outcome', outcome: snap.outcome } : { tag: 'idle' };
+  });
+  const [executedQuery, setExecutedQuery] = useState<string | null>(
+    () => getSearchSnapshot()?.executedQuery ?? null,
+  );
   const [inlineError, setInlineError] = useState<string | null>(null);
-  const [sort, setSort] = useState<SortKey>('relevance');
+  const [sort, setSort] = useState<SortKey>(() => getSearchSnapshot()?.sort ?? 'relevance');
   const inFlight = useRef(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const inputId = useId();
 
+  // Keep the snapshot in sync with the visible results/sort so a later back-navigation restores
+  // exactly what's on screen now (see searchCache).
+  useEffect(() => {
+    if (state.tag === 'outcome' && executedQuery) {
+      // Restore the executed query (not the live input), so a back-navigation shows an input
+      // that matches the results even if the user edited the box without re-searching.
+      setSearchSnapshot({ query: executedQuery, executedQuery, outcome: state.outcome, sort });
+    }
+  }, [state, executedQuery, sort]);
+
   const clearQuery = useCallback(() => {
+    // ✕ dismisses the whole search — input, results, sort, and the saved snapshot — so a later
+    // back-navigation starts blank. (Leaving the tab/site likewise drops the in-memory snapshot.)
     setQuery('');
     setInlineError(null);
+    setExecutedQuery(null);
+    setSort('relevance');
+    setState({ tag: 'idle' });
+    clearSearchSnapshot();
     inputRef.current?.focus();
   }, []);
 
@@ -76,6 +106,7 @@ export function SearchScreen() {
         setInlineError(null);
       }
       setState({ tag: 'outcome', outcome });
+      recordSearchExecuted(result.value, resultCount(outcome));
     } catch (err) {
       if (err instanceof UserFacingError && err.isAuth) {
         router.push('/login?redirect=/search');
@@ -160,6 +191,13 @@ export function SearchScreen() {
       </div>
     </div>
   );
+}
+
+function resultCount(outcome: SearchOutcome): number {
+  if (outcome.kind === 'page' || outcome.kind === 'degraded') {
+    return outcome.meta.resultCount ?? outcome.cards.length;
+  }
+  return 0;
 }
 
 function SortControl({ sort, onChange }: { sort: SortKey; onChange: (s: SortKey) => void }) {

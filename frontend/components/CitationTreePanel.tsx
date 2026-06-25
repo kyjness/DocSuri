@@ -134,7 +134,6 @@ export function CitationTreePanel({ paperId, onClose }: CitationTreePanelProps) 
       <div className={styles.header}>
         <div>
           <h2 className={styles.title}>각주 트리</h2>
-          {state.kind === 'done' ? <TreeMeta tree={state.tree} /> : null}
         </div>
         <div className={styles.tools}>
           <button
@@ -186,30 +185,10 @@ export function CitationTreePanel({ paperId, onClose }: CitationTreePanelProps) 
             onExpand={toggleExpand}
             onSave={save}
           />
-          {state.tree.unresolved.length > 0 ? (
-            <div>
-              <p className={styles.meta}>해결되지 않은 인용</p>
-              <ul className={styles.unresolved}>
-                {state.tree.unresolved.map((item) => (
-                  <li key={item}>{item}</li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
         </>
       )}
       </section>
     </div>
-  );
-}
-
-function TreeMeta({ tree }: { tree: CitationTreeResponse }) {
-  const more = tree.truncated && tree.remainingEstimate ? ` · 남은 예상 ${tree.remainingEstimate}건` : '';
-  return (
-    <p className={styles.meta}>
-      {tree.status} · depth {tree.depthReturned} · {tree.cacheHit ? '캐시 사용' : '신규 조회'}
-      {more}
-    </p>
   );
 }
 
@@ -234,6 +213,7 @@ function CitationGraph({
   const [horizontalScroll, setHorizontalScroll] = useState({ left: 0, max: 0 });
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const pendingScrollCenterRef = useRef<{ x: number; y: number } | null>(null);
+  const didFitInitialGraphRef = useRef(false);
   const graph = layoutGraph(tree, expandedById);
   const byId = new Map(graph.nodes.map((item) => [item.node.nodeId, item]));
 
@@ -255,6 +235,21 @@ function CitationGraph({
     viewport.scrollTop = target.y * zoom - viewport.clientHeight / 2;
     syncHorizontalScroll();
   }, [syncHorizontalScroll, zoom]);
+
+  useEffect(() => {
+    if (didFitInitialGraphRef.current) return;
+    const frame = window.requestAnimationFrame(() => {
+      const viewport = viewportRef.current;
+      if (!viewport) return;
+      didFitInitialGraphRef.current = true;
+      const fit = Math.min(viewport.clientWidth / graph.width, viewport.clientHeight / graph.height);
+      setZoom(Math.min(1, Math.max(0.25, fit)));
+      viewport.scrollLeft = 0;
+      viewport.scrollTop = 0;
+      syncHorizontalScroll();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [graph.height, graph.width, syncHorizontalScroll]);
 
   useEffect(() => {
     syncHorizontalScroll();
@@ -325,13 +320,11 @@ function CitationGraph({
                 const parent = item.parentId === tree.rootPaperId ? null : byId.get(item.parentId);
                 const x1 = parent?.x ?? graph.rootX;
                 const y1 = parent?.y ?? graph.rootY;
+                const midY = y1 + (item.y - y1) * 0.55;
                 return (
-                  <line
+                  <path
                     key={`${item.parentId}-${item.node.nodeId}`}
-                    x1={x1}
-                    y1={y1}
-                    x2={item.x}
-                    y2={item.y}
+                    d={`M ${x1} ${y1} C ${x1} ${midY}, ${item.x} ${midY}, ${item.x} ${item.y}`}
                     className={styles.edge}
                   />
                 );

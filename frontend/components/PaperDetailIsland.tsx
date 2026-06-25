@@ -5,7 +5,7 @@
 // 본문(doc-model rich view) and 본문 번역 open as full-screen IN-APP routes (Link / router.push,
 // same tab — each has its own ← back arrow), not a browser tab or inline. Choosing a summary
 // source anchor navigates to the 본문 route scrolled to the matching block. real-first.
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import type { AnchorVM } from '@/types/generated';
@@ -13,6 +13,7 @@ import { usePaperMeta } from '@/lib/usePaperMeta';
 import { SummaryModal, type DetailView } from './SummaryModal';
 import { SaveToLibraryButton } from './SaveToLibraryButton';
 import { CitationTreePanel } from './CitationTreePanel';
+import { recordPaperOpened } from '@/lib/personalization';
 import styles from './PaperDetailIsland.module.css';
 
 interface PaperDetailIslandProps {
@@ -33,6 +34,13 @@ export function PaperDetailIsland({ paperId, version, arxivUrl }: PaperDetailIsl
   const [citationOpen, setCitationOpen] = useState(false);
   const meta = usePaperMeta(paperId);
   const router = useRouter();
+  const openedRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (openedRef.current === paperId) return;
+    openedRef.current = paperId;
+    recordPaperOpened(paperId);
+  }, [paperId]);
 
   // 본문 / 본문 번역 are in-app routes (Link). A summary source anchor navigates to the 본문
   // route scrolled to the matching block (label carried via the query).

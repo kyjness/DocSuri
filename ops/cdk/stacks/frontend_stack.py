@@ -44,8 +44,14 @@ from aws_cdk import (
 )
 from constructs import Construct
 
+from ._origin_auth import SOCIAL_ORIGIN_VERIFY_SECRET
+
 _APP_DOMAIN = "docsuri.org"  # viewer (browser-facing) — the app's public URL
 _ORIGIN_DOMAIN = "app-origin.docsuri.org"  # ALB origin name (distinct from backend's origin.*)
+# Backend API origin (ComputeStack's ALB) — only the social-login full-page redirects route here
+# so the session cookie is first-party on docsuri.org (Option A, FR-27). Authenticated by the
+# shared X-Origin-Verify secret (accepted as a 2nd value on the backend ALB rule).
+_BACKEND_ORIGIN_DOMAIN = "origin.docsuri.org"
 _ZONE_NAME = "docsuri.org"
 _ZONE_ID = "Z0084324NUV4EPLJ7JH9"
 # Viewer cert lives in us-east-1 (CloudFront requirement); created out-of-band, DNS-validated.
@@ -159,6 +165,15 @@ class FrontendStack(Stack):
             origin_ssl_protocols=[cloudfront.OriginSslPolicy.TLS_V1_2],
             custom_headers={"X-Origin-Verify": _ORIGIN_VERIFY_SECRET},
         )
+        # Backend origin for the social-login redirects only (Option A, FR-27). Sends the SHARED
+        # verify secret (accepted as a 2nd value on the backend ALB rule in ComputeStack).
+        backend_origin = origins.HttpOrigin(
+            _BACKEND_ORIGIN_DOMAIN,
+            protocol_policy=cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
+            https_port=443,
+            origin_ssl_protocols=[cloudfront.OriginSslPolicy.TLS_V1_2],
+            custom_headers={"X-Origin-Verify": SOCIAL_ORIGIN_VERIFY_SECRET},
+        )
         self.cdn = cloudfront.Distribution(
             self, "WebCdn",
             comment="docsuri frontend (U5) - trusted HTTPS edge + authenticated origin",
@@ -178,6 +193,16 @@ class FrontendStack(Stack):
                     origin=origin,
                     viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.HTTPS_ONLY,
                     cache_policy=cloudfront.CachePolicy.CACHING_OPTIMIZED,
+                ),
+                # Social-login OIDC full-page redirects (start + callback) → backend origin, so the
+                # session cookie is set first-party on docsuri.org (Option A, FR-27). Dynamic/
+                # authenticated → no caching; forward cookies + query (code/state/nonce).
+                "/auth/social/*": cloudfront.BehaviorOptions(
+                    origin=backend_origin,
+                    viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.HTTPS_ONLY,
+                    allowed_methods=cloudfront.AllowedMethods.ALLOW_ALL,
+                    cache_policy=cloudfront.CachePolicy.CACHING_DISABLED,
+                    origin_request_policy=cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
                 ),
             },
         )

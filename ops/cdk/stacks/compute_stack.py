@@ -82,6 +82,8 @@ from aws_cdk import (
 )
 from constructs import Construct
 
+from ._origin_auth import SOCIAL_ORIGIN_VERIFY_SECRET
+
 # Public DNS for the API origin (zone docsuri.org lives in this account's Route53). CloudFront
 # connects to this name over HTTPS so the ACM cert (issued for it) validates — ACM can't issue
 # for the ALB's *.elb.amazonaws.com name, so a controlled domain is mandatory for origin TLS.
@@ -220,8 +222,36 @@ class ComputeStack(Stack):
             "DOCSURI_SUMMARY_JOB_QUEUE_URL": (  # long-summary async job (BR-S12)
                 f"https://sqs.{self.region}.amazonaws.com/{self.account}/docsuri-summary-job-queue"
             ),
-            "PERSONALIZATION_ENABLED": "false",
+            # Activation: mounting the U7 read path (summarization_enabled = bool(bucket)). The
+            # papers bucket is Ingestion-owned (same name the summary worker carries); the IAM for
+            # S3 read/write + Bedrock invoke is already granted to this task role below.
+            "DOCSURI_SUMMARY_BUCKET": f"docsuri-papers-fulltext-{self.account}",
+            # doc-model rich view (본문): on a read miss the API enqueues a BUILD_DOC_MODEL job to
+            # the ingestion queue (DOCSURI_DOCMODEL_BUILD_QUEUE_URL above) and returns `building`;
+            # the ingestion worker builds + caches it. OFF → license_unavailable.
+            "DOCSURI_DOCMODEL_VIEWER_ENABLED": "true",
+            # Long-input summaries: map-reduce band enqueues to the summary-job queue (async worker)
+            # and returns `pending`; without this the MAP_REDUCE band abstains (input_too_long).
+            "DOCSURI_MAP_REDUCE_ENABLED": "true",
+            "CITATION_GRAPH_ENABLED": "true",
+            "PERSONALIZATION_ENABLED": "true",
             "PERSONALIZATION_RAW_EVENT_RETENTION_DAYS": "90",
+            # --- U3 social login (FR-27, Google OIDC) ---
+            # client_id is public (embedded in the auth URL) → plain env. The matching
+            # GOOGLE_OIDC_CLIENT_SECRET arrives via Secrets Manager (see secrets= below).
+            "GOOGLE_OIDC_CLIENT_ID": (
+                # 2026-06-25: 이전 클라이언트(…15equ…)가 Google Console에서 삭제됨 → OAuth가
+                # "401 deleted_client"로 실패. 새 OAuth 클라이언트로 교체(시크릿도 함께 회전 필요).
+                "505093491210-55npim41bgaujn0udfj342p08vk6g8ne.apps.googleusercontent.com"
+            ),
+            # The browser must land first-party on docsuri.org for the session cookie to stick,
+            # so this callback path is routed to the backend by a CloudFront behavior on the
+            # frontend distribution (frontend_stack: /auth/social/* → backend origin — TODO).
+            "GOOGLE_OIDC_REDIRECT_URI": "https://docsuri.org/auth/social/google/callback",
+            # --- U3 account deletion cascade (FR-28/BR-A11) ---
+            # AccountDeletedPublisher puts events here; subscribers (U4/U2/U11) attach bus rules.
+            # Unset → app falls back to the Logging publisher (no real fan-out).
+            "ACCOUNT_EVENTS_BUS": "docsuri-account-events",
         }
 
         # DB password injected from the RDS-generated secret (JSON key "password"); CDK grants
@@ -238,6 +268,18 @@ class ComputeStack(Stack):
             self, "ResendApiKey", "docsuri/resend-api-key",
         )
         container_secrets["RESEND_API_KEY"] = ecs.Secret.from_secrets_manager(resend_secret)
+        # Google OIDC client secret (FR-27). Referenced by COMPLETE ARN, not name:
+        # from_secret_name_v2 grants on "<name>-??????" but ECS fetches the partial name ARN — they
+        # mismatch, so the task gets AccessDenied and the deploy rolls back (observed). The full ARN
+        # makes the grant and the container valueFrom identical to the real secret ARN.
+        google_oidc_secret = secretsmanager.Secret.from_secret_complete_arn(
+            self,
+            "GoogleOidcClientSecret",
+            "arn:aws:secretsmanager:ap-northeast-2:028317349537:secret:docsuri/google-oidc-client-secret-lihORg",  # noqa: E501
+        )
+        container_secrets["GOOGLE_OIDC_CLIENT_SECRET"] = ecs.Secret.from_secrets_manager(
+            google_oidc_secret
+        )
 
         # --- TLS for the origin: Route53 zone + ACM cert for origin.docsuri.org ---
         zone = route53.HostedZone.from_hosted_zone_attributes(
@@ -346,7 +388,12 @@ class ComputeStack(Stack):
             "VerifiedOriginOnly",
             priority=1,
             conditions=[
-                elbv2.ListenerCondition.http_header("X-Origin-Verify", [_ORIGIN_VERIFY_SECRET])
+                # Accept the existing backend-CF secret AND the shared social-edge secret
+                # (Option A): the frontend CF's /auth/social/* behavior sends the latter. Additive —
+                # existing backend BFF-gateway auth is unchanged.
+                elbv2.ListenerCondition.http_header(
+                    "X-Origin-Verify", [_ORIGIN_VERIFY_SECRET, SOCIAL_ORIGIN_VERIFY_SECRET]
+                )
             ],
             action=elbv2.ListenerAction.forward([self.service.target_group]),
         )
@@ -418,6 +465,15 @@ class ComputeStack(Stack):
             iam.PolicyStatement(
                 actions=["s3:GetObject"],
                 resources=[f"{_papers_bucket}/doc-model/*"],
+            )
+        )
+        # Full-text source (S3FullTextSource reads full-text/{paperId}/v{n}.txt) — the source-
+        # selector fallback for summary/full-translation when the doc-model is absent. Without
+        # this the fallback hits AccessDenied instead of degrading to abstract.
+        self.service.task_definition.task_role.add_to_principal_policy(
+            iam.PolicyStatement(
+                actions=["s3:GetObject"],
+                resources=[f"{_papers_bucket}/full-text/*"],
             )
         )
         self.service.task_definition.task_role.add_to_principal_policy(
@@ -494,6 +550,42 @@ class ComputeStack(Stack):
                                     "-m",
                                     "backend.modules.personalization.maintenance",
                                 ],
+                            )
+                        ],
+                    )
+                ],
+            )
+
+        # --- U3 account deletion cascade (FR-28/BR-A11) ---
+        # Custom EventBridge bus for AccountDeleted fan-out. The API task publishes here
+        # (build_account_deleted_publisher reads ACCOUNT_EVENTS_BUS=docsuri-account-events);
+        # U4/U2/U11 attach rules to purge owner-scoped data (idempotent · DLQ on their side).
+        account_events_bus = events.EventBus(
+            self, "AccountEventsBus", event_bus_name="docsuri-account-events"
+        )
+        account_events_bus.grant_put_events_to(self.service.task_definition.task_role)
+
+        # Grace-purge worker (FR-28): daily scan of DEACTIVATED accounts past purge_after →
+        # AccountDeleted + permanent delete. Same image/env/secrets as the API task; reuses the
+        # personalization-cleanup pattern. Idempotent — a missed/extra run is harmless.
+        if api_container is not None:
+            events.Rule(
+                self,
+                "AccountPurgeWorker",
+                description="Daily grace purge of soft-deleted (DEACTIVATED) accounts (FR-28)",
+                schedule=events.Schedule.cron(hour="3", minute="30"),
+                targets=[
+                    targets.EcsTask(
+                        cluster=cluster,
+                        task_definition=self.service.task_definition,
+                        task_count=1,
+                        subnet_selection=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PUBLIC),
+                        assign_public_ip=True,
+                        security_groups=self.service.service.connections.security_groups,
+                        container_overrides=[
+                            targets.ContainerOverride(
+                                container_name=api_container.container_name,
+                                command=["python", "-m", "backend.modules.accounts.purge_worker"],
                             )
                         ],
                     )
@@ -606,6 +698,33 @@ class ComputeStack(Stack):
             alarm_description="U9 behavior-event retention purge failed",
         )
         personalization_purge_alarm.add_alarm_action(cw_actions.SnsAction(ops_alerts))
+
+        # Email delivery failures (incident 2026-06-25): verification/reset emails silently failed
+        # for every signup because the prod RESEND_API_KEY was invalid (Resend 400 "API key is
+        # invalid") — accounts stuck PENDING with NO alert. _emit_email_failure emits
+        # EmailDeliveryFailureSignal both per-error_type (diagnostics) AND dimensionless (this alarm
+        # target). We alarm on the DIMENSIONLESS stream because CloudWatch metric alarms do NOT
+        # support SEARCH (dimension wildcards) — the dimensionless total catches every error_type
+        # (Resend RuntimeError, network exceptions, SES boto errors) in one alarm. threshold=0 →
+        # any failure in a 5-min window pages ops instead of failing silently.
+        email_failure_alarm = cloudwatch.Metric(
+            namespace="DocSuri/Production",
+            metric_name="EmailDeliveryFailureSignal",
+            period=Duration.minutes(5),
+            statistic="Sum",
+        ).create_alarm(
+            self,
+            "EmailDeliveryFailureAlarm",
+            threshold=0,
+            evaluation_periods=1,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+            alarm_description=(
+                "DocSuri verification/reset email delivery failing "
+                "(e.g. invalid RESEND_API_KEY or unverified sender domain) — accounts stuck PENDING"
+            ),
+        )
+        email_failure_alarm.add_alarm_action(cw_actions.SnsAction(ops_alerts))
 
         # SLO 3 — cost burn: account budget mirroring the in-app cap ($1600), notifying at the same
         # 80% warning ratio ($1280 — cost_guard.warning_ratio). Budget emails the ops alias directly

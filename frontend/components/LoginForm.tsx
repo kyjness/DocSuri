@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import styles from './AuthForm.module.css';
 import { getApiClient, UserFacingError } from '@/lib/api';
@@ -83,6 +84,11 @@ export function LoginForm() {
           가입이 완료되었습니다. 로그인해 주세요.
         </p>
       ) : null}
+      {params.get('reset') ? (
+        <p className={styles.formNotice} role="status" data-testid="login-reset-notice">
+          비밀번호가 재설정되었습니다. 새 비밀번호로 로그인해 주세요.
+        </p>
+      ) : null}
       {formError ? (
         <>
           <p className={styles.formError} role="alert" data-testid="login-form-error">
@@ -132,6 +138,21 @@ export function LoginForm() {
       >
         로그인
       </button>
+      <div className={styles.linkRow}>
+        <Link href="/reset-password" className={styles.linkButton} data-testid="login-reset-link">
+          비밀번호를 잊으셨나요?
+        </Link>
+      </div>
+      <div className={styles.divider}>또는</div>
+      {/* 소셜 로그인은 전체 페이지 리다이렉트(OIDC) — 엣지에서 백엔드 오리진으로 라우팅되는
+          /auth/social/google/start로 직접 이동한다(BFF JSON 프록시 경유 아님). */}
+      <a
+        className={styles.socialButton}
+        href="/auth/social/google/start"
+        data-testid="login-google"
+      >
+        Google로 계속하기
+      </a>
     </form>
   );
 }

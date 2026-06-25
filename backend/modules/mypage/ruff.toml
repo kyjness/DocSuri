@@ -1,0 +1,9 @@
+# U10 mypage lane lint config (modules self-lint; backend app-shell ruff excludes modules/).
+# Mirrors the library lane's select set. B008 is suppressed because FastAPI's
+# `param: T = Depends(...)` dependency-injection idiom (also used by the accounts lane) is
+# intentional — it is not the mutable-default function call that B008 targets.
+line-length = 100
+
+[lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["B008"]

@@ -33,10 +33,24 @@ _text = st.text(
 )
 def test_pbt_cache_key_deterministic(paper, version, task, persona, gver) -> None:
     req = SummaryRequest(paper_id=paper, version=version, task=task, persona=persona)
-    a = build_cache_key(req, glossary_ver=gver, model_ver="m")
-    b = build_cache_key(req, glossary_ver=gver, model_ver="m")
+    a = build_cache_key(req, glossary_ver=gver, model_ver="m", user_id="u1")
+    b = build_cache_key(req, glossary_ver=gver, model_ver="m", user_id="u1")
     assert a == b
     assert a.object_path() == b.object_path()
+    # BR-S1: a glossaryVer bump must change the key (path) so the term change invalidates
+    # the cached artifact (new object), rather than serving the stale translation.
+    bumped = build_cache_key(req, glossary_ver=gver + 1, model_ver="m", user_id="u1")
+    assert bumped.object_path() != a.object_path()
+    assert bumped.redis_key() != a.redis_key()
+    # BR-S1 cross-user isolation: two different users sharing the SAME glossary_ver integer
+    # must not share a personalized key (the counter is per-user, not a content identity).
+    # The baseline (ver 0, no personal terms) is owner-agnostic and intentionally shared.
+    other = build_cache_key(req, glossary_ver=gver, model_ver="m", user_id="u2")
+    if gver > 0:
+        assert other.object_path() != a.object_path()
+        assert other.redis_key() != a.redis_key()
+    else:
+        assert other.object_path() == a.object_path()
 
 
 # PBT-S2 — refine is a fixed point on already-refined body.
@@ -63,11 +77,20 @@ def test_pbt_keep_as_is_invariant(text: str) -> None:
 
 
 # PBT-S4 — response to_dict round-trip exposes no internal fields (SEC-9) for all terminal states.
+# Internal identifiers that must never appear in the serialized DTO.
+_SEC9_FORBIDDEN = ("model_ver", "prompt_ver", "token", "redis", "cache_key", "user_id")
+
+
 @given(
     status=st.sampled_from(["ok_summary", "ok_translate", "abstain", "cost_degraded", "source_unavailable"]),
     tldr=_text,
     korean=_text,
-    reason=st.text(min_size=1, max_size=100),
+    # ``reason`` is a PUBLIC field echoed into the DTO; a free-text value that happens to
+    # contain an internal field name is not a SEC-9 leak, so exclude those tokens to avoid a
+    # false positive (real reasons are short codes like "insufficient_grounding").
+    reason=st.text(min_size=1, max_size=100).filter(
+        lambda r: not any(f in r for f in _SEC9_FORBIDDEN)
+    ),
 )
 def test_pbt_response_to_dict_sec9_all_states(status: str, tldr: str, korean: str, reason: str) -> None:
     from summarization.domain.models import SummaryDraft, Anchor, AnchorTarget, AbstainDTO, CostDegradedDTO, SourceUnavailableDTO
@@ -102,7 +125,7 @@ def test_pbt_response_to_dict_sec9_all_states(status: str, tldr: str, korean: st
 
     out = dto.to_dict()
     flat = str(out)
-    for forbidden in ("model_ver", "prompt_ver", "token", "redis", "cache_key", "user_id"):
+    for forbidden in _SEC9_FORBIDDEN:
         assert forbidden not in flat
     # ponytail: "cost" is a legitimate PUBLIC abstain reason ({"status":"abstain","reason":"cost"}),
     # not a SEC-9 internal field — the whitelisted forbidden set above is the real non-exposure check.

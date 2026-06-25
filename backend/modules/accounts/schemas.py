@@ -7,6 +7,8 @@ redefine these locally — change the JSON Schema in shared/ and regenerate (§5
 
 from docsuri_shared.dtos import (
     LoginRequest,
+    PasswordResetConfirm,
+    PasswordResetRequest,
     SessionInfo,
     SignupRequest,
     SignupResult,
@@ -19,4 +21,6 @@ __all__ = [
     "LoginRequest",
     "SessionInfo",
     "ValidationErrorDTO",
+    "PasswordResetRequest",
+    "PasswordResetConfirm",
 ]

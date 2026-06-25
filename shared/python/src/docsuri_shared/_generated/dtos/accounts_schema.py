@@ -20,9 +20,6 @@ class SignupRequest(BaseModel):
     Self-signup input. Source: AccountController.signup(req: SignupRequest, ctx) (component-methods U3). `password` is INPUT-ONLY and NOT logged (SEC-3); policy/breach checks are server-side (PasswordPolicy). Trace: dtos.md §2, FR-7, US-A1, SEC-12.
     """
 
-    model_config = ConfigDict(
-        extra='forbid',
-    )
     email: str = Field(
         ..., description='Account email (signup identity). Trace: FR-7, US-A1.'
     )
@@ -51,9 +48,6 @@ class LoginRequest(BaseModel):
     Login input. Source: AccountController.login(req: LoginRequest, ctx) (component-methods U3). `password` is INPUT-ONLY and NOT logged. Failures surface as a generalized auth error (401/429 — credential existence not disclosed). Trace: dtos.md §2, FR-7, US-A2, SEC-12.
     """
 
-    model_config = ConfigDict(
-        extra='forbid',
-    )
     email: str = Field(
         ..., description='Account email (login identity). Trace: FR-7, US-A2.'
     )
@@ -78,4 +72,29 @@ class SessionInfo(BaseModel):
     expiresAt: AwareDatetime = Field(
         ...,
         description='Session expiry instant (serialized as RFC 3339 / ISO 8601 date-time — concrete wire format is API/Infra Design). Trace: FR-7, US-A2.',
+    )
+
+
+class PasswordResetRequest(BaseModel):
+    """
+    Forgot-password request input (FR-26/BR-A8). Enumeration-safe: the response is identical regardless of account existence/state. `email` only. Public auth input → unknown fields ignored (FR-29/BR-A12). Trace: FR-26, US-A3, SEC-9.
+    """
+
+    email: str = Field(
+        ..., description='Account email to send the reset link to. Trace: FR-26, US-A3.'
+    )
+
+
+class PasswordResetConfirm(BaseModel):
+    """
+    Forgot-password confirm input (FR-26/BR-A8). Single-use token + new password (re-validated against BR-A1); on success all sessions are invalidated. Public auth input → unknown fields ignored (FR-29/BR-A12). Trace: FR-26, US-A3, SEC-12.
+    """
+
+    token: str = Field(
+        ...,
+        description='Single-use reset token from the emailed link. INPUT-ONLY, never logged (SEC-3). Trace: FR-26.',
+    )
+    newPassword: str = Field(
+        ...,
+        description='INPUT-ONLY new plaintext password; policy/breach validated server-side (PasswordPolicy/BR-A1). Never logged/returned (SEC-3/SEC-12). Trace: FR-26, SEC-12.',
     )

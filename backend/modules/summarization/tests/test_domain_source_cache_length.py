@@ -53,8 +53,8 @@ def test_translate_full_falls_back_to_abstract() -> None:
 
 
 def test_cache_key_is_immutable_and_pathed() -> None:
-    key = build_cache_key(_req(Task.SUMMARY), glossary_ver=0, model_ver="m1")
-    same = build_cache_key(_req(Task.SUMMARY), glossary_ver=0, model_ver="m1")
+    key = build_cache_key(_req(Task.SUMMARY), glossary_ver=0, model_ver="m1", user_id="u1")
+    same = build_cache_key(_req(Task.SUMMARY), glossary_ver=0, model_ver="m1", user_id="u1")
     assert key == same  # deterministic identity (PBT-S1)
     assert key.object_path().startswith("summaries/2401.00001/v1/")
     assert key.redis_key().startswith("sum:")
@@ -62,13 +62,13 @@ def test_cache_key_is_immutable_and_pathed() -> None:
 
 def test_cache_key_scope_dimension() -> None:
     # summary is fixed to full text; translate varies by scope -> distinct objects.
-    summary = build_cache_key(_req(Task.SUMMARY), glossary_ver=0, model_ver="m1")
+    summary = build_cache_key(_req(Task.SUMMARY), glossary_ver=0, model_ver="m1", user_id="u1")
     assert summary.scope == Scope.FULL
     abs_tr = build_cache_key(
-        _req(Task.TRANSLATE, scope=Scope.ABSTRACT), glossary_ver=0, model_ver="m1"
+        _req(Task.TRANSLATE, scope=Scope.ABSTRACT), glossary_ver=0, model_ver="m1", user_id="u1"
     )
     full_tr = build_cache_key(
-        _req(Task.TRANSLATE, scope=Scope.FULL), glossary_ver=0, model_ver="m1"
+        _req(Task.TRANSLATE, scope=Scope.FULL), glossary_ver=0, model_ver="m1", user_id="u1"
     )
     assert abs_tr.scope == Scope.ABSTRACT and full_tr.scope == Scope.FULL
     assert abs_tr != full_tr

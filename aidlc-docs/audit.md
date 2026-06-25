@@ -1572,3 +1572,83 @@
 **Context**: CONSTRUCTION — U1 issue119 cross-review remediation and PR draft.
 
 ---
+
+## U3 Accounts 프로덕션화 — Requirements Analysis 재진입
+**Timestamp**: 2026-06-24T08:04:33Z
+**User Input**: "Fix the login module. Our teammates reported that the login procedure is not operating." → 이후 "Don't fix just that problem. Using AIDLC, develop the user & account feature into a full, production-level feature."
+**AI Response**: "로그인 장애를 진단한 결과 U3 코드·계약·인프라는 정상이며, 팀이 본 'login not operating'은 `/auth/login`의 **HTTP 422**(요청 바디 형상 불일치 — `LoginRequest`의 `extra='forbid'` + 필수 필드)가 프런트 `normalizeHttpError`의 `unknown` 폴백('문제가 발생했습니다. 다시 시도해 주세요.')으로 표면화된 것임을 라이브 프로브로 재현 확인(정상 `{email,password}` → 401, 추가/누락 필드 → 422). 사용자 지시에 따라 단발 패치 대신 U3(사용자·계정)를 프로덕션급으로 확장하기로 하고 AIDLC Requirements Analysis 재진입을 시작함. 현재 U3 구현 표면(가입/로그인/이메일인증/재발송/세션/로그아웃/MFA enroll·verify/admin whoami)을 코드 대조로 확인하고, 프로덕션 갭(① 비밀번호 재설정(분실) ② 소셜 로그인(OAuth/OIDC) ③ 계정 라이프사이클: 비번 변경·이메일 변경·계정 삭제 ④ 이메일 인증 견고화 + 422 계약 취약성)을 도출. U10 마이페이지(타 팀원 진행 중)와의 경계 확정 필요. 명확화 질문지 `aidlc-docs/inception/requirements/requirement-verification-questions-account-production.md` 생성(Q1~Q8) → 범위·경계 게이트에서 답변 대기."
+**Context**: INCEPTION — Requirements Analysis 재진입 (U3 Accounts 프로덕션화). 범위·경계 게이트 대기(Step 6). 작업 브랜치 `feature/u3-accounts-production`.
+
+---
+
+## U3 Accounts 프로덕션화 — Requirements 승인 + User Stories
+**Timestamp**: 2026-06-24T08:20:00Z
+**User Input**: "approved & continue"
+**AI Response**: "Requirements Analysis(FR-26~29) 리뷰 게이트를 사용자가 승인('approved & continue'). User Stories 단계 진행 — 기존 에픽 기반·INVEST·Given/When/Then 방법론(9개 선례 동일·권장안 일괄 채택)으로 `stories.md` **에픽 2(계정)** 에 US-A3(비밀번호 재설정)·US-A4(소셜 Google OIDC)·US-A5(비번/이메일 변경)·US-A6(계정 삭제 소프트+유예 캐스케이드)·US-A7(인증 에러 표면화·입력 견고화) **5 스토리 추가**(총 53/10 에픽). 페르소나 P1/P2(US-A1..A7)·추적성(FR-26→A3·27→A4·28→A5/A6·29→A7)·커버 푸터 갱신, FR-26~29 전수 커버. 계획 `story-generation-plan-account-production.md` 생성. 다음: Units Generation(별도 승인) → Construction."
+**Context**: INCEPTION — User Stories 재진입 (U3 Accounts 프로덕션화). PART 2 완료, 리뷰 게이트 대기.
+
+---
+
+## U3 Accounts 프로덕션화 — Units Generation
+**Timestamp**: 2026-06-24T08:40:00Z
+**User Input**: "approve & continue"
+**AI Response**: "User Stories 게이트 승인. Units Generation 진행 — 신규 유닛 없이 기존 U3 확장. `unit-of-work-story-map.md`에 US-A3~A7 Owner=U3 매핑(총 53/10·미할당 0)·U3 요약/카운트/노트 갱신. 경계 Q2=A(U10=UI만·U3=백엔드). 아키텍처 판정: U4/U2/U11이 이미 U3 인증에 의존 → 삭제 캐스케이드를 직접 호출하면 순환 → **이벤트 구동(U3 AccountDeleted 발행→구독·파기)** 의존성 역전으로 비순환 유지. 신규 의존 U3→Google OIDC. 기존-유닛 확장이라 unit-of-work.md/dependency 세부는 story-map 노트로 일원화. 다음: Construction(별도 승인)."
+**Context**: INCEPTION — Units Generation 재진입 (U3 Accounts 프로덕션화). 리뷰 게이트 대기. 다음=Construction(U3 Functional Design).
+
+---
+
+## U3 Accounts 프로덕션화 — Construction: Functional Design
+**Timestamp**: 2026-06-24T08:55:00Z
+**User Input**: "approve & continue" → (단계 선택) "Functional Design only, then gate"
+**AI Response**: "Units Generation 게이트 승인 후, 사용자가 Construction을 'Functional Design only, then gate'로 선택. U3 FD를 코드 없이 HOW 설계만 확장: business-rules.md에 BR-A8~A12(재설정 토큰·소셜 OIDC 연결·이메일 변경 지연반영·삭제 소프트+유예+AccountDeleted 이벤트 캐스케이드·인증 입력 추가필드 무시)+추적성 5행, domain-entities.md §4(PasswordResetToken·SocialIdentity·EmailChangeRequest·AccountDeletion·AccountDeleted 이벤트·OidcProvider·AccountStatus.DEACTIVATED), business-logic-model.md §5~9(PasswordResetService·SocialLoginService·AccountManagementService·AccountDeletionService+purgeJob·인증 견고화). 전부 추상(HOW 라이브러리/스키마/이벤트버스는 NFR/Infra/Code 이월). 리뷰 게이트 대기."
+**Context**: CONSTRUCTION — U3 Accounts Functional Design 개정 완료. 리뷰 게이트 대기. 다음=NFR Requirements/Design.
+
+---
+
+## U3 Accounts 프로덕션화 — Construction: NFR Requirements/Design
+**Timestamp**: 2026-06-24T09:10:00Z
+**User Input**: "continue"
+**AI Response**: "NFR Requirements/Design 개정. tech-stack-decisions.md TD-U3-7~10(Resend·OIDC httpx+python-jose JWKS[Authlib 미채택]·신규 RDS 테이블+state/nonce Redis·삭제 EventBridge AccountDeleted+유예 잡), nfr-design-patterns.md §4~7(재설정 보안·OIDC CSRF/JWKS·삭제 이벤트 캐스케이드 멱등/DLQ·공개 인증 extra=ignore·422 표면화). 코드 없음. 다음(별도 승인): Infra Design → Code Generation → Build&Test."
+**Context**: CONSTRUCTION — U3 Accounts NFR Requirements/Design 개정 완료. 리뷰 게이트 대기. 다음=Infra Design 또는 Code Generation.
+
+---
+
+## U3 Accounts 프로덕션화 — Design Review + 보정
+**Timestamp**: 2026-06-24T09:30:00Z
+**User Input**: "now do the design review." → "apply the H1/H2/M1/M2 design fixes"
+**AI Response**: "U3 프로덕션 설계(FR-26~29) 적대적 디자인 리뷰 수행(자동 도구 `tools/aidlc-designreview`는 README 누락 패키징 결함+strands/Bedrock 의존으로 미실행 — 수동 리뷰). 발견: **H1**(소셜 자동연결 pre-hijacking — 기존 비밀번호 계정에 자동 병합 위험), **H2**(삭제 캐스케이드 타이밍 모순 — `AccountDeleted`를 소프트삭제 시 발행하면 유예 복구가 무의미), **M1**(유예 중 동일 이메일 재가입/복구 차단), **M2**(이메일 변경 시 기존 이메일 미통지). 사용자 지시로 4건 설계 보정: business-rules BR-A9(자동연결=비밀번호 없는 계정만, 아니면 명시적 연결)·BR-A10(기존 이메일 통지)·BR-A11(`AccountDeleted`=유예 경과 후 파기 시 발행+유예 재활성화) 및 business-logic §6.2/§7.2/§8.1-8.2 동기화. L1~L3(PENDING 재설정·관리자 삭제 가드·콜백 레이트리밋)은 Code 단계 인수기준으로 이월. 코드 변경 없음."
+**Context**: CONSTRUCTION — U3 Accounts Functional Design 디자인 리뷰 완료 + H1/H2/M1/M2 보정 반영. 다음=Infra Design 또는 Code(FR-29 핫픽스 우선).
+
+---
+
+## U3 Accounts 프로덕션화 — 자동 디자인 리뷰 패스 + U3 보정
+**Timestamp**: 2026-06-24T09:50:00Z
+**User Input**: "add README.md and run the agent pass" → "yes"(U3 관련 발견 #1~#4 적용)
+**AI Response**: "`tools/aidlc-designreview` 패키징 결함(README.md 누락) 보정 후 자동 에이전트 리뷰(strands/Bedrock) 실행 — 전체 aidlc-docs 대상 1 Critical/5 High/23 Medium. Critical(Redacted Secrets)·High 5건은 기존 시스템 전역(내 U3 변경 무관). U3 관련 4건 적용: **#2** `AccountDeleted`를 `shared/events.md` 카탈로그+상세(payload accountId/occurredAt/eventId·멱등키·DLQ·유예 N=30d 제안)에 등재 · **#1** 캐스케이드 완료검증(구독자 완료보고+미완료 경보·수동 재조정, BR-A11+events 상세) · **#3** H1 명시적 연결 플로우 `/auth/social/link`+`SocialIdentity.status=PENDING_CONFIRMATION|LINKED`(BR-A9+domain §4.2) · **#4** `captchaToken`은 선언 옵셔널 필드여야 함(`extra=ignore`가 미선언 필드 제거 → BR-A4 CAPTCHA 우회 방지, BR-A12). 시스템 전역 발견(U2↔U6·인덱스 라이터·SearchExecuted·모놀리스 경계 등)은 미적용(U3 범위 밖). 코드 변경 없음. 리포트=job tmp md/html."
+**Context**: CONSTRUCTION — U3 Accounts 자동 디자인 리뷰 + U3 관련 보정(#1~#4) 반영 완료. 설계 green. 다음=Infra Design 또는 Code(FR-29 핫픽스 우선).
+
+---
+
+## U3 Accounts 프로덕션화 — Construction: Code (FR-29 슬라이스)
+**Timestamp**: 2026-06-24T10:15:00Z
+**User Input**: "start the construction stage"
+**AI Response**: "Construction 코드 첫 착수 — FR-29 인증 입력 견고화 슬라이스(실 로그인 422 장애 해소). 백엔드: SSOT accounts.schema.json LoginRequest·SignupRequest에서 additionalProperties:false 제거 → `uv run python tools/generate.py` 재생성으로 docsuri_shared extra=ignore(응답 DTO는 forbid 유지), Python 드리프트 `ok`. 프런트: errors.ts normalizeHttpError 422 분기(불투명 'unknown'→명확 '입력 형식…새로고침'). TS 타입 무변(gen-types additionalProperties:false 고정 옵션·accounts.ts 큐레이티드). 테스트 tests/accounts/test_auth_input_tolerance.py 3 passed(`uv run --project backend pytest`). 라이브 즉시 해소=develop 프런트 재배포(별개). 남은 Construction(FR-26/27/28·Infra·DB 마이그레이션) 미착수·미커밋. 검증: 드리프트 ok + 3 passed."
+**Context**: CONSTRUCTION — U3 Accounts Code 첫 슬라이스(FR-29) 완료·검증. 리뷰 게이트 대기. 다음=FR-26/27/28 슬라이스 또는 Infra Design.
+
+---
+
+## U3 Accounts 프로덕션화 — Construction: Code (FR-26 비밀번호 재설정 백엔드)
+**Timestamp**: 2026-06-24T10:45:00Z
+**User Input**: "continue to the next slice"
+**AI Response**: "FR-26 비밀번호 재설정 백엔드 슬라이스 풀 구현. SSOT 2 DTO+재생성, 리포지토리 password_reset_tokens(해시저장·단일사용), PasswordResetService(request 열거방지·confirm 만료/단일사용/BR-A1/전세션무효화), email 3프로바이더 send_password_reset_email, 세션 invalidate_all_for_user(user_sessions Redis 셋), 컨트롤러 2 엔드포인트(request 일반응답·confirm 400/503/500). 기존 email-verification 토큰 패턴 미러. 검증: ruff clean·`uv run --project backend pytest tests/accounts` 39 passed(reset 6 신규·회귀 0)·generate.py --check ok. 이월: FE 재설정 페이지·DB 마이그레이션·앱셸 와이어링. 미커밋(사용자 미요청)."
+**Context**: CONSTRUCTION — U3 Accounts FR-26 백엔드 슬라이스 완료·검증. 리뷰 게이트 대기. 다음=FR-26 FE/마이그레이션 또는 FR-27 OIDC 슬라이스.
+
+---
+
+## U3 Accounts 프로덕션화 — Construction: Code (FR-27 소셜 로그인 조정 코어)
+**Timestamp**: 2026-06-24T11:05:00Z
+**User Input**: "commit then move on to FR-27"
+**AI Response**: "FR-26 커밋(efc0c95) 후 FR-27 착수. 비용(~$628)·복잡도 고려해 OIDC의 보안 핵심(H1) 신원 조정 코어로 범위 한정 — OIDC HTTP/JWKS 트랜스포트는 이월. models OidcProvider+SocialLinkConfirmationRequired, credential social_identities 테이블+SOCIAL_NO_PASSWORD_HASH 센티넬+has_usable_password+repo(social identity/account), SocialLoginService.reconcile(미검증 거부·기존연결 멱등·소셜-only 자동연결·H1 비번계정 자동병합 금지→PENDING_CONFIRMATION+예외·신규 ACTIVE). 테스트 5 케이스(H1 포함). 검증: ruff clean·pytest tests/accounts 44 passed(회귀 0). 이월: Google verifier·state/nonce·컨트롤러·FE·마이그레이션. 미커밋."
+**Context**: CONSTRUCTION — U3 Accounts FR-27 OIDC 조정 코어 완료·검증. 리뷰 게이트 대기. 다음=FR-27 OIDC 트랜스포트+컨트롤러 또는 일시정지(비용).
+
+---

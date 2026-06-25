@@ -11,8 +11,8 @@ export default function HistoryPage() {
       <div className={styles.screen}>
         <AppHeader title="DocSuri" />
         <HistoryScreen />
-        <BottomNav />
       </div>
+      <BottomNav />
     </RouteGuard>
   );
 }

@@ -10,6 +10,7 @@ from sqlalchemy.orm import sessionmaker
 from backend.modules.accounts.guard import AuthorizationGuard, Decision
 from backend.modules.accounts.models import (
     AccountStatus,
+    DomainException,
     Principal,
     SessionRecord,
     UserRole,
@@ -96,7 +97,7 @@ def test_seed_admin_is_idempotent_and_creates_admin(db_session):
     assert rows[0].status == AccountStatus.ACTIVE.value
 
 
-def test_seed_admin_promotes_existing_user(db_session):
+def _seed_existing_user(db_session):
     existing = AccountTable(
         email="promote@docsuri.dev",
         password_hash="x",
@@ -105,6 +106,21 @@ def test_seed_admin_promotes_existing_user(db_session):
     )
     db_session.add(existing)
     db_session.commit()
+
+
+def test_seed_admin_refuses_existing_user_without_optin(db_session, monkeypatch):
+    # 권한 상승 가드: 비-ADMIN 기존 계정은 명시 opt-in 없이는 승격하지 않는다(선점 가입 방어).
+    monkeypatch.delenv("DOCSURI_ADMIN_PROMOTE_EXISTING", raising=False)
+    _seed_existing_user(db_session)
+    with pytest.raises(DomainException):
+        seed_admin(db_session, "promote@docsuri.dev", "StrongPass123!")
+    row = CredentialRepository(db_session).get_by_email("promote@docsuri.dev")
+    assert row.role == UserRole.USER.value  # 승격되지 않음
+
+
+def test_seed_admin_promotes_existing_user_with_optin(db_session, monkeypatch):
+    monkeypatch.setenv("DOCSURI_ADMIN_PROMOTE_EXISTING", "true")
+    _seed_existing_user(db_session)
     seed_admin(db_session, "promote@docsuri.dev", "StrongPass123!")
     row = CredentialRepository(db_session).get_by_email("promote@docsuri.dev")
     assert row.role == UserRole.ADMIN.value

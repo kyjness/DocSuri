@@ -27,6 +27,14 @@ _PUBLIC_PREFIXES = (
     "/auth/verify-email",
     # PENDING-account recovery (resend mail) — public like signup/verify
     "/auth/resend-verification",
+    # FR-26 password reset (request + confirm) — public like signup
+    "/auth/password-reset",
+    # FR-27 Google OIDC start + callback — full-page redirects with no session yet.
+    # NOT "/auth/social/link" (that confirms a link for a logged-in user → needs a session).
+    "/auth/social/google",
+    # FR-28 email-change confirm — clicked from the verification mail (no session).
+    # NOT "/auth/email-change/request" which is logged-in.
+    "/auth/email-change/confirm",
     "/docs",
     "/openapi.json",
 )

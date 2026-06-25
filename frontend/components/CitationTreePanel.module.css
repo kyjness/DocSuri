@@ -5,6 +5,7 @@
   display: flex;
   align-items: flex-end;
   justify-content: center;
+  padding-bottom: 5vh;
   background: rgba(17, 24, 39, 0.5);
 }
 
@@ -15,7 +16,7 @@
   width: 100%;
   max-height: 88vh;
   padding: 0.875rem 1rem 1.25rem;
-  border-radius: 1rem 1rem 0 0;
+  border-radius: 1rem;
   background: var(--color-surface);
   box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.18);
   overflow: hidden;
@@ -133,7 +134,10 @@
   height: 32rem;
   overflow-x: scroll;
   overflow-y: auto;
-  scrollbar-gutter: stable;
+}
+
+.graphViewport::-webkit-scrollbar:vertical {
+  width: 0;
 }
 
 .horizontalScroller {
@@ -278,6 +282,6 @@
   .panel {
     max-width: 56rem;
     max-height: 86vh;
-    border-radius: 1rem;
+    transform: translateY(-3vh);
   }
 }

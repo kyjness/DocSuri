@@ -9,6 +9,12 @@
   text-align: center;
 }
 
+.logo {
+  width: 120px;
+  height: 120px;
+  object-fit: contain;
+}
+
 .title {
   margin: 0;
   font-size: 32px;

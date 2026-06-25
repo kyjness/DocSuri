@@ -24,6 +24,10 @@ export function HeroLanding() {
 
   return (
     <section className={styles.root} data-testid="hero-landing">
+      {/* Decorative: the <h1> already names the brand, so the mark is alt="" to avoid
+          a screen reader announcing "DocSuri" twice. */}
+      {/* eslint-disable-next-line @next/next/no-img-element -- small static brand asset (8KB); next/image not configured */}
+      <img src="/logo.png" alt="" className={styles.logo} width={120} height={120} />
       <h1 className={styles.title}>DocSuri</h1>
       <p className={styles.subtitle}>
         질문을 입력하면 근거 있는 논문을 찾아드려요.

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 import time
 from collections import OrderedDict, deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -67,3 +70,64 @@ class InMemoryRateLimiter:
                 window.popleft()
             if not window:
                 del self._events[key]
+
+
+class InProcessWindowLimiter:
+    """Per-call-limit fixed-window limiter (local/dev fallback for the email-sending endpoints).
+
+    Unlike ``InMemoryRateLimiter`` (fixed cap, gateway blanket limiter), each ``allow`` call carries
+    its own ``limit``/``window_seconds`` so different endpoints/keys can have different caps. NOT
+    shared across workers — production uses ``RedisRateLimiter``.
+    """
+
+    def __init__(self, clock: Callable[[], float] = time.time) -> None:
+        self._clock = clock
+        self._buckets: dict[str, tuple[int, float]] = {}
+
+    async def allow(self, key: str, *, limit: int, window_seconds: int) -> bool:
+        now = self._clock()
+        count, reset = self._buckets.get(key, (0, now + window_seconds))
+        if now >= reset:
+            count, reset = 0, now + window_seconds
+        count += 1
+        self._buckets[key] = (count, reset)
+        return count <= limit
+
+
+class RedisRateLimiter:
+    """Shared (cross-worker) fixed-window limiter backed by Redis (INCR + EXPIRE).
+
+    Used for the email-sending / account-creating endpoints (password-reset, resend-verification,
+    email-change, signup) so per-email/per-IP caps hold across ECS workers (감사 M1/M6 / SEC-11).
+    Fail-OPEN on Redis errors: these are non-auth endpoints, so a limiter outage must not take down
+    signup/recovery — the gateway per-IP blanket limiter remains a backstop.
+    """
+
+    def __init__(
+        self, redis_host: str, redis_port: int = 6379, use_tls: bool = False, db: int = 0
+    ) -> None:
+        import redis.asyncio as aioredis
+
+        pool_kwargs: dict = {
+            "host": redis_host,
+            "port": redis_port,
+            "db": db,
+            "socket_timeout": 1.0,
+            "socket_connect_timeout": 1.0,
+            "max_connections": 20,
+            "decode_responses": True,
+        }
+        if use_tls:
+            pool_kwargs["connection_class"] = aioredis.SSLConnection
+        self._redis = aioredis.Redis(connection_pool=aioredis.ConnectionPool(**pool_kwargs))
+
+    async def allow(self, key: str, *, limit: int, window_seconds: int) -> bool:
+        full = f"ratelimit:{key}"
+        try:
+            count = await self._redis.incr(full)
+            if count == 1:
+                await self._redis.expire(full, window_seconds)
+            return count <= limit
+        except Exception as e:  # noqa: BLE001 — fail-open for availability (non-auth endpoints)
+            logger.warning("RedisRateLimiter unavailable; failing open for key=%s (%s)", key, e)
+            return True

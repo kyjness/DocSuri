@@ -18,8 +18,7 @@
           "description": "INPUT-ONLY plaintext password. NEVER returned in any response and NEVER logged (SEC-12/SEC-3). Policy/breach validation is server-side (PasswordPolicy). Trace: FR-7, SEC-3, SEC-12."
         }
       },
-      "required": ["email", "password"],
-      "additionalProperties": false
+      "required": ["email", "password"]
     },
     "SignupResult": {
       "type": "object",
@@ -47,8 +46,7 @@
           "description": "INPUT-ONLY plaintext password. NEVER returned in any response and NEVER logged (SEC-12/SEC-3). Trace: FR-7, SEC-3, SEC-12."
         }
       },
-      "required": ["email", "password"],
-      "additionalProperties": false
+      "required": ["email", "password"]
     },
     "SessionInfo": {
       "type": "object",
@@ -67,6 +65,34 @@
       },
       "required": ["userId", "expiresAt"],
       "additionalProperties": false
+    },
+    "PasswordResetRequest": {
+      "type": "object",
+      "title": "PasswordResetRequest",
+      "description": "Forgot-password request input (FR-26/BR-A8). Enumeration-safe: the response is identical regardless of account existence/state. `email` only. Public auth input → unknown fields ignored (FR-29/BR-A12). Trace: FR-26, US-A3, SEC-9.",
+      "properties": {
+        "email": {
+          "type": "string",
+          "description": "Account email to send the reset link to. Trace: FR-26, US-A3."
+        }
+      },
+      "required": ["email"]
+    },
+    "PasswordResetConfirm": {
+      "type": "object",
+      "title": "PasswordResetConfirm",
+      "description": "Forgot-password confirm input (FR-26/BR-A8). Single-use token + new password (re-validated against BR-A1); on success all sessions are invalidated. Public auth input → unknown fields ignored (FR-29/BR-A12). Trace: FR-26, US-A3, SEC-12.",
+      "properties": {
+        "token": {
+          "type": "string",
+          "description": "Single-use reset token from the emailed link. INPUT-ONLY, never logged (SEC-3). Trace: FR-26."
+        },
+        "newPassword": {
+          "type": "string",
+          "description": "INPUT-ONLY new plaintext password; policy/breach validated server-side (PasswordPolicy/BR-A1). Never logged/returned (SEC-3/SEC-12). Trace: FR-26, SEC-12."
+        }
+      },
+      "required": ["token", "newPassword"]
     }
   }
 }

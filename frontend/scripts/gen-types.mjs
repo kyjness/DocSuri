@@ -20,6 +20,7 @@ const SCHEMAS = [
   'accounts.schema.json',
   'library.schema.json',
   'docmodel.schema.json',
+  'mypage.schema.json',
 ];
 
 await mkdir(rawDir, { recursive: true });

@@ -12,8 +12,8 @@ export default function SearchPage() {
       <div className={styles.screen}>
         <AppHeader title="DocSuri" />
         <SearchScreen />
-        <BottomNav />
       </div>
+      <BottomNav />
     </RouteGuard>
   );
 }

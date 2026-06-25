@@ -221,6 +221,74 @@ def _mount_library(app: FastAPI, settings: Settings, result: MountResult) -> Non
     result.mounted.append("library")
 
 
+def _mount_mypage(app: FastAPI, settings: Settings, result: MountResult) -> None:
+    # mypage (U10) is `backend.modules.mypage`. Absent → ModuleNotFoundError → skip. Mock
+    # subscription only (Q10: "하는 척만" — no real PG/billing). The other U10 menu items
+    # (관심 논문 / 로그아웃) are NOT mounted here — the frontend calls U4 GET /library and U3
+    # POST /logout directly, so those two have no U10-owned backend code.
+    from backend.modules.mypage import controller as mypage
+    from backend.modules.mypage.repository.memory import (
+        InMemoryAccountRepository,
+        InMemorySubscriptionRepository,
+    )
+
+    if _is_postgres(settings.database_url):
+        from backend.modules.mypage.repository.sql import (
+            SqlAccountRepository,
+            SqlSubscriptionRepository,
+        )
+
+        from .db import make_engine, make_session_factory
+
+        # One engine per process — reuse the accounts-built engine (accounts mounts first).
+        engine = getattr(app.state, "db_engine", None) or make_engine(settings.database_url)
+        app.state.db_engine = engine
+        session_factory = make_session_factory(engine)
+
+        def get_subscription_repo():
+            session = session_factory()
+            try:
+                yield SqlSubscriptionRepository(session)
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
+            finally:
+                session.close()
+
+        # Account-backed profile/consents read straight from U3's accounts tables on the SAME
+        # shared engine (SqlAccountRepository wraps CredentialRepository).
+        def get_account_repo():
+            session = session_factory()
+            try:
+                yield SqlAccountRepository(session)
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
+            finally:
+                session.close()
+
+        log.info("app-shell: mypage read path = sql(postgres)")
+    else:
+        repo = InMemorySubscriptionRepository()
+        account_repo = InMemoryAccountRepository()
+
+        def get_subscription_repo():
+            return repo
+
+        def get_account_repo():
+            return account_repo
+
+        log.info("app-shell: mypage read path = in-memory")
+
+    app.dependency_overrides[mypage.get_subscription_repo] = get_subscription_repo
+    app.dependency_overrides[mypage.get_account_repo] = get_account_repo
+    for router in mypage.routers:
+        app.include_router(router)
+    result.mounted.append("mypage")
+
+
 def _mount_summarization(app: FastAPI, settings: Settings, result: MountResult) -> None:
     # summarization (U7) is the top-level ``summarization`` package (docsuri-summarization).
     # Real-first: unlike discovery it ships NO mock wiring, so it mounts ONLY when the real
@@ -337,6 +405,7 @@ _INTEGRATIONS = (
     _mount_accounts,
     _mount_discovery,
     _mount_library,
+    _mount_mypage,
     _mount_ops,
     _mount_citation_graph,
     _mount_personalization,

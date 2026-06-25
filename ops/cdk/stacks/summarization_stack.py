@@ -152,6 +152,16 @@ class SummarizationStack(Stack):
                 actions=["s3:GetObject"], resources=[f"{papers_bucket_arn}/doc-model/*"],
             )
         )
+        # Full-text source (S3FullTextSource reads full-text/{paperId}/v{n}.txt). The worker payload
+        # carries only paperId/version/abstract, so the worker re-reads the body from S3; with the
+        # doc-model viewer off here that full-text read is its only real input source. Without this
+        # the read hits AccessDenied, which the source-selector swallows into a silent degrade to
+        # abstract — long async summaries quietly stop working. Mirrors the API task role.
+        task_def.add_to_task_role_policy(
+            iam.PolicyStatement(
+                actions=["s3:GetObject"], resources=[f"{papers_bucket_arn}/full-text/*"],
+            )
+        )
         task_def.add_to_task_role_policy(
             iam.PolicyStatement(
                 actions=["s3:GetObject", "s3:PutObject"],

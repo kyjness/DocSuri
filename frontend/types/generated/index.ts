@@ -4,3 +4,4 @@ export * from './accounts';
 export * from './library';
 export * from './summarize';
 export * from './docModel';
+export * from './mypage';

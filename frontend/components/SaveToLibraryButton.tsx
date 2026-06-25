@@ -1,7 +1,9 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { getApiClient } from '@/lib/api';
+import { recordLibraryAdded, recordLibraryRemoved } from '@/lib/personalization';
+import { useSavedLibrary } from '@/lib/library/savedLibrary';
 import styles from './SaveToLibraryButton.module.css';
 
 // SaveToLibraryButton (US-L2, FR-9) — toggles the paper in the user's library with a
@@ -25,9 +27,21 @@ export interface SaveTarget {
 type SaveState = 'idle' | 'saving' | 'saved' | 'removing' | 'error';
 
 export function SaveToLibraryButton({ card }: { card: SaveTarget }) {
+  const savedLibrary = useSavedLibrary();
   const [state, setState] = useState<SaveState>('idle');
   // Library item id captured from the (idempotent) add response — needed to un-save.
   const [itemId, setItemId] = useState<string | null>(null);
+
+  // Hydrate the initial saved state from the shared library set (so an already-saved paper shows
+  // as bookmarked on first paint, not empty). Only while still idle — never override a state the
+  // user just produced by tapping. The shared set is also the un-save id source on first paint.
+  const knownItemId = savedLibrary.itemIdFor(card.arxivId);
+  useEffect(() => {
+    if (state === 'idle' && knownItemId) {
+      setItemId(knownItemId);
+      setState('saved');
+    }
+  }, [knownItemId, state]);
 
   const onToggle = async () => {
     if (state === 'saving' || state === 'removing') return; // ignore while a request is in flight
@@ -38,6 +52,8 @@ export function SaveToLibraryButton({ card }: { card: SaveTarget }) {
       setState('removing');
       try {
         await getApiClient().removeFromLibrary(itemId);
+        recordLibraryRemoved(card.arxivId);
+        savedLibrary.markRemoved(card.arxivId);
         setItemId(null);
         setState('idle');
       } catch {
@@ -60,7 +76,10 @@ export function SaveToLibraryButton({ card }: { card: SaveTarget }) {
           arxivUrl: card.arxivUrl ?? '',
         },
       });
-      setItemId(item.id != null ? String(item.id) : null);
+      const newId = item.id != null ? String(item.id) : null;
+      recordLibraryAdded(card.arxivId);
+      setItemId(newId);
+      if (newId) savedLibrary.markSaved(card.arxivId, newId);
       setState('saved');
     } catch {
       setState('error');

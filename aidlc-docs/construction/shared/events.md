@@ -22,6 +22,25 @@
 | 인제스천 실패 신호 | 🟡 PROVISIONAL | U1.IngestFailureHandler.emitFailureSignal | U6.ObservabilityHub | at-least-once · 멱등 | RES-7, US-I2/I3 |
 | AI 인시던트(`ClassifiedIncident`) | 🟡 PROVISIONAL | U6.IncidentEventPublisher.publishIncident | Event Backbone → IR/COE·OpsDashboardService | at-least-once · 멱등(requestId 상관) | RES-11(a/b/c), US-R4 |
 | 운영 경보(`OpsAlert`) | 🟡 PROVISIONAL | U6.IncidentEventPublisher.publishAlert | Event Backbone → IR/COE | at-least-once · 멱등 | RES-7, RES-11, US-R4 |
+| `AccountDeleted` | 🟡 PROVISIONAL | U3.AccountDeletionService.purgeJob (**유예 경과 후 발행**) | U4·U2·U11 (각자 owner-scoped 파기) | at-least-once · **멱등(`accountId` 키)** · DLQ | FR-28, US-A6, SEC-8 |
+
+---
+
+## 1b. U3 → U4·U2·U11 — `AccountDeleted` 🟡 PROVISIONAL *(계정 프로덕션화, 2026-06-24)*
+
+계정 영구 파기(유예 경과 후 `purgeJob`) 시 발행되는 캐스케이드 파기 이벤트. **소프트 삭제 시점이 아니라 파기 시점에 발행**(유예 동안 데이터 보존·복구 가능, H2).
+
+| 필드 | 타입 | 의미 |
+|---|---|---|
+| `accountId` | string | 파기 대상 계정(**멱등 키** — 구독자 중복 처리 방지) |
+| `occurredAt` | timestamp | 파기 확정 시각 |
+| `eventId` | string | 발행 단위 유일 ID(at-least-once 중복 식별) |
+
+- **생산자**: `U3.AccountDeletionService.purgeJob` — `purge_after` 경과분 일괄 발행.
+- **소비자**: U4(라이브러리·저장검색)·U2(이력)·U11(연구세션) — 각자 owner-scoped 데이터 파기. **멱등(`accountId`)**, 실패 시 재시도 → **DLQ**.
+- **완료 검증(#1 리뷰, GDPR)**: 각 구독자는 파기 완료를 확인 신호(`AccountPurged{accountId, unit}` 또는 감사 로그)로 보고하고, U3/Ops는 **미완료(최대 허용 지연 초과·DLQ 적체) 시 경보**한다. 영구 다운 구독자는 DLQ → 수동 재조정. (구체 SLA·확인 채널 = Infra Design.)
+- **유예 기간 N**: 기본 제안 **30일**(운영 정책·법적 요건으로 조정 — Infra Design 확정).
+- **순서**: U3 파기와 캐스케이드 간 순서 보장 없음(결과적 일관성); 구독자 멱등으로 재정렬 무해.
 
 ---
 

@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://docsuri.dev/shared/dtos/mypage.schema.json",
+  "title": "U10 My Page DTOs",
+  "description": "U10 My Page DTO contract — subscription status only (dtos.md TBD). Producer: U10 (MypageController.getSubscription/subscribe/cancelSubscription). Consumer: U5. MOCK-ONLY: no real payment gateway/billing integration sits behind this contract — subscribe/cancel only flip persisted state. INVARIANT (SEC-8/SEC-9): DTOs do NOT carry the owner userId externally — ownership is enforced server-side (U3 Principal). All DTOs defined in $defs for per-track type generation. Trace: U10 (mypage subscription, mock).",
+  "$defs": {
+    "SubscriptionPlan": {
+      "type": "string",
+      "enum": ["FREE", "PREMIUM"],
+      "description": "Subscription plan tier. Trace: U10."
+    },
+    "SubscriptionStatusValue": {
+      "type": "string",
+      "enum": ["NONE", "ACTIVE", "CANCELED"],
+      "description": "Lifecycle status. NONE = never subscribed. CANCELED = cancellation requested but the PREMIUM benefit is retained through currentPeriodEnd (no immediate cutoff). Trace: U10."
+    },
+    "SubscriptionDTO": {
+      "type": "object",
+      "title": "SubscriptionDTO",
+      "description": "Current subscription snapshot (owner userId NOT exposed, SEC-9). Mock-only — no real PG/billing behind this. Trace: U10.",
+      "properties": {
+        "plan": { "$ref": "#/$defs/SubscriptionPlan" },
+        "status": { "$ref": "#/$defs/SubscriptionStatusValue" },
+        "startedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Subscription start instant. Absent when status=NONE. Trace: U10."
+        },
+        "currentPeriodEnd": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Current mock billing-period end. The PREMIUM benefit remains active through this instant even after cancellation (no immediate cutoff). Absent when status=NONE. Trace: U10."
+        },
+        "canceledAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Cancellation-request instant. Present only once a cancellation has been requested. Trace: U10."
+        }
+      },
+      "required": ["plan", "status"],
+      "additionalProperties": false
+    }
+  }
+}

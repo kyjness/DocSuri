@@ -12,8 +12,8 @@ export default function LibraryPage() {
       <div className={styles.screen}>
         <AppHeader title="DocSuri" />
         <LibraryScreen />
-        <BottomNav />
       </div>
+      <BottomNav />
     </RouteGuard>
   );
 }

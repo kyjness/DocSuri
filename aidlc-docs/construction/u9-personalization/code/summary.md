@@ -37,7 +37,7 @@
 | `POST /api/personalization/delete-events` | Directly deletes owner-scoped active raw events. |
 | `POST /api/personalization/reset-profile` | Clears aggregate profile/defaults. |
 
-All routes are gated by `PERSONALIZATION_ENABLED`; default is disabled.
+All routes are gated by `PERSONALIZATION_ENABLED`; CDK deploy default is enabled.
 
 ## Tables
 
