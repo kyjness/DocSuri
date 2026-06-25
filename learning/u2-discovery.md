@@ -142,48 +142,48 @@ QueryUnderstandingExpander(cache)
 
 **[받음]** ③의 검색 계획.
 
-### (1) 두 검색을 발행 — 각각 상위 `RETRIEVAL_TOP_K=50`
+### (1) 두 검색을 발행 — 각각 상위 `RETRIEVAL_TOP_K=150`
 
 둘 다 **같은 인덱스 `docsuri-corpus-v1`의 다른 필드**를 때린다 (`adapters/opensearch_index.py`):
 
 - **k-NN** (HYBRID일 때만) — `vector` 필드, 의미 유사:
   ```python
-  body = {"size": 50, "query": {"knn": {"vector": {"vector": <쿼리벡터>, "k": 50}}}}
+  body = {"size": 150, "query": {"knn": {"vector": {"vector": <쿼리벡터>, "k": 150}}}}
   ```
-  - **k-NN** = *k-Nearest Neighbors*, "가장 가까운 k개". 벡터 공간에서 쿼리 벡터 근처 50개를 집어온다 (= 의미가 가까운 검색).
+  - **k-NN** = *k-Nearest Neighbors*, "가장 가까운 k개". 벡터 공간에서 쿼리 벡터 근처 150개를 집어온다 (= 의미가 가까운 검색).
 
 - **BM25** (항상) — `lexicalTerms` 필드, 단어 일치:
   ```python
-  body = {"size": 50, "query": {"match": {"lexicalTerms": "그래프 신경망 추천"}}}
+  body = {"size": 150, "query": {"match": {"lexicalTerms": "그래프 신경망 추천"}}}
   ```
   - **BM25** = 전통적 키워드 검색 점수 방식. 쿼리 단어가 그 문서에 **자주** 나오고 + 그 단어가 **희귀**할수록 점수↑ (흔한 단어는 가중치 낮음).
 
+> **왜 50→150으로 올렸나?** U1이 **전문 전체를 여러 청크로** 색인하게 되면서 논문 1편이 **여러 청크**로 잡힌다. 고정 슬라이스(50)를 떼면 paperId 디덥 후 **남는 논문 수가 확 줄어** top-N(20)을 못 채운다 → **over-fetch(150)**로 디덥 손실을 메운다.
+
 - 각 hit의 `_source`를 그대로 `IndexRecord`로 역직렬화하고, 인덱스가 매긴 점수(`_score`)도 같이 들고 나온다 → `[(IndexRecord, score), ...]` 순위 순.
 
-### (2) RRF 병합 (`_reciprocal_rank_fusion`)
+### (2) RRF 병합 (`_reciprocal_rank_fusion`) — ★best-chunk 방식
 
 두 리스트를 합치는데 **점수가 아니라 순위(rank)만** 쓴다.
 - **왜 점수를 안 쓰나**: k-NN 점수(0~1 코사인)와 BM25 점수(수백)는 **스케일이 너무 달라서**, 그냥 더하면 BM25가 압도한다. 그래서 점수 대신 등수만 본다.
-- **RRF** = *Reciprocal Rank Fusion*, "역순위 합산". 앞 등수일수록 큰 값을 주는 공식으로 두 리스트를 합친다:
+- **RRF** = *Reciprocal Rank Fusion*, "역순위 합산". `contribution = 1/(RRF_K + 0-based rank + 1)`, `RRF_K=60`.
+- **★리스트 내에선 SUM이 아니라 MAX**: 한 논문의 여러 청크 중 **그 리스트에서 가장 좋은 청크 1개의 기여만** 본다(`per_list_best`). 그래야 **약하게 매칭되는 본문 청크가 잔뜩** 있는 논문이 "강한 1방"인 논문을 점수로 눌러버리는 *전문 길이 편향*을 막는다.
+- **리스트 간엔 SUM**: 그렇게 고른 k-NN best + BM25 best를 **더한다** → 두 방식이 함께 지지하면(corroboration) 점수↑(RRF의 본래 취지 유지).
   ```
-  score(논문) = Σ(각 리스트)  1 / (RRF_K + 그 리스트에서의 0-based rank + 1)     # RRF_K=60
+  score(논문) = best_kNN(논문) + best_BM25(논문)
+              = max over its chunks[1/(60+rank+1)]  (각 리스트에서)
   ```
-- *숫자 예시* — 논문 P가 k-NN 1등(rank 0), BM25 3등(rank 2)이면:
-  ```
-  score(P) = 1/(60+0+1) + 1/(60+2+1) = 1/61 + 1/63 ≈ 0.0164 + 0.0159 = 0.0323
-  ```
-  → 두 검색 모두 상위면 두 항이 더해져 점수↑. 스케일 무관·결정적.
 
 ### (3) 디덥 (중복 제거)
 
-인덱스는 청크 단위라 **같은 논문이 여러 청크로** 잡힌다. `paperId` 기준 **처음 본 1개만** 유지.
-- **디덥(dedup)** = *deduplication*, 중복 제거. 같은 논문 청크 여러 개 → 논문 1건.
+인덱스는 청크 단위라 **같은 논문이 여러 청크로** 잡힌다. `paperId`당 **전역 최고점 청크의 레코드 1개만** 유지.
+- **디덥(dedup)** = *deduplication*, 중복 제거. 같은 논문 청크 여러 개 → 논문 1건(최고점 청크).
 - 정렬 `(-score, paperId)` (점수순, 동점은 paperId로 → 항상 같은 순서, 결정적).
 
 **[내보냄]** 디덥된 후보 목록(`CandidateSet`).
 **[갈림길 둘]**
-- 후보 **0건** → `AbstainDTO("no_results")`, **HTTP 200**. — **abstain(기권)** = "결과 없음"을 가짜 빈 페이지로 주지 않고 "못 찾았다"고 명확히 알리는 것.
-- 검색 **실패**(`IndexUnavailable`) → `SearchUnavailable` → **HTTP 503**. OpenSearch가 유일 저장소라 **폴백 없음 = fail-closed**. — **fail-closed** = 애매하거나 고장 나면 통과 말고 거부. (임베딩은 lexical 폴백 있지만 인덱스는 폴백 없음.)
+- 후보 **0건**(무결과) → **빈 성공 페이지**(`SearchResultPageDTO` cards=[], `resultCount=0`), **HTTP 200**. ★주의: 이건 **abstain(기권)이 아니다** — `AbstainDTO`는 ⑦ 근거화가 **거부(refusal)**했을 때만(U5 규칙: **기권 ≠ 빈 결과**, BR-9). "못 찾음"은 빈 페이지, "지어낸 것 같아 거부"는 abstain으로 구분.
+- 검색 **실패**(`IndexUnavailable`) → `SearchUnavailable` → **HTTP 503**. OpenSearch가 유일 저장소라 **폴백 없음 = fail-closed**. (임베딩은 lexical 폴백 있지만 인덱스는 폴백 없음.)
 
 ---
 
@@ -229,10 +229,10 @@ GroundingInput(candidate_response=ranked, retrieved_records=retrieved)
 **[함]**
 - `map_decision`: `pass` → 랭킹 그대로. `block`/`abstain` → `AbstainResult`. (재계산 없이 매핑.)
 - `assemble`:
-  - Abstain → `AbstainDTO`.
-  - Grounded인데 0건 → `AbstainDTO("no_results")` (가짜 빈 페이지 금지, BR-9 = 비즈니스 규칙 9번).
+  - **Abstain(근거화 refusal: verdict=block/abstain)** → `AbstainDTO`. ← 이것만 진짜 기권.
+  - **NoMatch, 또는 근거화 pass했지만 후보가 전부 걸러짐** → **빈 성공 페이지**(`SearchResultPageDTO` cards=[], `resultCount=0`, 저하 배너 없음). 가짜가 아니라 "정말 없음"(BR-9 / U5 B3-a: **기권 ≠ 빈 결과**).
   - 정상 → 각 레코드를 **카드 7필드로 투영** (`title·authors·year·arxivId·abstractSnippet·relevance·arxivUrl`). `relevance`는 **1-based 표시 순위**, raw RRF 점수는 **비노출**(SEC-9).
-  - 저하 모드면 `DegradedResultDTO(mode)`(배너용), 아니면 `SearchResultPageDTO`.
+  - **비어있지 않은** 성공에 저하 모드면 `DegradedResultDTO(mode)`(배너용), 아니면 `SearchResultPageDTO`.
 
 **[내보냄]** `SearchResponse` → **HTTP 200** (검증 실패만 400, 인덱스 장애만 503).
 
@@ -249,6 +249,24 @@ GroundingInput(candidate_response=ranked, retrieved_records=retrieved)
 
 ---
 
+## 곁다리: 논문 상세 메타 — `GET /api/papers/{paper_id}` (`service/paper_metadata.py`)
+
+검색 파이프라인과 **독립된** 작은 서비스. U5 상세 페이지(`/paper/[id]`)와 U7 요약 진입점이 논문 헤더(제목·저자·초록)를 보여줄 때 쓴다.
+
+**[왜 U2가?]** title·authors·abstract는 **코퍼스/인덱스 데이터 = U2 소유**다. U7엔 이런 필드가 없다 → 그래서 요약 모듈이 아니라 discovery에 둔다.
+
+**[함]** `PaperMetadataService.get_paper_meta(paper_id)`:
+- 주입된 `PaperLookupAdapter.fetch_paper`로 **코퍼스 레코드 1건**만 읽어 `PaperMetaDTO`로 투영.
+- **SEC-9 화이트리스트**: `arxivId·title·authors·year·abstract·arxivUrl`만. 내부 인덱스 필드(vector·lexicalTerms·chunkId·section·categories)는 비노출.
+- ★검색 카드는 **초록 *스니펫*만** 주지만, 상세 엔드포인트는 **전체 초록(full abstract)**을 돌려준다 — 그 논문 자기 페이지에 그 논문의 공개 arXiv 초록을 보여주는 것이라 cross-paper 누출이 아니다.
+
+**[라우트 등록·종단]** (`api/router.py`)
+- `paper_service`가 **주입됐을 때만** `GET /api/papers/{paper_id}` 라우트를 등록한다(없으면 라우트 자체가 없음 → 404).
+- 인덱스에 없음(`record is None`) → **404**(`{"message": "Paper not found."}`) → 상세 페이지는 arXiv id + 링크아웃으로 degrade.
+- 스토어 장애(`IndexUnavailable`) → `SearchUnavailable`로 변환 → 앱셸 핸들러가 **일반화 503**(폴백 없음, INV-3/SEC-15).
+
+---
+
 ## 한 장 요약 (데이터 출처 강조)
 
 ```
@@ -256,15 +274,16 @@ GroundingInput(candidate_response=ranked, retrieved_records=retrieved)
  ① validator    : NFC 정규화 + 검증 4종              (도메인, I/O 없음)
  ② cost_guard   : U6에서 저하모드 읽기               ← U6 (read-only)
  ③ expander     : 토큰화 + 임베딩 1024d              ← EmbeddingCache → Bedrock(Cohere v3, search_query)
- ④ retriever    : k-NN(vector) ∥ BM25(lexicalTerms) ← OpenSearch docsuri-corpus-v1 (각 top_k=50)
-                  → RRF(k=60) 병합 → paperId 디덥
+ ④ retriever    : k-NN(vector) ∥ BM25(lexicalTerms) ← OpenSearch docsuri-corpus-v1 (각 top_k=150)
+                  → RRF(k=60, 리스트내 best-chunk MAX → 리스트간 SUM) → paperId 디덥(최고점 청크)
  ⑤ ranker       : 점수순 정렬 → top_n=20             (도메인)
  ⑥ grounding_adapter: enforce 입력 모양 만들기        (도메인)
  ─ gateway seam ─
  ⑦ enforce      : 근거화 검사 pass/block/abstain     ← U6 GroundingEnforcementHook (단일 권위)
  ⑧ assembler    : 카드 7필드 투영(raw점수 비노출)     → SearchResponse
  ⑨ publish      : SearchExecuted 비동기 발행          → EventBridge → U4
+ [곁다리] GET /api/papers/{id} → PaperMetadataService (상세 헤더 메타, full abstract, 404=미색인)
 ```
 
-**갈림길 요약**: 임베딩 장애 → lexical 폴백(계속). 인덱스 장애 → 503(폴백 없음). 무결과·날조 → abstain(200). 검증 실패 → 400.
+**갈림길 요약**: 임베딩 장애 → lexical 폴백(계속). 인덱스 장애 → 503(폴백 없음). **무결과 → 빈 페이지(200)**, **날조 거부 → abstain(200)**(둘은 다르다). 검증 실패 → 400.
 ```

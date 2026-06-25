@@ -171,6 +171,65 @@ return new MockTransport();
 
 ---
 
+## ⑦ U7 슬라이스 — 상세 페이지 + 요약/번역 모달 (검색과 별개 흐름)
+
+검색(①~⑥)이 카드 목록까지라면, **카드를 누르면 시작되는** 두 번째 흐름이 있다. 같은 `ApiClient`/Transport/BFF 골격을 그대로 재사용하되 종단이 다르다.
+
+```
+frontend/ (U7/상세 관련 추가분)
+├── app/paper/[id]/page.tsx            ← 상세 라우트 (SSR 셸 + RouteGuard 보호)
+├── app/paper/[id]/doc-model/page.tsx  ← 본문(구조화 doc-model) 뷰어 라우트
+├── app/paper/[id]/translate/page.tsx  ← 전문 번역 라우트
+├── components/
+│   ├── PaperDetailIsland.tsx          ← ★상세 클라 island (sticky 액션바 + 메타)
+│   ├── SummaryModal.tsx               ← 요약/초록번역/각주트리 모달(탭)
+│   ├── SummaryView.tsx / TranslationView.tsx / PersonaToggle.tsx
+│   ├── DocModelViewer.tsx             ← 본문 렌더(섹션/수식/그림)
+│   ├── FullTranslationIsland.tsx      ← 전문 번역 본체
+│   ├── CitationTreePanel.tsx          ← 각주(인용) 트리
+│   └── GlossaryTermBadge.tsx          ← 개인 용어집 배지 에디터
+└── lib/
+    ├── usePaperMeta.ts               ← 상세 헤더 메타 로드
+    ├── useSummarize.ts               ← 요약/번역 1회 실행(상태기계 + dedup + stale 가드)
+    ├── useDocModel.ts / useAssets.ts ← 본문 doc-model / 그림·표 로드(폴링·라이선스 게이트)
+    ├── useGlossaryTerms.ts           ← 개인 용어집 목록/upsert
+    └── api/classifySummarize.ts      ← summarize 응답 분류(★status 판별자)
+```
+
+### 상세 라우트 — `app/paper/[id]/page.tsx`
+- **SSR 셸**(`AppHeader`) + **클라 island**(`PaperDetailIsland`). `RouteGuard`로 보호(미인증 → 로그인).
+- `paperId = arxivId`, `version = 1`(Q8=A) 고정으로 island에 주입.
+
+### `PaperDetailIsland` — 상세 본체
+- 메타(제목·저자·초록) + **sticky 액션바**: `요약` / `초록 번역` / `각주트리` → 각 탭으로 `SummaryModal` 오픈.
+- 본문/전문번역은 모달이 아니라 **별도 라우트 링크**: `본문`→`/paper/[id]/doc-model`(DocModelViewer), `전문 번역`→`/paper/[id]/translate`(FullTranslationIsland).
+- 메타는 `usePaperMeta(paperId)` → `ApiClient.getPaperMeta` → **U2 `GET /api/papers/{id}`**. 실패는 **`null`로 정규화**(하드 에러 안 띄우고 arXiv id + 링크아웃으로 degrade).
+
+### `useSummarize` — 요약/번역 실행
+- 상태기계 `idle → loading → done(outcome)`. **검색 흐름과 동일한 이중 방어**: `inFlightKey`로 같은 요청 dedup + `activeKey`로 **stale 응답 가드**(뒤늦게 온 옛 응답 무시 → 무한 로딩/경합 방지).
+- `ApiClient.summarize(req)` → `POST /api/summarize` (idempotent). 에러는 `{kind:'error'}` outcome으로 정규화(surface가 멈추지 않음).
+
+### `classifySummarize` — ★검색과 다른 판별 방식
+검색 응답(`classify.ts`)은 판별 필드가 **없어 구조로** 갈랐지만, summarize 응답은 **`status` 판별자(discriminant)가 있어** 그걸로 직접 분기한다:
+
+```
+status==='ok' + 'summary'      → { kind:'summary', summary, meta, cached }
+status==='ok' + 'translation'  → { kind:'translation', translation, meta, cached }
+status==='pending'             → pending(retryAfterMs)  ← 긴 입력, 폴링 안내
+status==='abstain'             → abstain
+status==='cost_degraded'       → degraded ("AI 요약이 일시 중단됐어요")
+status==='source_unavailable'  → sourceUnavailable
+validation_error / 그 외        → invalid / error  (fail-closed)
+```
+→ 백엔드 U7의 **5종단(ok·pending·abstain·cost_degraded·source_unavailable)**이 그대로 프론트 outcome으로 매핑된다. `pending`이면 클라가 `retryAfterMs` 후 재요청해 캐시 히트로 결과를 받는다.
+
+### 본문/그림 뷰어 — `useDocModel` / `useAssets` (옛 full-text 대체)
+- `본문` 라우트: `useDocModel` → `ApiClient.getDocModel` → **`GET /api/papers/{id}/doc-model`**. 기본 OFF면 `license_unavailable`(arXiv 링크아웃), 미스면 `building`(U1 lazy 빌드 중) → **폴링**, 히트면 `DocModelViewer`가 섹션/수식/그림 렌더.
+- 그림/표: `useAssets` → `GET /api/papers/{id}/assets`(서명 URL만). doc-model의 `assetId`로 조인.
+- 개인 용어집: `GlossaryTermBadge` + `useGlossaryTerms` → `GET/POST /api/glossary`(번역에 반영, owner-scoped).
+
+---
+
 ## 한 장 요약
 
 ```
@@ -187,7 +246,17 @@ SearchScreen (클라 상태기계 idle→loading→outcome|error, in-flight 락 
    → classifySearchResponse (구조로 판별: reason/cards+mode/cards/message)
    → 렌더 분기 (page·degraded·empty·abstain·invalid)
    에러: UserFacingError fail-closed (401→재로그인, 그 외 비기술 메시지)
+
+[U7 슬라이스] 카드 클릭 → /paper/[id]
+   PaperDetailIsland (SSR 셸 + 클라 island, RouteGuard 보호)
+   ├ usePaperMeta → getPaperMeta → U2 GET /api/papers/{id} (실패=null degrade)
+   ├ sticky 액션바(요약·초록번역·각주트리) → SummaryModal(탭)
+   │   useSummarize → POST /api/summarize → classifySummarize(★status 판별)
+   │      → summary·translation·pending·abstain·degraded·sourceUnavailable·invalid·error
+   ├ 본문 라우트 /paper/[id]/doc-model → useDocModel/useAssets → GET .../doc-model·/assets
+   │      (기본 OFF=license_unavailable · 미스=building 폴링)  ← 옛 full-text 대체
+   └ 전문 번역 /paper/[id]/translate (FullTranslationIsland) · 개인 용어집 GlossaryTermBadge(GET/POST /api/glossary)
 ```
 
-**전체 그림**: U5가 BFF로 토큰을 가두고 → U6 게이트웨이(인증·rate-limit) → U2 검색 → U1이 채운 코퍼스. **7개 유닛 한 바퀴 완주.**
+**전체 그림**: U5가 BFF로 토큰을 가두고 → U6 게이트웨이(인증·rate-limit) → U2 검색/상세메타 → U1이 채운 코퍼스 → U7 요약/번역. **7개 유닛 한 바퀴 완주.** 검색 응답은 *구조*로, summarize 응답은 *status 판별자*로 분류한다는 대비가 프론트의 핵심 디테일.
 ```

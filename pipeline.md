@@ -3,7 +3,7 @@
 > 유닛(U1~U7)별 단락으로 구분한다. 각 단락에 **파이프라인 + 스택 요약**이 들어간다.
 > 각 단락은 그 유닛의 **대표 경로 1건**(색인 1건 · 검색 1회 · 로그인 1회 · 요약 1회 …)을 끝까지 따라간다.
 > 근거: `backend/modules/<unit>/` · `ingestion/` · `frontend/` · `ops/` 실제 코드 + `shared/` 계약 + `aidlc-docs/`.
-> 본문의 모든 수치(top_k=50·RRF_K=60·top_n=20·캐시 TTL 등)는 **코드 상수 그대로**다 — 추정값이 아니다.
+> 본문의 모든 수치(top_k=150·RRF_K=60·top_n=20·캐시 TTL 등)는 **코드 상수 그대로**다 — 추정값이 아니다.
 >
 > **읽는 법:** 박스(`╔═╗`) = 한 유닛의 도메인 코어 / `[ ... ]` = 외부 인프라·다른 유닛 / `★` = 폴백·게이트 등 분기점 / 굵은 화살표(`──▶`) = 외부 호출.
 
@@ -73,10 +73,12 @@ arXiv 수집 · 청킹 · 문서 임베딩 · 색인 (공유 인덱스 단일 **
 ```
   [ 트리거 ]  RefreshOrchestrationService
    · on_schedule_tick (증분, watermark 이후)   · on_new_arxiv_event   · trigger_full_rebuild(락)
+   · (U7 read 미스가 enqueue) BUILD_DOC_MODEL 잡 — lazy doc-model 생성
         │  IngestionJob 적재
         ▼
    [ AWS SQS 큐 ]  (rebuild 진행 중이면 증분/이벤트 defer)
-        │  worker.py: receive_messages(max 10) → process_message → ingest_one
+        │  worker.py: receive_messages(max 10) → process_message
+        │    └ kind=BUILD_DOC_MODEL → build_doc_model · 그 외 → ingest_one
         ▼
 ╔══════════════ IngestionPipelineService.ingest_one (Python 워커) ══════════════╗
 ║  공통 복원력: 의존성마다 retry 5회(지수 backoff+jitter) · circuit(5회 실패 OPEN, 60s) · timeout(기본 30s·설정값) ║
@@ -101,6 +103,13 @@ arXiv 수집 · 청킹 · 문서 임베딩 · 색인 (공유 인덱스 단일 **
         ▼                                         ▼
    다음 메시지                          record_job_finished(success=False) → emit_failure_signal
                                         PERMANENT → [ SQS DLQ ] + ack / RETRIABLE → 미ack(재배달)
+
+  ─────────── 색인 핫패스 밖의 두 갈래 (색인을 절대 막지 않음) ───────────
+   ⑩' (선택) dual-write v2  : embedding_v2+vector_index_v2 주입 시 다른 임베딩 모델로 두 번째 인덱스
+                              (모델 마이그레이션/AB) — best-effort, 실패=로그만(1차 색인 무영향)
+   ⑪  FR-17 assets         : 그림/표 추출 → S3, 인덱스 커밋 *후* best-effort(BR-27)
+   별도 잡 BUILD_DOC_MODEL  : build_doc_model — 구조화 doc-model 생성·캐시(결정적, native HTML→ar5iv 폴백)
+                              U7 /doc-model 읽기 미스가 enqueue → 여기서 produce (핫패스 비차단, D6/BR-30)
 ```
 
 ## 왜 이렇게 생겼나
@@ -120,6 +129,9 @@ arXiv 수집 · 청킹 · 문서 임베딩 · 색인 (공유 인덱스 단일 **
 **5. 실패를 분류해서 처리한다.**
 PERMANENT(포이즌·검증 위반)만 DLQ로 격리하고 ack, RETRIABLE은 미ack로 SQS가 재배달. 조용한 유실이 없다.
 
+**6. 무거운 부가 산출물은 색인 핫패스에서 뺀다.**
+구조화 doc-model은 색인 때 미리 만들지 않고(핫패스 비차단), U7이 처음 읽을 때 미스가 BUILD_DOC_MODEL 잡을 enqueue하면 워커가 **lazy하게** 생성·캐시한다(D6/BR-30, 결정적). FR-17 그림/표 assets는 인덱스 커밋 *후* best-effort로 저장하고, dual-write v2(2차 임베딩 인덱스)도 실패 시 로그만 — 부가물 어느 것도 1차 색인을 막지 못한다(BR-27).
+
 ## 스택 요약
 
 | 레이어 | 기술 | 메모 |
@@ -130,7 +142,8 @@ PERMANENT(포이즌·검증 위반)만 DLQ로 격리하고 ack, RETRIABLE은 미
 | **컨트롤 플레인** | PostgreSQL | dedup·watermark·job 상태·rebuild 락 (단조 가드) |
 | **전문 저장** | AWS S3 | 외부 인프라 접점 — 원문 보관 |
 | **임베딩** | AWS Bedrock — Cohere Embed Multilingual v3 (`search_document`, 1024-d) | 권한 경계 — 단일 writer, U2 reader와 동일 공간 |
-| **색인 스토어** | OpenSearch `docsuri-corpus-v1` | 권한 경계 — 단일 writer(U2=단일 reader) |
+| **색인 스토어** | OpenSearch `docsuri-corpus-v1` (+ 선택 v2 인덱스) | 권한 경계 — 단일 writer(U2=단일 reader), v2는 dual-write best-effort |
+| **doc-model/assets** | docmodel 빌더(native HTML→ar5iv) · S3 그림/표 | 색인 핫패스 밖 — BUILD_DOC_MODEL 잡(lazy)·assets best-effort, U7이 소비 |
 | **복원력** | retry 5회 · circuit(5/60s) · timeout(기본 30s·설정값) | 의존성별 독립, 처리량 자세 |
 
 ---
@@ -182,7 +195,7 @@ PERMANENT(포이즌·검증 위반)만 DLQ로 격리하고 ack, RETRIABLE은 미
 ║  │ ④ RETRIEVE             HybridRetriever          │                                      ║
 ║  │                                                 │      ┌──────────────────────────┐    ║
 ║  │   k-NN 쿼리  ∥  BM25 쿼리   (병렬 발행)          │─────▶│ OpenSearch               │    ║
-║  │   각 top_k=50                                   │      │ index: docsuri-corpus-v1 │    ║
+║  │   각 top_k=150                                  │      │ index: docsuri-corpus-v1 │    ║
 ║  │        │                                        │◀─────│ ─ vector: knn_vector     │    ║
 ║  │        ▼                                        │      │     hnsw·cosinesimil·1024│    ║
 ║  │   RRF 병합   score=Σ 1/(60 + rank + 1)          │      │ ─ lexicalTerms: text(BM25)│    ║
@@ -191,7 +204,7 @@ PERMANENT(포이즌·검증 위반)만 DLQ로 격리하고 ack, RETRIABLE은 미
 ║  │   디덥 (paperId 단위, first-seen)               │  장애 → IndexUnavailable             ║
 ║  │   정렬 (-score, paperId)                        │        ★fail-closed ─▶ HTTP 503       ║
 ║  │                                                 │                                      ║
-║  │   후보 0건 → AbstainDTO("no_results") ───────────────────────────▶ HTTP 200 (빈 성공 X)║
+║  │   후보 0건/필터아웃 → 빈 페이지(resultCount=0) ──────────────▶ HTTP 200 (★abstain 아님)║
 ║  └───────────────────────┬────────────────────────┘                                      ║
 ║                          ▼                                                                ║
 ║  ┌────────────────────────────────────────────────┐                                      ║
@@ -250,8 +263,11 @@ PERMANENT(포이즌·검증 위반)만 DLQ로 격리하고 ack, RETRIABLE은 미
 - OpenSearch 죽으면 → **즉시 503** (k-NN·BM25가 한 스토어라 폴백 없음)
 P50<3s를 지키려고 "기다리며 재시도" 대신 "빨리 포기/우회"를 택했다(U1 워커가 5회 재시도하는 것과 정반대 — 워커=처리량, U2=레이턴시).
 
-**3. 하이브리드 = 코사인 + BM25를 RRF로 섞는다 (점수 스케일 무관).**
-`1/(60+rank+1)`로 **순위만** 더하니까, 0~1짜리 코사인 유사도와 수백짜리 BM25 점수를 직접 더하지 않고 공정하게 합칠 수 있다. 그 뒤 같은 논문의 여러 청크는 `paperId`로 1건만 남긴다(디덥).
+**3. 하이브리드 = 코사인 + BM25를 RRF로 섞는다 (점수 스케일 무관, best-chunk 방식).**
+`1/(60+rank+1)`로 **순위만** 더하니까, 0~1짜리 코사인 유사도와 수백짜리 BM25 점수를 직접 더하지 않고 공정하게 합칠 수 있다. 전문을 다(多)청크로 색인하면서 **리스트 안에선 한 논문의 best 청크 기여만(MAX) 쓰고**(약한 본문 청크 다수가 강한 1건을 눌러버리는 길이 편향 차단), 그렇게 고른 k-NN best와 BM25 best를 **리스트 간에 더한다(SUM)**. 그 뒤 `paperId`로 1건(최고점 청크)만 남긴다(디덥). over-fetch(top_k=150)는 다청크 디덥 손실을 메워 top-N을 채우려는 것.
+
+**3b. 무결과와 기권(abstain)은 다른 종단이다.**
+검색 결과가 0건이거나 근거화 pass 후 후보가 전부 걸러지면 **빈 성공 페이지**(`resultCount=0`, 배너 없음)다. `AbstainDTO`는 근거화가 **거부(block/abstain)**했을 때만 — "못 찾음(빈 페이지) ≠ 지어낸 것 같아 거부(기권)"를 클라가 구분하게 한다(BR-9 / U5 B3-a).
 
 **4. 임베딩은 검색당 딱 1회 + 캐시 — 비용/레이턴시의 거의 전부.**
 LLM 질의 재작성·리랭킹을 안 하므로(Q1=A/Q3=A) U2의 유일한 LLM 비용 동인은 질의 임베딩 1회뿐이고, 그마저 정규화 질의 키로 캐싱(TTL 300s)해 중복 질의를 막는다.
@@ -266,8 +282,8 @@ SearchExecuted는 응답 **후** EventBridge로 비동기 발행 → U4 → Post
 | **API** | FastAPI · pydantic v2 · Python 3.12 | 동기 단일 경로, NFR-P1 P50<3s |
 | **임베딩** | AWS Bedrock — Cohere Embed Multilingual v3 (1024-d, cosine, `search_query`) | 외부 인프라 접점 — 비용·레이턴시 동인 / 장애 시 lexical 폴백 |
 | **캐시** | 인메모리 read-through, TTL 300s, max 1024 (→ Infra: 공유 캐시) | 중복 질의 임베딩 차단 |
-| **검색 스토어** | OpenSearch — k-NN(HNSW·cosine·1024) + BM25, 단일 인덱스 `docsuri-corpus-v1` | 외부 인프라 접점 / 장애 시 503 fail-closed (폴백 없음) |
-| **병합** | 앱 레벨 RRF (k=60) + paperId 디덥 | 점수 스케일 무관, 결정적 |
+| **검색 스토어** | OpenSearch — k-NN(HNSW·cosine·1024) + BM25, 단일 인덱스 `docsuri-corpus-v1`, 각 top_k=150 | 외부 인프라 접점 / 장애 시 503 fail-closed (폴백 없음) |
+| **병합** | 앱 레벨 RRF (k=60) — 리스트내 best-chunk(MAX)→리스트간 SUM + paperId 디덥 | 점수 스케일 무관·결정적, 전문 길이 편향 차단 |
 | **근거화** | U6 GroundingEnforcementHook (gateway seam 단일 호출) | 권한 경계 — 이 행만 U2 밖(U6), 검색 ≠ 근거화 |
 | **이벤트** | AWS EventBridge → U4 → PostgreSQL(RDS) `search_history` | 외부 인프라 접점 — 비동기·비차단, 검색 응답과 분리 |
 | **저하 권위** | U6 CostGuardCircuitBreaker (U2는 읽기만) | 권한 경계 — 비용 판정은 U6, U2는 분기만 |
@@ -465,6 +481,18 @@ saved-search/history rerun도 게이트웨이로 재진입한다. 그래야 비�
 │   page → ResultList · degraded → ResultList(저하 배너) · empty/abstain/invalid → StateView│
 │   에러: 401(auth) → /login?redirect=/search · 그 외 → StateView(error) + 재시도          │
 └──────────────────────────────────────────────────────────────────────────────────────┘
+
+  ─────────── 곁다리: U7 상세/요약 슬라이스 (카드 클릭 → /paper/[id]) ───────────
+   app/paper/[id]/page.tsx  SSR 셸(AppHeader) + 클라 island(PaperDetailIsland) · RouteGuard 보호
+     ├ usePaperMeta → ApiClient.getPaperMeta → [U2] GET /api/papers/{id}  (실패=null → arXiv 링크아웃 degrade)
+     ├ sticky 액션바(요약·초록번역·각주트리) → SummaryModal(해당 탭)
+     │    useSummarize(상태기계 + inFlight dedup + stale 가드) → POST /api/summarize
+     │      → classifySummarizeResponse  ★status 판별자로 분기 (검색은 구조 판별 — 대비점)
+     │         ok+summary → SummaryView · ok+translation → TranslationView
+     │         pending(retryAfterMs 폴링) · abstain · cost_degraded · source_unavailable · invalid/error
+     ├ 본문 라우트 /paper/[id]/doc-model  useDocModel/useAssets → [U7] GET .../doc-model · /assets
+     │      기본 OFF→license_unavailable · 미스→building(폴링) · DocModelViewer 렌더  ← 옛 full-text 대체
+     └ 전문 번역 /paper/[id]/translate (FullTranslationIsland) · 개인 용어집 GlossaryTermBadge → GET/POST /api/glossary
 ```
 
 ## 왜 이렇게 생겼나
@@ -495,6 +523,8 @@ HTTP 상태 → `UserFacingError`(auth/forbidden/rateLimited/server/network)로 
 | **Transport** | MockTransport / RouteHandlerTransport / HttpTransport | mock↔real = 설정 스위치, 컴포넌트 불변 |
 | **BFF** | Next route handler `/bff/[...path]` (서버) | 권한 경계 — 게이트웨이 URL·세션 쿠키 서버 전용(SEC-3/12) |
 | **응답 분류** | classifySearchResponse | 구조 기반 union 판별 → SearchOutcome 5종 |
+| **U7 상세/요약 슬라이스** | /paper/[id](+/doc-model·/translate) · PaperDetailIsland · usePaperMeta/useSummarize/useDocModel/useAssets/useGlossaryTerms | 같은 BFF 골격 재사용 — 상세메타=U2, 요약/번역/doc-model/assets=U7 |
+| **summarize 분류** | classifySummarizeResponse | **status 판별자** 기반(검색=구조 기반과 대비) |
 | **에러** | UserFacingError | 401→재로그인, fail-closed 비기술 메시지(SEC-15) |
 
 ---
@@ -510,7 +540,7 @@ HTTP 상태 → `UserFacingError`(auth/forbidden/rateLimited/server/network)로 
 ⓐ 요청 엣지 — install_gateway_middleware (모든 백엔드 요청을 감싼다)   ※ 현재 구현 그대로
   [ U5/BFF ] ──▶ ┌────────────────────────────────────────────────────────┐
                  │ ① request_id 부여 (X-Request-ID) → request.state.context  │
-                 │ ② rate limit (token bucket)                               │
+                 │ ② rate limit (sliding window, 60/60s)                     │
                  │     키 = 신뢰 프록시 hop (X-Forwarded-For 왼쪽=조작가능 무시) │
                  │     초과 → 429                                            │
                  │ ③ call_next → 도메인 모듈(U2/U3/U4)                        │
@@ -567,12 +597,12 @@ cap $1600 대비 spend 비율로 `NORMAL → RERANK_OFF(0.80) → LEXICAL_ONLY(0
 |---|---|---|
 | **게이트웨이** | FastAPI 미들웨어 (요청 엣지) | request_id · rate-limit · 예외 일반화 · 보안 헤더 · CORS |
 | **authn/authz** | 게이트웨이 미들웨어 (backend/middleware/auth.py) | 세션 쿠키→U3 verify→principal 주입(결선됨). REDIS_HOST 미설정 시 건너뜀(dev=X-User-Id 폴백) |
-| **rate limit** | Token bucket | 신뢰 프록시 hop 키, 초과 429 |
+| **rate limit** | InMemoryRateLimiter — 슬라이딩 윈도우(60req/60s) | 신뢰 프록시 hop 키, 초과 429 |
 | **근거화** | GroundingEnforcementHook.enforce (ops 단일 권위) | 권한 경계 — 호출 위치=discovery seam(post-handler 대역), 날조 block |
 | **비용 가드** | CostGuardCircuitBreaker (cap $1600) | 권한 경계 — 0.80/0.95/1.0 임계, event_id 멱등 |
 | **운영 워커** | Python 비동기 (ops/) · 텔레메트리→인시던트 | 외부 인프라 접점 — SQS, at-least-once |
 | **관측성** | 구조화 로그 · X-Request-ID 상관 | fail-closed, 스택 비노출 |
-| **IaC** | AWS CDK (ops/cdk) | network/compute/ingestion/search 스택 |
+| **IaC** | AWS CDK (ops/cdk) | network·compute·access·ingestion·search·summarization·frontend 스택 (+ v2 인덱스 마이그레이션) |
 
 ---
 
@@ -584,110 +614,95 @@ LLM을 부르는 유일한 사용자 경로라 비용이 핵심 — 그래서 �
 ## 파이프라인
 
 ```
-┌──────────────────────────────────────────────────────────────────────────────────────┐
-│  CLIENT   [ U5 결과 카드 ]   "요약 보기" / "번역" 탭 (모달)                              │
-│   POST /api/summarize  { task:"summary", paperId, version:1, persona:"expert",          │
-│                          targetLang:"ko", scope:"abstract", abstract? }                 │
-└─────────────────────────┼──────────────────────────────────────────────────────────────┘
-                          ▼
-┌──────────────────────────────────────────────────────────────────────────────────────┐
-│  GATEWAY  [ U6 ]  authn · authz · rate-limit(비용 기능 = 남용 방어)  ──▶ principal 주입   │
-└─────────────────────────┼──────────────────────────────────────────────────────────────┘
-                          ▼
-   router.summarize:  principal user_id 없음 → 401  ·  payload 검증 실패(SEC-5) → 400
-                       parse → SummaryRequest  ──▶ gateway_seam.run_summarization
-                       (seam = 얇은 진입점, 예기치 못한 예외는 전부 fail-closed abstain)
-                          ▼
-╔══════════════ SummarizationOrchestrationService.run (동기) ════════════════════════════╗
-║                                                                          stack / 수치    ║
-║  ┌────────────────────────────────────────────────────────────────┐                     ║
-║  │ ⓪ CACHE LOOKUP (read-through)                                   │  ┌────────────────┐ ║
-║  │   key = (paperId·version·task·lang·scope·persona·              │─▶│ Redis sum:*    │ ║
-║  │         glossaryVer·modelVer·promptVer)  ← 불변 8차원 동일성     │  │ (hot, TTL 24h) │ ║
-║  │   ★ HIT → cached=true 즉시 반환 (LLM 0회 · 비용·레이턴시 0)      │◀─│  miss          │ ║
-║  └───────────────────────────────┬────────────────────────────────┘  │      ▼ miss     │ ║
-║                                  │                                    │ S3 summaries/  │ ║
-║                                  │ miss                               │ (영구·불변키)  │ ║
-║                                  ▼                                    └────────────────┘ ║
-║  ┌────────────────────────────────────────────────────────────────┐                     ║
-║  │ ① COST GATE   U6 CostGuard.get_budget_state (읽기만)            │  ← LLM 지출 직전     ║
-║  │   ★ degrade_mode≠normal  OR  circuit=OPEN  → CostDegradedDTO     │     ("AI 요약 일시   ║
-║  │     ("AI 요약 일시 중단")  ─────────────────────────────────────────▶ 중단", status 200)║
-║  └───────────────────────────────┬────────────────────────────────┘                     ║
-║                                  ▼                                                        ║
-║  ┌────────────────────────────────────────────────────────────────┐                     ║
-║  │ ② SOURCE SELECT   SourceSelector                                │  ┌────────────────┐ ║
-║  │   summary → 전문(S3) · 없으면 ★abstract 폴백(fallback_reason)    │─▶│ S3 full text   │ ║
-║  │   translate scope=full → 전문 / scope=abstract → 초록           │  └────────────────┘ ║
-║  │   ★ 둘 다 없음 → SourceUnavailableDTO                            │                     ║
-║  └───────────────────────────────┬────────────────────────────────┘                     ║
-║                                  ▼                                                        ║
-║  ┌────────────────────────────────────────────────────────────────┐                     ║
-║  │ ③ REFINE   InputRefiner (구조 인식 정제)                        │  references/머리말· ║
-║  │   제거: references·페이지번호·copyright·소속              제거    │  저작권만 보수적 제거║
-║  │   보존: Table/Figure 캡션·수식(LaTeX)·Appendix  ← 결과 수치 보호  │  토큰≈len/4 추정    ║
-║  │                                  │                              │                     ║
-║  │ ④ LENGTH ROUTE   LengthRouter (토큰 예산 분기)                  │  ≤40K → SINGLE      ║
-║  │   ★ >120K(input cap) → AbstainDTO("input_too_long")             │  ≤120K → MAP_REDUCE  ║
-║  └───────────────────────────────┬────────────────────────────────┘  (v1 동기)          ║
-║                                  ▼                                                        ║
-║  ┌────────────────────────────────────────────────────────────────┐  ┌────────────────┐ ║
-║  │ ⑤ GLOSSARY   GlossaryResolver  seed(P1) ∪ personal(P2)         │─▶│ RDS 용어집     │ ║
-║  │   keep-as-is 19개(Transformer·BERT·LoRA…) + 매핑 4개            │  │ (glossaryVer)  │ ║
-║  └───────────────────────────────┬────────────────────────────────┘  └────────────────┘ ║
-║                                  ▼                                                        ║
-║  ┌────────────────────────────────────────────────────────────────┐  ┌────────────────┐ ║
-║  │ ⑥ GENERATE (buffer)   LLM 1회 — draft 통째로 받음               │─▶│ AWS Bedrock    │ ║
-║  │   프롬프트: system 지시 ↔ <paper> 데이터 영역 분리(injection 방어)│  │ summary=       │ ║
-║  │   "제공 텍스트 안에서만 · 근거 없으면 비워라 · anchor 부기"       │  │  Claude        │ ║
-║  │                                  │                              │  │  Sonnet 4.6    │ ║
-║  │ ⑦ GROUNDING VALIDATE  ★U7 자체 결정적 게이트 (U6 enforce 아님)   │  │ translate=     │ ║
-║  │   (1) anchor span ⊆ 원문   (2) 결과 수치 ⊆ 원문(95.3%↔0.953)    │  │  Claude        │ ║
-║  │   (3) §3 스키마 완전성     (4) 빈/잘림 없음                      │  │  Haiku 4.5     │ ║
-║  │   ★ 위반 → 1회 retry → 또 실패 → AbstainDTO("insufficient_       │  └────────────────┘ ║
-║  │     grounding")  · LLM-judge 없음(전부 결정적, fail-closed)      │                     ║
-║  └───────────────────────────────┬────────────────────────────────┘                     ║
-║                                  ▼ pass                                                   ║
-║  ┌────────────────────────────────────────────────────────────────┐                     ║
-║  │ ⑧ ASSEMBLE   ResultAssembler → SummaryResultDTO                 │  SEC-9 whitelist:   ║
-║  │   요약: tldr·contributions·method·results·limitations·          │  tokens·cost·       ║
-║  │        reproducibility{code,data}·anchors                       │  cacheKey·modelId   ║
-║  │   번역: koreanText (+ 사용자 선호 단순명사 post-substitution)    │  전부 비노출        ║
-║  └───────────────────────────────┬────────────────────────────────┘                     ║
-║                                  ▼                                                        ║
-║  ┌────────────────────────────────────────────────────────────────┐  S3(영구) +         ║
-║  │ ⑨ WRITE-THROUGH   store.put → S3 먼저(durable) → Redis backfill  │  Redis(TTL 24h)     ║
-║  │ ⑩ EMIT TELEMETRY (비차단 · 절대 raise 안 함) ──▶ U6 ObservabilityHub                   ║
-║  └───────────────────────────────┬────────────────────────────────┘                     ║
-║                                  ▼                                                        ║
-║          SummaryResponse (4종단 중 1) ──────────────────────────────────────▶ HTTP 200    ║
-║          ok(요약/번역) · abstain · cost_degraded · source_unavailable                     ║
-╚══════════════════════════════════════════════════════════════════════════════════════════╝
+  [ U5 상세 페이지 ]  "요약" / "초록·전문 번역" 탭(모달) · 리치 뷰
+   POST /api/summarize { task, paperId, version, persona:"expert", targetLang:"ko", scope, abstract? }
+        │
+        ▼
+  [ U6 게이트웨이 ]  authn · authz · rate-limit(비용 기능 = 남용 방어)  ──▶ principal 주입
+        │
+        ▼
+  router.summarize:  principal user_id 없음 → 401  ·  payload 검증 실패(SEC-5) → 400(message)
+                     parse → SummaryRequest  ──▶ gateway_seam.run_summarization
+                     (seam = 얇은 진입점, 예기치 못한 예외는 전부 fail-closed → Abstain("unavailable"))
+        │
+        ▼
+╔════════ SummarizationOrchestrationService.run (allow_enqueue=True=API · False=워커) ═══════════╗
+║                                                                                                ║
+║  ⓪ CACHE LOOKUP (read-through)                                                                 ║
+║     key=(paperId·version·task·lang·scope·persona·glossaryVer·[ownerId]·modelVer·promptVer)     ║
+║         ← 불변 10차원. scope:summary=FULL고정 · persona:translate=EXPERT핀(BR-S10)             ║
+║         ownerId: glossaryVer>0(개인화)일 때만 set, ver0 베이스라인은 공유                      ║
+║     ★ HIT → cached=true 즉시 반환(LLM 0회) ─▶ [ Redis sum:* TTL24h ] → miss → [ S3 summaries/ ]║
+║        │ miss                                                                                  ║
+║  ① COST GATE  U6 CostGuard.get_budget_state(읽기만) ── LLM 지출 직전                           ║
+║     ★ degrade_mode≠normal OR circuit=OPEN → CostDegradedDTO("AI 요약 일시 중단", 200)          ║
+║        │                                                                                       ║
+║  ② SOURCE SELECT(D2)  doc-model(S3) → 없으면 레거시 전문(S3) → 없으면 ★초록 폴백               ║
+║     translate scope=abstract → 초록 · ★ 모두 없음 → SourceUnavailableDTO                       ║
+║        │                                                                                       ║
+║  ③ REFINE  refine_source: doc-model이면 섹션/표/수식 직접 / 평문이면 레거시 regex              ║
+║     제거 references·페이지번호·copyright·소속 / 보존 캡션·수식·Appendix (토큰≈len/4)           ║
+║        │                                                                                       ║
+║  ④ LENGTH ROUTE  ≤40K SINGLE · 40~120K MAP_REDUCE · >120K Abstain("input_too_long")            ║
+║     MAP_REDUCE: 게이트 OFF→too_long / ON+잡큐→enqueue→★PendingDTO(retryAfterMs)                ║
+║                 (워커가 allow_enqueue=False로 인라인 재실행) ─▶ [ SQS 잡큐 ]                   ║
+║        │                                                                                       ║
+║  ⑤ GLOSSARY  seed keep-as-is 19 + 매핑 4 ∪ personal ─▶ [ RDS 용어집 (glossaryVer 카운터) ]     ║
+║        │                                                                                       ║
+║  ⑥ GENERATE (스트림 버퍼링) ─▶ [ AWS Bedrock ]                                                 ║
+║     요약 SINGLE→bedrock_llm · MAP_REDUCE→map_reduce 요약기   summary=Claude Sonnet 4.6         ║
+║     번역→structured_translator(doc-model→번역 doc-model)     translate=Claude Haiku 4.5        ║
+║     프롬프트: system 지시 ↔ <paper> 데이터 분리(injection 방어)                                ║
+║        │                                                                                       ║
+║  ⑦ GROUNDING VALIDATE  ★요약 전용 결정적 게이트(U6 enforce 아님 · Option D)                    ║
+║     anchor=SOFT(미검증 span은 drop→kept_anchors) · 수치(95.3%↔0.953)/스키마/잘림=HARD          ║
+║     ★ HARD 위반 → 1회 retry → 또 실패 → Abstain("insufficient_grounding")                      ║
+║     (번역엔 게이트 없음: 한 필드라도 실제 번역됐는지 검사 → 실패 Abstain("empty_translation")) ║
+║        │ pass                                                                                  ║
+║  ⑧ ASSEMBLE → SummaryResultDTO  SEC-9 화이트리스트(tokens·cost·cacheKey·modelId 비노출)        ║
+║     요약 tldr·contributions·method·results·limitations·reproducibility{code,data}·anchors(kept)║
+║     번역 번역된 doc-model (+ 사용자 선호 단순명사 후치환)                                      ║
+║        │                                                                                       ║
+║  ⑨ WRITE-THROUGH  store.put → S3 먼저(durable) → Redis 백필(TTL24h)                            ║
+║  ⑩ EMIT TELEMETRY (비차단·절대 raise 안 함) ─▶ U6 ObservabilityHub                             ║
+║        │                                                                                       ║
+║     SummaryResponse (5종단 중 1) ──────────────────────────────────────────────▶ HTTP 200      ║
+║     ok · pending · abstain · cost_degraded · source_unavailable                                ║
+╚════════════════════════════════════════════════════════════════════════════════════════════════╝
 
-  ─────────── 곁다리: 인앱 전문 뷰어 (Q5=C, 라이선스 게이트) ───────────
-   GET /api/papers/{paperId}/full-text  → 기본 OFF → {"status":"license_unavailable"}(arXiv 링크아웃)
-     · OA 라이선스 신호가 결선될 때까지 닫아둠  · 켜지면 S3 정규화 전문 반환
+  ─────────── 곁다리 엔드포인트 (라우터에서 주입/OA 게이트, 전부 fail-closed) ───────────
+   GET/POST /api/glossary           개인 용어집(owner-scoped) 목록/upsert(성공 시 glossaryVer++)
+   GET /api/papers/{id}/doc-model   구조화 doc-model(리치뷰/요약입력) · 기본 OFF→license_unavailable
+                                    · 미스 → U1 lazy 빌드 트리거 → building(폴링) · URL-free(SEC-9)
+   GET /api/papers/{id}/assets      그림/표 매니페스트(FR-17) · 기본 OFF · 서명 URL만(SEC-9)
+     (※ 이전 단일 .../full-text 는 doc-model + assets 두 갈래로 대체됨)
 ```
 
 ## 왜 이렇게 생겼나
 
 **1. 캐시 키가 곧 "동일성"의 전부 — 같은 키 = 영구히 같은 산출물.**
-키는 8차원(paper·version·task·lang·scope·persona·glossaryVer·modelVer·promptVer)이고 **불변**이다(INV-5). 그래서 캐시 HIT이면 LLM을 **0회** 부르고 즉시 반환한다. 개인 용어집은 `userId`를 키에 넣는 대신 `glossaryVer`로 접어 넣어(Q7) 공유 키 공간을 쓴다 — 다른 사용자라도 용어집 버전이 같으면 캐시를 공유한다. `promptVer`/`modelVer`를 올리면 파생 객체가 전부 자동 무효화된다.
+키는 10차원(paper·version·task·lang·scope·persona·glossaryVer·[ownerId]·modelVer·promptVer)이고 **불변**이다(INV-5). 그래서 캐시 HIT이면 LLM을 **0회** 부르고 즉시 반환한다. scope는 summary면 `FULL` 고정, persona는 translate면 `EXPERT`로 핀(BR-S10 — persona-agnostic 작업에 중복 캐시 방지). 개인화 산출물(`glossaryVer>0`)은 `ownerId`까지 키에 넣는다 — `glossaryVer`는 사용자별 카운터라 서로 다른 사용자가 같은 ver를 가질 수 있어, owner 스코프가 없으면 남의 개인 번역이 서빙될 수 있어서다. 베이스라인(ver0, 개인 용어 없음)은 owner-agnostic이라 사용자끼리 **공유**. `promptVer`/`modelVer`를 올리면 파생 객체가 전부 자동 무효화된다.
 
 **2. 비용 게이트가 LLM 지출 "직전"에 선다 (U6 단일 권위, 읽기만).**
 `degrade_mode`가 normal이 아니거나 서킷이 OPEN이면 — 소스를 읽기도 전에 — `CostDegradedDTO`("AI 요약 일시 중단")로 끊는다(BR-S13). 비용 판정은 U6가 소유하고 U7은 **읽기만** 한다(U2와 동일 규약). 캐시 HIT은 이 게이트보다 앞이라, 비용이 묶여 있어도 이미 만든 요약은 계속 나간다.
 
-**3. 근거화는 U7이 직접 소유한다 — U6의 enforce와 다른 종류의 검사다.**
-U6 enforce는 "검색 후보의 식별자 ⊆ 검색된 레코드 집합"(SET 멤버십)을 본다. U7은 "요약문 ⊆ 한 논문의 원문"(문서 충실도)을 본다 — 그래서 "근거화 단일 권위 = U6"는 *검색 근거화에 한정*으로 읽고, 요약 근거화는 U7이 가진다(Q4). 검사는 **전부 결정적**(anchor 존재·수치 일치·스키마·잘림)이고 LLM-judge는 안 쓴다(Q15 — 검열관을 또 LLM으로 두지 않음). 1회 retry 후에도 위반이면 fail-closed로 abstain(INV-4).
+**3. 근거화는 U7이 직접 소유한다 — U6의 enforce와 다른 종류의 검사다. (Option D: soft anchor)**
+U6 enforce는 "검색 후보의 식별자 ⊆ 검색된 레코드 집합"(SET 멤버십)을 본다. U7은 "요약문 ⊆ 한 논문의 원문"(문서 충실도)을 본다 — 그래서 "근거화 단일 권위 = U6"는 *검색 근거화에 한정*으로 읽고, 요약 근거화는 U7이 가진다(Q4). **전부 결정적**(LLM-judge 없음, Q15)이되 검사마다 강도가 다르다: **anchor 존재는 SOFT** — 원문에 verbatim으로 없는 anchor(표 재렌더·패러프레이즈·LaTeX↔유니코드 수식)는 abstain이 아니라 **drop**하고 통과한 것만 `kept_anchors`로 남긴다. **수치 일치·스키마·잘림은 HARD** — hard 위반이면 1회 retry 후 fail-closed abstain(`insufficient_grounding`, INV-4). 검증 못 한 포인터를 떨궈도 수치가 hard라 날조는 안 새고, 멀쩡한 요약을 통째로 버리지 않는다. 단 이 게이트는 **요약 경로 전용**이다 — 번역은 "한 필드라도 실제 번역됐는가"만 보고, 아니면 retry 후 `AbstainDTO("empty_translation")`.
 
-**4. 저하를 세 종류로 구분해서 각각 다른 종단을 준다.**
-비용(`CostDegradedDTO`) · 장애(LLM 2회 실패 → `AbstainDTO`) · 소스 없음(`SourceUnavailableDTO`)을 섞지 않는다(nfr §1.3). 클라가 "잠깐 막힘 / 못 만듦 / 원문 없음"을 구분해 다르게 안내할 수 있다.
+**4. 저하/대기를 종류별로 구분해 각각 다른 종단을 준다.**
+비용(`CostDegradedDTO`) · 대기(긴 입력 → 백그라운드 잡 → `PendingDTO(retryAfterMs)`, 클라가 폴링) · 장애(LLM 2회 실패 → `AbstainDTO`) · 입력 초과(`input_too_long`) · 소스 없음(`SourceUnavailableDTO`)을 섞지 않는다(nfr §1.3). 클라가 "잠깐 막힘 / 처리 중 / 못 만듦 / 너무 김 / 원문 없음"을 구분해 다르게 안내할 수 있다.
 
 **5. 정제는 보수적이다 — 결과 수치를 지우지 않으려고.**
 references·페이지번호·copyright·소속처럼 **명백한** 잡음만 제거하고, Table/Figure 캡션·수식·Appendix는 보존한다(Q2). 초록엔 잘 안 나오는 결과 수치·재현성이 본문/표에 있어서다. 과다 제거가 곧 근거화 실패로 이어지니 "덜 지우는" 쪽으로 기울였다.
 
 **6. buffer-validate-then-render — 검증 끝난 결과만 노출한다.**
-스트리밍처럼 보여도 도메인은 **완성·검증된** draft를 통째로 반환한다(BR-S8). 토큰을 흘려보내며 렌더하면 근거화 미통과 문장이 새어 나갈 수 있어서(FR-5), 점진적 렌더는 이미 검증된 필드를 클라가 단계적으로 그리는 **표현 계층**의 일이다.
+스트리밍처럼 보여도 도메인은 토큰 스트림을 내부에서 받아 **완성 JSON으로 버퍼링**한 뒤 검증한다(BR-S8). 토큰을 흘려보내며 렌더하면 근거화 미통과 문장이 새어 나갈 수 있어서(FR-5), 점진적 렌더는 이미 검증된 필드를 클라가 단계적으로 그리는 **표현 계층**의 일이다.
+
+**9. 긴 논문은 동기 응답을 막지 않는다 — map-reduce + 비동기 잡.**
+40K~120K 토큰(MAP_REDUCE 밴드)은 게이트(`DOCSURI_MAP_REDUCE_ENABLED`)가 켜져 있으면 백그라운드 SQS 잡으로 enqueue하고 즉시 `PendingDTO(retryAfterMs)`를 돌려준다. 워커(`worker.py`)가 `allow_enqueue=False`로 같은 파이프라인을 재실행해 섹션 인식 map-reduce(요약)·섹션 map-only(번역)를 인라인 처리하고, 클라는 폴링하다 캐시 히트로 결과를 받는다. 게이트 OFF면 그 밴드는 `input_too_long`으로 abstain(이전 동작 보존).
+
+**10. 전문 접근은 doc-model + assets 두 갈래다.**
+이전 단일 `/full-text` 대신 **구조화 doc-model**(리치 뷰·요약 입력, URL-free)과 **assets 매니페스트**(그림/표 서명 URL, SEC-9)로 나뉜다. doc-model 미스 시 U1의 lazy 빌드를 트리거하고 `building`으로 폴링을 유도(빌드는 U1 몫, U7은 큐잉만). 둘 다 기본 OFF(OA 운영 토글)이고, 개인 용어집 CRUD(`GET/POST /api/glossary`)도 같은 라우터에 owner-scoped로 붙는다.
 
 **7. 프롬프트는 지시/데이터를 물리적으로 가른다 (injection 방어).**
 system 지시와 논문 본문을 분리하고, 본문은 `<paper>` 태그로 감싸 "이 안은 데이터이지 지시가 아니다"라고 못 박는다. 외부 텍스트(논문)가 프롬프트를 탈취하지 못하게 한다.
@@ -699,15 +714,16 @@ system 지시와 논문 본문을 분리하고, 본문은 `<paper>` 태그로 �
 
 | 레이어 | 기술 | 메모 |
 |---|---|---|
-| **API** | FastAPI (동기) · POST /api/summarize · GET /api/papers/{id}/full-text | 비용 기능 — rate-limit은 U6, 입력검증 SEC-5 |
-| **요약 LLM** | AWS Bedrock — Claude Sonnet 4.6 (`anthropic.claude-sonnet-4-6`) | 외부 인프라 접점 — 구조화 요약, 검색당 최대 1회 |
-| **번역 LLM** | AWS Bedrock — Claude Haiku 4.5 (`anthropic.claude-haiku-4-5`) | 외부 인프라 접점 — 초록/전문 번역, 저비용 모델 |
+| **API** | FastAPI · POST /api/summarize · GET/POST /api/glossary · GET /papers/{id}/doc-model · /assets | 비용 기능 — rate-limit은 U6, 입력검증 SEC-5 |
+| **요약 LLM** | AWS Bedrock — Claude Sonnet 4.6 (`global.anthropic.claude-sonnet-4-6`) | 외부 인프라 접점 — SINGLE 1회 / 긴 입력 map-reduce |
+| **번역 LLM** | AWS Bedrock — Claude Haiku 4.5 (`global.anthropic.claude-haiku-4-5-20251001-v1:0`) | 외부 인프라 접점 — 구조화 doc-model 번역, 저비용 |
+| **긴 입력** | map_reduce 요약기 / structured_translator + 비동기 잡(SQS) | MAP_REDUCE 밴드 — Pending→폴링, 게이트 OFF면 abstain |
 | **캐시(hot)** | Redis `sum:` 키스페이스, TTL 24h | 미스 시 S3 백필 — 만료 없는 키 금지 |
-| **저장(영구)** | AWS S3 `summaries/` — 불변 키 | durable truth, 동일 키 = 영구 동일 산출물(INV-5) |
-| **전문 소스** | AWS S3 (U1이 적재한 정규화 전문) | 없으면 abstract 폴백(NFR-R2) |
-| **용어집** | PostgreSQL (RDS) — seed ∪ personal | glossaryVer로 캐시 동일성에 접어 넣음(Q7) |
-| **근거화** | GroundingValidator (U7 자체 · 결정적) | 권한 경계 — U6 enforce와 별개(문서 충실도), LLM-judge 없음 |
+| **저장(영구)** | AWS S3 `summaries/` — 불변 키(`object_path`) | durable truth, 동일 키 = 영구 동일 산출물(INV-5) |
+| **소스** | AWS S3 — doc-model → 레거시 전문 → 초록 (U1 적재) | doc-model 우선, 없으면 단계적 폴백(NFR-R2) |
+| **용어집** | PostgreSQL (RDS) — seed ∪ personal, glossaryVer 카운터 | 개인화(ver>0)는 ownerId로 캐시 스코프 |
+| **근거화** | GroundingValidator (U7 자체 · 결정적 · Option D) | 권한 경계 — anchor SOFT(drop)·수치/스키마 HARD, LLM-judge 없음 |
 | **비용 가드** | U6 CostGuardCircuitBreaker (읽기만) | 권한 경계 — LLM 지출 직전 게이트, 판정은 U6 |
 | **관측성** | U6 ObservabilityHub (비차단 emit) | 응답 경로 밖 — telemetry는 절대 raise 안 함 |
 | **모델 ID 버전** | `model_ver=sonnet46-haiku45` · `prompt_ver=p1` | 캐시 키 일부 — 바꾸면 전체 무효화 |
-| **마운트** | real-first — S3 버킷 설정됐을 때만 마운트(mock 결선 없음) | 미설정 → skip(fail-closed, 무음 폴백 없음) |
+| **마운트** | real-first — S3/RDS 설정됐을 때만 마운트(mock 결선 없음) | 미설정 → skip(fail-closed, 무음 폴백 없음) |

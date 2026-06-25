@@ -24,13 +24,20 @@ arXiv에서 논문을 긁어와 → 검증 → 조각내고 → 임베딩 → **
 
 ```
 docsuri_ingestion/
-├── worker.py          ← 큐 폴링 루프 (SIGTERM drain)
-├── application.py     ← ★IngestionPipelineService.ingest_one (색인 1건) + RefreshOrchestrationService (트리거)
-├── processors.py      ← parse·chunk·dedup·assemble
-├── resilience.py      ← retry·circuit·timeout·DLQ
-├── adapters/          ← arxiv·aws(S3/SQS/OpenSearch/Bedrock)·postgres
-└── config.py          ← 코퍼스 범위·라이선스 allowlist·withdrawal 마커
+├── worker.py              ← 큐 폴링 루프 (SIGTERM drain) · 잡 kind 분기(ingest_one / build_doc_model)
+├── application.py         ← ★IngestionPipelineService.ingest_one (색인 1건) · build_doc_model · RefreshOrchestrationService(트리거)
+├── processors.py          ← parse·chunk·dedup·assemble
+├── docmodel/              ← 구조화 doc-model 빌더 (builder·parser·mathml) — U7 lazy 빌드 산출물
+├── asset_extraction.py / domain/assets.py / adapters/assets.py ← FR-17 그림·표 추출/저장
+├── full_text_extraction.py ← 전문 추출
+├── resilience.py          ← retry·circuit·timeout·DLQ
+├── adapters/              ← arxiv·aws(S3/SQS/OpenSearch/Bedrock)·postgres
+└── config.py              ← 코퍼스 범위·라이선스 allowlist·withdrawal 마커
 ```
+
+> ★**색인 외 두 갈래가 추가됐다(둘 다 색인 핫패스 밖):**
+> - **BUILD_DOC_MODEL 잡** — U7이 `/doc-model` 읽다 미스 나면 큐에 빌드 잡을 넣고(read 측 enqueue), 이 워커가 `build_doc_model`로 **구조화 doc-model을 생성·캐시**한다(D6/BR-30). 결정적(generatedAt만 비결정), Q6 폴백 사다리(native HTML→ar5iv). 색인 때 미리 안 만든다(핫패스 비차단).
+> - **FR-17 assets** — 그림/표를 추출해 S3에 저장. `ingest_one` **인덱스 커밋 *후* best-effort**(실패해도 색인을 막지 않음, BR-27).
 
 ---
 
@@ -59,7 +66,7 @@ while not _shutdown_event.is_set():
     _shutdown_event.wait(timeout=1.0)
 ```
 - **SIGTERM/SIGINT → graceful drain**: 신호 받으면 현재 배치까지만 처리하고 깔끔히 종료(작업 안 잃음).
-- `process_message`: 페이로드 파싱 실패(포이즌) → PERMANENT → DLQ + ack. 정상 → `ingest_one` 호출 후 ack.
+- `process_message`: 페이로드 파싱 실패(포이즌) → PERMANENT → DLQ + ack. 정상 → **잡 kind로 분기**: `BUILD_DOC_MODEL` → `build_doc_model`(U7용 doc-model 생성), 그 외(`SEED_REBUILD`/`INCREMENTAL`/`EVENT`) → `ingest_one`. 처리 후 ack.
 
 ---
 
@@ -87,8 +94,11 @@ while not _shutdown_event.is_set():
 ⑧ embed_documents ─────────────────▶ Bedrock (Cohere v3, search_document, 1024d)
 ⑨ assemble IndexRecord
 ⑩ bulk_upsert + delete_stale_chunks ▶ OpenSearch docsuri-corpus-v1
-⑪ mark_ingested · advance_watermark · record_job_finished
+⑩' (선택) dual-write v2 ─────────────▶ 다른 임베딩 모델로 두 번째 인덱스 (best-effort, 실패=로그만)
+⑪ mark_ingested · advance_watermark · (FR-17 assets best-effort) · record_job_finished
 ```
+
+> **⑩' dual-write v2** — `embedding_v2`+`vector_index_v2`가 둘 다 주입됐을 때만, 같은 청크를 **다른 임베딩 모델**로 한 번 더 임베딩해 **두 번째 OpenSearch 인덱스**에 색인한다(모델 마이그레이션/AB용). 실패해도 raise 안 하고 로그만 — 1차 색인을 망가뜨리지 않는다.
 
 ### ③ parse — 라이선스·검증·철회 게이트 (`FetchParseProcessor`)
 
@@ -170,9 +180,12 @@ ingest_one — 의존성마다 retry5·circuit(5/60s)·timeout30s
  ⑧ embed            → Bedrock (search_document, 1024d)
  ⑨ assemble IndexRecord (chunkId 결정적·lexicalTerms·vector·카드7필드)
  ⑩ bulk_upsert + delete_stale_chunks → OpenSearch docsuri-corpus-v1
- ⑪ mark_ingested · advance_watermark · job_finished
+ ⑩'(선택) dual-write v2 → 두 번째 인덱스(다른 임베딩 모델, best-effort)
+ ⑪ mark_ingested · advance_watermark · (FR-17 assets best-effort) · job_finished
  실패: PERMANENT→DLQ+ack / RETRIABLE→미ack 재배달
+
+별도 잡: BUILD_DOC_MODEL → build_doc_model (U7 read 미스가 enqueue, lazy·결정적·캐시)
 ```
 
-**전체 데이터 수명주기 완성**: U1이 `search_document`로 써넣은 `IndexRecord`를 → U2가 `search_query`로 읽고 → U7이 ⑥의 S3 전문을 요약한다. **단일 writer(U1) / 단일 reader(U2)**가 같은 공간(vector-spec)을 공유하는 게 전체 검색의 토대.
+**전체 데이터 수명주기 완성**: U1이 `search_document`로 써넣은 `IndexRecord`를 → U2가 `search_query`로 읽고 → U7이 ⑥의 S3 전문(+ 별도 잡으로 만든 **구조화 doc-model**·assets)을 요약/렌더한다. **단일 writer(U1) / 단일 reader(U2)**가 같은 공간(vector-spec)을 공유하는 게 전체 검색의 토대.
 ```
