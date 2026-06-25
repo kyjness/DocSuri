@@ -10,27 +10,42 @@ from uuid import uuid4
 from docsuri_ops.domain.enums import SignalKind
 from docsuri_ops.domain.models import TelemetryEvent
 
+# Denylist of sensitive field names, stored in NORMALIZED form (lowercased, non-alphanumerics
+# stripped) so naming style can't smuggle a value past it: ownerId / owner_id / OWNER-ID all
+# collapse to "ownerid". Matching is exact-after-normalization, not substring, so a benign
+# "tokenCount" is left intact. The email regex is the value-level backstop for emails appearing
+# under non-sensitive keys or inside free text.
+# ponytail: still a denylist — add a name here if a new secret-bearing field slips in under an
+# unlisted key; switch to an allowlist of known-safe keys only if that list stays small.
 _SENSITIVE_KEYS = {
     "password",
     "passwd",
     "secret",
     "token",
+    "accesstoken",
+    "refreshtoken",
+    "apikey",
     "authorization",
     "cookie",
-    "set-cookie",
+    "setcookie",
     "email",
-    "user_id",
-    "userId",
+    "userid",
     "owner",
+    "ownerid",
+    "sessionid",
 }
 _EMAIL_PATTERN = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+
+
+def _normalize_key(key: str) -> str:
+    return "".join(ch for ch in key.lower() if ch.isalnum())
 
 
 def redact(value: Any) -> Any:
     if isinstance(value, dict):
         redacted = {}
         for key, item in value.items():
-            if str(key) in _SENSITIVE_KEYS:
+            if _normalize_key(str(key)) in _SENSITIVE_KEYS:
                 redacted[key] = "[REDACTED]"
             else:
                 redacted[key] = redact(item)

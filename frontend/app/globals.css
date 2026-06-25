@@ -32,6 +32,41 @@
   }
 }
 
+/* Manual override (U10 마이페이지 설정 — 다크모드 토글). `[data-theme]`의 속성 선택자는 위
+   미디어 쿼리 안의 `:root`보다 명시도가 높아, OS 설정과 무관하게 항상 우선한다. 마이페이지
+   설정에서 고르지 않았으면 `data-theme`이 아예 없어서 위 OS 설정 분기를 그대로 따른다. */
+:root[data-theme='light'] {
+  --color-bg: #ffffff;
+  --color-mockup-bg: #eceef1;
+  --color-surface: #f7f8fa;
+  --color-text: #16181d;
+  --color-text-muted: #6b7280;
+  --color-border: #d9dde3;
+  --color-accent: #2f6df6;
+  --color-accent-contrast: #ffffff;
+  --color-accent-soft-bg: #eaf1ff;
+  --color-danger: #c0362c;
+  --color-danger-bg: #fdecea;
+  --color-warn-bg: #fff4e0;
+  --color-warn-text: #8a5a00;
+}
+
+:root[data-theme='dark'] {
+  --color-bg: #131519;
+  --color-mockup-bg: #0b0c0e;
+  --color-surface: #1c1f25;
+  --color-text: #f1f3f6;
+  --color-text-muted: #9aa3b0;
+  --color-border: #2c313a;
+  --color-accent: #5b8bff;
+  --color-accent-contrast: #0b0c0e;
+  --color-accent-soft-bg: #1b2742;
+  --color-danger: #ff7a70;
+  --color-danger-bg: #3a1d1a;
+  --color-warn-bg: #3a2e16;
+  --color-warn-text: #ffd98a;
+}
+
 * {
   box-sizing: border-box;
 }

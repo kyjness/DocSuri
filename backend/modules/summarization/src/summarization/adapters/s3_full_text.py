@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from ._paper_ref import bare_paper_id
+
 # Mirrors U1's full-text object layout (read-only capability).
 _FULL_TEXT_PREFIX = "full-text"
 
@@ -30,7 +32,10 @@ class S3FullTextSource:
         self._prefix = prefix
 
     def get_full_text(self, paper_id: str, version: int) -> str | None:
-        key = f"{self._prefix}/{paper_id}/v{version}.txt"
+        # U1 keys full text on the bare id (full-text/{bareId}/v{ver}.txt); strip the version
+        # suffix the app carries so the read matches the write (else perpetual miss → no
+        # full-text fallback for summary/translation).
+        key = f"{self._prefix}/{bare_paper_id(paper_id)}/v{version}.txt"
         try:
             obj = self._s3.get_object(Bucket=self._bucket, Key=key)
             return obj["Body"].read().decode("utf-8")

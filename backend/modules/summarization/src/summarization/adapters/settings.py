@@ -11,8 +11,12 @@ import os
 from dataclasses import dataclass
 
 # Concrete model bindings (TD-S3). modelVer is part of the immutable cache key.
-DEFAULT_SUMMARY_MODEL = "anthropic.claude-sonnet-4-6"
-DEFAULT_TRANSLATE_MODEL = "anthropic.claude-haiku-4-5"
+# Invoked via Bedrock inference profiles — the bare foundation-model ids (``anthropic.claude-*``)
+# are NOT on-demand invocable here (ValidationException: "Invocation with on-demand throughput
+# isn't supported. Retry with an inference profile."). Sonnet 4.6 / Haiku 4.5 ship as ``global.*``
+# profiles; both overridable via DOCSURI_SUMMARY_MODEL_ID / DOCSURI_TRANSLATE_MODEL_ID.
+DEFAULT_SUMMARY_MODEL = "global.anthropic.claude-sonnet-4-6"
+DEFAULT_TRANSLATE_MODEL = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
 MODEL_VER = "sonnet46-haiku45"
 
 

@@ -40,7 +40,10 @@ class SavedSearchService:
         existing = repo.find_by_normalized(owner, entity.normalized_query)
         if existing is not None:
             if entity.label is not None and entity.label != existing.label:
-                repo.update_label(owner, existing.id, entity.label)
+                # Use the updated row so the response reflects the new label on every adapter.
+                # (SQL's find_by_normalized returns a detached copy; without this the response
+                #  would echo the stale label even though the row was relabeled — BR-L1/FR-8.)
+                existing = repo.update_label(owner, existing.id, entity.label) or existing
             ret_dto = to_saved_dto(existing)
             object.__setattr__(ret_dto, "was_created", False)
             return ret_dto

@@ -5,6 +5,16 @@
 import type { PaperMetaVM } from '@/types/paperMeta';
 
 const META: Record<string, PaperMetaVM> = {
+  // Math-in-abstract repro (arXiv uses `$…$` for inline TeX) — verifies the KaTeX render path.
+  '2503.17809v1': {
+    arxivId: '2503.17809v1',
+    title: 'Poisson-Process Topic Model for Integrating Knowledge from Pre-trained Language Models',
+    authors: ['Morgane Austern', 'Yuanchuan Guo', 'Zheng Tracy Ke', 'Tianle Liu'],
+    year: 2025,
+    abstract:
+      'Topic modeling is traditionally applied to word counts without accounting for the context in which words appear. Recent advancements in large language models (LLMs) offer contextualized word embeddings, which capture deeper meaning and relationships between words. We use a pre-trained LLM to convert each document into a sequence of word embeddings. This sequence is then modeled as a Poisson point process, with its intensity measure expressed as a convex combination of $K$ base measures, each corresponding to a topic. Assuming each topic is a $β$-Hölder smooth intensity measure on the embedded space, we establish the rate of convergence of our method. We also provide a minimax lower bound and show that the rate of our method matches with the lower bound when $β\\leq 1$.',
+    arxivUrl: 'https://arxiv.org/abs/2503.17809',
+  },
   '1706.03762v5': {
     arxivId: '1706.03762v5',
     title: 'Attention Is All You Need',

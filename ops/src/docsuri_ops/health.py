@@ -81,6 +81,10 @@ def _read_index_stats(provider: Any) -> Any:
 def _get(value: Any, field: str) -> Any:
     if isinstance(value, dict):
         return value.get(field)
+    # Optional U1 contract: an IndexStats object MAY expose to_public_internal_dict() (its public
+    # projection). Probed by name — if U1 renames it, the getattr below falls back to attribute
+    # access, and a field that still can't be read surfaces as last_write=None, so deep_check
+    # reports unhealthy (fail-closed) rather than a silent "healthy". (US-R4 review)
     public = getattr(value, "to_public_internal_dict", None)
     if public is not None:
         return public().get(field)

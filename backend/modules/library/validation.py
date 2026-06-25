@@ -112,8 +112,6 @@ def validate_meta(meta: object) -> LibraryItemMeta:
     try:
         if isinstance(meta, LibraryItemMeta):
             return meta
-        if isinstance(meta, dict):
-            return LibraryItemMeta.model_validate(meta)
         return LibraryItemMeta.model_validate(meta)
     except Exception as exc:  # pydantic ValidationError → generalized SEC-5 422
         raise ValidationException(f"invalid library item meta: {exc}") from exc

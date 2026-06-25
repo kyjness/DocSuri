@@ -37,16 +37,22 @@ class TimeoutRunner:
         self._timeout_seconds = timeout_seconds
 
     def run(self, func: Callable[[], T]) -> T:
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(func)
-            try:
-                return future.result(timeout=self._timeout_seconds)
-            except FutureTimeoutError as exc:
-                raise RetriableIngestionError(
-                    "operation timed out",
-                    reason=FailureReason.TIMEOUT,
-                    stage="timeout",
-                ) from exc
+        # NOT a `with` block: ThreadPoolExecutor.__exit__ joins the worker thread, which would
+        # block past the timeout and defeat the wall-clock cap. shutdown(wait=False) returns
+        # immediately; the orphaned thread ends on its own I/O timeout (httpx caps at 30s).
+        executor = ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(func)
+        try:
+            result = future.result(timeout=self._timeout_seconds)
+        except FutureTimeoutError as exc:
+            executor.shutdown(wait=False)
+            raise RetriableIngestionError(
+                "operation timed out",
+                reason=FailureReason.TIMEOUT,
+                stage="timeout",
+            ) from exc
+        executor.shutdown(wait=False)
+        return result
 
 
 class CircuitOpenError(RetriableIngestionError):
@@ -72,8 +78,11 @@ class CircuitBreaker:
             raise CircuitOpenError(self.dependency)
         try:
             result = func()
-        except Exception:
-            self.record_failure()
+        except Exception as exc:
+            # Only availability failures (retriable/timeout) are a dependency-health signal;
+            # permanent errors (404, validation) must not trip the breaker on healthy deps.
+            if is_retriable(exc):
+                self.record_failure()
             raise
         self.record_success()
         return result

@@ -12,6 +12,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from ..domain.models import StoredAsset
+from ._paper_ref import bare_paper_id
 
 
 class RdsS3AssetReader:
@@ -47,8 +48,10 @@ class RdsS3AssetReader:
             "SELECT asset_id, type, ordinal, caption, source_mode, object_ref, page_ref, bbox "
             "FROM paper_asset WHERE paper_id = %s AND version = %s ORDER BY type, ordinal"
         )
+        # U1 writes the manifest under the bare paper_id (version is a separate column); strip
+        # the version suffix the app carries so the lookup matches (else no figures/tables).
         with self._connect() as conn, conn.cursor() as cur:
-            cur.execute(sql, (paper_id, version))
+            cur.execute(sql, (bare_paper_id(paper_id), version))
             return [
                 StoredAsset(
                     asset_id=row[0],

@@ -4,6 +4,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
+from docsuri_ops._dedup import BoundedSeen
 from docsuri_ops.cost_guard import CostGuardCircuitBreaker
 from docsuri_ops.detectors import CostExplosionDetector
 from docsuri_ops.domain.enums import CircuitState, DegradeMode, IncidentClass, Severity
@@ -41,6 +42,19 @@ def test_cost_guard_is_idempotent_by_usage_event_id() -> None:
     state = guard.record_spend(event)
 
     assert state.spend_usd == 10.0
+
+
+def test_bounded_seen_dedups_and_evicts_oldest() -> None:
+    seen = BoundedSeen(max_size=2)
+    seen.add("a")
+    seen.add("b")
+    assert "a" in seen and "b" in seen
+    seen.add("a")  # re-add is a dedup no-op — does not grow or evict
+    assert len(seen) == 2
+    seen.add("c")  # over cap → oldest ("a") evicted
+    assert "a" not in seen
+    assert "b" in seen and "c" in seen
+    assert len(seen) == 2
 
 
 def test_cost_explosion_detector_classifies_and_deduplicates() -> None:

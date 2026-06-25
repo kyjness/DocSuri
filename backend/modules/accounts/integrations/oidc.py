@@ -101,7 +101,10 @@ class GoogleOidcVerifier:
         self, code: str, redirect_uri: str, expected_nonce: str, code_verifier: str | None = None
     ) -> OidcClaims:
         """code → id_token → 검증된 클레임. aud/iss/nonce 불일치 또는 필수 클레임 부재 시 거부.
-        code_verifier가 있으면 PKCE 증명으로 교환에 사용한다(감사 #8)."""
+        PKCE(S256) code_verifier는 **필수**다 — 미래 호출부가 PKCE를 조용히 누락하지 못하게
+        막는다(감사 #8). 정상 콜백 경로는 항상 공급한다."""
+        if not code_verifier:
+            raise DomainException("PKCE 증명(code_verifier)이 누락되었습니다. (보안 정책)")
         id_token = await self._exchange_code(code, redirect_uri, code_verifier)
         info = await self._fetch_tokeninfo(id_token)
         if info.get("aud") != self._client_id:

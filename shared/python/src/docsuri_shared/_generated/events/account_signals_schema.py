@@ -6,6 +6,27 @@ from __future__ import annotations
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, RootModel
 
 
+class AccountDeleted(BaseModel):
+    """
+    Producer: U3.AccountDeletionService.purge_job — published at PERMANENT-PURGE time (H2: NOT at soft-delete; the grace window must stay recoverable). Consumers: U4 (library/saved-searches), U2 (history), U11 (research sessions) — each subscribes by topic and purges its own owner-scoped data (BR-A11 cascade, dependency-inverted: U3 never calls them). Delivery: at-least-once → consumers MUST be idempotent, keyed on `eventId` (deterministic uuid5(account_id), stable across retries). NO secrets/PII beyond the account id (SEC-3). Trace: FR-28, US-A6, BR-A11, SEC-8/14.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    accountId: str = Field(
+        ...,
+        description='Identifier of the permanently-purged account whose owner-scoped data subscribers must erase. Trace: BR-A11, FR-28.',
+    )
+    occurredAt: AwareDatetime = Field(
+        ..., description='Permanent-purge time (date-time). Trace: BR-A11.'
+    )
+    eventId: str = Field(
+        ...,
+        description='Idempotency key — deterministic uuid5(account_id), identical across at-least-once retries so consumers de-dup the cascade. Trace: BR-A11 (멱등·재시도·DLQ).',
+    )
+
+
 class AccountCreated(BaseModel):
     """
     Producer: U3.SignupService — published after policy/uniqueness validation, hashing, and persistence succeed (services.md register orchestration). Consumer: U6 Observability/Ops (signup telemetry + audit fan-out). Delivery: at-least-once → consumer idempotent (suppress duplicate signup telemetry). PII minimized (SEC-3); plaintext password/credentials NEVER included (FR-7/SEC-12 invariant). Trace: FR-7, US-A1, NFR-O1.
@@ -61,10 +82,12 @@ class AuthFailureSignal(BaseModel):
 
 
 class U3AccountAuthSignals(
-    RootModel[AccountCreated | SignupAbuseSignal | AuthFailureSignal]
+    RootModel[AccountCreated | SignupAbuseSignal | AuthFailureSignal | AccountDeleted]
 ):
-    root: AccountCreated | SignupAbuseSignal | AuthFailureSignal = Field(
-        ...,
-        description='🟡 PROVISIONAL (events.md §3 — shapes finalized in U3 FD; here only the fact-of-publish, producer/consumer, meaning, and security invariants are fixed). U3 SignupService/AuthenticationService emit these after domain processing (services.md). Contains: AccountCreated, SignupAbuseSignal, AuthFailureSignal. All payloads: NO plaintext passwords/credentials (FR-7/SEC-12 invariant), PII minimized (SEC-3), generalized failure reasons (SEC-12). Use $defs root selection to validate a specific shape.',
-        title='U3 Account / Auth Signals',
+    root: AccountCreated | SignupAbuseSignal | AuthFailureSignal | AccountDeleted = (
+        Field(
+            ...,
+            description='🟡 PROVISIONAL (events.md §3 — shapes finalized in U3 FD; here only the fact-of-publish, producer/consumer, meaning, and security invariants are fixed). U3 SignupService/AuthenticationService emit these after domain processing (services.md). Contains: AccountCreated, SignupAbuseSignal, AuthFailureSignal, AccountDeleted. All payloads: NO plaintext passwords/credentials (FR-7/SEC-12 invariant), PII minimized (SEC-3), generalized failure reasons (SEC-12). Use $defs root selection to validate a specific shape.',
+            title='U3 Account / Auth Signals',
+        )
     )

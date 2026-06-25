@@ -467,6 +467,17 @@ class ComputeStack(Stack):
                 resources=[f"{_papers_bucket}/doc-model/*"],
             )
         )
+        # ListBucket on the papers bucket — WITHOUT it, GetObject on a not-yet-built key returns
+        # 403 (AccessDenied) instead of 404 (NoSuchKey). The U7 readers treat a non-miss error as
+        # a hard 503 (correctly, to surface config faults), so every miss 503s AND the lazy
+        # doc-model build never fires (the read raises before the enqueue) → bodies/summaries stay
+        # "no source". Granting ListBucket makes a miss read as a miss → 404 → None → build.
+        self.service.task_definition.task_role.add_to_principal_policy(
+            iam.PolicyStatement(
+                actions=["s3:ListBucket"],
+                resources=[_papers_bucket],
+            )
+        )
         # Full-text source (S3FullTextSource reads full-text/{paperId}/v{n}.txt) — the source-
         # selector fallback for summary/full-translation when the doc-model is absent. Without
         # this the fallback hits AccessDenied instead of degrading to abstract.
@@ -479,7 +490,11 @@ class ComputeStack(Stack):
         self.service.task_definition.task_role.add_to_principal_policy(
             iam.PolicyStatement(
                 actions=["s3:GetObject", "s3:PutObject"],
-                resources=[f"{_papers_bucket}/summary/*"],
+                # Store writes under ``summaries/`` (plural — SummaryCacheKey.object_path,
+                # infra-design §2.1); grant must match or every cache write-through hits
+                # AccessDenied (put is uncaught → request fails, a successful summary/translation
+                # 500s, nothing ever cached). Was ``summary/`` (typo).
+                resources=[f"{_papers_bucket}/summaries/*"],
             )
         )
         # SendMessage: doc-model build (ingestion queue, boundary B) + long-summary job queue.
@@ -492,13 +507,15 @@ class ComputeStack(Stack):
                 ],
             )
         )
-        # Bedrock InvokeModel for the U7 summary/translate models (Anthropic on Bedrock). Scoped to
-        # Anthropic foundation models + inference profiles in-region (concrete ids are app config).
+        # Bedrock InvokeModel for the U7 summary/translate models (Anthropic on Bedrock). Sonnet
+        # 4.6 / Haiku 4.5 are invoked via global inference profiles — the bare foundation-model ids
+        # aren't on-demand invokable; a global profile can route the FM to any region, so grant the
+        # FM across regions (mirrors the Cohere grant below) + the in-region profile.
         self.service.task_definition.task_role.add_to_principal_policy(
             iam.PolicyStatement(
                 actions=["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
                 resources=[
-                    f"arn:aws:bedrock:{self.region}::foundation-model/anthropic.*",
+                    "arn:aws:bedrock:*::foundation-model/anthropic.*",
                     f"arn:aws:bedrock:{self.region}:{self.account}:inference-profile/*",
                 ],
             )

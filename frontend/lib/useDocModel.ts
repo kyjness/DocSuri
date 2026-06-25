@@ -64,16 +64,24 @@ export function useDocModel() {
   }, []);
 
   const load = useCallback(
+    // Stable identity (deps = [fetchOnce], itself []-stable): the viewer effect lists `load` as a
+    // dependency, so a `load` that changed on every status transition re-fired the effect — and on
+    // a terminal error the catch below clears `activeKey`, dropping the dedup guard — which together
+    // spun an unbounded re-fetch loop (a single backend non-200 became a request storm → 429s).
     async (req: DocModelRequest) => {
       const key = JSON.stringify(req);
-      if (activeKey.current === key && state.status !== 'idle') return; // dedup / already loaded
+      // Dedup: a matching key means this req is already in-flight or settled. The error/give-up
+      // paths clear `activeKey` (→ null) so a manual onRetry re-fetches; an idle hook has a null
+      // key too, so the old `&& state.status !== 'idle'` clause was redundant (its only purpose was
+      // to keep `state.status` referenced, which is exactly what made `load` unstable).
+      if (activeKey.current === key) return;
       activeKey.current = key;
       clearTimer();
       pollCount.current = 0;
       setState({ status: 'loading' });
       await fetchOnce(req, key);
     },
-    [state.status, fetchOnce],
+    [fetchOnce],
   );
 
   const reset = useCallback(() => {

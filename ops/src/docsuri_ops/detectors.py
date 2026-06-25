@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from docsuri_ops._dedup import BoundedSeen
 from docsuri_ops.domain.enums import CircuitState, IncidentClass, Severity
 from docsuri_ops.domain.models import (
     BudgetState,
@@ -17,7 +18,7 @@ class CostExplosionDetector:
     budget_cap_usd: float = 1600.0
     single_event_spike_usd: float = 50.0
     rate_limit_spike_count: int = 100
-    _seen: set[str] = field(default_factory=set)
+    _seen: BoundedSeen = field(default_factory=BoundedSeen)  # bounded LRU — caps dedup memory
 
     def evaluate_usage(
         self,
@@ -102,7 +103,7 @@ class CostExplosionDetector:
 
 @dataclass(slots=True)
 class HallucinationDetector:
-    _seen: set[str] = field(default_factory=set)
+    _seen: BoundedSeen = field(default_factory=BoundedSeen)  # bounded LRU — caps dedup memory
 
     def evaluate_grounding(
         self,
@@ -151,7 +152,7 @@ class HallucinationDetector:
 
 @dataclass(slots=True)
 class PartialResultDetector:
-    _seen: set[str] = field(default_factory=set)
+    _seen: BoundedSeen = field(default_factory=BoundedSeen)  # bounded LRU — caps dedup memory
 
     def evaluate_response(
         self, *, request_id: str, payload: dict, signal_id: str

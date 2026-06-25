@@ -254,6 +254,10 @@ class AnchorVerdict:
     ok: bool
     violations: tuple[Violation, ...] = ()
     outcome: str = "pass"  # pass | abstain
+    # Anchors that passed the existence check (option D): the orchestrator swaps the draft's
+    # anchors for these before assembling, so unverifiable anchors (table/paraphrase/math) are
+    # dropped rather than abstaining the whole summary.
+    kept_anchors: tuple[Anchor, ...] = ()
 
 
 # --- Terminal response union (BR-S9 / Q5) ------------------------------------

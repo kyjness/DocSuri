@@ -18,6 +18,28 @@ def test_redact_removes_sensitive_keys_and_emails() -> None:
     }
 
 
+def test_redact_normalizes_sensitive_key_variants() -> None:
+    # camelCase / snake_case / kebab variants collapse to the same normalized name, so a value
+    # can't slip past by renaming the field. (US-R4 review: ownerId/owner_id were a redaction gap)
+    payload = {
+        "ownerId": "acct-1",
+        "owner_id": "acct-2",
+        "access_token": "abc",
+        "apiKey": "k",
+        "Session-Id": "s",
+        "tokenCount": 7,  # NOT a secret — exact-after-normalize match must leave it intact
+    }
+
+    assert redact(payload) == {
+        "ownerId": "[REDACTED]",
+        "owner_id": "[REDACTED]",
+        "access_token": "[REDACTED]",
+        "apiKey": "[REDACTED]",
+        "Session-Id": "[REDACTED]",
+        "tokenCount": 7,
+    }
+
+
 def test_observability_log_preserves_request_id_and_redacts() -> None:
     store = InMemoryEventStore()
     hub = ObservabilityHub(store)

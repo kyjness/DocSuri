@@ -224,3 +224,50 @@ async def test_request_deletion_requires_correct_password(session):
     with pytest.raises(DomainException):
         await svc.request_deletion(acct.id)  # 비번 미제공
     assert repo.get_by_id(acct.id).status == AccountStatus.ACTIVE.value  # 삭제되지 않음
+
+
+def test_withdrawal_backup_is_idempotent(session):
+    # 파기 잡 at-least-once 재시도 시 동일 계정에 중복 5년 백업 행이 쌓이지 않아야 한다(리뷰 should-fix).
+    from backend.modules.accounts.repository.credential import AccountWithdrawalBackupTable
+
+    repo = CredentialRepository(session)
+    acct = _active_account(repo, session)
+    repo._create_withdrawal_backup(acct)
+    session.commit()
+    repo._create_withdrawal_backup(acct)  # 재시도 경로 — 기존 백업이 있으면 건너뛴다
+    session.commit()
+    backups = (
+        session.query(AccountWithdrawalBackupTable)
+        .filter(AccountWithdrawalBackupTable.original_account_id == acct.id)
+        .all()
+    )
+    assert len(backups) == 1
+
+
+@pytest.mark.asyncio
+async def test_authenticate_reactivates_deactivated_owner_within_grace(session):
+    # M1: 소프트 삭제로 세션이 전부 무효화되고 로그인이 차단된 뒤, 소유자가 자격증명을 재증명하면
+    # (reactivate=True) ACTIVE로 복원되고 즉시 세션이 발급된다(리뷰: reactivate 라우트 도달성).
+    from types import SimpleNamespace
+
+    from backend.modules.accounts.services.auth import AuthenticationService
+
+    repo = CredentialRepository(session)
+    acct = _active_account(repo, session)
+    sm = AsyncMock()
+    sm.issue = AsyncMock(return_value=SimpleNamespace(handle="sess-1"))
+
+    await AccountDeletionService(repo, sm).request_deletion(acct.id, "OldPw123!@x")
+    session.commit()
+    assert repo.get_by_id(acct.id).status == AccountStatus.DEACTIVATED.value
+
+    auth = AuthenticationService(repo, sm, AsyncMock())
+    # 일반 로그인은 DEACTIVATED를 계속 차단한다
+    with pytest.raises(DomainException):
+        await auth.authenticate(acct.email, "OldPw123!@x")
+    # 복구 플래그 + 올바른 자격증명 → 복원 + 세션 발급
+    handle = await auth.authenticate(acct.email, "OldPw123!@x", reactivate=True)
+    session.commit()
+    assert handle == "sess-1"
+    assert repo.get_by_id(acct.id).status == AccountStatus.ACTIVE.value
+    assert repo.get_account_deletion(acct.id) is None  # 삭제 레코드 제거됨

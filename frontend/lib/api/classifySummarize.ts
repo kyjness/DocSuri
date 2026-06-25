@@ -33,7 +33,9 @@ export function classifySummarizeResponse(body: unknown): SummarizeOutcome {
       if ('translation' in body) {
         return { kind: 'translation', translation: body.translation as TranslationVM, meta, cached };
       }
-      return { kind: 'error', message: '결과를 해석할 수 없습니다.' };
+      // ponytail: unreachable — backend always sets summary or translation on status:ok.
+      // Explicit contract-drift message so the issue surfaces clearly to QA, not as a generic error.
+      return { kind: 'error', message: '응답 형식이 변경되었습니다. 앱을 새로고침 해주세요.' };
     }
     case 'pending':
       // Long summary running as a background job (BR-S6/BR-S8): caller polls again after the hint.

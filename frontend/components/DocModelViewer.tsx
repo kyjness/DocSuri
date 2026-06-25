@@ -9,7 +9,7 @@
 // NOTE: anchor highlight matches the summary anchor's label ("Table 1"/"Figure 2") to a
 // block's anchorLabel (the AnchorVM still carries a label, not a doc-model id — the
 // id-based anchor contract is a follow-up). Span-precise inline highlight is a follow-up.
-import 'katex/dist/katex.min.css';
+// (KaTeX stylesheet is pulled in by the renderMath import below.)
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { AnchorVM, AssetRef, DocBlock, DocModel, DocSection } from '@/types/generated';
 import { useDocModel } from '@/lib/useDocModel';
@@ -81,7 +81,12 @@ export function DocModelViewer({ paperId, version, anchor, arxivUrl }: DocModelV
         <div className={styles.gate} data-testid="docmodel-license">
           <StateView kind="licenseUnavailable" />
           {safeArxivUrl ? (
-            <a className={styles.link} href={safeArxivUrl} target="_blank" rel="noopener noreferrer">
+            <a
+              className={styles.link}
+              href={safeArxivUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
               arXiv에서 원문 보기
             </a>
           ) : null}
@@ -91,7 +96,11 @@ export function DocModelViewer({ paperId, version, anchor, arxivUrl }: DocModelV
       return <StateView kind="sourceUnavailable" />;
     case 'error':
       return (
-        <StateView kind="error" message={outcome.message} onRetry={() => load({ paperId, version })} />
+        <StateView
+          kind="error"
+          message={outcome.message}
+          onRetry={() => load({ paperId, version })}
+        />
       );
     case 'page':
       return (

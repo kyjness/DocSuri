@@ -5,6 +5,11 @@
 // XSS: KaTeX escapes its input and emits trusted markup; `throwOnError: false` degrades a
 // malformed expression to its (escaped) source instead of throwing. Surrounding prose is
 // rendered as React text nodes (escaped), never as HTML.
+//
+// The KaTeX stylesheet lives here, not in each consumer — any view that renders math (the
+// doc-model viewer, the paper-detail abstract) gets it by importing this module, so math is
+// never shown with the unstyled fallback.
+import 'katex/dist/katex.min.css';
 import { Fragment } from 'react';
 import katex from 'katex';
 
@@ -28,23 +33,30 @@ export function MathDisplay({ latex }: { latex: string }) {
   return <span dangerouslySetInnerHTML={{ __html: toHtml(latex, true) }} />;
 }
 
-const INLINE_MATH = /\\\(([\s\S]*?)\\\)/g;
+// Math delimiters, in match-priority order: display `$$…$$` / `\[…\]`, then inline `\(…\)`
+// / `$…$`. arXiv abstracts use TeX `$…$` (e.g. "$K$", "$\beta\leq 1$"), the doc-model uses
+// `\(…\)` — both are supported. The `$…$` arm forbids whitespace just inside the delimiters
+// (`(?!\s)` / `(?<!\s)`) so prose prices like "$5 and $10" don't get parsed as math.
+// Group: 1=$$ display, 2=\[ display, 3=\( inline, 4=$ inline.
+const MATH =
+  /\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]|\\\(([\s\S]+?)\\\)|\$(?!\s)((?:\\.|[^$])+?)(?<!\s)\$/g;
 
-/** Render text that may contain inline math (`\( ... \)`) into React nodes. Prose segments
- * stay React-escaped; only the math segments become KaTeX markup. */
+/** Render text that may contain inline/display math (`$…$`, `$$…$$`, `\(…\)`, `\[…\]`) into
+ * React nodes. Prose segments stay React-escaped; only the math segments become KaTeX markup. */
 export function renderInlineMath(text: string): React.ReactNode {
-  if (!text.includes('\\(')) return text;
+  if (!text.includes('$') && !text.includes('\\(') && !text.includes('\\[')) return text;
   const nodes: React.ReactNode[] = [];
   let last = 0;
   let key = 0;
-  for (const m of text.matchAll(INLINE_MATH)) {
+  for (const m of text.matchAll(MATH)) {
     const idx = m.index ?? 0;
     if (idx > last) nodes.push(<Fragment key={key++}>{text.slice(last, idx)}</Fragment>);
-    nodes.push(
-      <span key={key++} dangerouslySetInnerHTML={{ __html: toHtml(m[1], false) }} />,
-    );
+    const display = m[1] !== undefined || m[2] !== undefined;
+    const latex = m[1] ?? m[2] ?? m[3] ?? m[4] ?? '';
+    nodes.push(<span key={key++} dangerouslySetInnerHTML={{ __html: toHtml(latex, display) }} />);
     last = idx + m[0].length;
   }
+  if (last === 0) return text; // no delimiter actually matched (e.g. a lone `$`)
   if (last < text.length) nodes.push(<Fragment key={key++}>{text.slice(last)}</Fragment>);
   return nodes;
 }

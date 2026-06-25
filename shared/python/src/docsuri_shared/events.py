@@ -19,6 +19,7 @@ from __future__ import annotations
 # U3 account/auth signals (account-signals.schema.json) — no union (see module docstring)
 from ._generated.events.account_signals_schema import (
     AccountCreated,
+    AccountDeleted,
     AuthFailureSignal,
     SignupAbuseSignal,
 )
@@ -61,6 +62,7 @@ __all__ = [
     "AccountCreated",
     "SignupAbuseSignal",
     "AuthFailureSignal",
+    "AccountDeleted",
     # incidents
     "ClassifiedIncident",
     "OpsAlert",

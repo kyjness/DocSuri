@@ -79,8 +79,9 @@ async def test_signup_flow_success(credential_repo, email_client, mock_observabi
     token_record = db_session.query(VerificationTokenTable).filter(VerificationTokenTable.email == email).first()
     assert token_record is not None
     
-    # 이메일 검증 처리 진행
-    verified = await service.verify_email(token_record.token)
+    # 토큰은 at-rest 해시로 저장되므로(SEC-BR-1) DB 값이 아닌 메일로 발송된 원문 토큰으로 검증한다.
+    assert token_record.token != email_client.last_verification_token  # 저장값은 해시
+    verified = await service.verify_email(email_client.last_verification_token)
     db_session.commit()
     
     assert verified is True

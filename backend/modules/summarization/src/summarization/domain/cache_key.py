@@ -10,7 +10,7 @@ personal terms) is owner-agnostic and shared. Same key ⇒ same artifact, foreve
 
 from __future__ import annotations
 
-from .models import Scope, SummaryCacheKey, SummaryRequest, Task
+from .models import Persona, Scope, SummaryCacheKey, SummaryRequest, Task
 
 # Prompt template version — bump to invalidate all derived objects (key changes).
 PROMPT_VER = "p1"
@@ -21,7 +21,12 @@ def build_cache_key(
 ) -> SummaryCacheKey:
     # Identity dimensions (§11): summary varies by persona (2 variants), scope fixed to
     # full; translate varies by scope (abstract|full), persona-agnostic (single).
-    scope = Scope.FULL if request.task == Task.SUMMARY else request.scope
+    is_summary = request.task == Task.SUMMARY
+    scope = Scope.FULL if is_summary else request.scope
+    # Translate is persona-agnostic (BR-S10): pin persona to a constant so an incoming persona
+    # (the FE only toggles it for summary) can't mint redundant per-persona translate entries
+    # for identical output — wasted LLM spend (NFR-C1). Mirrors the scope special-case above.
+    persona = request.persona if is_summary else Persona.EXPERT
     # Personalized artifacts (the user has terms ⇒ glossary_ver > 0) are owner-scoped so a
     # per-user version integer shared across users does not collapse to one key. The baseline
     # (ver 0) stays owner-agnostic so identical un-personalized results de-dup across users.
@@ -32,7 +37,7 @@ def build_cache_key(
         task=request.task,
         target_lang=request.target_lang,
         scope=scope,
-        persona=request.persona,
+        persona=persona,
         glossary_ver=glossary_ver,
         owner_id=owner_id,
         model_ver=model_ver,

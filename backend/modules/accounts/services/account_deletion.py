@@ -23,6 +23,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
 from argon2.exceptions import InvalidHash, VerificationError
+from docsuri_shared.events import AccountDeleted  # 발행 페이로드를 SSOT 계약에 바인딩(계약 준수).
 
 from ..models import AccountStatus, DomainException
 from ..password import get_password_hasher
@@ -44,20 +45,21 @@ class AccountDeletedPublisher(Protocol):
     async def publish(self, account_id: str, occurred_at: datetime, event_id: str) -> None: ...
 
 
+def _build_payload(account_id: str, occurred_at: datetime, event_id: str) -> dict:
+    """발행 detail을 SSOT 계약(``AccountDeleted``)으로 검증·직렬화한다 — 계약 드리프트를 발행
+    시점에 잡는다. ``occurred_at``은 tz-aware여야 한다(계약은 AwareDatetime)."""
+    return AccountDeleted(
+        accountId=account_id, occurredAt=occurred_at, eventId=event_id
+    ).model_dump(mode="json")
+
+
 class LoggingAccountDeletedPublisher:
     """기본 발행자 — 구조화 로그로만 기록한다. 실 EventBridge 트랜스포트는 인프라 슬라이스로 이월.
     멱등 키는 ``account_id``; ``event_id``는 account_id로부터 결정적으로 파생되므로(uuid5) 재시도
     시에도 동일해 중복 식별 키로도 쓸 수 있다 (at-least-once)."""
 
     async def publish(self, account_id: str, occurred_at: datetime, event_id: str) -> None:
-        logger.info(
-            {
-                "event": "AccountDeleted",
-                "accountId": account_id,
-                "occurredAt": occurred_at.isoformat(),
-                "eventId": event_id,
-            }
-        )
+        logger.info({"event": "AccountDeleted", **_build_payload(account_id, occurred_at, event_id)})
 
 
 class EventBridgeAccountDeletedPublisher:
@@ -79,9 +81,7 @@ class EventBridgeAccountDeletedPublisher:
         return self._client
 
     async def publish(self, account_id: str, occurred_at: datetime, event_id: str) -> None:
-        detail = json.dumps(
-            {"accountId": account_id, "occurredAt": occurred_at.isoformat(), "eventId": event_id}
-        )
+        detail = json.dumps(_build_payload(account_id, occurred_at, event_id))
 
         def _put():
             return self._get_client().put_events(
@@ -182,7 +182,7 @@ class AccountDeletionService:
                 # 발행을 먼저 — 발행 성공 후에만 파기를 커밋한다. 커밋이 실패하면 이벤트는 이미
                 # 나갔어도 계정은 DEACTIVATED로 남아 다음 회차에 동일 event_id로 재시도된다(멱등).
                 # 발행 자체가 실패하면 except로 빠져 파기를 건너뛴다(이벤트 유실→캐스케이드 누락 방지).
-                await self._publisher.publish(account_id, _now(), event_id)
+                await self._publisher.publish(account_id, datetime.now(UTC), event_id)
                 self._repo.delete_account_permanently(account_id)
                 self._repo.mark_deletion_purged(account_id)
                 self._repo.commit()

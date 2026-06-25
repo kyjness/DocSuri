@@ -18,6 +18,8 @@
 | BedrockLlmGatewayAdapter | **Bedrock** — Sonnet 4.6·Haiku 4.5(InvokeModel/Stream) | 재사용(IAM 권한 추가) |
 | CostGate/Telemetry | **Ports → U6**(CloudWatch 경유) | 재사용 |
 
+> **키 계약(읽기)**: `FullTextSourceAdapter`(full-text)·doc-model 리더·`paper_asset` 자산 리더는 **U1이 bare paperId로 기록한** 스토어를 읽는다. 앱이 들고 다니는 버전 포함 id(`2304.10557v1`)를 키/조회 전 **bare id로 정규화**(트레일링 `vN` 제거; `adapters/_paper_ref.bare_paper_id`)해야 U1 기록과 일치한다 — 누락 시 영구 미스. 근거: U1 infrastructure-design §1.1b 키 계약.
+
 ---
 
 ## 2. 스토리지 (Q2·Q3·Q4)
@@ -25,7 +27,8 @@
 ### 2.1 S3 요약 객체 (Q2)
 - **기존 버킷 + `summaries/` 프리픽스**. 경로: `summaries/{paperId}/v{version}/{task}_{lang}_{scope}_{persona}_g{glossaryVer}[_u{ownerId}]_{modelVer}_{promptVer}.json`. 신원 차원은 BR-S1과 일치(`glossaryVer` 포함 → 용어 변경 시 키 변경으로 무효화; translate는 `scope`=abstract|full로 산출물 분기). `_u{ownerId}` 세그먼트는 **개인화 산출물(`glossaryVer > 0`)에만** 붙어 사용자 간 충돌을 막고, 베이스라인(`glossaryVer == 0`)은 owner 무관·공유.
 - **라이프사이클**: 현행 키 **영구 보존**(immutable·INV-5). glossaryVer/modelVer/promptVer 변경 시 옛 객체 미참조 방치 → 선택적 라이프사이클 만료(예 미참조 90일)는 운영 옵션.
-- **IAM**: U7 task role은 `s3:GetObject`/`PutObject` **프리픽스 스코프**(`arn:.../summaries/*`) + 전문 read(`GetObject` 전문 프리픽스).
+- **IAM**: U7 task role은 `s3:GetObject`/`PutObject` **프리픽스 스코프**(`arn:.../summaries/*`) + 전문·doc-model·asset read(`GetObject`) + **papers 버킷 `s3:ListBucket`**. ListBucket이 없으면 미빌드 키 GetObject가 404가 아니라 403으로 떠 읽기가 503가 되고 lazy doc-model build가 발화하지 않는다(미스가 미스로 안 읽힘).
+- **Bedrock 모델**: InvokeModel은 **inference profile**로 호출한다 — Sonnet 4.6=`global.anthropic.claude-sonnet-4-6`, Haiku 4.5=`global.anthropic.claude-haiku-4-5-20251001-v1:0`. bare foundation-model id(`anthropic.claude-*`)는 on-demand 호출 불가(ValidationException). `global.*` 프로필은 FM을 전 리전으로 라우팅하므로 IAM은 `bedrock:*::foundation-model/anthropic.*`(+ in-region `inference-profile/*`)가 필요하다(Cohere 임베딩 grant와 동일 패턴).
 - 용량: ~2KB×30만 ≈ 600MB(무시 수준).
 
 ### 2.2 ElastiCache Redis 핫캐시 (Q3)

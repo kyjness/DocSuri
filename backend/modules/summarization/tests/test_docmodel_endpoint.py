@@ -134,6 +134,19 @@ def test_ok_returns_docmodel_union() -> None:
     assert orch.calls == [("2401.00001", 3)]
 
 
+def test_fail_closed_503_when_orchestrator_raises() -> None:
+    # A store/queue fault must surface as a generic 503 (fail-closed, INV-4/SEC-15), never a raw
+    # 500 leaking internals. A bare 500 here was also what the client retried in a tight loop.
+    class _Boom:
+        def doc_model(self, paper_id: str, version: int) -> DocModelLookup:
+            raise RuntimeError("s3 down")
+
+    endpoint = _endpoint(_Boom(), en=True)
+    resp = endpoint(_FakeRequest({"user_id": "u1"}, {"version": "1"}), "2401.00001")
+    assert resp.status_code == 503
+    assert json.loads(resp.body) == {"status": "unavailable"}
+
+
 # --- adapter: S3DocModelReader (S3 read, read-only) -----------------------
 
 
@@ -164,3 +177,15 @@ def test_reader_reads_cached_doc_model() -> None:
 def test_reader_returns_none_on_miss() -> None:
     reader = S3DocModelReader(bucket="papers", client=_FakeS3({}))
     assert reader.get_doc_model("2401.00001", 9) is None
+
+
+def test_reader_strips_version_suffix_from_paper_id() -> None:
+    # The app carries versioned paper ids (2304.10557v1) but U1 keys the doc-model store on
+    # the bare id (doc-model/{bareId}/v{version}.json). The read key must strip the trailing
+    # vN or a built artifact is never found (perpetual miss → "no rich source").
+    body = _doc_model(version=1).model_dump_json(exclude_none=True).encode("utf-8")
+    s3 = _FakeS3({"doc-model/2304.10557/v1.json": body})
+    reader = S3DocModelReader(bucket="papers", client=s3)
+    doc = reader.get_doc_model("2304.10557v1", 1)
+    assert doc is not None
+    assert s3.calls == ["doc-model/2304.10557/v1.json"]

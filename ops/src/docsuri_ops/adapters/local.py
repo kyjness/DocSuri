@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 
 from docsuri_shared.events import ClassifiedIncident, OpsAlert
 
+from docsuri_ops._dedup import BoundedSeen
 from docsuri_ops.domain.models import AlertRecord, ClassifiedIncidentRecord, TelemetryEvent
 
 # Cap the in-memory event buffer so a long-running non-CloudWatch process (dev/staging) can't
@@ -42,8 +43,8 @@ class InMemoryEventStore:
 class InMemoryIncidentStore:
     incidents: list[ClassifiedIncidentRecord] = field(default_factory=list)
     alerts: list[AlertRecord] = field(default_factory=list)
-    _incident_seen: set[str] = field(default_factory=set)
-    _alert_seen: set[str] = field(default_factory=set)
+    _incident_seen: BoundedSeen = field(default_factory=BoundedSeen)  # bounded LRU dedup
+    _alert_seen: BoundedSeen = field(default_factory=BoundedSeen)  # bounded LRU dedup
 
     def append_incident(self, incident: ClassifiedIncidentRecord) -> bool:
         key = f"{incident.incident_class.value}:{incident.request_id}:{incident.reason}"

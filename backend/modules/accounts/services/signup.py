@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import logging
 import secrets
 from datetime import UTC, datetime, timedelta
@@ -11,6 +12,13 @@ from ..password import PasswordPolicy, get_password_hasher
 from ..repository.credential import CredentialRepository
 
 logger = logging.getLogger(__name__)
+
+
+def _hash_token(token: str) -> str:
+    """이메일 인증 토큰을 저장 전 SHA-256으로 해시한다(평문 비저장·비로깅, SEC-BR-1) — 재설정/
+    이메일변경 토큰과 동일한 at-rest 해싱 정책. 원문 토큰만 메일 링크로 발송한다."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
 
 class SignupService:
     """사용자 자격증명 생성 및 회원가입 비즈니스 오케스트레이션 서비스 (US-A1)"""
@@ -56,7 +64,7 @@ class SignupService:
         token = secrets.token_urlsafe(32)
         # naive UTC — matches SQLAlchemy DateTime(timezone=False) column storage.
         expires_at = datetime.now(UTC).replace(tzinfo=None) + timedelta(hours=24)
-        self._repo.create_verification_token(email_vo.value, token, expires_at)
+        self._repo.create_verification_token(email_vo.value, _hash_token(token), expires_at)
 
         # 6. 이메일 발송 (SES 소프트 폴백 적용)
         # 이메일 발송 결과와 무관하게 DB 가입 트랜잭션은 롤백되지 않고 회원가입이 완료됩니다 (소프트 폴백).
@@ -99,7 +107,7 @@ class SignupService:
 
         token = secrets.token_urlsafe(32)
         expires_at = datetime.now(UTC).replace(tzinfo=None) + timedelta(hours=24)
-        self._repo.create_verification_token(email_vo.value, token, expires_at)
+        self._repo.create_verification_token(email_vo.value, _hash_token(token), expires_at)
 
         email_sent = await self._email_client.send_verification_email(
             email=email_vo.value, token=token, signup_link=verification_link_base
@@ -113,13 +121,13 @@ class SignupService:
         if not token:
             raise DomainException("유효하지 않은 인증 토큰입니다.")
 
-        token_record = self._repo.get_verification_token(token)
+        token_record = self._repo.get_verification_token(_hash_token(token))
         if not token_record:
             raise DomainException("인증 토큰이 존재하지 않거나 만료되었습니다.")
 
         # 토큰 유효 기간 검증 (24시간)
         if datetime.now(UTC).replace(tzinfo=None) > token_record.expires_at:
-            self._repo.delete_verification_token(token)
+            self._repo.delete_verification_token(_hash_token(token))
             raise DomainException("인증 링크 유효 기간(24시간)이 만료되었습니다. 다시 가입해 주십시오.")
 
         # 계정 ACTIVE 상태 업데이트
@@ -129,12 +137,12 @@ class SignupService:
 
         if account.status == AccountStatus.ACTIVE.value:
             # 이미 활성화된 상태인 경우 성공으로 간주
-            self._repo.delete_verification_token(token)
+            self._repo.delete_verification_token(_hash_token(token))
             return True
 
         account.status = AccountStatus.ACTIVE.value
         self._repo.update_account(account)
-        self._repo.delete_verification_token(token)
+        self._repo.delete_verification_token(_hash_token(token))
 
         logger.info(f"Account {account.id} successfully activated via email verification.")
         

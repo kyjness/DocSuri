@@ -15,6 +15,8 @@ API/presentation concern; the domain returns a complete, validated result.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from docsuri_shared.dtos import DocModel
 from docsuri_shared.ports import CostGuardCircuitBreaker, ObservabilityHub
 
@@ -189,6 +191,9 @@ class SummarizationOrchestrationService:
             verdict = self._grounding.validate(GroundingInput(draft=draft, refined=refined))
             self._emit("u7.grounding", 1.0, request, verdict=verdict.outcome)
             if verdict.ok:
+                # Option D: assemble with only the verified anchors — unverifiable ones
+                # (table/paraphrase/math spans) are dropped, not abstained on.
+                draft = replace(draft, anchors=verdict.kept_anchors)
                 result = self._assembler.assemble_summary(draft, source)
                 self._store.put(key, result.to_dict())  # write-through
                 self._emit("u7.summary.ok", 1.0, request)

@@ -304,12 +304,15 @@ class IngestionPipelineService:
         display-only, non-blocking side path (BR-27); failures are observed, not propagated."""
         if not (self._asset_extractor and self._asset_store and self._asset_source):
             return
+        # Classify by where it fails (§7.3): fetch/extract → EXTRACT, persistence → STORE.
+        reason = FailureReason.ASSET_EXTRACT_FAILURE
         try:
             eprint = self._asset_source.fetch_eprint(metadata)
             pdf = self._asset_source.fetch_pdf(metadata)
             extracted = self._asset_extractor.extract(
                 paper_id=paper.paper_id, version=paper.version, pdf=pdf, eprint=eprint
             )
+            reason = FailureReason.ASSET_STORE_FAILURE
             if extracted:
                 self._asset_store.store_assets(paper.paper_id, paper.version, extracted)
             self._observability.emit_metric(
@@ -319,7 +322,7 @@ class IngestionPipelineService:
             self._observability.emit_log(
                 {
                     "type": "asset_pipeline_failure",
-                    "reason": FailureReason.ASSET_STORE_FAILURE.value,
+                    "reason": reason.value,
                     "paperId": paper.paper_id,
                     "error": str(exc),
                 }

@@ -10,6 +10,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import type { AnchorVM } from '@/types/generated';
 import { usePaperMeta } from '@/lib/usePaperMeta';
+import { renderInlineMath } from '@/lib/renderMath';
 import { SummaryModal, type DetailView } from './SummaryModal';
 import { SaveToLibraryButton } from './SaveToLibraryButton';
 import { CitationTreePanel } from './CitationTreePanel';
@@ -29,7 +30,10 @@ const ACTIONS: { view: DetailView; label: string }[] = [
 ];
 
 export function PaperDetailIsland({ paperId, version, arxivUrl }: PaperDetailIslandProps) {
-  const safeArxivUrl = (arxivUrl && (arxivUrl.startsWith('http://') || arxivUrl.startsWith('https://'))) ? arxivUrl : undefined;
+  const safeArxivUrl =
+    arxivUrl && (arxivUrl.startsWith('http://') || arxivUrl.startsWith('https://'))
+      ? arxivUrl
+      : undefined;
   const [modalView, setModalView] = useState<DetailView | null>(null);
   const [citationOpen, setCitationOpen] = useState(false);
   const meta = usePaperMeta(paperId);
@@ -107,12 +111,17 @@ export function PaperDetailIsland({ paperId, version, arxivUrl }: PaperDetailIsl
             {meta.meta.year ? <span className={styles.year}> · {meta.meta.year}</span> : null}
           </p>
           <p className={styles.abstract} data-testid="paper-abstract">
-            {meta.meta.abstract}
+            {renderInlineMath(meta.meta.abstract)}
           </p>
           <p className={styles.idline}>
             <span>arXiv:{paperId}</span>
             {safeArxivUrl ? (
-              <a className={styles.link} href={safeArxivUrl} target="_blank" rel="noopener noreferrer">
+              <a
+                className={styles.link}
+                href={safeArxivUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
                 arXiv에서 원문 보기
               </a>
             ) : null}

@@ -91,6 +91,13 @@ def process_message(runtime, message) -> None:
     except IngestionError as exc:
         if exc.failure_class is FailureClass.PERMANENT:
             queue.ack(message)
+    except Exception as exc:  # noqa: BLE001 - never let one unexpected error crash-loop the worker
+        # An exception outside the failure taxonomy (e.g. an unguarded parse) must not escape
+        # the loop and crash-loop on redelivery. Isolate it like a poison payload (RES-9/BR-18).
+        log.exception("unexpected error processing job %s", job.job_id)
+        runtime.observability.emit_failure_signal(job.job_id, stage="worker", error=str(exc))
+        queue.send_to_dlq(message.body, reason="unexpected_error")
+        queue.ack(message)
     else:
         queue.ack(message)
 

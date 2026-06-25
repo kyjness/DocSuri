@@ -22,6 +22,7 @@
 - **접근/암호화**: `assets/`와 동일 — **공개 차단(SEC-9)** · **SSE-KMS**(동일 CMK) · 전송 TLS. 노출은 서비스 역할 GetObject(리치뷰/요약 입력).
 - **생성**: **lazy on-demand**(첫 요약/열람/에이전트 사용 시 빌더가 `PutObject`) + `(paperId, version)` 캐시(U1 BR-30·BLM §7). `ingestOne` eager 아님.
 - **라이프사이클**: doc-model = **파생 캐시**. version 변경·tombstone 시 **애플리케이션 주도 무효화**(`doc-model/{paperId}/*` 삭제, §3.4 write-order에 편입). 선택적 TTL은 NFR(재생성 가능하므로 비용 관점 허용); 기본은 만료 없음(재생성 콜드스타트 회피).
+- **키 계약 — `{paperId}`는 bare arXiv id**: `assets/`·`doc-model/` prefix와 `paper_asset.paper_id` 컬럼의 `{paperId}`는 **버전 없는 bare id**다(버전은 별도 `v{version}` 경로 세그먼트/컬럼). 빌더는 `rsplit('v',1)`로 bare id를 유도해 기록한다. 애플리케이션은 버전 포함 id(`2304.10557v1`)를 들고 다니므로, **읽기 측(U7 어댑터)은 키 생성 전 트레일링 `vN`을 제거**해야 한다 — 누락 시 빌드 산출물을 영영 못 찾음(영구 미스 → 본문/요약 "근거 없음"). 회귀: `backend/modules/summarization/tests/test_paper_ref_normalization.py`.
 
 ### 1.2 `paper_asset` RDS 테이블 (Q3=A, NFR Design §5.2)
 - **위치**: 기존 **공유 RDS PostgreSQL**(U3 계정·U4 라이브러리·U7 용어집). 신규 DB 0.

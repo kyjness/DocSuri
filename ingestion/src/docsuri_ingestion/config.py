@@ -10,7 +10,6 @@ OPEN_ACCESS_LICENSE_ALLOWLIST: tuple[str, ...] = (
     "creativecommons.org/licenses/by/",
     "creativecommons.org/licenses/by-sa/",
     "creativecommons.org/publicdomain/zero/",
-    "creativecommons.org/licenses/cc0/",
     # Relaxed beyond CC-only: arXiv's default non-exclusive distribution license. Papers are
     # publicly readable on arXiv and the app links back + shows snippets (discovery, not bulk
     # redistribution) — broadens the indexable corpus from CC-only to ~all arXiv papers.

@@ -48,7 +48,7 @@ def test_build_authorization_url_has_required_params():
 @pytest.mark.asyncio
 async def test_exchange_and_verify_success():
     v = _with_tokeninfo(_info())
-    claims = await v.exchange_and_verify("code", "https://app/cb", "n1")
+    claims = await v.exchange_and_verify("code", "https://app/cb", "n1", "v1")
     assert claims.subject == "google-123"
     assert claims.email == "u@docsuri.org"
     assert claims.email_verified is True
@@ -57,7 +57,7 @@ async def test_exchange_and_verify_success():
 @pytest.mark.asyncio
 async def test_email_verified_false_string_coerced():
     v = _with_tokeninfo(_info(email_verified="false"))
-    claims = await v.exchange_and_verify("code", "https://app/cb", "n1")
+    claims = await v.exchange_and_verify("code", "https://app/cb", "n1", "v1")
     assert claims.email_verified is False  # reconcile will then reject (BR-A9)
 
 
@@ -65,28 +65,28 @@ async def test_email_verified_false_string_coerced():
 async def test_aud_mismatch_rejected():
     v = _with_tokeninfo(_info(aud="someone-else.apps.googleusercontent.com"))
     with pytest.raises(DomainException):
-        await v.exchange_and_verify("code", "https://app/cb", "n1")
+        await v.exchange_and_verify("code", "https://app/cb", "n1", "v1")
 
 
 @pytest.mark.asyncio
 async def test_iss_invalid_rejected():
     v = _with_tokeninfo(_info(iss="https://evil.example"))
     with pytest.raises(DomainException):
-        await v.exchange_and_verify("code", "https://app/cb", "n1")
+        await v.exchange_and_verify("code", "https://app/cb", "n1", "v1")
 
 
 @pytest.mark.asyncio
 async def test_nonce_mismatch_rejected():
     v = _with_tokeninfo(_info(nonce="attacker"))
     with pytest.raises(DomainException):
-        await v.exchange_and_verify("code", "https://app/cb", "n1")
+        await v.exchange_and_verify("code", "https://app/cb", "n1", "v1")
 
 
 @pytest.mark.asyncio
 async def test_missing_required_claim_rejected():
     v = _with_tokeninfo(_info(sub=None))
     with pytest.raises(DomainException):
-        await v.exchange_and_verify("code", "https://app/cb", "n1")
+        await v.exchange_and_verify("code", "https://app/cb", "n1", "v1")
 
 
 # ── PKCE (감사 #8) ─────────────────────────────────────────────────────────────

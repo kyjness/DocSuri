@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { act, renderHook } from '@testing-library/react';
+import { act, renderHook, render } from '@testing-library/react';
+import React from 'react';
 
 // Mock the api module so we can script building → building → page (lazy build polling).
 const getDocModel = vi.fn();
@@ -64,6 +65,33 @@ describe('useDocModel — lazy build polling (BR-30/D6)', () => {
     }
     expect(result.current.state).toMatchObject({ status: 'done', outcome: { kind: 'error' } });
     expect(getDocModel).toHaveBeenCalledTimes(6); // capped — does not spin forever
+  });
+
+  it('does not re-fetch in a loop when the request errors (stable load ref)', async () => {
+    // A backend non-200 makes getApiClient().getDocModel throw → fetchOnce clears activeKey so a
+    // manual retry can re-fetch. Regression: `load` used to change identity on every status
+    // transition, and the viewer's effect lists `load` as a dependency — so a single error spun an
+    // unbounded re-fetch loop (the 429 request storm). Mimic that effect here and assert it fires once.
+    getDocModel.mockRejectedValue(new Error('boom')); // stands in for a 500/429
+
+    function Harness() {
+      const { state, load } = useDocModel();
+      React.useEffect(() => {
+        void load({ paperId: 'x', version: 1 });
+      }, [load]); // same dependency shape as DocModelViewer's effect
+      return React.createElement('div', null, state.status);
+    }
+
+    await act(async () => {
+      render(React.createElement(Harness));
+    });
+    // Flush the rejected fetch + any resulting re-renders; a stable `load` must not re-trigger.
+    await act(async () => {
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(getDocModel).toHaveBeenCalledTimes(1);
   });
 
   it('settles immediately when already built (no polling)', async () => {

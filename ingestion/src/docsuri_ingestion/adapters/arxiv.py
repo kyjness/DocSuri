@@ -118,7 +118,14 @@ class ArxivHttpSource:
             "identifier": f"oai:arXiv.org:{bare_id}",
         }
         body = self._get_text(self._oai_base_url, params=params, stage="fetch_license")
-        license_el = ET.fromstring(body).find(".//arxiv:license", OAI_NS)
+        try:
+            license_el = ET.fromstring(body).find(".//arxiv:license", OAI_NS)
+        except ET.ParseError:
+            # Best-effort backfill: a malformed OAI response must not escape the failure
+            # taxonomy and crash the worker. Degrade to the unenriched record — license stays
+            # None → strict-OA reject downstream (fail-closed, BR-1/BR-18).
+            _log.warning("license enrichment got malformed OAI XML for %s", bare_id)
+            return record
         if license_el is not None and license_el.text:
             return replace(record, license_url=license_el.text.strip())
         return record

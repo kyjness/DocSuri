@@ -85,6 +85,19 @@ def test_assets_license_gated_when_disabled() -> None:
     assert body == {"status": "license_unavailable"}
 
 
+def test_assets_fail_closed_503_when_orchestrator_raises() -> None:
+    # An RDS/S3 fault must return a generic 503 (fail-closed, INV-4/SEC-15), not a raw 500
+    # leaking internals — parity with the doc-model handler.
+    class _Boom:
+        def list_assets(self, paper_id: str, version: int):
+            raise RuntimeError("rds down")
+
+    endpoint = _endpoint(_Boom(), "/api/papers/{paper_id}/assets", "GET", en=True)
+    resp = endpoint(_FakeRequest({"user_id": "u1"}, {"version": "1"}), "2401.00001")
+    assert resp.status_code == 503
+    assert json.loads(resp.body) == {"status": "unavailable"}
+
+
 def test_assets_ok_returns_signed_refs_without_internal_fields() -> None:
     orch = _FakeOrchestrator([_ref("a1", 0), _ref("a2", 1)])
     status, body = _call_assets(orch, principal={"user_id": "u1"}, assets_enabled=True, version="3")

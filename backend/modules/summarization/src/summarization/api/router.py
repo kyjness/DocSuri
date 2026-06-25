@@ -108,7 +108,12 @@ def build_router(
             version = int(request.query_params.get("version", "1"))
         except (TypeError, ValueError):
             version = 1
-        result = orchestrator.doc_model(paper_id, version)
+        try:
+            result = orchestrator.doc_model(paper_id, version)
+        except Exception:  # noqa: BLE001 — fail-closed: a store/queue fault must not surface as a
+            # raw 500 (INV-4/SEC-15). A bare 500 here is also what the client retried in a tight
+            # loop; a generic 503 keeps internals out and lets the client back off / show a retry.
+            return JSONResponse({"status": "unavailable"}, status_code=503)
         if result.doc is not None:
             return JSONResponse(
                 {
@@ -139,7 +144,11 @@ def build_router(
             version = int(request.query_params.get("version", "1"))
         except (TypeError, ValueError):
             version = 1
-        refs = orchestrator.list_assets(paper_id, version)
+        try:
+            refs = orchestrator.list_assets(paper_id, version)
+        except Exception:  # noqa: BLE001 — fail-closed (INV-4/SEC-15): an RDS/S3 fault returns a
+            # generic 503, not a raw 500 leaking internals (parity with the doc-model handler).
+            return JSONResponse({"status": "unavailable"}, status_code=503)
         if refs is None:
             return JSONResponse({"status": "license_unavailable"})
         return JSONResponse({"status": "ok", "assets": [r.to_dict() for r in refs]})

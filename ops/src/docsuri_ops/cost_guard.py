@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from docsuri_ops._dedup import BoundedSeen
 from docsuri_ops.domain.enums import CircuitState, DegradeMode
 from docsuri_ops.domain.models import BudgetState, UsageEvent
 
@@ -12,7 +13,9 @@ class CostGuardCircuitBreaker:
     warning_ratio: float = 0.80
     hard_degrade_ratio: float = 0.95
     spend_usd: float = 0.0
-    _seen_event_ids: set[str] = field(default_factory=set)
+    # Bounded LRU: a long-running worker consumes a usage event per request — an unbounded set
+    # would grow forever. Eviction only re-counts a long-evicted event_id (cap dwarfs the window).
+    _seen_event_ids: BoundedSeen = field(default_factory=BoundedSeen)
 
     def record_spend(self, event: UsageEvent) -> BudgetState:
         if event.amount_usd < 0:

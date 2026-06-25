@@ -100,7 +100,11 @@ class BedrockLlmGateway:
         self, refined: RefinedSource, request: SummaryRequest, glossary: Glossary
     ) -> SummaryDraft:
         system, user = build_summary_prompt(refined, request, glossary)
-        payload = self._invoke_json(self._summary_model, system, user)
+        # The structured summary is small, but Korean output + per-claim anchor spans push a
+        # full paper's JSON past the old 2000-token default — it truncated mid-JSON → parse
+        # failure → abstain. max_tokens is a cap (the model stops when done), so a generous
+        # ceiling costs nothing for short outputs while preventing truncation on long ones.
+        payload = self._invoke_json(self._summary_model, system, user, max_tokens=8192)
         return _to_summary_draft(payload)
 
     def translate_segments(

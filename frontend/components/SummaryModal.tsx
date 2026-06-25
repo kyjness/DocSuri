@@ -113,15 +113,19 @@ export function SummaryModal({ paperId, version, view, onClose, onAnchor }: Summ
         );
       case 'translation':
         return <TranslationView translation={outcome.translation} cached={outcome.cached} />;
-      case 'pending':
+      case 'pending': {
         // Long summary running as a background job (BR-S6/BR-S8): the hook is polling.
+        const hint = outcome.retryAfterMs
+          ? ` (~${Math.ceil(outcome.retryAfterMs / 1000)}초 후 재시도)`
+          : '';
         return (
           <StateView
             kind="loading"
             title="요약 준비 중…"
-            message="긴 논문이라 요약을 만들고 있어요. 잠시만 기다려 주세요."
+            message={`긴 논문이라 요약을 만들고 있어요. 잠시만 기다려 주세요.${hint}`}
           />
         );
+      }
       case 'abstain':
         return <StateView kind="abstain" message="근거가 부족해 요약/번역을 보류했어요." />;
       case 'degraded':

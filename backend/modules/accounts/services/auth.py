@@ -32,10 +32,14 @@ class AuthenticationService:
         # OWASP 권장 강도 해싱 파라미터 (m=65536, t=3, p=4) — password.py의 단일 팩토리 공유
         self._hasher = get_password_hasher()
 
-    async def authenticate(self, email: str, password: str, recaptcha_token: str | None = None, remote_ip: str | None = None) -> str:
+    async def authenticate(self, email: str, password: str, recaptcha_token: str | None = None, remote_ip: str | None = None, reactivate: bool = False) -> str:
         """
         사용자 자격증명을 검증하고 보안 세션을 발급합니다.
         실패 횟수에 따라 지수 백오프 및 reCAPTCHA 검증을 강제합니다. (BR-A4)
+
+        ``reactivate=True``는 유예 중 DEACTIVATED 계정의 **소유자 본인 복구(M1)** 경로다:
+        자격증명이 검증된(타인 도달 불가) 뒤 미파기 삭제 레코드가 있으면 ACTIVE로 되살리고
+        세션을 발급한다. 일반 로그인(기본 False)은 DEACTIVATED를 계속 차단한다.
         """
         # 트러스트 바운더리 정규화: 저장/조회 이메일을 동일 규칙(trim+lowercase)으로 맞춰
         # 대소문자 차이로 정상 자격증명이 거부되는 사일런트 401을 막는다 (normalize_email).
@@ -116,7 +120,16 @@ class AuthenticationService:
         elif account.status == AccountStatus.DEACTIVATED.value:
             # BR-A11: 소프트 삭제(탈퇴) 계정은 유예 동안 로그인 차단. 이 분기는 자격증명이 이미
             # 검증된 뒤라(타인 도달 불가) 본인에게 비활성 상태와 복구 경로를 안내해도 열거 위험이 없다.
-            raise DomainException("탈퇴 처리된 계정입니다. 복구를 원하시면 계정 복구 절차를 이용해 주세요.")
+            rec = self._repo.get_account_deletion(account.id)
+            if reactivate and rec is not None and rec.state == AccountStatus.DEACTIVATED.value:
+                # M1: 자격증명을 증명한 소유자가 명시적으로 복구를 요청 → ACTIVE 복원 + 삭제 레코드 제거.
+                # 이후 4단계 통과로 떨어져 정상 세션을 발급한다(복구 즉시 로그인).
+                account.status = AccountStatus.ACTIVE.value
+                self._repo.update_account(account)
+                self._repo.delete_account_deletion(account.id)
+                logger.info({"event": "AccountReactivated", "accountId": account.id})
+            else:
+                raise DomainException("탈퇴 처리된 계정입니다. 복구를 원하시면 계정 복구 절차를 이용해 주세요.")
 
         # 5. 성공 시 실패 통계 초기화
         if account.failure_count > 0:

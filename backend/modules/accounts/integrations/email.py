@@ -169,7 +169,12 @@ class EmailClientInterface(ABC):
 class MockEmailClient(EmailClientInterface):
     """로컬 테스트를 위해 실제 이메일을 발송하지 않고 터미널 콘솔에 출력하는 Mock 이메일 클라이언트"""
 
+    # 인증 토큰이 at-rest 해시로 저장된 뒤로 DB에서 원문을 복구할 수 없으므로, 로컬/테스트에서
+    # 원문 토큰을 여기 보관해 전체 가입→검증 플로우를 검증할 수 있게 한다(SEC-BR-1 보완).
+    last_verification_token: str | None = None
+
     async def send_verification_email(self, email: str, token: str, signup_link: str) -> bool:
+        self.last_verification_token = token
         logger.info("================ [MOCK EMAIL DELIVERY] ================")
         logger.info(f"To: {email}")
         logger.info("Subject: DocSuri 이메일 인증 안내")

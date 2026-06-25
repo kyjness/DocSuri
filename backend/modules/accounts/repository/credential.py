@@ -402,6 +402,16 @@ class CredentialRepository:
         """하드 파기 직전, accounts가 소유한 최소 스냅샷을 5년 보관 테이블에 적재한다(감사 #4 / PR #193
         복원). password_hash·totp_secret은 의도적으로 제외(크리덴셜 비보관). withdrawn_at은 소프트삭제
         시점(삭제 레코드 requested_at), purge_after는 +5년."""
+        # 멱등: 파기 잡이 at-least-once로 재시도되면 동일 계정에 대해 다시 호출될 수 있다.
+        # 이미 백업 행이 있으면 건너뛴다(중복 5년 보관 행 누적 방지). original_account_id에
+        # UNIQUE 제약이 없어 앱 레벨에서 가드한다 — purge는 계정별 단일 트랜잭션이라 경합 없음.
+        existing = (
+            self._session.query(AccountWithdrawalBackupTable)
+            .filter(AccountWithdrawalBackupTable.original_account_id == account.id)
+            .first()
+        )
+        if existing is not None:
+            return
         deletion = self.get_account_deletion(account.id)
         raw = deletion.requested_at if deletion is not None else datetime.now(UTC)
         withdrawn_at = raw.replace(tzinfo=None) if raw.tzinfo else raw

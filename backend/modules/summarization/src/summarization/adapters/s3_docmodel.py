@@ -12,6 +12,8 @@ from typing import Any
 
 from docsuri_shared.dtos import DocModel
 
+from ._paper_ref import bare_paper_id
+
 logger = logging.getLogger(__name__)
 
 # Mirrors U1's doc-model object layout (read-only capability).
@@ -40,7 +42,7 @@ class S3DocModelReader:
     def get_doc_model(self, paper_id: str, version: int) -> DocModel | None:
         from botocore.exceptions import ClientError
 
-        key = f"{self._prefix}/{paper_id}/v{version}.json"
+        key = f"{self._prefix}/{bare_paper_id(paper_id)}/v{version}.json"
         try:
             obj = self._s3.get_object(Bucket=self._bucket, Key=key)
             return DocModel.model_validate_json(obj["Body"].read())

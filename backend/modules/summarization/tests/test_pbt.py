@@ -167,9 +167,17 @@ def test_pbt_anchor_validation_soundness(span: str, ref_body: str, is_present: b
     refined = RefinedSource(body=ref_body, captions=())
     gi = GroundingInput(draft=draft, refined=refined)
     
+    from summarization.domain.grounding import _is_formula_span
+
     verdict = GroundingValidator().validate(gi)
+    kept_spans = {a.span for a in verdict.kept_anchors}
     if is_present:
         assert not any(v.kind == "anchor_missing" for v in verdict.violations)
+        assert span in kept_spans  # a verifiable anchor is kept
     else:
-        assert not verdict.ok
+        # Option D: an unverifiable anchor is DROPPED (soft violation), not whole-summary abstain.
+        # Formula spans are intentionally exempt from existence checking, so exclude them here.
+        assume(not _is_formula_span(span))
+        assert verdict.ok  # no hard violation in this draft
+        assert span not in kept_spans
         assert any(v.kind == "anchor_missing" for v in verdict.violations)

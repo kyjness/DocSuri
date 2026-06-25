@@ -1,3 +1,4 @@
+import logging
 import os
 import secrets
 from datetime import UTC, datetime, timedelta
@@ -43,6 +44,7 @@ from .services.signup import SignupService
 from .services.social_login import SocialLoginService
 from .services.totp import TotpService
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["Accounts/Auth"])
 
 
@@ -697,6 +699,51 @@ async def login(
         raise HTTPException(status_code=500, detail="인증 처리 중 서버 장애가 발생했습니다. (Fail-Closed)") from None
 
 
+@router.post("/account/reactivate")
+async def reactivate_account(
+    request: Request,
+    response: Response,
+    req: LoginRequest,
+    x_recaptcha_token: str | None = Header(None, alias="X-Recaptcha-Token"),
+    auth_svc: AuthenticationService = Depends(get_auth_service),
+    db: Session = Depends(get_db_session),
+):
+    """유예 기간 내 소유자 본인 계정 복구 (FR-28/BR-A11 M1). 세션은 소프트 삭제 시 전부 무효화되고
+    로그인은 DEACTIVATED를 차단하므로, 복구는 **자격증명 재증명**으로 소유권을 입증한다(IDOR 방지).
+    인증·실패지연·CAPTCHA·계정열거 방어는 로그인과 동일 경로를 재사용한다. 성공 시 ACTIVE로 복원하고
+    바로 세션을 발급한다. 잘못된 자격증명/이미 파기/복구 불가는 로그인과 동일한 일반 오류로 응답한다."""
+    try:
+        session_handle = await auth_svc.authenticate(
+            email=req.email,
+            password=req.password,
+            recaptcha_token=x_recaptcha_token,
+            remote_ip=_client_ip(request),
+            reactivate=True,
+        )
+        db.commit()
+        response.set_cookie(
+            key="session_id",
+            value=session_handle,
+            httponly=True,
+            secure=True,
+            samesite="lax",
+            max_age=30 * 24 * 60 * 60,
+        )
+        return {"status": "success", "message": "계정이 복구되었습니다."}
+    except SessionStoreUnavailableException as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=503,
+            detail="일시적으로 복구할 수 없습니다. 잠시 후 다시 시도해 주세요. (세션 저장소 장애)",
+        ) from e
+    except DomainException as e:
+        db.rollback()
+        raise HTTPException(status_code=401, detail=str(e)) from e
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="계정 복구 중 서버 장애가 발생했습니다. (Fail-Closed)") from None
+
+
 @router.get("/verify-email")
 async def verify_email(
     token: str = Query(..., description="이메일 활성화 토큰"),
@@ -780,8 +827,11 @@ async def logout(
     if session_id:
         try:
             await session_mgr.invalidate(session_id)
-        except Exception:
-            pass # 로그아웃 예외는 무시하고 클라이언트 쿠키 클리어 진행
+        except SessionStoreUnavailableException:
+            # 세션 저장소 장애 중에는 서버측 무효화가 불가능하다(저장소 다운). 쿠키는 지우되 미완료를
+            # 명시적으로 로깅한다 — 만료(TTL)로 정리된다. *예상치 못한* 예외는 더 이상 삼키지 않고
+            # 전파시켜 500(Fail-Closed)·관측이 되게 한다(기존 `except Exception: pass`의 사일런트 fail-open 제거).
+            logger.warning("Logout could not invalidate the server session (store unavailable); cookie cleared, session will expire by TTL.")
 
     response.delete_cookie(key="session_id")
     return {"status": "success", "message": "로그아웃되었습니다."}

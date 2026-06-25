@@ -14,6 +14,7 @@ from docsuri_shared.events import (
     Severity as SharedSeverity,
 )
 
+from docsuri_ops._dedup import BoundedSeen
 from docsuri_ops.detectors import (
     CostExplosionDetector,
     HallucinationDetector,
@@ -77,7 +78,7 @@ class IncidentEventPublisher:
     incident_store: Any
     alert_publisher: Any
     event_store: Any | None = None
-    _published_alerts: set[str] = field(default_factory=set)
+    _published_alerts: BoundedSeen = field(default_factory=BoundedSeen)  # bounded LRU dedup
 
     def publish_candidate(self, candidate: IncidentCandidate) -> bool:
         record = ClassifiedIncidentRecord(
