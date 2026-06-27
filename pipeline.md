@@ -87,47 +87,87 @@ cross-source로 정규 논문 1건을 만들고 doc-model을 **색인 전 eager*
 ## 파이프라인
 
 ```
-  [ 트리거 ]  RefreshOrchestrationService  (enabled_sources = arXiv [+ Semantic Scholar·OpenAlex 설정 시])
-   · on_schedule_tick (소스별 watermark 이후 증분)   · on_new_arxiv_event   · trigger_full_rebuild(락)
-   · arXiv = harvest_seed/fetch_incremental, 외부 소스 = source_record로 enqueue (코퍼스 범위 cs.LG/AI/CL/CV·stat.ML, 2025)
-   · (호환/백필) BUILD_DOC_MODEL 잡 — doc-model 누락·재빌드분만 (메인 경로는 ⑦ eager)
-        │  IngestionJob 적재
-        ▼
-   [ AWS SQS 큐 ]  (rebuild 진행 중이면 증분/이벤트 defer)
-        │  worker.py: receive_messages(max 10) → process_message
-        │    └ kind=BUILD_DOC_MODEL → build_doc_model · source_record 있음 → 외부소스 경로 · 그 외 → arXiv 경로
-        ▼
-╔══════════════ IngestionPipelineService.ingest_one (Python 워커) ══════════════╗
-║  공통 복원력: 의존성마다 retry 5회(지수 backoff+jitter) · circuit(5회 실패 OPEN, 60s) · timeout(기본 30s·설정값) ║
-║                                                                                ║
-║  ① record_job_started ───────────────────────────────▶ [ PostgreSQL 컨트롤플레인 ] ║
-║  ② SOURCE FETCH                                                                  ║
-║     · arXiv 경로:  fetch_metadata + fetch_full_text ─▶ [ arXiv HTTP ]            ║
-║     · 외부 소스 경로(source_record): PDF → GROBID 전문 추출 ─▶ [ Semantic Scholar / OpenAlex + GROBID ] ║
-║  ③ parse (FetchParseProcessor)                                                  ║
-║     · OA 라이선스 allowlist(CC-BY·BY-SA·CC0 + arXiv nonexclusive-distrib ≈ 거의 모든 arXiv) 아니면 거부 ║
-║     · withdrawal 마커 감지 → tombstone 경로 ─────────▶ [ OpenSearch ] tombstone_paper ║
-║  ④ canonical dedup (cross-source) ───────────────────▶ [ PostgreSQL ]            ║
-║     · canonical_key = title+year+(doi·arxivId)+first_author · 별칭 키 병합        ║
-║     · 소스 우선순위 arXiv<SemanticScholar<OpenAlex: 더 높은 소스가 오면 기존 winner를 tombstone·교체, 낮으면 DUPLICATE ║
-║  ⑤ begin_upsert (claim) — 단조 가드(낮은 버전 거부)                               ║
-║  ⑥ put_full_text ────────────────────────────────────▶ [ AWS S3 전문 저장 ]      ║
-║  ⑦ build doc-model (EAGER · 색인 전) · native HTML → PDF/text 폴백 ─▶ [ docmodel 빌더·캐시 ] ║
-║     chunk: doc-model 있으면 chunk_doc_model(블록 단위·block_refs 보존) · 없으면 레거시 chunk ║
-║     (Chunker: max 2400자 · overlap 240 · ≤128청크/논문 · 섹션=abstract+본문 헤딩)  ║
-║  ⑧ embed_documents ──────────────────────────────────▶ [ AWS Bedrock ]          ║
-║     Cohere Embed Multilingual v3 · input_type=search_document · 1024-d · cosine   ║
-║  ⑨ assemble IndexRecord (chunkId=결정적 upsert키 · lexicalTerms=제목+초록+청크 · 카드필드) ║
-║  ⑩ bulk_upsert + delete_stale_chunks(paperId 단위) ──▶ [ OpenSearch docsuri-corpus-v1 ] ║
-║  ⑪ mark_ingested · advance_watermark(소스별) · record_canonical_winner · record_job_finished ║
-╚══════════════════════════════╪═════════════════════════════════════════════════╝
+┌──────────────────────────────────────────────────────────────────────────────────────┐
+│  TRIGGER         RefreshOrchestrationService   enabled_sources = arXiv [+ S2 · OpenAlex] │
+│   · on_schedule_tick (소스별 watermark 이후 증분)  · on_new_arxiv_event  · trigger_full_rebuild(락) │
+│   · arXiv = harvest_seed/fetch_incremental   · 외부 소스 = source_record로 enqueue        │
+│   · 코퍼스 범위: cs.LG/AI/CL/CV · stat.ML · 2025년               │  IngestionJob 적재 → 큐  │
+└─────────────────────────┼──────────────────────────────────────────────────────────────┘
+                          ▼
+┌──────────────────────────────────────────────────────────────────────────────────────┐
+│  QUEUE           [ AWS SQS 큐 ]   rebuild 진행 중이면 증분/이벤트 defer                     │
+│   worker.py: receive_messages(max 10) → process_message                                 │
+│     └ kind=BUILD_DOC_MODEL → build_doc_model · source_record 있음 → 외부 소스 · 그 외 → arXiv │
+└─────────────────────────┼──────────────────────────────────────────────────────────────┘
+                          ▼
+╔════════ U1 도메인 코어 (IngestionPipelineService.ingest_one · Python 워커 · 비동기) ════════╗
+║  공통 복원력(의존성 호출마다): retry 5회(지수 backoff+jitter) · circuit(5회 OPEN·60s) · timeout 30s ║
+║                                                               stack / 수치               ║
+║  ┌────────────────────────────────────────────────┐                                      ║
+║  │ ① START                record_job_started        │─────────────────▶ [ PostgreSQL 컨트롤플레인 ] ║
+║  └───────────────────────┬────────────────────────┘                                      ║
+║                          ▼                                                                ║
+║  ┌────────────────────────────────────────────────┐      ┌──────────────────────────┐    ║
+║  │ ② FETCH                소스별 원문 수집            │ arXiv│ arXiv HTTP               │    ║
+║  │   arXiv:  fetch_metadata + fetch_full_text      │─────▶│                          │    ║
+║  │   외부소스(source_record): PDF → GROBID 전문추출  │─────▶│ Semantic Scholar/OpenAlex│    ║
+║  │                                                 │ ext  │   + GROBID               │    ║
+║  └───────────────────────┬────────────────────────┘      └──────────────────────────┘    ║
+║                          ▼                                                                ║
+║  ┌────────────────────────────────────────────────┐                                      ║
+║  │ ③ PARSE / GATE         FetchParseProcessor       │  OA 라이선스 allowlist               ║
+║  │   라이선스 위반 → ★거부(skip)                    │  (CC-BY·BY-SA·CC0 + arXiv            ║
+║  │   withdrawal 마커 → ★tombstone ──────────────────────────▶ [ OpenSearch ] tombstone_paper ║
+║  └───────────────────────┬────────────────────────┘   nonexclusive-distrib ≈ 대부분 arXiv)  ║
+║                          ▼                                                                ║
+║  ┌────────────────────────────────────────────────┐                                      ║
+║  │ ④ DEDUP (cross-source) canonical dedup           │─────────────────▶ [ PostgreSQL ]    ║
+║  │   key=title+year+(doi·arxivId)+first_author      │  소스 우선순위                       ║
+║  │   ★더 높은 소스 → 기존 winner tombstone·교체      │  arXiv < S2 < OpenAlex               ║
+║  │   ★낮은 소스 → DUPLICATE / 낮은 버전 → STALE 종료 │                                      ║
+║  └───────────────────────┬────────────────────────┘                                      ║
+║                          ▼                                                                ║
+║  ┌────────────────────────────────────────────────┐                                      ║
+║  │ ⑤ CLAIM                begin_upsert (단조 가드)   │  낮은 버전 거부                      ║
+║  └───────────────────────┬────────────────────────┘                                      ║
+║                          ▼                                                                ║
+║  ┌────────────────────────────────────────────────┐                                      ║
+║  │ ⑥ STORE FULL-TEXT      put_full_text             │─────────────────▶ [ AWS S3 전문 저장 ] ║
+║  └───────────────────────┬────────────────────────┘                                      ║
+║                          ▼                                                                ║
+║  ┌────────────────────────────────────────────────┐                                      ║
+║  │ ⑦ DOC-MODEL + CHUNK    eager 빌드(색인 전)        │  native HTML → PDF/text 폴백         ║
+║  │   chunk_doc_model(블록 단위·block_refs) │ 폴백=chunk│  max 2400자·overlap 240·≤128청크    ║
+║  └───────────────────────┬────────────────────────┘                                      ║
+║                          ▼                                                                ║
+║  ┌────────────────────────────────────────────────┐      ┌──────────────────────────┐    ║
+║  │ ⑧ EMBED                embed_documents           │─────▶│ AWS Bedrock              │    ║
+║  │   (단일 writer 공간 · U2 reader와 동일)           │      │ Cohere Embed v4 (Bedrock)│    ║
+║  │                                                 │◀─────│ search_document·1024-d·cosine │ ║
+║  └───────────────────────┬────────────────────────┘      └──────────────────────────┘    ║
+║                          ▼                                                                ║
+║  ┌────────────────────────────────────────────────┐                                      ║
+║  │ ⑨ ASSEMBLE             IndexRecord               │  chunkId=결정적 upsert키             ║
+║  │                                                 │  lexicalTerms(제목+초록+청크)·카드필드 ║
+║  └───────────────────────┬────────────────────────┘                                      ║
+║                          ▼                                                                ║
+║  ┌────────────────────────────────────────────────┐                                      ║
+║  │ ⑩ INDEX                bulk_upsert               │─────────────────▶ [ OpenSearch       ║
+║  │   + delete_stale_chunks (paperId 단위)           │                    docsuri-corpus-v1 ] ║
+║  └───────────────────────┬────────────────────────┘                                      ║
+║                          ▼                                                                ║
+║  ┌────────────────────────────────────────────────┐                                      ║
+║  │ ⑪ COMMIT  mark_ingested · advance_watermark(소스별)│ record_canonical_winner            ║
+║  │           record_job_finished                    │ · job 종료                          ║
+║  └───────────────────────┬────────────────────────┘                                      ║
+╚══════════════════════════╪═══════════════════════════════════════════════════════════════╝
         │ 성공 → SQS ack                          │ 실패(IngestionError)
         ▼                                         ▼
-   다음 메시지                          record_job_finished(success=False) → emit_failure_signal
-                                        PERMANENT → [ SQS DLQ ] + ack / RETRIABLE → 미ack(재배달)
+   다음 메시지                          record_job_finished(False) → emit_failure_signal
+                                        ★PERMANENT → [ SQS DLQ ] + ack  /  ★RETRIABLE → 미ack(재배달)
 
   ─────────── 색인 핫패스 밖의 갈래 (색인을 절대 막지 않음) ───────────
-   ⑩' (선택) dual-write v2  : embedding_v2+vector_index_v2 주입 시 다른 임베딩 모델로 두 번째 인덱스
+   ⑩' (선택) dual-write v2  : embedding_v2+vector_index_v2 주입 시 다른 모델로 두 번째 인덱스
                               (모델 마이그레이션/AB) — best-effort, 실패=로그만(1차 색인 무영향)
    ⑪  FR-17 assets         : 그림/표 추출 → S3, 인덱스 커밋 *후* best-effort(BR-27)
    BUILD_DOC_MODEL 잡(호환/백필) : doc-model 누락·재빌드분만 lazy 생성·캐시(결정적, native HTML→PDF 폴백)
@@ -143,7 +183,7 @@ cross-source로 정규 논문 1건을 만들고 doc-model을 **색인 전 eager*
 | **소스** | arXiv HTTP · Semantic Scholar · OpenAlex (+ GROBID PDF 추출) | 외부 인프라 접점 — cross-source, 소스별 watermark·우선순위 |
 | **컨트롤 플레인** | PostgreSQL | canonical dedup·소스별 watermark·job 상태·rebuild 락 (단조 가드) |
 | **전문 저장** | AWS S3 | 외부 인프라 접점 — 원문 보관 |
-| **임베딩** | AWS Bedrock — Cohere Embed Multilingual v3 (`search_document`, 1024-d) | 권한 경계 — 단일 writer, U2 reader와 동일 공간 |
+| **임베딩** | AWS Bedrock — Cohere Embed v4 (`search_document`, 1024-d·cosine, specVersion v2) | 권한 경계 — 단일 writer, U2 reader와 동일 공간 |
 | **색인 스토어** | OpenSearch `docsuri-corpus-v1` (+ 선택 v2 인덱스) | 권한 경계 — 단일 writer(U2=단일 reader), v2는 dual-write best-effort |
 | **doc-model/assets** | docmodel 빌더(native HTML→PDF/text) · S3 그림/표 | ⑦ eager 빌드가 표준(블록 단위 청킹) · BUILD_DOC_MODEL=백필, assets best-effort, U7이 소비 |
 | **복원력** | retry 5회 · circuit(5/60s) · timeout(기본 30s·설정값) | 의존성별 독립, 처리량 자세 |
@@ -187,7 +227,7 @@ cross-source로 정규 논문 1건을 만들고 doc-model을 **색인 전 eager*
 ║                          │                                              ▼ miss            ║
 ║                          │                              ┌────────────────────────────┐    ║
 ║                          │                              │ AWS Bedrock                 │    ║
-║                          │                              │ Cohere Embed Multilingual v3│    ║
+║                          │                              │ Cohere Embed v4 (Bedrock)   │    ║
 ║                          │                              │ input_type=search_query     │    ║
 ║                          │                              │ 1024-d · cosine · 정규화     │    ║
 ║                          │   임베딩 장애                 └────────────────────────────┘    ║
@@ -260,7 +300,7 @@ cross-source로 정규 논문 1건을 만들고 doc-model을 **색인 전 eager*
 | 레이어 | 기술 | 메모 |
 |---|---|---|
 | **API** | FastAPI · pydantic v2 · Python 3.12 | 동기 단일 경로, NFR-P1 P50<3s |
-| **임베딩** | AWS Bedrock — Cohere Embed Multilingual v3 (1024-d, cosine, `search_query`) | 외부 인프라 접점 — 비용·레이턴시 동인 / 장애 시 lexical 폴백 |
+| **임베딩** | AWS Bedrock — Cohere Embed v4 (1024-d, cosine, `search_query`, specVersion v2) | 외부 인프라 접점 — 비용·레이턴시 동인 / 장애 시 lexical 폴백 |
 | **캐시** | 인메모리 read-through, TTL 300s, max 1024 (→ Infra: 공유 캐시) | 중복 질의 임베딩 차단 |
 | **검색 스토어** | OpenSearch — k-NN(HNSW·cosine·1024) + BM25, 단일 인덱스 `docsuri-corpus-v1`, 각 top_k=150 | 외부 인프라 접점 / 장애 시 503 fail-closed (폴백 없음) |
 | **병합** | 앱 레벨 RRF (k=60) — 리스트내 best-chunk(MAX)→리스트간 SUM + paperId 디덥 | 점수 스케일 무관·결정적, 전문 길이 편향 차단 |
