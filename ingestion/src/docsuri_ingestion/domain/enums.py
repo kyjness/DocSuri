@@ -3,6 +3,12 @@ from __future__ import annotations
 from enum import StrEnum
 
 
+class SourceName(StrEnum):
+    ARXIV = "ARXIV"
+    SEMANTIC_SCHOLAR = "SEMANTIC_SCHOLAR"
+    OPENALEX = "OPENALEX"
+
+
 class DedupDecision(StrEnum):
     NEW = "NEW"
     CHANGED = "CHANGED"

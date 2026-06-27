@@ -112,7 +112,7 @@ arXiv 논문 수집·파싱·임베딩·벡터 인덱스 쓰기 파이프라인.
   scale-in:  Messages = 0 for 5 min → −1 task (cooldown 300s)
 ```
 
-**벌크 로드 시나리오**: 초기 5 카테고리×5년 full-slice는 `trigger_full_rebuild` CLI → SQS에 수십만 메시지 발행 → 3 워커 자동 기동, 수일 간 큐 드레인.
+**벌크 로드 시나리오**: phase-1 5 카테고리×최근 1년 슬라이스는 `trigger_full_rebuild` CLI → SQS 메시지 발행 → 3 워커 자동 기동, 큐 드레인. 5년 full-slice는 Phase 7 backfill에서 별도 실행한다.
 
 ### 2.3. SQS 큐 및 DLQ
 

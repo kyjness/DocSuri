@@ -17,6 +17,7 @@ def make_record(arxiv_id: str) -> IndexRecord:
         vector=[0.0] * 1024,
         section="abstract",
         lexicalTerms="graph neural retrieval",
+        blockRefs=[],
         title=f"Paper {arxiv_id}",
         authors=["Ada Researcher"],
         year=2026,

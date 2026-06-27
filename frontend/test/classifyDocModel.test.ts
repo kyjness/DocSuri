@@ -6,7 +6,7 @@ describe('classifyDocModelResponse', () => {
     const out = classifyDocModelResponse({
       status: 'ok',
       cached: true,
-      docModel: { meta: { paperId: 'x', version: 1 }, sections: [] },
+      docModel: { meta: { paperId: 'x', version: 1 }, fullText: '', sections: [] },
     });
     expect(out.kind).toBe('page');
     if (out.kind === 'page') {

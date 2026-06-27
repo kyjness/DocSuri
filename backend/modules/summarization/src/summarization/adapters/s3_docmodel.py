@@ -7,9 +7,11 @@ router surfaces ``source_unavailable``. Read-only: building/caching is U1's role
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
+from docsuri_shared.docmodel_contract import DOCMODEL_PARSER_VERSION, DOCMODEL_SCHEMA_VERSION
 from docsuri_shared.dtos import DocModel
 
 from ._paper_ref import bare_paper_id
@@ -45,7 +47,11 @@ class S3DocModelReader:
         key = f"{self._prefix}/{bare_paper_id(paper_id)}/v{version}.json"
         try:
             obj = self._s3.get_object(Bucket=self._bucket, Key=key)
-            return DocModel.model_validate_json(obj["Body"].read())
+            payload = json.loads(obj["Body"].read())
+            if not _is_current_doc_model(payload):
+                logger.info("stale doc-model cache ignored for %s", key)
+                return None
+            return DocModel.model_validate(payload)
         except ClientError as exc:
             # Only a genuine miss (not yet lazily built) is None → source_unavailable.
             # AccessDenied / throttling etc. must NOT masquerade as a miss — log + propagate
@@ -58,3 +64,16 @@ class S3DocModelReader:
             # Parse / schema-version drift on a corrupt object — surface, don't mask as a miss.
             logger.exception("doc-model parse failed for %s", key)
             raise
+
+
+def _is_current_doc_model(payload: object) -> bool:
+    if not isinstance(payload, dict):
+        return True
+    meta = payload.get("meta")
+    provenance = meta.get("provenance") if isinstance(meta, dict) else None
+    if not isinstance(provenance, dict):
+        return False
+    return (
+        provenance.get("parserVersion") == DOCMODEL_PARSER_VERSION
+        and provenance.get("schemaVersion") == DOCMODEL_SCHEMA_VERSION
+    )

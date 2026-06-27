@@ -43,6 +43,18 @@ def _rich_doc() -> DocModel:
                     "generatedAt": "1970-01-01T00:00:00Z",
                 },
             },
+            "fullText": (
+                "Introduction\n\n"
+                "We propose a model.\n\n"
+                "E=mc^2\n\n"
+                "print('x')\n\n"
+                "Table 1 Accuracy comparison\n"
+                "Method 95.3\n\n"
+                "first point\n"
+                "second point\n\n"
+                "Background\n\n"
+                "Prior work."
+            ),
             "sections": [
                 {
                     "id": "s1",
@@ -107,6 +119,9 @@ def test_translates_text_fields_and_preserves_structure() -> None:
     # ids preserved, kept terms surfaced
     assert blocks["s1.tbl1"].anchorLabel == "Table 1"
     assert draft.kept_terms == ("BERT",)
+    assert "번역:Introduction" in doc.fullText
+    assert "번역:Prior work." in doc.fullText
+    assert "95.3" in doc.fullText
 
 
 def test_map_only_chunks_long_input_without_reduce() -> None:
@@ -138,6 +153,7 @@ def test_duplicate_block_ids_translate_independently() -> None:
                     "generatedAt": "1970-01-01T00:00:00Z",
                 },
             },
+            "fullText": "first\n\nsecond",
             "sections": [
                 {
                     "id": "s1",

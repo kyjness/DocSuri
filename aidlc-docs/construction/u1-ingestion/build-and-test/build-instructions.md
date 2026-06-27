@@ -1,33 +1,82 @@
-# Build Instructions — U1 Ingestion 멀티모달 자산 (FR-17)
+# Build Instructions — U1 Corpus
 
 ## Prerequisites
-- **Build Tool**: `uv` (Python 3.11+; CI 검증은 3.12)
-- **Dependencies**: 기본 = `pyproject.toml`; 멀티모달은 **`assets` extra**(pypdfium2·pdfplumber·Pillow — permissive).
-- **Env (런타임)**: `DOCSURI_MULTIMODAL_ASSETS_ENABLED`(기본 false), `DOCSURI_S3_BUCKET`, `DOCSURI_ASSET_S3_PREFIX`(기본 `assets`), `DOCSURI_ASSET_KMS_KEY_ID`, `DOCSURI_CONTROL_PLANE_DSN`(공유 RDS), `DOCSURI_ASSET_*`(상한·품질·타임아웃). 빌드/테스트엔 불필요.
+
+- **Build Tool**: `uv` with Python 3.11+ for Python packages, `pnpm` for frontend checks.
+- **Core Packages**: `shared/python`, `ingestion`, `backend/modules/summarization`, `frontend`.
+- **External Runtime Services**: AWS S3, RDS/Postgres, SQS/DLQ, OpenSearch, Bedrock, ECS Fargate, internal GROBID sidecar.
+- **Build-Time Env**: none required for local compile/test.
+- **Runtime Env**: `DOCSURI_S3_BUCKET`, `DOCSURI_CONTROL_PLANE_DSN`, `DOCSURI_SQS_QUEUE_URL`, `DOCSURI_SQS_DLQ_URL`, `DOCSURI_OPENSEARCH_ENDPOINT`, `DOCSURI_OPENSEARCH_INDEX`, `DOCSURI_OPENSEARCH_ALIAS`, `DOCSURI_BEDROCK_MODEL_ID`, `DOCSURI_CORPUS_SOURCES`, `DOCSURI_GROBID_URL`, `DOCSURI_MULTIMODAL_ASSETS_ENABLED`, `DOCSURI_CORPUS_BUILD_ROLLOUT_CONFIRMED`.
 
 ## Build Steps
 
-### 1. 의존성 설치 (assets extra 포함)
+### 1. Verify Shared DTO Generation
+
+```bash
+cd shared/python
+uv run python tools/generate.py --check
+```
+
+Expected: `_generated/` matches `shared/dtos/*.schema.json`.
+
+### 2. Verify Ingestion Package
+
 ```bash
 cd ingestion
-uv sync --extra assets        # 또는 uv run --extra assets <cmd>
+uv run ruff check .
+uv run pytest
 ```
 
-### 2. 마이그레이션 (배포 시)
+Expected: ruff passes and ingestion tests pass.
+
+### 3. Verify Summarization Consumer
+
 ```bash
-# 공유 RDS에 paper_asset 적용 (워커 배포 전 선적용)
-psql "$DOCSURI_CONTROL_PLANE_DSN" -f migrations/postgres/002_paper_asset.sql
+cd backend/modules/summarization
+uv run pytest
 ```
 
-### 3. 빌드/컴파일 검증
+Expected: summarization tests pass with skipped env-gated tests only.
+
+### 4. Verify Frontend Consumer
+
 ```bash
-uv run python -m compileall src/docsuri_ingestion
+cd frontend
+pnpm exec vitest run test/classifyDocModel.test.ts test/useDocModel.test.ts test/classifySummarize.test.ts test/glossaryBadge.test.tsx test/docModelViewer.test.tsx
+pnpm exec tsc --noEmit
 ```
 
-## Verify Build Success
-- `uv sync --extra assets` → `Installed N packages` (pypdfium2·pdfplumber·pdfminer.six·pillow 포함).
-- 빌드 산출물: 인제스천 워커 컨테이너(추출 의존성 포함, 다이제스트 핀 SEC-10).
+Expected: targeted DocModel consumer tests and typecheck pass.
+
+### 5. Apply Database Migration Before Deploy
+
+```bash
+cd ingestion
+psql "$DOCSURI_CONTROL_PLANE_DSN" -f migrations/postgres/003_corpus_control_plane.sql
+```
+
+This adds corpus control-plane tables for canonical dedup state, version state, generation tracking, and job items.
+
+### 6. Production Corpus Build Sequence
+
+1. Deploy the new ingestion worker image and wait until the ECS service is stable with only the new task definition running.
+2. Freeze ingestion worker redeploys for the harvest window.
+3. Set `DOCSURI_CORPUS_BUILD_ROLLOUT_CONFIRMED=true`, `DOCSURI_MULTIMODAL_ASSETS_ENABLED=true`, and keep `DOCSURI_BEDROCK_MODEL_ID_V2` unset.
+4. Provision the new OpenSearch on-disk candidate index.
+5. Run `python -m docsuri_ingestion.cli trigger-full-rebuild`.
+6. Harvest/backfill, validate the candidate generation, then switch the alias.
+
+## Build Artifacts
+
+- Ingestion worker package and ECS task image.
+- Shared generated Python DTOs.
+- Frontend curated DocModel type.
+- Postgres migration `003_corpus_control_plane.sql`.
+- CDK task definition update with GROBID sidecar env.
 
 ## Troubleshooting
-- **`multimodal assets extra not installed`**: `MULTIMODAL_ASSETS_ENABLED=true`인데 `--extra assets` 미설치. → extra 설치 또는 토글 off.
-- **PDFium/Pillow 시스템 라이브러리**: pypdfium2/Pillow는 manylinux 휠에 네이티브 번들 — 추가 시스템 패키지 불필요.
+
+- **DocModel validation fails**: rerun shared DTO generation and confirm all DocModel fixtures include `fullText`.
+- **GROBID unavailable**: keep `DOCSURI_GROBID_URL` unset for arXiv-only local tests; production worker uses the sidecar URL.
+- **Corpus rebuild preflight fails**: verify worker rollout completion, redeploy freeze, multimodal asset enablement, external-source GROBID URL, and that `DOCSURI_BEDROCK_MODEL_ID_V2` is unset.
+- **OpenSearch cutover blocked**: inspect candidate generation stats before alias switch; do not force alias cutover on an empty candidate.

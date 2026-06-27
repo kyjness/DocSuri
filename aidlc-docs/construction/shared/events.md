@@ -23,8 +23,38 @@
 | AI 인시던트(`ClassifiedIncident`) | 🟡 PROVISIONAL | U6.IncidentEventPublisher.publishIncident | Event Backbone → IR/COE·OpsDashboardService | at-least-once · 멱등(requestId 상관) | RES-11(a/b/c), US-R4 |
 | 운영 경보(`OpsAlert`) | 🟡 PROVISIONAL | U6.IncidentEventPublisher.publishAlert | Event Backbone → IR/COE | at-least-once · 멱등 | RES-7, RES-11, US-R4 |
 | `AccountDeleted` | 🟡 PROVISIONAL | U3.AccountDeletionService.purgeJob (**유예 경과 후 발행**) | U4·U2·U11 (각자 owner-scoped 파기) | at-least-once · **멱등(`accountId` 키)** · DLQ | FR-28, US-A6, SEC-8 |
+| `AccountPurged` | 🟡 PROVISIONAL | U4·U2·U11 (파기 완료 후 발행) | U3.AccountDeletionService (완료 추적) | at-least-once · 멱등(`accountId`+`unit`) | FR-28, GDPR |
+| `PaperRetractedEvent` | 🟡 PROVISIONAL | U1.VectorIndexWriter (철회 툼스톤 생성 시) | U4.LibraryService (철회 상태 마킹) | at-least-once · 멱등(`paperId`) | BR-L5 보완 |
+| `DocModelBuildRequestedEvent` | 🟡 PROVISIONAL | U7.SummaryService (doc-model 캐시 미스 시) | U1.DocModelBuilder | at-least-once · 멱등(`paperId`+`version`) | doc-model lazy build |
 
 ---
+
+## 1d. U7 → U1 — `DocModelBuildRequestedEvent` 🟡 PROVISIONAL
+
+U7(또는 리치뷰 클라이언트)이 doc-model을 요청했으나 캐시 미스가 발생한 경우, U1에게 비동기 빌드를 지시하기 위해 발행된다. U1 큐에 직접 결합되는 대신 이벤트 버스를 통해 발행하여 생산자와 소비자를 분리한다.
+
+| 필드 | 타입 | 의미 |
+|---|---|---|
+| `paperId` | string | 대상 논문 ID |
+| `version` | int | 논문 버전 |
+| `requestedAt` | timestamp | 빌드 요청 시각 |
+| `source` | string | 요청 출처 (예: `U7-Summarization`) |
+
+- **생산자**: `U7` — 클라이언트의 첫 열람 또는 요약 요청 시 `doc-model` 캐시가 없으면 발행.
+- **소비자**: `U1.DocModelBuilder` — 이벤트를 수신하여 `buildDocModel(paperId, version)` 워커 잡을 실행. **멱등**(동일 논문/버전 중복 빌드 요청 시 인프로세스 디덥 및 기존 캐시 확인 후 무시).
+- **상태 확인**: 비동기 빌드 완료 이벤트는 따로 발행하지 않으며, 클라이언트는 `PendingDTO` 수신 시 일정 시간 후 다시 API를 폴링하여 `doc-model` 캐시 히트를 확인한다 (getDocModel 폴링).
+
+## 1c. U1 → U4 — `PaperRetractedEvent` 🟡 PROVISIONAL
+
+U1 인제스천 파이프라인에서 arXiv 원문이 철회(retracted)되거나 철회 툼스톤이 감지되었을 때 발행된다.
+
+| 필드 | 타입 | 의미 |
+|---|---|---|
+| `paperId` | string | 철회된 논문의 고유 식별자(arxivId 등) |
+| `retractedAt` | timestamp | 철회 감지 시각 |
+
+- **생산자**: `U1.VectorIndexWriter` — 기존 논문 식별자에 대해 철회 상태가 업데이트되거나 툼스톤 레코드가 생성될 때 발행.
+- **소비자**: `U4.LibraryService` — 이벤트를 수신하여 라이브러리에 저장된 `LibraryItem` 중 해당 `paperId`를 가진 항목의 메타데이터에 `retracted: true` 플래그를 추가로 마킹. 데이터는 삭제하지 않고 보존하여 사용자 경험을 유지하면서 신뢰성 문제만 알린다.
 
 ## 1b. U3 → U4·U2·U11 — `AccountDeleted` 🟡 PROVISIONAL *(계정 프로덕션화, 2026-06-24)*
 
@@ -38,9 +68,17 @@
 
 - **생산자**: `U3.AccountDeletionService.purgeJob` — `purge_after` 경과분 일괄 발행.
 - **소비자**: U4(라이브러리·저장검색)·U2(이력)·U11(연구세션) — 각자 owner-scoped 데이터 파기. **멱등(`accountId`)**, 실패 시 재시도 → **DLQ**.
-- **완료 검증(#1 리뷰, GDPR)**: 각 구독자는 파기 완료를 확인 신호(`AccountPurged{accountId, unit}` 또는 감사 로그)로 보고하고, U3/Ops는 **미완료(최대 허용 지연 초과·DLQ 적체) 시 경보**한다. 영구 다운 구독자는 DLQ → 수동 재조정. (구체 SLA·확인 채널 = Infra Design.)
+- **완료 검증(#1 리뷰, GDPR)**: 각 구독자는 자신의 파기 트랜잭션이 완료되면 `AccountPurged{accountId, unit, purgedAt}` 이벤트를 발행한다. U3는 이를 수신하여 캐스케이드 완료 상태를 추적하고, 최대 허용 지연(예: 7일) 내에 모든 필수 구독자(U2, U4, U11)의 확인이 수신되지 않으면 명시적인 `CascadeOverdue` 경보를 발생시킨다. (단순 감사 로그 의존 배제)
 - **유예 기간 N**: 기본 제안 **30일**(운영 정책·법적 요건으로 조정 — Infra Design 확정).
 - **순서**: U3 파기와 캐스케이드 간 순서 보장 없음(결과적 일관성); 구독자 멱등으로 재정렬 무해.
+
+### 1b-2. 구독자 → U3 — `AccountPurged` 🟡 PROVISIONAL
+각 구독자(U4, U2, U11)가 AccountDeleted에 따른 자원 파기를 완료한 후 발행하는 명시적 확인 신호.
+| 필드 | 타입 | 의미 |
+|---|---|---|
+| `accountId` | string | 대상 계정 ID |
+| `unit` | string | 완료한 유닛 식별자 (예: "U4", "U2", "U11") |
+| `purgedAt` | timestamp | 실제 파기 완료 시각 |
 
 ---
 
@@ -51,14 +89,15 @@
 | 필드 | 타입 | 의미 |
 |---|---|---|
 | `userId` | string | 검색 실행 사용자(소유자 키 — 이력 owner-scoping) |
+| `requestId` | string | 이벤트 고유 식별자(의도적 반복 쿼리와 재전달 구분을 위함) |
 | `query` | string | 실행된 질의 문자열 |
 | `timestamp` | timestamp | 검색 실행 시각 |
 | `resultCount` | int | 반환 결과 건수 |
 
-- **생산자**: `U2.SearchOrchestrationService.publishSearchExecuted(userId, query, timestamp, resultCount) -> void` — 성공 응답 직후 이벤트 백본 발행.
+- **생산자**: `U2.SearchOrchestrationService.publishSearchExecuted(userId, requestId, query, timestamp, resultCount) -> void` — 성공 응답 직후 이벤트 백본 발행.
 - **소비자**: `U4.SearchHistoryService.recordSearch(event: SearchExecutedEvent) -> void` — 공유 이벤트 버스 구독해 비동기 기록.
 - **비차단(NFR-P1)**: ⚠️ **P50<3s 동기 검색 경로 밖**에서 발행·소비. 검색 응답을 블로킹하지 않음(component-dependency.md "P50<3s 경로 밖").
-- **at-least-once/멱등**: 중복 전달 가능 → U4는 멱등 기록(예: 동일 `userId`+`timestamp`+`query` 재수신 시 중복 행 생성 금지). 내부 필드 비노출(SEC-9) — owner 점수·디버그 미포함.
+- **at-least-once/멱등**: 중복 전달 가능 → U4는 멱등 기록(예: 동일 `userId`+`requestId`+`query` 재수신 시 중복 행 생성 금지). 내부 필드 비노출(SEC-9) — owner 점수·디버그 미포함.
 - **트레이스**: FR-10, NFR-P1, US-L3.
 
 ---

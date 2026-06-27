@@ -101,6 +101,25 @@ def test_record_event_dedupes_per_owner() -> None:
     assert len(repo.list_events(user_id)) == 1
 
 
+def test_recent_papers_falls_back_to_paper_id_without_title() -> None:
+    repo = InMemoryPersonalizationRepository()
+    user_id = str(uuid4())
+    repo.insert_event(
+        BehaviorEvent(
+            userId=user_id,
+            eventType=BehaviorEventType.PAPER_OPENED,
+            subject=BehaviorSubject(kind="paper", paperId="2401.00001"),
+            metadata={"entrySurface": "detail"},
+            dedupeKey="view-1",
+        )
+    )
+
+    viewed = repo.list_recent_papers(user_id)
+
+    assert viewed[0][0] == "2401.00001"
+    assert viewed[0][1] == "2401.00001"
+
+
 def test_owner_isolation_and_deterministic_aggregation() -> None:
     user_a = str(uuid4())
     user_b = str(uuid4())
@@ -193,7 +212,9 @@ def test_api_settings_disable_recording(monkeypatch) -> None:
     repo = InMemoryPersonalizationRepository()
     client = _client(monkeypatch, principal, repo)
 
+    assert client.get("/api/personalization/settings").json()["enabled"] is True
     assert client.patch("/api/personalization/settings", json={"enabled": False}).status_code == 200
+    assert client.get("/api/personalization/settings").json()["enabled"] is False
     resp = client.post(
         "/api/personalization/events",
         json={

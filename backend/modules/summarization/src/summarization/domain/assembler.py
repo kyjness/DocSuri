@@ -18,7 +18,7 @@ from .models import (
     Task,
     TranslationDraft,
 )
-from .structured_translator import iter_text_fields
+from .structured_translator import iter_text_fields, project_full_text
 
 
 class ResultAssembler:
@@ -37,6 +37,7 @@ class ResultAssembler:
         doc_dict = draft.doc_model.model_dump(mode="json")
         for _seg_id, text, setter in iter_text_fields(doc_dict):
             setter(GlossaryResolver.post_substitute(text, glossary))
+        doc_dict["fullText"] = project_full_text(doc_dict)
         final = TranslationDraft(
             doc_model=DocModel.model_validate(doc_dict), kept_terms=draft.kept_terms
         )

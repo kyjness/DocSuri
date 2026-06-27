@@ -36,6 +36,7 @@
 ### BR-S6 — 길이 분기 (§5 / Q3=A) — **3단계(구현됨, #135)**
 - **3경로**: `≤컨텍스트예산`(~40K) → 단일 콜 / `컨텍스트예산~입력상한`(~40K–120K) → **map-reduce** / `>입력상한`(~120K, OVER_CAP) → **거절(`input_too_long`)**.
 - **map-reduce**(구현 = `MapReduceSummarizer`): doc-model **섹션 경계 청킹**(+문자 오버랩, 초과 섹션은 윈도우 분할) → 부분요약(map) → 통합(reduce). 통합 출력도 §3 동일 스키마. 근거화는 **전체 `RefinedSource`** 기준 검증(앵커 문서 전역 해소).
+- **제약(Map-Reduce Grounding Contract)**: reduce 단계 프롬프트는 최종 출력의 모든 앵커가 자신이 취합하는 "부분 요약(map output) 내부의 주장" 및 "해당 청크의 원문"에서 비롯된 것인지 검증하도록 지시받아야 한다. 합성된 주장이 부분 요약의 컨텍스트를 벗어나 앵커 범위를 이탈하지 않도록 엄격히 통제한다.
 - **OVER_CAP은 부분요약(degraded)하지 않고 거절** — 모바일 결정(극단 입력은 솔직히 거절). **번역도 동일 밴드**: MAP_REDUCE 밴드 `translate`는 abstain이 아니라 **섹션별 map-only 번역→이어붙이기**(reduce 없음 — BR-S18); OVER_CAP은 번역도 거절.
 - 게이트 `DOCSURI_MAP_REDUCE_ENABLED` OFF 시 MAP_REDUCE 밴드도 abstain(기존 동작 보존). 임계·청크 크기 = NFR. 동기/비동기는 BR-S12.
 

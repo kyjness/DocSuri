@@ -37,7 +37,7 @@ class MockVectorStoreAdapter:
 
 
 class MockLexicalIndexAdapter:
-    """BM25 stand-in: overlap count between query terms and record lexicalTerms tokens.
+    """BM25 stand-in: overlap count against title, abstract, and chunk body tokens.
 
     NOT cross-lingual (matches English fixtures) — a Korean query yields no lexical hits,
     which is why a Korean query in lexical-only mode degrades to empty (realistic)."""
@@ -49,7 +49,8 @@ class MockLexicalIndexAdapter:
         wanted = {t.lower() for t in terms}
         scored: list[ScoredRecord] = []
         for record in self._records:
-            tokens = set(record.lexicalTerms.lower().split())
+            text = f"{record.title} {record.abstract} {record.lexicalTerms}"
+            tokens = set(text.lower().split())
             overlap = len(wanted & tokens)
             if overlap > 0:
                 scored.append((record, float(overlap)))

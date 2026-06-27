@@ -10,7 +10,7 @@ export default function LibraryPage() {
   return (
     <RouteGuard redirectTo="/library">
       <div className={styles.screen}>
-        <AppHeader title="DocSuri" />
+        <AppHeader title="라이브러리" backHref="/mypage/library" />
         <LibraryScreen />
       </div>
       <BottomNav />

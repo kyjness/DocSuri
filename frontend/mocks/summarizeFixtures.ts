@@ -69,6 +69,8 @@ export const abstractTranslationResponse: TranslationOkDTO = {
   translation: {
     docModel: {
       meta: { paperId: '2401.00001', version: 1, title: '', provenance: _provenance },
+      fullText:
+        '지배적인 시퀀스 변환 모델들은 복잡한 순환 신경망이나 합성곱 신경망에 기반한다. 우리는 순환과 합성곱을 완전히 배제하고 오직 어텐션 메커니즘에만 기반한 새로운 단순 네트워크 구조인 Transformer를 제안한다.',
       sections: [
         {
           id: 's1',
@@ -102,6 +104,8 @@ export const fullTranslationResponse: TranslationOkDTO = {
         title: '어텐션만 있으면 된다',
         provenance: _provenance,
       },
+      fullText:
+        '모델 구조\n\nTransformer는 순환 대신 스케일드 닷-프로덕트 어텐션 \\(\\mathrm{Attention}(Q,K,V)\\)을 사용한다.\n\n\\mathrm{Attention}(Q,K,V)=\\mathrm{softmax}\\left(\\frac{QK^{T}}{\\sqrt{d_{k}}}\\right)V\n\nFigure 1 Transformer — 모델 구조.\n\n셀프 어텐션을 쓰는 이유\n\nTable 1 최대 경로 길이와 층별 복잡도.',
       sections: [
         {
           id: 's3',
@@ -232,6 +236,8 @@ export const docModelResponse: DocModelOkDTO = {
         generatedAt: '2026-06-23T00:00:00Z',
       },
     },
+    fullText:
+      'Model Architecture\n\nThe Transformer uses scaled dot-product attention \\(\\mathrm{Attention}(Q,K,V)\\) in place of recurrence.\n\n\\mathrm{Attention}(Q,K,V)=\\mathrm{softmax}\\left(\\frac{QK^{T}}{\\sqrt{d_{k}}}\\right)V\n\nFigure 1 The Transformer — model architecture.\n\nWhy Self-Attention\n\nTable 1 Maximum path lengths and per-layer complexity.',
     sections: [
       {
         id: 's3',

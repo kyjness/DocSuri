@@ -12,22 +12,22 @@
 
 ---
 
-## U1 — Ingestion 서비스 (전부 이벤트/스케줄 백본, 사용자 동기 경로 아님)
+## U1 — Corpus Ingestion 서비스 (전부 이벤트/스케줄 백본, 사용자 동기 경로 아님)
 
 ### IngestionPipelineService
-- **책임**: 단일 논문(또는 배치)을 fetch→parse→dedup→chunk→embed→index→watermark까지 끝에서 끝으로 인제스천하는 핵심 오케스트레이터. **FR-6 파이프라인 본체이자 US-I1 초기/시드 코퍼스 빌드·정기 인제스천의 실현 주체.** 인덱스를 부분 손상 없이 멱등 갱신.
-- **오케스트레이션 (워커 내부 비동기 흐름)**: `ArxivSourceClient.fetchFullText` → `FetchParseProcessor.parse/validate` → `DeduplicationGuard.isNew`(중복이면 단락) → `Chunker.chunk` → `EmbeddingGatewayAdapter.embedBatch`(공유 VectorSpec 공간) → `VectorIndexWriter.upsert` → `DeduplicationGuard.markIngested` → `RefreshScheduler.advanceWatermark`. 모든 단계 오류는 IngestionResilienceService로 위임(재시도/DLQ/경보). 비-OA 항목은 parse 단계 배제. **단계 간은 워커 내부 비동기(DQ6 비동기 백본), 사용자 동기 경로와 완전 분리.**
-- **Trace**: FR-6, US-I1, NFR-R1, NFR-C1, QT-4
+- **책임**: 멀티소스 논문 후보를 fetch→license/fulltext→source-priority dedup→eager DocModel→DocModel Block chunk→embed→index generation/S3 저장→watermark까지 끝에서 끝으로 처리하는 핵심 오케스트레이터. **FR-6 파이프라인 본체이자 U1 Corpus phase-1 빌드·정기 인제스천의 실현 주체.**
+- **오케스트레이션 (워커 내부 비동기 흐름)**: `CorpusSourceAdapterSet.fetchMetadataPage/fetchFullTextCandidate`(arXiv HTML 우선/PDF 폴백, Semantic Scholar/OpenAlex PDF 후보) → `FullTextExtractionProcessor.validateLicense/extractFullText`(PDF는 transient GROBID, 원시 PDF 미저장) → `SourcePriorityDeduplicationGuard.deduplicate/canonicalize` → `DocModelBuildCoordinator.buildDocModel/storeDocModel` → `DocModelBlockChunker.chunkDocModel` → `EmbeddingGatewayAdapter.embedBatch`(공유 VectorSpec 공간) → `CorpusIndexWriter.prepareGeneration/upsert` → `CorpusRefreshScheduler.advanceWatermark`. 모든 단계 오류는 IngestionResilienceService로 위임(재시도/DLQ/경보). **단계 간은 워커 내부 비동기(DQ6 비동기 백본), 사용자 동기 경로와 완전 분리.**
+- **Trace**: FR-6, FR-18, US-I1, NFR-R1, NFR-C1, QT-9
 
 ### RefreshOrchestrationService
-- **책임**: 인제스천 개시 두 진입점(스케줄 갱신 + 신규-arXiv 이벤트)을 통합 관리, 증분 잡과 전체 재구축 잡을 IngestionPipelineService로 분배. **US-I2 최신성 갱신·US-I1 초기 빌드·RES-2 재구축 런북의 제어 평면.**
-- **오케스트레이션 (event + schedule)**: `RefreshScheduler.onSchedule`(스케줄, 제안 일 1회) 및 `NewArxivEventHandler.onNewArxivEvent`(이벤트 버스 구독)가 IngestionJob 생성 → 슬라이스 페이지네이션은 `ArxivSourceClient.fetchMetadataPage` 열거 → 각 논문을 IngestionPipelineService에 분배(배치/동시성은 RES-8 쿼터 준수). `triggerFullRebuild`는 워터마크 리셋 후 전체 슬라이스 재인제스천(US-I1 초기 빌드 포함). 잡 단위 실패율·진행도를 관측성 노출.
-- **Trace**: FR-6, US-I1, US-I2, RES-2, RES-7, RES-8
+- **책임**: source별 스케줄 갱신, phase-1 seed/backfill, DocModel/index 재생성을 통합 관리한다. **US-I2 최신성 갱신·US-I1 Corpus 빌드·RES-2 재구축 런북의 제어 평면.**
+- **오케스트레이션 (event + schedule)**: `CorpusRefreshScheduler.onSchedule`이 arXiv/Semantic Scholar/OpenAlex source별 IngestionJob을 생성 → 각 source의 `sourceWatermark` 이후 페이지를 열거 → IngestionPipelineService에 분배(배치/동시성은 RES-8 쿼터 준수). `triggerBackfill`은 최근 AI/ML 1년 phase-1 Corpus를 비용 상한 안에서 진행하고, `triggerRebuild`는 DocModel/parser/index version 변경 시 재생성한다. 잡 단위 실패율·진행도·watermark 지연을 관측성 노출.
+- **Trace**: FR-6, FR-18, US-I1, US-I2, RES-2, RES-7, RES-8, QT-9
 
 ### IngestionResilienceService
-- **책임**: 인제스천 복원력 정책(타임아웃·재시도/백오프·서킷·DLQ·쿼터)과 실패·갱신 건강도 신호 발행. **US-I3 복원력 + US-I2 실패 경보의 횡단 서비스.**
-- **오케스트레이션 (event)**: `IngestFailureHandler.classify` 분류 → 재시도 가능 시 `scheduleRetry`(지수 백오프·쿼터 인지) → 소진/영구 시 `sendToDLQ` → `emitFailureSignal`로 구조화 로그·경보 발행(운영 U6 라우팅, RES-7). EmbeddingGatewayAdapter/ArxivSourceClient/VectorIndexWriter 외부 호출에 타임아웃·서킷 주입(RES-9). 부분 인덱싱 차단(NFR-R1).
-- **Trace**: FR-6, US-I3, RES-7, RES-8, RES-9, NFR-R1
+- **책임**: source/GROBID/DocModel/embedding/index 단계의 타임아웃·재시도/백오프·서킷·DLQ·쿼터와 실패·갱신 건강도 신호 발행. **US-I3 복원력 + US-I2 실패 경보의 횡단 서비스.**
+- **오케스트레이션 (event)**: `IngestFailureHandler.classify` 분류 → 재시도 가능 시 `scheduleRetry`(source 쿼터/GROBID 처리량/임베딩 한도 인지) → 소진/영구 시 `sendToDLQ` → `emitFailureSignal`로 구조화 로그·경보 발행(운영 U6 라우팅, RES-7). CorpusSourceAdapterSet/FullTextExtractionProcessor/DocModelBuildCoordinator/EmbeddingGatewayAdapter/CorpusIndexWriter 외부 호출에 타임아웃·서킷 주입(RES-9). `(paperId, version)` 불일치나 Block anchor 결함은 cutover 전 차단한다(QT-9).
+- **Trace**: FR-6, FR-18, US-I3, RES-7, RES-8, RES-9, NFR-R1, QT-9
 
 ---
 
@@ -58,6 +58,26 @@
 - **책임**: 요청별 인증 검증(SessionVerifier)과 **객체 단위 소유권 인가(AuthorizationGuard — 시스템 단일 권위 결정점)** 를 묶어 게이트웨이·타 도메인(U4)에 제공. 기본 거부·fail closed 불변식(SEC-8, SEC-12, SEC-15).
 - **오케스트레이션**: 게이트웨이(sync) → `SessionVerifier.verifyRequest` → `SessionManager.verify`(+`SessionStore.load`) → AuthenticatedPrincipal 컨텍스트 주입. **사용자 데이터 접근 시 U6.AuthnAuthzGuard·U4 도메인 서비스가 동기로 `AuthorizationGuard.authorize`(소유권 판정)에 위임** — U3가 유일 결정 권위. P50<3s 예산 내 경량 수행(NFR-P1).
 - **Trace**: SEC-8, SEC-12, SEC-15, NFR-P1
+
+### AccountDeletionService (비동기 상태 전이 및 캐스케이드 추적)
+- **책임**: 계정 파기 요청 처리 및 GDPR 완전 삭제 캐스케이드(Defense-in-Depth). 사용자의 삭제 요청 시 계정을 소프트 비활성화하고 비동기 워커로 실제 삭제와 연계 시스템 데이터 삭제 보장을 오케스트레이션.
+- **오케스트레이션**: AccountController(sync) → `requestDeletion` (status=DEACTIVATED 설정 후 `purgeJob` 백그라운드 큐). 비동기 워커가 `purgeJob` 실행: U3 DB 레코드 물리 삭제 → `AccountDeleted` 이벤트 발행 → 구독자(U2, U4, U11)의 `AccountPurged` 완료 이벤트 수신 대기 및 추적. SLA 초과 시 `CascadeOverdue` 경보 트리거(GDPR 보장).
+- **Trace**: FR-28, US-A6, SEC-8, GDPR
+
+### PasswordResetService (동기 흐름 위임)
+- **책임**: 비밀번호 분실 시 보안 인증 및 재설정 절차.
+- **오케스트레이션**: AccountController(sync) → `requestReset` (토큰 생성/영속화) → 외부 Email 어댑터 발송 위임. `confirmReset` 시 토큰 검증, 신규 비밀번호 평가, 저장 및 진행 중인 모든 세션 무효화(`SessionManager.invalidate`).
+- **Trace**: FR-26, BR-A8
+
+### EmailVerificationService (계정 소유권 확인)
+- **책임**: 계정 생성 후 이메일 유효성 확인 및 변경 시 소유권 양방향 승인.
+- **오케스트레이션**: AccountController(sync) → `verifyEmail` 시도. 토큰 검증 성공 시 계정 상태 `ACTIVE`로 전환. `requestEmailChange` 시 기존/신규 이메일 양쪽으로 알림 발송 및 새 이메일 토큰 발송.
+- **Trace**: BR-A5, BR-A10
+
+### SocialLoginService (위임 인증 흐름)
+- **책임**: Google OIDC 등 타사 인증 연동 및 계정 통합(Pre-Hijacking 방어).
+- **오케스트레이션**: AccountController(sync) → `start` (OIDC 인가 URL 반환). 콜백 시 `callback` 실행하여 id_token 검증, 이메일 추출 후 매핑. 매핑 시 기존 계정과 병합 또는 거부 판단.
+- **Trace**: FR-27, BR-A9
 
 ---
 
@@ -139,3 +159,8 @@
 - **책임**: RES-11 AI 인시던트 탐지·분류·발행 — (a)비용 폭발 (b)할루시네이션 (c)반쪽짜리 결과를 탐지해 IR+COE로 라우팅.
 - **오케스트레이션**: 별도 워커가 이벤트 백본에서 텔레메트리/근거화 위반/지출/완결성 이벤트 비동기 소비(event) → 각 탐지기(`CostExplosionDetector`/`HallucinationDetector`/`PartialResultDetector`)의 `onTelemetryEvent` 후보 평가 → `classify`로 클래스·심각도 부여 → `IncidentEventPublisher.publishIncident/publishAlert`로 인시던트·경보 이벤트 발행(event) → COE 후속 컨텍스트 첨부, OpsDashboardService가 상태 소비. **탐지·발행 전 구간 비동기.**
 - **Trace**: RES-11(a/b/c), NFR-O1, US-R1, US-R2, US-R3, US-R4, QT-3(PartialResultDetector)
+
+## U10 — Mypage
+- `MypageController`
+- `UserPreferencesService`
+- `DataExportService`

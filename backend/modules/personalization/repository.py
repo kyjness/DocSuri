@@ -10,6 +10,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
 from .models import (
     BehaviorEvent,
+    BehaviorEventType,
     BehaviorSubject,
     PersonalizationSettings,
     UserInterestProfile,
@@ -27,6 +28,9 @@ class PersonalizationRepository(Protocol):
     def save_profile(self, profile: UserInterestProfile) -> UserInterestProfile: ...
     def reset_profile(self, user_id: str) -> None: ...
     def purge_events_before(self, cutoff: datetime) -> int: ...
+    def list_recent_papers(
+        self, user_id: str, limit: int = 50
+    ) -> list[tuple[str, str, datetime]]: ...
 
 
 class InMemoryPersonalizationRepository:
@@ -98,6 +102,25 @@ class InMemoryPersonalizationRepository:
             for key in keys:
                 del self._events[key]
             return len(keys)
+
+    def list_recent_papers(
+        self, user_id: str, limit: int = 50
+    ) -> list[tuple[str, str, datetime]]:
+        with self._lock:
+            events = [
+                e for e in self._events.values()
+                if e.userId == user_id and e.eventType == BehaviorEventType.PAPER_OPENED
+            ]
+            seen: dict[str, tuple[str, str, datetime]] = {}
+            for e in sorted(events, key=lambda ev: ev.occurredAt, reverse=True):
+                paper_id = e.subject.paperId
+                if not paper_id or paper_id in seen:
+                    continue
+                title = str(e.metadata.get("title") or paper_id)
+                seen[paper_id] = (paper_id, title, e.occurredAt)
+                if len(seen) >= limit:
+                    break
+            return list(seen.values())
 
 
 class Base(DeclarativeBase):
@@ -292,3 +315,26 @@ class SqlPersonalizationRepository:
         )
         self._s.flush()
         return int(deleted)
+
+    def list_recent_papers(
+        self, user_id: str, limit: int = 50
+    ) -> list[tuple[str, str, datetime]]:
+        rows = (
+            self._s.query(BehaviorEventTable)
+            .filter(
+                BehaviorEventTable.owner_id == user_id,
+                BehaviorEventTable.event_type == BehaviorEventType.PAPER_OPENED.value,
+            )
+            .order_by(BehaviorEventTable.occurred_at.desc())
+            .all()
+        )
+        seen: dict[str, tuple[str, str, datetime]] = {}
+        for row in rows:
+            paper_id = row.subject.get('paperId', '')
+            if not paper_id or paper_id in seen:
+                continue
+            title = str(row.metadata_json.get("title") or paper_id)
+            seen[paper_id] = (paper_id, title, row.occurred_at)
+            if len(seen) >= limit:
+                break
+        return list(seen.values())

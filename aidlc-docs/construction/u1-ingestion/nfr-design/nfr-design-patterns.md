@@ -6,6 +6,89 @@
 
 ---
 
+## 0. U1 Corpus NFR 패턴 우선 적용 개정 (2026-06-26)
+
+> **우선순위**: 본 섹션은 U1 Corpus 최신 NFR Design이다. 아래 §1~§7의 arXiv-only, Cohere v3, 단일 watermark, legacy chunk/index 설명과 충돌하면 **본 섹션을 우선한다**.
+
+### 0.1 Stage-aware retry/DLQ pattern
+
+| Stage | Retriable | Permanent/DLQ | Notes |
+|---|---|---|---|
+| `source_fetch` | timeout, 429, 5xx | 404/source gone | source별 quota와 circuit breaker 적용 |
+| `license_validate` | license service transient failure | non-OA/not indexing-allowed | raw PDF/FullText 저장 전 차단 |
+| `grobid_extract` | GROBID timeout/5xx/capacity | malformed PDF after retries | raw PDF는 retry 중에도 durable 저장하지 않음 |
+| `docmodel_validate` | parser transient/runtime failure | schema invalid, missing required block ids | index write 전 blocker |
+| `embed` | Bedrock timeout/429/5xx | repeated unsupported payload | cost metric 필수 |
+| `index_write` | OpenSearch 429/5xx/partial bulk | mapping/schema mismatch | generation alias 전환 금지 |
+| `artifact_store` | S3/DB timeout/5xx | checksum/schema violation | `(paperId, version)` manifest 정합 검증 |
+
+- DLQ item은 `sourceName`, `stage`, `paperId?`, `version?`, `canonicalKey`, `attempts`, `failureReason`을 보존한다.
+- Reprocess는 별도 보정기를 만들지 않고 동일 canonical pipeline으로 재진입한다.
+
+### 0.2 Source-specific circuit breaker pattern
+
+| Dependency | Circuit scope | OPEN behavior |
+|---|---|---|
+| arXiv | sourceName=`ARXIV` | arXiv fetch 신규 item 보류. 다른 source는 계속 처리. |
+| Semantic Scholar | sourceName=`SEMANTIC_SCHOLAR` | 해당 source fetch 보류. existing DLQ/retry backoff 유지. |
+| OpenAlex | sourceName=`OPENALEX` | 해당 source fetch 보류. |
+| GROBID | extraction pool | PDF extraction item 보류/retry. HTML arXiv path는 계속 처리. |
+| Bedrock Embed v4 | embedding | 신규 embed batch 보류. active index read path 영향 없음. |
+| OpenSearch generation | generationId | write 차단, alias cutover 금지, active alias 유지. |
+
+### 0.3 Cost hard-stop pattern
+
+- U1 Corpus job은 `$1600/month` account/app budget 안에서 별도 run budget을 가진다.
+- budget state가 warning이면 low-priority backfill을 늦추고, hard stop이면 신규 source fetch/GROBID/embed/index work를 중단한다.
+- hard stop은 active alias, existing DocModel read, existing search를 삭제/저하하지 않는다. 새 Corpus 확장만 보류한다.
+- metric 단위: `source_fetch_count`, `grobid_document_count`, `docmodel_count`, `chunk_count`, `embedding_vector_count`, `embedding_token_estimate`, `opensearch_bulk_items`, `s3_bytes_written`.
+
+### 0.4 Generation cutover/rollback pattern
+
+| Gate | Requirement |
+|---|---|
+| Schema gate | DocModel `fullText` + paragraph/table/formula/figure/list/code block schema roundtrip and negative validation pass. |
+| BlockRef gate | Every CorpusIndexRecord `blockRefs[]` exists in its DocModel. |
+| AssetRef gate | Every figure/table `AssetRef` in DocModel resolves to an allowed private `assets/` object or explicit degraded fallback. |
+| Version gate | FullText, DocModel, chunks, S3 manifest, index records share `(paperId, version)`. |
+| Count gate | generation doc/chunk counts are within expected phase-1 bounds. |
+| Smoke gate | U2 search smoke and U7 DocModel read smoke pass against candidate generation. |
+| Cutover | OpenSearch alias switch is atomic from reader perspective. |
+| Rollback | Keep previous generation until cutover burn-in completes. |
+
+### 0.5 Parser hardening pattern
+
+- HTML/XML/TEI parsing disables external entity resolution and external DTD loading.
+- Parser enforces input size and block count limits before materializing DocModel.
+- Parser materializes `fullText` as a projection, not as a second source of truth; structured blocks remain authoritative for tables, formulas, figures, lists, and code.
+- Raw source markup is not rendered directly. DocModel is normalized data, and U5/U7 render trusted components.
+- GROBID output is untrusted input and must pass the same DocModel schema validation as arXiv HTML output.
+
+### 0.6 QT-9 verification pattern
+
+| Invariant | Minimal check |
+|---|---|
+| multisource dedup idempotency | Property test with shuffled/duplicated DOI/arXiv/title-key records. |
+| source watermark monotonicity | Property test for per-source advance and rejected regression. |
+| `(paperId, version)` consistency | Unit/property test over generated manifests/chunks/index records. |
+| DocModel validation | Schema roundtrip + negative cases for missing `fullText`, missing/duplicate block ids, invalid SourceTier, invalid table rows, invalid formula payload, and unresolved AssetRef. |
+| index blockRef existence | Build index records from generated DocModel and assert every ref resolves. |
+| retry/DLQ idempotency | Replay same DLQ item N times and assert no duplicate artifacts/index records. |
+| raw PDF non-storage | PDF path fake store assertion: no artifact key/contentType represents raw PDF. |
+
+### 0.7 Traceability
+
+| Pattern | Requirements |
+|---|---|
+| Stage-aware retry/DLQ | RES-7/8/9, US-I3, QT-9 |
+| Source-specific circuit breaker | RES-8/9, NFR-R1 |
+| Cost hard-stop | NFR-C1, RES-11(a) |
+| Generation cutover/rollback | NFR-R1, RES-2, QT-9 |
+| Parser hardening | SEC-5/9/15, C-1 |
+| QT-9 verification | QT-9, PBT-02/03/07/08/09 |
+
+---
+
 ## 1. 복원력 패턴 (Resilience Patterns)
 
 ### 1.1 재시도 및 DLQ 백스톱 패턴 (RES-9 / BR-12 / BR-16)

@@ -16,6 +16,13 @@ export interface CitationNode {
 export interface CitationEdge {
   source: string;
   target: string;
+  depth: number;
+}
+
+export interface UnresolvedCitation {
+  title: string;
+  year?: number | null;
+  reason: string;
 }
 
 export interface CitationTreeResponse {
@@ -23,7 +30,7 @@ export interface CitationTreeResponse {
   rootPaperId: string;
   nodes: CitationNode[];
   edges: CitationEdge[];
-  unresolved: string[];
+  unresolved: UnresolvedCitation[];
   depthReturned: number;
   truncated: boolean;
   remainingEstimate?: number | null;

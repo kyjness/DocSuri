@@ -60,6 +60,7 @@ def tiny_doc(*, title: str = "Introduction", paragraph: str = "We propose a mode
                     "generatedAt": "1970-01-01T00:00:00Z",
                 },
             },
+            "fullText": f"{title}\n\n{paragraph}".strip(),
             "sections": [
                 {
                     "id": "s1",

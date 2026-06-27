@@ -39,8 +39,8 @@ class CitationNode(BaseModel):
 
 
 class CitationEdge(BaseModel):
-    fromNodeId: str
-    toNodeId: str
+    source: str
+    target: str
     depth: int
 
 
@@ -72,7 +72,7 @@ class InMemorySnapshotStore:
     def __init__(self) -> None:
         self._items: dict[str, tuple[float, CitationTreeResponse]] = {}
 
-    def get(self, key: str) -> CitationTreeResponse | None:
+    async def get(self, key: str) -> CitationTreeResponse | None:
         item = self._items.get(key)
         if not item:
             return None
@@ -82,20 +82,20 @@ class InMemorySnapshotStore:
             return None
         return value.model_copy(update={"cacheHit": True})
 
-    def set(self, key: str, value: CitationTreeResponse) -> None:
+    async def set(self, key: str, value: CitationTreeResponse) -> None:
         self._items[key] = (time.time() + _snapshot_ttl_seconds(), value)
 
 
 class RedisSnapshotStore:
     def __init__(self, url: str, prefix: str = "citation_graph:v1:") -> None:
-        import redis
+        import redis.asyncio as redis
 
         self._redis = redis.Redis.from_url(url)
         self._prefix = prefix
 
-    def get(self, key: str) -> CitationTreeResponse | None:
+    async def get(self, key: str) -> CitationTreeResponse | None:
         try:
-            raw = self._redis.get(self._prefix + key)
+            raw = await self._redis.get(self._prefix + key)
             if raw is None:
                 return None
             return CitationTreeResponse.model_validate_json(raw).model_copy(
@@ -104,9 +104,9 @@ class RedisSnapshotStore:
         except Exception:  # noqa: BLE001 - cache miss on Redis/JSON failure, provider remains source
             return None
 
-    def set(self, key: str, value: CitationTreeResponse) -> None:
+    async def set(self, key: str, value: CitationTreeResponse) -> None:
         try:
-            self._redis.set(
+            await self._redis.set(
                 self._prefix + key,
                 value.model_dump_json(),
                 ex=max(1, _snapshot_ttl_seconds()),
@@ -271,7 +271,7 @@ def _build_tree(
             continue
         if len(nodes) < _max_visible_nodes():
             nodes.append(item)
-            edges.append(CitationEdge(fromNodeId=parent, toNodeId=item.nodeId, depth=target_depth))
+            edges.append(CitationEdge(source=parent, target=item.nodeId, depth=target_depth))
     remaining = max(0, len(sorted_items) - len(nodes) - len(unresolved))
     return CitationTreeResponse(
         status="Partial" if unresolved else "Success",
@@ -321,7 +321,7 @@ async def get_citation_tree(
     parent = expandNodeId or paper_id
     depth_requested = 2 if expandNodeId else 1
     key = f"{paper_id}:{parent}"
-    if not refresh and (cached := store.get(key)):
+    if not refresh and (cached := await store.get(key)):
         _emit(request, cached, int((time.perf_counter() - started) * 1000), depth_requested)
         return cached
 
@@ -343,7 +343,7 @@ async def get_citation_tree(
     response = _build_tree(paper_id, parent, items, paper_service).model_copy(
         update={"providerStatus": provider_status}
     )
-    store.set(key, response)
+    await store.set(key, response)
     _emit(request, response, int((time.perf_counter() - started) * 1000), depth_requested)
     return response
 

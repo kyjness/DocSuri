@@ -5,7 +5,11 @@ from datetime import UTC, datetime, timedelta
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from docsuri_ingestion.adapters.local import FakeEmbeddingPort, InMemoryVectorIndex
+from docsuri_ingestion.adapters.local import (
+    FakeEmbeddingPort,
+    InMemoryControlPlaneStore,
+    InMemoryVectorIndex,
+)
 from docsuri_ingestion.domain.models import EmbeddingBatch, Watermark
 from docsuri_ingestion.processors import Chunker, IndexRecordAssembler
 
@@ -62,6 +66,35 @@ def test_p6_watermark_monotonic(offsets) -> None:
         watermark = watermark.advance(base + timedelta(days=offset))
         assert watermark.updated_at >= previous
         previous = watermark.updated_at
+
+
+@given(
+    st.lists(
+        st.tuples(
+            st.sampled_from(("arxiv", "semantic_scholar", "openalex")),
+            st.integers(min_value=-30, max_value=30),
+        ),
+        min_size=1,
+        max_size=30,
+    )
+)
+@settings(max_examples=25, derandomize=True)
+def test_source_watermarks_are_monotonic_and_independent(ops) -> None:
+    base = datetime(2024, 1, 1, tzinfo=UTC)
+    store = InMemoryControlPlaneStore()
+    names = ("arxiv", "semantic_scholar", "openalex")
+
+    previous = {name: store.get_watermark(name).updated_at for name in names}
+    for name, offset in ops:
+        before_others = {
+            other: store.get_watermark(other).updated_at for other in names if other != name
+        }
+        updated = store.advance_watermark(name, base + timedelta(days=offset))
+
+        assert updated.updated_at >= previous[name]
+        for other, value in before_others.items():
+            assert store.get_watermark(other).updated_at == value
+        previous[name] = updated.updated_at
 
 
 def assemble_batch(paper):

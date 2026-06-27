@@ -6,6 +6,58 @@
 
 ---
 
+## 0. U1 Corpus 논리 컴포넌트 우선 적용 개정 (2026-06-26)
+
+> **우선순위**: 본 섹션은 U1 Corpus 재인셉션의 최신 NFR Design이다. 아래 §1~§5의 arXiv-only, Cohere v3, 단일 `Watermark`, `Chunker`, `VectorIndexWriter` 설명과 충돌하면 **본 섹션을 우선한다**. 기존 섹션은 과거 결정과 멀티모달 자산 설계 추적으로 보존한다.
+
+### 0.1 Corpus component topology
+
+| 논리 컴포넌트 | 역할 | 상태/저장 |
+|---|---|---|
+| **EventBridge Source Scheduler** | source별 incremental/seed/backfill/rebuild job 발행. arXiv, Semantic Scholar, OpenAlex watermark를 분리한다. | schedule config |
+| **Corpus Work Queue** | source page/item을 worker에 전달. stage retry와 reprocess job도 같은 envelope를 쓴다. | SQS |
+| **Corpus DLQ** | retry 소진 또는 permanent failure 격리. stage, sourceName, paperId/version, failureReason을 보존한다. | SQS DLQ |
+| **Ingestion Worker** | source fetch, license validate, GROBID/HTML extraction, canonical dedup, eager DocModel, Block chunk, embed, generation write를 오케스트레이션한다. | stateless compute |
+| **Internal GROBID Runtime** | Semantic Scholar/OpenAlex PDF와 arXiv PDF fallback을 TEI/structure로 추출한다. 외부 공개 endpoint가 아니다. | container/service/sidecar; Infra에서 배치 |
+| **DocModel Parser** | arXiv HTML/MathML과 GROBID TEI를 공통 DocModel schema로 변환한다. `fullText` 전문 투영본과 paragraph/table/formula/figure/list/code blocks를 생성한다. LLM extraction 없음. | stateless library |
+| **Control Plane DB** | source watermark, canonical dedup state, generation state, parser/chunker version, job item state를 저장한다. | existing Postgres 우선 |
+| **Private Corpus S3** | normalized FullText, DocModel JSON, assets, generation manifest 저장. DocModel JSON은 AssetRef만 보유하고 이미지 바이트/URL은 `assets/`에 분리한다. raw PDF 저장 금지. | S3 private SSE |
+| **Bedrock Cohere Embed v4** | DocModelChunk embedding. active VectorSpec은 `specVersion=v2`, dimensions=1024, cosine이다. | Bedrock |
+| **OpenSearch Generation** | DocModel Block 기반 vector+lexical index generation. active alias 밖에서 검증 후 cutover한다. | OpenSearch |
+| **U6 ObservabilityHub** | source watermark lag, GROBID failure, DocModel validation failure, embedding spend, DLQ backlog, cutover status metric/log 수집. | `emitMetric`/`emitLog` |
+
+### 0.2 FD component mapping
+
+| U1 Corpus FD 컴포넌트 | NFR Design 논리 컴포넌트 |
+|---|---|
+| `CorpusSourceAdapterSet` | Ingestion Worker + source별 HTTP adapter + Source Scheduler |
+| `FullTextExtractionProcessor` | Ingestion Worker + Internal GROBID Runtime + DocModel Parser input hardening |
+| `SourcePriorityDeduplicationGuard` | Ingestion Worker + Control Plane DB canonical dedup state |
+| `DocModelBuildCoordinator` | Ingestion Worker + DocModel Parser + Private Corpus S3 |
+| `DocModelBlockChunker` | Ingestion Worker stateless library |
+| `EmbeddingGatewayAdapter` | Ingestion Worker + Bedrock Cohere Embed v4 |
+| `CorpusIndexWriter` | Ingestion Worker + OpenSearch Generation + active alias |
+| `CorpusRefreshScheduler` | EventBridge Source Scheduler + Control Plane DB source watermarks |
+| `IngestFailureHandler` | Ingestion Worker + Corpus Work Queue + Corpus DLQ + ObservabilityHub |
+
+### 0.3 Control-plane state changes
+
+| State | Key | Rule |
+|---|---|---|
+| **SourceWatermark** | `(sourceName)` | source별 단조 증가. page/item이 commit/retry/DLQ로 명시 상태를 가진 뒤 전진. |
+| **CanonicalDedupState** | `(canonicalKey)` | DOI -> arXiv id -> normalized title/firstAuthor/year 순서. losing source는 provenance만 저장. |
+| **PaperVersionState** | `(paperId, version)` | DocModel, chunk, index, S3 manifest 정합 검사. |
+| **IndexGenerationState** | `(generationId)` | `BUILDING` -> `VALIDATED` -> `ACTIVE` -> `ROLLED_BACK/RETIRED`. |
+| **DLQReprocessState** | `(dlqItemId)` | reprocess 반복이 중복 artifact/index record를 만들지 않도록 attempt와 canonical fingerprint 보존. |
+
+### 0.4 Internal-only boundaries
+
+- GROBID는 내부 worker network에서만 호출한다. 사용자 업로드 PDF, 공개 GROBID endpoint, raw PDF 다운로드는 없다.
+- OpenSearch generation alias cutover는 운영/worker 권한만 가능하다. U2는 active alias reader이며 generation write 권한이 없다.
+- Control Plane DB의 source provenance와 object refs는 내부 데이터다. 사용자 응답에는 signed URL/문서 anchor만 노출한다.
+
+---
+
 ## 1. 논리 컴포넌트 정의 및 역할
 
 U1 Ingestion 유닛은 대규모 비동기 처리를 담당하며, 논리적으로 다음과 같은 7개 핵심 컴포넌트로 구성됩니다.

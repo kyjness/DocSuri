@@ -16,26 +16,30 @@
 
 | 컴포넌트 | 시그니처 | 목적 | 입력 → 출력 |
 |---|---|---|---|
-| ArxivSourceClient | `fetchMetadataPage(slice: CategoryFilter, cursor: PageCursor, sinceWatermark: Timestamp) -> MetadataPage` | OA AI/ML 슬라이스에서 워터마크 이후 메타데이터 한 페이지를 레이트 한도 준수 조회 | CategoryFilter, PageCursor, Timestamp → MetadataPage{records[], nextCursor, hasMore} |
-| ArxivSourceClient | `fetchFullText(arxivId: ArxivId) -> RawDocument` | 단일 논문 OA 전문 원천을 타임아웃 부여 조회 | ArxivId → RawDocument{rawBody, sourceMeta, oaStatus} |
-| ArxivSourceClient | `resolveSliceCategories() -> CategoryFilter` | 설정된 카테고리·기간 슬라이스를 조회 필터로 해석 | (none) → CategoryFilter |
-| FetchParseProcessor | `parse(raw: RawDocument) -> ParsedPaper \| RejectedRecord` | 원천을 정규화 레코드로 파싱하거나 비-OA/손상 시 거부 | RawDocument → ParsedPaper \| RejectedRecord{reason} |
-| FetchParseProcessor | `validate(parsed: ParsedPaper) -> ValidationResult` | 필수 필드·형식 검증·손상 격리 판정 | ParsedPaper → ValidationResult{ok \| violations[]} |
-| Chunker | `chunk(paper: ParsedPaper) -> ChunkSet` | 본문을 추적 메타 부착 결정적 청크로 분할 | ParsedPaper → ChunkSet{chunks[] with chunkId, paperId, section, position} |
-| Chunker | `chunkId(paperId: PaperId, ordinal: int) -> ChunkId` | 결정적 청크 식별자 생성(멱등 키) | PaperId, int → ChunkId |
+| CorpusSourceAdapterSet | `fetchMetadataPage(source: SourceName, slice: CorpusSlice, cursor: PageCursor, sinceWatermark: Timestamp) -> MetadataPage` | 소스별 watermark 이후 메타데이터 페이지를 레이트 한도 준수 조회 | SourceName, CorpusSlice, PageCursor, Timestamp → MetadataPage{records[], nextCursor, hasMore} |
+| CorpusSourceAdapterSet | `fetchFullTextCandidate(record: SourceMetadataRecord) -> FullTextCandidate \| RejectedRecord` | arXiv HTML 우선/PDF 폴백, Semantic Scholar/OpenAlex PDF 후보를 조회 | SourceMetadataRecord → FullTextCandidate{sourceTier, payloadRef, license} \| RejectedRecord{reason} |
+| CorpusSourceAdapterSet | `sourceWatermark(source: SourceName) -> Watermark` | source별 incremental 기준점 조회 | SourceName → Watermark |
+| FullTextExtractionProcessor | `extractFullText(candidate: FullTextCandidate) -> FullText \| RejectedRecord` | HTML 또는 transient PDF→GROBID 결과를 정규화 FullText로 변환 | FullTextCandidate → FullText{text, structureHints, provenance} \| RejectedRecord{reason} |
+| FullTextExtractionProcessor | `validateLicense(candidate: FullTextCandidate) -> LicenseDecision` | OA/인덱싱 허용 여부를 fail-closed 판정 | FullTextCandidate → LicenseDecision{ALLOW \| REJECT, reason?} |
+| FullTextExtractionProcessor | `normalizeSource(fullText: FullText) -> ParsedPaper` | 메타데이터+전문을 canonical ParsedPaper로 정규화 | FullText → ParsedPaper |
+| SourcePriorityDeduplicationGuard | `deduplicate(records: Sequence[ParsedPaper]) -> DedupResult` | DOI → arXiv id → 정규화 title/author/year 순으로 중복 제거 | ParsedPaper[] → DedupResult{winners[], duplicates[]} |
+| SourcePriorityDeduplicationGuard | `canonicalize(paper: ParsedPaper) -> CanonicalPaperRef` | canonical paperId/version/sourceTier 결정 | ParsedPaper → CanonicalPaperRef{paperId, version, sourceTier} |
+| SourcePriorityDeduplicationGuard | `fingerprint(paper: ParsedPaper) -> ContentHash` | 변경 감지·멱등 키용 결정적 지문 생성 | ParsedPaper → ContentHash |
+| DocModelBuildCoordinator | `buildDocModel(paper: ParsedPaper, ref: CanonicalPaperRef) -> DocModel` | 수집 시점 eager DocModel 완성형 생성 | ParsedPaper, CanonicalPaperRef → DocModel |
+| DocModelBuildCoordinator | `storeDocModel(doc: DocModel) -> ObjectRef` | `(paperId, version)` 키로 DocModel 저장 | DocModel → ObjectRef |
+| DocModelBuildCoordinator | `validateDocModel(doc: DocModel) -> ValidationResult` | schema roundtrip/negative validation과 provenance 검사 | DocModel → ValidationResult |
+| DocModelBlockChunker | `chunkDocModel(doc: DocModel) -> ChunkSet` | DocModel Block 경계 기반 결정적 청크 생성 | DocModel → ChunkSet{chunks[] with blockId, sectionPath} |
+| DocModelBlockChunker | `chunkId(paperId: PaperId, version: int, blockId: BlockId, ordinal: int) -> ChunkId` | version+Block 기반 멱등 chunk id 생성 | PaperId, int, BlockId, int → ChunkId |
 | EmbeddingGatewayAdapter | `embedBatch(chunks: ChunkSet) -> EmbeddingBatch` | 청크 배치를 임베딩 게이트웨이로 벡터화(타임아웃·비용 텔레메트리 연동) | ChunkSet → EmbeddingBatch{vectors[] aligned to chunkId} |
 | EmbeddingGatewayAdapter | `embeddingSchema() -> VectorSpec` | **공유 VectorSpec(차원·모델·거리 메트릭) 노출 — U2 reader와 동일 진실 원천 소비** | (none) → VectorSpec{dimensions, modelRef, distanceMetric} |
-| VectorIndexWriter | `upsert(records: IndexRecordBatch) -> WriteResult` | 임베딩+메타+lexical 필드를 공유 인덱스에 멱등 기록 | IndexRecordBatch → WriteResult{written, skipped, failed[]} |
-| VectorIndexWriter | `tombstone(paperId: PaperId) -> WriteResult` | 철회/삭제 논문 제거로 정합성 유지 | PaperId → WriteResult |
-| VectorIndexWriter | `indexStats() -> IndexStats` | 인덱스 건강도·규모 통계(깊은 헬스·재구축 검증용) | (none) → IndexStats{docCount, vectorCount, lastWrite} |
-| DeduplicationGuard | `isNew(paper: ParsedPaper) -> DedupDecision` | 신규/변경 재처리 필요 판정(중복 비용 회피) | ParsedPaper → DedupDecision{NEW \| CHANGED \| DUPLICATE} |
-| DeduplicationGuard | `markIngested(paperId: PaperId, fingerprint: ContentHash) -> void` | 인덱싱 완료 논문 지문·상태 기록 | PaperId, ContentHash → void |
-| DeduplicationGuard | `fingerprint(paper: ParsedPaper) -> ContentHash` | 콘텐츠 결정적 지문 산출(변경 감지·멱등 키) | ParsedPaper → ContentHash |
-| RefreshScheduler | `onSchedule(trigger: ScheduleTrigger) -> IngestionJob` | 스케줄 트리거 시 증분 갱신 잡 생성·발행 | ScheduleTrigger → IngestionJob |
-| RefreshScheduler | `advanceWatermark(jobId: JobId, watermark: Timestamp) -> void` | 성공 인제스천 후 RPO 워터마크 전진 | JobId, Timestamp → void |
-| RefreshScheduler | `triggerFullRebuild() -> IngestionJob` | **인덱스 전체 재구축/초기 코퍼스 빌드 잡 개시(US-I1, RES-2 런북)** | (none) → IngestionJob |
-| NewArxivEventHandler | `onNewArxivEvent(event: NewArxivEvent) -> IngestionJob` | 신규-arXiv 이벤트를 소비해 인제스천 잡으로 변환 | NewArxivEvent → IngestionJob |
-| NewArxivEventHandler | `ackEvent(eventId: EventId) -> void` | 처리 완료 이벤트 확인(at-least-once 멱등 경계) | EventId → void |
+| CorpusIndexWriter | `prepareGeneration(spec: IndexGenerationSpec) -> IndexGenerationRef` | DocModel 기반 신규 index generation 생성 준비 | IndexGenerationSpec → IndexGenerationRef |
+| CorpusIndexWriter | `upsert(records: IndexRecordBatch, generation: IndexGenerationRef) -> WriteResult` | 임베딩+lexical+DocModel Block anchor를 OpenSearch generation에 멱등 기록 | IndexRecordBatch, IndexGenerationRef → WriteResult{written, skipped, failed[]} |
+| CorpusIndexWriter | `tombstone(paperId: PaperId, version: int, generation: IndexGenerationRef) -> WriteResult` | 철회/버전변경 논문 제거로 정합성 유지 | PaperId, int, IndexGenerationRef → WriteResult |
+| CorpusIndexWriter | `indexStats(generation: IndexGenerationRef) -> IndexStats` | 인덱스 건강도·규모 통계와 cutover smoke 입력 제공 | IndexGenerationRef → IndexStats{docCount, vectorCount, lastWrite} |
+| CorpusRefreshScheduler | `onSchedule(trigger: ScheduleTrigger) -> IngestionJob` | source별 증분 갱신 잡 생성·발행 | ScheduleTrigger → IngestionJob |
+| CorpusRefreshScheduler | `advanceWatermark(source: SourceName, watermark: Timestamp) -> void` | 성공 처리 후 source watermark 단조 전진 | SourceName, Timestamp → void |
+| CorpusRefreshScheduler | `triggerBackfill(scope: CorpusScope) -> IngestionJob` | phase-1 Corpus/backfill 잡 생성 | CorpusScope → IngestionJob |
+| CorpusRefreshScheduler | `triggerRebuild(reason: RebuildReason) -> IngestionJob` | DocModel/index 재생성 잡 생성 | RebuildReason → IngestionJob |
 | IngestFailureHandler | `classify(error: IngestError) -> FailureClass` | 오류를 재시도 가능/영구로 분류 | IngestError → FailureClass{RETRIABLE \| PERMANENT} |
 | IngestFailureHandler | `scheduleRetry(item: IngestItem, attempt: int) -> RetryDecision` | 백오프·재시도 한도·쿼터 인지 재시도 결정 | IngestItem, int → RetryDecision{RETRY at delay \| EXHAUSTED} |
 | IngestFailureHandler | `sendToDLQ(item: IngestItem, reason: FailureReason) -> void` | 소진/영구 실패 항목 DLQ 격리 | IngestItem, FailureReason → void |
@@ -167,16 +171,16 @@
 
 | 컴포넌트 | 시그니처 | 목적 | 입력 → 출력 |
 |---|---|---|---|
-| ApiGatewayMiddleware | `handle(request: HttpRequest, next: DomainHandler) -> HttpResponse` | 전처리 체인 적용→핸들러 위임; U2 라우트는 응답 엣지에서 GroundingEnforcementHook.enforce 적용; 미처리 예외 fail-closed 변환 | HttpRequest, DomainHandler → HttpResponse(정상 \| 일반화 에러) |
+| ApiGatewayMiddleware | `handle(request: HttpRequest, next: DomainHandler) -> HttpResponse` | 전처리 체인 적용→핸들러 위임; U2 라우트는 응답 엣지에서 GroundingEnforcementHook.enforce 적용; enforce에서 발생한 모든 예외는 명시적으로 catch하여 fail-closed(toProductionError) 처리함으로써 우회 차단 | HttpRequest, DomainHandler → HttpResponse(정상 \| 일반화 에러) |
 | ApiGatewayMiddleware | `applySecurityHeaders(response: HttpResponse) -> HttpResponse` | 제한 CSP·보안 헤더 부착(frame-ancestors=self 카브아웃) | HttpResponse → HttpResponse |
 | ApiGatewayMiddleware | `toProductionError(err: Throwable, requestId: RequestId) -> HttpResponse` | 내부 예외를 스택 트레이스 비노출 일반화 에러로 매핑(fail-closed) | Throwable, RequestId → HttpResponse(generic) |
 | AuthnAuthzGuard | `authenticate(request: HttpRequest) -> Result<Principal, AuthError>` | 세션/토큰 서버측 검증(U3.SessionVerifier 위임) | HttpRequest → Result<Principal, AuthError> |
 | AuthnAuthzGuard | `authorize(principal: Principal, resource: ResourceRef, action: Action) -> AuthzDecision` | **객체 단위 소유권 결정을 U3.AuthorizationGuard에 위임(재구현 아님); 미들웨어는 강제 이음새. 관리자 MFA 확인.** | Principal, ResourceRef, Action → AuthzDecision(allow \| deny) |
 | InputValidationGuard | `validate(payload: RawPayload, schemaId: SchemaId) -> Result<ValidatedPayload, ValidationError>` | 선언적 스키마 검증·새니타이즈·인라인 에러 | RawPayload, SchemaId → Result<ValidatedPayload, ValidationError> |
 | RateLimiter | `checkLimit(scope: LimitScope, key: ClientKey) -> LimitDecision` | 출처별 슬라이딩 윈도 한도 평가(검색·가입·남용 완화) | LimitScope, ClientKey → LimitDecision(allow \| throttle \| reject) |
-| CostGuardCircuitBreaker | `getBudgetState() -> BudgetState` | 준실시간 임계 상태·권고 저하 모드 반환(동기 폴백 분기 지원) | (none) → BudgetState{tier, degradeMode, circuitState} |
-| CostGuardCircuitBreaker | `recordSpend(usage: UsageEvent) -> void` | 사용량/지출 누적·임계 평가·급증 신호화 트리거 | UsageEvent → void |
-| CostGuardCircuitBreaker | `evaluateCircuit() -> CircuitTransition` | 임계 도달 시 OPEN/반-개방/CLOSE 전이·저하 지시 갱신 | (internal snapshot) → CircuitTransition |
+| CostGuardCircuitBreaker | `getBudgetState() -> BudgetState` | 준실시간 임계 상태·권고 저하 모드 반환(동기 폴백 분기 지원). 원자적 카운터를 읽어 TOCTOU 경합을 제거함 | (none) → BudgetState{tier, degradeMode, circuitState} |
+| CostGuardCircuitBreaker | `recordSpend(usage: UsageEvent) -> void` | 사용량/지출 누적(원자적 카운터 증분)·급증 신호화 트리거 | UsageEvent → void |
+| CostGuardCircuitBreaker | `evaluateCircuit() -> CircuitTransition` | 비동기 주기적 실행으로 임계 도달 시 OPEN/반-개방/CLOSE 전이·저하 지시 갱신 | (internal snapshot) → CircuitTransition |
 | **GroundingEnforcementHook** | `enforce(candidate: CandidateResponse, retrieved: RetrievedRecordSet) -> GroundingDecision` | **FR-5/QT-1 단일 권위 런타임 게이트. 실재 레코드 매핑·AI 텍스트 출처 검증·통과/차단/기권. 위반 시 HallucinationDetector로 신호.** | CandidateResponse, RetrievedRecordSet → GroundingDecision{verdict: pass\|block\|abstain, violations[]} |
 | GroundingEnforcementHook | `runEvalSet(evalSet: GroundingEvalSet) -> GroundingEvalReport` | QT-1 평가셋 동일 후크로 실행·날조 0건/코퍼스 밖 기권 보고(OP/팀 소유) | GroundingEvalSet → GroundingEvalReport |
 | **ReliabilityEvalProbe** | `runReliabilityEvalSet(evalSet: ReliabilityEvalSet) -> ReliabilityEvalReport` | **QT-3 신뢰성/우아한 저하 인수 평가 — 업스트림 장애·빈 결과 경로 동작 검증·보고** | ReliabilityEvalSet → ReliabilityEvalReport{cases[], degradedBehaviorOk} |

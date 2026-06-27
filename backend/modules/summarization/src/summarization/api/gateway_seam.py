@@ -8,8 +8,12 @@ orchestrator and returns the terminal response (fail-closed on any unexpected er
 
 from __future__ import annotations
 
+import logging
+
 from ..domain.models import AbstainDTO, RequestContext, SummaryRequest, SummaryResponse
 from ..service.orchestrator import SummarizationOrchestrationService
+
+logger = logging.getLogger(__name__)
 
 
 def run_summarization(
@@ -20,4 +24,12 @@ def run_summarization(
     try:
         return orchestrator.run(request, ctx)
     except Exception:  # noqa: BLE001 — fail-closed: never surface internals (INV-4/SEC-15)
+        # Response stays generic (no internals leak), but the cause is logged for operability —
+        # silently swallowing it makes a real fault (store/glossary/cost) indistinguishable from
+        # a legitimate abstain. (task=%s scope=%s so the failing path is identifiable.)
+        logger.exception(
+            "summarization run failed → fail-closed abstain (task=%s scope=%s)",
+            getattr(request, "task", "?"),
+            getattr(request, "scope", "?"),
+        )
         return AbstainDTO(reason="unavailable")

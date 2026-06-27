@@ -156,6 +156,9 @@
 | `AbstainDTO` | 근거화 실패(재시도 후)·코퍼스밖 | `{ reason }` |
 | `CostDegradedDTO` | 비용 게이트 OPEN/저하 | `{ message: "AI 요약 일시 중단" }`(FR-11) |
 | `SourceUnavailableDTO` | 전문·초록 모두 부재 | `{ reason }` |
+| `PendingDTO` | 비동기 잡(map-reduce/번역) 처리 중 | `{ jobId, retryAfterMs }` |
+
+> **비동기 폴링 계약 (Polling Contract)**: `PendingDTO` 수신 시 클라이언트는 `retryAfterMs`(예: 5000ms) 대기 후 `GET /api/summarization/jobs/{jobId}` 엔드포인트를 통해 상태를 폴링한다. 작업 완료 시 `SummaryResultDTO` 또는 실패 상태 DTO가 반환되며, 계속 진행 중일 경우 다시 `PendingDTO`가 반환된다. 최대 폴링 시간(예: 60초) 초과 시 클라이언트는 타임아웃 오류를 표시하고 중단한다.
 
 > **빈 성공 금지**: 근거 없는 빈 산출물을 성공으로 표기하지 않음. 비용저하·소스부재와 무관하게 근거화 실패면 **기권 우선**(INV-4).
 

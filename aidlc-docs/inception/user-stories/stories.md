@@ -28,9 +28,9 @@
 - **Given** 길이 초과 또는 빈 질의, **When** 제출하면, **Then** 인라인 검증 메시지가 뜨고 요청은 전송되지 않는다.
 - **Traces**: FR-1, SEC-5, NFR-U1
 
-### US-D2 — 공유 arXiv 인덱스에 대한 시맨틱 검색
+### US-D2 — 공유 AI/ML Corpus 인덱스에 대한 시맨틱 검색
 **As** 연구자(P1), **I want** 시스템이 의미로 논문을 검색하기를, **so that** 정확한 키워드 없이도 관련 연구를 찾는다.
-- **Given** 유효한 질의, **When** 검색하면, **Then** 공유 AI/ML arXiv 벡터 인덱스에서 후보를 검색한다(시맨틱, 선택적으로 lexical 하이브리드).
+- **Given** 유효한 질의, **When** 검색하면, **Then** 공유 AI/ML Corpus 벡터 인덱스에서 후보를 검색한다(시맨틱, 선택적으로 lexical 하이브리드).
 - **Given** 도메인 특화 표현, **When** 검색되면, **Then** 정확 용어 매치뿐 아니라 의미적으로 관련된 논문도 포함된다.
 - **Traces**: FR-2
 
@@ -138,22 +138,26 @@
 
 ## 에픽 4 — 인제스천
 
-### US-I1 — arXiv 인제스천 & 인덱싱 파이프라인
-**As** 운영자(OP), **I want** AI/ML arXiv 논문이 벡터 인덱스로 수집되기를, **so that** 연구자가 이를 발견할 수 있다.
-- **Given** 오픈액세스 AI/ML arXiv 소스, **When** 파이프라인이 실행되면, **Then** 메타데이터 + 전문을 수집·청크·임베딩해 벡터 인덱스에 저장한다.
-- **Given** 비(非)오픈액세스 항목, **When** 마주치면, **Then** 제외된다(오픈액세스 전용).
-- **Traces**: FR-6, C-1
+### US-I1 — 멀티소스 Corpus & DocModel 인덱싱 파이프라인 *(2026-06-26 U1 Corpus 개정)*
+**As** 운영자(OP), **I want** AI/ML 논문 Corpus가 멀티소스로 수집되어 DocModel 기반 인덱스로 구축되기를, **so that** 연구자가 더 넓고 근거 가능한 논문을 발견할 수 있다.
+- **Given** arXiv·Semantic Scholar·OpenAlex의 OA/인덱싱 허용 AI/ML 논문, **When** 파이프라인이 실행되면, **Then** arXiv는 HTML 우선/PDF 폴백, Semantic Scholar·OpenAlex는 PDF→GROBID로 FullText를 추출한다.
+- **Given** 같은 논문이 여러 소스에 존재, **When** 병합하면, **Then** DOI→arXiv id→정규화(title+1저자+연도) 순으로 dedup하고 소스 우선순위 승자를 보존한다.
+- **Given** 추출된 FullText, **When** 수집이 완료되면, **Then** `(paperId, version)`별 DocModel 완성형을 eager 생성하고 DocModel Block 경계로 청크·임베딩해 OpenSearch/S3에 저장한다.
+- **Given** 라이선스 미허용 또는 원시 PDF, **When** 처리하면, **Then** 검색/DocModel 저장 대상에서 제외하거나 transient 추출 입력으로만 사용하고 원시 PDF는 저장하지 않는다.
+- **Traces**: FR-6, FR-18, C-1, QT-9
 
 ### US-I2 — 최신성 스케줄 갱신
-**As** 연구자(P1), **I want** 새로 게재된 논문이 나타나기를, **so that** 빠르게 변하는 분야를 따라갈 수 있다.
-- **Given** 스케줄 갱신, **When** 실행되면, **Then** 신규 arXiv 논문이 인덱스에 추가되어 검색 가능해진다.
-- **Given** 갱신 실패, **When** 발생하면, **Then** 로깅·경보된다(OP).
-- **Traces**: FR-6, RES-7
+**As** 연구자(P1), **I want** 새로 게재된 논문이 source별 증분 갱신으로 나타나기를, **so that** 빠르게 변하는 분야를 따라갈 수 있다.
+- **Given** source별 watermark가 저장되어 있고, **When** 스케줄 갱신이 실행되면, **Then** 마지막 성공 지점 이후의 신규/변경 논문만 수집·재빌드·재색인된다.
+- **Given** 논문 버전이 바뀌면, **When** 재처리되면, **Then** DocModel·청크·인덱스·S3 참조가 같은 `(paperId, version)`으로 정합된다.
+- **Given** 갱신 실패, **When** 발생하면, **Then** source별 watermark 지연·단계 실패·DLQ 적체가 로깅·경보된다(OP).
+- **Traces**: FR-6, FR-18, RES-7, QT-9
 
 ### US-I3 — 복원력 있는 인제스천
-**As** 운영자(OP), **I want** 인제스천이 arXiv 일시 장애를 견디기를, **so that** 일시적 장애가 인덱스를 손상·정체시키지 않는다.
-- **Given** arXiv API 타임아웃/에러, **When** 인제스천 중이면, **Then** 명시적 타임아웃 + 재시도/백오프를 적용하고 arXiv 레이트 한도/쿼터를 준수한다.
-- **Traces**: RES-9, RES-8
+**As** 운영자(OP), **I want** 인제스천이 소스/GROBID/임베딩 일시 장애를 견디기를, **so that** 일시적 장애가 인덱스를 손상·정체시키지 않는다.
+- **Given** arXiv·Semantic Scholar·OpenAlex·GROBID·임베딩 중 하나가 타임아웃/에러를 반환, **When** 인제스천 중이면, **Then** 명시적 타임아웃 + 재시도/백오프를 적용하고 각 소스 레이트 한도/쿼터를 준수한다.
+- **Given** 재시도 한도를 넘은 논문/단계, **When** 실패하면, **Then** DLQ로 보내고 이미 성공한 인덱스 버전을 조용히 손상시키지 않는다.
+- **Traces**: RES-9, RES-8, RES-7, QT-9
 
 ---
 
@@ -174,14 +178,15 @@
 ### US-R3 — 비용 상한 서킷 브레이커 + 비용 폭발 탐지
 **As** 운영자(OP), **I want** 지출이 자동으로 상한되기를, **so that** 비용이 폭주하지 않는다.
 - **Given** 월 지출이 강한 상한에 근접, **When** 임계치를 넘으면, **Then** 서킷 브레이커가 상한 초과 이전에 저하한다(LLM 리랭킹 비활성화 / lexical 폴백).
+- **Given** U1 eager Corpus 빌드가 예산 임계치에 접근, **When** 우선순위 밖 논문이 남아 있으면, **Then** 신규 빌드는 보류·백필/DLQ로 이월되고 기존 검색/열람은 명시적 저하 상태를 유지한다.
 - **Given** 비정상 지출 급증, **When** 탐지되면, **Then** **비용 폭발 인시던트** 신호가 발생·경보된다.
 - **Traces**: NFR-C1, RES-11(a), SEC-11
 
 ### US-R4 — 관측성 & AI 인시던트 경보
 **As** 운영자(OP), **I want** 메트릭/로그/트레이스와 인시던트 경보를, **so that** 경량 IR + COE 프로세스에 따라 탐지·대응할 수 있다.
-- **Given** 운영 중 서비스, **When** 대시보드를 열면, **Then** 지연·에러율·처리량·검색/근거화 건강도·지출을 본다.
+- **Given** 운영 중 서비스, **When** 대시보드를 열면, **Then** 지연·에러율·처리량·검색/근거화 건강도·지출·source별 watermark·DLQ 적체를 본다.
 - **Given** 세 AI 인시던트 클래스(비용/할루시네이션/반쪽짜리 결과) 중 하나, **When** 신호가 발생하면, **Then** 경보가 장애 대응 프로세스로 라우팅되고 COE 후속이 따른다.
-- **Traces**: NFR-O1, RES-5, RES-11
+- **Traces**: NFR-O1, RES-5, RES-7, RES-11
 
 ### US-R5 — 헬스 체크
 **As** 운영자(OP), **I want** 얕은 + 깊은 헬스 체크를, **so that** 비정상 인스턴스로의 라우팅을 우회한다.
@@ -431,7 +436,7 @@
 | NFR-U1 | US-H1, US-D1, US-D4 |
 | NFR-U2 | US-D4 |
 | RES-6 | US-R5 |
-| RES-7 | US-I2 |
+| RES-7 | US-I2, US-I3, US-R4 |
 | RES-8 | US-I3 |
 | RES-9 | US-I3, US-R2 |
 | RES-11 (a/b/c) | US-R3, US-R1, US-R2, US-R4 |
@@ -439,6 +444,8 @@
 | QT-2 | US-D3 |
 | QT-3 | US-D7, US-R2 |
 | QT-4 (PBT) | 스토리 비매핑 — Functional/NFR Design 보류(RES-4/RES-12와 동일) |
+| FR-18 (DocModel 리치뷰/phase-1 eager 생성) [U1/U7/U5] | US-I1, US-I2, US-S3 |
+| QT-9 (U1 Corpus 품질/불변식) [U1] | US-I1, US-I2, US-I3 |
 | FR-12 (AI 요약) [U7] | US-S1, US-S3, US-S5 |
 | FR-13 (한국어 번역) [U7] | US-S2, US-S5 |
 | FR-14 (요약/번역 개인화) [U7] | US-S4 |
@@ -450,7 +457,6 @@
 | NFR-P3 (각주 트리 온디맨드 응답) [U8] | US-CG1 |
 | QT-6 (인용 엣지 정확도·그래프 불변식) [U8] | US-CG2, US-CG3, US-CG6 |
 | NFR-C1 (U8 citation API 쿼터 게이트) [U8] | US-CG5 |
-| FR-18 (행동 이벤트 기록) [U9] | US-P1, US-P2 |
 | FR-19 (사용자 관심 프로필) [U9] | US-P3, US-P6 |
 | FR-20 (개인화 적용) [U9] | US-P4, US-P5, US-P6 |
 | NFR-P4 (개인화 비차단) [U9] | US-P1, US-P4, US-P7 |
@@ -463,4 +469,4 @@
 | NFR-C1 (Agent 비용 게이트) [Agent] | US-RA7 |
 | QT-8 (에이전트 근거·novelty 인수) [Agent] | US-RA4, US-RA7, US-RA8 |
 
-_FR-1..11 전부 커버됨(표 본문 대조 검증). **FR-12..14·NFR-P2·QT-5 = U7 에픽 6(US-S1..S6) 커버(2026-06-18 편입, 팀 합의). FR-15..16·NFR-P3·QT-6 = U8 에픽 7(US-CG1..CG6) 커버(2026-06-19 편입). FR-18..20·NFR-P4·QT-7 = U9 에픽 8(US-P1..P7) 커버(2026-06-23 편입). FR-22..25·NFR-P5·QT-8 = 연구 에이전트 에픽 9(US-RA1..RA8) 커버(2026-06-24 편입; v1=모드 A, 모드 B novelty=US-RA8 다음 사이클·Q4=A). FR-26..29 = 계정 에픽 2 보강(US-A3..A7) 커버(2026-06-24 편입 — 재설정·소셜 OIDC·라이프사이클·입력 견고화).** SEC/RES의 인프라·설계 단계 항목(SEC-1/2/6/7/10/13/14, RES-1/2/3/4/10/12)은 스토리에 비매핑하고 NFR/Infra Design에서 다룬다. 적대적 비평 패스 완료(2026-06-15, 7/7 critic)._
+_FR-1..11 전부 커버됨(표 본문 대조 검증). **FR-12..14·NFR-P2·QT-5 = U7 에픽 6(US-S1..S6) 커버(2026-06-18 편입, 팀 합의). FR-15..16·NFR-P3·QT-6 = U8 에픽 7(US-CG1..CG6) 커버(2026-06-19 편입). FR-18·QT-9 = U1 Corpus/DocModel eager 개정(US-I1..I3 + US-S3) 커버(2026-06-26 편입). FR-19..20·NFR-P4·QT-7 = U9 에픽 8(US-P1..P7) 커버(2026-06-23 편입). FR-22..25·NFR-P5·QT-8 = 연구 에이전트 에픽 9(US-RA1..RA8) 커버(2026-06-24 편입; v1=모드 A, 모드 B novelty=US-RA8 다음 사이클·Q4=A). FR-26..29 = 계정 에픽 2 보강(US-A3..A7) 커버(2026-06-24 편입 — 재설정·소셜 OIDC·라이프사이클·입력 견고화).** SEC/RES의 인프라·설계 단계 항목(SEC-1/2/6/7/10/13/14, RES-1/2/3/4/10/12)은 스토리에 비매핑하고 NFR/Infra Design에서 다룬다. 적대적 비평 패스 완료(2026-06-15, 7/7 critic)._

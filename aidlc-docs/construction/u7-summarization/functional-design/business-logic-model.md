@@ -71,6 +71,7 @@
 
 ### 3.6 `LengthRouter` (Q3) — **3단계 구현됨(#135)**
 - `≤컨텍스트예산` → 단일 콜 / `컨텍스트예산~입력상한` → 긴 입력 경로(요약=**map-reduce** `MapReduceSummarizer`: 섹션 인지 청킹+오버랩 → 부분요약(map) → 통합(reduce); 번역=**map-only** `StructuredTranslator`: 섹션 경계 청킹 → 섹션별 번역(map) → 소스 구조에 재주입, **reduce 없음** — BR-S18) / `>입력상한`(OVER_CAP) → **거절**(`input_too_long`, 부분 처리 안 함 — BR-S6, 두 task 공통).
+- **제약(Map-Reduce Grounding Contract)**: reduce 단계 통합 시, 프롬프트는 합성되는 주장이 반드시 "해당 청크가 참조한 원본의 앵커 범위"를 초과하지 않도록 엄격히 통제받아야 한다.
 - **동기/비동기(BR-S12)**: 단일 콜=동기. 긴 입력=비동기 잡(API enqueue→`PendingDTO`→폴링→워커 inline 생성→write-through). **잡 큐·워커는 task-agnostic**(요약 map-reduce·번역 map-only 동일 큐/워커, `task` 포함). 게이트 OFF(map-reduce 미배선)면 MAP_REDUCE 밴드는 두 task 모두 abstain(기존 보존). **임계·청크 크기는 NFR.**
 
 ### 3.7 `LlmSummarizer` / `StructuredTranslator` (생성, §6 stage 6)

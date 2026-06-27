@@ -14,6 +14,7 @@ from .adapters.local import (
     FakeArxivSource,
     FakeEmbeddingPort,
     InMemoryControlPlaneStore,
+    InMemoryDocModelStore,
     InMemoryFullTextStore,
     InMemoryQueue,
     InMemoryVectorIndex,
@@ -21,6 +22,8 @@ from .adapters.local import (
 )
 from .adapters.postgres import PostgresControlPlaneStore
 from .application import IngestionPipelineService, RefreshOrchestrationService
+from .corpus_sources import CorpusSourceAdapterSet
+from .domain.enums import SourceName
 from .observability import LoggingObservabilityHub
 from .resilience import IngestFailureHandler, IngestionResilienceService
 from .settings import IngestionSettings
@@ -32,6 +35,7 @@ class RuntimeServices:
     refresh: RefreshOrchestrationService
     queue: object
     observability: object
+    corpus_sources: object | None = None
 
 
 def build_local_runtime() -> RuntimeServices:
@@ -42,6 +46,9 @@ def build_local_runtime() -> RuntimeServices:
     observability = CapturingObservabilityHub()
     resilience = IngestionResilienceService(observability, timeout_seconds=2.0)
     failure_handler = IngestFailureHandler(queue, observability)
+    from .docmodel import DocModelBuilder
+
+    doc_model_builder = DocModelBuilder(source=arxiv, store=InMemoryDocModelStore())
     pipeline = IngestionPipelineService(
         arxiv=arxiv,
         full_text_store=InMemoryFullTextStore(),
@@ -51,6 +58,7 @@ def build_local_runtime() -> RuntimeServices:
         observability=observability,
         resilience=resilience,
         failure_handler=failure_handler,
+        doc_model_builder=doc_model_builder,
     )
     refresh = RefreshOrchestrationService(
         arxiv=arxiv,
@@ -69,6 +77,32 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
     arxiv = ArxivHttpSource(
         timeout_seconds=settings.request_timeout_seconds,
         rate_limiter=None,
+    )
+    grobid = None
+    if settings.grobid_url:
+        from .adapters.grobid import GrobidHttpClient
+
+        grobid = GrobidHttpClient(
+            base_url=settings.grobid_url,
+            timeout_seconds=settings.request_timeout_seconds,
+        )
+    enabled_sources = _enabled_sources(settings.corpus_sources)
+    semantic_scholar = openalex = None
+    if grobid is not None:
+        from .adapters.corpus_http import OpenAlexCorpusSource, SemanticScholarCorpusSource
+
+        if SourceName.SEMANTIC_SCHOLAR in enabled_sources:
+            semantic_scholar = SemanticScholarCorpusSource(
+                api_key=settings.semantic_scholar_api_key,
+                timeout_seconds=settings.request_timeout_seconds,
+            )
+        if SourceName.OPENALEX in enabled_sources:
+            openalex = OpenAlexCorpusSource(timeout_seconds=settings.request_timeout_seconds)
+    corpus_sources = CorpusSourceAdapterSet(
+        arxiv=arxiv,
+        grobid=grobid,
+        semantic_scholar=semantic_scholar,
+        openalex=openalex,
     )
     control = PostgresControlPlaneStore(settings.control_plane_dsn or "")
     queue = SqsQueue(
@@ -103,9 +137,9 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
             prefix=settings.asset_s3_prefix,
             kms_key_id=settings.asset_kms_key_id,
         )
-    # Lazy on-demand doc-model builder (BR-30/D6): reuses the arXiv source (HTML→ar5iv tier)
-    # and the single bucket's doc-model/ prefix. Drives BUILD_DOC_MODEL jobs only — the index
-    # hot path is unaffected.
+    # Doc-model builder (BR-30/D6): reuses the arXiv source (HTML→ar5iv tier) and the
+    # single bucket's doc-model/ prefix. Phase-1 Corpus builds eagerly during ingest; the
+    # BUILD_DOC_MODEL job remains for misses/backfills.
     from .adapters.aws import S3DocModelStore
     from .docmodel import DocModelBuilder
 
@@ -137,6 +171,7 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
         asset_store=asset_store,
         asset_source=asset_source,
         doc_model_builder=doc_model_builder,
+        corpus_sources=corpus_sources,
         embedding_v2=BedrockCohereEmbeddingPort(
             model_id=settings.bedrock_model_id_v2,
             region_name=settings.aws_region,
@@ -153,7 +188,18 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
         control_plane=control,
         queue=queue,
         observability=observability,
+        corpus_sources=corpus_sources,
+        enabled_sources=enabled_sources,
     )
     return RuntimeServices(
-        pipeline=pipeline, refresh=refresh, queue=queue, observability=observability
+        pipeline=pipeline,
+        refresh=refresh,
+        queue=queue,
+        observability=observability,
+        corpus_sources=corpus_sources,
     )
+
+
+def _enabled_sources(raw: str) -> tuple[SourceName, ...]:
+    sources = tuple(SourceName(part.strip()) for part in raw.split(",") if part.strip())
+    return sources or (SourceName.ARXIV,)

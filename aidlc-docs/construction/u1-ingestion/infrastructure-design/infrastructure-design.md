@@ -8,6 +8,78 @@
 
 ---
 
+## 0. U1 Corpus 인프라 우선 적용 개정 (2026-06-26)
+
+> **우선순위**: 본 섹션은 재인셉션 페이즈 1 / U1 Corpus의 최신 Infrastructure Design이다. 아래 §1~§5의 멀티모달 자산 전용 범위와 lazy doc-model 설명이 본 섹션과 충돌하면 **본 섹션을 우선한다**. 기존 섹션은 FR-17 자산 인프라 추적 기록으로 보존한다.
+
+### 0.1 AWS 리소스 매핑
+
+| Corpus 논리 컴포넌트 | AWS 매핑 | 결정 |
+|---|---|---|
+| EventBridge Source Scheduler | 기존 EventBridge rule 패턴 확장 | source별 rule 3개 또는 하나의 daily fan-out rule을 같은 ingestion queue로 전송. 신규 event bus 불필요. |
+| Corpus Work Queue | 기존 `docsuri-ingestion-queue` | message type으로 `source_tick`, `paper_ingest`, `BUILD_DOC_MODEL`, `REPROCESS_DLQ` 구분. 큐 추가 없음. |
+| Corpus DLQ | 기존 `docsuri-ingestion-dlq` | payload에 `failureStage`, `sourceName`, `paperId`, `version`, `canonicalKey` 포함. stage별 별도 DLQ는 만들지 않음. |
+| Ingestion Worker | 기존 ECS Fargate service `docsuri-ingestion` | max task count는 기존 3 유지. Corpus backfill은 budget/queue depth로 조절. |
+| Internal GROBID | Ingestion task sidecar container | public endpoint 없음. worker container가 localhost/container network로 호출. GROBID 때문에 task memory/cpu는 Infra/code 단계에서 상향 가능. |
+| Control Plane DB | 기존 RDS/Postgres | `source_watermark`, `canonical_dedup_state`, `corpus_generation`, `corpus_job_item` 테이블 추가. 신규 DB 없음. |
+| Corpus artifacts | 기존 S3 bucket `docsuri-papers-fulltext-{account}` | prefixes: `full-text/`, `doc-model/`, `assets/`, `generation-manifests/`, `source-provenance/`. raw PDF prefix 없음. |
+| Embedding | existing Bedrock profile `global.cohere.embed-v4:0` | `output_dimension=1024`, writer input_type=`search_document`. |
+| OpenSearch generation | existing domain `docsuri-papers` | same domain, new generation index names, active alias cutover. 신규 domain 없음. |
+| Observability | CloudWatch Logs/Metrics + U6 ObservabilityHub | DLQ depth, source watermark lag, GROBID failures, embedding spend, cutover status alarms. |
+| Cost guard | existing AWS Budget `$1600/month` + U1 run budget | monthly account cap 유지. U1 worker stops new fetch/GROBID/embed work when run budget is exhausted. |
+
+### 0.2 S3 layout
+
+| Prefix | Content | Lifecycle |
+|---|---|---|
+| `full-text/{paperId}/v{version}.txt` | normalized FullText projection | retained, private |
+| `doc-model/{paperId}/v{version}.json` | eager phase-1 DocModel: `fullText` projection + paragraph/table/formula/figure/list/code blocks + AssetRef ids | retained, private |
+| `assets/{paperId}/{version}/{assetId}.webp` | figure/table image assets referenced by DocModel AssetRef | retained, private |
+| `generation-manifests/{generationId}/{paperId}/v{version}.json` | artifact/index consistency manifest | retained until generation retired |
+| `source-provenance/{paperId}/v{version}.json` | source lineage and sourceTier | retained with DocModel |
+
+**Raw PDFs are not stored.** PDF bytes from arXiv/Semantic Scholar/OpenAlex are temporary GROBID/parser input only. DocModel JSON also does not store image bytes, base64 payloads, or presigned URLs; it stores only stable AssetRef identifiers that resolve to private `assets/` objects.
+
+### 0.3 Control-plane tables
+
+| Table | Purpose | Notes |
+|---|---|---|
+| `source_watermark` | source별 cursor/timestamp and last success | PK `source_name`; monotonic update only. |
+| `canonical_dedup_state` | DOI/arXiv/title-key -> canonical paper/version | stores winning source tier and seen source refs. |
+| `paper_version_state` | `(paper_id, version)` consistency state | stores docModelRef, generationId, status. |
+| `corpus_generation` | OpenSearch generation lifecycle | `BUILDING`, `VALIDATED`, `ACTIVE`, `RETIRED`, `ROLLED_BACK`. |
+| `corpus_job_item` | retry/DLQ/reprocess metadata | stage, attempts, failureReason, sourceName. |
+
+Existing RDS migration runner applies these schema changes. No separate database.
+
+### 0.4 IAM and network
+
+- Worker task role:
+  - SQS consume on `docsuri-ingestion-queue`, DLQ send/reprocess permissions on `docsuri-ingestion-dlq`.
+  - S3 read/write only for the Corpus prefixes above.
+  - Bedrock `InvokeModel` only for Cohere Embed v4 profile/foundation model.
+  - OpenSearch write only for Corpus indices/generation aliases.
+  - RDS secret read and DB network access as existing ingestion stack pattern.
+- API/U7 read role:
+  - S3 read for `doc-model/`, `full-text/`, `assets/`; no write to Corpus generation.
+  - SQS `SendMessage` only for doc-model build/backfill trigger when still needed.
+- GROBID:
+  - no IAM, no public ingress, no load balancer.
+  - worker sidecar call only.
+
+### 0.5 Alarms and budget stops
+
+| Signal | Action |
+|---|---|
+| DLQ visible messages > 0 | alert OP; reprocess runbook. |
+| source watermark lag over threshold | alert OP; source-specific circuit opens. |
+| GROBID failure rate over threshold | alert OP; PDF sources slow/stop, arXiv HTML continues. |
+| embedding spend/run budget over threshold | stop new fetch/GROBID/embed work; keep active alias. |
+| generation validation failure | block alias cutover. |
+| OpenSearch write failures | stop generation writes; keep active alias. |
+
+---
+
 ## 1. 스토리지
 
 ### 1.1 S3 자산 (Q1=A)

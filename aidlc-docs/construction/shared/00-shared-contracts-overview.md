@@ -20,7 +20,7 @@
 | **DTOs**(API↔클라이언트) | `dtos.md` | 🟡 PROVISIONAL | U2/U3/U4 | U5 |
 | **Events**(이벤트 백본) | `events.md` | 🟡 일부 FROZEN | U1/U2/U3/U6 | U4/U6 |
 | **Ports**(횡단 후크 IF) | `ports.md` | 🟡 일부 FROZEN | U6(구현) | U2/U1(의존) |
-| **doc-model**(구조화 문서모델) | `docmodel.md` | 🟡 PROVISIONAL | U1(builder) | U7·U5·에이전트 |
+| **doc-model**(구조화 문서모델) | `docmodel.md` | 🔒 FROZEN | U1(builder) | U7·U5·에이전트 |
 
 > **doc-model**(2026-06-23 피벗 추가): 요약/번역 입력·자체 리치뷰·에이전트 toolschema의 공용 계약. 게이트=`plans/docmodel-foundation-pivot-plan.md`, 스키마=`shared/dtos/docmodel.schema.json`.
 

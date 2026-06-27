@@ -104,7 +104,7 @@ U2/U7이 소비하는 개인화 결정.
 | Field | Rule |
 |---|---|
 | `enabled` | 개인화 적용 가능 여부. |
-| `searchBoosts` | category/keyword bounded boost. |
+| `searchBoosts` | category/keyword bounded boost. **계약: 각 boost 값은 반드시 `[-0.1, +0.1]` 범위 내여야 하며, 전체 부스트의 합이 최대 `0.2`를 초과할 수 없다. 이는 기본 검색의 적합성 순위를 극단적으로 뒤집지 않고 미세 조정만 수행하도록 강제하기 위함이다.** |
 | `summaryDefaults` | persona/view 기본값 제안. |
 | `translationDefaults` | scope/glossary 기본값 제안. |
 | `reason` | `profile_available`, `disabled`, `no_profile`, `degraded`. |

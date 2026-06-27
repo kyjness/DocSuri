@@ -332,6 +332,7 @@ def _wrap_plain_doc(body: str, request: SummaryRequest) -> DocModel:
                     "generatedAt": "1970-01-01T00:00:00Z",
                 },
             },
+            "fullText": body,
             "sections": [
                 {
                     "id": "s1",

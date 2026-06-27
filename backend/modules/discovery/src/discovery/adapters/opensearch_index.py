@@ -2,8 +2,9 @@
 
 The reader mirror of U1's ``OpenSearchVectorIndex`` writer: the SAME index
 (``docsuri-corpus-v1``), one store serving both k-NN (cosine, ``vector``) and BM25
-(``lexicalTerms``) — hybrid retrieval (FR-2). Hits are deserialized straight back into the
-shared ``IndexRecord`` (SSOT round-trip; no forked shape). OpenSearch is one store, so ANY
+(``title``/``abstract``/``lexicalTerms``) — hybrid retrieval (FR-2). Hits are
+deserialized straight back into the shared ``IndexRecord`` (SSOT round-trip; no forked
+shape). OpenSearch is one store, so ANY
 query failure raises ``IndexUnavailable`` → the orchestrator fail-closes (INV-3/SEC-15);
 there is no index fallback (only embedding has a fallback).
 
@@ -124,7 +125,7 @@ class OpenSearchPaperLookupAdapter:
 
 
 class OpenSearchLexicalIndexAdapter:
-    """BM25 lexical reader over the shared OpenSearch index (``lexicalTerms``; FR-2)."""
+    """BM25 reader over analyzed title, abstract, and chunk-body lexical fields (FR-2)."""
 
     def __init__(self, client: Any, index_name: str) -> None:
         self._client = client
@@ -133,7 +134,12 @@ class OpenSearchLexicalIndexAdapter:
     def bm25_search(self, terms: Sequence[str], top_k: int) -> list[ScoredRecord]:
         body = {
             "size": top_k,
-            "query": {"match": {"lexicalTerms": " ".join(terms)}},
+            "query": {
+                "multi_match": {
+                    "query": " ".join(terms),
+                    "fields": ["title", "abstract", "lexicalTerms"],
+                }
+            },
         }
         try:
             response = self._client.search(index=self._index, body=body)

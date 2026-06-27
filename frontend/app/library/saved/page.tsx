@@ -9,7 +9,7 @@ export default function SavedSearchesPage() {
   return (
     <RouteGuard redirectTo="/library/saved">
       <div className={styles.screen}>
-        <AppHeader title="DocSuri" />
+        <AppHeader title="저장한 검색" backHref="/mypage/library" />
         <SavedSearchScreen />
       </div>
       <BottomNav />

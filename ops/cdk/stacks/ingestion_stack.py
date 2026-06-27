@@ -133,8 +133,8 @@ class IngestionStack(Stack):
         )
         task_def = ecs.FargateTaskDefinition(
             self, "WorkerTaskDef",
-            cpu=512,
-            memory_limit_mib=1024,
+            cpu=1024,
+            memory_limit_mib=3072,
         )
 
         # Control-plane DSN WITHOUT the password — libpq reads PGPASSWORD (injected as a secret
@@ -143,6 +143,14 @@ class IngestionStack(Stack):
         control_plane_dsn = f"postgresql://docsuri_admin@{_RDS_ENDPOINT}:{_RDS_PORT}/docsuri"
         db_secret = secretsmanager.Secret.from_secret_complete_arn(
             self, "DbSecret", _RDS_SECRET_ARN
+        )
+
+        task_def.add_container(
+            "grobid",
+            image=ecs.ContainerImage.from_registry("grobid/grobid:0.8.0"),
+            logging=ecs.LogDrivers.aws_logs(stream_prefix="grobid"),
+            essential=False,
+            port_mappings=[ecs.PortMapping(container_port=8070)],
         )
 
         task_def.add_container(
@@ -156,9 +164,9 @@ class IngestionStack(Stack):
                 "DOCSURI_BEDROCK_MODEL_ID": _BEDROCK_MODEL_ID,
                 "DOCSURI_OPENSEARCH_ENDPOINT": f"https://{opensearch_domain.domain_endpoint}",
                 "DOCSURI_OPENSEARCH_INDEX": "docsuri-corpus-v1",
-                # FR-21 v4 dual-write: setting *_V2 flips runtime.build_production_runtime to
-                # fan writes into the clean v2 index (Fail-Open — v2 errors never block v1).
-                "DOCSURI_BEDROCK_MODEL_ID_V2": _BEDROCK_MODEL_ID,
+                "DOCSURI_OPENSEARCH_ALIAS": "docsuri-corpus",
+                "DOCSURI_CORPUS_SOURCES": "ARXIV,SEMANTIC_SCHOLAR,OPENALEX",
+                "DOCSURI_GROBID_URL": "http://127.0.0.1:8070",
                 "DOCSURI_OPENSEARCH_INDEX_V2": "docsuri-corpus-v2",
                 "DOCSURI_CONTROL_PLANE_DSN": control_plane_dsn,
                 "DOCSURI_SQS_QUEUE_URL": self.queue.queue_url,

@@ -45,7 +45,7 @@ def test_knn_search_builds_query_and_deserializes_index_record() -> None:
     assert body["query"]["knn"]["vector"]["k"] == 20
 
 
-def test_bm25_search_builds_match_query_over_lexical_terms() -> None:
+def test_bm25_search_builds_multi_match_query_over_split_lexical_fields() -> None:
     rec = fixtures.RECORDS[0]
     fake = FakeSearchClient(hits=[_hit(rec, 1.2)])
     adapter = OpenSearchLexicalIndexAdapter(fake, "docsuri-corpus-v1")
@@ -54,7 +54,9 @@ def test_bm25_search_builds_match_query_over_lexical_terms() -> None:
 
     assert out[0][0].paperId == rec.paperId
     _, body = fake.last
-    assert body["query"]["match"]["lexicalTerms"] == "diffusion protein"
+    multi_match = body["query"]["multi_match"]
+    assert multi_match["query"] == "diffusion protein"
+    assert multi_match["fields"] == ["title", "abstract", "lexicalTerms"]
 
 
 def test_knn_failure_raises_index_unavailable() -> None:

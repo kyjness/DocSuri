@@ -1,20 +1,20 @@
 # unit-of-work-story-map.md — 스토리 → 유닛 매핑
 
 **단계**: INCEPTION → Units Generation · **일자**: 2026-06-15
-**근거**: `stories.md`(48개), `unit-of-work.md`(U1~U9·U11). 각 스토리에 **주 소유 유닛(Owner)** + 기여 유닛.
+**근거**: `stories.md`(53개), `unit-of-work.md`(U1~U9·U11). 각 스토리에 **주 소유 유닛(Owner)** + 기여 유닛.
 
 ---
 
-## 매핑 (40개 전수)
+## 매핑 (53개 전수)
 
 | 스토리 | Owner | 기여 유닛 |
 |---|---|---|
-| **US-H1** 히어로(가입→질의→근거화 결과) | U5 | U2(백킹 검색), U3(가입), U1(인덱스) |
+| **US-H1** 히어로(가입→질의→근거화 결과) | U5 | U2(백킹 검색), U3(가입), U1(Corpus 인덱스) |
 | **US-D1** 자연어 질의 입력 | U2 | U5(검색 화면) |
-| **US-D2** 시맨틱 검색 | U2 | U1(공유 인덱스) |
+| **US-D2** 시맨틱 검색 | U2 | U1(공유 Corpus 인덱스) |
 | **US-D3** 상위 N 랭킹 | U2 | — |
 | **US-D4** 폰 결과 카드 | U2(조립) | U5(카드) |
-| **US-D5** 엄격 근거화 | U6(근거화 후크) | U2(어댑터), U1(추적 메타) |
+| **US-D5** 엄격 근거화 | U6(근거화 후크) | U2(어댑터), U1(DocModel Block anchor) |
 | **US-D6** 기권 | U2(어댑터) | U6(후크) |
 | **US-D7** 빈/실패/저하 UX | U5(StateView) | U2 |
 | **US-A1** 공개 가입 | U3 | U5(계정 화면), U6(레이트리밋) |
@@ -27,8 +27,8 @@
 | **US-L1** 검색 저장 | U4 | U5 |
 | **US-L2** 라이브러리 | U4 | U5 |
 | **US-L3** 검색 이력 | U4 | U2(SearchExecuted 생산) |
-| **US-I1** 인제스천·인덱싱(시드) | U1 | — |
-| **US-I2** 스케줄 갱신 | U1 | U6(갱신 실패 경보) |
+| **US-I1** 멀티소스 Corpus & DocModel 인덱싱 | U1 | — |
+| **US-I2** source별 스케줄 갱신 | U1 | U6(갱신 실패 경보) |
 | **US-I3** 복원력 인제스천 | U1 | U6(관측) |
 | **US-R1** 근거화 보장+할루시네이션 탐지 | U6 | U2 |
 | **US-R2** 우아한 저하+반쪽짜리 탐지 | U6 | U2(저하 폴백) |
@@ -64,7 +64,7 @@
 | **US-RA8** novelty 비교(모드 B·다음 사이클) | U11 | U8(외부 API 캐시 패턴·차기), U2(검색) |
 
 ## 유닛별 스토리 묶음
-- **U1 Ingestion** — US-I1, US-I2, US-I3 (+US-H1/US-D2 인덱스 백킹)
+- **U1 Ingestion** — US-I1, US-I2, US-I3 (+US-H1/US-D2 Corpus 인덱스 백킹)
 - **U2 Discovery** — US-D1, US-D2, US-D3, US-D4, US-D6 (+US-D5/US-D7/US-R1/R2 기여, US-H1 백킹, US-L3 생산자)
 - **U3 Accounts** — US-A1..A7 (+US-H1 가입); 프로덕션화 US-A3~A7(재설정·소셜 OIDC·비번/이메일 변경·삭제·입력 견고화) 추가. **자가관리 설정 UI = U10 마이페이지 소유, U3 = 백엔드 엔드포인트·도메인 규칙 소유**(경계 Q2=A).
 - **U4 Library** — US-L1, US-L2, US-L3
@@ -84,3 +84,4 @@
 - **U9 추가(2026-06-23)**: US-P1..P6 Owner=U9(행동 이벤트/프로필/제어 신규 책임), US-P7은 운영 관측성이라 Owner=U6 기여=U9 — 단일-소유자 규칙 일치. U9는 U3/U6 인증·관측 경로에 의존하고 U2/U4/U7/U5는 U9를 비차단 호출하나, U9 역호출이 없어 코드 의존 그래프는 비순환 유지.
 - **U11 추가(2026-06-24)**: US-RA1..RA6·RA8 Owner=U11(연구 에이전트 신규 책임), US-RA7은 비용게이트·근거화 운영이라 Owner=U6 기여=U11 — 단일-소유자 규칙 일치. U11은 U2(검색)·U3/U6(인증·근거화·비용)·U7(doc-model/근거화 재사용)에 의존하고(+모드 B 차기 U8 캐시 패턴·U9 개인화 비차단), 어느 유닛도 U11을 역호출하지 않아 코드 의존 그래프는 비순환 유지. **US-RA8(novelty 모드 B)은 Owner=U11이나 다음 사이클 구현**(Q4=A). U10=마이페이지(타 팀원)는 본 문서 미반영 — 번호 점유 가정으로 본 유닛은 U11.
 - **U3 확장 — 계정 프로덕션화(2026-06-24)**: US-A3~A7 Owner=**U3**(재설정·소셜 OIDC·비번/이메일 변경·삭제·입력 견고화 — 신규 에픽 아님, 에픽 2 확장). **경계(Q2=A)**: U10 마이페이지(타 팀원)=프로필/설정 **UI만**, U3=백엔드 `/auth/*` 엔드포인트·도메인 규칙 소유. **신규 의존**: U3→외부 Google OIDC(콜백·토큰 교환). **삭제 캐스케이드**: U4/U2/U11은 이미 U3 인증에 의존하므로 U3가 이들을 **직접 호출하면 순환** — 따라서 캐스케이드는 **이벤트 구동**(U3가 `AccountDeleted` 발행 → U4/U2/U11이 각자 owner-scoped 데이터 구독·파기)으로 의존성 역전(U11↔U6 `shared/ports` 패턴 동일) → **코드 의존 그래프 비순환 유지**. 이벤트 계약·유예 잡 메커니즘 = Construction(Functional/Infra Design).
+- **U1 확장 — Corpus 완성형(2026-06-26)**: US-I1~I3 Owner=**U1** 유지. 멀티소스 수집(arXiv/Semantic Scholar/OpenAlex), GROBID, eager DocModel, DocModel Block 청킹/임베딩/index generation, source watermark, retry/DLQ는 모두 write-side Corpus 파이프라인 책임이므로 신규 유닛을 만들지 않는다. U2/U7/U11은 Corpus/DocModel capability read 소비자이며 코드 의존 그래프 비순환 유지.

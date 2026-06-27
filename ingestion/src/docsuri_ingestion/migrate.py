@@ -101,19 +101,21 @@ def backfill(settings: IngestionSettings | None = None) -> int:
         raise SystemExit("DOCSURI_BEDROCK_MODEL_ID_V2 is required for backfill")
 
     from .adapters.arxiv import ArxivHttpSource
-    from .adapters.aws import BedrockCohereEmbeddingPort, OpenSearchVectorIndex
     from .config import CORPUS_END, CORPUS_SLICE_CATEGORIES, CORPUS_START
-    from .domain.models import CategoryFilter, EmbeddingBatch
-    from .processors import Chunker, FetchParseProcessor, IndexRecordAssembler
+    from .domain.enums import JobKind
+    from .domain.models import CategoryFilter, IngestionJob
+    from .runtime import build_production_runtime
 
     arxiv = ArxivHttpSource(timeout_seconds=30.0)
-    embedder = BedrockCohereEmbeddingPort(model_id=model_id, region_name=settings.aws_region)
-    os_index = OpenSearchVectorIndex(
-        endpoint=settings.opensearch_endpoint or "",
-        index_name=index_name,
-        region_name=settings.aws_region,
+    runtime = build_production_runtime(
+        settings.model_copy(
+            update={
+                "bedrock_model_id": model_id,
+                "bedrock_model_id_v2": None,
+                "opensearch_index": index_name,
+            }
+        )
     )
-    parser, chunker, assembler = FetchParseProcessor(), Chunker(), IndexRecordAssembler()
     # Run-scoped window override (ISO date in DOCSURI_BACKFILL_START/END) lets a one-off
     # backfill narrow the slice without redefining the corpus — CORPUS_START/END stay canonical.
     def _window(env_name: str, default: datetime) -> datetime:
@@ -136,18 +138,14 @@ def backfill(settings: IngestionSettings | None = None) -> int:
             # (export.arxiv.org/api/query) was redundant — OAI already returns full metadata —
             # and arXiv 429-rate-limited it, skipping ~all papers. OAI also keeps the license the
             # Atom feed drops, so the OA gate sees it without a restore step.
-            # ponytail: OAI ids are version-less → fetch resolves to v1 (vs the Atom path's
-            # latest). Fine for a discovery corpus; thread the OAI <version> if "latest" matters.
-            paper = parser.parse(arxiv.fetch_full_text(metadata))
-            if paper.withdrawal_detected:
-                continue
-            chunks = chunker.chunk(paper)
-            vectors = embedder.embed_documents([c.text for c in chunks.chunks])
-            embeddings = EmbeddingBatch(
-                chunk_ids=tuple(c.chunk_id for c in chunks.chunks),
-                vectors=tuple(tuple(v) for v in vectors),
+            runtime.pipeline.ingest_metadata(
+                IngestionJob(
+                    job_id=f"v4-backfill-{metadata.paper_id}",
+                    kind=JobKind.SEED_REBUILD,
+                    arxiv_ref=metadata.arxiv_ref,
+                ),
+                metadata,
             )
-            os_index.bulk_upsert(assembler.assemble(paper, chunks, embeddings))
             count += 1
             log.info("[%d] backfilled %s", count, metadata.arxiv_ref)
         except Exception as exc:  # noqa: BLE001 — one bad paper must not abort the backfill

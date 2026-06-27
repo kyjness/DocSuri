@@ -12,7 +12,7 @@ import { useDocModel } from '@/lib/useDocModel';
 
 const PAGE = {
   kind: 'page' as const,
-  docModel: { meta: { paperId: 'x', version: 1 }, sections: [] },
+  docModel: { meta: { paperId: 'x', version: 1 }, fullText: '', sections: [] },
   cached: false,
 };
 

@@ -34,4 +34,5 @@ USER docsuri
 # PYTHONPATH = /app so `backend.*` and top-level `discovery` resolve. Port 8000.
 ENV PYTHONPATH=/app
 EXPOSE 8000
-ENTRYPOINT ["python", "-m", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Use CMD so ECS command overrides can run background/maintenance modules from this shared image.
+CMD ["python", "-m", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]

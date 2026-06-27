@@ -82,6 +82,11 @@
   color: var(--color-danger);
 }
 
+.notice {
+  font-size: 13px;
+  color: var(--color-accent);
+}
+
 .menuCard {
   display: flex;
   align-items: center;

@@ -59,6 +59,8 @@
 
 > **GroundingInput/GroundingDecision 경계**: U2.`GroundingAdapter.toGroundingInput(RankedResults, QueryPlan) -> GroundingInput{candidateResponse, retrievedRecords}`가 enforce 입력을 정형화하고, `mapDecision(GroundingDecision) -> GroundedResults \| AbstainResult`가 verdict를 매핑한다. **enforce 호출 자체는 U6 게이트웨이가 수행.**
 
+> **설계 주석 (U7 GroundingValidator와의 관계)**: U6의 `GroundingDecision`과 U7의 `AnchorVerdict`는 근거 기반의 출처 확인이라는 개념적 공통점이 있으나, 의도적으로 병렬 설계되었다. U6는 시스템의 최전방 검색 결과 노출을 차단(HARD check, fail-closed)하는 전역 보안/품질 게이트인 반면, U7은 생성된 요약문의 신뢰도를 측정하고 사용자에게 표시 가능한 메타데이터(SOFT check)로 변환하는 목적이 크기 때문이다. 만약 향후 U11과 같은 제3의 컨슈머가 문서 앵커 유효성 검증을 요구할 경우, 공통 앵커 확인 로직을 공유 유틸리티로 추출하되 강제 정책(enforcement policy)은 여전히 분리 유지하는 방향으로 통합을 고려해야 한다.
+
 ---
 
 ## 3. CostGuardCircuitBreaker (비용 저하 상태 조회)

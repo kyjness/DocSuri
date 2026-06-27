@@ -28,6 +28,7 @@ def _doc(paper_id: str = "2401.00001", version: int = 1) -> DocModel:
                     "generatedAt": "2026-06-23T00:00:00Z",
                 },
             },
+            "fullText": "Intro",
             "sections": [
                 {"id": "s1", "title": "Intro", "blocks": []},
             ],

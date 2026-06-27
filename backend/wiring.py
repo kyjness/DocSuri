@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from fastapi import FastAPI
@@ -27,6 +28,51 @@ from fastapi import FastAPI
 from .config import Settings
 
 log = logging.getLogger("docsuri.backend.wiring")
+
+
+class _DirectHistoryPublisher:
+    """In-process SearchExecutedEvent publisher for when EventBridge is not configured.
+
+    Mirrors EventBridgeEventPublisher semantics: recording runs on a daemon thread
+    (fire-and-forget, BR-14) and each event opens its own DB session.
+    """
+
+    def __init__(self, *, session_factory, gateway, audit) -> None:
+        self._session_factory = session_factory
+        self._gateway = gateway
+        self._audit = audit
+        self._executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="history-direct"
+        )
+
+    def publish_search_executed(self, event) -> None:
+        try:
+            self._executor.submit(self._record, event)
+        except RuntimeError:
+            log.warning("wiring: history executor unavailable; dropped SearchExecuted")
+
+    def _record(self, event) -> None:
+        from backend.modules.library.history_consumer import SearchHistoryEventConsumer
+        from backend.modules.library.repository.sql import SqlUserDataRepository
+        from backend.modules.library.services.history import SearchHistoryService
+
+        session = self._session_factory()
+        try:
+            repo = SqlUserDataRepository(session)
+            consumer = SearchHistoryEventConsumer(
+                SearchHistoryService(repo, self._gateway, self._audit)
+            )
+            consumer.consume(event)
+            session.commit()
+        except Exception:
+            session.rollback()
+            log.warning("wiring: direct history record failed", exc_info=True)
+        finally:
+            session.close()
+
+    def close(self) -> None:
+        self._executor.shutdown(wait=False)
+
 
 # A coroutine the shell runs once on shutdown (reverse order) to release a module's resources.
 Cleanup = Callable[[], Awaitable[None]]
@@ -130,6 +176,27 @@ def _mount_discovery(app: FastAPI, settings: Settings, result: MountResult) -> N
         bundle = build_mock_orchestrator(observability=observability, cost_guard=cost_guard)
         read_path = "mock"
 
+    # Wire direct history recording when EventBridge is absent but library is mounted.
+    # _DirectHistoryPublisher replaces the InMemoryEventPublisher inside the orchestrator so
+    # SearchExecutedEvents reach the SQL DB without requiring a live event bus.
+    from discovery.mocks.port_stubs import InMemoryEventPublisher
+
+    if isinstance(getattr(bundle, "event_publisher", None), InMemoryEventPublisher) and hasattr(
+        app.state, "library_session_factory"
+    ):
+        direct = _DirectHistoryPublisher(
+            session_factory=app.state.library_session_factory,
+            gateway=app.state.library_gateway,
+            audit=app.state.library_audit,
+        )
+        bundle.orchestrator._event_publisher = direct
+
+        async def _close_direct_publisher() -> None:
+            direct.close()
+
+        result.cleanups.append(_close_direct_publisher)
+        log.info("app-shell: discovery wired direct history publisher (no EventBridge)")
+
     # The grounding gate is the REAL U6 single authority (INV-1) in BOTH modes — replacing the
     # always-pass StubGroundingHook: enforce() blocks any exposed arXiv id/url absent from the
     # retrieved records and abstains when there is nothing to ground against. With the real
@@ -190,11 +257,11 @@ def _mount_library(app: FastAPI, settings: Settings, result: MountResult) -> Non
             finally:
                 session.close()
 
-        # The SearchExecuted consumer is a dormant seam in this image — no live EventBridge/SQS
-        # subscriber drives it (see history_consumer.py). It keeps an in-memory repo so the
-        # object graph is intact; the *request-path* history (GET/DELETE /library/history)
-        # persists via the SQL override above. Wire a session-per-event repo here if/when a real
-        # subscriber is added.
+        # Store deps so _mount_discovery can wire _DirectHistoryPublisher (session-per-event).
+        app.state.library_session_factory = session_factory
+        app.state.library_gateway = gateway
+        app.state.library_audit = audit
+        # consumer_repo is kept in-memory; real recording uses _DirectHistoryPublisher.
         consumer_repo = InMemoryUserDataRepository()
         log.info("app-shell: library read path = sql(postgres)")
     else:
@@ -298,6 +365,18 @@ def _mount_summarization(app: FastAPI, settings: Settings, result: MountResult) 
     from summarization.adapters.settings import SummarizationSettings
 
     sm_settings = SummarizationSettings.from_env()
+    # DATABASE_URL env isn't set in prod — config._resolve_database_url assembles the DSN from
+    # DB_HOST/DB_PASSWORD for the app, but SummarizationSettings.from_env reads DATABASE_URL
+    # directly (→ None). The summarization glossary repo calls psycopg.connect, so feed it the
+    # app's assembled DSN as a libpq URL (drop the SQLAlchemy ``+psycopg`` dialect tag). Without
+    # this every summary/translate raises (DSN=None) and fail-closes to a generic "근거 없음".
+    if not sm_settings.database_url and settings.database_url.startswith("postgresql"):
+        from dataclasses import replace as _dc_replace
+
+        sm_settings = _dc_replace(
+            sm_settings,
+            database_url=settings.database_url.replace("postgresql+psycopg://", "postgresql://"),
+        )
     if not sm_settings.summarization_enabled:
         result.skipped.append(("summarization", "real path not configured (no S3 bucket)"))
         log.info("app-shell: summarization real path not configured — skipping mount")
@@ -403,8 +482,8 @@ def _mount_personalization(app: FastAPI, settings: Settings, result: MountResult
 # (minus the `_mount_` prefix) labels it in MountResult / `/readyz`.
 _INTEGRATIONS = (
     _mount_accounts,
+    _mount_library,    # before discovery: session_factory must be on app.state first
     _mount_discovery,
-    _mount_library,
     _mount_mypage,
     _mount_ops,
     _mount_citation_graph,

@@ -7,6 +7,71 @@
 
 ---
 
+## 0. U1 Corpus 우선 적용 개정 (2026-06-26)
+
+> **우선순위**: 본 섹션은 2026-06-26 U1 Corpus 재인셉션(FR-6, FR-18, QT-9, C-1)을 반영한 최신 Functional Design이다. 아래 1~10장의 arXiv-only, versionless arXiv `PaperId`, 단일 `Watermark`, lazy DocModel, full-text/section 기반 chunk 설명과 충돌하면 **본 섹션을 우선한다**. 기존 섹션은 과거 결정과 멀티모달 표시 확장의 추적 기록으로 보존한다.
+
+### 0.1 Source·식별·중복 제거 엔티티
+
+| 엔티티 | 필드(개념) | 규칙 |
+|---|---|---|
+| **SourceName** | `ARXIV` \| `SEMANTIC_SCHOLAR` \| `OPENALEX` | phase-1 수집 소스. |
+| **SourceTier** | `ARXIV_HTML` \| `ARXIV_PDF` \| `SEMANTIC_SCHOLAR_GROBID` \| `OPENALEX_GROBID` | 전문 추출 품질·provenance·승자 판정에 기록한다. |
+| **SourcePriority** | arXiv > Semantic Scholar > OpenAlex | cross-source duplicate 충돌 시 기본 승자 순서. 단, 같은 canonical paper 안에서는 더 완성도 높은 FullText/DocModel 후보를 provenance로 보존한다. |
+| **SourcePaperRecord** | `sourceName`, `sourceId`, `doi?`, `arxivId?`, `title`, `authors[]`, `year`, `updatedAt`, `licenseSignal`, `pdfUrl?`, `htmlUrl?` | `CorpusSourceAdapterSet.fetchMetadataPage` 산출. source별 원천 메타는 canonical merge 전까지 보존한다. |
+| **CanonicalPaperKey** | `doi?`, `arxivId?`, `normalizedTitle`, `normalizedFirstAuthor`, `year` | dedup 판정 키. 순서 = DOI -> arXiv id -> normalized(title + first author + year). |
+| **PaperId** | canonical 내부 논문 id | 더 이상 "version 없는 arXiv id"만이 아니다. DOI가 있으면 DOI 기반, 없으면 arXiv id 기반, 둘 다 없으면 normalized tuple hash 기반으로 결정한다. |
+| **PaperVersion** | source version/revision + canonical version | `(paperId, version)`은 DocModel, chunk, index record, S3 object, dedup state의 공통 정합 키다. |
+| **SourceProvenance** | `paperId`, `version`, `sourceTier`, `sourceRecordRef`, `retrievedAt`, `licenseDecision`, `extractionQuality` | 검색/요약/에이전트 근거와 운영 디버깅에 필요한 source lineage. |
+| **SourceDedupState** | `canonicalKey`, `paperId`, `winningSourceTier`, `winningVersion`, `seenSources[]`, `fingerprint` | source별 재수집과 cross-source 병합을 멱등으로 만든다. |
+
+### 0.2 FullText·DocModel·자산 엔티티
+
+| 엔티티 | 필드(개념) | 규칙 |
+|---|---|---|
+| **FullTextCandidate** | `sourceTier`, `payloadRef`, `payloadKind`(`HTML`/`PDF`), `licenseDecision`, `retrievedAt` | arXiv는 HTML 우선, 없으면 PDF. Semantic Scholar/OpenAlex는 PDF를 GROBID 입력으로만 사용한다. 원시 PDF는 transient이며 저장 대상이 아니다(C-1). |
+| **FullText** | `paperId`, `version`, `sourceTier`, `plainText`, `sections?`, `tables?`, `formulas?`, `figures?`, `qualitySignals` | DocModel 생성 입력. 저장 가능 대상은 정규화 결과와 provenance뿐이며 원시 PDF는 제외한다. |
+| **DocModel** | `paperId`, `version`, `fullText`, `sections[]`, `blocks[]`, `provenance`, `parserVersion`, `schemaVersion` | phase-1 Corpus 논문은 수집 시점에 eager 생성한다. `fullText`는 전문 텍스트 투영본이고, Section/Block은 paragraph/table/formula/figure/list/code를 보존한다. table rows/cols, formula LaTeX/MathML, figure AssetRef, SourceTier를 포함한다. 이미지 비전 추론은 제외한다. |
+| **DocModelBlockRef** | `paperId`, `version`, `sectionId`, `blockId`, `blockType` | chunk와 index record가 참조하는 근거 anchor. QT-9에서 모든 index record의 block id 존재성을 검증한다. |
+| **AssetRef** | `assetId`, `paperId`, `version`, `sourceTier`, `caption?`, `objectRef?` | 그림/표 이미지 자산 참조. 표의 주 표현은 DocModel table rows/cols이고, 비-HTML 폴백 시 표 crop 이미지는 보조 자산이다. |
+| **StoredCorpusArtifact** | `artifactType`(`FULLTEXT`/`DOCMODEL`/`ASSET`/`INDEX_GENERATION_MANIFEST`), `paperId`, `version`, `objectRef`, `checksum` | S3 저장 단위. public access 금지, 원시 PDF 저장 금지, `(paperId, version)` 정합 필수. |
+
+### 0.3 Chunk·Embedding·Index 엔티티
+
+| 엔티티 | 필드(개념) | 규칙 |
+|---|---|---|
+| **DocModelChunk** | `chunkId`, `paperId`, `version`, `text`, `sectionContext`, `blockRefs[]`, `ordinal` | `DocModelBlockChunker.chunkDocModel` 산출. Block 경계를 존중하고 길이 상한을 넘으면 결정적으로 분할한다. |
+| **ChunkSet** | `paperId`, `version`, `chunks[]`, `chunkerVersion` | 같은 DocModel + 같은 chunkerVersion -> 같은 ChunkSet/ChunkId. |
+| **EmbeddingBatch** | `vectors[]`, `chunkIds[]`, `vectorSpecRef` | Cohere Embed v4/specVersion v2 유지. `vectors[i]`와 `chunkIds[i]` 정렬 불변. |
+| **CorpusIndexGeneration** | `generationId`, `indexAlias`, `sourceDocModelSchemaVersion`, `chunkerVersion`, `vectorSpecRef`, `status` | DocModel 기반 신규 OpenSearch generation. alias cutover 전 QT-9와 smoke search를 통과해야 한다. |
+| **CorpusIndexRecord** | `generationId`, `paperId`, `version`, `chunkId`, `blockRefs[]`, `vector`, `lexicalTerms`, `cardFields`, `sourceProvenance` | U2가 읽는 search record. 모든 record는 존재하는 DocModel block id를 참조해야 한다. |
+| **IndexWriteResult** | `generationId`, `written`, `skipped`, `failed[]` | paper/version 단위 원자 commit 판단에 사용한다. |
+
+### 0.4 제어·운영 엔티티
+
+| 엔티티 | 필드(개념) | 규칙 |
+|---|---|---|
+| **SourceWatermark** | `sourceName`, `cursorOrTimestamp`, `lastSuccessfulAt`, `generation?` | source별 단조 증가. arXiv/Semantic Scholar/OpenAlex가 서로의 watermark를 공유하지 않는다. |
+| **CorpusJob** | `jobId`, `kind`(`PHASE1_SEED`/`INCREMENTAL`/`BACKFILL`/`REBUILD`/`REPROCESS_DLQ`), `sourceName?`, `budgetClass`, `status` | Scheduler/backfill/rebuild/reprocess의 공통 job envelope. |
+| **CorpusJobItem** | `jobId`, `sourceRecordRef`, `paperId?`, `version?`, `stage`, `attempt` | 재시도와 DLQ의 최소 작업 단위. |
+| **CorpusDLQItem** | `jobItem`, `failureStage`, `failureReason`, `attempts`, `reprocessPolicy` | source/GROBID/DocModel/embedding/index 실패 격리. reprocess는 멱등이어야 한다. |
+| **CorpusFailureSignal** | `jobId`, `sourceName?`, `stage`, `reason`, `paperId?`, `version?`, `metricTags` | `ObservabilityHub.emitMetric`/`emitLog`로 라우팅되는 운영 신호. |
+
+### 0.5 레거시 엔티티 매핑
+
+| 기존 명칭 | U1 Corpus 기준 |
+|---|---|
+| `ArxivSourceClient` | `CorpusSourceAdapterSet`의 arXiv adapter로 축소된다. |
+| `FetchParseProcessor` | `FullTextExtractionProcessor`로 확장된다. PDF 경로는 GROBID, raw PDF는 transient이다. |
+| `DeduplicationGuard` | `SourcePriorityDeduplicationGuard`로 확장된다. |
+| `Chunker` | `DocModelBlockChunker`로 대체된다. |
+| `VectorIndexWriter` | `CorpusIndexWriter`로 대체된다. generation/alias cutover를 포함한다. |
+| `RefreshScheduler` | source별 `CorpusRefreshScheduler`로 확장된다. |
+| `Watermark` | source별 `SourceWatermark`로 대체된다. |
+| `StoredFullText` | `StoredCorpusArtifact(FULLTEXT)`의 한 종류다. DocModel 저장은 `StoredCorpusArtifact(DOCMODEL)`이다. |
+
+---
+
 ## 1. 식별자 값타입 & 식별/버전 규칙
 
 | 엔티티 | 정의 | 규칙 |
@@ -28,7 +93,7 @@
 
 | 엔티티 | 필드(개념) | 비고 |
 |---|---|---|
-| **CategoryFilter** | `categories[]`, `from`/`to`(기간) | **Q1=D: `categories=[cs.LG,cs.AI,cs.CL,cs.CV,stat.ML]`, 최근 5년(수십만 건).** `resolveSliceCategories()` 산출. |
+| **CategoryFilter** | `categories[]`, `from`/`to`(기간) | **Phase-1: `categories=[cs.LG,cs.AI,cs.CL,cs.CV,stat.ML]`, 최근 1년.** 5년 확장은 Phase 7에서 별도 backfill로 수행한다. |
 | **PageCursor** | 불투명 페이지/하베스트 커서 | 대량 시드 하베스트 + 증분 조회 페이지네이션 상태(프로토콜=NFR Q2). |
 | **MetadataPage** | `records[]`(원천 메타), `nextCursor`, `hasMore` | 슬라이스 페이지 단위 조회 결과. |
 | **RawDocument** | `text`(정규화 평문), `sourceMeta`, `oaStatus` | **BR-29**: 취득 = arXiv HTML 우선(평문 변환의 최선 소스) → PDF 폴백. 산출은 **평문 1종**(뷰어·AI 공통). |
@@ -53,7 +118,7 @@
 
 | 엔티티 | 필드(개념) | 비고 |
 |---|---|---|
-| **IndexRecord** | `chunkId`, `paperId`, `version`, `vector`, **카드 필드**(title·authors·year·arxivId·abstractSnippet·arxivUrl) + `categories` + `abstract` + `section` + `lexicalTerms` | **Q4=A·Q2=C: 청크당 1 레코드(논문당 다수).** FR-2 하이브리드(lexical=제목+초록+본문 토큰) + FR-4 카드 + FR-5 해소 가능 ID/링크. |
+| **IndexRecord** | `chunkId`, `paperId`, `version`, `vector`, **카드 필드**(title·authors·year·arxivId·abstractSnippet·arxivUrl) + `categories` + `abstract` + `section` + `lexicalTerms` | **Q4=A·Q2=C: 청크당 1 레코드(논문당 다수).** FR-2 하이브리드 lexical write는 `title`/`abstract`/본문전용 `lexicalTerms`로 분리하고, FR-4 카드 + FR-5 해소 가능 ID/링크를 보존한다. |
 | **IndexRecordBatch** | `records[]`(한 논문의 전 청크), `paperId`, `jobRef?` | `VectorIndexWriter.upsert` 입력 = **논문 단위 원자 커밋 단위**(Q8=A/BR-7). **프로덕션: 논문당 다중 IndexRecord 전부 또는 전무.** PBT P3/P4 대상. |
 | **StoredFullText** | `paperId`, `version`, `objectRef`, `contentType` | **Q2=C·SEC-9 활성**: OA 전문 오브젝트 스토리지 보관(공개 차단). 재구축·재처리 재사용(arXiv 재취득 회피). |
 | **WriteResult** | `written`, `skipped`, `failed[]` | upsert/tombstone 결과. `failed[]`→IngestionResilienceService. |
@@ -110,7 +175,7 @@
 ## 9. 엔티티 관계 (프로덕션)
 
 ```
-CategoryFilter(5cat,5yr) ──(fetchMetadataPage / 대량 하베스트)──▶ MetadataPage{ records[] }
+CategoryFilter(5cat,1yr) ──(fetchMetadataPage / 대량 하베스트)──▶ MetadataPage{ records[] }
    record ──(parse, fetchFullText Q2=C)──▶ ParsedPaper{ paperId, version, abstract, body/sections } ──▶ StoredFullText(ObjectRef, SEC-9)
       │                                                          │ (Q13=B) 철회신호(메타+전문)? ─▶ WithdrawalMarker ─▶ Tombstone(전 청크)
       ├─(fingerprint=paperId+version)─▶ ContentFingerprint ─(isNew)─▶ DedupDecision

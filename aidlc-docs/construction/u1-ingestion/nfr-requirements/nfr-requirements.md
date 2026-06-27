@@ -7,8 +7,59 @@
 
 ---
 
+## 0. U1 Corpus NFR 우선 적용 개정 (2026-06-26)
+
+> **우선순위**: 본 섹션은 2026-06-26 U1 Corpus 재인셉션(FR-6, FR-18, NFR-C1, QT-9)을 반영한 최신 NFR Requirements다. 아래 §1~§11의 5년 arXiv-only, Cohere v3, section/full-text chunking, lazy DocModel 설명과 충돌하면 **본 섹션을 우선한다**.
+
+### 0.1 확장성·처리량
+
+- **phase-1 범위**: 최근 AI/ML 1년, OA/인덱싱 허용 라이선스, 명시적 build budget 안에서만 eager Corpus를 구축한다. 5년/전체 AI/ML 확장은 별도 backfill phase다.
+- **source fan-out**: arXiv, Semantic Scholar, OpenAlex를 source별 job과 watermark로 분리한다. 한 source의 장애·쿼터가 다른 source의 watermark를 전진/정체시키면 안 된다.
+- **GROBID 처리량**: Semantic Scholar/OpenAlex PDF는 containerized internal GROBID 처리량을 별도 병목으로 본다. source fetch 동시성, GROBID 동시성, embedding batch 동시성은 각각 독립 quota를 갖는다.
+- **index generation**: DocModel 기반 index generation은 active alias 밖에서 bulk write하고, QT-9와 smoke check 통과 후 alias cutover한다. 기존 active index는 rollback window 동안 유지한다.
+- **DocModel 완성형**: phase-1 DocModel은 `fullText` 전문 텍스트 투영본과 `sections[].blocks[]` 멀티모달 구조를 함께 가져야 한다. 구조 블록은 paragraph/table/formula/figure/list/code를 보존하고, 이미지는 JSON에 base64/URL로 넣지 않고 `AssetRef`로 `assets/` 객체를 참조한다.
+
+### 0.2 성능·최신성
+
+- U1은 비동기 워커이므로 사용자 API P50/P95 SLA는 N/A다. NFR 목표는 **backfill 수렴, incremental freshness, active index 무손상**이다.
+- source별 incremental target은 "마지막 성공 watermark 이후만 처리"다. 전량 재스캔 + dedup 의존은 비용 상한 위반 위험 때문에 기본 경로가 아니다.
+- DocModel 생성은 phase-1에서 eager지만, 비용 게이트가 OPEN이면 새 item은 보류/backfill queue로 넘어가고 기존 검색/열람은 active generation을 계속 사용한다.
+
+### 0.3 신뢰성·복원력
+
+- retry/DLQ stage는 `source_fetch`, `license_validate`, `grobid_extract`, `docmodel_validate`, `chunk`, `embed`, `index_write`, `artifact_store`를 구분한다.
+- DLQ reprocess는 원래 canonical pipeline으로 재진입한다. 별도 보정 경로를 만들지 않는다.
+- partial index generation은 alias 전환 금지다. `(paperId, version)` 불일치, 누락 DocModel block reference, DocModel schema validation 실패는 cutover blocker다.
+- source별 watermark는 해당 page/item이 committed, retry scheduled, 또는 DLQ routed 된 뒤에만 전진한다.
+
+### 0.4 비용
+
+- **hard cap**: 계정/app 월 budget은 현재 CDK의 AWS Budget과 동일하게 **$1600/month**를 상한으로 둔다. U1 Corpus는 이 안의 별도 cost line이다.
+- **phase-1 build budget**: U1 job은 per-run budget guard를 가져야 하며, 초과 시 후순위 item을 보류/backfill로 이월한다. 무제한 eager build는 금지한다.
+- **계측 단위**: source fetch count, GROBID page/document count, DocModel count, chunk count, embedding token/vector count, OpenSearch bulk write count, S3 stored bytes, DLQ count를 별도 metric으로 낸다.
+- **비용 저하**: 비용 circuit OPEN 시 신규 Corpus 확장/backfill만 멈춘다. active search index와 이미 저장된 DocModel read path는 제거하지 않는다.
+
+### 0.5 보안·데이터 보호
+
+- raw PDF는 transient input이다. Semantic Scholar/OpenAlex PDF와 arXiv PDF fallback은 GROBID/추출 처리 후 저장하지 않는다.
+- GROBID는 internal-only로 둔다. 외부 공개 엔드포인트, 사용자 업로드 PDF 처리, raw PDF 다운로드는 범위 밖이다.
+- S3 artifact는 private + SSE + TLS를 유지한다. 저장 허용 대상은 normalized FullText, DocModel JSON, assets, generation manifest, source provenance다. DocModel JSON에는 이미지 바이트, presigned URL, raw PDF object reference를 넣지 않는다.
+- 외부 HTML/XML/TEI는 size limit, entity expansion/DTD 차단, schema validation, sanitize를 거친다.
+
+### 0.6 관측성
+
+- U1 실패 신호는 `ObservabilityHub.emitMetric`/`emitLog`로 라우팅한다. `emitFailureSignal`은 U1 내부 명칭일 뿐 포트 계약이 아니다.
+- 필수 metric: source별 watermark lag, source fetch error rate, GROBID failure rate, DocModel validation failure, embedding spend, generation cutover status, DLQ backlog, reprocess success/failure.
+
+### 0.7 PBT/QT-9
+
+- Hypothesis 기반 generator는 source record 중복/순서 섞기, DOI/arXiv/title-key 결측, version 변경, block id 누락, malformed DocModel, retry/DLQ replay를 포함해야 한다.
+- blocking invariant: multisource dedup idempotency, source watermark monotonicity, `(paperId, version)` consistency, DocModel `fullText` + multimodal block schema roundtrip/negative validation, index record blockRef existence, AssetRef object existence, retry/DLQ idempotency, raw PDF non-storage.
+
+---
+
 ## 1. 확장성 (Scalability)
-- **코퍼스 규모**: FR-6 풀 슬라이스 — cs.LG·cs.AI·cs.CL·cs.CV·stat.ML × 최근 5년 = **수십만 건**(Q1=D). 아키텍처는 NFR-S1 저(低)천명대 사용자까지 무재설계 확장.
+- **코퍼스 규모**: phase-1 슬라이스 — cs.LG·cs.AI·cs.CL·cs.CV·stat.ML × 최근 1년. 최근 5년은 Phase 7 backfill 확장 범위다. 아키텍처는 NFR-S1 저(低)천명대 사용자까지 무재설계 확장.
 - **시드 빌드(US-I1)**: OAI-PMH 하베스트(`set=cs`, resumptionToken)로 대량 수집(NFR Q2=B). **시간 단위 소요 허용**(준비 작업, 실시간 아님; Q10).
 - **워커 확장(Q11=B)**: fetch/parse/embed **병렬**, **인덱스 쓰기는 직렬화**(단일 writer 계약·FD BR-13 REBUILD_LOCK 유지). 동시성은 arXiv 쿼터(RES-8) 내 보수적.
 

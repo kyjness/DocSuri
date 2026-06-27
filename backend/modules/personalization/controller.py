@@ -12,6 +12,8 @@ from .models import (
     MetadataValidationError,
     PersonalizationDecision,
     PersonalizationSettings,
+    RecentlyViewedItem,
+    RecentlyViewedList,
     SettingsUpdate,
     ValidatedBehaviorEventCreate,
 )
@@ -90,6 +92,15 @@ async def summary_defaults(
     )
 
 
+@router.get("/settings", response_model=PersonalizationSettings)
+async def get_settings(
+    request: Request,
+    principal: Principal = PRINCIPAL_DEP,
+    repo: PersonalizationRepository = REPO_DEP,
+) -> PersonalizationSettings:
+    return PersonalizationSettingsService(repo, _observability(request)).get(principal.user_id)
+
+
 @router.patch("/settings", response_model=PersonalizationSettings)
 async def update_settings(
     dto: SettingsUpdate,
@@ -124,4 +135,24 @@ async def reset_profile(
     return {"status": "reset"}
 
 
-routers = (router,)
+recently_viewed_router = APIRouter(
+    prefix="/mypage",
+    tags=["Personalization"],
+    dependencies=[Depends(_feature_enabled)],
+)
+
+
+@recently_viewed_router.get("/recently-viewed", response_model=RecentlyViewedList)
+async def recently_viewed(
+    principal: Principal = PRINCIPAL_DEP,
+    repo: PersonalizationRepository = REPO_DEP,
+) -> RecentlyViewedList:
+    rows = repo.list_recent_papers(principal.user_id)
+    items = [
+        RecentlyViewedItem(arxivId=arxiv_id, title=title, viewedAt=viewed_at)
+        for arxiv_id, title, viewed_at in rows
+    ]
+    return RecentlyViewedList(items=items)
+
+
+routers = (router, recently_viewed_router)

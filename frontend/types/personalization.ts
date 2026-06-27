@@ -29,3 +29,19 @@ export interface EventRecordResult {
   duplicate: boolean;
   reason: 'recorded' | 'duplicate' | 'disabled' | 'degraded';
 }
+
+export interface PersonalizationSettings {
+  userId: string;
+  enabled: boolean;
+  rawEventsDeletedAt?: string | null;
+  profileResetAt?: string | null;
+  updatedAt: string;
+}
+
+export interface DeletePersonalizationEventsResult {
+  deletedEvents: number;
+}
+
+export interface ResetPersonalizationProfileResult {
+  status: 'reset';
+}

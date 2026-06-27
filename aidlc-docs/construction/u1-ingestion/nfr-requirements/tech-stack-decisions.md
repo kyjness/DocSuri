@@ -8,6 +8,68 @@
 
 ---
 
+## 0. U1 Corpus 기술 스택 우선 적용 개정 (2026-06-26)
+
+> **우선순위**: 본 섹션은 2026-06-26 U1 Corpus NFR Requirements의 최신 결정이다. 아래 TD-3의 Cohere v3, arXiv-only source, lazy DocModel, section/full-text indexing 설명과 충돌하면 **본 섹션을 우선한다**. `shared/vector-spec/vector-spec.yaml`의 `specVersion: v2`가 active vector contract다.
+
+### TD-C1 — 수집 소스 어댑터: 기존 Python worker + source별 HTTP adapters
+
+- **결정**: U1은 기존 Python ingestion worker 안에서 arXiv, Semantic Scholar, OpenAlex adapter를 둔다. 새 항상-on 서비스는 만들지 않는다.
+- **근거**: source별 rate limit/watermark만 다르고 pipeline은 동일하다. 별도 service split은 운영 표면만 늘린다.
+- **대안**: source별 독립 마이크로서비스. 기각: phase-1에 과함.
+- **전환 비용**: 낮음. adapter 추가와 source config 확장.
+
+### TD-C2 — PDF 구조 추출: containerized internal GROBID
+
+- **결정**: Semantic Scholar/OpenAlex PDF와 arXiv PDF fallback은 internal-only GROBID container로 TEI/structure를 추출한다. raw PDF는 transient input으로만 둔다.
+- **근거**: 요구사항이 PDF(GROBID)를 명시했고, 외부 SaaS 호출보다 비용/보안/재현성이 낫다.
+- **대안**: 단순 PDF text extraction. 기각: section/table/formula 구조 손실. 외부 GROBID SaaS. 기각: raw PDF 외부 전송·비용·가용성 위험.
+- **전환 비용**: 중간. Infra Design에서 ECS task/sidecar/service 중 하나로 배치하면 된다.
+
+### TD-C3 — DocModel parser: 기존 HTML parser stack + GROBID TEI parser
+
+- **결정**: arXiv HTML은 기존 TD-16 방향(lxml/BeautifulSoup + MathML->LaTeX)을 유지하고, PDF/GROBID 결과는 TEI XML parser로 같은 DocModel schema에 매핑한다.
+- **근거**: 두 경로 모두 deterministic parser이며 LLM 추출을 쓰지 않는다.
+- **대안**: LLM extraction. 기각: 표/수식 환각과 비용 폭주.
+- **전환 비용**: 중간. parserVersion/sourceTier를 DocModel provenance에 기록한다.
+
+### TD-C4 — Embedding VectorSpec: Cohere Embed v4 / specVersion v2 / 1024 / cosine
+
+- **결정**: active contract는 `shared/vector-spec/vector-spec.yaml`의 Cohere Embed v4(Bedrock), `specVersion=v2`, 1024 dimensions, cosine, writer `search_document`, reader `search_query`다.
+- **근거**: v4 migration is already landed in repo config and CDK. U1 Corpus는 모델 교체가 아니라 DocModel Block source/index generation 전환이다.
+- **대안**: 새 embedding model 도입. 기각: full re-embed와 U2 reader 재검증이 필요해 phase-8 품질 개선 작업으로 미룬다.
+- **전환 비용**: 모델/spec 변경은 전체 Corpus re-embed. 본 단계에서는 변경하지 않는다.
+
+### TD-C5 — OpenSearch generation/alias: 기존 OpenSearch 유지
+
+- **결정**: DocModel Block 기반 새 index generation을 OpenSearch에 만들고 alias cutover한다.
+- **근거**: OpenSearch는 이미 vector + BM25 lexical + per-paper delete 요구를 충족한다. 새 store는 필요 없다.
+- **대안**: Aurora pgvector/FTS. 기각: 이미 OpenSearch production path가 있고 phase-1 scope에 store migration은 불필요.
+- **전환 비용**: generation 생성 + reindex/re-embed. alias rollback으로 완화한다.
+
+### TD-C6 — Scheduler/Queue/DLQ: EventBridge + SQS/DLQ 유지
+
+- **결정**: periodic collection은 EventBridge Scheduler, retry/reprocess는 SQS + DLQ를 사용한다.
+- **근거**: 기존 TD-5/TD-6과 일치하며 source별 jobs와 DLQ replay를 가장 작게 구현한다.
+- **대안**: Airflow/Step Functions. 기각: phase-1에는 orchestration surface가 과하다.
+- **전환 비용**: 낮음. Infra Design에서 queue names, DLQ retention, IAM을 정한다.
+
+### TD-C7 — Artifact storage: private S3 + existing metadata store
+
+- **결정**: normalized FullText, DocModel JSON, assets, generation manifest는 private S3에 저장한다. source provenance/source watermark는 existing control-plane DB에 둔다.
+- **근거**: S3는 이미 전문/자산 저장 결정이고, raw PDF non-storage rule과 맞는다.
+- **대안**: raw PDF cache. 기각: C-1/§12 위반.
+- **전환 비용**: 낮음.
+
+### TD-C8 — Cost guard: $1600 account budget + U1 per-run hard stop
+
+- **결정**: account/app cap은 existing AWS Budget $1600/month를 따른다. U1 Corpus job은 per-run budget guard를 가져 비용 초과 전 신규 fetch/GROBID/embed/index work를 보류한다.
+- **근거**: eager Corpus는 사용량 비례가 아니라 선불성 batch cost다. budget guard 없이 전량 backfill을 돌리면 팀 우려대로 비용이 먼저 터진다.
+- **대안**: 사후 알림만. 기각: eager backfill에는 늦다.
+- **전환 비용**: 낮음. NFR Design에서 metric과 stop condition을 구체화한다.
+
+---
+
 ## TD-1 — 워커 언어/런타임: **Python**
 - **근거**: ML/임베딩/arXiv(arxiv.py·OAI-PMH) 생태계, Hypothesis(PBT), 선행 사례(사이클 1 Python). 
 - **대안**: TS/Node(프런트 통일). 폴리글랏(워커 Python·API 별도).

@@ -22,6 +22,7 @@ const translation: TranslationVM = {
         generatedAt: '2026-06-23T00:00:00Z',
       },
     },
+    fullText: '어텐션만으로 시퀀스를 변환한다.',
     sections: [
       {
         id: 's1',

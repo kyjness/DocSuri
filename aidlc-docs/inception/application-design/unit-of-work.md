@@ -1,7 +1,7 @@
 # unit-of-work.md — 유닛 정의 (Units of Work)
 
 **단계**: INCEPTION → Units Generation · **일자**: 2026-06-15
-**근거**: `application-design/`(U1~U6), UQ1=A(6 유닛), UQ2=A(모노레포), UQ3=A(4 배포 단위), UQ4=A(데모 우선), UQ5=A(공유 계약 `shared/`).
+**근거**: `application-design/`(U1~U6), UQ1=A(6 유닛), UQ2=A(모노레포), UQ3=A(4 배포 단위), UQ4=A(데모 우선), UQ5=A(공유 계약 `shared/`). 2026-06-26 U1 Corpus 리뷰: 신규 유닛 없이 기존 U1 확장.
 **정의**: 유닛 = 개발용 스토리 논리 묶음. 모듈형 모놀리스(DQ1)이므로 일부 유닛은 한 배포 단위(API) 내 **모듈**, 일부는 **독립 배포**(워커·프런트).
 
 ---
@@ -10,7 +10,7 @@
 
 | 유닛 | 책임 | 유형 | 배포 단위 | 코드 위치 | 경로 종류 |
 |---|---|---|---|---|---|
-| **U1 Ingestion** | arXiv OA AI/ML 슬라이스 수집·청크·임베딩 → 공유 벡터 인덱스 생성·갱신(단일 writer) | 독립 워커 | ② 인제스천 워커 | `ingestion/` | 이벤트/스케줄 |
+| **U1 Ingestion** | arXiv·Semantic Scholar·OpenAlex AI/ML 논문 수집 → FullText → eager DocModel → DocModel Block 청크·임베딩 → 공유 Corpus 인덱스/OpenSearch·S3 생성·갱신(단일 writer) | 독립 워커 | ② 인제스천 워커 | `ingestion/` | 이벤트/스케줄 |
 | **U2 Discovery** | 자연어 질의 동기 검색 읽기 경로(질의 이해·하이브리드 검색·랭킹·근거화 어댑팅·결과 조립) | API 모듈 | ① API | `backend/modules/discovery/` | 동기 REST |
 | **U3 Accounts/Auth** | 가입/로그인/세션·자격증명·**객체 소유권 인가 단일 결정점** | API 모듈 | ① API | `backend/modules/accounts/` | 동기 REST(+이벤트 신호) |
 | **U4 Library** | 검색 저장·라이브러리·이력(소유자 비공개) | API 모듈 | ① API | `backend/modules/library/` | 동기 CRUD(+이력 이벤트 소비) |
@@ -23,7 +23,7 @@
 
 > **U6 분할 주석**: U6는 두 곳에 산다 — (a) **게이트웨이 미들웨어**(authn/authz·검증·레이트리밋·비용 상태·근거화 강제 후크)는 API 배포 단위 ① 내부, (b) **Ops 워커**(AI 인시던트 탐지기·대시보드)는 이벤트 백본 소비 독립 워커 ③.
 
-> **U7 주석 (요약/번역)**: U7은 결과 카드의 **온디맨드 보조 기능**(검색 SLA NFR-P1 비대상, NFR-P2). U6 게이트웨이를 단일 진입으로 도달하며, **U1 전문 원본(S3 read = capability)·U6 근거화 후크/비용 게이트(`shared/ports` lib)에 의존**한다(U2와 동일 패턴 — 코드 순환 없음). LLM 호출은 U2 검색과 별개 경로. 대부분 단일 콜 동기 스트리밍, **초장문(map-reduce)만 비동기 잡**(배포 ③). 산출물은 S3 영구 + Redis 핫캐시(키 immutable, 논문당 평생 1회 생성).
+> **U7 주석 (요약/번역)**: U7은 결과 카드의 **온디맨드 보조 기능**(검색 SLA NFR-P1 비대상, NFR-P2). U6 게이트웨이를 단일 진입으로 도달하며, **U1 DocModel/FullText(S3 read = capability)·U6 근거화 후크/비용 게이트(`shared/ports` lib)에 의존**한다(U2와 동일 패턴 — 코드 순환 없음). LLM 호출은 U2 검색과 별개 경로. 대부분 단일 콜 동기 스트리밍, **초장문(map-reduce)만 비동기 잡**(배포 ③). 산출물은 S3 영구 + Redis 핫캐시(키 immutable, 논문당 평생 1회 생성).
 
 > **U8 주석 (인용 그래프/각주 트리)**: U8은 논문 상세보기 페이지에서 호출되는 **로그인 필수 온디맨드 읽기 경로**다. v1은 backward references만 다루며 forward citations·3-hop 이상·FE 구현은 제외한다. 외부 citation API(Semantic Scholar 우선)는 온디맨드 조회 + 7일 snapshot 캐시로 감싼다. 노드 저장은 U4 Library 계약을 재사용한다.
 
@@ -39,7 +39,7 @@
 3. **Ops/탐지 워커** — U6 탐지기·대시보드 (이벤트 백본) **(+ U7 초장문 요약 비동기 잡 옵션, + U11 긴 다논문 분석 비동기 잡 옵션)**
 4. **프런트엔드** — U5 (SSR)
 
-공유 capability(기술 미확정): 벡터 인덱스, 관리형 DB/영속화, 이벤트 버스/백본, 오브젝트 스토리지, 임베딩/LLM 게이트웨이, DLQ. **(U7 추가 활용: 오브젝트 스토리지[전문 read + 요약 영구저장]·핫캐시[Redis]·LLM 게이트웨이[Sonnet/Haiku]. U8 추가 활용: citation snapshot 캐시/스토어·외부 citation API 쿼터 카운터. U9 추가 활용: 사용자 행동 이벤트/관심 프로필 RDS 테이블. U11 추가 활용: 연구 세션·근거 정리·novelty 결과 저장[RDS/오브젝트]·외부 학술 API 캐시·쿼터[모드 B]·LLM 게이트웨이·잡 큐.)**
+공유 capability(기술 미확정): Corpus/OpenSearch 인덱스, DocModel/FullText 오브젝트 스토리지, GROBID 런타임, 관리형 DB/영속화, 이벤트 버스/백본, 임베딩/LLM 게이트웨이, DLQ. **(U7 추가 활용: 오브젝트 스토리지[DocModel/FullText read + 요약 영구저장]·핫캐시[Redis]·LLM 게이트웨이[Sonnet/Haiku]. U8 추가 활용: citation snapshot 캐시/스토어·외부 citation API 쿼터 카운터. U9 추가 활용: 사용자 행동 이벤트/관심 프로필 RDS 테이블. U11 추가 활용: 연구 세션·근거 정리·novelty 결과 저장[RDS/오브젝트]·외부 학술 API 캐시·쿼터[모드 B]·LLM 게이트웨이·잡 큐.)**
 
 ## 코드 조직 전략 (Greenfield, UQ2=A 모노레포)
 ```text
@@ -69,10 +69,10 @@
 개발 기간 단축을 위해 `shared/` 공용 규약을 선행 작성한 뒤, 아래와 같이 3개 독립 트랙으로 병렬 개발을 진행합니다.
 
 * **준비 단계**: `shared/` 규약 고정 (`vector-spec` 및 API DTO, 이벤트 스펙 선행 작성)
-* **[트랙 1] 데이터 파이프라인**: **U1 Ingestion** (인제스천 워커) ──> **U6 Reliability/Ops** (비동기 탐지 워커)
+* **[트랙 1] 데이터 파이프라인**: **U1 Ingestion** (멀티소스 Corpus 인제스천 워커) ──> **U6 Reliability/Ops** (비동기 탐지 워커)
 * **[트랙 2] 인증 및 사용자 데이터**: **U3 Accounts** (가입/로그인) ──> **U4 Library** (저장/라이브러리)
 * **[트랙 3] 사용자 검색 및 UI**: **U2 Discovery** (Mock API 기반 선행 개발) ──> **U5 Frontend** (UI 화면 및 인터랙션)
-* **[확장 / 2026-06-18] 요약·번역**: **U7 Summarization** — 코어(U1~U6) 빌드·배포 완료 후 편입되는 신규 유닛. **선행 의존**: U1(전문 원본 S3)·U6(근거화 후크·CostGuard)·shared(DTO·ports) = 이미 가용. 결과 카드 표면은 U2/U5와 연결. 단일 트랙으로 CONSTRUCTION 유닛 루프 진행(**실배포 기준 real-first 구현** — LLM·스토어 어댑터는 포트 뒤 실 구현 단일본[Bedrock·S3·Redis], mock/인메모리 대역 없음. _2026-06-18 U7 FD 답변 Q10/Q11로 확정._).
+* **[확장 / 2026-06-18] 요약·번역**: **U7 Summarization** — 코어(U1~U6) 빌드·배포 완료 후 편입되는 신규 유닛. **선행 의존**: U1(DocModel/FullText S3 capability)·U6(근거화 후크·CostGuard)·shared(DTO·ports) = 이미 가용. 결과 카드 표면은 U2/U5와 연결. 단일 트랙으로 CONSTRUCTION 유닛 루프 진행(**실배포 기준 real-first 구현** — LLM·스토어 어댑터는 포트 뒤 실 구현 단일본[Bedrock·S3·Redis], mock/인메모리 대역 없음. _2026-06-18 U7 FD 답변 Q10/Q11로 확정._).
 * **[확장 / 2026-06-19] 인용 그래프·각주 트리**: **U8 Citation Graph** — 논문 상세보기 페이지의 4개 액션 중 각주 트리 API를 제공한다. **선행 의존**: U3/U6(로그인·게이트웨이), U4(라이브러리 저장 계약), U5/상세보기 분기(FE 표면), shared(DTO·events). Requirements/User Stories/Units Generation까지만 진행하고, Construction은 별도 승인 후 시작한다.
 * **[확장 / 2026-06-23] 개인화/행동 인텔리전스**: **U9 Personalization** — 행동 이벤트와 관심 프로필을 소유하는 API 모듈. **선행 의존**: U3/U6(로그인·게이트웨이), U2(검색 결과 개인화), U4(라이브러리 신호), U7(요약/번역 기본값), U5(설정/표시), shared(DTO·events). Construction은 U9 단일 유닛 루프로 진행한다.
 * **[확장 / 2026-06-24] 연구 에이전트 (문헌탐색·근거형성)**: **U11 Research Agent** — 대화형 다논문 근거형성(모드 A) API 모듈(긴 분석 비동기 잡 옵션). **선행 의존**: U3/U6(로그인·게이트웨이·근거화·CostGuard, `shared/ports`), U2(검색), U7(doc-model·근거화 파이프라인 재사용), U8(외부 학술 API 캐시 패턴 — 모드 B 커버리지), U9(개인화 신호·비차단), shared(DTO·events). U10=마이페이지(타 팀원)와 별개 유닛. v1=모드 A, 모드 B(novelty)는 다음 사이클(Q4=A). **Requirements/User Stories/Units Generation까지 진행, Construction은 별도 승인**(Q18=A).

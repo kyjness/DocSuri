@@ -4,7 +4,142 @@
 **근거**: 계획서(프로덕션 재스코핑) — Q1=D·Q2=C·Q12=B·Q13=B·그 외 A.
 **원칙**: 기술 무관 알고리즘 수준. 타임아웃·동시성 수치·큐/스토어 구현은 NFR/Infra.
 **프로덕션 스코프**: 전문 수집·다중 청크·이벤트 경로·철회 tombstone·전문 오브젝트 보관 전부 활성.
-**피벗(2026-06-23, doc-model)**: 보관물이 평문(`.txt`) 1종 → **+ 구조화 doc-model**(§7)로 확장(BR-29 확장). doc-model은 **lazy on-demand 생성·캐시**라 §1.1 인덱스 hot path 밖이며 **인덱스/검색 경로는 불변**. 근거 SSOT = `construction/plans/docmodel-foundation-pivot-plan.md`(D1·D2·D6·Q5).
+**U1 Corpus 개정(2026-06-26)**: 재인셉션 D6/FR-6에 따라 phase-1 Corpus 논문은 **수집 시점 eager DocModel 생성 + DocModel Block 기반 인덱싱**으로 전환한다. 기존 2026-06-23 lazy/on-demand DocModel 결정은 누락분·재빌드·백필·phase-1 밖 논문 보강 경로로만 남는다.
+
+---
+
+## 0. U1 Corpus 우선 적용 로직 (2026-06-26)
+
+> **우선순위**: 본 섹션은 U1 Corpus Functional Design의 최신 권위다. 아래 §1~§7의 arXiv-only, single-watermark, lazy DocModel, `Chunker.chunk(parsed)` 설명과 충돌하면 본 섹션이 우선한다. 기존 섹션은 과거 결정 추적을 위해 유지한다.
+
+### 0.1 Source별 incremental loop
+
+```
+runSourceIncrement(sourceName):
+  watermark <- CorpusRefreshScheduler.loadSourceWatermark(sourceName)
+  job <- CorpusRefreshScheduler.createJob(INCREMENTAL, sourceName, watermark)
+
+  for page in CorpusSourceAdapterSet.fetchMetadataPage(sourceName, watermark):
+    for sourceRecord in page.records:
+      processSourceRecord(sourceRecord, job)
+
+    if page durable and all accepted items committed or routed to retry/DLQ:
+      CorpusRefreshScheduler.advanceWatermark(sourceName, page.highWatermark)
+```
+
+- `SourceWatermark`는 source별로만 전진한다. arXiv 실패가 Semantic Scholar/OpenAlex watermark를 막지 않고, 반대도 동일하다.
+- watermark 전진은 해당 page의 accepted item이 durable commit, retry, 또는 DLQ 중 하나로 명시 상태를 갖춘 뒤에만 가능하다.
+- phase-1 seed/backfill은 같은 loop를 쓰되 `kind=PHASE1_SEED` 또는 `BACKFILL`로 표시하고 비용 게이트가 우선순위를 결정한다.
+
+### 0.2 논문 후보 처리
+
+```
+processSourceRecord(sourceRecord, job):
+  candidate <- CorpusSourceAdapterSet.fetchFullTextCandidate(sourceRecord)
+  licenseDecision <- FullTextExtractionProcessor.validateLicense(sourceRecord, candidate)
+    if not allowed: routePermanent(NON_OA_OR_NOT_ALLOWED); return
+
+  fullText <- FullTextExtractionProcessor.extractFullText(candidate)
+    # arXiv: HTML first, PDF fallback
+    # Semantic Scholar/OpenAlex: PDF -> GROBID, raw PDF transient only
+
+  normalized <- FullTextExtractionProcessor.normalizeSource(sourceRecord, fullText)
+  canonical <- SourcePriorityDeduplicationGuard.canonicalize(normalized)
+  dedupDecision <- SourcePriorityDeduplicationGuard.deduplicate(canonical)
+
+  if dedupDecision == LOSING_DUPLICATE:
+    storeSourceProvenance(canonical)
+    return SKIPPED_DUPLICATE
+
+  if dedupDecision in {NEW, CHANGED, BETTER_SOURCE_FOR_SAME_VERSION}:
+    ingestCanonicalPaper(canonical, job)
+```
+
+- dedup key 순서: DOI -> arXiv id -> normalized(title + first author + year).
+- 승자 규칙: source priority(arXiv > Semantic Scholar > OpenAlex)를 기본으로 하되, 같은 canonical paper에서 더 완성도 높은 FullText/DocModel 후보는 provenance와 quality signal로 보존한다.
+- losing duplicate는 embedding/index를 만들지 않는다. 단, provenance는 남겨 재현성과 추적성을 보장한다.
+
+### 0.3 Canonical paper commit pipeline
+
+```
+ingestCanonicalPaper(canonical, job):
+  paperId, version <- canonical.paperId, canonical.version
+
+  fullTextRef <- CorpusArtifactStore.putFullText(canonical.fullText)
+  docModel <- DocModelBuildCoordinator.buildDocModel(canonical.fullText, canonical.provenance)
+  DocModelBuildCoordinator.validateDocModel(docModel)
+  docModelRef <- DocModelBuildCoordinator.storeDocModel(docModel)
+
+  chunks <- DocModelBlockChunker.chunkDocModel(docModel)
+  assert every chunk.blockRef exists in docModel
+
+  embeddings <- EmbeddingGatewayAdapter.embedBatch(chunks)
+  generation <- CorpusIndexWriter.prepareGeneration(vectorSpec=v2, docModelSchema=docModel.schemaVersion)
+  records <- assembleCorpusIndexRecords(generation, canonical, chunks, embeddings, docModelRef)
+
+  writeResult <- CorpusIndexWriter.upsert(generation, records)
+    if writeResult partial/fail:
+      IngestionResilienceService.handle(error, stage=INDEX_WRITE)
+      return RETRY_OR_DLQ
+
+  SourcePriorityDeduplicationGuard.markCommitted(paperId, version, canonical.fingerprint)
+  CorpusArtifactStore.putGenerationManifest(paperId, version, generation, fullTextRef, docModelRef)
+  CorpusRefreshScheduler.markItemCommitted(job, paperId, version)
+```
+
+- commit 단위는 `(paperId, version)`이다. FullText, DocModel, chunks, index records, S3 object refs가 같은 version을 가져야 한다.
+- DocModel validation 실패는 index write 전에 차단한다. 스키마 roundtrip과 negative validation은 QT-9에 포함한다.
+- `CorpusIndexWriter.upsert`는 generation 내부에만 기록한다. alias cutover는 별도 gate(0.5)에서 수행한다.
+- 기존 `StoredFullText(.txt)`는 검색 투영/재처리 보조 artifact로 남길 수 있으나, 인덱싱 권위는 DocModel Block이다.
+
+### 0.4 Retry, DLQ, reprocess
+
+```
+handleCorpusFailure(error, jobItem):
+  failure <- IngestFailureHandler.classify(error)
+  ObservabilityHub.emitMetric("u1.corpus.stage_failure", tags=failure.tags)
+  ObservabilityHub.emitLog("u1.corpus.failure", payload=failure.redactedPayload)
+
+  if failure.retriable and attempts remain:
+    scheduleRetry(jobItem, backoffWithJitter, sourceQuotaAware)
+  else:
+    sendToDLQ(jobItem, failure)
+
+reprocessDLQ(dlqItem):
+  job <- CorpusRefreshScheduler.createJob(REPROCESS_DLQ, dlqItem.sourceName)
+  processSourceRecord(dlqItem.sourceRecord, job)
+```
+
+- retry/DLQ는 source, GROBID, DocModel validation, embedding, index write 단계별로 stage를 보존한다.
+- reprocess는 원래 pipeline을 다시 타며 dedup/upsert/idempotency 규칙으로 중복을 만들지 않는다.
+- 실패 신호는 U1 내부 `emitFailureSignal` 이름을 쓰더라도 실제 포트 호출은 `ObservabilityHub.emitMetric`/`emitLog`다.
+
+### 0.5 Index generation과 alias cutover
+
+```
+cutoverCorpusGeneration(generation):
+  require QT-9 invariants pass
+  require sample search and summary/docModel read smoke pass
+  require generation.indexStats within expected phase-1 bounds
+
+  CorpusIndexWriter.switchAlias(generation.indexAlias, generation.id)
+  CorpusIndexWriter.markGenerationActive(generation.id)
+```
+
+- OpenSearch alias는 DocModel 기반 generation 검증 후에만 전환한다.
+- 이전 full-text 기반 index generation은 rollback window 동안 보존한다.
+- partial generation은 검색에 노출하지 않는다.
+
+### 0.6 Lazy build의 남은 역할
+
+Lazy/on-demand DocModel build는 U1 phase-1 Corpus의 기본 경로가 아니다. 다음에만 허용한다.
+
+- phase-1 이전 데이터에서 DocModel이 누락된 논문 보강.
+- parserVersion/schemaVersion 변경 후 선택적 rebuild/backfill.
+- phase-1 범위 밖 논문의 리치뷰/요약 요청.
+- 장애로 eager build가 DLQ 처리된 item의 reprocess.
+
+이 경우에도 저장 키와 index/read 계약은 `(paperId, version)`을 따른다.
 
 ---
 
@@ -45,7 +180,7 @@ ingestOne(record, job):
 ```
 triggerFullRebuild():                                  # US-I1 시드/전체 재구축, RES-2
   acquire REBUILD_LOCK (Q16=A 상호 배제)                 # rebuild 동안 INCREMENTAL/EVENT 보류·거부
-  job ← IngestionJob(SEED_REBUILD, slice=resolveSliceCategories() [5cat,5yr], since=null)
+  job ← IngestionJob(SEED_REBUILD, slice=resolveSliceCategories() [5cat,1yr], since=null)
   reset Watermark (의도적 리셋 — Q17 예외 경로)
   for batch in harvest(대량 시드 하베스트):              # 프로토콜=NFR Q2; 수십만
       for record in batch: IngestionPipelineService.ingestOne(record, job)  # 쿼터 인지 동시성(NFR Q11=B, 쓰기 직렬화)
@@ -83,7 +218,7 @@ handle(error|class, context):
 
 | 컴포넌트 | 핵심 알고리즘(프로덕션) |
 |---|---|
-| **ArxivSourceClient** | `resolveSliceCategories`→ 5 카테고리·최근 5년(Q1=D). `fetchMetadataPage`(증분, updated 기준 Q7=A) + 대량 시드 하베스트(프로토콜 NFR Q2). **`fetchFullText` 활성(Q2=C)** — OA 전문 취득. 레이트/쿼터 보수 준수(RES-8)·타임아웃(RES-9)·fail-closed(SEC-15). |
+| **ArxivSourceClient** | `resolveSliceCategories`→ 5 카테고리·최근 1년 phase-1. `fetchMetadataPage`(증분, updated 기준 Q7=A) + 대량 시드 하베스트(프로토콜 NFR Q2). **`fetchFullText` 활성(Q2=C)** — OA 전문 취득. 레이트/쿼터 보수 준수(RES-8)·타임아웃(RES-9)·fail-closed(SEC-15). |
 | **FetchParseProcessor** | `parse`: 메타+**전문 본문** ParsedPaper(Q2=C). OA 판정(엄격 라이선스 검증, BR-1). `validate`: 필수필드·형식(SEC-5). **(Q13=B) 철회 신호 탐지**(메타 철회 표시 + 전문 withdrawal 공지) → WithdrawalMarker. |
 | **Chunker** | `chunk`: **섹션 인지 다중 청크**(초록·본문 섹션, 오버랩 정책), 추적 메타(paperId·section·position), **결정적·멱등**(PBT-08). `chunkId(paperId, ordinal)` 결정적. 과대/빈/손상 본문 정책(BR-21). |
 | **EmbeddingGatewayAdapter** | `embedBatch`: 다중 청크 배치 벡터화(**공유 VectorSpec, NFR PIN**), 타임아웃·재시도·서킷(RES-9), 비용 텔레메트리(NFR-C1), vector↔chunkId 정렬 보존. `embeddingSchema()`→VectorSpec. fail-closed(SEC-15). |

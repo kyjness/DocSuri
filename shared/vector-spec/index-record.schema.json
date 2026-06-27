@@ -8,6 +8,33 @@
     "ArxivCategory": {
       "type": "string",
       "description": "An arXiv category code within the corpus slice (e.g. cs.LG, cs.AI, cs.CL, cs.CV, stat.ML). Trace: C-6."
+    },
+    "DocModelBlockRef": {
+      "type": "object",
+      "description": "Structured DocModel block reference covered by this chunk. Trace: FR-18, QT-9.",
+      "properties": {
+        "paperId": { "type": "string" },
+        "version": { "type": "integer" },
+        "sectionId": { "type": "string" },
+        "blockId": { "type": "string" },
+        "blockType": { "type": "string" }
+      },
+      "required": ["paperId", "version", "sectionId", "blockId", "blockType"],
+      "additionalProperties": false
+    },
+    "SourceProvenance": {
+      "type": "object",
+      "description": "Internal source lineage for debugging, grounding, and future agent evidence. Not exposed in external DTOs. Trace: BR-C4, BR-C11.",
+      "properties": {
+        "sourceName": { "type": "string" },
+        "sourceId": { "type": "string" },
+        "sourceTier": { "type": "string" },
+        "sourceUrl": { "type": "string" },
+        "doi": { "type": "string" },
+        "arxivId": { "type": "string" }
+      },
+      "required": ["sourceName", "sourceId", "sourceTier", "sourceUrl", "doi", "arxivId"],
+      "additionalProperties": false
     }
   },
   "properties": {
@@ -36,7 +63,12 @@
     },
     "lexicalTerms": {
       "type": "string",
-      "description": "Analyzed text field over title + abstract + body tokens — the BM25 lexical field for hybrid retrieval (FR-2). INTERNAL — not exposed in external DTOs (SEC-9). Trace: BR-6."
+      "description": "Analyzed chunk-body text for lexical retrieval (FR-2). Empty for abstract chunks. Title and abstract are written once in their own analyzed fields; U2 queries title + abstract + lexicalTerms together, with boost tuning deferred to search quality work and no reindex required. INTERNAL — not exposed in external DTOs (SEC-9). Trace: BR-6."
+    },
+    "blockRefs": {
+      "type": "array",
+      "description": "Structured DocModel block refs covered by this chunk. Empty only for legacy/plain-text chunks. INTERNAL provenance used by QT-9 BlockRef validation; not searched or exposed externally. Trace: BR-C8, BR-C13, QT-9.",
+      "items": { "$ref": "#/$defs/DocModelBlockRef" }
     },
     "title": {
       "type": "string",
@@ -71,6 +103,18 @@
       "type": "array",
       "description": "arXiv categories (corpus slice cs.LG/cs.AI/cs.CL/cs.CV/stat.ML). INTERNAL — not exposed in external DTOs (SEC-9). Trace: C-6.",
       "items": { "$ref": "#/$defs/ArxivCategory" }
+    },
+    "doi": {
+      "type": "string",
+      "description": "Known DOI alias for this indexed paper/chunk. INTERNAL keyword for canonical alias repair and future lookup; not exposed in external DTOs. Optional for legacy/arXiv-only records. Trace: BR-C4."
+    },
+    "sourceArxivId": {
+      "type": "string",
+      "description": "Known arXiv alias from the source record, independent of canonical paperId. INTERNAL keyword for DOI/arXiv alias repair; not exposed in external DTOs. Optional when unknown. Trace: BR-C4."
+    },
+    "sourceProvenance": {
+      "$ref": "#/$defs/SourceProvenance",
+      "description": "Internal source lineage. OpenSearch stores it as non-indexed provenance; external DTOs do not project it. Trace: BR-C4, BR-C11."
     }
   },
   "required": [
@@ -80,6 +124,7 @@
     "vector",
     "section",
     "lexicalTerms",
+    "blockRefs",
     "title",
     "authors",
     "year",

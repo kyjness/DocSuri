@@ -8,7 +8,7 @@ from .domain.enums import JobKind
 from .domain.models import IngestionJob
 from .observability import configure_logging
 from .runtime import build_local_runtime, build_production_runtime
-from .settings import IngestionSettings
+from .settings import IngestionSettings, validate_corpus_build_settings
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -24,11 +24,10 @@ def main(argv: list[str] | None = None) -> int:
     subcommands.add_parser("schedule-tick")
 
     args = parser.parse_args(argv)
-    runtime = (
-        build_local_runtime()
-        if args.local
-        else build_production_runtime(IngestionSettings.from_env())
-    )
+    settings = IngestionSettings.from_env()
+    if args.command == "trigger-full-rebuild" and not args.local:
+        validate_corpus_build_settings(settings)
+    runtime = build_local_runtime() if args.local else build_production_runtime(settings)
 
     if args.command == "ingest-one":
         decision = runtime.pipeline.ingest_one(

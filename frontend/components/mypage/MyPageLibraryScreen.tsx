@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { getApiClient } from '@/lib/api';
 import { usePaginatedList } from '@/lib/usePaginatedList';
 import { cardFromMeta } from '@/lib/library/cardFromMeta';
+import { useSavedLibrary } from '@/lib/library/savedLibrary';
 import { ResultCard } from '../ResultCard';
 import { StateView } from '../StateView';
 import styles from './MyPageScreen.module.css';
@@ -44,6 +45,7 @@ function InterestTab() {
   const fetchPage = useCallback((cursor?: string) => getApiClient().listLibrary({ cursor }), []);
   const { items, status, error, hasMore, loadMore, reload, removeLocal } =
     usePaginatedList<LibraryItemDTO>(fetchPage);
+  const savedLibrary = useSavedLibrary();
   const [busyId, setBusyId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -54,6 +56,7 @@ function InterestTab() {
     try {
       await getApiClient().removeFromLibrary(itemId);
       removeLocal((it) => String(it.id) === itemId);
+      savedLibrary.markRemoved(item.arXivId);
     } catch {
       setActionError('제거하지 못했습니다. 다시 시도해 주세요.');
     } finally {

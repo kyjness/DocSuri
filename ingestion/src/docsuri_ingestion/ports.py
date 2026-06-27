@@ -10,6 +10,7 @@ from docsuri_shared.events import NewArxivEvent
 from .domain.assets import AssetManifest, ExtractedAsset
 from .domain.enums import DedupDecision, JobKind
 from .domain.models import (
+    CanonicalDedupState,
     CategoryFilter,
     DedupResult,
     IndexRecordBatch,
@@ -84,6 +85,18 @@ class ControlPlaneStorePort(Protocol):
     def mark_ingested(self, paper_id: str, version: int, fingerprint: str) -> None: ...
 
     def try_claim_tombstone(self, paper_id: str, version: int) -> bool: ...
+
+    def get_canonical_dedup_state(
+        self, canonical_key: str
+    ) -> CanonicalDedupState | None: ...
+
+    def list_canonical_dedup_states_for_paper(
+        self, paper_id: str
+    ) -> tuple[CanonicalDedupState, ...]: ...
+
+    def upsert_canonical_dedup_state(self, state: CanonicalDedupState) -> None: ...
+
+    def delete_canonical_dedup_state_for_paper(self, paper_id: str) -> None: ...
 
     def acquire_rebuild_lock(self, owner: str) -> bool: ...
 

@@ -10,6 +10,7 @@ from conftest import load_schema, valid_index_record_dict
 from pydantic import ValidationError
 
 from docsuri_shared import vector_spec as vs
+from docsuri_shared.index_spec import papers_index_body
 
 # Every top-level vector-spec.yaml key must be mirrored by a Python constant.
 _EXPECTED_YAML_KEYS = {
@@ -58,6 +59,61 @@ def test_index_record_enforces_vector_dimension():
     bad = {**valid_index_record_dict(), "vector": [0.0] * 1023}
     with pytest.raises(ValidationError):
         vs.IndexRecord.model_validate(bad)
+
+
+def test_index_record_block_refs_are_structured():
+    payload = {
+        **valid_index_record_dict(),
+        "blockRefs": [
+            {
+                "paperId": "2106.01234",
+                "version": 1,
+                "sectionId": "s1",
+                "blockId": "s1.p1",
+                "blockType": "paragraph",
+            }
+        ],
+    }
+    record = vs.IndexRecord.model_validate(payload)
+    assert record.blockRefs[0].blockId == "s1.p1"
+
+    with pytest.raises(ValidationError):
+        vs.IndexRecord.model_validate({**valid_index_record_dict(), "blockRefs": ["s1.p1"]})
+
+
+def test_block_refs_mapping_is_non_indexed_provenance():
+    mapping = papers_index_body()["mappings"]["properties"]["blockRefs"]
+    assert mapping == {"type": "object", "enabled": False}
+
+
+def test_source_provenance_is_optional_internal_metadata():
+    record = vs.IndexRecord.model_validate(
+        {
+            **valid_index_record_dict(),
+            "doi": "10.1000/example",
+            "sourceArxivId": "2106.01234v1",
+            "sourceProvenance": {
+                "sourceName": "OPENALEX",
+                "sourceId": "oa-1",
+                "sourceTier": "OPENALEX_GROBID",
+                "sourceUrl": "https://example.test/paper.pdf",
+                "doi": "10.1000/example",
+                "arxivId": "2106.01234v1",
+            },
+        }
+    )
+
+    assert record.doi == "10.1000/example"
+    assert record.sourceArxivId == "2106.01234v1"
+    assert record.sourceProvenance is not None
+    assert record.sourceProvenance.sourceName == "OPENALEX"
+
+
+def test_source_alias_mapping_is_keyword_and_provenance_is_non_indexed():
+    properties = papers_index_body()["mappings"]["properties"]
+    assert properties["doi"] == {"type": "keyword"}
+    assert properties["sourceArxivId"] == {"type": "keyword"}
+    assert properties["sourceProvenance"] == {"type": "object", "enabled": False}
 
 
 def test_assert_same_space():

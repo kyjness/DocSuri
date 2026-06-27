@@ -46,8 +46,10 @@
   - `arxiv_id: str`
   - `abstract_snippet: str | None` — ≤ 1000자
   - `arxiv_url: str | None`
+  - `retracted: bool` — 철회 논문 플래그 (기본 `false`)
 - 추가 시점에 **SEC-5 검증**을 거쳐 그대로 저장되고, 조회 시 **저장된 값을 verbatim 반환**한다.
 - **가용성 격리(availability isolation)**: 라이브러리 렌더링은 라이브 인덱스(U2)나 게이트웨이를 재조회하지 않는다. 이 스냅샷은 U2 `ResultCardVM` 카드 필드(dtos.md §1.1: title·authors·year·arxivId·abstractSnippet·arxivUrl)를 미러링하므로, 라이브 인덱스 없이도 카드를 완전히 렌더링할 수 있다.
+- **논문 철회 상태 전파(PaperRetractedEvent 소비)**: U1 인제스천 측에서 원문 철회가 감지되어 `PaperRetractedEvent`가 발행되면, `LibraryService`가 이를 비동기적으로 구독하여 보유한 항목 중 해당 논문의 `retracted` 속성을 `true`로 갱신한다. 사용자의 라이브러리 데이터는 강제 삭제하지 않고 보존하되 신뢰할 수 없는 항목임을 UI에 명시적으로 알리도록 한다.
 
 ### BR-L6: 검색 이력 롤링 보존 정책 (D6 반영)
 - 검색 이력은 소유자별 **최근 500건** 롤링 보존이다.
@@ -56,7 +58,8 @@
 
 ### BR-L7: 검색 이력 기록 멱등성 (D7 반영, INV-L3)
 - 이력 기록은 `SearchExecutedEvent`(🔒FROZEN) **at-least-once** 전달을 전제로 한다.
-- **디덥 키**: `dedupe_key = sha256(owner_id | executed_at.isoformat() | query)`.
+- **디덥 키**: `dedupe_key = sha256(owner_id | requestId | query)`.
+- 기존 `timestamp` 기반 디덥 키는 의도적인 빠른 반복 쿼리에서 해시 충돌(데이터 누락)이 발생할 위험이 있으므로, 요청 생성 시의 고유 `requestId`를 사용하여 시스템 재시도로 인한 중복 전달만 멱등하게 차단한다.
 - 동일 이벤트의 **재전달은 중복 행을 생성하지 않는다**(exactly-once 행, INV-L3).
 - 이력 WRITE는 이벤트 구동(consumer)이며 공개 POST 엔드포인트로 노출되지 않는다.
 - `dedupe_key`는 내부 필드로 와이어 DTO에 직렬화되지 않는다(SEC-9).
@@ -76,7 +79,8 @@
 - 저장 검색/이력 항목의 재실행(rerun)은 **U2 직접 호출이 아니다**.
 - 재실행은 **`SearchGatewayPort`** (`search(query, principal) -> SearchResultSetDTO`)를 통해 게이트웨이-프론트된 검색 계약(U6 `ApiGatewayMiddleware` → U2)으로 재진입하여, **비용·근거화 훅이 재적용**되도록 한다(백도어 금지).
 - `rerunSavedSearch` / `rerunHistoryEntry`는 저장된 질의를 해석(resolve)한 뒤 포트를 호출한다.
-- U4는 `StubSearchGateway`(결정론적 placeholder)를 기본 탑재하며, 실제 바인딩은 U6/Infra에서 주입된다.
+- U4는 `StubSearchGateway`(결정론적 placeholder)를 기본 탑재하며, 실제 바인딩은 U6/Infra에서 주입된다. **주의: 프로덕션 환경 구성에서는 `StubSearchGateway` 사용이 엄격히 금지된다.**
+- **게이트웨이 컨트랙트 테스트 강제**: 실제 게이트웨이 바인딩이 U6의 비용(`CostGuardCircuitBreaker.getBudgetState()`) 및 근거화(`GroundingEnforcementHook.enforce()`) 훅을 정상적으로 통과하는지 검증하는 CI 차원의 블로킹 통합 테스트(`ContractTestHarness`)를 반드시 통과해야만 배포를 허용한다.
 
 ### BR-L10: 핵심 데이터 변경 감사 (D12 반영, SEC-13)
 - 변이 연산(저장/삭제, 추가/제거, clear)에서 서비스는 **`AuditSink`** 포트를 통해 감사 이벤트를 발행한다.

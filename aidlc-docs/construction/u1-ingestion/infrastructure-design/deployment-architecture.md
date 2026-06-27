@@ -48,3 +48,75 @@ graph LR
 ---
 
 > 비용·IAM·KMS·스키마 상세는 `infrastructure-design.md`. 다음 단계 = U1 Code Generation(추출·정규화·AssetStore 구현, `paper_asset` 마이그레이션).
+
+---
+
+## 6. U1 Corpus 배포 아키텍처 우선 적용 개정 (2026-06-26)
+
+> **우선순위**: 본 섹션은 U1 Corpus 최신 배포 아키텍처다. 위 §1~§5의 멀티모달 자산 한정 설명과 충돌하면 본 섹션을 우선한다.
+
+### 6.1 배포 단위
+
+| 배포 단위 | 매핑 | 결정 |
+|---|---|---|
+| Ingestion worker | existing ECS Fargate service `docsuri-ingestion` | 유지. SQS depth 기반 scale-to-zero/min 0/max 3 패턴 유지. |
+| GROBID | worker task sidecar | 별도 ALB/service discovery 없음. worker와 같은 task network에서만 호출. |
+| Queue/DLQ | existing `docsuri-ingestion-queue` / `docsuri-ingestion-dlq` | message type으로 Corpus job 종류 구분. |
+| Scheduler | EventBridge rules | source별 daily tick 또는 fan-out payload. 같은 queue target. |
+| OpenSearch | existing `docsuri-papers` domain | new generation index + alias cutover. |
+| Storage | existing papers bucket + RDS | prefixes/table additions only. |
+
+### 6.2 Runtime environment
+
+Existing ingestion task env remains the base:
+
+- `DOCSURI_S3_BUCKET=docsuri-papers-fulltext-{account}`
+- `DOCSURI_BEDROCK_MODEL_ID=global.cohere.embed-v4:0`
+- `DOCSURI_OPENSEARCH_ENDPOINT=https://...`
+- `DOCSURI_CONTROL_PLANE_DSN=...`
+- `DOCSURI_SQS_QUEUE_URL=...`
+- `DOCSURI_SQS_DLQ_URL=...`
+
+Corpus additions:
+
+- `DOCSURI_CORPUS_PHASE1_ENABLED=true`
+- `DOCSURI_CORPUS_SOURCES=ARXIV,SEMANTIC_SCHOLAR,OPENALEX`
+- `DOCSURI_GROBID_URL=http://localhost:8070`
+- `DOCSURI_MULTIMODAL_ASSETS_ENABLED=true`
+- `DOCSURI_CORPUS_BUILD_ROLLOUT_CONFIRMED=true` only after the new worker deployment is fully stable and worker redeploys are frozen for the harvest window.
+- `DOCSURI_CORPUS_RUN_BUDGET_USD=<per-run cap>`
+- optional `SEMANTIC_SCHOLAR_API_KEY` from Secrets Manager only if quota requires it.
+
+### 6.3 Rollout sequence
+
+1. Apply RDS migrations for `source_watermark`, `canonical_dedup_state`, `paper_version_state`, `corpus_generation`, `corpus_job_item`.
+2. Deploy ingestion image with Corpus code and GROBID sidecar, but keep harvest triggers disabled.
+3. Wait for the ECS service deployment to fully stabilize: every running task must be on the new task definition. Old and new workers must not consume SQS jobs concurrently during corpus build.
+4. Freeze ingestion worker redeploys for the full harvest window.
+5. Set `DOCSURI_CORPUS_BUILD_ROLLOUT_CONFIRMED=true`. Production `trigger-full-rebuild` refuses to queue the build until this is set.
+6. Provision the new OpenSearch candidate generation index with on-disk vector mapping in the existing domain.
+7. Enable one source at a time: arXiv first, then Semantic Scholar, then OpenAlex.
+8. Run phase-1 budgeted backfill/harvest only after steps 3-6 are complete.
+9. Run QT-9 gates and U2/U7 smoke checks against candidate generation, including DocModel `fullText`, multimodal block coverage, blockRef integrity, and AssetRef object resolution.
+10. Switch active alias.
+11. Keep previous generation until burn-in completes, then retire.
+
+### 6.4 Rollback
+
+- Disable `DOCSURI_CORPUS_PHASE1_ENABLED`.
+- Stop EventBridge Corpus rules.
+- Keep current active OpenSearch alias on previous generation.
+- Leave candidate S3 artifacts and RDS state for inspection; do not delete during incident response.
+- Reprocess DLQ only after root cause is known.
+
+### 6.5 Network and capacity
+
+- Worker remains outbound-only. Public ingress is not added.
+- GROBID sidecar has no public route.
+- OpenSearch remains VPC-only with worker/API security group access.
+- Existing worker size `512 CPU / 1024 MiB` may be too small with GROBID. Infrastructure Design sets the trigger to raise task size when sidecar is enabled; Code/Infra implementation should start with a conservative GROBID-enabled task size rather than failing at runtime.
+
+### 6.6 Operations handoff
+
+- Required dashboards: source watermark lag, queue depth, DLQ depth, GROBID failures, embedding spend, generation validation status, alias active generation.
+- Required runbooks: source circuit open, GROBID degraded, budget hard stop, generation cutover failure, DLQ reprocess.

@@ -1,15 +1,30 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
+from docsuri_shared.dtos import DocModel
+from docsuri_shared.vector_spec import DIMENSIONS
 
 from docsuri_ingestion.adapters.local import InMemoryControlPlaneStore, sample_metadata
-from docsuri_ingestion.domain.enums import DedupDecision, DedupStateKind
+from docsuri_ingestion.domain.enums import DedupDecision, DedupStateKind, SourceName
 from docsuri_ingestion.domain.errors import LicenseRejectedError
 from docsuri_ingestion.domain.ids import content_fingerprint, normalize_arxiv_ref
-from docsuri_ingestion.domain.models import RawDocument, Watermark
-from docsuri_ingestion.processors import Chunker, FetchParseProcessor, detect_withdrawal
+from docsuri_ingestion.domain.models import (
+    Chunk,
+    ChunkSet,
+    EmbeddingBatch,
+    ParsedPaper,
+    RawDocument,
+    Watermark,
+)
+from docsuri_ingestion.processors import (
+    Chunker,
+    FetchParseProcessor,
+    IndexRecordAssembler,
+    detect_withdrawal,
+)
 
 
 def test_arxiv_id_normalization_and_version_parsing() -> None:
@@ -62,6 +77,216 @@ def test_chunker_produces_abstract_plus_body_chunks() -> None:
     assert [c.ordinal for c in first.chunks] == list(range(len(first.chunks)))
     # body chunks exist beyond the abstract
     assert {c.section for c in first.chunks} > {"abstract"}
+
+
+def test_docmodel_chunker_uses_docmodel_blocks_only() -> None:
+    doc = DocModel.model_validate(
+        {
+            "meta": {
+                "paperId": "2401.00001",
+                "version": 1,
+                "title": "T",
+                "provenance": {
+                    "sourceTier": "native_html",
+                    "parserVersion": "test",
+                    "schemaVersion": "1",
+                    "generatedAt": "1970-01-01T00:00:00Z",
+                },
+            },
+            "fullText": "Body",
+            "sections": [
+                {
+                    "id": "s1",
+                    "title": "Body",
+                    "blocks": [{"id": "s1.p1", "type": "paragraph", "text": "Body"}],
+                }
+            ],
+        }
+    )
+
+    chunks = Chunker(
+        max_chunk_chars=10,
+        overlap_chars=0,
+        max_chunks_per_paper=2,
+    ).chunk_doc_model(doc)
+
+    assert len(chunks.chunks) == 1
+    assert chunks.chunks[0].section == "Body"
+    assert chunks.chunks[0].block_refs[0].block_id == "s1.p1"
+
+
+def test_docmodel_chunker_falls_back_to_full_text_for_textless_blocks() -> None:
+    doc = DocModel.model_validate(
+        {
+            "meta": {
+                "paperId": "2401.00001",
+                "version": 1,
+                "title": "T",
+                "provenance": {
+                    "sourceTier": "native_html",
+                    "parserVersion": "test",
+                    "schemaVersion": "1",
+                    "generatedAt": "1970-01-01T00:00:00Z",
+                },
+            },
+            "fullText": "Results",
+            "sections": [
+                {
+                    "id": "s1",
+                    "title": "Results",
+                    "blocks": [{"id": "s1.tbl1", "type": "table", "rows": []}],
+                }
+            ],
+        }
+    )
+
+    chunks = Chunker().chunk_doc_model(doc)
+
+    assert chunks.chunks[0].text == "Results"
+    assert chunks.chunks[0].block_refs[0].block_id == "s1.tbl1"
+
+
+def test_index_record_lexical_terms_are_body_chunk_only() -> None:
+    metadata = replace(
+        sample_metadata(),
+        title="Unique Title Only",
+        abstract="Unique Abstract Only",
+    )
+    paper = FetchParseProcessor().parse(
+        RawDocument(
+            metadata=metadata,
+            text="INTRODUCTION\nBody chunk only terms",
+            source_url="local://paper",
+        )
+    )
+    chunks = Chunker(max_chunk_chars=200, overlap_chars=0).chunk(paper)
+    embedding_batch = EmbeddingBatch(
+        chunk_ids=tuple(chunk.chunk_id for chunk in chunks.chunks),
+        vectors=tuple(tuple([0.0] * DIMENSIONS) for _ in chunks.chunks),
+    )
+
+    records = IndexRecordAssembler().assemble(paper, chunks, embedding_batch).records
+    abstract_record = next(record for record in records if record.section == "abstract")
+    body_record = next(
+        record for record in records if record.lexicalTerms == "INTRODUCTION Body chunk only terms"
+    )
+
+    assert abstract_record.lexicalTerms == ""
+    assert abstract_record.abstract == "Unique Abstract Only"
+    assert "Unique Title Only" not in body_record.lexicalTerms
+    assert "Unique Abstract Only" not in body_record.lexicalTerms
+
+
+def test_docmodel_abstract_chunk_has_empty_lexical_terms() -> None:
+    metadata = replace(
+        sample_metadata(),
+        title="DocModel Title",
+        abstract="DocModel Abstract Only",
+    )
+    paper = FetchParseProcessor().parse(
+        RawDocument(
+            metadata=metadata,
+            text="INTRODUCTION\nDocModel body only terms",
+            source_url="local://paper",
+        )
+    )
+    doc = DocModel.model_validate(
+        {
+            "meta": {
+                "paperId": paper.paper_id,
+                "version": paper.version,
+                "title": paper.title,
+                "abstract": paper.abstract,
+                "provenance": {
+                    "sourceTier": "native_html",
+                    "parserVersion": "test",
+                    "schemaVersion": "1",
+                    "generatedAt": "1970-01-01T00:00:00Z",
+                },
+            },
+            "fullText": "Abstract\n\nDocModel Abstract Only\n\nBody\n\nDocModel body only terms",
+            "sections": [
+                {
+                    "id": "s0",
+                    "title": "Abstract",
+                    "blocks": [
+                        {"id": "s0.p1", "type": "paragraph", "text": "DocModel Abstract Only"}
+                    ],
+                },
+                {
+                    "id": "s1",
+                    "title": "Body",
+                    "blocks": [
+                        {"id": "s1.p1", "type": "paragraph", "text": "DocModel body only terms"}
+                    ],
+                },
+            ],
+        }
+    )
+    chunks = Chunker(max_chunk_chars=200, overlap_chars=0).chunk_doc_model(doc)
+    embedding_batch = EmbeddingBatch(
+        chunk_ids=tuple(chunk.chunk_id for chunk in chunks.chunks),
+        vectors=tuple(tuple([0.0] * DIMENSIONS) for _ in chunks.chunks),
+    )
+
+    records = IndexRecordAssembler().assemble(paper, chunks, embedding_batch).records
+    abstract_record = next(record for record in records if record.section == "Abstract")
+    body_record = next(record for record in records if record.section == "Body")
+
+    assert abstract_record.lexicalTerms == ""
+    assert abstract_record.abstract == "DocModel Abstract Only"
+    assert body_record.lexicalTerms == "DocModel body only terms"
+
+
+def test_index_record_preserves_source_provenance_and_external_arxiv_alias() -> None:
+    paper = ParsedPaper(
+        paper_id="src-abc",
+        version=1,
+        title="External Paper",
+        authors=("Ada Lovelace",),
+        abstract="External abstract",
+        categories=("cs.LG",),
+        updated_at=datetime(2025, 1, 1, tzinfo=UTC),
+        year=2025,
+        arxiv_url="https://example.test/paper",
+        full_text="External body",
+        license_url="https://creativecommons.org/licenses/by/4.0/",
+        doi="10.1000/external",
+        source_arxiv_id="2501.00001v2",
+        source_name=SourceName.OPENALEX,
+        source_id="oa-1",
+        source_tier="OPENALEX_GROBID",
+        source_url="https://example.test/paper.pdf",
+        display_arxiv_id="2501.00001v2",
+    )
+    chunks = ChunkSet(
+        paper_id=paper.paper_id,
+        version=paper.version,
+        chunks=(
+            Chunk(
+                paper_id=paper.paper_id,
+                ordinal=0,
+                section="body",
+                text="External body",
+                chunk_id="src-abc:0000",
+            ),
+        ),
+    )
+    embedding_batch = EmbeddingBatch(
+        chunk_ids=("src-abc:0000",),
+        vectors=(tuple([0.0] * DIMENSIONS),),
+    )
+
+    record = IndexRecordAssembler().assemble(paper, chunks, embedding_batch).records[0]
+
+    assert record.arxivId == "2501.00001v2"
+    assert record.doi == "10.1000/external"
+    assert record.sourceArxivId == "2501.00001v2"
+    assert record.sourceProvenance is not None
+    assert record.sourceProvenance.sourceName == "OPENALEX"
+    assert record.sourceProvenance.sourceId == "oa-1"
+    assert record.sourceProvenance.sourceTier == "OPENALEX_GROBID"
+    assert record.sourceProvenance.sourceUrl == "https://example.test/paper.pdf"
 
 
 def test_dedup_guard_decisions_and_mark_ingested() -> None:

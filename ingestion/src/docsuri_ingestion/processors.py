@@ -4,14 +4,16 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from docsuri_shared.dtos import DocModel
 from docsuri_shared.ids import chunk_id
 from docsuri_shared.vector_spec import EMBEDDING_SPEC, IndexRecord
 
 from .config import OPEN_ACCESS_LICENSE_ALLOWLIST, WITHDRAWAL_MARKERS
-from .domain.enums import DedupDecision
+from .domain.enums import DedupDecision, SourceName
 from .domain.errors import LicenseRejectedError, ValidationViolationError
 from .domain.models import (
     Chunk,
+    ChunkBlockRef,
     ChunkSet,
     DedupResult,
     EmbeddingBatch,
@@ -54,6 +56,12 @@ class FetchParseProcessor:
             full_text=text,
             license_url=metadata.license_url or "",
             withdrawal_detected=withdrawal_detected,
+            source_name=SourceName.ARXIV,
+            source_id=identifier.arxiv_id,
+            source_tier="ARXIV_PDF" if "/pdf/" in raw.source_url else "ARXIV_HTML",
+            source_url=raw.source_url,
+            source_arxiv_id=identifier.arxiv_id,
+            display_arxiv_id=identifier.arxiv_id,
         )
 
     def validate_open_access(self, license_url: str | None) -> None:
@@ -108,6 +116,102 @@ class Chunker:
             raise ValidationViolationError("paper produced no chunks", stage="chunk")
         return ChunkSet(paper_id=paper.paper_id, version=paper.version, chunks=tuple(chunks))
 
+    def chunk_doc_model(self, doc: DocModel) -> ChunkSet:
+        """Chunk structured doc-model blocks while preserving block id refs internally."""
+        block_ids: set[tuple[str, str, str]] = set()
+        entries: list[tuple[str, str, tuple[ChunkBlockRef, ...]]] = []
+        fallback_refs: tuple[ChunkBlockRef, ...] = ()
+
+        def walk(section) -> None:
+            nonlocal fallback_refs
+            section_id = getattr(section, "id", "")
+            section_label = normalize_text(section.title or section.id)
+            for block in section.blocks:
+                b = block.root
+                block_id = getattr(b, "id", "")
+                block_type = getattr(b, "type", "")
+                if block_id:
+                    block_ids.add((section_id, block_id, block_type))
+                text = _docmodel_block_text(b)
+                if text:
+                    refs = (
+                        (
+                            ChunkBlockRef(
+                                section_id=section_id,
+                                block_id=block_id,
+                                block_type=block_type,
+                            ),
+                        )
+                        if block_id
+                        else ()
+                    )
+                    if refs and not fallback_refs:
+                        fallback_refs = refs
+                    entries.append((section_label, text, refs))
+                elif block_id and not fallback_refs:
+                    fallback_refs = (
+                        ChunkBlockRef(
+                            section_id=section_id,
+                            block_id=block_id,
+                            block_type=block_type,
+                        ),
+                    )
+            for child in section.sections or []:
+                walk(child)
+
+        for section in doc.sections:
+            walk(section)
+
+        chunks: list[Chunk] = []
+        for section, text, refs in entries:
+            if len(chunks) >= self.max_chunks_per_paper:
+                break
+            for part in split_text(text, self.max_chunk_chars, self.overlap_chars):
+                if len(chunks) >= self.max_chunks_per_paper:
+                    break
+                ordinal = len(chunks)
+                chunks.append(
+                    Chunk(
+                        paper_id=doc.meta.paperId,
+                        ordinal=ordinal,
+                        section=section or "body",
+                        text=part,
+                        chunk_id=chunk_id(doc.meta.paperId, ordinal),
+                        block_refs=refs,
+                    )
+                )
+            if len(chunks) >= self.max_chunks_per_paper:
+                break
+
+        if not chunks and doc.fullText and fallback_refs:
+            for part in split_text(doc.fullText, self.max_chunk_chars, self.overlap_chars):
+                ordinal = len(chunks)
+                chunks.append(
+                    Chunk(
+                        paper_id=doc.meta.paperId,
+                        ordinal=ordinal,
+                        section="body",
+                        text=part,
+                        chunk_id=chunk_id(doc.meta.paperId, ordinal),
+                        block_refs=fallback_refs,
+                    )
+                )
+                if len(chunks) >= self.max_chunks_per_paper:
+                    break
+
+        referenced = {
+            (ref.section_id, ref.block_id, ref.block_type)
+            for chunk in chunks
+            for ref in chunk.block_refs
+        }
+        if not referenced.issubset(block_ids):
+            raise ValidationViolationError(
+                "chunk references unknown doc-model block", stage="chunk"
+            )
+        if not chunks:
+            raise ValidationViolationError("doc-model produced no chunks", stage="chunk")
+        return ChunkSet(paper_id=doc.meta.paperId, version=doc.meta.version, chunks=tuple(chunks))
+
 
 class DeduplicationGuard:
     def __init__(self, store: ControlPlaneStorePort) -> None:
@@ -149,7 +253,9 @@ class IndexRecordAssembler:
         chunk: Chunk,
         vector: Sequence[float],
     ) -> IndexRecord:
-        lexical_terms = normalize_text(f"{paper.title} {paper.abstract} {chunk.text}")
+        lexical_terms = ""
+        if normalize_text(chunk.section).lower() != "abstract":
+            lexical_terms = normalize_text(chunk.text)
         return IndexRecord(
             chunkId=chunk.chunk_id,
             paperId=paper.paper_id,
@@ -157,19 +263,64 @@ class IndexRecordAssembler:
             vector=list(vector),
             section=chunk.section,
             lexicalTerms=lexical_terms,
+            blockRefs=[
+                {
+                    "paperId": paper.paper_id,
+                    "version": paper.version,
+                    "sectionId": ref.section_id,
+                    "blockId": ref.block_id,
+                    "blockType": ref.block_type,
+                }
+                for ref in chunk.block_refs
+            ],
             title=paper.title,
             authors=list(paper.authors),
             year=paper.year,
-            arxivId=paper.arxiv_id,
+            arxivId=paper.card_arxiv_id,
             abstract=paper.abstract,
             abstractSnippet=snippet(paper.abstract),
             arxivUrl=paper.arxiv_url,
             categories=list(paper.categories),
+            doi=paper.doi or None,
+            sourceArxivId=paper.source_arxiv_id or None,
+            sourceProvenance={
+                "sourceName": paper.source_name.value,
+                "sourceId": paper.source_id or paper.paper_id,
+                "sourceTier": paper.source_tier or paper.source_name.value,
+                "sourceUrl": paper.source_url or paper.arxiv_url,
+                "doi": paper.doi,
+                "arxivId": paper.source_arxiv_id or paper.card_arxiv_id,
+            },
         )
 
 
 def normalize_text(text: str) -> str:
     return _WHITESPACE_RE.sub(" ", text).strip()
+
+
+def _docmodel_block_text(block) -> str:
+    kind = getattr(block, "type", "")
+    if kind == "paragraph":
+        return normalize_text(block.text)
+    if kind == "formula":
+        return normalize_text(block.latex)
+    if kind == "table":
+        lines: list[str] = []
+        label = getattr(block, "anchorLabel", "") or ""
+        caption = getattr(block, "caption", "") or ""
+        if label or caption:
+            lines.append(" ".join(v for v in (label, caption) if v))
+        for row in block.rows:
+            lines.append(" | ".join(cell.text for cell in row.cells))
+        return normalize_text(" ".join(lines))
+    if kind == "figure":
+        figure_text = " ".join(v for v in (block.anchorLabel or "", block.caption or "") if v)
+        return normalize_text(figure_text)
+    if kind == "list":
+        return normalize_text(" ".join(item.text for item in block.items))
+    if kind == "code":
+        return normalize_text(block.text)
+    return ""
 
 
 def detect_withdrawal(metadata: MetadataRecord, text: str) -> bool:

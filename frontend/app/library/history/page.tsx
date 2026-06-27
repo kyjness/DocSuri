@@ -9,7 +9,7 @@ export default function HistoryPage() {
   return (
     <RouteGuard redirectTo="/library/history">
       <div className={styles.screen}>
-        <AppHeader title="DocSuri" />
+        <AppHeader title="검색 이력" backHref="/mypage/library" />
         <HistoryScreen />
       </div>
       <BottomNav />

@@ -5,7 +5,7 @@ import signal
 import sys
 import threading
 
-from .domain.enums import FailureClass, FailureReason, JobKind
+from .domain.enums import FailureClass, FailureReason, JobKind, SourceName
 from .domain.errors import IngestionError, PermanentIngestionError
 from .domain.models import IngestionJob
 from .observability import configure_logging
@@ -116,7 +116,16 @@ def job_from_payload(payload) -> IngestionJob:
         kind = JobKind(payload["kind"])
         job_id = payload["jobId"]
         arxiv_ref = payload.get("arxivRef")
+        source_name = payload.get("sourceName")
     except (KeyError, ValueError, TypeError) as exc:
+        raise PermanentIngestionError(
+            "invalid queue payload",
+            reason=FailureReason.POISON_EVENT,
+            stage="queue",
+        ) from exc
+    try:
+        parsed_source = SourceName(source_name) if source_name else None
+    except ValueError as exc:
         raise PermanentIngestionError(
             "invalid queue payload",
             reason=FailureReason.POISON_EVENT,
@@ -128,6 +137,12 @@ def job_from_payload(payload) -> IngestionJob:
         arxiv_ref=arxiv_ref,
         event_id=payload.get("eventId"),
         correlation_id=payload.get("correlationId"),
+        source_name=parsed_source,
+        failure_stage=payload.get("failureStage"),
+        canonical_key=payload.get("canonicalKey"),
+        paper_id=payload.get("paperId"),
+        version=payload.get("version"),
+        source_record=payload.get("sourceRecord"),
     )
 
 

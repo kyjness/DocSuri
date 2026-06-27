@@ -119,7 +119,7 @@
 ### Step 3 — 포트와 설정 생성
 - [x] `ports.py`에 U1 내부 포트 Protocol을 정의한다.
 - [x] `settings.py`에 환경 변수 기반 설정을 정의하되, 시크릿 값은 로깅하지 않도록 표현을 제한한다.
-- [x] `config.py`에 corpus slice 기본값 `cs.LG`, `cs.AI`, `cs.CL`, `cs.CV`, `stat.ML`와 5년 범위를 둔다.
+- [x] `config.py`에 corpus slice 기본값 `cs.LG`, `cs.AI`, `cs.CL`, `cs.CV`, `stat.ML`와 phase-1 최근 1년 범위를 둔다.
 
 ### Step 4 — 순수 도메인 컴포넌트 구현
 - [x] `FetchParseProcessor`를 구현한다.

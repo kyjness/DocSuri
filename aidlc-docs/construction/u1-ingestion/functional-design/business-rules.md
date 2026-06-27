@@ -1,11 +1,63 @@
 # business-rules.md — U1 Ingestion 비즈니스 규칙·속성·추적성 (프로덕션)
 
 **단계**: CONSTRUCTION → Functional Design · **유닛**: U1 Ingestion · **일자**: 2026-06-16
-**근거**: 계획서(프로덕션 재스코핑) — Q1=D·**Q2=B(제목+초록만 인덱싱, issue #120 결정 2026-06-18)**·Q12=B·Q13=B·그 외 A · `requirements.md`.
+**근거**: 계획서(프로덕션 재스코핑) + U1 Corpus 우선 적용 개정 — Q1=D·Q2=C(전문 다중 청크)·Q12=B·Q13=B·그 외 A · `requirements.md`.
 **원칙**: 기술 무관 결정·검증·제약. 수치(백오프·동시성·타임아웃)는 정책+NFR Requirements 확정값(Q14).
-**프로덕션 스코프**: **초록 단일 청크(논문당 1벡터)**·이벤트 경로·철회 tombstone·전문 오브젝트 보관 활성.
+**프로덕션 스코프**: **DocModel 기반 초록+본문 다중 청크(논문당 최대 128벡터)**·이벤트 경로·철회 tombstone·전문 오브젝트 보관 활성.
 
-> **⚠️ 개정(2026-06-25, U1 유닛리뷰 — SSOT 재정합):** 아래 **BR-2·BR-5·BR-6·§4 본문 깊이·속성 P4**의 "제목+초록만 인덱싱·논문당 1벡터"(Q2=B, issue #120) 결정은 **본문 시맨틱 검색 전환(PR #143)으로 폐기**되었다. 현행 구현(`processors.py` `Chunker`)은 **초록 청크 + 섹션 분할 본문 청크(논문당 최대 128청크)**를 임베딩·인덱싱한다 — 즉 `|upserted IndexRecords| == 1`(P4)은 더 이상 성립하지 않는다. 해당 규칙 문구는 코드와 불일치하므로 본 개정 배너를 우선한다(규칙 본문 미수정, 추적 보존). **불변**: VectorSpec(§6, 1024-dim/v4/cosine)·전문 S3 보관(BR-20)·디덥/멱등/INV-1 커밋 순서.
+> **⚠️ 개정(2026-06-25, U1 유닛리뷰 — SSOT 재정합):** 아래 **BR-2·BR-5·BR-6·§4 본문 깊이·속성 P4**의 "제목+초록만 인덱싱·논문당 1벡터"(Q2=B, issue #120) 결정은 **본문 시맨틱 검색 전환(PR #143)으로 폐기**되었다. 현행 구현(`processors.py` `Chunker`)은 **초록 청크 + 섹션 분할 본문 청크(논문당 최대 128청크)**를 임베딩·인덱싱한다. **불변**: VectorSpec(§6, 1024-dim/v4/cosine)·전문 S3 보관(BR-20)·디덥/멱등/INV-1 커밋 순서.
+
+> **⚠️ U1 Corpus 우선 적용 개정(2026-06-26):** 재인셉션 D6/FR-6에 따라 아래 **§0 Corpus 규칙**이 최신 권위다. 기존 BR-2/5/6/7/10/11/20/21/29/30, §3 PBT, §4 production scope, §5 traceability가 §0과 충돌하면 **§0을 우선한다**. 특히 phase-1 Corpus에서는 **멀티소스 수집, source별 watermark, eager DocModel, DocModel Block chunking, raw PDF 미저장, index generation/alias cutover**가 필수다.
+
+---
+
+## 0. U1 Corpus 비즈니스 규칙 (2026-06-26 우선 적용)
+
+### 0.1 규칙
+
+| ID | 규칙 | 근거 |
+|---|---|---|
+| **BR-C1 (소스 범위·우선순위)** | phase-1 수집 소스는 arXiv, Semantic Scholar, OpenAlex이다. 우선순위는 arXiv > Semantic Scholar > OpenAlex. arXiv는 HTML 우선/PDF 폴백, Semantic Scholar/OpenAlex는 PDF -> GROBID이다. | FR-6, U1 Corpus Q1/Q3=A |
+| **BR-C2 (라이선스·원시 PDF 미저장)** | OA/인덱싱 허용 라이선스만 저장·인덱싱한다. Semantic Scholar/OpenAlex PDF와 arXiv fallback PDF는 transient GROBID/추출 입력으로만 사용하고 원시 PDF를 S3/DB/다운로드용으로 저장하지 않는다. | C-1, SEC-9, U1 Corpus Q3/Q12=A |
+| **BR-C3 (canonical dedup)** | 동일 논문 판정 키는 DOI -> arXiv id -> normalized(title + first author + year) 순서다. 중복 수집 시 canonical `(paperId, version)`은 하나만 인덱싱하고 losing source는 provenance만 보존한다. | FR-6, QT-9, U1 Corpus Q2=A |
+| **BR-C4 (PaperId 일반화)** | `PaperId`는 더 이상 arXiv id 전용이 아니다. DOI/arXiv id/normalized tuple 기반 canonical id이며, 모든 저장·인덱스·DocModel 참조는 `(paperId, version)`을 공통 키로 사용한다. | FR-6, FR-18, QT-9, U1 Corpus Q9=A |
+| **BR-C5 (phase-1 범위와 비용 게이트)** | 초기 구축은 최근 AI/ML 1년, OA/허용 라이선스, eager 비용 상한 안으로 제한한다. 비용 임계치 도달 시 후순위 item은 보류 또는 backfill/DLQ 경로로 이월하며 기존 active index를 손상하지 않는다. | NFR-C1, U1 Corpus Q12=A |
+| **BR-C6 (eager DocModel)** | phase-1 Corpus에 편입된 논문은 수집 시점에 DocModel 완성형을 eager 생성한다. lazy/on-demand build는 누락분, 재빌드, 백필, phase-1 밖 논문 보강에만 허용한다. | FR-6, FR-18, U1 Corpus Q5=A |
+| **BR-C7 (DocModel 완성형)** | DocModel은 `fullText` 전문 텍스트 투영본과 Section/Block 구조를 모두 포함한다. 구조 블록은 paragraph/table/formula/figure/list/code이며, table rows/cols, formula LaTeX/MathML, figure AssetRef, provenance/sourceTier를 포함한다. 이미지 바이트/base64/서명 URL은 넣지 않고 AssetRef로 참조한다. 이미지 비전 추론은 하지 않는다. | FR-6, FR-17, FR-18, U1 Corpus Q4=A |
+| **BR-C8 (DocModel Block chunking)** | 인덱싱 source는 FullText plain text가 아니라 DocModel Block이다. Chunk는 block boundary를 존중하고 section context를 포함하며, 모든 chunk/index record는 실재 DocModel block id를 참조해야 한다. | FR-6, FR-5, QT-9, U1 Corpus Q6/Q7=A |
+| **BR-C9 (Embedding/vector spec)** | Cohere Embed v4/specVersion v2를 유지한다. 이번 작업은 임베딩 모델 변경이 아니라 index source/schema generation 전환이다. | FR-6, FR-21, U1 Corpus Q8=A |
+| **BR-C10 (Index generation cutover)** | DocModel 기반 OpenSearch index generation을 새로 만들고, QT-9와 smoke check 통과 전 alias를 전환하지 않는다. partial generation은 검색에 노출하지 않는다. | FR-6, NFR-R1, QT-9 |
+| **BR-C11 (source별 watermark)** | watermark는 source별로 단조 증가한다. 한 source 실패가 다른 source watermark를 역행시키거나 공유 watermark를 오염시키면 안 된다. | RES-2, RES-7, QT-9, U1 Corpus Q10=A |
+| **BR-C12 (retry/DLQ/reprocess 멱등)** | source, GROBID, DocModel, embedding, index write 단계별 retry와 DLQ를 둔다. DLQ reprocess는 같은 canonical pipeline을 다시 타며 중복 DocModel/chunk/index record를 만들지 않아야 한다. | US-I3, RES-9, QT-9, U1 Corpus Q11=A |
+| **BR-C13 (commit 정합성)** | `(paperId, version)` 단위로 FullText, DocModel, chunks, embeddings, index records, S3 object refs, generation manifest가 서로 맞아야 한다. 불일치하면 generation cutover 차단이다. | FR-6, FR-18, QT-9 |
+| **BR-C14 (관측성 신호)** | U1 실패 신호는 내부 이름과 무관하게 `ObservabilityHub.emitMetric`/`emitLog`로 라우팅한다. source watermark 지연, GROBID 실패, DocModel validation 실패, embedding 실패, DLQ 적체는 별도 tag를 가져야 한다. | RES-7, NFR-O1, U1 Corpus Q11=A |
+| **BR-C15 (레거시 규칙 폐기 범위)** | `PaperId=versionless arXiv id`, 단일 전역 `Watermark`, `Chunker.chunk(parsed)` 기반 인덱싱, phase-1 lazy DocModel, 원시 PDF 저장 가능 해석은 U1 Corpus 범위에서 폐기한다. | FR-6, FR-18, QT-9 |
+| **BR-C16 (lexical write split)** | `IndexRecord.lexicalTerms`는 본문 청크 텍스트만 저장한다. 제목/초록은 `title`/`abstract` analyzed 필드를 검색 필드로 재사용하며, boost 튜닝은 재색인 없이 U2 query 변경으로 적용한다. | FR-2, BR-6 |
+
+### 0.2 QT-9 / PBT 속성
+
+| 속성 | 진술 | 차단성 |
+|---|---|---|
+| **P-C1 multisource dedup idempotency** | 같은 SourcePaperRecord 집합을 임의 순서/중복으로 처리해도 canonical `(paperId, version)`과 winning source가 동일하다. | PBT-07/08 |
+| **P-C2 source watermark monotonicity** | `advanceWatermark(source)`는 source별로만 전진하며 역행하지 않는다. | PBT-08 |
+| **P-C3 version consistency** | 모든 StoredCorpusArtifact, DocModelChunk, CorpusIndexRecord, generation manifest가 같은 `(paperId, version)`을 공유한다. | PBT-08/09 |
+| **P-C4 DocModel schema validation** | 유효 DocModel은 `fullText`와 멀티모달 Section/Block schema roundtrip을 통과하고, block id 누락/중복/잘못된 AssetRef/잘못된 SourceTier는 negative validation에서 실패한다. | PBT-09 |
+| **P-C5 block reference integrity** | 모든 CorpusIndexRecord의 `blockRefs[]`는 해당 DocModel 안에 존재한다. | PBT-08/09 |
+| **P-C6 retry/DLQ idempotency** | retry와 DLQ reprocess를 반복해도 index record, DocModel artifact, provenance가 중복 생성되지 않는다. | PBT-08 |
+| **P-C7 raw PDF non-storage** | PDF 입력 경로를 처리해도 영속 artifact 목록에 raw PDF content/object가 존재하지 않는다. | PBT-02/03 |
+
+### 0.3 최신 추적성
+
+| 요구사항 | 랜딩 |
+|---|---|
+| **FR-6** U1 Corpus 생성 파이프라인 | BR-C1~C14, BLM §0, domain-entities §0 |
+| **FR-18** phase-1 eager DocModel / lazy 보강 | BR-C6/C7/C13 |
+| **FR-17** 표·그림 DocModel/AssetRef | BR-C7, 기존 §7 멀티모달 규칙 |
+| **C-1 / SEC-9** 라이선스·원시 PDF 미저장·비공개 저장 | BR-C2, BR-C7/P-C7 |
+| **NFR-C1** 비용 상한 | BR-C5, BR-C14 |
+| **RES-2 / RES-7 / RES-8 / RES-9** 재구축·watermark·쿼터·장애 처리 | BR-C10~C14 |
+| **QT-9** Corpus 품질/불변식 | P-C1~P-C7 |
+| **US-I1 / US-I2 / US-I3** | BR-C1~C14 |
 
 ---
 
@@ -14,28 +66,28 @@
 | ID | 규칙 | 근거/답 |
 |---|---|---|
 | **BR-1 (엄격 OA 라이선스 검증)** | **팀 결정(2026-06-16): 엄격 OA 라이선스 검증.** 각 논문의 arXiv 라이선스를 검사해 **허용 라이선스만** 수집·전문 보관·인덱싱; **재배포 불가·미표기·불명 → NON_OA 배제**. 취득 실패도 제외. (Q5 A→엄격 검증 확정; A-5 가정 강화; 커버리지보다 정합 우선.) **[개정 2026-06-25 — 커밋 `86ade36` 추인, C-1 개정 동기화]** 허용 집합 = CC-BY/CC-BY-SA/CC0 **+ arXiv 비독점 배포 라이선스**(`arxiv.org/licenses/nonexclusive-distrib`) — 디스커버리(링크백+스니펫, 비-대량재배포) 한정. arXiv 비독점 라이선스는 **더 이상 NON_OA 예시가 아님**. | C-1(개정), A-5, **Q5=엄격** |
-| **BR-2 (콘텐츠 범위)** | **제목+초록만 임베딩·인덱싱**(Q2=B, issue #120). 전문은 수집·S3 보관(BR-20, U7 요약 용도)하되 **벡터 인덱스 대상이 아님**. | FR-6, **Q2=B** |
+| **BR-2 (콘텐츠 범위)** | DocModel `fullText`와 Section/Block을 기준으로 초록과 본문 청크를 임베딩·인덱싱한다. 전문은 수집·S3 보관(BR-20, U7 요약 용도)하고, Corpus phase-1에서는 DocModel Block chunking이 인덱싱 권위다. | FR-6, FR-18, Q2=C |
 | **BR-3 (논문 식별·버전)** | `PaperId=버전 없는 arXiv ID`. 최신 vN만 인덱스(latest-wins). NEW/CHANGED/DUPLICATE 의미(Q3=A). | Q3=A |
 | **BR-4 (디덥 지문)** | `ContentFingerprint=PaperId+PaperVersion` 파생(콘텐츠 해시 아님). 동일 지문 재수신→DUPLICATE 단락(재임베딩 0). | NFR-C1, PBT-08, Q6=A |
-| **BR-5 (청킹 결정성·전략)** | **논문당 단일 청크(초록 전문)**; `chunk`·`chunkId` 결정적·멱등(동일 입력→동일 ChunkSet/ChunkId). | FR-6, QT-4, PBT-08, **Q2=B** |
-| **BR-6 (IndexRecord 구성)** | 논문당 1 레코드 = 카드 필드(FR-4) + category + version + section("abstract") + abstract + lexicalTerms(**제목+초록** 토큰만). 해소 가능 arXiv ID/링크 필수(FR-5). | FR-2/4/5, Q4=A |
-| **BR-7 (논문 단위 원자성)** | 한 논문의 **단일 청크(초록)** 임베딩·기록 성공 시에만 커밋(markIngested). 실패=미커밋·재시도. **부분/조용한 인덱싱 금지.** | NFR-R1, **Q8=A** |
+| **BR-5 (청킹 결정성·전략)** | 청크와 `chunkId`는 결정적·멱등이다(동일 입력→동일 ChunkSet/ChunkId). Corpus path는 DocModel block boundary와 section context를 보존하고, legacy full-text path는 초록 + 섹션 분할 본문 청크를 생성한다. | FR-6, FR-18, QT-4, PBT-08 |
+| **BR-6 (IndexRecord 구성)** | 청크당 1 레코드 = 카드 필드(FR-4) + category + version + 실제 section + abstract + structured `blockRefs[]` + `lexicalTerms`(본문 청크 텍스트만). 제목/초록은 별도 `title`/`abstract` analyzed 필드로 저장·검색한다. 해소 가능 ID/링크 필수(FR-5). | FR-2/4/5, Q4=A, BR-C16 |
+| **BR-7 (논문 단위 원자성)** | 한 논문의 청크 세트 전체 임베딩·기록 성공 시에만 커밋(markIngested). 실패=미커밋·재시도. **부분/조용한 인덱싱 금지.** | NFR-R1, **Q8=A** |
 | **BR-8 (커밋 순서 INV-1)** | **index write durable → markIngested → advanceWatermark**. upsert 후 markIngested 전 크래시→재분류·멱등 재upsert. | NFR-R1, INV-1 |
 | **BR-9 (멱등 upsert)** | upsert는 ChunkId 키 멱등(재실행·재전송이 중복 레코드 0). CHANGED는 덮어쓰기. | QT-4, PBT-08, Q3=A |
 | **BR-10 (워터마크·RPO)** | 기준 시각=arXiv updated. RPO=마지막 인제스천(RES-2, 별도 백업 없음). | RES-2, Q7=A |
 | **BR-11 (워터마크 역행)** | max-clamp(전진만, 역행 무시). 예외: SEED_REBUILD만 의도적 리셋(BR-13 보호). | RES-2, Q17=A |
 | **BR-12 (이벤트 멱등·포이즌)** | 이벤트 at-least-once 소비(**Q12=B 활성**). 멱등=DeduplicationGuard DUPLICATE 단일 백스톱(이벤트-레벨 dedup 없음). 처리 후 ackEvent. 포이즌→DLQ. | RES-7, **Q15=A, Q12=B** |
 | **BR-13 (재구축↔증분/이벤트 상호배제)** | 단일 writer 보호: SEED_REBUILD 활성 중 INCREMENTAL·EVENT 보류/거부(REBUILD_LOCK). | NFR-R1, RES-2, **Q16=A** |
-| **BR-14 (철회·tombstone · 버전 단조 순서)** | **Q13=B 활성**: 철회 탐지(메타+전문 withdrawal 공지) → tombstone(전 청크); INV-1 순서. **순서 규칙 = highest-vN-wins, 제어평면 `current_version`(paperId별)에 대한 원자적 compare-and-set로 강제**(— `isNew`는 인서트 스킵 판정일 뿐 **삭제 가드가 아님**): **upsert(vN)**는 `vN ≥ current_version`일 때만 적용(→ current_version:=vN, INDEXED); **tombstone(vW)**는 `vW ≥ current_version`일 때만 적용(→ current_version:=vW, TOMBSTONED), **`current_version > vW`면 삭제 무시**(strictly-newer-vN-wins). 원자적이라 {철회 vW·인서트 vN} **도착 순서 무관**하게 최고 버전 성격으로 수렴(v2 삭제·v3 인서트 경쟁 시 v3 생존). 재구축 시 능동 재탐지. | **Q13=B** |
+| **BR-14 (철회·tombstone · 버전 단조 순서)** | **Q13=B 활성**: 철회 탐지(메타+전문 withdrawal 공지) → tombstone(전 청크) 및 **`PaperRetractedEvent` 발행(공용 이벤트 버스)**; INV-1 순서. **순서 규칙 = highest-vN-wins, 제어평면 `current_version`(paperId별)에 대한 원자적 compare-and-set로 강제**(— `isNew`는 인서트 스킵 판정일 뿐 **삭제 가드가 아님**): **upsert(vN)**는 `vN ≥ current_version`일 때만 적용(→ current_version:=vN, INDEXED); **tombstone(vW)**는 `vW ≥ current_version`일 때만 적용(→ current_version:=vW, TOMBSTONED, 이벤트 발행), **`current_version > vW`면 삭제 무시**(strictly-newer-vN-wins). 원자적이라 {철회 vW·인서트 vN} **도착 순서 무관**하게 최고 버전 성격으로 수렴(v2 삭제·v3 인서트 경쟁 시 v3 생존). 재구축 시 능동 재탐지. | **Q13=B** |
 | **BR-15 (실패 분류)** | RETRIABLE=네트워크/타임아웃/5xx/429; PERMANENT=파싱·검증·비-OA·404. (전문 취득·임베딩·쓰기 실패 포함.) | RES-9, Q9=A |
 | **BR-16 (재시도·쿼터)** | 지수 백오프+지터, arXiv 보수 쿼터(RES-8), 소진→DLQ. **수치는 NFR Q14 확정.** | RES-8/9, Q10=A |
 | **BR-17 (DLQ·경보)** | 소진/영구→DLQ 격리 + 구조화 실패 신호 U6.ObservabilityHub. 잡 계속; 실패율 임계 초과→갱신 실패 경보. | RES-7, NFR-O1, NFR-R1, Q11=A |
 | **BR-18 (fail-closed)** | 모든 외부 호출(arXiv/오브젝트 스토리지/임베딩 게이트웨이/벡터 스토어) 타임아웃·서킷; 실패 fail closed. | SEC-15, RES-9, NFR-R1 |
 | **BR-19 (입력 검증)** | 파싱 산출 필수 필드·형식 검증·새니타이즈. | SEC-5 |
 | **BR-20 (전문 보관·공개 차단)** | **Q2=C 활성**: OA 전문 원천을 오브젝트 스토리지 보관(StoredFullText/ObjectRef), **공개 차단(SEC-9)**, 재구축·재처리 재사용. at-rest 암호화/TLS(SEC-1, NFR Q17). | **SEC-9**, SEC-1, RES-2 |
-| **BR-21 (본문 크기 정책)** | **Q2=B**: 인덱싱 대상=초록만이므로 본문 크기가 벡터 비용에 영향 없음. 전문은 S3 보관만(BR-20) — 과대 전문 취득 제한은 S3 스토리지 비용 관점에서만 적용. | FR-6, NFR-C1 |
+| **BR-21 (본문 크기 정책)** | 본문 크기는 청크 수와 임베딩 비용에 직접 영향을 준다. `max_chunks_per_paper`, `max_chunk_chars`, overlap, 비용 게이트로 상한을 강제하고, 초과분은 결정적으로 잘라 candidate generation 검증 대상에 포함한다. | FR-6, NFR-C1 |
 | **BR-29 (전문 추출 소스·형식)** | **결정 D 활성**(FD plan `사후 결정` Q18=D; #139 근원=추출 소스·형식 미설계). 전문은 **arXiv HTML 우선(native → ar5iv) → PDF 폴백**으로 취득한다 — HTML은 *가장 깨끗한 평문을 뽑는 소스*, PDF는 폴백(커버리지 스파이크: native 단독 34%·ar5iv 포함 90% → **ar5iv 필수**, HTML 전무 ~9%는 PDF 폴백 실필요). **보관=정규화 평문(`.txt`)** — **인덱스 청킹·검색 투영용으로 유지**(인덱싱 권위; Q4: doc-model=진실원천, `.txt`=파생 평문). **e-print(LaTeX) 미해제 디코딩 금지** — gzip/tar 페이로드를 텍스트로 디코딩하지 않음(`arxiv.py:73` 결함 제거); 단 doc-model 폴백 단계에서 *해제 후* LaTeX 파싱은 허용(BR-30, Q6 폴백 사다리). HTML 부재는 폴백(거부 아님); 추출·평문화 실패는 BR-15 분류(PARSE/FETCH). **피벗(doc-model)**: 수식·표·그림의 리치 렌더/보관은 더 이상 범위 밖이 아님 — **doc-model로 구조화**(BR-30)하고 자체 리치뷰가 렌더(D4). 앵커 하이라이트 계약 유지(BR-SF). on-demand 비전은 에이전트 단계(D5). | **D**, Q4, Q6, SEC-5, BR-15/19/20/30 |
-| **BR-30 (doc-model 구조·생성, 피벗 2026-06-23)** | **결정 D1·D2·D6 활성**(SSOT=`construction/plans/docmodel-foundation-pivot-plan.md`). doc-model = arXiv HTML **결정적 파싱 → JSON**(`doc-model/{paperId}/v{ver}.json`): 섹션/블록·앵커 · **표=구조화 데이터(rows/cols)** · **수식=LaTeX(MathML 변환)** · **그림/표이미지=webp `assetId` 참조**(픽셀·메타는 §6/FR-17 산출물 재사용 — **재추출 0**). **LLM 추출 금지**(표 숫자 환각 방지) — 결정적 파서만, 동일 HTML→동일 doc-model(P7). **생성=lazy on-demand + `(paperId, version)` 캐시**(D6): 첫 요약/열람/에이전트 사용 시 생성, version 변경 시 무효화(Q5); `ingestOne` eager 아님(인덱스 hot path 비차단). 생성 폴백 사다리=`native HTML → ar5iv → e-print LaTeX → (최후) PDF 파싱`(Q6). 알고리즘은 BLM §7. | **D1/D2/D6**, Q4/Q5/Q6, BR-29, FR-17 |
+| **BR-30 (doc-model 구조·생성, 피벗 2026-06-23; Corpus 개정 2026-06-26)** | **결정 D1·D2·D6 활성**(SSOT=`construction/plans/docmodel-foundation-pivot-plan.md`). doc-model = HTML/GROBID 결과의 **결정적 파싱 → JSON**(`doc-model/{paperId}/v{ver}.json`): **`fullText` 전문 텍스트 투영본** · 섹션/블록·앵커 · **표=구조화 데이터(rows/cols)** · **수식=LaTeX(MathML 변환)** · **그림/표이미지=webp `assetId` 참조**(픽셀·메타는 §6/FR-17 산출물 재사용 — **재추출 0**). **LLM 추출 금지**(표 숫자 환각 방지) — 결정적 파서만, 동일 소스→동일 doc-model(P7). **Corpus phase-1 생성=eager + `(paperId, version)` 캐시**(BR-C6): legacy lazy on-demand는 누락분·재빌드·백필 호환 경로다. 생성 폴백 사다리=`native HTML → ar5iv → e-print LaTeX → (최후) PDF/GROBID 파싱`(Q6). 알고리즘은 BLM §7. | **D1/D2/D6**, Q4/Q5/Q6, BR-29, FR-17 |
 
 ---
 
@@ -57,9 +109,9 @@
 | 속성 | 진술 | 트레이스 |
 |---|---|---|
 | **P1 디덥 멱등성** | isNew 결정적·입력 의존; 동일 이벤트/논문 재전송이 추가 인덱싱·중복 0(Q15=A). | PBT-08, BR-4/9/12 |
-| **P2 청크 결정성** | 동일 ParsedPaper → 동일 ChunkSet·동일 ChunkId(초록 단일 청크, 결정적). | PBT-08, BR-5 |
+| **P2 청크 결정성** | 동일 ParsedPaper/DocModel → 동일 ChunkSet·동일 ChunkId(초록+본문 다중 청크, 결정적). | PBT-08, BR-5 |
 | **P3 upsert 멱등성** | 동일 IndexRecordBatch 재upsert가 인덱스 상태 불변; CHANGED는 덮어쓰기. | PBT-08, BR-8/9 |
-| **P4 무손실·무중복** | 주어진 ParsedPaper에 대해 `|upserted IndexRecords| == 1`(논문당 1벡터, 누락/중복 0). | NFR-R1, BR-7 |
+| **P4 무손실·무중복** | 주어진 ParsedPaper/DocModel에 대해 `|upserted IndexRecords| == |chunks|`이고 각 chunkId는 한 번만 upsert된다(누락/중복 0). | NFR-R1, BR-7 |
 | **P5 임베딩 정렬 보존** | `EmbeddingBatch.vectors[i] ↔ chunks[i].chunkId`(재정렬/누락 0). | NFR-R1, BR-7 |
 | **P6 워터마크 단조성** | advanceWatermark는 BR-11 max-clamp(전진만); SEED_REBUILD 리셋만 예외. | RES-2, BR-11 |
 
@@ -71,8 +123,8 @@
 
 | 축 | 프로덕션 결정 | 비고 |
 |---|---|---|
-| 코퍼스 슬라이스 | cs.LG/cs.AI/cs.CL/cs.CV/stat.ML × 5년(수십만)(Q1=D) | FR-6 풀 슬라이스 |
-| 본문 깊이 | **제목+초록만 인덱싱(Q2=B, issue #120)** | 전문은 S3 보관만(BR-20); 벡터 인덱스 대상 아님 |
+| 코퍼스 슬라이스 | cs.LG/cs.AI/cs.CL/cs.CV/stat.ML × 최근 1년(phase-1); 5년 확장은 Phase 7 | FR-6 phase-1 슬라이스 |
+| 본문 깊이 | **DocModel 기반 초록+본문 다중 청크 인덱싱(Q2=C)** | 전문은 S3 보관(BR-20)과 U7 입력에 재사용; 벡터 인덱스는 청크 상한으로 비용 통제 |
 | 트리거 표면 | 수동 rebuild + 스케줄 증분 + **new-arXiv 이벤트 활성**(Q12=B) | 3경로 |
 | 철회/tombstone | 탐지·tombstone 활성(Q13=B) | 메타+전문 신호(BR-14) |
 | 평가셋 코퍼스 | QT-1/QT-2 대상 논문 포함 보장(Q14=A FD) | U2/U6 FD가 평가셋 구축 |
@@ -89,7 +141,7 @@
 |---|---|
 | **FR-6**(인제스천·인덱싱·갱신) | BR-2/5/6, IngestionPipelineService, RefreshOrchestrationService |
 | **C-1**(OA 전용) | BR-1(OA 배제·라이선스), RejectReason(NON_OA) |
-| **C-6**(AI/ML 전용) | CategoryFilter / resolveSliceCategories(5 카테고리, Q1=D) |
+| **C-6**(AI/ML 전용) | CategoryFilter / resolveSliceCategories(5 카테고리 × 최근 1년 phase-1) |
 | **RES-2**(재구축 자산·RPO·런북) | BR-10/11/13, IndexStats, AS-5, BR-20(전문 재사용) |
 | **RES-7**(갱신 실패 경보) | BR-17, RejectReason 거부율 |
 | **RES-8**(쿼터 인지) | BR-16, ArxivSourceClient(증분+대량 하베스트) |
@@ -112,6 +164,7 @@
 
 - U1.EmbeddingGatewayAdapter(writer)·U2.QueryUnderstandingExpander(reader)는 **동일 VectorSpec(차원·모델·거리 — NFR Requirements PIN)**. 동일 임베딩 공간 불변식.
 - 계약 산출물 소유=공유 임베딩 게이트웨이 레이어(UQ5=A); U1(빌드 #1)이 값을 PIN, 후속 유닛 재결정 없음(NS-5). 선택 스토어 ANN 인덱스가 PIN된 차원·거리 메트릭 지원 확인(ANN 호환 게이트).
+- **런타임 호환성 검증(VectorSpec same-space gate)**: `VectorSpec` 계약의 강제력을 런타임으로 확장하기 위해, 공유 계약의 `assert_same_space()`는 writer/reader의 `specVersion`·`model`·`dimensions`·`distanceMetric`·`normalize`를 비교한다. candidate index 검증과 alias cutover는 이 동일-공간 검사를 통과해야 하며, 현 `IndexRecord`에는 per-record `modelVer` 필드를 추가하지 않는다.
 - 단일 writer(U1)/단일 reader(U2) 경계.
 
 ---

@@ -1,11 +1,11 @@
 # shared/ 공용 계약 — doc-model (구조화 문서모델)
 
 **단계**: CONSTRUCTION → 공용 계약 (DocModel 피벗) · **일자**: 2026-06-23
-**상태**: 🟡 **PROVISIONAL** — 소유 유닛 U1 FD 진행 중. 형상은 본 문서가 SSOT, 런타임 스키마는 `shared/dtos/docmodel.schema.json`(파생).
+**상태**: 🔒 **FROZEN** — U1 Corpus build v1 입력·인덱싱·리치뷰 계약. 형상은 본 문서가 SSOT, 런타임 스키마는 `shared/dtos/docmodel.schema.json`(파생).
 **근거(SSOT 게이트)**: `aidlc-docs/construction/plans/docmodel-foundation-pivot-plan.md` (결정 D1·D2·D4·D6·D8 + Q1 커버리지 스파이크 + Q3 이 문서). 원장: `aidlc-docs/aidlc-state.md`.
-**목적**: 요약/번역 입력·자체 리치뷰 렌더·(후속)에이전트 toolschema **세 소비자의 단일 계약**. 평문 `.txt`가 무시하던 표·수식을 데이터로 싣는다.
+**목적**: 요약/번역 입력·자체 리치뷰 렌더·(후속)에이전트 toolschema **세 소비자의 단일 계약**. `fullText`로 전문 텍스트 투영본을 제공하고, `sections[].blocks[]`로 표·수식·그림·코드까지 구조화해 싣는다.
 
-> **상태 범례**: 🔒 FROZEN · 🟡 PROVISIONAL. 본 계약은 U1 FD 확정 시 동기화. 가산적 진화(필드 추가=하위호환; 제거/의미 변경=버전업, `provenance.schemaVersion`).
+> **상태 범례**: 🔒 FROZEN · 🟡 PROVISIONAL. 가산적 진화(필드 추가=하위호환; 제거/의미 변경=버전업, `provenance.schemaVersion`).
 
 ---
 
@@ -18,27 +18,33 @@
         ├─ U5/U7-frontend 자체 리치뷰(DocModelViewer 렌더 D4)
         └─ (후속) 근거형성·문헌탐색 에이전트 toolschema
 
-원칙   표 = 데이터(rows/cols)  ·  수식 = LaTeX  ·  그림/표이미지 = webp assetId 참조(픽셀 미포함)
-       arXiv HTML 결정적 파싱(LLM 추출 금지 D1)  ·  on-demand lazy 생성 + (paperId,version) 캐시(D6)
+원칙   fullText = 읽기 순서 전문 텍스트 투영본
+       표 = 데이터(rows/cols)  ·  수식 = LaTeX  ·  그림/표이미지 = webp assetId 참조(픽셀 미포함)
+       arXiv HTML 결정적 파싱(LLM 추출 금지 D1)  ·  Corpus phase-1은 수집 시 eager 생성
 ```
 
-- **생산자**: U1 — `DocModelBuilder`(arXiv HTML 결정적 파싱, BR-30·TD-16). 첫 요약/열람/에이전트 사용 시 **lazy 생성**, `(paperId, version)` 키 캐시, version 변경·철회 시 무효화.
+- **생산자**: U1 — `DocModelBuilder`(HTML/GROBID 결정적 파싱, BR-C6/BR-C7·TD-16). Corpus phase-1은 수집 시점에 **eager 생성**, `(paperId, version)` 키 캐시, version 변경·철회 시 무효화. 기존 read-miss lazy build는 누락/백필 호환 경로다.
 - **소비자**: U7(요약 입력 = `RefinedSource`의 섹션·표·수식·캡션을 doc-model에서 직접 취득), U5/U7-frontend(`DocModelViewer`), 에이전트(동일 id로 인용).
 - **보안(전 계약 공통)**: 이미지 **픽셀·`object_ref`·서명 URL은 doc-model에 미저장** — `assetId` 참조만(SEC-9). 서명 URL은 읽기 API가 발급. PII/시크릿 금지(SEC-3).
 
 ---
 
-## 2. 본문 구조 — 중첩 섹션 트리 (Q3 결정 A)
+## 2. 본문 구조 — 전문 투영본 + 중첩 섹션 트리 (Q3 결정 A)
 
-논문은 **섹션이 블록과 하위섹션을 품는 재귀 트리**다(평면 배열 아님). 리치뷰 목차(`DocTOC`)·요약 맵리듀스 섹션분할(P3)·앵커 해석이 이 트리를 그대로 쓴다.
+논문은 `fullText`와 **섹션이 블록과 하위섹션을 품는 재귀 트리**를 함께 가진다(평면 배열 아님). `fullText`는 전문 텍스트 투영본이고, 리치뷰 목차(`DocTOC`)·요약 맵리듀스 섹션분할(P3)·앵커 해석·이미지/표/수식 렌더는 구조화 트리를 그대로 쓴다.
 
 ```
 DocModel
  ├─ meta : { paperId, version, title, abstract?, provenance }
+ ├─ fullText : string  ← 읽기 순서 전문 텍스트 투영본
  └─ sections[] (재귀)
       Section { id, title, blocks[], sections[] }   ← sections = 하위섹션
         blocks[] = Block (type 판별자)
 ```
+
+### 2.0 `fullText`
+
+`fullText`는 모든 텍스트 보유 요소를 읽기 순서로 투영한 문자열이다. 포함 대상은 섹션 제목, 문단, 표 캡션·셀, 수식 LaTeX, 그림 캡션, 리스트 항목, 코드다. 단, 그림 픽셀은 포함하지 않는다. 이미지 자체가 필요한 소비자는 `figure.assetRef.assetId`로 `assets/{paperId}/{version}/{assetId}.webp`를 읽는다.
 
 ### 2.1 Block 타입 (6)
 | type | 핵심 필드 | 비고 |
@@ -51,6 +57,7 @@ DocModel
 | `code` | `text` · `language?` | 알고리즘/코드 verbatim |
 
 > **헤딩은 블록이 아니다** — `Section.title`이 담는다. 소스 헤딩 부재 시 `title`은 빈 문자열(span-only 섹션, BR-S3 폴백과 정합).
+> **v1 제외 확정**: 각주(`ltx_note`)·references 목록 구조화·페이지 번호는 DocModel 블록으로 승격하지 않는다. 본문 인용 마커 텍스트는 보존하지만, 참고문헌/인용 그래프 구조화는 U8 Citation Graph 책임이다. PDF 페이지 딥링크는 소스 간 일관성이 없어 v1 제외이며, 근거 단위는 결정적 Section/Block id가 맡는다.
 
 ---
 
@@ -68,8 +75,9 @@ DocModel
 
 - **소스 사다리(Q6)**: `native HTML → ar5iv → e-print LaTeX → (최후) PDF 파싱`. `provenance.sourceTier ∈ {native_html, ar5iv, eprint_latex, pdf}`. Q1 스파이크: native+ar5iv 90%·HTML 전무 ~9%(PDF 폴백 실필요).
 - **결정성(D1)**: LLM 추출 금지(표 숫자 환각 방지) — 결정적 파서만(BR-30·TD-16: lxml/BeautifulSoup·MathML→LaTeX).
-- **캐시(D6)**: `(paperId, version)` 키. `provenance.parserVersion`/`schemaVersion` 변경 또는 version 변경·철회(tombstone) 시 무효화. `ingestOne`은 eager 생성 안 함(인덱스 hot path 비차단).
+- **캐시/생성(D6 개정)**: `(paperId, version)` 키. `provenance.parserVersion`/`schemaVersion` 변경 또는 version 변경·철회(tombstone) 시 무효화. U1 builder와 U7/S3 reader는 shared doc-model version contract를 사용하며, reader도 version mismatch를 cache miss로 취급해 stale S3 object를 노출하지 않는다. Corpus phase-1은 수집 시 eager 생성하며, legacy lazy build는 누락분·재빌드·백필 호환 경로로만 사용한다.
 - **저장**: `doc-model/{paperId}/v{version}.json`(단일 버킷·prefix, SSE-KMS, 공개 차단 — U1 Infra §1.1b). 이미지 바이트 분리: `assets/{paperId}/{version}/{assetId}.webp`(유지) + RDS `paper_asset`(유지) 재사용 — **재추출 0**.
+- **PDF/GROBID 폴백 결정**: rich HTML이 없는 논문은 `sourceTier=pdf` DocModel로 degrade하고, 구조를 추정하지 않은 단일 paragraph block을 만든다. Phase 7에서 PDF/GROBID 구조화 품질을 올리기 전까지 이 downgrade는 승인된 v1 동작이다.
 
 ---
 

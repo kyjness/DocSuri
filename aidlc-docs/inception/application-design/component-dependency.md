@@ -14,31 +14,32 @@
 
 ---
 
-## 1. U1 — Ingestion (이벤트/스케줄 백본)
+## 1. U1 — Corpus Ingestion (이벤트/스케줄 백본)
 
 | from | to | kind | purpose |
 |---|---|---|---|
-| NewArxivEventHandler | Event Bus (shared capability) | event | 신규-arXiv 이벤트 구독·소비(DQ3=C, DQ6 비동기). at-least-once 멱등. |
-| RefreshScheduler | Scheduler/Timer (shared capability) | event | 스케줄(제안 일 1회) 시간 트리거로 증분 갱신 잡 개시(US-I2, FR-6). |
+| CorpusRefreshScheduler | Scheduler/Timer (shared capability) | event | source별 스케줄 시간 트리거로 증분 갱신·backfill·rebuild 잡 개시(US-I2, FR-6). |
 | RefreshOrchestrationService | IngestionPipelineService | lib | 스케줄/이벤트 생성 잡의 논문을 파이프라인 오케스트레이터로 분배(워커 내부). |
-| IngestionPipelineService | ArxivSourceClient | lib | OA AI/ML 슬라이스 메타·전문 조회(FR-6, C-1). |
-| ArxivSourceClient | arXiv OA API (external upstream) | sync | 워커→arXiv 외부 동기 조회(레이트/쿼터 RES-8, 타임아웃 RES-9). **사용자 동기 경로 아님 — 워커 내부 업스트림.** |
-| IngestionPipelineService | FetchParseProcessor | lib | 파싱·정규화·OA 강제·입력 검증(C-1, SEC-5). |
-| IngestionPipelineService | DeduplicationGuard | lib | 신규/변경 판정으로 중복 임베딩·인덱싱 회피(NFR-C1, 멱등 QT-4). |
-| IngestionPipelineService | Chunker | lib | 본문을 추적 메타 부착 결정적 청크로 분할(FR-6, FR-5 지원). |
+| IngestionPipelineService | CorpusSourceAdapterSet | lib | arXiv·Semantic Scholar·OpenAlex 메타·전문 후보 조회(FR-6, C-1). |
+| CorpusSourceAdapterSet | arXiv / Semantic Scholar / OpenAlex (external upstreams) | sync | 워커→외부 학술 소스 동기 조회(레이트/쿼터 RES-8, 타임아웃 RES-9). **사용자 동기 경로 아님 — 워커 내부 업스트림.** |
+| IngestionPipelineService | FullTextExtractionProcessor | lib | HTML/PDF 원천에서 FullText 추출, PDF는 transient GROBID 처리, 라이선스 검증(C-1, SEC-5). |
+| FullTextExtractionProcessor | GROBID Runtime (shared capability) | sync | Semantic Scholar/OpenAlex PDF 및 arXiv PDF fallback 전문 구조화 추출. 원시 PDF 저장 없음. |
+| IngestionPipelineService | SourcePriorityDeduplicationGuard | lib | DOI→arXiv id→title/author/year 기준 cross-source 중복 제거와 canonical version 결정(NFR-C1, QT-9). |
+| IngestionPipelineService | DocModelBuildCoordinator | lib | `(paperId, version)`별 eager DocModel 생성·검증·S3 저장(FR-18, QT-9). |
+| DocModelBuildCoordinator | Object Storage (shared capability) | sync | DocModel JSON과 FullText/asset 참조 저장. 원시 PDF 저장 금지(C-1, SEC-9). |
+| IngestionPipelineService | DocModelBlockChunker | lib | DocModel Block 경계 기반 결정적 청크 생성(FR-6, FR-5 지원). |
 | IngestionPipelineService | EmbeddingGatewayAdapter | lib | 청크 배치 벡터화 호출(FR-6). |
 | EmbeddingGatewayAdapter | Embedding Gateway (shared capability) | sync | 워커→임베딩 게이트웨이 동기 호출로 벡터 생성(타임아웃·서킷 RES-9). |
 | **EmbeddingGatewayAdapter** | **Shared Embedding Gateway VectorSpec (shared contract)** | **lib** | **공유 임베딩 스키마(차원·모델·거리 메트릭) 단일 진실 원천 소비 — U2 reader와 벡터 공간 호환 보장(인덱스 정합성).** |
 | EmbeddingGatewayAdapter | Cost Telemetry (shared X-cutting) | event | 임베딩 사용량/비용 텔레메트리 발행(NFR-C1, DQ5 횡단 레이어). |
-| IngestionPipelineService | VectorIndexWriter | lib | 임베딩+메타+lexical 필드를 공유 인덱스에 멱등 기록(FR-6, FR-2). |
-| VectorIndexWriter | Vector Store (shared capability) | sync | 워커→벡터 스토어 동기 upsert/tombstone. U2 reader 공유 인덱스 생성(재생성 가능 RES-2). |
-| ArxivSourceClient | Object Storage (shared capability) | sync | OA 전문 원천 보관(C-1; 공개 차단 SEC-9), 재구축·재처리 재사용. |
+| IngestionPipelineService | CorpusIndexWriter | lib | 임베딩+lexical+DocModel Block anchor를 공유 OpenSearch generation에 멱등 기록(FR-6, FR-2, FR-18). |
+| CorpusIndexWriter | OpenSearch / Vector Store (shared capability) | sync | 워커→인덱스 스토어 동기 upsert/tombstone. U2 reader 공유 인덱스 generation 생성(재생성 가능 RES-2). |
 | IngestionPipelineService | IngestionResilienceService | lib | 모든 단계 오류 분류·재시도/백오프·DLQ·경보 위임(US-I3, RES-9/8/7). |
 | IngestionResilienceService | Dead-Letter Queue (shared capability) | event | 소진/영구 실패 격리로 인덱스 정체·손상 방지(US-I3). |
 | IngestionResilienceService | Observability/Alerting (shared X-cutting) | event | 실패 신호·잡 건강도 발행(RES-7, NFR-O1); 운영 U6 라우팅. |
 | U1-Ingestion | U6.ObservabilityHub | event | 인제스천 워커 갱신 성공/실패·재시도 텔레메트리 비동기 제출(RES-7, US-I2). |
 
-> **읽기/쓰기 분리 주석**: U1.VectorIndexWriter는 공유 벡터 인덱스의 **write-only 생산자**, U2.HybridRetriever는 **read 소비자**. 단일 writer·단일 reader.
+> **읽기/쓰기 분리 주석**: U1.CorpusIndexWriter는 공유 Corpus 인덱스의 **write-only 생산자**, U2.HybridRetriever는 **read 소비자**. 단일 writer·단일 reader.
 
 ---
 
@@ -55,7 +56,7 @@
 | SearchOrchestrationService | ResultAssembler | sync | 근거화 결과/기권/저하를 폰 DTO 조립(FR-4, FR-11). |
 | QueryUnderstandingExpander | LlmGatewayAdapter (shared X-cutting, U6 게이트웨이 경유) | sync | 임베딩 생성·LLM 질의 확장; 비용/저하 신호 시 우회(NFR-C1). |
 | **QueryUnderstandingExpander** | **Shared Embedding Gateway VectorSpec (shared contract)** | **lib** | **질의 임베딩 모델·차원·거리 메트릭을 U1 인덱스와 동일 공유 계약에서 해석 — 벡터 공간 호환 선언 불변식.** |
-| HybridRetriever | VectorStoreAdapter (shared adapter) | sync | 벡터 ANN 시맨틱 검색; 공유 AI/ML arXiv 인덱스 읽기(FR-2). |
+| HybridRetriever | VectorStoreAdapter (shared adapter) | sync | 벡터 ANN 시맨틱 검색; 공유 AI/ML Corpus 인덱스 읽기(FR-2). |
 | HybridRetriever | LexicalIndexAdapter (shared adapter) | sync | lexical 텀 검색; 하이브리드 병합·저하 폴백(FR-2, NFR-R2). |
 | RelevanceRanker | LlmGatewayAdapter (shared X-cutting, U6 경유) | sync | 선택적 LLM 리랭킹; cost-circuit 'rerank off' 시 baseline 폴백(NFR-C1, US-R3). |
 | SearchOrchestrationService | U6.CostGuardCircuitBreaker (DegradationSignal) | sync | 요청 스코프 degradation/cost-circuit 신호 수신(LLM/rerank on-off) 저하 분기(NFR-C1, RES-9, US-R2/R3). |
@@ -176,7 +177,7 @@
   - U2 검색 파이프라인 전 단계 sync; 어댑터(VectorStore/Lexical/LLM 게이트웨이) 호출도 sync.
   - U4 rerun도 게이트웨이-프런티드 검색 계약으로 **동일 sync 경로 재진입**(후크 통과).
 - **이벤트(event) 백본 = 인제스천·이력 쓰기·인시던트·관측성·감사 (비차단)**
-  - 인제스천: New-arXiv 이벤트/스케줄 → U1 워커 → 벡터 인덱스(write-only).
+  - 인제스천: source별 스케줄/backfill → U1 워커 → Corpus 인덱스(write-only).
   - 이력 쓰기: U2 `SearchExecuted` → U4.SearchHistoryService 비동기 기록.
   - 인시던트: 근거화 위반/비용 급증/완결성 → 탐지기 → IncidentEventPublisher → 백본 → IR/COE.
   - 관측성: 전 유닛 → ObservabilityHub → 팬아웃 → 탐지기·대시보드.
@@ -189,26 +190,28 @@
 
 ## 8. 데이터 흐름 ASCII
 
-### (A) 인제스천 이벤트 경로 (비동기 백본, 사용자 경로 아님)
+### (A) Corpus 인제스천 이벤트 경로 (비동기 백본, 사용자 경로 아님)
 ```
-[New-arXiv Event] ──event──▶ NewArxivEventHandler ─┐
-[Scheduler/Timer] ──event──▶ RefreshScheduler ─────┤ (US-I1 초기 빌드: triggerFullRebuild)
-                                                   ▼
-                                    RefreshOrchestrationService
-                                                   │ lib
-                                                   ▼
-   ArxivSourceClient ──sync(upstream)──▶ [arXiv OA API]
-        │ lib                            [Object Storage]◀──sync── (OA 전문 보관)
+[Scheduler/Timer] ──event──▶ CorpusRefreshScheduler ──▶ RefreshOrchestrationService
+                                                             │ lib
+                                                             ▼
+ CorpusSourceAdapterSet ──sync(upstream)──▶ [arXiv / Semantic Scholar / OpenAlex]
+        │ lib
         ▼
-   FetchParseProcessor ─lib▶ DeduplicationGuard ─lib▶ Chunker ─lib▶ EmbeddingGatewayAdapter
-        (parse/validate)      (isNew? 단락)         (deterministic)        │ sync
-        비-OA 배제(C-1)                                                    ▼
-                                            [Embedding Gateway]  (VectorSpec 공유 계약)
-                                                                          │
-                                                                          ▼
-                                                  VectorIndexWriter ─sync▶ [Vector Store]
-                                                  (멱등 upsert, write-only 생산자)
-        실패 전 단계 ─lib▶ IngestionResilienceService ─event▶ [DLQ] / [Observability/Alerting → U6]
+ FullTextExtractionProcessor ──sync──▶ [GROBID Runtime]  (PDF transient, raw PDF not stored)
+        │ lib
+        ▼
+ SourcePriorityDeduplicationGuard ─lib▶ DocModelBuildCoordinator ─sync▶ [Object Storage]
+        (DOI→arXiv→title/author/year)     (eager DocModel, paperId+version)
+                                                    │ lib
+                                                    ▼
+ DocModelBlockChunker ─lib▶ EmbeddingGatewayAdapter ─sync▶ [Embedding Gateway]
+        (Block anchors)                 (VectorSpec shared contract)
+                                                    │
+                                                    ▼
+                                   CorpusIndexWriter ─sync▶ [OpenSearch / Vector Store]
+                                   (generation upsert, write-only producer)
+ 실패 전 단계 ─lib▶ IngestionResilienceService ─event▶ [DLQ] / [Observability/Alerting → U6]
 ```
 
 ### (B) 디스커버리 동기 경로 (NFR-P1 P50<3s, 요청→응답)

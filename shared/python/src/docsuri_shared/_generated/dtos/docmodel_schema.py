@@ -370,13 +370,17 @@ class Section(BaseModel):
 
 class DocModel(BaseModel):
     """
-    The structured paper artifact: a nested section tree of typed content blocks. Tables are DATA (rows/cols), formulas are LaTeX, figures/table-images are webp references by assetId (pixels are NOT embedded — base64 bloat avoided; reuse assets/{paperId}/{version}/{assetId}.webp). Deterministic: same source HTML -> same DocModel (LLM extraction forbidden). Trace: D1, D8, P7.
+    The structured paper artifact: fullText plus a nested section tree of typed content blocks. fullText is the complete reading-order text projection of the paper. Tables are DATA (rows/cols), formulas are LaTeX, figures/table-images are webp references by assetId (pixels are NOT embedded — base64 bloat avoided; reuse assets/{paperId}/{version}/{assetId}.webp). Deterministic: same source HTML -> same DocModel (LLM extraction forbidden). Trace: D1, D8, P7.
     """
 
     model_config = ConfigDict(
         extra='forbid',
     )
     meta: DocModelMeta
+    fullText: str = Field(
+        ...,
+        description='Complete reading-order text projection of the paper. Includes section titles, paragraphs, table captions/cells, formula LaTeX, figure captions, list items, and code text. Excludes image bytes, base64 payloads, presigned URLs, and internal object refs. Trace: FR-6, FR-18, QT-9.',
+    )
     sections: list[Section] = Field(
         ...,
         description='Top-level sections in reading order; each may nest subsections (recursive). The rich-view DocTOC and the summary map-reduce split (P3) both consume this tree. Trace: Q1-decision (nested section tree).',
@@ -408,7 +412,7 @@ class DocModelResponse(
         DocModelResultDTO | BuildingDTO | LicenseUnavailableDTO | SourceUnavailableDTO
     ) = Field(
         ...,
-        description='doc-model contract (DocModel pivot — SSOT spec: aidlc-docs/construction/shared/docmodel.md; gate: construction/plans/docmodel-foundation-pivot-plan.md, D1/D2/D4/D6/D8). The ROOT schema is DocModelResponse — the union (oneOf) returned by getDocModel and branched by U5 ApiClient to surface status (ok | building | license_unavailable | source_unavailable). The bare DocModel artifact (the JSON stored at doc-model/{paperId}/v{version}.json and consumed as the U7 summary input) is defined at #/$defs/DocModel. STATUS: PROVISIONAL (owning unit U1 FD in progress). Trace: FR-12, FR-17, BR-30, BR-S2.',
+        description='doc-model contract (DocModel pivot — SSOT spec: aidlc-docs/construction/shared/docmodel.md; gate: construction/plans/docmodel-foundation-pivot-plan.md, D1/D2/D4/D6/D8). The ROOT schema is DocModelResponse — the union (oneOf) returned by getDocModel and branched by U5 ApiClient to surface status (ok | building | license_unavailable | source_unavailable). The bare DocModel artifact (the JSON stored at doc-model/{paperId}/v{version}.json and consumed as the U7 summary input) is defined at #/$defs/DocModel. STATUS: FROZEN for U1 Corpus build v1. Footnotes/references/page numbers are intentionally out of scope; Citation Graph owns structured references and DocModel block ids replace page anchors. Trace: FR-12, FR-17, BR-30, BR-S2.',
         title='DocModelResponse',
     )
 

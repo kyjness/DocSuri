@@ -13,6 +13,17 @@ from summarization.domain.models import Scope, SourceKind, SourceText, Task
 from summarization.domain.refiner import InputRefiner
 from summarization.domain.source_selector import SourceSelector
 
+_FULL_TEXT = (
+    "Results\n\n"
+    "We report accuracy.\n\n"
+    "Table 1 Scores.\n"
+    "Model Acc\n"
+    "Ours 0.953\n\n"
+    "E=mc^2\n\n"
+    "Ablation\n\n"
+    "Sub finding."
+)
+
 
 def _doc() -> DocModel:
     return DocModel.model_validate(
@@ -28,6 +39,7 @@ def _doc() -> DocModel:
                     "generatedAt": "2026-06-23T00:00:00Z",
                 },
             },
+            "fullText": _FULL_TEXT,
             "sections": [
                 {
                     "id": "s1",
@@ -40,8 +52,12 @@ def _doc() -> DocModel:
                             "anchorLabel": "Table 1",
                             "caption": "Scores.",
                             "rows": [
-                                {"cells": [{"text": "Model", "isHeader": True},
-                                           {"text": "Acc", "isHeader": True}]},
+                                {
+                                    "cells": [
+                                        {"text": "Model", "isHeader": True},
+                                        {"text": "Acc", "isHeader": True},
+                                    ]
+                                },
                                 {"cells": [{"text": "Ours"}, {"text": "0.953"}]},
                             ],
                         },
@@ -86,6 +102,15 @@ def test_refine_doc_model_collects_sections_formulas_captions() -> None:
     assert refined.formulas == ("E=mc^2",)
     assert any("Scores." in c for c in refined.captions)
     assert "Sub finding." in refined.body  # nested subsection content included
+
+
+def test_refine_doc_model_body_stays_aligned_with_root_full_text() -> None:
+    doc = _doc()
+    refined = InputRefiner().refine_doc_model(doc)
+
+    for expected in ("We report accuracy.", "0.953", "E=mc^2", "Sub finding."):
+        assert expected in doc.fullText
+        assert expected in refined.body
 
 
 def test_refine_source_dispatches_on_doc_model() -> None:

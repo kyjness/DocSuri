@@ -87,6 +87,37 @@ export class MockTransport implements Transport {
       void (req.body as BehaviorEventCreate);
       return { status: 200, body: { recorded: true, duplicate: false, reason: 'recorded' } };
     }
+    if (path === '/api/personalization/settings' && req.method === 'GET') {
+      return {
+        status: 200,
+        body: {
+          userId: 'mock-user',
+          enabled: true,
+          rawEventsDeletedAt: null,
+          profileResetAt: null,
+          updatedAt: '2026-06-25T00:00:00Z',
+        },
+      };
+    }
+    if (path === '/api/personalization/settings' && req.method === 'PATCH') {
+      const body = (req.body ?? {}) as { enabled?: unknown };
+      return {
+        status: 200,
+        body: {
+          userId: 'mock-user',
+          enabled: Boolean(body.enabled),
+          rawEventsDeletedAt: null,
+          profileResetAt: null,
+          updatedAt: '2026-06-25T00:00:00Z',
+        },
+      };
+    }
+    if (path === '/api/personalization/delete-events' && req.method === 'POST') {
+      return { status: 200, body: { deletedEvents: 0 } };
+    }
+    if (path === '/api/personalization/reset-profile' && req.method === 'POST') {
+      return { status: 200, body: { status: 'reset' } };
+    }
 
     if (req.path === '/api/search' && req.method === 'POST') {
       const query = String((req.body as { query?: unknown })?.query ?? '');

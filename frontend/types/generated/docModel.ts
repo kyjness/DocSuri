@@ -113,9 +113,11 @@ export interface DocModelMeta {
   provenance: DocProvenance;
 }
 
-/** The structured paper artifact: a nested section tree of typed content blocks. */
+/** The structured paper artifact: fullText plus a nested section tree of typed blocks. */
 export interface DocModel {
   meta: DocModelMeta;
+  /** Complete reading-order text projection. No image bytes, signed URLs, or object refs. */
+  fullText: string;
   sections: DocSection[];
 }
 

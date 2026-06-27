@@ -12,6 +12,7 @@ import io
 import json
 from typing import Any
 
+from docsuri_shared.docmodel_contract import DOCMODEL_PARSER_VERSION, DOCMODEL_SCHEMA_VERSION
 from docsuri_shared.dtos import DocModel
 
 from summarization.adapters.s3_docmodel import S3DocModelReader
@@ -48,11 +49,12 @@ def _doc_model(paper_id: str = "2401.00001", version: int = 1) -> DocModel:
                 "title": "A Paper",
                 "provenance": {
                     "sourceTier": "ar5iv",
-                    "parserVersion": "docmodel-parser@1",
-                    "schemaVersion": "1.0.0",
+                    "parserVersion": DOCMODEL_PARSER_VERSION,
+                    "schemaVersion": DOCMODEL_SCHEMA_VERSION,
                     "generatedAt": "2026-06-23T00:00:00Z",
                 },
             },
+            "fullText": "Introduction\n\nBody.",
             "sections": [
                 {
                     "id": "s1",
@@ -177,6 +179,25 @@ def test_reader_reads_cached_doc_model() -> None:
 def test_reader_returns_none_on_miss() -> None:
     reader = S3DocModelReader(bucket="papers", client=_FakeS3({}))
     assert reader.get_doc_model("2401.00001", 9) is None
+
+
+def test_reader_treats_stale_doc_model_as_miss_before_schema_validation() -> None:
+    payload = _doc_model(version=2).model_dump(mode="json", exclude_none=True)
+    payload["meta"]["provenance"]["parserVersion"] = "docmodel-parser@0"
+    del payload["fullText"]  # old stale shape should rebuild, not fail the read path.
+    s3 = _FakeS3({"doc-model/2401.00001/v2.json": json.dumps(payload).encode("utf-8")})
+    reader = S3DocModelReader(bucket="papers", client=s3)
+
+    assert reader.get_doc_model("2401.00001", 2) is None
+
+
+def test_reader_treats_schema_version_mismatch_as_miss() -> None:
+    payload = _doc_model(version=2).model_dump(mode="json", exclude_none=True)
+    payload["meta"]["provenance"]["schemaVersion"] = "0.9.0"
+    s3 = _FakeS3({"doc-model/2401.00001/v2.json": json.dumps(payload).encode("utf-8")})
+    reader = S3DocModelReader(bucket="papers", client=s3)
+
+    assert reader.get_doc_model("2401.00001", 2) is None
 
 
 def test_reader_strips_version_suffix_from_paper_id() -> None:

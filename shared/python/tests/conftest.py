@@ -37,6 +37,7 @@ def valid_index_record_dict() -> dict:
         "vector": [0.0] * 1024,
         "section": "abstract",
         "lexicalTerms": "transformer attention retrieval",
+        "blockRefs": [],
         "title": "Attention Is All You Need",
         "authors": ["A. Vaswani", "N. Shazeer"],
         "year": 2017,

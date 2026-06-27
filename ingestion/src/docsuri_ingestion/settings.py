@@ -24,9 +24,17 @@ class IngestionSettings(BaseModel):
     opensearch_index_v2: str = Field(
         default="docsuri-corpus-v2", alias="DOCSURI_OPENSEARCH_INDEX_V2"
     )
+    opensearch_alias: str = Field(default="docsuri-corpus", alias="DOCSURI_OPENSEARCH_ALIAS")
     control_plane_dsn: str | None = Field(default=None, alias="DOCSURI_CONTROL_PLANE_DSN")
     sqs_queue_url: str | None = Field(default=None, alias="DOCSURI_SQS_QUEUE_URL")
     sqs_dlq_url: str | None = Field(default=None, alias="DOCSURI_SQS_DLQ_URL")
+    corpus_sources: str = Field(
+        default="ARXIV,SEMANTIC_SCHOLAR,OPENALEX", alias="DOCSURI_CORPUS_SOURCES"
+    )
+    grobid_url: str | None = Field(default=None, alias="DOCSURI_GROBID_URL")
+    semantic_scholar_api_key: str | None = Field(
+        default=None, alias="DOCSURI_SEMANTIC_SCHOLAR_API_KEY"
+    )
     request_timeout_seconds: float = Field(default=30.0, alias="DOCSURI_REQUEST_TIMEOUT_SECONDS")
     index_stats_ttl_seconds: float = Field(default=60.0, alias="DOCSURI_INDEX_STATS_TTL_SECONDS")
     arxiv_rate_per_second: float = Field(default=0.33, alias="DOCSURI_ARXIV_RATE_PER_SECOND")
@@ -36,6 +44,9 @@ class IngestionSettings(BaseModel):
     # FR-17 multimodal assets (display-only). Safe default OFF — base worker unaffected.
     multimodal_assets_enabled: bool = Field(
         default=False, alias="DOCSURI_MULTIMODAL_ASSETS_ENABLED"
+    )
+    corpus_build_rollout_confirmed: bool = Field(
+        default=False, alias="DOCSURI_CORPUS_BUILD_ROLLOUT_CONFIRMED"
     )
     asset_s3_prefix: str = Field(default="assets", alias="DOCSURI_ASSET_S3_PREFIX")
     asset_max_longest_side: int = Field(default=2048, alias="DOCSURI_ASSET_MAX_LONGEST_SIDE")
@@ -75,6 +86,26 @@ class IngestionSettings(BaseModel):
                 if data[key]:
                     data[key] = "***configured***"
         return data
+
+
+def validate_corpus_build_settings(settings: IngestionSettings) -> None:
+    if settings.env == "local":
+        return
+    sources = {part.strip() for part in settings.corpus_sources.split(",") if part.strip()}
+    errors: list[str] = []
+    if not settings.multimodal_assets_enabled:
+        errors.append("DOCSURI_MULTIMODAL_ASSETS_ENABLED must be true before corpus build")
+    if settings.bedrock_model_id_v2:
+        errors.append("DOCSURI_BEDROCK_MODEL_ID_V2 must be unset before corpus build")
+    if not settings.corpus_build_rollout_confirmed:
+        errors.append(
+            "DOCSURI_CORPUS_BUILD_ROLLOUT_CONFIRMED must be true after worker rollout "
+            "completion and during a worker deployment freeze"
+        )
+    if sources.intersection({"SEMANTIC_SCHOLAR", "OPENALEX"}) and not settings.grobid_url:
+        errors.append("DOCSURI_GROBID_URL is required for Semantic Scholar/OpenAlex corpus build")
+    if errors:
+        raise RuntimeError("; ".join(errors))
 
 
 @dataclass(frozen=True, slots=True)

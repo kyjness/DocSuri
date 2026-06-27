@@ -164,6 +164,7 @@ US-L3 / FR-10. 검색 이력은 두 경로로 나뉜다 — **WRITE는 이벤트
 ### 5.2. 불변식 (INV-L2)
 - rerun은 **반드시 `SearchGatewayPort`로 재진입**하며, 어떤 경우에도 U4가 U2 모듈을 직접 import 하거나 U2 서비스 메서드를 직접 호출해서는 안 된다. (application-design "rerun reconciliation" 미러)
 - U4는 결정적 플레이스홀더 `StubSearchGateway`를 동봉한다(실 바인딩은 U6/Infra 가용 시 DI로 주입). 이 stub은 포트 시그니처를 만족하는 결정적 결과를 반환하여 라이브 인프라 없이 마운트/테스트가 그린이 되도록 한다(mock-first, discovery 패턴 답습).
+- **실제 바인딩 검증(Real Binding Verification)**: U6/Infra에서 `StubSearchGateway`를 실제 게이트웨이 어댑터(`RealSearchGatewayAdapter`)로 교체하여 주입하는 시점에, 반드시 **통합 계약 테스트(Contract Test)**가 실행되어야 한다. 이 테스트는 `SearchGatewayPort`를 통한 rerun 요청이 최소 1회 이상 `CostGuardCircuitBreaker.getBudgetState()`를 호출하고, 응답 경로가 `GroundingEnforcementHook.enforce()`를 통과하는지(U6 게이트웨이 파이프라인의 횡단 관심사 정상 적용)를 검증해야 한다. `StubSearchGateway`는 프로덕션 환경(ENV=PROD) 구성에서 절대 사용될 수 없다.
 
 ---
 
@@ -172,8 +173,8 @@ US-L3 / FR-10. 검색 이력은 두 경로로 나뉜다 — **WRITE는 이벤트
 `SearchHistoryService.recordSearch`는 `SearchExecutedEvent`(🔒FROZEN, `shared/events/search-executed.schema.json`)를 구독한다. 이 이벤트는 **성공한 검색 응답 이후** U2 `SearchOrchestrationService.publishSearchExecuted(userId, query, timestamp, resultCount)`가 발행하며, **동기 검색 경로(NFR-P1 P50<3s) 밖에서** 발행/소비된다 — 검색 응답을 블로킹하지 않는다.
 
 ### 6.1. 멱등 기록 알고리즘
-1. **이벤트 수신**: `SearchExecutedEvent{userId, query, timestamp, resultCount}`. `userId`를 `owner_id`로, `timestamp`를 `executed_at`(aware UTC)로 매핑한다.
-2. **dedupe_key 산출 (D7)**: `dedupe_key = sha256(owner_id | executed_at.isoformat() | query)`.
+1. **이벤트 수신**: `SearchExecutedEvent{userId, requestId, query, timestamp, resultCount}`. `userId`를 `owner_id`로, `timestamp`를 `executed_at`(aware UTC)로 매핑한다.
+2. **dedupe_key 산출 (D7)**: `dedupe_key = sha256(owner_id | requestId | query)`. 동일 시간대(초 단위 해상도)에 사용자가 의도적으로 동일 쿼리를 반복 실행하는 경우, `timestamp` 기반 식별 시 해시 충돌로 이력이 누락되는 한계가 있다. 이를 해결하기 위해 요청 당시 주입된 고유 `requestId`를 해시 키로 활용하여 재시도에 의한 이벤트 중복 전달만 정확히 차단한다.
 3. **멱등 검사 (INV-L3)**: `(owner_id, dedupe_key)`가 이미 존재하면 **아무것도 하지 않고 종료**한다(중복 행 생성 금지). at-least-once 재전달이 exactly-once row로 수렴한다.
 4. **신규 기록**: 미존재 시 `HistoryEntry{id=uuid4, owner_id, query, executed_at, result_count, dedupe_key}`를 소유자-스코프로 기록한다.
 5. **보존 한도 적용 (§4.5/D6)**: 기록 후 소유자별 건수가 500을 초과하면 가장 오래된 것부터 prune.

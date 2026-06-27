@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
 from docsuri_shared.vector_spec import DIMENSIONS, IndexRecord
 
-from .enums import DedupDecision, DedupStateKind, JobKind
+from .enums import DedupDecision, DedupStateKind, JobKind, SourceName
 from .ids import ArxivIdentifier, content_fingerprint, normalize_arxiv_ref
 
 
@@ -71,14 +72,40 @@ class ParsedPaper:
     license_url: str
     withdrawal_detected: bool = False
     stored_full_text_ref: str | None = None
+    doi: str = ""
+    source_arxiv_id: str = ""
+    source_name: SourceName = SourceName.ARXIV
+    source_id: str = ""
+    source_tier: str = ""
+    source_url: str = ""
+    display_arxiv_id: str = ""
 
     @property
     def arxiv_id(self) -> str:
         return f"{self.paper_id}v{self.version}"
 
     @property
+    def card_arxiv_id(self) -> str:
+        if self.display_arxiv_id:
+            return self.display_arxiv_id
+        if self.source_arxiv_id:
+            return self.source_arxiv_id
+        return "" if self.paper_id.startswith("src-") else self.arxiv_id
+
+    @property
     def fingerprint(self) -> str:
-        return content_fingerprint(self.paper_id, self.version)
+        try:
+            return content_fingerprint(self.paper_id, self.version)
+        except ValueError:
+            payload = f"{self.paper_id}:v{self.version}".encode()
+            return hashlib.sha256(payload).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class ChunkBlockRef:
+    section_id: str
+    block_id: str
+    block_type: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +115,7 @@ class Chunk:
     section: str
     text: str
     chunk_id: str
+    block_refs: tuple[ChunkBlockRef, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,6 +167,31 @@ class IngestionJob:
     category_filter: CategoryFilter | None = None
     event_id: str | None = None
     correlation_id: str | None = None
+    source_name: SourceName | None = None
+    failure_stage: str | None = None
+    canonical_key: str | None = None
+    paper_id: str | None = None
+    version: int | None = None
+    source_record: dict[str, Any] | None = None
+
+    def to_payload(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "jobId": self.job_id,
+            "kind": self.kind.value,
+            "arxivRef": self.arxiv_ref,
+            "eventId": self.event_id,
+            "correlationId": self.correlation_id,
+        }
+        optional = {
+            "sourceName": self.source_name.value if self.source_name else None,
+            "failureStage": self.failure_stage,
+            "canonicalKey": self.canonical_key,
+            "paperId": self.paper_id,
+            "version": self.version,
+            "sourceRecord": self.source_record,
+        }
+        payload.update({key: value for key, value in optional.items() if value is not None})
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,6 +214,16 @@ class DedupState:
     fingerprint: str | None
     state: DedupStateKind
     ingested_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CanonicalDedupState:
+    canonical_key: str
+    paper_id: str
+    winning_source_tier: str
+    winning_version: int
+    fingerprint: str
+    seen_sources: tuple[SourceName, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,6 +1,6 @@
 # components.md — 컴포넌트 정의 (Application Design)
 
-> 범위: AI/ML arXiv 디스커버리 데모의 6개 유닛(U1–U6) 컴포넌트.
+> 범위: AI/ML 논문 디스커버리 시스템의 유닛 컴포넌트.
 > 기술 스택 미확정 — 모든 외부 의존성은 capability("vector store", "LLM/embedding gateway", "event bus/backbone", "object storage", "managed DB/persistence adapter")로 참조한다.
 > 아키텍처 잠금: DQ1 모듈형 모놀리스 API + 별도 인제스천 워커, DQ2 SSR 폰 우선 프런트엔드, DQ3 이벤트 드리븐 인제스천, DQ4 하이브리드(도메인 모듈 + 공유 레이어), DQ5 전용 횡단 미들웨어/게이트웨이, DQ6 인제스천/운영은 이벤트 백본·디스커버리 READ는 동기 REST, DQ7 REST.
 
@@ -9,28 +9,28 @@
 - **[major] 인시던트 발행 대상 정합**: 팬텀 `IncidentSignalPublisher`를 제거. 근거화 위반 신호는 U6의 실재 컴포넌트 **HallucinationDetector**(AiIncidentDetectorSuite 내 승격된 1급 서브컴포넌트)로 향하고, 발행은 **IncidentEventPublisher**가 담당한다.
 - **[major] SEC-8 객체 소유권 단일 권위**: 객체 단위 소유권 결정의 권위 소유자는 **U3.AuthorizationGuard**. U6.AuthnAuthzGuard는 미들웨어 강제 이음새로서 이 결정을 U3에 위임만 한다. U4.UserDataRepository의 owner-scoped 질의는 데이터 계층 백스톱(심층 방어)이다.
 - **[major] QT-3 소유자 신설**: U6.HealthMonitoringService에 **ReliabilityEvalProbe** 진입점(우아한 저하/강제 장애 검증)을 부여해 QT-3을 소유. HybridRetriever·CostGuardCircuitBreaker·PartialResultDetector에 QT-3 교차 트레이스.
-- **[major] US-I1 소유자**: 초기/시드 코퍼스 빌드는 IngestionPipelineService(end-to-end)·VectorIndexWriter·RefreshScheduler(triggerFullRebuild)가 소유.
-- **[minor] RES-1 팬텀 트레이스 제거**: ArxivSourceClient에서 RES-1(워크로드 중요도·의존성 맵 문서화) 삭제 — FR-6/C-1/RES-8/RES-9로 유효 트레이스 유지.
+- **[major] US-I1 소유자**: phase-1 Corpus 빌드와 재생성은 IngestionPipelineService(end-to-end)·CorpusIndexWriter·CorpusRefreshScheduler(triggerBackfill/triggerRebuild)가 소유.
+- **[minor] RES-1 팬텀 트레이스 제거**: U1 source adapter 계층에서 RES-1(워크로드 중요도·의존성 맵 문서화) 삭제 — FR-6/C-1/RES-8/RES-9로 유효 트레이스 유지.
 - **[minor] PBT-02/03/07 개별 소유자**: 라운드트립/정렬/디덥 불변식을 가진 컴포넌트에 개별 PBT-0x 트레이스 부여.
 - **[minor] US-H1 홈 정정**: 히어로 스토리를 U5.SearchScreen·AppShell에 추가(프런트 히어로 표면 소유), U2 백엔드 트레이스는 백킹 경로로 유지.
 - **[minor] VectorSpec 공유 계약**: 임베딩 스키마는 공유 임베딩 게이트웨이 레이어가 소유하는 단일 진실 원천(VectorSpec). U1 writer와 U2 reader가 동일 계약을 소비.
 
 ---
 
-## U1 — Ingestion (이벤트 드리븐 인제스천 워커)
+## U1 — Ingestion (이벤트 드리븐 Corpus 인제스천 워커)
 
-DQ1=A에 따라 사용자向 API와 분리 배포되는 독립 워커. DQ3=C/DQ6에 따라 비동기 이벤트·스케줄 백본으로만 동작(동기 사용자 경로 아님). 워커 내부의 arXiv/임베딩/벡터 스토어 호출은 "워커→업스트림" 동기 호출이며 사용자 동기 경로가 아니다.
+DQ1=A에 따라 사용자向 API와 분리 배포되는 독립 워커. DQ3=C/DQ6에 따라 비동기 이벤트·스케줄 백본으로만 동작(동기 사용자 경로 아님). 워커 내부의 학술 소스/GROBID/임베딩/인덱스 호출은 "워커→업스트림" 동기 호출이며 사용자 동기 경로가 아니다.
 
 | 컴포넌트 | 목적 | 핵심 책임 | 인터페이스 | Trace |
 |---|---|---|---|---|
-| **ArxivSourceClient** | arXiv OA AI/ML 슬라이스 전용 어댑터. 레이트 한도·쿼터 준수하며 메타데이터·OA 전문 조회. | 슬라이스 페이지네이션 조회; 워터마크 이후 증분 조회; 레이트/쿼터 준수(RES-8)·명시적 타임아웃(RES-9); 비-OA 식별·표시(C-1); 실패를 fail-closed 표면화(SEC-15) | `fetchMetadataPage`, `fetchFullText`, `resolveSliceCategories` | FR-6, C-1, RES-8, RES-9 |
-| **FetchParseProcessor** | arXiv 원천을 정규화 논문 레코드로 파싱·검증. 비-OA 배제. | 메타데이터 정규화; OA 전문 본문 추출; 비-OA 배제(C-1); 입력 검증(SEC-5); 파싱 실패를 재시도/영구로 분류해 실패 핸들러 위임 | `parse`, `validate` | FR-6, C-1, SEC-5, RES-9 |
-| **Chunker** | 본문을 임베딩 가능 결정적 청크로 분할, 추적 메타데이터 부착. | 결정적 분할; 청크↔논문 추적 메타(FR-5 근거화 지원); 멱등 분할(동일 입력→동일 청크); 빈/비정상 본문 안전 처리 | `chunk`, `chunkId` | FR-6, FR-5, QT-4, **PBT-08** |
+| **CorpusSourceAdapterSet** | arXiv·Semantic Scholar·OpenAlex 수집 어댑터 집합. | arXiv는 HTML 우선/PDF 폴백, Semantic Scholar·OpenAlex는 PDF→GROBID 입력을 제공; 소스별 레이트/쿼터·타임아웃 준수; OA/인덱싱 허용 여부 표면화 | `fetchMetadataPage`, `fetchFullTextCandidate`, `sourceWatermark` | FR-6, C-1, RES-8, RES-9 |
+| **FullTextExtractionProcessor** | 소스 원문 후보를 FullText/DocModel 입력으로 정규화. | HTML 파싱 우선; PDF는 transient GROBID 처리 후 원시 PDF 미저장; 비허용 라이선스·손상 문서 거부; 입력 검증(SEC-5) | `extractFullText`, `validateLicense`, `normalizeSource` | FR-6, FR-18, C-1, SEC-5, RES-9 |
+| **SourcePriorityDeduplicationGuard** | cross-source 중복 제거와 승자 선택. | DOI → arXiv id → 정규화(title+1저자+연도) 순으로 dedup; 소스 우선순위와 전문 품질로 canonical paper/version 결정; 멱등성 보장 | `deduplicate`, `canonicalize`, `fingerprint` | FR-6, NFR-C1, QT-9, **PBT-07** |
+| **DocModelBuildCoordinator** | 수집 시점 eager DocModel 완성형 생성·저장. | `(paperId, version)`별 DocModel 생성/검증/저장; Section/Block·표·수식·그림 AssetRef·provenance 포함; 누락/재빌드/backfill 큐로 보강 | `buildDocModel`, `storeDocModel`, `validateDocModel` | FR-6, FR-18, QT-9, **PBT-09** |
+| **DocModelBlockChunker** | DocModel Block 기반 청킹. | Block 경계를 존중하고 섹션 컨텍스트를 붙여 길이 상한 내 결정적 청크 생성; 모든 청크가 실재 Block id를 참조 | `chunkDocModel`, `chunkId` | FR-6, FR-5, FR-18, QT-9, **PBT-08** |
 | **EmbeddingGatewayAdapter** | 공유 임베딩 게이트웨이 capability의 U1측 어댑터. | 청크 배치 벡터화; 타임아웃·재시도·서킷(RES-9); 임베딩 비용 텔레메트리 보고(NFR-C1); **공유 VectorSpec 일관성 보장(U2 reader와 동일 임베딩 공간)**; 게이트웨이 장애 fail-closed(SEC-15) | `embedBatch`, `embeddingSchema` | FR-6, NFR-C1, RES-9, SEC-15 |
-| **VectorIndexWriter** | 임베딩 청크를 U2가 읽는 공유 벡터 인덱스(+lexical 필드)에 멱등 upsert. | 멱등 upsert/tombstone; lexical 필드 동시 기록(FR-2); 철회/갱신 정합성; **재구축 안전성·초기 코퍼스 빌드(US-I1)**; 쓰기 실패 표면화(NFR-R1) | `upsert`, `tombstone`, `indexStats` | FR-6, FR-2, RES-2, NFR-R1, QT-4, **PBT-08**, **US-I1** |
-| **DeduplicationGuard** | 재처리·중복 임베딩 방지로 비용 절감·멱등성 보장. | 콘텐츠 지문·인제스천 상태 추적; 신규/변경만 통과(NFR-C1); arXiv vN 재처리 트리거; 디덥 결정 멱등성 | `isNew`, `markIngested`, `fingerprint` | FR-6, NFR-C1, QT-4, **PBT-08** |
-| **RefreshScheduler** | 스케줄 갱신 트리거·워터마크 관리·전체 재구축 진입점. | 스케줄 증분 갱신 잡 발행(US-I2); 워터마크(RPO) 관리; **전체 재구축 잡(RES-2 런북, 초기 코퍼스 빌드 US-I1)**; 갱신 실패 경보(RES-7) | `onSchedule`, `advanceWatermark`, `triggerFullRebuild` | FR-6, RES-7, RES-2, **US-I1** |
-| **NewArxivEventHandler** | 이벤트 버스의 신규-arXiv 이벤트 소비(DQ3=C)→인제스천 잡 비동기 개시. | new-arXiv 이벤트 구독·소비(DQ3=C, DQ6 비동기); 이벤트→잡 변환·디덥 위임; at-least-once 멱등 처리; 포이즌 이벤트 DLQ 라우팅 | `onNewArxivEvent`, `ackEvent` | FR-6, RES-7 |
+| **CorpusIndexWriter** | DocModel 청크를 U2가 읽는 OpenSearch index generation에 멱등 upsert. | vector+lexical 필드 동시 기록; `(paperId, version)` 정합; blue/green generation write와 alias cutover 지원; tombstone/reindex 안전성 | `upsert`, `tombstone`, `indexStats`, `prepareGeneration` | FR-6, FR-2, FR-18, RES-2, QT-9, **PBT-08**, **US-I1** |
+| **CorpusRefreshScheduler** | source별 스케줄 갱신·watermark·backfill 진입점. | arXiv/Semantic Scholar/OpenAlex watermark 단조 전진; phase-1 seed/backfill/rebuild job 발행; 비용 상한 도달 시 후순위 작업 보류 | `onSchedule`, `advanceWatermark`, `triggerBackfill`, `triggerRebuild` | FR-6, FR-18, RES-7, RES-2, QT-9, **US-I1** |
 | **IngestFailureHandler** | 인제스천 전 단계 실패 분류·재시도·백오프·DLQ·경보. | 재시도 가능/영구 분류; 지수 백오프+최대 재시도(RES-9)·쿼터 인지(RES-8); 소진 항목 DLQ 격리(US-I3); 실패 신호 구조화 로그·경보(RES-7, NFR-O1) | `classify`, `scheduleRetry`, `sendToDLQ`, `emitFailureSignal` | FR-6, RES-7, RES-8, RES-9, NFR-O1, SEC-15 |
 
 ---
@@ -68,6 +68,10 @@ DQ6 재조정에 따라 사용자向 검색 READ는 동기 REST(NFR-P1 P50<3s). 
 | **CredentialStore** | 자격증명(해시) 영속·검증. 평문 미저장·미반환. | 적응형 해싱(메모리-하드 KDF, SEC-12); 상수시간 의도 검증·재해싱 필요 플래그; 자격증명 영속·조회(평문·시크릿 비로깅, SEC-3); 계정↔식별자 소유권 데이터(SEC-8) | `createCredential`, `verifyCredential`, `rehash` | FR-7, SEC-12, SEC-8, SEC-3 |
 | **PasswordPolicy** | 비밀번호 정책·유출 검사 규칙. | 길이·복잡도·차단목록(SEC-12); 유출 검사(breach 어댑터 위임, SEC-12); 구조화 사유 코드 | `evaluate` | SEC-12, US-A1 |
 | **SessionStore** | 세션 상태 영속 어댑터(공유 데이터 레이어). | 세션 레코드 영속·조회·삭제; 서버측 무효화 즉시성(US-A2); 계정/세션 메타 RPO~24h 백업 분류(RES-2) | `persist`, `load`, `remove` | FR-7, US-A2, SEC-8, RES-2 |
+| **AccountDeletionService** | 계정 소프트 삭제 및 파기 오케스트레이션. | 계정 비활성화, 파기 잡 스케줄링, `AccountDeleted` 발행 및 `AccountPurged` 캐스케이드 추적(GDPR) | `requestDeletion`, `purgeJob` | FR-28, US-A6, SEC-8 |
+| **PasswordResetService** | 비밀번호 분실 재설정 흐름. | 토큰 해시 영속화, 재설정 메일 발송 위임, 토큰 검증 후 비밀번호 재해싱 갱신(전 세션 무효화) | `requestReset`, `confirmReset` | FR-26, BR-A8 |
+| **EmailVerificationService** | 계정 이메일 인증 및 변경. | 토큰 발급, 이메일 변경 절차 시 기존 메일 알림, 상태 활성화 전환 | `verifyEmail`, `requestEmailChange`, `confirmEmailChange` | BR-A5, BR-A10 |
+| **SocialLoginService** | 소셜(OIDC) 로그인 오케스트레이션. | OIDC 인가 시작, 콜백(CSRF 방어), 기존 계정 매핑 및 pre-hijacking 방어 | `start`, `callback` | FR-27, BR-A9 |
 
 ---
 
@@ -125,3 +129,13 @@ DQ5 전용 횡단 계층의 정문 + 운영(관측성·비용 가드·헬스·AI
 | **AiIncidentDetectorSuite** | RES-11 AI 인시던트 탐지 계층(별도 워커, DQ1). **세 탐지기를 1급 서브컴포넌트로 선언.** | (a) **CostExplosionDetector**: 지출·레이트 신호 급증 탐지(RES-11(a), US-R3); (b) **HallucinationDetector**: 근거화 위반·QT-1 결과 날조 패턴 탐지(RES-11(b), US-R1); (c) **PartialResultDetector**: 완결성/저하 마커·의존성 장애 탐지(RES-11(c), US-R2); 각 인시던트 분류·심각도 부여 후 IncidentEventPublisher로 방출 | `onTelemetryEvent`, `classify` (서브컴포넌트: CostExplosionDetector, HallucinationDetector, PartialResultDetector) | RES-11, NFR-O1, US-R1, US-R2, US-R3, US-R4, FR-11, NFR-R1, NFR-R2, **QT-3**(PartialResultDetector 저하 검증) |
 | **IncidentEventPublisher** | 탐지 인시던트·경보를 이벤트 백본에 표준 스키마로 발행하는 어댑터. **U2/U6 인시던트 발행의 실재 단일 대상(팬텀 IncidentSignalPublisher 대체).** | typed 인시던트(class a/b/c·심각도·요청 ID 상관) 발행(RES-11); IR 라우팅·COE 컨텍스트 첨부(RES-11, US-R4); 발행 감사(SEC-14) | `publishIncident`, `publishAlert` | RES-11, RES-7, SEC-14, US-R4 |
 | **OpsDashboardService** | OP 운영 대시보드 데이터 제공(NFR-O1, RES-5). | 집계 텔레메트리를 뷰 모델로(NFR-O1, US-R4); 세 인시던트 클래스 상태·경보 이력(RES-11, US-R4); 비용 상한 대비 지출(서킷 상태)·인제스천 건강도(RES-7) | `GET /ops/dashboard`, `GET /ops/incidents` (관리자 인가 SEC-8/MFA SEC-12) | NFR-O1, RES-5, RES-7, RES-11, SEC-12, US-R4 |
+| **RealSearchGatewayAdapter** | U4 rerun(SearchGatewayPort) 요청을 U2 검색 처리로 중계하는 실제 어댑터. | `StubSearchGateway`를 대체하여 주입됨; 게이트웨이 파이프라인(비용/근거화 후크 등)의 강제 로직을 재사용·통과하도록 통합 위임 | `search` (SearchGatewayPort 구현) | INV-L2 |
+## U10 — Mypage (사용자 마이페이지 도메인 모듈)
+
+사용자 프로필 설정, 보안 제어(비밀번호/이메일 변경), 그리고 애플리케이션 내의 다양한 개인화 및 도메인 데이터 관리를 담당하는 모듈. 다른 모듈(U3 계정, U9 개인화 등)의 제어 UI를 통합 제공하며, U3/U9/U4의 API를 동기적으로 호출하여 상태를 조회 및 변경한다.
+
+| 컴포넌트 | 목적 | 핵심 책임 | 인터페이스 | Trace |
+|---|---|---|---|---|
+| **MypageController** | 마이페이지 기능 동기 REST 진입점. | 라우트 매핑; 프로필 조회, 개인화 설정 변경, 데이터 내보내기/삭제 위임; 인증 컨텍스트 전파(SEC-8) | `GET /api/mypage/profile`, `PUT /api/mypage/settings`, `GET /api/mypage/export` | US-A5, US-P6, SEC-8 |
+| **UserPreferencesService** | 개인 설정(개인화, UI 테마 등) 관리 오케스트레이션. | 사용자 설정 조회 및 변경; U9 개인화 선호도 갱신 위임; U3 연동 | `getPreferences`, `updatePreferences` | US-P6, SEC-8 |
+| **DataExportService** | 사용자 데이터(이력, 저장 검색, 라이브러리) 내보내기. | GDPR 준수 데이터 내보내기(Data Portability); U4 등 도메인 데이터 조회 후 JSON/CSV 등 형식 변환 다운로드 제공 | `exportUserData` | FR-28, SEC-8 |

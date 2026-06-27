@@ -8,6 +8,7 @@ attachment ("어텐션을/어텐션이") stays safe.
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Sequence
 
@@ -29,6 +30,9 @@ SEED_MAPPINGS: tuple[TermMapping, ...] = (
 )
 
 
+logger = logging.getLogger(__name__)
+
+
 class GlossaryResolver:
     def __init__(self, repo: GlossaryRepositoryPort | None = None) -> None:
         self._repo = repo
@@ -36,7 +40,15 @@ class GlossaryResolver:
     def resolve(self, user_id: str | None) -> Glossary:
         overrides: Sequence[TermMapping] = ()
         if self._repo is not None and user_id is not None:
-            overrides = tuple(self._repo.get_user_glossary(user_id))
+            try:
+                overrides = tuple(self._repo.get_user_glossary(user_id))
+            except Exception:  # noqa: BLE001 — personal-term overrides are OPTIONAL; a repo fault
+                # (DB unavailable, table not yet migrated) must not abstain the whole summary/
+                # translate. Degrade to the shared seed glossary (no personal terms).
+                logger.warning(
+                    "personal glossary lookup failed — degrading to seed-only", exc_info=True
+                )
+                overrides = ()
         return Glossary(
             seed_mappings=SEED_MAPPINGS,
             keep_as_is=SEED_KEEP_AS_IS,

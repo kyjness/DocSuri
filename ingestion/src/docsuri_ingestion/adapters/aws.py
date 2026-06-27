@@ -289,6 +289,34 @@ class OpenSearchVectorIndex:
     def index_stats(self) -> IndexStats:
         return self._stats_cache.get_or_refresh(self._index_name, self._fetch_stats)
 
+    def validate_generation(self, *, min_documents: int = 1) -> IndexStats:
+        """Validate a candidate generation before alias cutover."""
+        stats = self._fetch_stats()
+        if stats.total_documents < min_documents:
+            raise ValidationViolationError(
+                "OpenSearch generation validation failed: too few documents",
+                stage="index_generation",
+            )
+        return stats
+
+    def switch_alias(
+        self,
+        *,
+        alias_name: str,
+        target_index: str | None = None,
+        previous_index: str | None = None,
+    ) -> None:
+        """Atomically point ``alias_name`` at ``target_index`` after external validation."""
+        target = target_index or self._index_name
+        actions: list[dict[str, dict[str, str]]] = []
+        existing = self._client.indices.get_alias(name=alias_name, ignore=[404])
+        if isinstance(existing, dict):
+            for index in existing:
+                if previous_index is None or index == previous_index:
+                    actions.append({"remove": {"index": index, "alias": alias_name}})
+        actions.append({"add": {"index": target, "alias": alias_name}})
+        self._client.indices.update_aliases(body={"actions": actions})
+
     def _fetch_stats(self) -> IndexStats:
         count = int(self._client.count(index=self._index_name).get("count", 0))
         return IndexStats(
@@ -344,14 +372,7 @@ class SqsQueue:
         self._client.send_message(
             QueueUrl=self._queue_url,
             MessageBody=json.dumps(
-                {
-                    "type": "ingest_paper",
-                    "jobId": job.job_id,
-                    "kind": job.kind.value,
-                    "arxivRef": job.arxiv_ref,
-                    "eventId": job.event_id,
-                    "correlationId": job.correlation_id,
-                }
+                {"type": "ingest_paper", **job.to_payload()}
             ),
         )
 

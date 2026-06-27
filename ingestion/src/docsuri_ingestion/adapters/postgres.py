@@ -5,8 +5,14 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any
 
-from docsuri_ingestion.domain.enums import DedupDecision, DedupStateKind
-from docsuri_ingestion.domain.models import DedupResult, DedupState, IngestionJob, Watermark
+from docsuri_ingestion.domain.enums import DedupDecision, DedupStateKind, SourceName
+from docsuri_ingestion.domain.models import (
+    CanonicalDedupState,
+    DedupResult,
+    DedupState,
+    IngestionJob,
+    Watermark,
+)
 
 
 class PostgresControlPlaneStore:
@@ -149,6 +155,89 @@ class PostgresControlPlaneStore:
             ).fetchone()
             conn.commit()
         return row is not None
+
+    def get_canonical_dedup_state(
+        self, canonical_key: str
+    ) -> CanonicalDedupState | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT canonical_key, paper_id, winning_source_tier, winning_version,
+                       fingerprint, seen_sources
+                  FROM canonical_dedup_state
+                 WHERE canonical_key = %s
+                """,
+                (canonical_key,),
+            ).fetchone()
+        if row is None:
+            return None
+        return CanonicalDedupState(
+            canonical_key=row[0],
+            paper_id=row[1],
+            winning_source_tier=row[2],
+            winning_version=row[3],
+            fingerprint=row[4],
+            seen_sources=tuple(SourceName(v) for v in (row[5] or [])),
+        )
+
+    def list_canonical_dedup_states_for_paper(
+        self, paper_id: str
+    ) -> tuple[CanonicalDedupState, ...]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT canonical_key, paper_id, winning_source_tier, winning_version,
+                       fingerprint, seen_sources
+                  FROM canonical_dedup_state
+                 WHERE paper_id = %s
+                 ORDER BY canonical_key
+                """,
+                (paper_id,),
+            ).fetchall()
+        return tuple(
+            CanonicalDedupState(
+                canonical_key=row[0],
+                paper_id=row[1],
+                winning_source_tier=row[2],
+                winning_version=row[3],
+                fingerprint=row[4],
+                seen_sources=tuple(SourceName(v) for v in (row[5] or [])),
+            )
+            for row in rows
+        )
+
+    def upsert_canonical_dedup_state(self, state: CanonicalDedupState) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO canonical_dedup_state(
+                    canonical_key, paper_id, winning_source_tier, winning_version,
+                    fingerprint, seen_sources, updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, now())
+                ON CONFLICT (canonical_key) DO UPDATE
+                    SET paper_id = EXCLUDED.paper_id,
+                        winning_source_tier = EXCLUDED.winning_source_tier,
+                        winning_version = EXCLUDED.winning_version,
+                        fingerprint = EXCLUDED.fingerprint,
+                        seen_sources = EXCLUDED.seen_sources,
+                        updated_at = now()
+                """,
+                (
+                    state.canonical_key,
+                    state.paper_id,
+                    state.winning_source_tier,
+                    state.winning_version,
+                    state.fingerprint,
+                    [source.value for source in state.seen_sources],
+                ),
+            )
+            conn.commit()
+
+    def delete_canonical_dedup_state_for_paper(self, paper_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM canonical_dedup_state WHERE paper_id = %s", (paper_id,))
+            conn.commit()
 
     def acquire_rebuild_lock(self, owner: str) -> bool:
         with self._connect() as conn:

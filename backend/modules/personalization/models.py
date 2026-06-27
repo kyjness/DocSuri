@@ -95,9 +95,19 @@ class SettingsUpdate(BaseModel):
     enabled: bool
 
 
+class RecentlyViewedItem(BaseModel):
+    arxivId: str
+    title: str
+    viewedAt: datetime
+
+
+class RecentlyViewedList(BaseModel):
+    items: list[RecentlyViewedItem]
+
+
 _ALLOWED_METADATA: dict[BehaviorEventType, set[str]] = {
     BehaviorEventType.SEARCH_EXECUTED: {"resultCount", "topCategories", "language", "keywords"},
-    BehaviorEventType.PAPER_OPENED: {"entrySurface", "paperCategory"},
+    BehaviorEventType.PAPER_OPENED: {"entrySurface", "paperCategory", "title"},
     BehaviorEventType.LIBRARY_ADDED: {"paperCategory", "savedSource"},
     BehaviorEventType.LIBRARY_REMOVED: {"paperCategory"},
     BehaviorEventType.SUMMARY_TRANSLATION_REQUESTED: {

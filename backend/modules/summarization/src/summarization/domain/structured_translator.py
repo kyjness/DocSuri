@@ -87,6 +87,7 @@ class StructuredTranslator:
         for i, (_sid, original, setter) in enumerate(fields):
             ko = translations.get(str(i))
             setter(ko if ko and ko.strip() else original)
+        doc_dict["fullText"] = project_full_text(doc_dict)
 
         return TranslationDraft(
             doc_model=DocModel.model_validate(doc_dict), kept_terms=tuple(kept)
@@ -115,6 +116,44 @@ class StructuredTranslator:
 # collect (read text) and re-inject (call setter) share one id scheme. Reused by the assembler
 # for post-substitution. Verbatim fields — table cells, formula latex, code text, ids, assetRefs
 # — are never yielded (BR-S18).
+
+
+def project_full_text(doc_dict: dict[str, Any]) -> str:
+    """Flatten the structured doc-model text in reading order.
+
+    This keeps the root ``fullText`` aligned with translated/post-substituted sections without
+    exposing asset refs, URLs, or image payloads.
+    """
+    parts: list[str] = []
+
+    def add(value: object) -> None:
+        text = str(value or "").strip()
+        if text:
+            parts.append(text)
+
+    def walk_section(section: dict[str, Any]) -> None:
+        add(section.get("title"))
+        for block in section.get("blocks") or []:
+            kind = block.get("type")
+            if kind in ("paragraph", "code"):
+                add(block.get("text"))
+            elif kind == "formula":
+                add(block.get("latex"))
+            elif kind in ("figure", "table"):
+                add(" ".join(v for v in (block.get("anchorLabel"), block.get("caption")) if v))
+                if kind == "table":
+                    for row in block.get("rows") or []:
+                        cells = [str(c.get("text", "")).strip() for c in row.get("cells") or []]
+                        add(" ".join(cells))
+            elif kind == "list":
+                for item in block.get("items") or []:
+                    add(item.get("text"))
+        for sub in section.get("sections") or []:
+            walk_section(sub)
+
+    for section in doc_dict.get("sections") or []:
+        walk_section(section)
+    return "\n\n".join(parts)
 
 
 def iter_text_fields(

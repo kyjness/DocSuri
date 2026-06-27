@@ -102,6 +102,7 @@ def parse_html_to_docmodel(
 
     top_sections = _top_level_sections(root)
     if top_sections:
+        top_sections = _drop_duplicate_abstract_elements(top_sections, abstract)
         sections = [
             _parse_section(el, f"s{i}", doc_ctx) for i, el in enumerate(top_sections, start=1)
         ]
@@ -109,6 +110,7 @@ def parse_html_to_docmodel(
         # No LaTeXML sectioning (e.g. a short note): fold all body content into one
         # span-only section so the doc-model is still well-formed (BR-S3 fallback).
         sections = [_span_only_section(root, doc_ctx)]
+    sections = _with_abstract_section(sections, abstract)
 
     data = {
         "meta": {
@@ -123,6 +125,52 @@ def parse_html_to_docmodel(
                 "generatedAt": generated_at,
             },
         },
+        "fullText": _project_full_text(sections),
+        "sections": sections,
+    }
+    return DocModel.model_validate(data)
+
+
+def parse_text_to_docmodel(
+    text: str,
+    *,
+    paper_id: str,
+    version: int,
+    title: str,
+    abstract: str | None,
+    source_tier: SourceTier,
+    parser_version: str,
+    schema_version: str,
+    generated_at: datetime,
+) -> DocModel:
+    """Build a minimal validated DocModel from normalized full text.
+
+    This is the last-rung PDF/GROBID fallback: it preserves the DocModel contract and stable
+    block refs even when no rich HTML source exists. It intentionally produces a single
+    paragraph block rather than inventing structure the source did not provide.
+    """
+    body = _WS_RE.sub(" ", text or "").strip()
+    sections = _with_abstract_section([], abstract)
+    section = {
+        "id": "s1",
+        "title": "",
+        "blocks": ([{"id": "s1.p1", "type": "paragraph", "text": body}] if body else []),
+    }
+    sections.append(section)
+    data = {
+        "meta": {
+            "paperId": paper_id,
+            "version": version,
+            "title": title,
+            **({"abstract": abstract} if abstract else {}),
+            "provenance": {
+                "sourceTier": source_tier.value,
+                "parserVersion": parser_version,
+                "schemaVersion": schema_version,
+                "generatedAt": generated_at,
+            },
+        },
+        "fullText": _project_full_text(sections),
         "sections": sections,
     }
     return DocModel.model_validate(data)
@@ -179,6 +227,35 @@ def _span_only_section(root: Tag, doc_ctx: _DocCtx) -> dict:
     sec_ctx = _SectionCtx(section_id="s1")
     blocks = _collect_blocks(root, sec_ctx, doc_ctx, skip_sections=False)
     return {"id": "s1", "title": "", "blocks": blocks}
+
+
+def _with_abstract_section(sections: list[dict], abstract: str | None) -> list[dict]:
+    text = _WS_RE.sub(" ", abstract or "").strip()
+    if not text:
+        return sections
+    return [
+        {
+            "id": "s0",
+            "title": "Abstract",
+            "blocks": [{"id": "s0.p1", "type": "paragraph", "text": text}],
+        },
+        *sections,
+    ]
+
+
+def _drop_duplicate_abstract_elements(sections: list[Tag], abstract: str | None) -> list[Tag]:
+    text = _WS_RE.sub(" ", abstract or "").strip().lower()
+    if not text or not sections:
+        return sections
+    first = sections[0]
+    title = _WS_RE.sub(" ", _section_title(first)).strip().lower()
+    if title != "abstract":
+        return sections
+    body = _WS_RE.sub(
+        " ",
+        " ".join(_inline_text(p) for p in first.find_all("p", class_="ltx_p")),
+    ).strip().lower()
+    return sections[1:] if body == text else sections
 
 
 def _section_title(section_el: Tag) -> str:
@@ -376,9 +453,7 @@ def _inline_text(el: Tag) -> str:
 
     Skips LaTeXML marker tags (``ltx_tag`` — section numbers, list bullets, eq numbers) and
     footnotes/notes (``ltx_note`` — out-of-flow annotations) so neither leaks into body text.
-    A footnote rendered inline (``...heads as A.33In all cases...``) would otherwise corrupt
-    the sentence sent to the LLM and the rich view (footnote data is not preserved — a follow-up
-    may promote it to a dedicated block).
+    U1 Corpus freezes footnotes out of DocModel v1; Citation Graph owns reference structure.
     """
     parts: list[str] = []
     for node in el.children:
@@ -427,3 +502,48 @@ def _int_attr(el: Tag, name: str) -> int:
         return int(raw) if raw is not None else 1
     except (TypeError, ValueError):
         return 1
+
+
+def _project_full_text(sections: list[dict]) -> str:
+    """Reading-order text projection for DocModel.fullText.
+
+    This is intentionally derived from the already-built block tree, so the contract stays in
+    one place: tables contribute rows/cells, figures contribute captions, formulas contribute
+    LaTeX, and AssetRef internals never enter the text projection.
+    """
+    parts: list[str] = []
+
+    def add(text: str | None) -> None:
+        cleaned = _WS_RE.sub(" ", text or "").strip()
+        if cleaned:
+            parts.append(cleaned)
+
+    def walk_section(section: dict) -> None:
+        add(section.get("title"))
+        for block in section.get("blocks", []):
+            kind = block.get("type")
+            if kind == "paragraph":
+                add(block.get("text"))
+            elif kind == "table":
+                label = block.get("anchorLabel")
+                caption = block.get("caption")
+                add(" ".join(v for v in (label, caption) if v))
+                for row in block.get("rows", []):
+                    add(" | ".join(cell.get("text", "") for cell in row.get("cells", [])))
+            elif kind == "formula":
+                add(block.get("latex"))
+            elif kind == "figure":
+                label = block.get("anchorLabel")
+                caption = block.get("caption")
+                add(" ".join(v for v in (label, caption) if v))
+            elif kind == "list":
+                for item in block.get("items", []):
+                    add(item.get("text"))
+            elif kind == "code":
+                add(block.get("text"))
+        for child in section.get("sections", []) or []:
+            walk_section(child)
+
+    for section in sections:
+        walk_section(section)
+    return "\n\n".join(parts)

@@ -13,6 +13,37 @@ class ArxivCategory(RootModel[str]):
     )
 
 
+class DocModelBlockRef(BaseModel):
+    """
+    Structured DocModel block reference covered by this chunk. Trace: FR-18, QT-9.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    paperId: str
+    version: int
+    sectionId: str
+    blockId: str
+    blockType: str
+
+
+class SourceProvenance(BaseModel):
+    """
+    Internal source lineage for debugging, grounding, and future agent evidence. Not exposed in external DTOs. Trace: BR-C4, BR-C11.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    sourceName: str
+    sourceId: str
+    sourceTier: str
+    sourceUrl: str
+    doi: str
+    arxivId: str
+
+
 class IndexRecord(BaseModel):
     """
     Shared per-chunk index document (one record per chunk; many chunks per paper, Q2=C full-text multi-chunk). Written by U1 (VectorIndexWriter) and read by U2 (HybridRetriever) over the SAME embedding space (vector-spec.md §2, §4). Card fields (FR-4) project to U2 ResultCardVM (dtos.md §1.1). Internal fields (vector, lexicalTerms, chunkId, section, categories — and the full `abstract`; the snippet, not the full abstract, is the exposed card field) are NOT exposed in external DTOs; the externally exposed card projection is the 6 fields in dtos.md §1.1 (SEC-9, per dtos.md §1.1/§4).
@@ -43,7 +74,11 @@ class IndexRecord(BaseModel):
     )
     lexicalTerms: str = Field(
         ...,
-        description='Analyzed text field over title + abstract + body tokens — the BM25 lexical field for hybrid retrieval (FR-2). INTERNAL — not exposed in external DTOs (SEC-9). Trace: BR-6.',
+        description='Analyzed chunk-body text for lexical retrieval (FR-2). Empty for abstract chunks. Title and abstract are written once in their own analyzed fields; U2 queries title + abstract + lexicalTerms together, with boost tuning deferred to search quality work and no reindex required. INTERNAL — not exposed in external DTOs (SEC-9). Trace: BR-6.',
+    )
+    blockRefs: list[DocModelBlockRef] = Field(
+        ...,
+        description='Structured DocModel block refs covered by this chunk. Empty only for legacy/plain-text chunks. INTERNAL provenance used by QT-9 BlockRef validation; not searched or exposed externally. Trace: BR-C8, BR-C13, QT-9.',
     )
     title: str = Field(
         ...,
@@ -76,4 +111,16 @@ class IndexRecord(BaseModel):
     categories: list[ArxivCategory] = Field(
         ...,
         description='arXiv categories (corpus slice cs.LG/cs.AI/cs.CL/cs.CV/stat.ML). INTERNAL — not exposed in external DTOs (SEC-9). Trace: C-6.',
+    )
+    doi: str | None = Field(
+        None,
+        description='Known DOI alias for this indexed paper/chunk. INTERNAL keyword for canonical alias repair and future lookup; not exposed in external DTOs. Optional for legacy/arXiv-only records. Trace: BR-C4.',
+    )
+    sourceArxivId: str | None = Field(
+        None,
+        description='Known arXiv alias from the source record, independent of canonical paperId. INTERNAL keyword for DOI/arXiv alias repair; not exposed in external DTOs. Optional when unknown. Trace: BR-C4.',
+    )
+    sourceProvenance: SourceProvenance | None = Field(
+        None,
+        description='Internal source lineage. OpenSearch stores it as non-indexed provenance; external DTOs do not project it. Trace: BR-C4, BR-C11.',
     )

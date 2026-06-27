@@ -11,22 +11,34 @@ import { AuthField } from '../AuthField';
 import styles from './MyPageScreen.module.css';
 import authStyles from '../AuthForm.module.css';
 import type { ConsentSettingsVM } from '@/types/mypage';
+import type { PersonalizationSettings } from '@/types/personalization';
 
 // MyPageSettingsScreen (U10) — 동의 철회(야간 푸시만 토글, 필수 동의는 읽기 전용) + 비밀번호 변경
 // + 이메일 변경(FR-28/BR-A10) + 로그아웃 + 회원탈퇴. 비밀번호 변경·탈퇴·이메일 변경은 현재
 // 비밀번호 재인증을 요구한다(감사 H7). 비밀번호 변경 성공 시 백엔드가 전 세션을 무효화하므로
 // 로그아웃 후 재로그인 화면으로 보낸다.
 
-type BusyKey = 'consent' | 'logout' | 'withdraw' | 'password' | 'email' | null;
+type BusyKey =
+  | 'consent'
+  | 'personalization'
+  | 'deletePersonalizationEvents'
+  | 'resetPersonalizationProfile'
+  | 'logout'
+  | 'withdraw'
+  | 'password'
+  | 'email'
+  | null;
 
 export function MyPageSettingsScreen() {
   const { signOut } = useSession();
   const { effectiveTheme, setTheme } = useTheme();
   const router = useRouter();
   const [consents, setConsents] = useState<ConsentSettingsVM | null>(null);
+  const [personalization, setPersonalization] = useState<PersonalizationSettings | null>(null);
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [busy, setBusy] = useState<BusyKey>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
 
   // 비밀번호 변경 폼
   const [curPw, setCurPw] = useState('');
@@ -41,8 +53,14 @@ export function MyPageSettingsScreen() {
   const load = useCallback(async () => {
     setStatus('loading');
     try {
-      const result = await getApiClient().getConsents();
-      setConsents(result);
+      const api = getApiClient();
+      const consentResult = await api.getConsents();
+      setConsents(consentResult);
+      try {
+        setPersonalization(await api.getPersonalizationSettings());
+      } catch {
+        setPersonalization(null);
+      }
       setStatus('ready');
     } catch {
       setStatus('error');
@@ -56,6 +74,7 @@ export function MyPageSettingsScreen() {
   const withBusy = async (key: NonNullable<BusyKey>, action: () => Promise<void>) => {
     setBusy(key);
     setActionError(null);
+    setActionNotice(null);
     try {
       await action();
     } catch {
@@ -70,6 +89,28 @@ export function MyPageSettingsScreen() {
       const result = await getApiClient().updateNightlyPushConsent(checked);
       setConsents(result);
     });
+
+  const onTogglePersonalization = (checked: boolean) =>
+    withBusy('personalization', async () => {
+      const result = await getApiClient().updatePersonalizationEnabled(checked);
+      setPersonalization(result);
+    });
+
+  const onDeletePersonalizationEvents = () => {
+    if (!window.confirm('개인맞춤 행동 로그를 삭제할까요? 이 작업은 되돌릴 수 없습니다.')) return;
+    void withBusy('deletePersonalizationEvents', async () => {
+      const result = await getApiClient().deletePersonalizationEvents();
+      setActionNotice(`개인맞춤 행동 로그 ${result.deletedEvents}건을 삭제했습니다.`);
+    });
+  };
+
+  const onResetPersonalizationProfile = () => {
+    if (!window.confirm('개인맞춤 프로필과 기본값을 초기화할까요?')) return;
+    void withBusy('resetPersonalizationProfile', async () => {
+      await getApiClient().resetPersonalizationProfile();
+      setActionNotice('개인맞춤 프로필을 초기화했습니다.');
+    });
+  };
 
   // 다크모드는 기기(브라우저)별 설정 — 계정에 저장하지 않으므로 API 호출이 필요 없다.
   const onToggleDarkMode = (checked: boolean) => setTheme(checked ? 'dark' : 'light');
@@ -171,6 +212,11 @@ export function MyPageSettingsScreen() {
           {actionError}
         </p>
       ) : null}
+      {actionNotice ? (
+        <p className={styles.notice} role="status" data-testid="mypage-action-notice">
+          {actionNotice}
+        </p>
+      ) : null}
 
       <section className={styles.card} data-testid="mypage-display">
         <h2 className={styles.cardTitle}>화면</h2>
@@ -205,6 +251,46 @@ export function MyPageSettingsScreen() {
             data-testid="mypage-consent-nightly-push"
           />
         </label>
+      </section>
+
+      <section className={styles.card} data-testid="mypage-personalization-data">
+        <h2 className={styles.cardTitle}>맞춤 서비스</h2>
+        <label className={styles.toggleRow}>
+          <span>맞춤 서비스 사용</span>
+          <input
+            type="checkbox"
+            checked={personalization?.enabled ?? false}
+            disabled={!personalization || busy === 'personalization'}
+            onChange={(e) => void onTogglePersonalization(e.target.checked)}
+            data-testid="mypage-personalization-enabled"
+          />
+        </label>
+        {!personalization ? (
+          <p className={styles.muted} role="status" data-testid="mypage-personalization-unavailable">
+            맞춤 서비스 설정을 불러오지 못했습니다.
+          </p>
+        ) : null}
+        <p className={styles.muted}>
+          행동 로그 삭제는 원천 기록을 지우고, 프로필 초기화는 분석된 관심사와 기본값을 지웁니다.
+        </p>
+        <button
+          type="button"
+          className={styles.danger}
+          disabled={!personalization || busy === 'deletePersonalizationEvents'}
+          onClick={() => void onDeletePersonalizationEvents()}
+          data-testid="mypage-personalization-delete-events"
+        >
+          행동 로그 삭제
+        </button>
+        <button
+          type="button"
+          className={styles.action}
+          disabled={!personalization || busy === 'resetPersonalizationProfile'}
+          onClick={() => void onResetPersonalizationProfile()}
+          data-testid="mypage-personalization-reset-profile"
+        >
+          개인맞춤 프로필 초기화
+        </button>
       </section>
 
       <section className={styles.card} data-testid="mypage-change-password">

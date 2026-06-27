@@ -33,6 +33,7 @@
 | `POST /api/personalization/events` | Records an allowlisted meaningful behavior event, best-effort. |
 | `GET /api/personalization/decision/search` | Returns bounded search boosts or fail-open default. |
 | `GET /api/personalization/decision/summary-defaults` | Returns summary/translation defaults or fail-open default. |
+| `GET /api/personalization/settings` | Returns the current user's personalization settings. |
 | `PATCH /api/personalization/settings` | Enables/disables personalization. |
 | `POST /api/personalization/delete-events` | Directly deletes owner-scoped active raw events. |
 | `POST /api/personalization/reset-profile` | Clears aggregate profile/defaults. |

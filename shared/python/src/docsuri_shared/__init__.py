@@ -16,12 +16,14 @@ The most load-bearing names are re-exported at the top level for convenience.
 
 from __future__ import annotations
 
-from . import dtos, events, ids, ports, vector_spec
+from . import docmodel_contract, dtos, events, ids, ports, vector_spec
+from .docmodel_contract import DOCMODEL_PARSER_VERSION, DOCMODEL_SCHEMA_VERSION
 from .ids import chunk_id, paper_id_prefix
 from .vector_spec import (
     DIMENSIONS,
     EMBEDDING_SPEC,
     SPEC_VERSION,
+    DocModelBlockRef,
     IndexRecord,
     VectorSpec,
     assert_same_space,
@@ -33,9 +35,14 @@ __all__ = [
     "events",
     "ports",
     "vector_spec",
+    "docmodel_contract",
     "ids",
+    # doc-model cache contract
+    "DOCMODEL_PARSER_VERSION",
+    "DOCMODEL_SCHEMA_VERSION",
     # vector-spec (FROZEN)
     "IndexRecord",
+    "DocModelBlockRef",
     "VectorSpec",
     "EMBEDDING_SPEC",
     "SPEC_VERSION",

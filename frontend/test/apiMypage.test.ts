@@ -97,6 +97,58 @@ describe('ApiClient mypage (U10) methods', () => {
     });
   });
 
+  it('gets and updates personalization settings through the U9 endpoint', async () => {
+    const r = recorder((req) => ({
+      status: 200,
+      body: {
+        userId: 'u1',
+        enabled: req.method === 'PATCH' ? false : true,
+        rawEventsDeletedAt: null,
+        profileResetAt: null,
+        updatedAt: '2026-06-25T00:00:00Z',
+      },
+    }));
+    const client = new ApiClient(r.transport, fast);
+
+    await expect(client.getPersonalizationSettings()).resolves.toMatchObject({ enabled: true });
+    await expect(client.updatePersonalizationEnabled(false)).resolves.toMatchObject({
+      enabled: false,
+    });
+    expect(r.calls[0]).toMatchObject({
+      method: 'GET',
+      path: '/api/personalization/settings',
+      idempotent: true,
+    });
+    expect(r.calls[1]).toMatchObject({
+      method: 'PATCH',
+      path: '/api/personalization/settings',
+      body: { enabled: false },
+      idempotent: false,
+    });
+  });
+
+  it('deletes personalization events through the U9 endpoint', async () => {
+    const r = recorder(() => ({ status: 200, body: { deletedEvents: 3 } }));
+    const out = await new ApiClient(r.transport, fast).deletePersonalizationEvents();
+    expect(out).toEqual({ deletedEvents: 3 });
+    expect(r.calls[0]).toMatchObject({
+      method: 'POST',
+      path: '/api/personalization/delete-events',
+      idempotent: false,
+    });
+  });
+
+  it('resets the personalization profile through the U9 endpoint', async () => {
+    const r = recorder(() => ({ status: 200, body: { status: 'reset' } }));
+    const out = await new ApiClient(r.transport, fast).resetPersonalizationProfile();
+    expect(out).toEqual({ status: 'reset' });
+    expect(r.calls[0]).toMatchObject({
+      method: 'POST',
+      path: '/api/personalization/reset-profile',
+      idempotent: false,
+    });
+  });
+
   it('withdraws the account via the REAL U3 soft-delete (POST /auth/account/delete, 204)', async () => {
     const r = recorder(() => ({ status: 204, body: null }));
     await expect(new ApiClient(r.transport, fast).withdrawAccount()).resolves.toBeUndefined();

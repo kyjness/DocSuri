@@ -3,7 +3,8 @@ and a QT-2 eval set with Korean↔English cross-lingual cases (TD-3).
 
 The mock "embedding" is a tiny bag-of-keywords vector where Korean and English synonyms map
 to the SAME dimension (cross-lingual), so k-NN matches a Korean query to an English paper —
-while BM25 (English lexicalTerms) does not, which is exactly why hybrid needs the embedding.
+while BM25 (English title/abstract/lexicalTerms) does not, which is exactly why hybrid
+needs the embedding.
 This is a deterministic stand-in for real cross-lingual embeddings, not a quality model.
 """
 
@@ -52,7 +53,8 @@ def _record(
         version=1,
         vector=embed(" ".join(keywords)),
         section="abstract" if ordinal == 0 else f"body-{ordinal}",
-        lexicalTerms=f"{title} {abstract}".lower(),
+        lexicalTerms=abstract.lower(),
+        blockRefs=[],
         title=title,
         authors=authors,
         year=year,

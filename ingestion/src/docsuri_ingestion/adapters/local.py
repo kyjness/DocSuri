@@ -6,12 +6,14 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from docsuri_shared.dtos import DocModel
 from docsuri_shared.events import NewArxivEvent
 from docsuri_shared.vector_spec import DIMENSIONS, IndexRecord
 
 from docsuri_ingestion.domain.enums import DedupDecision, DedupStateKind, FailureReason
 from docsuri_ingestion.domain.errors import RetriableIngestionError
 from docsuri_ingestion.domain.models import (
+    CanonicalDedupState,
     CategoryFilter,
     DedupResult,
     DedupState,
@@ -54,10 +56,15 @@ class FakeArxivSource:
             )
         return RawDocument(metadata=metadata, text=text, source_url=f"local://{metadata.arxiv_ref}")
 
+    def fetch_html_source(self, arxiv_id: str):
+        del arxiv_id
+        return None
+
 
 class InMemoryControlPlaneStore:
     def __init__(self) -> None:
         self._dedup: dict[str, DedupState] = {}
+        self._canonical: dict[str, CanonicalDedupState] = {}
         self._watermarks: dict[str, Watermark] = {}
         self._jobs: dict[str, dict[str, Any]] = {}
         self._rebuild_owner: str | None = None
@@ -137,6 +144,25 @@ class InMemoryControlPlaneStore:
                 ingested_at=datetime.now(UTC),
             )
             return True
+
+    def get_canonical_dedup_state(self, canonical_key: str) -> CanonicalDedupState | None:
+        return self._canonical.get(canonical_key)
+
+    def list_canonical_dedup_states_for_paper(
+        self, paper_id: str
+    ) -> tuple[CanonicalDedupState, ...]:
+        return tuple(state for state in self._canonical.values() if state.paper_id == paper_id)
+
+    def upsert_canonical_dedup_state(self, state: CanonicalDedupState) -> None:
+        with self._lock:
+            self._canonical[state.canonical_key] = state
+
+    def delete_canonical_dedup_state_for_paper(self, paper_id: str) -> None:
+        with self._lock:
+            for key in [
+                key for key, state in self._canonical.items() if state.paper_id == paper_id
+            ]:
+                del self._canonical[key]
 
     def acquire_rebuild_lock(self, owner: str) -> bool:
         with self._lock:
@@ -228,6 +254,23 @@ class InMemoryFullTextStore:
         return ref
 
 
+class InMemoryDocModelStore:
+    def __init__(self) -> None:
+        self.objects: dict[tuple[str, int], DocModel] = {}
+
+    def get(self, paper_id: str, version: int) -> DocModel | None:
+        return self.objects.get((paper_id, version))
+
+    def put(self, doc: DocModel) -> str:
+        key = (doc.meta.paperId, doc.meta.version)
+        self.objects[key] = doc
+        return f"memory://doc-model/{doc.meta.paperId}/v{doc.meta.version}.json"
+
+    def remove(self, paper_id: str) -> None:
+        for key in [key for key in self.objects if key[0] == paper_id]:
+            del self.objects[key]
+
+
 @dataclass(frozen=True, slots=True)
 class InMemoryQueueMessage:
     message_id: str
@@ -251,14 +294,7 @@ class InMemoryQueue:
                 InMemoryQueueMessage(
                     message_id=job.job_id,
                     receipt_handle=job.job_id,
-                    body={
-                        "type": "ingest_paper",
-                        "jobId": job.job_id,
-                        "kind": job.kind.value,
-                        "arxivRef": job.arxiv_ref,
-                        "eventId": job.event_id,
-                        "correlationId": job.correlation_id,
-                    },
+                    body={"type": "ingest_paper", **job.to_payload()},
                 )
             )
         self.jobs = self.jobs[max_messages:]

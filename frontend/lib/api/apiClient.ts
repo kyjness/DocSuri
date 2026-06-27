@@ -46,7 +46,13 @@ import type {
   GlossaryListDTO,
 } from '@/types/glossary';
 import type { CitationNode, CitationTreeQuery, CitationTreeResponse } from '@/types/citationGraph';
-import type { BehaviorEventCreate, EventRecordResult } from '@/types/personalization';
+import type {
+  BehaviorEventCreate,
+  DeletePersonalizationEventsResult,
+  EventRecordResult,
+  PersonalizationSettings,
+  ResetPersonalizationProfileResult,
+} from '@/types/personalization';
 
 export interface ApiClientOptions {
   timeoutMs?: number;
@@ -213,6 +219,47 @@ export class ApiClient {
       idempotent: false,
     });
     if (res.status === 200) return res.body as EventRecordResult;
+    throw normalizeHttpError(res.status, serverMessage(res.body));
+  }
+
+  async getPersonalizationSettings(): Promise<PersonalizationSettings> {
+    const res = await this.request({
+      method: 'GET',
+      path: '/api/personalization/settings',
+      idempotent: true,
+    });
+    if (res.status === 200) return res.body as PersonalizationSettings;
+    throw normalizeHttpError(res.status, serverMessage(res.body));
+  }
+
+  async updatePersonalizationEnabled(enabled: boolean): Promise<PersonalizationSettings> {
+    const res = await this.request({
+      method: 'PATCH',
+      path: '/api/personalization/settings',
+      body: { enabled },
+      idempotent: false,
+    });
+    if (res.status === 200) return res.body as PersonalizationSettings;
+    throw normalizeHttpError(res.status, serverMessage(res.body));
+  }
+
+  async deletePersonalizationEvents(): Promise<DeletePersonalizationEventsResult> {
+    const res = await this.request({
+      method: 'POST',
+      path: '/api/personalization/delete-events',
+      idempotent: false,
+    });
+    if (res.status === 200) return res.body as DeletePersonalizationEventsResult;
+    throw normalizeHttpError(res.status, serverMessage(res.body));
+  }
+
+  async resetPersonalizationProfile(): Promise<ResetPersonalizationProfileResult> {
+    const res = await this.request({
+      method: 'POST',
+      path: '/api/personalization/reset-profile',
+      idempotent: false,
+    });
+    if (res.status === 200) return res.body as ResetPersonalizationProfileResult;
     throw normalizeHttpError(res.status, serverMessage(res.body));
   }
 
