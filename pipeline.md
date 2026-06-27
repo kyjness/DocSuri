@@ -1,6 +1,6 @@
-# DocSuri 유닛 파이프라인 문서 (U1~U7)
+# DocSuri 유닛 파이프라인 문서 (U1~U10)
 
-> 유닛(U1~U7)별 단락으로 구분한다. 각 단락에 **파이프라인 + 스택 요약**이 들어간다.
+> 유닛(U1~U10)별 단락으로 구분한다. 각 단락에 **파이프라인 + 스택 요약**이 들어간다.
 > 각 단락은 그 유닛의 **대표 경로 1건**(색인 1건 · 검색 1회 · 로그인 1회 · 요약 1회 …)을 끝까지 따라간다.
 > 근거: `backend/modules/<unit>/` · `ingestion/` · `frontend/` · `ops/` 실제 코드 + `shared/` 계약 + `aidlc-docs/`.
 > 본문의 모든 수치(top_k=150·RRF_K=60·top_n=20·캐시 TTL 등)는 **코드 상수 그대로**다 — 추정값이 아니다.
@@ -17,6 +17,9 @@
 | **U5** Frontend | 검색·라이브러리 폰 UI | Next.js BFF | 토큰 브라우저 비노출 |
 | **U6** Reliability | 게이트웨이·근거화·비용 가드 | 엣지 미들웨어 + 운영 워커 | 횡단 관심사 **단일 권위** |
 | **U7** Summarization | 온디맨드 구조화 요약·번역 | 동기 — 캐시 우선 | 불변 캐시 키 · U7 자체 근거화 |
+| **U8** Citation Graph | 상세보기 각주 트리(backward refs) | 동기 — 온디맨드·비-SLA | 외부 provider 캐시 · 코퍼스 밖 노드 |
+| **U9** Personalization | 행동 이벤트 집계·관심 프로파일 | 동기 read-port + 보존 잡 | opt-in · 저하 시 빈 결정 |
+| **U10** My Page | 마이페이지(구독·프로필·설정·관심논문) | 동기 CRUD · 폰 셸 | owner 스코프 · 구독 mock |
 
 ## 유닛 의존성 그래프
 
@@ -31,7 +34,10 @@ graph TD
     U3["U3 Accounts<br/>인증·세션·MFA"]
     U4["U4 Library<br/>저장·이력·재실행"]
     U7["U7 Summarization<br/>요약·번역"]
-    U1["U1 Ingestion<br/>수집·색인 워커"]
+    U1["U1 Ingestion<br/>멀티소스 수집·색인 워커"]
+    U8["U8 Citation Graph<br/>각주 트리(backward refs)"]
+    U9["U9 Personalization<br/>행동 집계·관심 프로파일"]
+    U10["U10 My Page<br/>구독·프로필·설정"]
 
     OS[("OpenSearch<br/>docsuri-corpus-v1")]
     S3[("S3 전문")]
@@ -43,12 +49,21 @@ graph TD
     U6 --> U3
     U6 --> U4
     U6 --> U7
+    U6 --> U8
+    U6 --> U9
+    U6 --> U10
 
     %% 단일 권위 조회 (재구현 금지)
     U2 -.->|"근거화 enforce·비용 read"| U6
     U7 -.->|"비용 read·관측"| U6
     U4 -.->|"소유권 판정(AuthorizationGuard)"| U3
     U6 -.->|"세션 검증"| U3
+    U10 -.->|"프로필·동의 read(U3 계정 데이터)"| U3
+
+    %% 곁다리 유닛 연동
+    U8 -->|"각주 노드 저장(게이트웨이 재진입)"| U4
+    U8 ==>|"references 조회"| SS["Semantic Scholar API"]
+    U8 -.->|"inCorpus 판정(코퍼스 메타 read)"| U2
 
     %% 비동기 이력 + 백도어 금지 재실행
     U2 -->|"SearchExecuted (비동기)"| EB --> U4
@@ -65,72 +80,59 @@ graph TD
 
 # U1 Ingestion
 
-arXiv 수집 · 청킹 · 문서 임베딩 · 색인 (공유 인덱스 단일 **writer**).
+멀티소스 Corpus 수집(arXiv + Semantic Scholar + OpenAlex) · 청킹 · 문서 임베딩 · 색인 (공유 인덱스 단일 **writer**).
+cross-source로 정규 논문 1건을 만들고 doc-model을 **색인 전 eager**로 빌드한다(phase-1 Corpus).
 **비동기 워커**(레이턴시가 아니라 처리량이 목표 — U2의 동기 경로와 정반대). 아래는 논문 1건 색인 경로.
 
 ## 파이프라인
 
 ```
-  [ 트리거 ]  RefreshOrchestrationService
-   · on_schedule_tick (증분, watermark 이후)   · on_new_arxiv_event   · trigger_full_rebuild(락)
-   · (U7 read 미스가 enqueue) BUILD_DOC_MODEL 잡 — lazy doc-model 생성
+  [ 트리거 ]  RefreshOrchestrationService  (enabled_sources = arXiv [+ Semantic Scholar·OpenAlex 설정 시])
+   · on_schedule_tick (소스별 watermark 이후 증분)   · on_new_arxiv_event   · trigger_full_rebuild(락)
+   · arXiv = harvest_seed/fetch_incremental, 외부 소스 = source_record로 enqueue (코퍼스 범위 cs.LG/AI/CL/CV·stat.ML, 2025)
+   · (호환/백필) BUILD_DOC_MODEL 잡 — doc-model 누락·재빌드분만 (메인 경로는 ⑦ eager)
         │  IngestionJob 적재
         ▼
    [ AWS SQS 큐 ]  (rebuild 진행 중이면 증분/이벤트 defer)
         │  worker.py: receive_messages(max 10) → process_message
-        │    └ kind=BUILD_DOC_MODEL → build_doc_model · 그 외 → ingest_one
+        │    └ kind=BUILD_DOC_MODEL → build_doc_model · source_record 있음 → 외부소스 경로 · 그 외 → arXiv 경로
         ▼
 ╔══════════════ IngestionPipelineService.ingest_one (Python 워커) ══════════════╗
 ║  공통 복원력: 의존성마다 retry 5회(지수 backoff+jitter) · circuit(5회 실패 OPEN, 60s) · timeout(기본 30s·설정값) ║
 ║                                                                                ║
 ║  ① record_job_started ───────────────────────────────▶ [ PostgreSQL 컨트롤플레인 ] ║
-║  ② fetch_metadata + fetch_full_text ─────────────────▶ [ arXiv HTTP ]            ║
+║  ② SOURCE FETCH                                                                  ║
+║     · arXiv 경로:  fetch_metadata + fetch_full_text ─▶ [ arXiv HTTP ]            ║
+║     · 외부 소스 경로(source_record): PDF → GROBID 전문 추출 ─▶ [ Semantic Scholar / OpenAlex + GROBID ] ║
 ║  ③ parse (FetchParseProcessor)                                                  ║
-║     · 라이선스 allowlist(CC-BY 계열만) 아니면 거부   · title/authors/abstract/category 검증 ║
+║     · OA 라이선스 allowlist(CC-BY·BY-SA·CC0 + arXiv nonexclusive-distrib ≈ 거의 모든 arXiv) 아니면 거부 ║
 ║     · withdrawal 마커 감지 → tombstone 경로 ─────────▶ [ OpenSearch ] tombstone_paper ║
-║  ④ dedup 평가 (paperId·version·fingerprint) ─────────▶ [ PostgreSQL ]            ║
-║     · DUPLICATE/STALE → short-circuit 종료                                       ║
+║  ④ canonical dedup (cross-source) ───────────────────▶ [ PostgreSQL ]            ║
+║     · canonical_key = title+year+(doi·arxivId)+first_author · 별칭 키 병합        ║
+║     · 소스 우선순위 arXiv<SemanticScholar<OpenAlex: 더 높은 소스가 오면 기존 winner를 tombstone·교체, 낮으면 DUPLICATE ║
 ║  ⑤ begin_upsert (claim) — 단조 가드(낮은 버전 거부)                               ║
 ║  ⑥ put_full_text ────────────────────────────────────▶ [ AWS S3 전문 저장 ]      ║
-║  ⑦ chunk (Chunker: max 2400자 · overlap 240 · ≤128청크/논문 · 섹션=abstract+본문 헤딩) ║
+║  ⑦ build doc-model (EAGER · 색인 전) · native HTML → PDF/text 폴백 ─▶ [ docmodel 빌더·캐시 ] ║
+║     chunk: doc-model 있으면 chunk_doc_model(블록 단위·block_refs 보존) · 없으면 레거시 chunk ║
+║     (Chunker: max 2400자 · overlap 240 · ≤128청크/논문 · 섹션=abstract+본문 헤딩)  ║
 ║  ⑧ embed_documents ──────────────────────────────────▶ [ AWS Bedrock ]          ║
 ║     Cohere Embed Multilingual v3 · input_type=search_document · 1024-d · cosine   ║
 ║  ⑨ assemble IndexRecord (chunkId=결정적 upsert키 · lexicalTerms=제목+초록+청크 · 카드필드) ║
 ║  ⑩ bulk_upsert + delete_stale_chunks(paperId 단위) ──▶ [ OpenSearch docsuri-corpus-v1 ] ║
-║  ⑪ mark_ingested · advance_watermark · record_job_finished                      ║
+║  ⑪ mark_ingested · advance_watermark(소스별) · record_canonical_winner · record_job_finished ║
 ╚══════════════════════════════╪═════════════════════════════════════════════════╝
         │ 성공 → SQS ack                          │ 실패(IngestionError)
         ▼                                         ▼
    다음 메시지                          record_job_finished(success=False) → emit_failure_signal
                                         PERMANENT → [ SQS DLQ ] + ack / RETRIABLE → 미ack(재배달)
 
-  ─────────── 색인 핫패스 밖의 두 갈래 (색인을 절대 막지 않음) ───────────
+  ─────────── 색인 핫패스 밖의 갈래 (색인을 절대 막지 않음) ───────────
    ⑩' (선택) dual-write v2  : embedding_v2+vector_index_v2 주입 시 다른 임베딩 모델로 두 번째 인덱스
                               (모델 마이그레이션/AB) — best-effort, 실패=로그만(1차 색인 무영향)
    ⑪  FR-17 assets         : 그림/표 추출 → S3, 인덱스 커밋 *후* best-effort(BR-27)
-   별도 잡 BUILD_DOC_MODEL  : build_doc_model — 구조화 doc-model 생성·캐시(결정적, native HTML→ar5iv 폴백)
-                              U7 /doc-model 읽기 미스가 enqueue → 여기서 produce (핫패스 비차단, D6/BR-30)
+   BUILD_DOC_MODEL 잡(호환/백필) : doc-model 누락·재빌드분만 lazy 생성·캐시(결정적, native HTML→PDF 폴백)
+                              메인 경로의 ⑦ eager 빌드가 표준 — 이 잡은 누락·백필 보강용(D6/BR-30)
 ```
-
-## 왜 이렇게 생겼나
-
-**1. 처리량 우선이라 재시도를 많이 한다 (U2와 정반대).**
-의존성마다 retry 5회(지수 backoff + jitter) · 서킷(5회 실패 시 OPEN, 60s 후 half-open) · timeout(기본 30s·설정값). 사용자 대면 레이턴시 예산이 없으니 "끈질기게" 처리한다.
-
-**2. 멱등 색인 — 같은 논문을 재처리해도 깨지지 않는다.**
-`chunkId`가 결정적이라 OpenSearch upsert 키로 그대로 쓰이고, dedup 가드(paperId·version·fingerprint)가 DUPLICATE/STALE을 short-circuit한다. 낮은 버전은 단조 가드로 거부 → 오래된 재배달이 최신본을 덮지 못한다.
-
-**3. 단일 writer 불변식 — U2와 같은 공간에 쓴다.**
-`input_type=search_document`(U2 reader의 `search_query`와 비대칭). 부팅 시 `assert_writer_embedding_role()`로 역할을 강제, specVersion·1024·cosine을 U2와 맞춘다(vector-spec).
-
-**4. 라이선스·철회 게이트 — 색인 전에 거른다.**
-오픈액세스 allowlist(CC-BY 계열)만 통과, 철회 마커가 보이면 색인 대신 tombstone으로 인덱스에서 제거.
-
-**5. 실패를 분류해서 처리한다.**
-PERMANENT(포이즌·검증 위반)만 DLQ로 격리하고 ack, RETRIABLE은 미ack로 SQS가 재배달. 조용한 유실이 없다.
-
-**6. 무거운 부가 산출물은 색인 핫패스에서 뺀다.**
-구조화 doc-model은 색인 때 미리 만들지 않고(핫패스 비차단), U7이 처음 읽을 때 미스가 BUILD_DOC_MODEL 잡을 enqueue하면 워커가 **lazy하게** 생성·캐시한다(D6/BR-30, 결정적). FR-17 그림/표 assets는 인덱스 커밋 *후* best-effort로 저장하고, dual-write v2(2차 임베딩 인덱스)도 실패 시 로그만 — 부가물 어느 것도 1차 색인을 막지 못한다(BR-27).
 
 ## 스택 요약
 
@@ -138,12 +140,12 @@ PERMANENT(포이즌·검증 위반)만 DLQ로 격리하고 ack, RETRIABLE은 미
 |---|---|---|
 | **런타임** | Python 워커 (long-running, SIGTERM drain) | 비동기·처리량 목표, 사용자 경로 밖 |
 | **큐** | AWS SQS (+ DLQ) | 외부 인프라 접점 — at-least-once, PERMANENT만 DLQ |
-| **소스** | arXiv HTTP | 외부 인프라 접점 — 증분/이벤트/전체 재빌드 |
-| **컨트롤 플레인** | PostgreSQL | dedup·watermark·job 상태·rebuild 락 (단조 가드) |
+| **소스** | arXiv HTTP · Semantic Scholar · OpenAlex (+ GROBID PDF 추출) | 외부 인프라 접점 — cross-source, 소스별 watermark·우선순위 |
+| **컨트롤 플레인** | PostgreSQL | canonical dedup·소스별 watermark·job 상태·rebuild 락 (단조 가드) |
 | **전문 저장** | AWS S3 | 외부 인프라 접점 — 원문 보관 |
 | **임베딩** | AWS Bedrock — Cohere Embed Multilingual v3 (`search_document`, 1024-d) | 권한 경계 — 단일 writer, U2 reader와 동일 공간 |
 | **색인 스토어** | OpenSearch `docsuri-corpus-v1` (+ 선택 v2 인덱스) | 권한 경계 — 단일 writer(U2=단일 reader), v2는 dual-write best-effort |
-| **doc-model/assets** | docmodel 빌더(native HTML→ar5iv) · S3 그림/표 | 색인 핫패스 밖 — BUILD_DOC_MODEL 잡(lazy)·assets best-effort, U7이 소비 |
+| **doc-model/assets** | docmodel 빌더(native HTML→PDF/text) · S3 그림/표 | ⑦ eager 빌드가 표준(블록 단위 청킹) · BUILD_DOC_MODEL=백필, assets best-effort, U7이 소비 |
 | **복원력** | retry 5회 · circuit(5/60s) · timeout(기본 30s·설정값) | 의존성별 독립, 처리량 자세 |
 
 ---
@@ -253,28 +255,6 @@ PERMANENT(포이즌·검증 위반)만 DLQ로 격리하고 ack, RETRIABLE은 미
      · paper_service 주입됐을 때만 라우트 등록  · 없으면 404
 ```
 
-## 왜 이렇게 생겼나
-
-**1. 파이프라인이 ⑥과 ⑦ 사이에서 두 동강 나 있다.**
-`plan_and_retrieve()` / `finalize()`로 메서드 자체를 갈라서, U2 코드가 **구조적으로 enforce를 못 부르게** 만들었다. 근거화(날조 검증)는 U6의 단독 권한(INV-1). "검색 엔진과 검열관의 분리"다. 그 틈(gateway seam)에서만 U6가 enforce를 끼워넣는다.
-
-**2. 동기 경로라 재시도를 안 한다 — 갈림길 두 개.**
-- 임베딩(Bedrock) 죽으면 → **lexical(BM25)로 폴백** (저하 배너 달고 계속 서비스)
-- OpenSearch 죽으면 → **즉시 503** (k-NN·BM25가 한 스토어라 폴백 없음)
-P50<3s를 지키려고 "기다리며 재시도" 대신 "빨리 포기/우회"를 택했다(U1 워커가 5회 재시도하는 것과 정반대 — 워커=처리량, U2=레이턴시).
-
-**3. 하이브리드 = 코사인 + BM25를 RRF로 섞는다 (점수 스케일 무관, best-chunk 방식).**
-`1/(60+rank+1)`로 **순위만** 더하니까, 0~1짜리 코사인 유사도와 수백짜리 BM25 점수를 직접 더하지 않고 공정하게 합칠 수 있다. 전문을 다(多)청크로 색인하면서 **리스트 안에선 한 논문의 best 청크 기여만(MAX) 쓰고**(약한 본문 청크 다수가 강한 1건을 눌러버리는 길이 편향 차단), 그렇게 고른 k-NN best와 BM25 best를 **리스트 간에 더한다(SUM)**. 그 뒤 `paperId`로 1건(최고점 청크)만 남긴다(디덥). over-fetch(top_k=150)는 다청크 디덥 손실을 메워 top-N을 채우려는 것.
-
-**3b. 무결과와 기권(abstain)은 다른 종단이다.**
-검색 결과가 0건이거나 근거화 pass 후 후보가 전부 걸러지면 **빈 성공 페이지**(`resultCount=0`, 배너 없음)다. `AbstainDTO`는 근거화가 **거부(block/abstain)**했을 때만 — "못 찾음(빈 페이지) ≠ 지어낸 것 같아 거부(기권)"를 클라가 구분하게 한다(BR-9 / U5 B3-a).
-
-**4. 임베딩은 검색당 딱 1회 + 캐시 — 비용/레이턴시의 거의 전부.**
-LLM 질의 재작성·리랭킹을 안 하므로(Q1=A/Q3=A) U2의 유일한 LLM 비용 동인은 질의 임베딩 1회뿐이고, 그마저 정규화 질의 키로 캐싱(TTL 300s)해 중복 질의를 막는다.
-
-**5. 이력은 던지고 잊는다(fire-and-forget).**
-SearchExecuted는 응답 **후** EventBridge로 비동기 발행 → U4 → PostgreSQL. 발행이 실패해도 검색 응답엔 영향 0. 이력 저장이 검색 레이턴시 예산(P50<3s)을 잠식하지 못하게 경계를 그었다.
-
 ## 스택 요약
 
 | 레이어 | 기술 | 메모 |
@@ -328,26 +308,6 @@ SearchExecuted는 응답 **후** EventBridge로 비동기 발행 → U4 → Post
    /auth/admin/*: AuthorizationGuard.authorize_admin(role=ADMIN AND mfa_verified) → 아니면 403
 ```
 
-## 왜 이렇게 생겼나
-
-**1. 세션 토큰은 httpOnly 쿠키로만 — body엔 절대 안 싣는다.**
-로그인 응답은 `{status, message}`뿐이고 토큰은 `Set-Cookie`(httpOnly·secure·samesite=lax). XSS로도 토큰을 못 읽는다(SEC-12).
-
-**2. Argon2는 워커 스레드로 — 이벤트 루프를 안 막는다.**
-Argon2id(m=64MB)는 수십 ms CPU 바운드라 `asyncio.to_thread`로 위임. 실패 backoff도 `time.sleep`이 아니라 `asyncio.sleep` — 동시 로그인 직렬화/스레드 고갈 DoS를 막는다.
-
-**3. 타이밍 공격·계정 부존재를 숨긴다.**
-계정이 없어도 `dummy_hash`로 동일 시간만큼 비교하고, 결과는 강제 False. "이메일이 존재하는지"가 응답 시간으로 새지 않는다.
-
-**4. 자동 계정 잠금을 안 한다.**
-실패가 쌓여도 LOCKED로 자동 전환하지 않는다(타인 계정을 겨냥한 DoS가 되니까). 대신 10회차 CAPTCHA + 지수 backoff(최대 120s)로 방어. LOCKED는 관리자 수동 경로만.
-
-**5. Redis 장애 = fail-closed.**
-세션 저장소가 죽으면 PostgreSQL로 폴백하지 않고 즉시 거부한다. 만료 검증을 우회하느니 막는 쪽.
-
-**6. 권한 상승 차단.**
-ADMIN은 이메일 접두사 같은 사용자 입력으로 절대 안 준다(role은 DB 단일 출처). 관리자 제어평면은 ADMIN 역할 **AND** TOTP MFA 2단계를 통과해야만 접근.
-
 ## 스택 요약
 
 | 레이어 | 기술 | 메모 |
@@ -393,26 +353,6 @@ ADMIN은 이메일 접두사 같은 사용자 입력으로 절대 안 준다(rol
      (현재 StubSearchGateway 자리표시 — 실 게이트웨이 결선은 동일 포트 뒤 교체)
 ```
 
-## 왜 이렇게 생겼나
-
-**1. 모든 쿼리가 owner 스코프 (INV-L1).**
-저장된 검색·라이브러리·이력 전부 `owner_id`로 필터. 소유권 판정은 U3 `AuthorizationGuard`에 위임(재구현 안 함).
-
-**2. 타인 리소스는 403이 아니라 404.**
-cross-owner/부재는 "권한 없음"이 아니라 "없음"으로 일반화(SEC-9) — 리소스 존재 여부조차 안 흘린다.
-
-**3. 재실행은 U2를 직접 안 부른다 (INV-L2).**
-saved-search/history rerun도 게이트웨이로 재진입한다. 그래야 비용 가드와 근거화 enforce가 매 재실행에 다시 적용된다 — 검색 계약을 우회하는 백도어를 막는다.
-
-**4. 검색 응답을 안 막는다.**
-이력 적재는 U2의 동기 응답 경로 밖(EventBridge 비동기). `dedupe_key`로 at-least-once 중복을 흡수한다.
-
-**5. 라이브러리는 메타 스냅샷을 보존한다 (BR-L5).**
-담을 때의 메타를 검증해 저장 → 원논문이 사라지거나 바뀌어도 카드를 렌더할 수 있다(availability isolation). 추가는 (owner, arxivId) 멱등 + 쿼터 1000/owner.
-
-**6. 목록은 keyset 커서.**
-오프셋·총건수 없이 마지막 레코드 기준 커서로 페이지네이션.
-
 ## 스택 요약
 
 | 레이어 | 기술 | 메모 |
@@ -445,7 +385,7 @@ saved-search/history rerun도 게이트웨이로 재진입한다. 그래야 비�
 ┌──────────────────────────────────────────────────────────────────────────────────────┐
 │  ApiClient.search()   [ lib/api/apiClient.ts ]   — 백엔드 단일 진입점                    │
 │   POST /api/search { query } · idempotent=true                                          │
-│   정책: timeout=8000ms · 5xx 재시도 2회(backoff 200ms×i) · in-flight dedup(키 단위)       │
+│   정책: timeout=8000ms · idempotent만 1회 재시도(최대 2회 시도·5xx/네트워크·backoff 200ms×i) · in-flight dedup(키 단위) │
 │   200/400 → classify · 그 외 → normalizeHttpError(UserFacingError)                       │
 └─────────────────────────┼──────────────────────────────────────────────────────────────┘
                           ▼  Transport.send()  (팩토리가 빌드 플래그로 선택)
@@ -493,24 +433,16 @@ saved-search/history rerun도 게이트웨이로 재진입한다. 그래야 비�
      ├ 본문 라우트 /paper/[id]/doc-model  useDocModel/useAssets → [U7] GET .../doc-model · /assets
      │      기본 OFF→license_unavailable · 미스→building(폴링) · DocModelViewer 렌더  ← 옛 full-text 대체
      └ 전문 번역 /paper/[id]/translate (FullTranslationIsland) · 개인 용어집 GlossaryTermBadge → GET/POST /api/glossary
+     └ 각주 트리(U8) CitationTreePanel → ApiClient.getCitationTree → [U8] GET /api/papers/{id}/citation-tree (노드 저장=POST .../save → U4)
+
+  ─────────── 곁다리: 폰 셸 + 마이페이지 (BottomNav 2탭 — 검색 / 마이페이지) ───────────
+   app/mypage/* (MyPageScreen) · RouteGuard 보호 · 같은 BFF 골격 재사용
+     ├ /mypage                구독·프로필·설정 허브 (MyPageScreen)
+     ├ /mypage/subscription   MyPageSubscriptionScreen → [U10] GET/POST /mypage/subscription(+/cancel)
+     ├ /mypage/settings       MyPageSettingsScreen → [U10] GET/POST /mypage/consents · [U9] PATCH /api/personalization/settings(개인화 on/off·데이터 삭제)
+     ├ /mypage/library        관심 논문(U4 라이브러리 재사용) — MyPageLibraryScreen
+     └ /mypage/library/recent 최근 본 논문(U9) → [U9] GET /mypage/recently-viewed
 ```
-
-## 왜 이렇게 생겼나
-
-**1. 토큰은 브라우저 JS에 절대 안 들어온다 — BFF가 방화벽.**
-클라이언트(`RouteHandlerTransport`)는 항상 동일 출처 `/bff/*`로만 보낸다. 게이트웨이 URL과 httpOnly 세션 쿠키는 **Next 서버(BFF)에서만** 보이고(`httpTransport.ts`는 `import 'server-only'`로 클라 번들 유입 시 빌드 에러), BFF가 서버↔게이트웨이 구간에서만 쿠키를 전달한다(SEC-3/12).
-
-**2. mock ↔ real 교체가 컴포넌트를 안 건드린다.**
-화면·`ApiClient`는 그대로 두고 **Transport만** 바꾼다. 빌드 플래그(`NEXT_PUBLIC_DOCSURI_REAL_API`)로 mock/real, BFF 안에선 `DOCSURI_GATEWAY_URL` 유무로 실게이트웨이/mock. 인프라 없이도 프리뷰가 돈다.
-
-**3. 응답 union을 "구조"로 가른다 — 판별 필드가 없으니까.**
-`SearchResponse`엔 discriminant가 없어서 `classify.ts`가 키 모양으로 분기한다(`{reason}`→abstain, `{cards,meta,mode}`→degraded, `{cards,meta}`→page/empty, `{message}`→invalid). DTO가 `additionalProperties:false`라 모양이 안 겹친다.
-
-**4. 검색은 한 번에 한 요청 — in-flight 락 + dedup 이중.**
-`SearchScreen`이 `useRef`로 제출을 잠그고, `ApiClient`가 idempotent 요청을 키 단위로 dedup한다. timeout 8s, 5xx만 2회 재시도(멱등 한정) — 사용자 대면이라 무한 로딩을 막는다.
-
-**5. 실패는 fail-closed로 일반화한다.**
-HTTP 상태 → `UserFacingError`(auth/forbidden/rateLimited/server/network)로 정규화, 비기술 메시지만 노출(SEC-15). 401만 특별 취급 → 재로그인 라우팅.
 
 ## 스택 요약
 
@@ -519,12 +451,14 @@ HTTP 상태 → `UserFacingError`(auth/forbidden/rateLimited/server/network)로 
 | **프레임워크** | Next.js (App Router) · React · TypeScript | 폰 목업 UI(PhoneMockupFrame), 모바일 우선 |
 | **화면/상태** | SearchScreen 클라이언트 상태기계 + in-flight 락(useRef) | idle / loading / outcome / error |
 | **클라 검증** | validateQuery — NFC · trim · ≤500자 | UX 보조 — 권위는 백엔드(U2/U6) |
-| **API 클라이언트** | ApiClient (백엔드 단일 진입점) | timeout 8s · 5xx 재시도 2회 · in-flight dedup |
+| **API 클라이언트** | ApiClient (백엔드 단일 진입점) | timeout 8s · idempotent만 1회 재시도(5xx/네트워크) · in-flight dedup |
 | **Transport** | MockTransport / RouteHandlerTransport / HttpTransport | mock↔real = 설정 스위치, 컴포넌트 불변 |
 | **BFF** | Next route handler `/bff/[...path]` (서버) | 권한 경계 — 게이트웨이 URL·세션 쿠키 서버 전용(SEC-3/12) |
 | **응답 분류** | classifySearchResponse | 구조 기반 union 판별 → SearchOutcome 5종 |
 | **U7 상세/요약 슬라이스** | /paper/[id](+/doc-model·/translate) · PaperDetailIsland · usePaperMeta/useSummarize/useDocModel/useAssets/useGlossaryTerms | 같은 BFF 골격 재사용 — 상세메타=U2, 요약/번역/doc-model/assets=U7 |
 | **summarize 분류** | classifySummarizeResponse | **status 판별자** 기반(검색=구조 기반과 대비) |
+| **폰 셸 + 마이페이지** | BottomNav(검색/마이페이지) · app/mypage/* · MyPageScreen 외 | U10 구독·설정·동의 + U4 라이브러리 재사용 + U9 최근 본 논문 |
+| **곁다리 슬라이스** | CitationTreePanel(U8) · lib/personalization.ts(U9) | 각주 트리=U8·행동 이벤트/최근 본=U9 — 같은 ApiClient/BFF 경유 |
 | **에러** | UserFacingError | 401→재로그인, fail-closed 비기술 메시지(SEC-15) |
 
 ---
@@ -570,26 +504,6 @@ HTTP 상태 → `UserFacingError`(auth/forbidden/rateLimited/server/network)로 
      [ 텔레메트리 소스(SQS) ] ──▶ AiIncidentDetectorSuite.evaluate ──▶ IncidentEventPublisher
         · 인시던트 후보 발행 성공해야 ack (at-least-once) · 실패 → 미ack 재배달
 ```
-
-## 왜 이렇게 생겼나
-
-**1. 횡단 관심사를 한 곳에 모았다 (단일 권위).**
-authn·authz, rate-limit, 근거화 enforce, 비용 가드를 전부 U6가 소유한다. U2/U3/U4는 호출하거나 조회만 하고 재구현하지 않는다 — 정책이 한 군데서만 바뀐다.
-
-**2. 근거화는 응답 엣지에서 단 한 번.**
-U2가 만든 candidate의 참조(arxivId/paperId/arxivUrl)가 retrieved 레코드에 실재하는지 검증 → 날조면 block, 전부 실재면 pass, 후보/레코드가 없으면 abstain. 식별자는 URL·버전(vN)을 벗겨 정규화해 비교한다. (현재 호출 위치는 discovery 라우터의 seam — 게이트웨이 post-handler 대역 — 이고, hook은 app-shell이 주입하는 진짜 ops 단일 권위다.)
-
-**3. 비용은 비율로 단계적으로 죈다.**
-cap $1600 대비 spend 비율로 `NORMAL → RERANK_OFF(0.80) → LEXICAL_ONLY(0.95) → OPEN(1.0)`. `record_spend`는 `event_id` 멱등이라 같은 사용 이벤트가 두 번 와도 중복 합산이 없다. U2는 이 `degrade_mode`를 **읽기만** 한다.
-
-**4. rate-limit 키를 위조 못 하게 한다.**
-`X-Forwarded-For`의 왼쪽 값은 클라가 조작 가능 → 무시. 우리 프록시가 찍은 오른쪽에서 `trusted_proxy_count`번째 hop만 신뢰하고, 유효 IP가 아니면 버킷을 안 만든다.
-
-**5. 전역 fail-closed.**
-미처리 예외는 스택·내부 식별자 없이 일반화 500으로, 모든 응답에 보안 헤더와 `X-Request-ID`(상관용)를 붙인다.
-
-**6. 인시던트는 at-least-once.**
-운영 워커는 인시던트 후보를 발행에 성공해야 소스를 ack한다. 발행 실패 시 미ack로 재배달 → 조용한 유실이 없다.
 
 ## 스택 요약
 
@@ -678,38 +592,6 @@ LLM을 부르는 유일한 사용자 경로라 비용이 핵심 — 그래서 �
      (※ 이전 단일 .../full-text 는 doc-model + assets 두 갈래로 대체됨)
 ```
 
-## 왜 이렇게 생겼나
-
-**1. 캐시 키가 곧 "동일성"의 전부 — 같은 키 = 영구히 같은 산출물.**
-키는 10차원(paper·version·task·lang·scope·persona·glossaryVer·[ownerId]·modelVer·promptVer)이고 **불변**이다(INV-5). 그래서 캐시 HIT이면 LLM을 **0회** 부르고 즉시 반환한다. scope는 summary면 `FULL` 고정, persona는 translate면 `EXPERT`로 핀(BR-S10 — persona-agnostic 작업에 중복 캐시 방지). 개인화 산출물(`glossaryVer>0`)은 `ownerId`까지 키에 넣는다 — `glossaryVer`는 사용자별 카운터라 서로 다른 사용자가 같은 ver를 가질 수 있어, owner 스코프가 없으면 남의 개인 번역이 서빙될 수 있어서다. 베이스라인(ver0, 개인 용어 없음)은 owner-agnostic이라 사용자끼리 **공유**. `promptVer`/`modelVer`를 올리면 파생 객체가 전부 자동 무효화된다.
-
-**2. 비용 게이트가 LLM 지출 "직전"에 선다 (U6 단일 권위, 읽기만).**
-`degrade_mode`가 normal이 아니거나 서킷이 OPEN이면 — 소스를 읽기도 전에 — `CostDegradedDTO`("AI 요약 일시 중단")로 끊는다(BR-S13). 비용 판정은 U6가 소유하고 U7은 **읽기만** 한다(U2와 동일 규약). 캐시 HIT은 이 게이트보다 앞이라, 비용이 묶여 있어도 이미 만든 요약은 계속 나간다.
-
-**3. 근거화는 U7이 직접 소유한다 — U6의 enforce와 다른 종류의 검사다. (Option D: soft anchor)**
-U6 enforce는 "검색 후보의 식별자 ⊆ 검색된 레코드 집합"(SET 멤버십)을 본다. U7은 "요약문 ⊆ 한 논문의 원문"(문서 충실도)을 본다 — 그래서 "근거화 단일 권위 = U6"는 *검색 근거화에 한정*으로 읽고, 요약 근거화는 U7이 가진다(Q4). **전부 결정적**(LLM-judge 없음, Q15)이되 검사마다 강도가 다르다: **anchor 존재는 SOFT** — 원문에 verbatim으로 없는 anchor(표 재렌더·패러프레이즈·LaTeX↔유니코드 수식)는 abstain이 아니라 **drop**하고 통과한 것만 `kept_anchors`로 남긴다. **수치 일치·스키마·잘림은 HARD** — hard 위반이면 1회 retry 후 fail-closed abstain(`insufficient_grounding`, INV-4). 검증 못 한 포인터를 떨궈도 수치가 hard라 날조는 안 새고, 멀쩡한 요약을 통째로 버리지 않는다. 단 이 게이트는 **요약 경로 전용**이다 — 번역은 "한 필드라도 실제 번역됐는가"만 보고, 아니면 retry 후 `AbstainDTO("empty_translation")`.
-
-**4. 저하/대기를 종류별로 구분해 각각 다른 종단을 준다.**
-비용(`CostDegradedDTO`) · 대기(긴 입력 → 백그라운드 잡 → `PendingDTO(retryAfterMs)`, 클라가 폴링) · 장애(LLM 2회 실패 → `AbstainDTO`) · 입력 초과(`input_too_long`) · 소스 없음(`SourceUnavailableDTO`)을 섞지 않는다(nfr §1.3). 클라가 "잠깐 막힘 / 처리 중 / 못 만듦 / 너무 김 / 원문 없음"을 구분해 다르게 안내할 수 있다.
-
-**5. 정제는 보수적이다 — 결과 수치를 지우지 않으려고.**
-references·페이지번호·copyright·소속처럼 **명백한** 잡음만 제거하고, Table/Figure 캡션·수식·Appendix는 보존한다(Q2). 초록엔 잘 안 나오는 결과 수치·재현성이 본문/표에 있어서다. 과다 제거가 곧 근거화 실패로 이어지니 "덜 지우는" 쪽으로 기울였다.
-
-**6. buffer-validate-then-render — 검증 끝난 결과만 노출한다.**
-스트리밍처럼 보여도 도메인은 토큰 스트림을 내부에서 받아 **완성 JSON으로 버퍼링**한 뒤 검증한다(BR-S8). 토큰을 흘려보내며 렌더하면 근거화 미통과 문장이 새어 나갈 수 있어서(FR-5), 점진적 렌더는 이미 검증된 필드를 클라가 단계적으로 그리는 **표현 계층**의 일이다.
-
-**9. 긴 논문은 동기 응답을 막지 않는다 — map-reduce + 비동기 잡.**
-40K~120K 토큰(MAP_REDUCE 밴드)은 게이트(`DOCSURI_MAP_REDUCE_ENABLED`)가 켜져 있으면 백그라운드 SQS 잡으로 enqueue하고 즉시 `PendingDTO(retryAfterMs)`를 돌려준다. 워커(`worker.py`)가 `allow_enqueue=False`로 같은 파이프라인을 재실행해 섹션 인식 map-reduce(요약)·섹션 map-only(번역)를 인라인 처리하고, 클라는 폴링하다 캐시 히트로 결과를 받는다. 게이트 OFF면 그 밴드는 `input_too_long`으로 abstain(이전 동작 보존).
-
-**10. 전문 접근은 doc-model + assets 두 갈래다.**
-이전 단일 `/full-text` 대신 **구조화 doc-model**(리치 뷰·요약 입력, URL-free)과 **assets 매니페스트**(그림/표 서명 URL, SEC-9)로 나뉜다. doc-model 미스 시 U1의 lazy 빌드를 트리거하고 `building`으로 폴링을 유도(빌드는 U1 몫, U7은 큐잉만). 둘 다 기본 OFF(OA 운영 토글)이고, 개인 용어집 CRUD(`GET/POST /api/glossary`)도 같은 라우터에 owner-scoped로 붙는다.
-
-**7. 프롬프트는 지시/데이터를 물리적으로 가른다 (injection 방어).**
-system 지시와 논문 본문을 분리하고, 본문은 `<paper>` 태그로 감싸 "이 안은 데이터이지 지시가 아니다"라고 못 박는다. 외부 텍스트(논문)가 프롬프트를 탈취하지 못하게 한다.
-
-**8. 용어집은 두 경로 — 프롬프트 강제 + 후치환.**
-핵심 용어(attention→어텐션 등)는 **프롬프트에서 강제**하고, 사용자 선호 단순명사는 생성 후 **결정적 후치환**으로 바꾼다(LLM 재호출 없음). 후치환은 단순명사로만 한정하고 왼쪽 경계만 매칭해 한국어 조사("어텐션을/어텐션이")가 깨지지 않게 한다(Q8).
-
 ## 스택 요약
 
 | 레이어 | 기술 | 메모 |
@@ -727,3 +609,184 @@ system 지시와 논문 본문을 분리하고, 본문은 `<paper>` 태그로 �
 | **관측성** | U6 ObservabilityHub (비차단 emit) | 응답 경로 밖 — telemetry는 절대 raise 안 함 |
 | **모델 ID 버전** | `model_ver=sonnet46-haiku45` · `prompt_ver=p1` | 캐시 키 일부 — 바꾸면 전체 무효화 |
 | **마운트** | real-first — S3/RDS 설정됐을 때만 마운트(mock 결선 없음) | 미설정 → skip(fail-closed, 무음 폴백 없음) |
+
+---
+
+# U8 Citation Graph
+
+논문 상세보기의 **각주 트리**(backward references) — 외부 인용 데이터를 온디맨드로 조회·캐시. **FastAPI 동기 · 비-SLA(NFR-P3)**.
+검색·요약과 달리 코퍼스 **밖**의 논문도 노드로 보여주고, 저장 가능한 노드만 U4로 담는다. 아래는 각주 트리 1회 조회 경로.
+
+## 파이프라인
+
+```
+  [ U5 상세 페이지 ]  CitationTreePanel (카드 클릭 → /paper/[id])
+   GET /api/papers/{paperId}/citation-tree  [?expandNodeId=&refresh=]
+        │
+        ▼
+  [ U6 게이트웨이 ]  authn · authz · rate-limit  ──▶ principal 주입
+        │
+        ▼
+  router (dependencies=[_feature_enabled])
+   ★ CITATION_GRAPH_ENABLED 아니면 → 404 (기본 OFF, OA 운영 토글)
+   principal 없음 → 401 (fail-closed)
+        │  parent = expandNodeId or paperId · depth = 2(expand) / 1(root) · key=f"{paperId}:{parent}"
+        ▼
+╔════════════════ get_citation_tree (Python · 동기) ════════════════╗
+║  ⓪ SNAPSHOT LOOKUP (refresh=false일 때)                            ║
+║     ★ HIT(cacheHit=true) 즉시 반환 ─▶ [ Redis citation_graph:v1: TTL 7d ] (미설정=프로세스 InMemory) ║
+║        │ miss                                                      ║
+║  ① PROVIDER FETCH  ──────────────────────────────────────────────▶ [ Semantic Scholar references API ] ║
+║     · timeout 2s · retries 1 · limit = maxVisible(50)+1            ║
+║     ★ 429 → RateLimited · 오류/타임아웃 → Unavailable (빈 노드, 캐시 안 함) ║
+║        │ ok                                                        ║
+║  ② BUILD TREE (_build_tree)                                       ║
+║     · 정렬: citationCount desc → year desc → title                 ║
+║     · node = ArXiv|DOI|paperId|url 식별자 + title 있어야 성립        ║
+║     · 식별자/제목 없음 → unresolved 리스트로 분리 (status=Partial)   ║
+║     · 가시 노드 ≤ 50(CITATION_GRAPH_MAX_VISIBLE_NODES) · 초과분 → truncated·remainingEstimate ║
+║     · inCorpus = U2 paper_service.get_paper_meta(arxivId) 존재?      ║
+║     · saveable = arxivId 있고 아직 안 보인 노드                      ║
+║  ③ store.set(key) ───────────────────────────────────────────────▶ [ 스냅샷 캐시 ] ║
+║  ④ emit_log citation_graph.lookup ──────────────────────────────▶ [ U6 ObservabilityHub ] ║
+╚═══════════════════════════════╪═══════════════════════════════════╝
+                                ▼
+   CitationTreeResponse (Success/Partial/RateLimited/Unavailable) ──▶ HTTP 200
+   { nodes·edges·unresolved·depthReturned·truncated·remainingEstimate·cacheHit·providerStatus }
+
+  ─────────── 노드 저장 (각주 → 라이브러리) ───────────
+   POST /api/papers/{paperId}/citation-tree/save  { node }
+     · node.saveable && arxivId 아니면 → 422
+     · LibraryService.add(principal, LibraryItemCreateDTO{arXivId, meta 스냅샷}) ──▶ [ U4 Library ]
+       (U4 자체 멱등·쿼터·소유권 가드 그대로 재사용 — 백도어 없음)
+```
+
+## 스택 요약
+
+| 레이어 | 기술 | 메모 |
+|---|---|---|
+| **API** | FastAPI · GET citation-tree · POST .../save | 비-SLA(NFR-P3) · 기능 게이트 `CITATION_GRAPH_ENABLED`(기본 OFF→404) |
+| **provider** | Semantic Scholar references API (httpx) | 외부 인프라 접점 — timeout 2s·retries 1, 429=RateLimited·오류=Unavailable |
+| **캐시** | Redis `citation_graph:v1:` TTL 7d (미설정 시 프로세스 InMemory) | 스냅샷 키=`paperId:parent`, refresh=true로 우회 |
+| **그래프 규칙** | depth ≤ 2 · 가시 노드 ≤ 50 · citationCount→year→title 정렬 | unresolved 분리(Partial) · truncated/remainingEstimate |
+| **코퍼스 연동** | U2 paper_service.get_paper_meta (inCorpus 판정) | 권한 경계 — 코퍼스 read만, 실패해도 표시 안 깨짐 |
+| **저장** | U4 LibraryService.add (게이트웨이 재진입 계약) | 권한 경계 — saveable+arxivId만, U4 멱등·쿼터·소유권 재사용 |
+| **인증** | request.state.principal (U6 주입) | fail-closed 401 |
+| **관측성** | U6 ObservabilityHub.emit_log (citation_graph.lookup) | cacheHit·providerStatus·nodeCount·latency |
+
+---
+
+# U9 Personalization
+
+행동 이벤트 수집 · 관심 프로파일 집계 · 개인화 결정 read-port. **FastAPI 동기 + 보존 잡(배치)**. **opt-in**.
+검색/요약을 직접 바꾸지 않고 **결정만 제공**하는 read-port다(현재 U2/U7 소비는 미결선 — 포트만 준비). 아래는 이벤트 적재 + 결정 조회 경로.
+
+## 파이프라인
+
+```
+  [ U5 / 백엔드 신호 ]  행동 이벤트 (검색·논문열람·라이브러리·요약/번역·앵커클릭·용어집)
+   POST /api/personalization/events  { eventType, subject, metadata, source }
+        │
+        ▼
+  [ U6 게이트웨이 ]  authn · authz · rate-limit  ──▶ principal 주입
+        │
+        ▼
+  router (dependencies=[_feature_enabled])
+   ★ PERSONALIZATION_ENABLED 아니면 → 404 (기본 OFF)
+   principal 없음 → 401 (fail-closed)
+        │  ValidatedBehaviorEventCreate 검증(이벤트별 metadata 화이트리스트) 실패 → 422
+        ▼
+╔════════════════ BehaviorEventRecorder.record (동기) ════════════════╗
+║  · settings.enabled=false → {recorded:false, reason:"disabled"} (no-op) ║
+║  · insert_event (eventId 멱등) — 중복 → {recorded:false, duplicate:true} ║
+║  · 예외 → emit_metric(record_failure) · {reason:"degraded"} (절대 raise 안 함) ║
+║                                            ──▶ [ PostgreSQL personalization (RDS) ] ║
+╚═════════════════════════════════════════════════════════════════════╝
+
+  ─────────── 결정 조회 (read-port — U2/U7가 소비 예정) ───────────
+   GET /api/personalization/decision/search          → searchBoosts(categoryWeights)
+   GET /api/personalization/decision/summary-defaults → summaryDefaults·translationDefaults
+        ▼
+╔════════════════ PersonalizationReadPort._decision ════════════════╗
+║  · settings.enabled=false → PersonalizationDecision(enabled=false, "disabled") ║
+║  · get_profile 캐시 미스 → list_events(profileResetAt 이후) → ProfileAggregator.aggregate ║
+║     가중치: library_added 3.0 · summary/translate 2.0 · paper_opened 1.0 · search 0.5 · keyword 0.25 ║
+║     library_removed → 해당 paperSignal 제거 · 모두 max 정규화 [0,1]   ║
+║  · 프로파일 없음 → enabled=false("no_profile") · 있으면 save_profile 후 결정 반환 ║
+║  · 예외 → emit_metric(degraded_decision) · enabled=false("degraded") (fail-open=빈 개인화) ║
+╚═══════════════════════════════════════════════════════════════════╝
+
+  ─────────── 설정·프라이버시 (opt-in 제어) ───────────
+   GET/PATCH /api/personalization/settings   개인화 on/off (enabled)
+   POST /api/personalization/delete-events    원시 이벤트 전체 삭제 → {deletedEvents}
+   POST /api/personalization/reset-profile    집계 프로파일 리셋(profileResetAt)
+   GET  /mypage/recently-viewed               최근 본 논문 목록 (U10 마이페이지가 소비)
+
+  ─────────── 보존 잡 (배치 · 응답 경로 밖) ───────────
+   maintenance.run()  cutoff = now − RETENTION_DAYS(기본 90d) → purge_events_before
+     성공 emit_metric(retention_purge_success) · 실패 → rollback + emit_metric(failure) + raise
+```
+
+## 스택 요약
+
+| 레이어 | 기술 | 메모 |
+|---|---|---|
+| **API** | FastAPI · /api/personalization/* · /mypage/recently-viewed | 기능 게이트 `PERSONALIZATION_ENABLED`(기본 OFF→404) · opt-in |
+| **저장소** | PostgreSQL (SqlPersonalizationRepository) — events·profile·settings | eventId 멱등 적재, 프로파일 캐시 |
+| **집계** | ProfileAggregator (인메모리 가중치 합산 → max 정규화) | library 3.0·요약 2.0·열람 1.0·검색 0.5, [0,1] 바운드 |
+| **결정 read-port** | search_decision / summary_defaults (PersonalizationDecision) | 권한 경계 — 결정만 제공, **U2/U7 소비는 미결선**(포트 준비) |
+| **프라이버시** | settings.enabled 게이트 · delete-events · reset-profile | opt-in, 원시 이벤트 삭제·프로파일 리셋 |
+| **보존 잡** | maintenance.run (배치) — RETENTION_DAYS 기본 90d | 응답 경로 밖, 실패 시 raise(조용한 유실 없음) |
+| **복원력** | record/decision 예외 → degraded (emit_metric, 절대 raise 안 함) | fail-open = 빈 개인화(개인화는 부가 기능) |
+| **관측성** | U6 ObservabilityHub.emit_metric (비차단) | record_failure·degraded_decision·purge 신호 |
+
+---
+
+# U10 My Page
+
+마이페이지 — 구독 · 계정 프로필/동의 · 설정. **FastAPI 동기 CRUD + 폰 셸(BottomNav 진입)**.
+구독은 **mock**(실 PG/빌링 없음), 프로필·동의는 **U3 계정 데이터 read**다. 마이페이지 화면은 U4 라이브러리·U9 최근 본 논문도 함께 끌어모은다(FE 합성). 아래는 구독·프로필 경로.
+
+## 파이프라인
+
+```
+  [ U5 폰 셸 ]  BottomNav "마이페이지" → app/mypage/* (MyPageScreen)
+        │  GET/POST /mypage/subscription(+/cancel) · GET/POST /mypage/account-profile·/consents
+        ▼
+  [ U6 게이트웨이 ]  authn · authz · rate-limit  ──▶ request.state.principal 주입
+        │  principal 없음 → 401 (fail-closed)
+        ▼
+╔══════════════ ⓐ 구독 (SubscriptionService · mock) ══════════════╗
+║  GET    /mypage/subscription        get → SubscriptionDTO(plan·status·기간)  ║
+║  POST   /mypage/subscription        subscribe → PREMIUM·ACTIVE (이미 ACTIVE면 멱등 no-op) ║
+║         · current_period_end = now + BILLING_PERIOD(30d)                       ║
+║  POST   /mypage/subscription/cancel cancel → CANCELED (기간 종료일까지 혜택 유지) ║
+║         · ACTIVE 아니면 멱등 no-op                                              ║
+║                                     ──▶ [ InMemory(기본) / PostgreSQL(SQL 어댑터) ] ║
+╚═════════════════════════════════════════════════════════════════╝
+
+╔══════════════ ⓑ 계정 프로필·동의 (AccountService · REAL U3 데이터) ══════════════╗
+║  GET  /mypage/account-profile   get_profile → { loginProvider, createdAt }    ║
+║  GET  /mypage/consents          get_consents → { privacy·terms·nightlyPush }  ║
+║  POST /mypage/consents          set_nightly_push(agreed) → ConsentsDTO         ║
+║     · 계정 없음 → None → 404 (fail-closed)                                      ║
+║     · AccountRepository = 프로덕션은 U3 CredentialRepository 래핑 ──▶ [ U3 계정(PostgreSQL) ] ║
+╚════════════════════════════════════════════════════════════════════════════════╝
+
+  ─────────── 마이페이지 화면이 합성하는 다른 유닛 (FE 조립) ───────────
+   /mypage/library         관심 논문 = U4 LibraryService 재사용 (별도 백엔드 없음)
+   /mypage/library/recent  최근 본 논문 = U9 GET /mypage/recently-viewed
+   /mypage/settings        동의(U10) + 개인화 on/off·데이터 삭제(U9)
+```
+
+## 스택 요약
+
+| 레이어 | 기술 | 메모 |
+|---|---|---|
+| **API** | FastAPI · /mypage/subscription · /mypage/account-profile·/consents | 동기 CRUD, 2 라우터 (U4 library wiring 패턴) |
+| **구독** | SubscriptionService (mock — 실 PG/빌링 없음) | subscribe/cancel 멱등 · 해지=기간말까지 혜택 유지(BILLING_PERIOD 30d) |
+| **저장소** | InMemory(mock-first 기본) / PostgreSQL(SQL 어댑터) | 포트 분리(U4 패턴), owner_id 필수 인자(타인 행 구조적 차단) |
+| **계정 데이터** | AccountRepository → U3 CredentialRepository 래핑 | 권한 경계 — 프로필·동의 read/write, U3 단일 출처 |
+| **인증** | request.state.principal (U6 주입) | fail-closed 401 · 계정 부재 404 |
+| **FE 합성** | 마이페이지 화면이 U4 라이브러리·U9 최근 본 논문 흡수 | 백엔드 경계는 유지, 조립만 U5(U10 셸) |
+| **마운트** | mock-first — 인프라 없이 마운트, 앱셸이 SQL로 override | 데모/프리뷰 무인프라 동작 |
