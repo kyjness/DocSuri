@@ -4,16 +4,17 @@
   gap: 0.625rem;
 }
 
-.cached {
-  align-self: flex-start;
-  padding: 0.125rem 0.5rem;
-  font-size: 0.75rem;
-  color: var(--color-accent);
-  background: var(--color-accent-soft-bg);
-  border-radius: 999px;
+/* Paper title atop the 전문 번역 view (mirrors the 전문 view), separated from what follows. */
+.paperTitle {
+  margin: 0 0 1.25rem;
+  font-size: 1.375rem;
+  font-weight: 700;
+  line-height: 1.4;
+  color: var(--color-text);
+  word-break: break-word;
 }
 
-/* Personal-glossary section (본문 번역 only) — titled like the body lists, with a gap
+/* Personal-glossary section (전문 번역 only) — titled like the body lists, with a gap
    before the translated text below. */
 .glossary {
   position: relative; /* containing block for a badge's editor popover (full-width, no overflow) */

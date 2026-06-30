@@ -254,3 +254,67 @@ PartialResultDetector ─┘            ▲
         전 유닛 ─sync/event─▶ ObservabilityHub ─event▶ (탐지기 공급) / ─sync▶ OpsDashboardService
 ReliabilityEvalProbe.runReliabilityEvalSet (QT-3) ──▶ HealthMonitoringService 보고
 ```
+
+---
+
+## 7. U11 — Evidence Formation Agent 의존성 (재인셉션 Phase 4)
+
+| from | to | kind | purpose |
+|---|---|---|---|
+| EvidenceChatController | EvidenceChatService | lib | 채팅 턴 오케스트레이션 위임(FR-36, NFR-P6). |
+| EvidenceChatController | EvidenceSessionManagementService | lib | 세션 CRUD 오케스트레이션 위임(FR-38). |
+| U6.ApiGatewayMiddleware | EvidenceChatController | sync | 게이트웨이 전처리(authn/authz·검증·rate-limit·비용·관측성) 통과 후 진입(DQ5). |
+| EvidenceChatService | EvidenceAgentOrchestrator | lib | Agent 실행·스트리밍 응답 위임. |
+| EvidenceChatService | EvidenceSessionRepository | lib | 세션 load/create/appendTurn(FR-38). |
+| EvidenceSessionManagementService | U3.AuthorizationGuard | lib | **SEC-8 소유권 결정 위임 — 단일 권위 결정점.** |
+| EvidenceSessionManagementService | EvidenceSessionRepository | lib | 세션 delete/reset owner-scoped(FR-38). |
+| EvidenceAgentOrchestrator | EvidencePaperSearchTool | lib | 논문 검색 도구 호출(자율 오케스트레이션, FR-37). |
+| EvidenceAgentOrchestrator | EvidenceDocModelTool | lib | DocModel 블록 읽기 도구 호출(FR-37, FR-18). |
+| EvidenceAgentOrchestrator | EvidenceExtractor | lib | DocModel 블록 → EvidenceItem 추출(C-2, FR-5). |
+| EvidenceAgentOrchestrator | EvidenceComparisonAssembler | lib | EvidenceItem → 비교표+쟁점 오버레이 조립(Q2=A). |
+| EvidenceAgentOrchestrator | AttachmentDocModelAdapter | lib | 첨부 문서 일시 처리(Q6=A, FR-18). |
+| EvidenceAgentOrchestrator | LLM Gateway (shared capability) | sync | Agent 추론·추출·의사결정 LLM 호출(타임아웃·서킷 RES-9). |
+| EvidencePaperSearchTool | OpenSearch / Vector Store (shared capability) | sync | 공유 코퍼스 인덱스 검색(auto/mixed scope; IndexRecord 반환). |
+| EvidenceDocModelTool | Object Storage (shared capability) | sync | DocModel JSON·블록 읽기(S3 read, paperId+recordRef 기반). |
+| AttachmentDocModelAdapter | Object Storage (shared capability) | sync | 첨부 파일 일시 처리·DocModel 추출(원시 파일 미저장). |
+| EvidenceFormationService | EvidenceAgentOrchestrator | lib | EvidenceFormationPort.form_evidence → Agent 라우팅(D5 구현). |
+| EvidenceFormationService | Job Queue (shared capability) | event | 긴 분석 비동기 잡 발행(NFR-P6, Q9=A). |
+| U11.EvidenceFormationService | shared/ports.EvidenceFormationPort | lib | **D5 계약 구현 — U12 연구아이디어 Agent(미래)가 추상에만 의존해 소비(순환 차단).** |
+| U11 | U6.ObservabilityHub | event | 채팅 턴 지연·에러·스트리밍 건강도 메트릭 제출(NFR-O1). |
+
+### (D) 근거형성 Agent 경로 (동기 스트리밍 + 비동기 잡 옵션)
+```
+[Phone/Browser]
+   │ sync REST (SSE)
+   ▼
+U5.ApiClient ──sync──▶ U6.ApiGatewayMiddleware ──(전처리: 헤더→검증→authN/Z→rate-limit→cost-state)
+                                  │ sync 위임
+                                  ▼
+                    U11.EvidenceChatController
+                                  │ lib
+                                  ▼
+                    EvidenceChatService
+                          │ lib
+                          ▼
+                EvidenceAgentOrchestrator.run(request, ctx)
+                    │ lib (자율 순서로 반복 호출)
+                    ├──▶ EvidencePaperSearchTool ─sync▶ [Vector Store]
+                    ├──▶ EvidenceDocModelTool ─sync▶ [Object Storage]
+                    ├──▶ AttachmentDocModelAdapter (Q6=A 첨부)
+                    ├──▶ LLM Gateway (추론·추출)
+                    ▼
+              EvidenceExtractor → EvidenceComparisonAssembler
+                    │
+                    ▼
+          EvidenceResult | EvidenceAbstainResult (state=ok/abstain)
+                    │ SSE stream
+◀──────── EvidenceChatController ─stream▶ [Phone/Browser]
+
+[긴 분석 — 비동기 잡 옵션 (NFR-P6)]
+EvidenceChatService ─event▶ [Job Queue] ─▶ Worker: EvidenceAgentOrchestrator
+                                              │ 완료
+                                              ▼
+                                    EvidenceSessionRepository (결과 저장)
+                                              │
+                    Client ─sync▶ GET /api/evidence/jobs/:id (폴링)
+```

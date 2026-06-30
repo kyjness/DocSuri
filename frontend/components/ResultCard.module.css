@@ -47,6 +47,18 @@
   word-break: break-word;
 }
 
+/* Source-neutral link-out (FR-4/FR-5, Phase 2 Q2). Inherits muted meta tone; underline on
+   interaction keeps the touch target legible without competing with the title link. */
+.sourceLink {
+  color: inherit;
+  text-decoration: none;
+}
+
+.sourceLink:hover,
+.sourceLink:focus-visible {
+  text-decoration: underline;
+}
+
 .snippet {
   margin: 0;
   font-size: 14px;

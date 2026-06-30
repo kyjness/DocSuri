@@ -1,16 +1,32 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { getApiClient } from '@/lib/api';
 import styles from './library/Library.module.css';
 
 // SaveSearchButton (US-L1, FR-8) — persists the just-executed query as a saved
-// search. Resets to idle when the query changes (keyed by `query` from the parent).
+// search. Checks on mount whether the query is already saved (first page only).
 export function SaveSearchButton({ query }: { query: string }) {
-  const [state, setState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [state, setState] = useState<'checking' | 'idle' | 'saving' | 'saved' | 'error'>('checking');
+
+  useEffect(() => {
+    let cancelled = false;
+    getApiClient()
+      .listSavedSearches({ query })
+      .then((page) => {
+        if (cancelled) return;
+        setState(page.items.length > 0 ? 'saved' : 'idle');
+      })
+      .catch(() => {
+        if (!cancelled) setState('idle');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [query]);
 
   const onSave = async () => {
-    if (state === 'saving' || state === 'saved') return;
+    if (state !== 'idle' && state !== 'error') return;
     setState('saving');
     try {
       await getApiClient().saveSearch({ query });
@@ -20,7 +36,9 @@ export function SaveSearchButton({ query }: { query: string }) {
     }
   };
 
-  const label = state === 'saved' ? '저장됨' : state === 'error' ? '재시도' : '검색어 저장';
+  if (state === 'checking') return null;
+
+  const label = state === 'saved' ? '저장됨' : state === 'saving' ? '저장 중…' : state === 'error' ? '재시도' : '검색어 저장';
   return (
     <button
       type="button"

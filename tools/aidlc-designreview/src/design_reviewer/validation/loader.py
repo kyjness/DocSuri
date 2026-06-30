@@ -43,10 +43,25 @@ from design_reviewer.foundation.progress import progress_bar
 from design_reviewer.validation.models import ArtifactInfo
 
 
+# Generic catch-all from Logger.CREDENTIAL_PATTERNS that must NOT run over document
+# content: it matches any 40-char [A-Za-z0-9/+=] run, so it redacts non-secret tokens
+# (sha/hex IDs, long identifiers) into ***REDACTED_SECRET***, which the AI then reports
+# as a leaked-secret finding. Excluded here; logs keep it (ephemeral, over-redaction is
+# harmless there). See operations/code-reviews/2026-06-28/designreview-audit.md (H1).
+_GENERIC_SECRET_PATTERN = r"[A-Za-z0-9/+=]{40}"
+
+# High-precision secret shapes only — safe to apply to content fed to the reviewer.
+CONTENT_CREDENTIAL_PATTERNS = [
+    (pat, repl)
+    for pat, repl in Logger.CREDENTIAL_PATTERNS
+    if pat != _GENERIC_SECRET_PATTERN
+]
+
+
 def scrub_credentials(content: str) -> str:
-    """Apply credential scrubbing using Unit 1 Logger patterns."""
+    """Scrub real secret shapes from document content (no generic 40-char heuristic)."""
     scrubbed = content
-    for pattern, replacement in Logger.CREDENTIAL_PATTERNS:
+    for pattern, replacement in CONTENT_CREDENTIAL_PATTERNS:
         scrubbed = re.sub(pattern, replacement, scrubbed)
     return scrubbed
 

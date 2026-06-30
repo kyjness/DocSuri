@@ -1,6 +1,6 @@
 # 코드 베이스라인 (Reverse-Engineering Baseline) — 2026-06
 
-**단계**: INCEPTION 재진입 · 리버스 엔지니어링 · **작성일**: 2026-06-26 · **상태**: 초안(1차 패스)
+**단계**: INCEPTION 재진입 · 리버스 엔지니어링 · **작성일**: 2026-06-26 · **상태**: 초안(1차 패스) · **back-sync**: 2026-06-30(Phase 1 — GROBID TEI·S2/OpenAlex·소스별 watermark·DLQ/scheduler·DocModel eager 인덱싱 반영 / Phase 2 — U2 검색 정합·소스 중립 카드 Q2 완료 #244 반영 / **Phase 3 — U7 요약/번역 + Grounding 통합 완료 #249 반영**: GroundingValidatorRegistry 등재·수치 임계 재보정·번역 UX/persona·견고성 보강)
 **상위 문서**: `aidlc-docs/inception/plans/reinception-2026-06-charter.md` (재인셉션 차터, SSOT 앵커)
 
 > **목적**: 재인셉션(D1)의 사실 기준을 stale 문서가 아니라 **실제 코드**에서 확립한다
@@ -46,24 +46,26 @@
 
 ---
 
-## 2. 페이즈별 코드 현황 (8 로드맵 대응)
+## 2. 페이즈별 코드 현황 (7 로드맵 대응)
+
+> **페이즈 번호 갱신(2026-06-28)**: 기존 페이즈 3(요약/번역)·4(Grounding)를 **하나로 병합**(함께 진행)하고,
+> 이후 번호를 한 칸씩 당겼다. 차터 §3 로드맵과 일치. 
 
 | 페이즈 | 영역 | 코드에 있는 것 | 없는 것(=신규) |
 |---|---|---|---|
-| **1** U1 Corpus | `ingestion/` | arXiv 어댑터(**HTML 우선 → PDF 폴백**, SourceTier ar5iv/native_html)·**단일소스 watermark**(`postgres.py` `watermark` 테이블·`get/advance/reset_watermark`)·`docmodel/`(builder·parser·mathml)·`full_text_extraction`·`asset_extraction`·dedup 테스트·`migrate`·resilience·observability | **Semantic Scholar·OpenAlex 어댑터·GROBID 연동·cross-source watermark·DLQ/scheduler 운영 표면** |
-| **2** U2 검색 | `discovery/` | domain(retriever·ranker·assembler·validator·expander·grounding_adapter)·adapters(bedrock_embedding·opensearch·event_publisher)·ports/search_ports·mocks·real_wiring | 페이즈 8 개선 항목(reranker·LTR·click log 등) |
-| **3** U7 요약/번역 | `summarization/` | domain(refiner·grounding·map_reduce·structured_translator·glossary·source_selector·length_router·cache_key)·adapters(bedrock_llm·s3_docmodel·s3_full_text·s3_redis_store·rds_*·sqs_*)·worker | (요약/번역은 상당 구현됨 — 페이즈 3은 정합·개선 성격) |
-| **4** Grounding | `shared/ports`·`discovery/domain/grounding_adapter`·`summarization/domain/grounding` | **단일 프레임워크 통합**: enforce 단일권위(현재 U6) ↔ 도메인별 Validator(Search/Summary/**Agent**) 레지스트리 재조정 |
-| **5** 문헌탐색 Agent | — | **전부 그린필드** (`research_agent` 모듈 부재) |
-| **6** 연구아이디어 Agent | — | **전부 그린필드** |
-| **7** Corpus 대량 | `ingestion/migrate`·재처리 경로 | 대량 스케일 운영(Reindex·재생성 파이프라인 운영 표면) |
-| **8** 검색 품질 | `discovery/domain/ranker`·`expander` | reranker·LTR·query expansion 고도화·feedback/click log |
+| **1** U1 Corpus | `ingestion/` | arXiv 어댑터(**HTML 우선 → PDF 폴백**, SourceTier ar5iv/native_html)·**소스별 watermark**(`postgres.py` `watermark` 테이블·`get/advance/reset_watermark`, `watermark_name=source` cross-source)·`docmodel/`(builder·parser·mathml·**tei**)·**GROBID TEI 구조화 파서 + 좌표 page-crop(FR-17)**·**Semantic Scholar·OpenAlex 어댑터**(`adapters/corpus_http.py`)·**DLQ**(`failure_handler.send_to_dlq`)·**scheduler**(`on_schedule_tick`)·`full_text_extraction`·`asset_extraction`·dedup 테스트·`migrate`·resilience·observability | (back-sync 후) **실외부호출 라이브 검증 미실행**(테스트는 fake/mock 기준)·**전량 리빌드 운영 게이트**(`validate_corpus_build_settings`로 의도적 동결)·페이즈 6 대량 스케일 운영 표면 |
+| **2** U2 검색 ✅**완료(#244)** | `discovery/` | domain(retriever·ranker·assembler·validator·expander·grounding_adapter)·adapters(bedrock_embedding·opensearch·event_publisher)·ports/search_ports·mocks·real_wiring. **(#244, 2026-06-29)** 소스 중립 결과 카드 Q2 — `domain/source_ref.py`(실 도메인, 카드+상세 헤더 공유)·`search.schema.json` sourceName/sourceUrl 계약·실 프론트 컴포넌트(`ResultCard`/`PaperDetailIsland`) 착지 | 페이즈 7 개선 항목(reranker·LTR·click log 등). **이월 2건(→페이즈 7 백로그)**: 연도 facet 필터·상세 라우트 *키* 소스 중립 id. **데이터 조건**: 비-arXiv(S2/OpenAlex) 카드 분기는 코드 준비 완료이나 멀티소스 *적재*(페이즈 1 라이브)가 있어야 실데이터로 보임 |
+| **3** U7 요약/번역 + Grounding 통합 ✅**완료(#249)** | `summarization/`·`shared/ports`·`discovery/domain/grounding_adapter`·`summarization/domain/grounding` | 요약: domain(refiner·grounding·map_reduce·structured_translator·glossary·source_selector·length_router·cache_key)·adapters(bedrock_llm·s3_docmodel·s3_full_text·s3_redis_store·rds_*·sqs_*)·worker. **(#249, 2026-06-30)** Grounding 통합 착지 — `shared/ports` **GroundingValidatorRegistry**(도메인별 Validator 카탈로그·summary=`advisory` 권위·enforce는 U6 `search` 단독권위 유지·레지스트리 가드가 타 도메인 enforce 거부)·ports.md §2.1(U6 사인오프 완료). 수치 임계 재보정(실 arXiv 코퍼스→0.5 확정·QT-1 하니스)·전문/초록 번역 UX·persona 구체화·견고성 보강(요약 캐시 비용·프롬프트 격리·DB 풀링·glossary_ver 경쟁) | **이월(→페이즈 4·5)**: **Agent 도메인 Validator** 레지스트리 등재는 연구에이전트(그린필드)에서. 실 Bedrock 요약/번역 **라이브 스모크**는 페이즈 1 라이브 산출 후 단건부터 |
+| **4** 문헌탐색·근거형성 Agent | — | **전부 그린필드** (`research_agent` 모듈 부재) — 구체 파이프라인/방식은 인셉션 질문지로 결정 |
+| **5** 연구아이디어 Agent | — | **전부 그린필드** |
+| **6** Corpus 대량 | `ingestion/migrate`·재처리 경로 | 대량 스케일 운영(Reindex·재생성 파이프라인 운영 표면) |
+| **7** 검색 품질 | `discovery/domain/ranker`·`expander` | reranker·LTR·query expansion 고도화·feedback/click log |
 
 ---
 
 ## 3. 에이전트가 소비할 계약 인벤토리 (D5 병렬의 출발점)
 
-페이즈 5·6 에이전트는 Search·DocModel·Summary·Citation을 **Tool**로 소비한다. 그 계약은 이미 코드에 존재:
+페이즈 4·5 에이전트는 Search·DocModel·Summary·Citation을 **Tool**로 소비한다. 그 계약은 이미 코드에 존재:
 
 | 계약 | 루트 타입 | 핵심 구조 | SSOT |
 |---|---|---|---|
@@ -94,29 +96,36 @@
 
 ## 4. 재인셉션에 주는 시사점 (설계 긴장점)
 
-1. **D3 grounding 통합 ↔ 현 "단일권위 enforce" 긴장**
+1. **D3 grounding 통합 ↔ 현 "단일권위 enforce" 긴장** → **(#249, 2026-06-30) 해소 — 선택지 (b)**
    현재 계약은 `GroundingEnforcementHook.enforce`를 **U6 단일권위**로 못박고 U2는 어댑팅만 한다.
-   페이즈 4의 "도메인별 Validator(Search/Summary/Agent)"는 이 단일권위 모델과 **재조정**이 필요하다.
-   선택지: (a) U6가 도메인별 Validator를 내부 보유하고 enforce가 디스패치, (b) 각 도메인이 shared 추상
-   인터페이스를 구현하되 enforce 호출 지점은 게이트웨이 단일 유지. → application-design에서 확정.
+   페이즈 3에서 **`GroundingValidatorRegistry`**(`shared/ports`)로 정착: 도메인별 Validator를 **카탈로그**로
+   등재(summary=`advisory`·search=`enforce`)하되 **enforce 단일권위는 U6 `search`에 유지**(레지스트리 가드가
+   타 도메인의 enforce 권위 주장을 거부). U7은 자기 결정적 게이트(`domain/grounding`)를 직접 호출하고 호출
+   지점은 그대로 — 즉 "각 도메인이 shared 추상에 등재하되 enforce 호출 지점은 단일"인 (b)안. ports.md §2.1.
 
-2. **D5 에이전트 포트 = 기존 `shared/ports` 패턴 그대로 적용 가능**
-   문헌탐색 유닛이 추상 포트를 `shared/ports`에 선언(impl=문헌탐색 유닛), 연구아이디어 유닛이 소비.
-   FROZEN 동결·사인오프 정책이 이미 있으므로 **D5 "계약 선행 동결"의 제도적 틀이 코드에 존재**.
+2. **D5 에이전트 포트 = 기존 `shared/ports` 패턴 그대로 적용 가능 (의존 채택 시)**
+   연구아이디어 유닛이 문헌탐색 유닛을 의존하기로 하면, 추상 포트를 `shared/ports`에 선언(impl=문헌탐색 유닛)·
+   연구아이디어 유닛이 소비하는 구조다. FROZEN 동결·사인오프 정책이 이미 있어 **D5 "계약 선행 동결"의
+   제도적 틀이 코드에 존재**. *(단 5→4 의존 자체는 기본 제안·requirements 질문지에서 확정 — 차터 §4.)*
 
 3. **요약/번역(페이즈 3)은 그린필드가 아니라 정합 작업** — domain·adapters·worker가 상당 구현됨.
    페이즈 3의 실체는 "신규 구축"보다 **DocModel 완성형·grounding 통합 반영한 정합·개선**.
+   → **(#249, 2026-06-30) 완료**: 예상대로 정합·개선 성격으로 종료(신규 모듈 없음). DocModel eager 입력 소비·
+   structured 번역·grounding 레지스트리 등재·수치 임계 재보정·견고성 보강까지 착지.
 
 4. **citation_graph·ops 모듈이 얇음** — 각 `controller.py`만 관찰. 실제 책임 분포 **추가 확인 필요**.
 
-5. **DocModel 빌드/인덱싱 위치 — D6 핵심 갭 (코드 실측)**
-   - 현재 **인덱싱은 full-text 청크 기반**: `ingestion/processors.py::Chunker`가 `ParsedPaper` 본문을
-     섹션 분할(추상 청크 + 본문 청크)해 임베딩→OpenSearch. **DocModel은 인덱싱에 미사용.**
-   - 현재 **DocModel은 요약 시점 lazy 빌드**: `summarization/adapters/sqs_docmodel_build.py::SqsDocModelBuildQueue.enqueue_build`
-     가 U1 워커 형식의 `BUILD_DOC_MODEL` 잡을 적재(dedup TTL 120s) → `ingestion/runtime.py`의
-     `DocModelBuilder`가 빌드해 S3 `doc-model/` 저장. 주석: "Drives BUILD_DOC_MODEL jobs only — the index [is separate]".
-   - **D6 목표**: 빌드를 **수집 시점 eager**로 당기고 **인덱싱 소스를 DocModel(Block)로 전환**.
-     → 청킹 전략 변경·코퍼스 전량 빌드 비용·lazy 큐 역할 재정의가 페이즈 1 requirements 대상.
+5. **DocModel 빌드/인덱싱 위치 — D6 핵심 갭 → (back-sync 2026-06-29) 대체로 해소**
+   - **현재 빌드는 수집 시점 eager**: `application.py::IngestionPipelineService._build_doc_model_before_index`
+     (arXiv 경로)·`_build_doc_model_from_record`(비arXiv GROBID TEI 경로)가 인덱스 노출 전에 doc-model을
+     빌드/캐시한다.
+   - **인덱싱 소스가 DocModel(Block)로 전환됨**: `_index_paper`가 `doc_model`이 있으면
+     `Chunker.chunk_doc_model(doc_model)`로 청킹→임베딩→OpenSearch. full-text 청크(`chunk(paper)`)는
+     doc-model 부재 시 폴백 경로로만 남는다. (D6 목표였던 "eager 전환 + Block 인덱싱" 달성.)
+   - **lazy `BUILD_DOC_MODEL` 잡은 역할 재정의됨**: 캐시 미스/백필 전용으로 잔존
+     (`build_doc_model` docstring "misses/backfills"). 요약 시점 최초 빌드를 더는 전제하지 않는다.
+   - **잔여**: 코퍼스 전량 eager 빌드 비용은 전량 리빌드(`validate_corpus_build_settings` 게이트) 의사결정
+     사안으로 남는다. 실라이브 검증(Bedrock/OpenSearch/GROBID/S3 실호출)은 단건 스모크부터.
 
 ---
 
@@ -126,4 +135,11 @@
 - [ ] `citation_graph` 실제 계약/거동(Tool로 쓰일 인용 데이터 표면).
 - [ ] `backend/modules/ops` vs top-level `ops/` 책임 중복 실측.
 - [ ] DocModel "완성형 v1" 정의를 `construction/shared/docmodel.md`와 대조(번역 계약 정합).
-- [ ] discovery/summarization 런타임 거동(grounding 호출 지점) 실측 — D3 재조정 입력.
+- [x] discovery/summarization 런타임 거동(grounding 호출 지점) 실측 — D3 재조정 입력. **(#249) 해소**: §4-1 참조(레지스트리 정착·enforce 단일권위 U6 유지).
+- [ ] **(Phase 1 closeout 선행)** 단건 `ingest-one` 라이브 스모크 — S3 `full-text/`·`doc-model/`·`assets/`
+      생성·OpenSearch 청크 업서트·TEI 그림/수식 crop을 실호출로 1회 확인(테스트는 fake/mock 기준).
+      > **게이트 성격 명확화(2026-06-29)**: 이 스모크는 **페이즈 3의 *통합 완료* 게이트**이지 **착수 게이트가 아니다.**
+      > 차터 §4.2 원칙("인셉션 문서는 계약 레벨 — 코드 가동 불필요")에 따라 페이즈 3의 **문서 정합·질문지(requirements)는
+      > 스모크 없이 착수 가능**(소비할 DocModel/Search/grounding 계약은 이미 코드에 존재). 페이즈 3는 D6대로 **실제 DocModel
+      > (eager 빌드+Block 인덱싱)을 입력으로 소비**하므로, 페이즈 1이 라이브로 산출물을 내는지 1회 확인되어야 **통합 검증/완료**가
+      > 성립한다. 즉 스모크는 "페이즈 3 코드 통합 검증에 들어가기 전"까지만 끝나면 된다(mock/fixture 기반 구현은 그 전에 가능).

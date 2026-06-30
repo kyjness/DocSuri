@@ -126,12 +126,13 @@ async def create_saved_search(
 async def list_saved_searches(
     limit: int = Query(default=20),
     cursor: str | None = Query(default=None),
+    query: str | None = Query(default=None),
     principal: Principal = Depends(get_principal),
     svc: SavedSearchService = Depends(get_saved_search_service),
 ) -> SavedSearchPageDTO:
     try:
         validate_limit(limit)
-        return svc.list(principal, PageParams(limit=limit, cursor=cursor))
+        return svc.list(principal, PageParams(limit=limit, cursor=cursor), query=query)
     except DomainException as exc:
         raise _to_http(exc) from exc
 

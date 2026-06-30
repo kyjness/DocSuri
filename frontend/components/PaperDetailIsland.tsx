@@ -30,13 +30,18 @@ const ACTIONS: { view: DetailView; label: string }[] = [
 ];
 
 export function PaperDetailIsland({ paperId, version, arxivUrl }: PaperDetailIslandProps) {
-  const safeArxivUrl =
-    arxivUrl && (arxivUrl.startsWith('http://') || arxivUrl.startsWith('https://'))
-      ? arxivUrl
-      : undefined;
   const [modalView, setModalView] = useState<DetailView | null>(null);
   const [citationOpen, setCitationOpen] = useState(false);
   const meta = usePaperMeta(paperId);
+  // Source-neutral header (FR-4/FR-5, Phase 2 Q2): the detail header agrees with the search card
+  // on the discovery source. arXiv keeps "arXiv:<id>"; a non-arXiv paper shows its source name
+  // and links out to that source. http(s)-guarded (external-link safety).
+  const m = meta.status === 'done' ? meta.meta : undefined;
+  const sourceName = m?.sourceName ?? 'arXiv';
+  const isArxiv = sourceName.toLowerCase() === 'arxiv';
+  const sourceUrlRaw = m?.sourceUrl ?? m?.arxivUrl ?? arxivUrl;
+  const sourceUrl =
+    sourceUrlRaw && /^https?:\/\//i.test(sourceUrlRaw) ? sourceUrlRaw : undefined;
   const router = useRouter();
   const openedRef = useRef<string | null>(null);
 
@@ -114,15 +119,16 @@ export function PaperDetailIsland({ paperId, version, arxivUrl }: PaperDetailIsl
             {renderInlineMath(meta.meta.abstract)}
           </p>
           <p className={styles.idline}>
-            <span>arXiv:{paperId}</span>
-            {safeArxivUrl ? (
+            <span data-testid="paper-source">{isArxiv ? `arXiv:${paperId}` : sourceName}</span>
+            {sourceUrl ? (
               <a
                 className={styles.link}
-                href={safeArxivUrl}
+                href={sourceUrl}
                 target="_blank"
                 rel="noopener noreferrer"
+                data-testid="paper-source-link"
               >
-                arXiv에서 원문 보기
+                {isArxiv ? 'arXiv에서 원문 보기' : `${sourceName}에서 원문 보기`}
               </a>
             ) : null}
           </p>
@@ -135,12 +141,12 @@ export function PaperDetailIsland({ paperId, version, arxivUrl }: PaperDetailIsl
 
       {/* Body access — below the metadata. Both navigate in-app to a full-screen route (each
           with its own ← back): 본문 = the doc-model rich view, 본문 번역 = the full-text translation. */}
-      <div className={styles.bodyActions} role="group" aria-label="본문">
+      <div className={styles.bodyActions} role="group" aria-label="전문">
         <Link className={styles.action} href={bodyHref} data-testid="open-doc-model">
-          본문
+          전문
         </Link>
         <Link className={styles.action} href={translateHref} data-testid="open-full-translation">
-          본문 번역
+          전문 번역
         </Link>
       </div>
 

@@ -1,19 +1,7 @@
-import styles from '../page.module.css';
-import { RouteGuard } from '@/components/RouteGuard';
-import { AppHeader } from '@/components/AppHeader';
-import { BottomNav } from '@/components/BottomNav';
-import { LibraryScreen } from '@/components/library/LibraryScreen';
+import { redirect } from 'next/navigation';
 
-// Library route (protected, US-L2). RouteGuard reflects auth client-side;
-// backend 401/403 stays authoritative.
+const LIBRARY_ENTRY_PATH = process.env.DOCSURI_LIBRARY_ENTRY_PATH || '/library/saved';
+
 export default function LibraryPage() {
-  return (
-    <RouteGuard redirectTo="/library">
-      <div className={styles.screen}>
-        <AppHeader title="라이브러리" backHref="/mypage/library" />
-        <LibraryScreen />
-      </div>
-      <BottomNav />
-    </RouteGuard>
-  );
+  redirect(LIBRARY_ENTRY_PATH);
 }

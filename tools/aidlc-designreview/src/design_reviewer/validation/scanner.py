@@ -33,13 +33,22 @@ from typing import List, Tuple
 
 from design_reviewer.foundation.logger import Logger
 
-# Files excluded by name regardless of location (case-insensitive)
+# Files excluded by name regardless of location (case-insensitive).
+# component-methods.md: stale inception artifact superseded by construction/shared;
+# its signatures drift from the FROZEN contracts (see the 2026-06-28 design-review audit).
 EXCLUDED_FILENAMES: frozenset[str] = frozenset(
-    {"audit.md", "aidlc-state.md", "readme.md"}
+    {"audit.md", "aidlc-state.md", "readme.md", "component-methods.md"}
 )
 
-# Directory names whose contents are excluded (at any depth)
-EXCLUDED_DIRECTORIES: frozenset[str] = frozenset({"plans", "build-and-test"})
+# Directory names whose contents are excluded (at any depth).
+# operations: holds the reviewer's OWN past reports — never a design input; scanning
+#   them caused a self-referential false positive (see the 2026-06-28 audit).
+# ponytail: inception/ is intentionally NOT excluded — requirements, user-stories, and
+#   application-design are real review inputs (the gateway/index findings come from
+#   inception/application-design). Drop only the stale file above, not the tree.
+EXCLUDED_DIRECTORIES: frozenset[str] = frozenset(
+    {"plans", "build-and-test", "operations"}
+)
 
 # Number of lines to read for AI classification
 EXCERPT_LINE_COUNT: int = 100

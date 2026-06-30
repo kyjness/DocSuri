@@ -46,16 +46,21 @@ def seeded():
     with psycopg.connect(DSN) as c:
         c.execute(_DDL)
         c.execute("DELETE FROM paper_asset WHERE paper_id = %s", (_PAPER,))
+        # Seed a type="formula" page-crop alongside figure/table — the reader must filter it out
+        # (it belongs to the doc-model viewer, not the summary asset gallery / AssetView enum).
         c.execute(
             "INSERT INTO paper_asset (paper_id,version,asset_id,type,caption,ordinal,"
             "source_mode,object_ref,page_ref,bbox) VALUES "
             "(%s,1,%s,'figure','Figure 1: demo',0,'page-crop',%s,3,%s),"
-            "(%s,1,%s,'table','Table 1: demo',0,'page-crop',%s,NULL,NULL)",
+            "(%s,1,%s,'table','Table 1: demo',0,'page-crop',%s,NULL,NULL),"
+            "(%s,1,%s,'formula','',0,'page-crop',%s,4,NULL)",
             (
                 _PAPER, f"{_PAPER}:v1:figure:0",
                 f"s3://bkt/assets/{_PAPER}/v1/fig.webp", "[0, 0, 612, 92]",
                 _PAPER, f"{_PAPER}:v1:table:0",
                 f"s3://bkt/assets/{_PAPER}/v1/tbl.webp",
+                _PAPER, f"{_PAPER}:v1:formula:0",
+                f"s3://bkt/assets/{_PAPER}/v1/eq.webp",
             ),
         )
     yield

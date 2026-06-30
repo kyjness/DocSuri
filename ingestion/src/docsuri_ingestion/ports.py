@@ -164,6 +164,17 @@ class DocModelSourcePort(Protocol):
 
 
 @runtime_checkable
+class EprintSourcePort(Protocol):
+    """e-print tarball bytes for a paper version (BR-30 macro extraction).
+
+    Structurally satisfied by ``AssetSourcePort`` — the doc-model builder uses it only to
+    read the author's LaTeX preamble for KaTeX macros, best-effort and never blocking.
+    """
+
+    def fetch_eprint(self, metadata: MetadataRecord) -> bytes | None: ...
+
+
+@runtime_checkable
 class DocModelStorePort(Protocol):
     """BR-30 doc-model cache: lazy-built JSON keyed (paperId, version) at the doc-model/ prefix.
 

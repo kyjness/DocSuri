@@ -2,6 +2,7 @@
 
 **단계**: CONSTRUCTION → NFR Design · **유닛**: U7 Summarization · **일자**: 2026-06-19
 **근거**: 계획서 `u7-summarization-nfr-design-plan.md`(10문 전수 A) · NFR Requirements(TD-S1~S12) · FD(BR-S1~S14·INV).
+**페이즈 3 amendment(2026-06-29, 코드 검증)**: §1.3 비용 degradeMode 임계(ratio ≥0.80)·검색 대비 도메인별 저하 매핑(U7=일괄 기권, lexical 폴백 없음) 명문화 · §2.1 저장 불변식(S3 영구 immutable + Redis TTL 필수) 정합.
 **고도**: 패턴·정책·범위. 수치(타임아웃 ms·TTL·서킷 임계·토큰 캡·동시성)는 Infra/Code-gen.
 
 ---
@@ -23,11 +24,12 @@
 
 | 계층 | 원인 | 트리거 | 종단 상태 | 신호 |
 |---|---|---|---|---|
-| **비용 degradeMode** | 예산 임계 | U6 `get_budget_state()` OPEN/저하 | `CostDegradedDTO`("AI 요약 일시 중단") | RES-11a(비용 폭발) |
+| **비용 degradeMode** | 예산 임계 (spend ratio **≥0.80**) | U6 `get_budget_state()` degradeMode가 non-normal(0.80 `RERANK_OFF`/0.95 `LEXICAL_ONLY`/≥1.0 hard_cap) | `CostDegradedDTO`("AI 요약 일시 중단") | RES-11a(비용 폭발) |
 | **의존성 서킷** | Bedrock 장애/타임아웃/스로틀 | 서킷 OPEN(1.1) | `AbstainDTO` | RES-11(가용성) |
 | **소스 저하** | 전문 부재/라이선스X | `FullTextSourceAdapter` 미스 | 초록 폴백(+메타) 또는 `SourceUnavailableDTO` | NFR-R2 |
 
 > 셋은 **U6 단일 권위 비용 판정**(degradeMode)과 **U7 의존성 장애**(서킷)와 **데이터 가용성**(소스)으로 책임이 다르다. 통합 금지(운영 진단 모호해짐).
+> **검색 신호 재사용·매핑 차이(코드 검증)**: U7은 U6의 동일 `degradeMode` 신호를 소비하되, 검색(U2)이 `RERANK_OFF`/`LEXICAL_ONLY`에서 **부분 저하(lexical 폴백)** 로 계속 응답하는 것과 달리, U7 오케스트레이터(`_is_cost_degraded`)는 **non-normal 전부를 일괄 기권**한다 — 요약/번역은 LLM이 필수라 lexical 대체가 없기 때문. 즉 신호는 공유, **저하 매핑은 도메인별**.
 
 ---
 
@@ -37,6 +39,7 @@
 - **read-through**(Redis 핫 → S3 영구) → 미스 → 생성 → **write-through**(S3 + Redis).
 - 키 = immutable `SummaryCacheKey`. **캐시 HIT = LLM 0콜 즉시**(TTFB 주 경로·비용 0).
 - 무효화 = 키(modelVer/promptVer/glossaryVer/version) 변경 = 신규 객체(자동, stale 없음). TTL/라이프사이클은 Infra.
+- **저장 불변식(코드 검증)**: S3 = **영구·immutable**(write-through 원천), Redis 핫 = **TTL 필수**(`s3_redis_store.py` `set(..., ex=ttl)` — 만료없는 키 금지). 미스 시 S3 원천 read → Redis backfill. **요약·초록번역·전문번역(DocModel v1) 3종 동일** 저장 모델(키 차원만 상이).
 
 ### 2.2 스트리밍 ↔ 근거화 패턴 ⭐ (Q5 / BR-S8 / FR-5)
 §3 구조화 JSON은 앵커·스키마가 **전체 draft에 의존** → 안전 우선:

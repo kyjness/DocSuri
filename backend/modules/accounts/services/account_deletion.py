@@ -33,6 +33,7 @@ from .session_manager import SessionManager
 logger = logging.getLogger(__name__)
 
 DEFAULT_GRACE_DAYS = 30  # 유예 기간 N (events.md 기본 제안 30일; 운영/법적 요건으로 조정).
+MAX_PURGE_ATTEMPTS = 5  # S2: 파기 반복 실패가 이 횟수에 도달하면 PURGE_FAILED(DLQ)로 격리한다.
 
 # AccountDeleted event_id를 account_id로부터 결정적으로 파생하기 위한 네임스페이스(고정).
 # 재시도 시에도 동일 account_id → 동일 event_id가 되어 구독자가 event_id로 중복 제거할 수 있다.
@@ -43,6 +44,21 @@ class AccountDeletedPublisher(Protocol):
     """``AccountDeleted`` 캐스케이드 이벤트 발행자 포트 (shared/events.md 계약)."""
 
     async def publish(self, account_id: str, occurred_at: datetime, event_id: str) -> None: ...
+
+
+class OwnerDataPurger(Protocol):
+    """동일 RDS 안의 owner-scoped 데이터 파기 포트.
+
+    EventBridge 발행은 외부/비동기 구독자를 위한 계약이고, 이 포트는 현재 모놀리식 DB에 이미
+    존재하는 owner-scoped 테이블을 같은 트랜잭션에서 정리하는 운영 backstop이다.
+    """
+
+    def purge(self, account_id: str) -> None: ...
+
+
+class NoopOwnerDataPurger:
+    def purge(self, account_id: str) -> None:
+        return None
 
 
 def _build_payload(account_id: str, occurred_at: datetime, event_id: str) -> dict:
@@ -101,10 +117,22 @@ class EventBridgeAccountDeletedPublisher:
 
 
 def build_account_deleted_publisher() -> AccountDeletedPublisher:
-    """환경 기반 발행자 선택: ACCOUNT_EVENTS_BUS 설정 시 EventBridge, 아니면 Logging(기본)."""
+    """환경 기반 발행자 선택: ACCOUNT_EVENTS_BUS 설정 시 EventBridge, 아니면 Logging(로컬 전용).
+
+    S3: 비-local 환경에서 버스가 비면 Logging으로 *조용히* 폴백하던 동작은, 단 하나의 env 누락으로
+    AccountDeleted가 발행되지 않아 U4/U2/U11이 owner-scoped 데이터를 영구히 파기하지 못하게 한다
+    (사일런트 크로스모듈 데이터 고아화·GDPR 파기 누락). 따라서 프로덕션에선 페일패스트한다 — 로컬/
+    테스트(ENV in {local,test,dev})에서만 Logging 발행자를 허용한다."""
     bus = os.getenv("ACCOUNT_EVENTS_BUS", "").strip()
     if bus:
         return EventBridgeAccountDeletedPublisher(event_bus_name=bus, region=os.getenv("AWS_REGION") or None)
+    env = os.getenv("ENV", "local").strip().lower()
+    if env not in {"local", "test", "dev"}:
+        raise RuntimeError(
+            f"ACCOUNT_EVENTS_BUS가 설정되지 않았습니다 (ENV={env}). 프로덕션 파기 워커는 AccountDeleted를 "
+            "발행해야 U4/U2/U11이 owner-scoped 데이터를 파기합니다(GDPR). 버스를 설정하거나 ENV=local로 "
+            "실행하세요."
+        )
     return LoggingAccountDeletedPublisher()
 
 
@@ -118,11 +146,13 @@ class AccountDeletionService:
         credential_repo: CredentialRepository,
         session_manager: SessionManager | None,  # purge_job 경로는 미사용 → 워커는 None 주입.
         publisher: AccountDeletedPublisher | None = None,
+        owner_data_purger: OwnerDataPurger | None = None,
         grace_days: int = DEFAULT_GRACE_DAYS,
     ):
         self._repo = credential_repo
         self._session_manager = session_manager
         self._publisher = publisher or LoggingAccountDeletedPublisher()
+        self._owner_data_purger = owner_data_purger or NoopOwnerDataPurger()
         self._grace_days = grace_days
         self._hasher = get_password_hasher()
 
@@ -183,14 +213,34 @@ class AccountDeletionService:
                 # 나갔어도 계정은 DEACTIVATED로 남아 다음 회차에 동일 event_id로 재시도된다(멱등).
                 # 발행 자체가 실패하면 except로 빠져 파기를 건너뛴다(이벤트 유실→캐스케이드 누락 방지).
                 await self._publisher.publish(account_id, datetime.now(UTC), event_id)
+                self._owner_data_purger.purge(account_id)
                 self._repo.delete_account_permanently(account_id)
                 self._repo.mark_deletion_purged(account_id)
                 self._repo.commit()
             except Exception:
+                # 실패한 파기 트랜잭션을 롤백하고, 시도 횟수만 별도 트랜잭션으로 누적한다. 임계 초과 시
+                # PURGE_FAILED(DLQ)로 격리해 무한 재시도를 끊고 운영 경보를 띄운다(S2). 격리된 행은
+                # get_due_deletions(state=DEACTIVATED만)에서 자동 제외되므로 다음 회차부터 건너뛴다.
                 self._repo.rollback()
-                logger.exception(
-                    "Purge failed for one account; left DEACTIVATED for next run (at-least-once)."
-                )
+                try:
+                    attempts = self._repo.increment_deletion_attempts(account_id)
+                    if attempts >= MAX_PURGE_ATTEMPTS:
+                        self._repo.mark_deletion_failed(account_id)
+                        logger.error(
+                            "Purge permanently failing for account after %s attempts; "
+                            "quarantined to PURGE_FAILED (DLQ) — manual reconciliation required.",
+                            attempts,
+                        )
+                    else:
+                        logger.exception(
+                            "Purge failed for one account (attempt %s); left DEACTIVATED for next run "
+                            "(at-least-once).",
+                            attempts,
+                        )
+                    self._repo.commit()
+                except Exception:
+                    self._repo.rollback()
+                    logger.exception("Failed to record purge attempt for account; will retry next run.")
                 continue
             purged += 1
             logger.info({"event": "AccountPurged", "accountId": account_id, "eventId": event_id})

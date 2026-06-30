@@ -107,9 +107,9 @@ KDF 알고리즘을 통해 암호화된 해시 값 객체입니다. 평문 비�
 - **불변식**: 단일 사용 — `usedAt`이 설정되었거나 `expiresAt` 경과 시 검증 실패. 평문 토큰은 저장·로깅 금지(SEC-BR-1).
 - **Trace**: FR-26, US-A3, SEC-9/11/12
 
-### 4.2. SocialIdentity (소셜 신원 연결) — FR-27 / BR-A9
-- **속성**: `provider`(`OidcProvider`), `providerSubject`(프로바이더 안정 식별자), `accountId`, `emailAtLink`, `linkedAt`, **`status`(`LINKED|PENDING_CONFIRMATION` — #3 리뷰: 기존 비밀번호 계정 명시적 연결 대기 상태)**.
-- **불변식**: `(provider, providerSubject)`는 전역 유일. 연결은 프로바이더 **검증 이메일**에 한해 성립(미검증 거부). 한 `accountId`는 다수 `SocialIdentity` 보유 가능.
+### 4.2. SocialIdentity (소셜 신원 연결) — FR-27 / BR-A9 / BR-A13
+- **속성**: `provider`(`OidcProvider`), `providerSubject`(프로바이더 안정 식별자 — Google `sub` / ORCID iD), `accountId`, `emailAtLink`(이메일-없는 프로바이더는 NULL), `linkedAt`, **`status`(`LINKED|PENDING_CONFIRMATION` — #3 리뷰: 기존 비밀번호 계정 명시적 연결 대기 상태)**, **ORCID 캐시 컬럼 `orcidName`·`orcidAffiliation`·`orcidSyncedAt`** *(2026-06-30, 마이그레이션 006; 마이페이지 ORCID 카드용)*.
+- **불변식**: `(provider, providerSubject)`는 전역 유일. **이메일 제공 프로바이더**(Google)는 프로바이더 **검증 이메일**에 한해 연결 성립(미검증 거부, BR-A9). **이메일-없는 프로바이더**(ORCID)는 `(provider, providerSubject)` 단독으로 신원 성립(이메일 매칭 없음, `accounts.email` NULL 허용, BR-A13). 한 `accountId`는 다수 `SocialIdentity` 보유 가능.
 - **Trace**: FR-27, US-A4, SEC-5/12
 
 ### 4.3. EmailChangeRequest (이메일 변경 요청) — FR-28 / BR-A10
@@ -124,11 +124,12 @@ KDF 알고리즘을 통해 암호화된 해시 값 객체입니다. 평문 비�
 
 ### 4.5. AccountDeleted (도메인 이벤트) — FR-28 / BR-A11
 - **속성**: `accountId`, `occurredAt`.
-- **의미**: U3가 발행하고 U4/U2/U11이 구독해 각자 owner-scoped 데이터를 파기한다(직접 호출 아님 — 코드 DAG 비순환). 구독자는 멱등·재시도·DLQ.
+- **의미**: U3가 발행하고 U4/U2가 구독해 각자 owner-scoped 데이터를 파기한다(직접 호출 아님 — 코드 DAG 비순환; 분리될 연구 에이전트 유닛은 생성 시 동일 패턴으로 구독 편입). 구독자는 멱등·재시도·DLQ.
 - **Trace**: FR-28, US-A6, SEC-8
 
 ### 4.6. OidcProvider (값 객체/Enum) — FR-27
-- **값**: `GOOGLE` (v1). `GITHUB`·`APPLE`은 차기 사이클(요구사항 등재만).
+- **값**: `GOOGLE`, **`ORCID`** *(2026-06-30)*. `GITHUB`·`APPLE`은 차기 사이클(요구사항 등재만).
+- **이메일 제공 여부**: `GOOGLE`은 검증 이메일 제공(BR-A9 경로). **`ORCID`은 OIDC가 이메일 클레임을 반환하지 않음**(`scopes_supported=[openid]`) → 이메일-없는 신원 경로(BR-A13).
 - **Trace**: FR-27, US-A4
 
 ### 4.7. AccountStatus 확장 — BR-A11

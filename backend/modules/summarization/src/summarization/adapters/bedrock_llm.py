@@ -114,8 +114,9 @@ class BedrockLlmGateway:
         glossary: Glossary,
     ) -> TranslationSegmentsResult:
         system, user = build_translate_segments_prompt(segments, request, glossary)
-        # A translation's output volume tracks its input, so it needs a much higher token cap
-        # than the (small, structured) summary output; chunking upstream keeps each call within it.
+        # A translation's output volume tracks its input, so it needs a generous token cap; the
+        # StructuredTranslator chunks upstream (output-bounded) so each call stays within this 8192
+        # ceiling — the same cap the summary path uses to avoid mid-JSON truncation.
         payload = self._invoke_json(self._translate_model, system, user, max_tokens=8192)
         raw = payload.get("translations", {})
         translations = {str(k): str(v) for k, v in raw.items()} if isinstance(raw, dict) else {}

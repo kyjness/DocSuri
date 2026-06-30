@@ -96,6 +96,23 @@ async def test_request_email_change_sends_verification_and_notice(session):
 
 
 @pytest.mark.asyncio
+async def test_request_email_change_for_null_email_account_skips_old_address_notice(session):
+    repo = CredentialRepository(session)
+    acct = repo.create_social_account(None)
+    session.commit()
+    email_client = AsyncMock()
+    svc = AccountManagementService(repo, AsyncMock(), email_client)
+
+    await svc.request_email_change(acct.id, "new@docsuri.org", "https://x/confirm")
+    session.commit()
+
+    email_client.send_email_change_verification_email.assert_awaited_once()
+    email_client.send_email_change_notice_email.assert_not_awaited()
+    token = _change_token(email_client)
+    assert repo.get_email_change_request(_hash_token(token)) is not None
+
+
+@pytest.mark.asyncio
 async def test_request_email_change_in_use_is_noop(session):
     repo = CredentialRepository(session)
     acct = _active_account(repo, session)

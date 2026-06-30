@@ -48,6 +48,16 @@ if (typeof window.localStorage?.setItem !== 'function') {
 // `prefers-color-scheme` once on mount, so any test that mounts inside `ThemeProvider` needs
 // this defined. Defaults to "no preference" (matches: false); tests that care about the
 // system-dark case override `window.matchMedia` themselves.
+// jsdom doesn't implement ResizeObserver. The block-zoom overlay observes its content/overlay
+// to re-measure on reflow; a no-op stub lets components that open it mount in tests.
+if (typeof globalThis.ResizeObserver === 'undefined') {
+  globalThis.ResizeObserver = class {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  } as unknown as typeof ResizeObserver;
+}
+
 if (typeof window.matchMedia !== 'function') {
   window.matchMedia = (query: string) =>
     ({

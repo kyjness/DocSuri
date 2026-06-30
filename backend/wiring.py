@@ -223,12 +223,12 @@ def _mount_library(app: FastAPI, settings: Settings, result: MountResult) -> Non
     # library (U4) is `backend.modules.library`. Absent → ModuleNotFoundError → skip.
     from backend.modules.library import controller as library
     from backend.modules.library.audit import InMemoryAuditSink
-    from backend.modules.library.gateway import StubSearchGateway
+    from backend.modules.library.gateway import DiscoverySearchGateway
     from backend.modules.library.history_consumer import SearchHistoryEventConsumer
     from backend.modules.library.repository.memory import InMemoryUserDataRepository
     from backend.modules.library.services.history import SearchHistoryService
 
-    gateway = StubSearchGateway()
+    gateway = DiscoverySearchGateway(app)
     audit = InMemoryAuditSink()
 
     # Read/request path repo: SQL against the U3-inherited RDS when DATABASE_URL is Postgres
@@ -478,6 +478,80 @@ def _mount_personalization(app: FastAPI, settings: Settings, result: MountResult
     result.mounted.append("personalization")
 
 
+def _mount_novelty(app: FastAPI, settings: Settings, result: MountResult) -> None:
+    from backend.modules.novelty import controller as novelty
+    from backend.modules.novelty.repository import (
+        InMemoryNoveltyRepository,
+        SqlNoveltyRepository,
+    )
+
+    if _is_postgres(settings.database_url):
+        from .db import make_engine, make_session_factory
+
+        engine = getattr(app.state, "db_engine", None) or make_engine(settings.database_url)
+        app.state.db_engine = engine
+        session_factory = make_session_factory(engine)
+
+        def get_novelty_repo():
+            session = session_factory()
+            try:
+                yield SqlNoveltyRepository(session)
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
+            finally:
+                session.close()
+    else:
+        repo = InMemoryNoveltyRepository()
+        app.state.novelty_repo = repo
+
+        def get_novelty_repo():
+            return repo
+
+    app.dependency_overrides[novelty.get_repo] = get_novelty_repo
+    for router in novelty.routers:
+        app.include_router(router)
+    result.mounted.append("novelty")
+
+
+def _mount_research(app: FastAPI, settings: Settings, result: MountResult) -> None:
+    from backend.modules.research import controller as research
+    from backend.modules.research.repository import (
+        InMemoryResearchRepository,
+        SqlResearchRepository,
+    )
+
+    if _is_postgres(settings.database_url):
+        from .db import make_engine, make_session_factory
+
+        engine = getattr(app.state, "db_engine", None) or make_engine(settings.database_url)
+        app.state.db_engine = engine
+        session_factory = make_session_factory(engine)
+
+        def get_research_repo():
+            session = session_factory()
+            try:
+                yield SqlResearchRepository(session)
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
+            finally:
+                session.close()
+    else:
+        repo = InMemoryResearchRepository()
+        app.state.research_repo = repo
+
+        def get_research_repo():
+            return repo
+
+    app.dependency_overrides[research.get_repo] = get_research_repo
+    for router in research.routers:
+        app.include_router(router)
+    result.mounted.append("research")
+
+
 # The real registry. Each entry is a `(app, settings, result) -> None` mounter whose name
 # (minus the `_mount_` prefix) labels it in MountResult / `/readyz`.
 _INTEGRATIONS = (
@@ -488,5 +562,7 @@ _INTEGRATIONS = (
     _mount_ops,
     _mount_citation_graph,
     _mount_personalization,
+    _mount_research,
+    _mount_novelty,
     _mount_summarization,
 )

@@ -31,6 +31,16 @@ _ALIAS = "docsuri-corpus"
 _BACKFILL_DELAY_SECONDS = 3.0
 
 
+def _window(env_name: str, default: datetime) -> datetime:
+    """Run-scoped window override (ISO date in DOCSURI_BACKFILL_START/END) — lets a one-off
+    backfill narrow the slice without redefining the corpus (CORPUS_START/END stay canonical)."""
+    raw = os.getenv(env_name)
+    if not raw:
+        return default
+    dt = datetime.fromisoformat(raw)
+    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+
+
 def _admin_client(settings: IngestionSettings):
     """OpenSearch admin client matching the writer adapter (aws.build_opensearch_client):
     TLS on in prod and SigV4-signed (service ``es``) with the ECS task role, so the managed
@@ -116,15 +126,6 @@ def backfill(settings: IngestionSettings | None = None) -> int:
             }
         )
     )
-    # Run-scoped window override (ISO date in DOCSURI_BACKFILL_START/END) lets a one-off
-    # backfill narrow the slice without redefining the corpus — CORPUS_START/END stay canonical.
-    def _window(env_name: str, default: datetime) -> datetime:
-        raw = os.getenv(env_name)
-        if not raw:
-            return default
-        dt = datetime.fromisoformat(raw)
-        return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
-
     filter_ = CategoryFilter(
         categories=CORPUS_SLICE_CATEGORIES,
         updated_after=_window("DOCSURI_BACKFILL_START", CORPUS_START),
@@ -156,7 +157,32 @@ def backfill(settings: IngestionSettings | None = None) -> int:
     return 0
 
 
-_STEPS = {"provision": provision, "backfill": backfill, "cutover": cutover}
+def backfill_external(settings: IngestionSettings | None = None) -> int:
+    """Enqueue a bounded SS/OpenAlex backfill over the run-scoped DOCSURI_BACKFILL_START/END
+    window (defaults to CORPUS_START/END). arXiv is NOT re-harvested and no rebuild lock is taken
+    — this only ENQUEUES source-record jobs; the live worker service drains them through
+    GROBID->embed->index. Idempotent: canonical dedup + chunkId upsert make re-runs safe."""
+    settings = settings or IngestionSettings.from_env()
+
+    from .config import CORPUS_END, CORPUS_START
+    from .runtime import build_production_runtime
+
+    runtime = build_production_runtime(settings)
+    since = _window("DOCSURI_BACKFILL_START", CORPUS_START)
+    until = _window("DOCSURI_BACKFILL_END", CORPUS_END)
+    queued = runtime.refresh.backfill_external_sources(since, until)
+    log.info(
+        "external backfill enqueued %d jobs [%s .. %s]", queued, since.date(), until.date()
+    )
+    return 0
+
+
+_STEPS = {
+    "provision": provision,
+    "backfill": backfill,
+    "backfill_external": backfill_external,
+    "cutover": cutover,
+}
 
 
 def run_step(step: str, settings: IngestionSettings | None = None) -> int:

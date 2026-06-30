@@ -31,6 +31,16 @@ class RetrievalMode(StrEnum):
     LEXICAL_ONLY = "lexical-only"
 
 
+class SearchScope(StrEnum):
+    """Retrieval breadth requested by the caller (distinct from ``RetrievalMode``, which is the
+    degradation state). ``LITE`` is the human search box (BM25 over title+abstract, no k-NN —
+    P50<3s); ``FULL`` is hybrid over the full-body chunk index for the agent / opt-in toggle.
+    Maps from the external ``docsuri_shared.dtos.Scope`` at the orchestrator boundary."""
+
+    LITE = "lite"
+    FULL = "full"
+
+
 @dataclass(frozen=True, slots=True)
 class AuthSession:
     """Authenticated principal injected by the U6 gateway (SEC-8; BR-13). U2 trusts it."""
@@ -72,11 +82,16 @@ class DegradationSignal:
 
 @dataclass(frozen=True, slots=True)
 class QueryPlan:
-    """Expander output (BR-3 / Q1=A). embedding_vector is None in lexical-only mode."""
+    """Expander output (BR-3 / Q1=A). embedding_vector is None in lexical-only mode.
+
+    ``scope`` carries the caller's requested breadth (lite/full); the retriever uses it to gate
+    k-NN and to pick the BM25 field set. It is independent of ``mode`` (degradation): a FULL
+    request still degrades to lexical-only when embedding is unavailable."""
 
     lexical_terms: tuple[str, ...]
     mode: RetrievalMode
     embedding_vector: tuple[float, ...] | None = None
+    scope: SearchScope = SearchScope.LITE
 
 
 @dataclass(frozen=True, slots=True)

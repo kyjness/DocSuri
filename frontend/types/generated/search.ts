@@ -8,7 +8,8 @@
  */
 export type DegradationMode = string;
 
-/** Single-paper phone card view-model — the 7 external-exposure fields (FR-4). */
+/** Single-paper phone card view-model — external-exposure fields (FR-4);
+ * Phase 2 adds source-neutral sourceName/sourceUrl for the multi-source corpus (Q2). */
 export interface ResultCardVM {
   title: string;
   authors: string[];
@@ -18,6 +19,10 @@ export interface ResultCardVM {
   /** Display-only relevance (ranking order / grade). Raw scores NOT exposed (SEC-9). */
   relevance: unknown;
   arxivUrl: string;
+  /** Phase 2 (Q2). Source label (arXiv / Semantic Scholar / OpenAlex). Optional, additive. */
+  sourceName?: string;
+  /** Phase 2 (Q2). Source-neutral resolvable link (arXiv=arxivUrl, non-arXiv=sourceUrl/DOI). */
+  sourceUrl?: string;
 }
 
 /** Result-count and degradation banner hints. */

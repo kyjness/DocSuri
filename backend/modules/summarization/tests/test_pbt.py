@@ -82,7 +82,9 @@ _SEC9_FORBIDDEN = ("model_ver", "prompt_ver", "token", "redis", "cache_key", "us
 
 
 @given(
-    status=st.sampled_from(["ok_summary", "ok_translate", "abstain", "cost_degraded", "source_unavailable"]),
+    status=st.sampled_from(
+        ["ok_summary", "ok_translate", "abstain", "cost_degraded", "source_unavailable"]
+    ),
     tldr=_text,
     korean=_text,
     # ``reason`` is a PUBLIC field echoed into the DTO; a free-text value that happens to
@@ -92,8 +94,17 @@ _SEC9_FORBIDDEN = ("model_ver", "prompt_ver", "token", "redis", "cache_key", "us
         lambda r: not any(f in r for f in _SEC9_FORBIDDEN)
     ),
 )
-def test_pbt_response_to_dict_sec9_all_states(status: str, tldr: str, korean: str, reason: str) -> None:
-    from summarization.domain.models import SummaryDraft, Anchor, AnchorTarget, AbstainDTO, CostDegradedDTO, SourceUnavailableDTO
+def test_pbt_response_to_dict_sec9_all_states(
+    status: str, tldr: str, korean: str, reason: str
+) -> None:
+    from summarization.domain.models import (
+        AbstainDTO,
+        Anchor,
+        AnchorTarget,
+        CostDegradedDTO,
+        SourceUnavailableDTO,
+        SummaryDraft,
+    )
     if status == "ok_summary":
         draft = SummaryDraft(
             tldr=tldr,
@@ -127,8 +138,8 @@ def test_pbt_response_to_dict_sec9_all_states(status: str, tldr: str, korean: st
     flat = str(out)
     for forbidden in _SEC9_FORBIDDEN:
         assert forbidden not in flat
-    # ponytail: "cost" is a legitimate PUBLIC abstain reason ({"status":"abstain","reason":"cost"}),
-    # not a SEC-9 internal field — the whitelisted forbidden set above is the real non-exposure check.
+    # "cost" is a legitimate PUBLIC abstain reason ({"status":"abstain","reason":"cost"}), not a
+    # SEC-9 internal field — the whitelisted forbidden set above is the real non-exposure check.
 
 
 # PBT-S5 — 앵커 검증 건전성 (Step 34).
@@ -139,7 +150,13 @@ def test_pbt_response_to_dict_sec9_all_states(status: str, tldr: str, korean: st
 )
 def test_pbt_anchor_validation_soundness(span: str, ref_body: str, is_present: bool) -> None:
     from summarization.domain.grounding import GroundingValidator
-    from summarization.domain.models import GroundingInput, SummaryDraft, Anchor, AnchorTarget, RefinedSource
+    from summarization.domain.models import (
+        Anchor,
+        AnchorTarget,
+        GroundingInput,
+        RefinedSource,
+        SummaryDraft,
+    )
 
     # whitespace-only spans strip to "" → the validator treats them as no-span (auto-pass);
     # the present/absent soundness property only holds once the span is non-empty after strip.

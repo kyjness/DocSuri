@@ -15,6 +15,8 @@ _DEFAULT_PATHS = [
     "backend/modules/accounts/migrations",
     "backend/modules/library/migrations",
     "backend/modules/personalization/migrations",
+    "backend/modules/research/migrations",
+    "backend/modules/novelty/migrations",
     "ingestion/migrations/postgres",
 ]
 

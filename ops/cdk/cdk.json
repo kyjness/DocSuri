@@ -1,6 +1,10 @@
 {
   "app": "python3 app.py",
   "context": {
-    "@aws-cdk/aws-ecs:enableExecuteCommand": true
+    "@aws-cdk/aws-ecs:enableExecuteCommand": true,
+    "novelty_db_endpoint": "docsuri-compute-postgres9dc8bb04-7ajkntsj0ouu.cpegcaqmu01d.ap-northeast-2.rds.amazonaws.com",
+    "novelty_db_port": "5432",
+    "novelty_db_security_group_id": "sg-0633ac0c0b8c7a052",
+    "novelty_db_secret_arn": "arn:aws:secretsmanager:ap-northeast-2:028317349537:secret:DocsuriComputePostgresSecre-9qclXydED0pl-30WA1V"
   }
 }

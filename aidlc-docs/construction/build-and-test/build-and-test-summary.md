@@ -5,6 +5,48 @@
 
 ---
 
+# U11 Novelty Agent Build and Test Summary — 2026-06-30
+
+## Build Status
+
+- **Build tool**: Python `compileall`, pytest, ruff, AWS CDK.
+- **Build status**: PASS for U11/backend code syntax, lint, tests, app-shell integration, and CDK synth.
+- **CDK synth**: PASS; synthesized `Docsuri-Novelty` to `ops/cdk/cdk.out`.
+
+## Test Execution Summary
+
+| Category | Command | Result |
+| --- | --- | --- |
+| U11 unit tests | `python -m pytest backend/tests/test_novelty.py -q` | 15 passed |
+| U11 + app-shell | `$env:PYTHONPATH='shared/python/src;ops/src;backend/modules/discovery/src;backend/modules/summarization/src'; python -m pytest backend/tests/test_novelty.py backend/tests/test_app_shell.py -q` | 29 passed |
+| Backend tests | `$env:PYTHONPATH='shared/python/src;ops/src;backend/modules/discovery/src;backend/modules/summarization/src'; python -m pytest backend/tests -q` | Passed with 1 skipped test |
+| Lint | `python -m ruff check backend/modules/novelty backend/wiring.py backend/app.py backend/migrations/__main__.py backend/tests/test_novelty.py backend/tests/test_app_shell.py ops/cdk/stacks/novelty_stack.py ops/cdk/stacks/compute_stack.py ops/cdk/app.py` | PASS |
+| Compile | `python -m compileall backend/modules/novelty backend/wiring.py backend/app.py ops/cdk/stacks/novelty_stack.py ops/cdk/stacks/compute_stack.py ops/cdk/app.py` | PASS |
+| CDK synth | `cd ops/cdk; cdk synth` | PASS; existing construct warnings only |
+
+## U11 Coverage
+
+- Natural-language novelty job creation.
+- PDF/Markdown/TXT manuscript boundary.
+- Owner-scoped job access.
+- Job state transition guard and cancel path.
+- Persisted progress event SSE snapshot.
+- Artifact validation with source-ref requirement.
+- Notion preview/approval/export invariant.
+- External query minimization and SSRF URL guard.
+- Worker happy-path processing through persisted artifacts.
+- App-shell module registry inclusion.
+
+## Overall Status
+
+- **Build**: PASS for Python/backend code and CDK synth.
+- **Tests**: PASS for U11, U11 + app-shell, and backend suite after installing declared `pytest-asyncio` test dependency.
+- **Performance tests**: Local load test not executed; staging validation instructions documented.
+- **Contract/security tests**: Backend-local checks documented and covered by `backend/tests/test_novelty.py`.
+- **Ready for Operations**: Yes for review.
+
+---
+
 ## 1. 빌드 현황 (Build Status)
 
 ### U1 Ingestion

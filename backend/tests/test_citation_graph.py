@@ -260,9 +260,23 @@ def test_semantic_scholar_provider_url_encodes_path(monkeypatch) -> None:
 
     monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
 
-    asyncio.run(controller.SemanticScholarProvider().references("10.1/a b/../../x", 1))
+    asyncio.run(controller.SemanticScholarProvider().references("ARXIV:1706.03762v7", 1))
 
-    assert captured["url"].endswith("/paper/10.1%2Fa%20b%2F..%2F..%2Fx/references")
+    assert captured["url"].endswith("/paper/ARXIV%3A1706.03762/references")
+
+
+def test_semantic_scholar_paper_id_normalizes_common_ids() -> None:
+    assert controller._semantic_scholar_paper_id("1706.03762") == "ARXIV:1706.03762"
+    assert controller._semantic_scholar_paper_id("1706.03762v7") == "ARXIV:1706.03762"
+    assert controller._semantic_scholar_paper_id("ARXIV:1706.03762v7") == "ARXIV:1706.03762"
+    assert (
+        controller._semantic_scholar_paper_id("10.5555/3295222.3295349")
+        == "DOI:10.5555/3295222.3295349"
+    )
+    assert (
+        controller._semantic_scholar_paper_id("https://example.test/paper")
+        == "URL:https://example.test/paper"
+    )
 
 
 def test_emit_ignores_observability_without_emit_log() -> None:

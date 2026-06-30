@@ -81,9 +81,9 @@ class _Grobid:
         self.text = text
         self.seen_pdf: bytes | None = None
 
-    def extract_text(self, pdf: bytes) -> str:
+    def extract_tei(self, pdf: bytes) -> str:
         self.seen_pdf = pdf
-        return self.text
+        return f"<TEI><text><body><div><p>{self.text}</p></div></body></text></TEI>"
 
 
 def _external_record() -> SourcePaperRecord:
@@ -256,7 +256,7 @@ def test_worker_dispatches_legacy_type_less_ingest_job() -> None:
         receipt_handle="legacy-job",
         body={"jobId": "job-1", "kind": "EVENT", "arxivRef": "2401.00001v1"},
     )
-    pipeline = SimpleNamespace(ingest_one=seen.append)
+    pipeline = SimpleNamespace(ingest_one=seen.append, is_rebuild_active=lambda: False)
     runtime = SimpleNamespace(pipeline=pipeline, queue=queue, observability=observability)
 
     process_message(runtime, message)
@@ -482,6 +482,60 @@ def test_refresh_wires_configured_external_sources_into_queue() -> None:
     assert job.canonical_key == "doi:10.1000/external"
 
 
+def test_schedule_tick_isolates_a_failing_external_source() -> None:
+    # A single external source raising must NOT abort the tick or crash the worker — it should
+    # be caught, emit a failure metric, and let the tick finish. Regression for the SS 400 that
+    # propagated to worker.main -> SystemExit.
+    control = InMemoryControlPlaneStore()
+    queue = InMemoryQueue()
+    observability = type(
+        "Obs",
+        (),
+        {
+            "metrics": [],
+            "emit_metric": lambda self, name, value, tags=None: self.metrics.append(
+                (name, value, tags or {})
+            ),
+            "emit_log": lambda self, entry: None,
+            "emit_failure_signal": lambda self, job_id, stage, error: None,
+        },
+    )()
+
+    class _RaisingExternalSource:
+        def fetch_incremental(self, since, categories, until=None):
+            raise PermanentIngestionError(
+                "boom", reason=FailureReason.FETCH_FAILURE, stage="source"
+            )
+
+        def fetch_pdf(self, record: SourcePaperRecord) -> bytes:
+            raise AssertionError("fetch_pdf should not be called")
+
+    corpus_sources = CorpusSourceAdapterSet(
+        arxiv=FakeArxivSource([sample_metadata()]),
+        openalex=_RaisingExternalSource(),
+        grobid=_Grobid(),
+    )
+    service = RefreshOrchestrationService(
+        arxiv=FakeArxivSource([sample_metadata()]),
+        control_plane=control,
+        queue=queue,
+        observability=observability,
+        corpus_sources=corpus_sources,
+        enabled_sources=(SourceName.ARXIV, SourceName.OPENALEX),
+    )
+
+    service.on_schedule_tick()  # must not raise
+
+    names = [name for name, _, _ in observability.metrics]
+    assert "ingestion.source.incremental.failed" in names  # the bad source was isolated
+    assert "ingestion.incremental.queued" in names  # the tick still reached completion
+    failed_tags = [
+        tags for name, _, tags in observability.metrics
+        if name == "ingestion.source.incremental.failed"
+    ]
+    assert failed_tags[0]["source"] == "OPENALEX"
+
+
 def test_full_rebuild_wires_configured_external_sources_as_seed_jobs() -> None:
     control = InMemoryControlPlaneStore()
     queue = InMemoryQueue()
@@ -564,6 +618,106 @@ def test_full_rebuild_skips_external_records_outside_corpus_window() -> None:
 
     assert service.trigger_full_rebuild(owner="test") == 0
     assert queue.jobs == []
+
+
+def test_backfill_external_sources_enqueues_only_external_seed_jobs_in_window() -> None:
+    control = InMemoryControlPlaneStore()
+    queue = InMemoryQueue()
+    observability = type(
+        "Obs",
+        (),
+        {
+            "metrics": [],
+            "emit_metric": lambda self, name, value, tags=None: self.metrics.append(
+                (name, value, tags or {})
+            ),
+            "emit_log": lambda self, entry: None,
+            "emit_failure_signal": lambda self, job_id, stage, error: None,
+        },
+    )()
+    record = _external_record()  # updated_at 2025-06-02, inside the window below
+    provider = _ExternalSource(record)
+    corpus_sources = CorpusSourceAdapterSet(
+        arxiv=FakeArxivSource([sample_metadata()]),
+        openalex=provider,
+        grobid=_Grobid(),
+    )
+    service = RefreshOrchestrationService(
+        arxiv=FakeArxivSource([sample_metadata()]),
+        control_plane=control,
+        queue=queue,
+        observability=observability,
+        corpus_sources=corpus_sources,
+        enabled_sources=(SourceName.ARXIV, SourceName.OPENALEX),
+    )
+
+    since = datetime(2025, 1, 1, tzinfo=UTC)
+    until = datetime(2025, 12, 31, tzinfo=UTC)
+    assert service.backfill_external_sources(since, until) == 1
+
+    # arXiv is NOT re-harvested — only the external source is enqueued, and as a SEED job.
+    assert len(queue.jobs) == 1
+    job = queue.jobs[0]
+    assert job.source_name is SourceName.OPENALEX
+    assert job.kind is JobKind.SEED_REBUILD
+    # The run-scoped window is passed straight through to the source adapter.
+    assert provider.incremental_calls[0][0] == since
+    assert provider.incremental_calls[0][2] == until
+
+
+def test_backfill_external_sources_isolates_a_failing_source() -> None:
+    # One source exhausting its retries (raises) must NOT abort the backfill or drop the others.
+    control = InMemoryControlPlaneStore()
+    queue = InMemoryQueue()
+    observability = type(
+        "Obs",
+        (),
+        {
+            "metrics": [],
+            "emit_metric": lambda self, name, value, tags=None: self.metrics.append(
+                (name, value, tags or {})
+            ),
+            "emit_log": lambda self, entry: None,
+            "emit_failure_signal": lambda self, job_id, stage, error: None,
+        },
+    )()
+
+    class _RaisingExternalSource:
+        def fetch_incremental(self, since, categories, until=None):
+            raise RetriableIngestionError(
+                "rate limited", reason=FailureReason.RATE_LIMITED, stage="semantic_scholar"
+            )
+
+        def fetch_pdf(self, record: SourcePaperRecord) -> bytes:
+            raise AssertionError("fetch_pdf should not be called")
+
+    good = _ExternalSource(_external_record())
+    corpus_sources = CorpusSourceAdapterSet(
+        arxiv=FakeArxivSource([sample_metadata()]),
+        semantic_scholar=_RaisingExternalSource(),
+        openalex=good,
+        grobid=_Grobid(),
+    )
+    service = RefreshOrchestrationService(
+        arxiv=FakeArxivSource([sample_metadata()]),
+        control_plane=control,
+        queue=queue,
+        observability=observability,
+        corpus_sources=corpus_sources,
+        enabled_sources=(SourceName.ARXIV, SourceName.SEMANTIC_SCHOLAR, SourceName.OPENALEX),
+    )
+
+    queued = service.backfill_external_sources(
+        datetime(2025, 1, 1, tzinfo=UTC), datetime(2025, 12, 31, tzinfo=UTC)
+    )  # must not raise despite SS failing
+
+    assert queued == 1  # OpenAlex still enqueued
+    assert queue.jobs[0].source_name is SourceName.OPENALEX
+    failed = [
+        tags for name, _, tags in observability.metrics
+        if name == "ingestion.backfill.external.failed"
+    ]
+    assert failed and failed[0]["source"] == "SEMANTIC_SCHOLAR"
 
 
 def test_source_record_ingest_uses_grobid_docmodel_and_source_watermark() -> None:

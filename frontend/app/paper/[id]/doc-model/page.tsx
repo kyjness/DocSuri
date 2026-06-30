@@ -29,7 +29,7 @@ export default async function DocModelPage({
   return (
     <RouteGuard redirectTo={`/paper/${id}/doc-model`}>
       <div className={screen.screen}>
-        <AppHeader title="본문" backHref={`/paper/${id}`} />
+        <AppHeader title="전문" backHref={`/paper/${id}`} />
         <main className={page.page}>
           <DocModelViewer paperId={id} version={version} anchor={anchor} arxivUrl={arxivUrl} />
         </main>

@@ -5,6 +5,8 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any
 
+from psycopg.types.json import Jsonb
+
 from docsuri_ingestion.domain.enums import DedupDecision, DedupStateKind, SourceName
 from docsuri_ingestion.domain.models import (
     CanonicalDedupState,
@@ -15,11 +17,34 @@ from docsuri_ingestion.domain.models import (
 )
 
 
+def _tier_priority_sql(col: str) -> str:
+    """SQL CASE giving canonical-winner precedence for a tier column (lower wins). Mirrors
+    ``domain.canonical.source_priority_from_tier`` — keep the two in sync. Uses ``position(...)``
+    rather than ``LIKE '%..%'`` so no literal ``%`` collides with psycopg parameter parsing."""
+    return (
+        f"CASE WHEN position('ARXIV' in upper({col})) > 0 "
+        f"OR {col} IN ('native_html', 'ar5iv', 'eprint_latex', 'pdf') THEN 0 "
+        f"WHEN position('SEMANTIC_SCHOLAR' in upper({col})) > 0 THEN 1 ELSE 2 END"
+    )
+
+
+# True when the incoming (EXCLUDED) winner should overwrite the stored one: higher source
+# priority, or equal priority and a newer-or-equal version (BR-C3 / BR-14).
+_CANONICAL_SUPERSEDES = (
+    f"(({_tier_priority_sql('EXCLUDED.winning_source_tier')}) "
+    f"< ({_tier_priority_sql('canonical_dedup_state.winning_source_tier')}) "
+    f"OR (({_tier_priority_sql('EXCLUDED.winning_source_tier')}) "
+    f"= ({_tier_priority_sql('canonical_dedup_state.winning_source_tier')}) "
+    f"AND EXCLUDED.winning_version >= canonical_dedup_state.winning_version))"
+)
+
+
 class PostgresControlPlaneStore:
     """Postgres implementation of U1 control-plane state.
 
-    The CAS statements are deliberately conditional on `current_version <= incoming`.
-    This enforces BR-14 strictly-newer-vN-wins for both upserts and tombstones.
+    The CAS statements are deliberately conditional on `current_version <= incoming`
+    (newer-or-equal-vN-wins): a strictly-newer version supersedes, and a same-version re-claim
+    is allowed so idempotent reprocess (BR-C12) is a no-op rather than a rejection.
     """
 
     def __init__(self, dsn: str, *, min_pool_size: int = 2, max_pool_size: int = 5) -> None:
@@ -207,20 +232,35 @@ class PostgresControlPlaneStore:
         )
 
     def upsert_canonical_dedup_state(self, state: CanonicalDedupState) -> None:
+        # Guarded, atomic winner upsert (BR-C3 / BR-14): on a key collision overwrite the winner
+        # identity ONLY when the incoming row has higher source priority or a newer-or-equal
+        # version, and ALWAYS union seen_sources. Two sources racing on one canonical_key can no
+        # longer lost-update each other or regress the winner. Mirrors the InMemory store guard.
         with self._connect() as conn:
             conn.execute(
-                """
+                f"""
                 INSERT INTO canonical_dedup_state(
                     canonical_key, paper_id, winning_source_tier, winning_version,
                     fingerprint, seen_sources, updated_at
                 )
                 VALUES (%s, %s, %s, %s, %s, %s, now())
                 ON CONFLICT (canonical_key) DO UPDATE
-                    SET paper_id = EXCLUDED.paper_id,
-                        winning_source_tier = EXCLUDED.winning_source_tier,
-                        winning_version = EXCLUDED.winning_version,
-                        fingerprint = EXCLUDED.fingerprint,
-                        seen_sources = EXCLUDED.seen_sources,
+                    SET paper_id = CASE WHEN {_CANONICAL_SUPERSEDES}
+                            THEN EXCLUDED.paper_id ELSE canonical_dedup_state.paper_id END,
+                        winning_source_tier = CASE WHEN {_CANONICAL_SUPERSEDES}
+                            THEN EXCLUDED.winning_source_tier
+                            ELSE canonical_dedup_state.winning_source_tier END,
+                        winning_version = CASE WHEN {_CANONICAL_SUPERSEDES}
+                            THEN EXCLUDED.winning_version
+                            ELSE canonical_dedup_state.winning_version END,
+                        fingerprint = CASE WHEN {_CANONICAL_SUPERSEDES}
+                            THEN EXCLUDED.fingerprint ELSE canonical_dedup_state.fingerprint END,
+                        seen_sources = (
+                            SELECT COALESCE(jsonb_agg(DISTINCT elem), '[]'::jsonb)
+                              FROM jsonb_array_elements(
+                                  canonical_dedup_state.seen_sources || EXCLUDED.seen_sources
+                              ) AS elem
+                        ),
                         updated_at = now()
                 """,
                 (
@@ -229,7 +269,7 @@ class PostgresControlPlaneStore:
                     state.winning_source_tier,
                     state.winning_version,
                     state.fingerprint,
-                    [source.value for source in state.seen_sources],
+                    Jsonb([source.value for source in state.seen_sources]),
                 ),
             )
             conn.commit()

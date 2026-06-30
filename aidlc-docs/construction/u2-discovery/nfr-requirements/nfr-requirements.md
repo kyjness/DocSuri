@@ -7,9 +7,12 @@
 
 ---
 
+> **페이즈 2 개정(2026-06-29, 재인셉션)**: lite/full scope SLA 프로파일(§1)·SEC-9 비노출에 `blockRefs`/`sourceProvenance` 추가(§5)·QT-1 멀티소스(비-arXiv) 근거 평가셋(§9). 임베딩 모델·specVersion 불변(Cohere Embed v4·specVersion v2).
+
 ## 1. 성능 (Performance) — NFR-P1 **주 대상**
 
 - **목표(제안 계승)**: **P50 < 3s, P95 < 8s** 종단(질의 → 정렬 결과).
+- **scope별 SLA(2026-06-29 — 페이즈 2/Q6·#236)**: NFR-P1 SLA 대상은 **`lite`(사람 검색창 기본)** — 초록 chunk k-NN + 제목/초록 BM25. **`full`(에이전트 심층·본문 chunk)은 비-SLA**(요약/에이전트 온디맨드 프로파일 준함). lite/full 분기는 #236 랜딩.
 - **레이턴시 예산 분해(Q4=A)**: **U2 자체 단계**(질의 임베딩 + OpenSearch 하이브리드 검색 + RRF/랭킹 + 조립)에 예산 할당 + **U6 근거화(enforce, post-handler)는 별도 예산**(책임 분리). 종단 합이 NFR-P1 충족.
   - U2 단계 동인: Bedrock 질의 임베딩 1회(TD-U2-6) + OpenSearch k-NN+BM25 + 앱 RRF 병합.
   - **임베딩 캐시(TD-U2-7)**: 동일 정규화 질의 재임베딩 회피로 캐시 히트 시 임베딩 레이턴시 0.
@@ -43,7 +46,7 @@
 
 - **U2 직접**:
   - **SEC-5**: 질의 도메인 검증·새니타이즈(BR-1/2; ≤500자·제어문자 거부·NFC).
-  - **SEC-9**: 내부 필드(owner·raw/RRF 점수·디버그·`vector`/`chunkId`/`section`) 외부 비노출(BR-6/15·INV-2); 카드 7필드만; 일반화 에러.
+  - **SEC-9** *(2026-06-29 개정 — 페이즈 2)*: 내부 필드(owner·raw/RRF 점수·디버그·`vector`/`chunkId`/`section`/**`blockRefs`/`sourceProvenance`**) 외부 비노출(BR-6/15·INV-2; Q3: blockRefs/sourceProvenance 외부 노출 페이즈 3·4 이월); 카드는 소스 중립 투영(§domain-entities §5.1 + `sourceName`/`sourceUrl`, Q2)만; 일반화 에러.
   - **SEC-15**: 모든 외부 호출 fail-closed·전역 에러 핸들러(BR-16·INV-3).
   - **SEC-3**: 구조화 로깅(requestId 상관)·**질의 원문/PII 로깅 정책 준수**.
 - **위임(단일 권위)**: **SEC-8 인증·인가** = U6 게이트웨이(authn) + U3.AuthorizationGuard(객체 인가) — U2는 `RequestContext.authSession` 신뢰(BR-13). **SEC-11 레이트리밋** = U6 게이트웨이(U2 미구현).
@@ -65,6 +68,7 @@
 
 ## 9. 테스트 (QT-2/3/4) — Q9=A
 
+- **QT-1(근거화 — 페이즈 2 보강)**: 보류 평가셋 날조 0건·코퍼스 밖 기권. **멀티소스(비-arXiv) 케이스 추가** — 소스 중립 실재 링크 검증(BR-18·GroundingStructuralGuard, Q2). enforce는 U6 단일권위(QT-1 평가셋 소유=U6/OP).
 - **QT-2(관련도)**: Recall@10 ≥ 0.7(제안). **RelevanceRanker 출력이 평가 표면**; **평가셋에 한국어 질의 포함**(cross-lingual TD-3 검증). 평가셋 구축·실행 소유=U6/OP.
 - **QT-3(신뢰성/저하)**: 모든 업스트림 장애·빈/기권/저하 경로 정의·테스트(BR-9/10/11/16). U6.ReliabilityEvalProbe 소유; U2는 저하 폴백·종단 상태 기여.
 - **QT-4(PBT)**: §7.

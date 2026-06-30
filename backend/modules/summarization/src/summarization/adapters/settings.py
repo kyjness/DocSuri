@@ -20,6 +20,12 @@ DEFAULT_TRANSLATE_MODEL = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
 MODEL_VER = "sonnet46-haiku45"
 
 
+def _env_flag(name: str) -> bool:
+    """Truthy when the env var is set to a common affirmative ("1"/"true"/"yes"). All feature
+    gates here default OFF (unset → False), so a misspelled value fails closed."""
+    return os.environ.get(name, "").lower() in ("1", "true", "yes")
+
+
 @dataclass(frozen=True, slots=True)
 class SummarizationSettings:
     summary_model_id: str
@@ -77,13 +83,10 @@ class SummarizationSettings:
             region_name=os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION"),
             redis_ttl_seconds=int(os.environ.get("DOCSURI_SUMMARY_TTL", "86400")),  # 24h (§11)
             model_ver=MODEL_VER,
-            assets_enabled=os.environ.get("DOCSURI_MULTIMODAL_ASSETS_ENABLED", "").lower()
-            in ("1", "true", "yes"),
+            assets_enabled=_env_flag("DOCSURI_MULTIMODAL_ASSETS_ENABLED"),
             asset_url_ttl_seconds=int(os.environ.get("DOCSURI_ASSET_URL_TTL_SECONDS", "600")),
-            docmodel_viewer_enabled=os.environ.get("DOCSURI_DOCMODEL_VIEWER_ENABLED", "").lower()
-            in ("1", "true", "yes"),
+            docmodel_viewer_enabled=_env_flag("DOCSURI_DOCMODEL_VIEWER_ENABLED"),
             docmodel_build_queue_url=os.environ.get("DOCSURI_DOCMODEL_BUILD_QUEUE_URL"),
-            map_reduce_enabled=os.environ.get("DOCSURI_MAP_REDUCE_ENABLED", "").lower()
-            in ("1", "true", "yes"),
+            map_reduce_enabled=_env_flag("DOCSURI_MAP_REDUCE_ENABLED"),
             summary_job_queue_url=os.environ.get("DOCSURI_SUMMARY_JOB_QUEUE_URL"),
         )

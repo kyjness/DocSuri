@@ -11,6 +11,34 @@
 
 ---
 
+# U11 Novelty Agent Unit Test Instructions — 2026-06-30
+
+Run U11 unit tests:
+
+```powershell
+python -m pytest backend/tests/test_novelty.py -q
+```
+
+Observed result:
+
+- 15 passed
+
+Coverage focus:
+
+- source-key normalization idempotency
+- source-ref requirement for supported artifacts
+- owner isolation
+- state transition guard
+- Notion preview/approval/export invariant
+- SSRF and query minimization guard
+- worker happy path
+- worker failure commit/ack path
+- SSE snapshot encoding
+- API create/status/cancel
+- unsupported manuscript rejection
+
+---
+
 ## 1. 테스트 실행 도구 (Testing Tools)
 
 - **테스트 프레임워크**: `pytest`

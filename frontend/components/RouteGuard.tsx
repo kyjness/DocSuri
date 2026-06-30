@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useSession } from './session/SessionContext';
 import { StateView } from './StateView';
@@ -10,15 +10,23 @@ import { StateView } from './StateView';
 // preserved. Backend 401/403 remains authoritative.
 
 export function RouteGuard({ redirectTo, children }: { redirectTo: string; children: React.ReactNode }) {
-  const { status } = useSession();
+  const { status, signingOut } = useSession();
   const router = useRouter();
+  const sawSignOut = useRef(false);
+
+  // Logout callers must navigate after signOut; this latch only suppresses RouteGuard's /login race.
+  if (signingOut) sawSignOut.current = true;
+  const isSignOutFlow = signingOut || sawSignOut.current;
 
   useEffect(() => {
-    if (status === 'anonymous') {
+    if (status === 'anonymous' && !isSignOutFlow) {
       router.replace(`/login?redirect=${encodeURIComponent(redirectTo)}`);
     }
-  }, [status, redirectTo, router]);
+  }, [status, isSignOutFlow, redirectTo, router]);
 
   if (status === 'authenticated') return <>{children}</>;
-  return <StateView kind="loading" />;
+  if (isSignOutFlow) {
+    return <StateView kind="loading" title="로그아웃 중…" message="잠시만 기다려 주세요." />;
+  }
+  return <StateView kind="loading" title="페이지를 불러오는 중…" message="잠시만 기다려 주세요." />;
 }

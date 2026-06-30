@@ -212,6 +212,43 @@ def test_figure_links_existing_webp_asset_by_ordinal() -> None:
     assert figure.assetRef.ordinal == 0
 
 
+def test_subfigure_uses_own_caption_not_first_panel() -> None:
+    """A figure with sub-panels takes its OWN "Figure N" caption, not the first panel's "(a)".
+
+    LaTeXML emits each panel's "(a)/(b)" caption before the figure's own numbered caption; the
+    parser must not mislabel the figure "(a)" (which also strips the number used to image it)."""
+    panel = (
+        '<figure class="ltx_figure"><img src="{src}"/>'
+        '<figcaption class="ltx_caption"><span class="ltx_tag">{tag} </span>{cap}</figcaption>'
+        "</figure>"
+    )
+    own = (
+        '<figcaption class="ltx_caption">'
+        '<span class="ltx_tag">Figure 4: </span>Overall result</figcaption>'
+    )
+    html = (
+        '<html><body><div class="ltx_document">'
+        '<section class="ltx_section"><h2>1 Results</h2>'
+        '<figure class="ltx_figure">'
+        + panel.format(src="panel_a.png", tag="(a)", cap="left")
+        + panel.format(src="panel_b.png", tag="(b)", cap="right")
+        + own
+        + "</figure></section></div></body></html>"
+    )
+    specs: list = []
+    doc = parse_html_to_docmodel(
+        html, paper_id="2401.00009", version=1, title="T", abstract=None,
+        source_tier=SourceTier.ar5iv, parser_version="p", schema_version="1.0.0",
+        generated_at=_FIXED_TS, figure_specs=specs,
+    )
+    figure = next(
+        b.root for s in doc.sections for b in s.blocks if isinstance(b.root, FigureBlock)
+    )
+    assert figure.anchorLabel == "Figure 4"  # NOT "(a)"
+    assert figure.caption == "Overall result"
+    assert specs[0].label == "Figure 4"  # numbered label flows to the asset extractor
+
+
 def test_list_and_code_blocks() -> None:
     doc = _parse()
     sub = _body_sections(doc)[0].sections[0]

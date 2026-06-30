@@ -9,15 +9,24 @@ overrides it for production (SQL).
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from backend.modules.accounts.integrations.oidc import ORCID_BASES, fetch_orcid_public_record
 from backend.modules.accounts.models import Principal
 
 from .ports import AccountRepository, SubscriptionRepository
 from .repository.memory import InMemoryAccountRepository, InMemorySubscriptionRepository
-from .schemas import AccountProfileDTO, ConsentsDTO, ConsentsUpdate, SubscriptionDTO
+from .schemas import (
+    AccountProfileDTO,
+    ConsentsDTO,
+    ConsentsUpdate,
+    OrcidProfileDTO,
+    OrcidWorkDTO,
+    SubscriptionDTO,
+)
 from .services.account import AccountService
 from .services.subscription import SubscriptionService
 
@@ -94,6 +103,27 @@ async def get_account_profile(
     if profile is None:
         raise HTTPException(status_code=404, detail="account not found")
     return profile
+
+
+@account_router.get("/orcid-profile", response_model=OrcidProfileDTO)
+async def get_orcid_profile(
+    principal: Principal = Depends(get_principal),
+    svc: AccountService = Depends(get_account_service),
+) -> OrcidProfileDTO:
+    """ORCID 공개 프로필 (FR-27/BR-A13). 이름·소속은 로그인 시 캐시한 값, works는 ORCID Public
+    API에서 라이브로 best-effort 취득(실패 시 빈 목록). ORCID로 로그인하지 않은 계정은 404."""
+    identity = svc.get_orcid_identity(principal)
+    if identity is None:
+        raise HTTPException(status_code=404, detail="orcid profile not found")
+    _, pub_base = ORCID_BASES.get(os.getenv("ORCID_OIDC_ENV", "prod"), ORCID_BASES["prod"])
+    record = await fetch_orcid_public_record(identity.orcid_id, pub_base=pub_base)
+    works = [OrcidWorkDTO(title=w["title"], year=w.get("year")) for w in record.get("works", [])]
+    return OrcidProfileDTO(
+        orcidId=identity.orcid_id,
+        name=identity.name or identity.orcid_id,
+        affiliation=identity.affiliation,
+        works=works,
+    )
 
 
 @account_router.get("/consents", response_model=ConsentsDTO)

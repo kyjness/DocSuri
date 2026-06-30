@@ -24,9 +24,20 @@ class ArxivAssetSource:
     ) -> None:
         self._base = base_url.rstrip("/")
         self._timeout = timeout_seconds
+        # Single-entry e-print memo (arxiv_id, bytes|None). The asset extractor and the doc-model
+        # macro extractor both pull the same multi-MB tarball within one paper's processing, and
+        # this source is shared between them (one instance in the wiring), so caching the most
+        # recent paper lets the two calls share a single network fetch. Bounded to one tarball in
+        # memory — replaced when a different paper is fetched.
+        self._eprint_memo: tuple[str, bytes | None] | None = None
 
     def fetch_eprint(self, metadata: MetadataRecord) -> bytes | None:
-        return self._get(f"{self._base}/e-print/{metadata.identifier.arxiv_id}")
+        arxiv_id = metadata.identifier.arxiv_id
+        if self._eprint_memo is not None and self._eprint_memo[0] == arxiv_id:
+            return self._eprint_memo[1]
+        data = self._get(f"{self._base}/e-print/{arxiv_id}")
+        self._eprint_memo = (arxiv_id, data)
+        return data
 
     def fetch_pdf(self, metadata: MetadataRecord) -> bytes | None:
         return self._get(f"{self._base}/pdf/{metadata.identifier.arxiv_id}")
@@ -34,11 +45,16 @@ class ArxivAssetSource:
     def _get(self, url: str) -> bytes | None:
         import httpx
 
+        from docsuri_ingestion.http_limits import read_capped
+
         try:
-            response = httpx.get(url, timeout=self._timeout, follow_redirects=True)
-            response.raise_for_status()
-            return response.content
-        except Exception:  # noqa: BLE001 - best-effort: missing source → no assets
+            with (
+                httpx.Client(timeout=self._timeout, follow_redirects=True) as client,
+                client.stream("GET", url) as response,
+            ):
+                response.raise_for_status()
+                return read_capped(response)  # caps oversize PDF/e-print (NFR §0.5)
+        except Exception:  # noqa: BLE001 - best-effort: missing/oversize source → no assets
             return None
 
 

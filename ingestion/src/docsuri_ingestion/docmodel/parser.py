@@ -31,7 +31,7 @@ from bs4 import BeautifulSoup, NavigableString, Tag
 from docsuri_shared.dtos import DocModel, SourceTier
 
 from docsuri_ingestion.docmodel.mathml import mathml_to_latex
-from docsuri_ingestion.domain.assets import asset_id
+from docsuri_ingestion.domain.assets import FigureSpec, asset_id
 from docsuri_ingestion.domain.enums import AssetType
 
 _WS_RE = re.compile(r"\s+")
@@ -68,6 +68,16 @@ class _DocCtx:
     version: int
     figure_ordinal: int = 0
     table_ordinal: int = 0
+    formula_ordinal: int = 0
+    # Optional collector for coordinate crop specs (TEI/PDF path). When a list is supplied, the
+    # TEI figure/formula builders append the page-crop request they mint alongside the block, so
+    # the rendered image's asset_id matches the block's assetRef exactly (ordinal alignment).
+    crops: list | None = None
+    # Optional collector for figure image-resolution hints (HTML path). When a list is supplied,
+    # each FigureBlock appends a FigureSpec(<img src>, anchorLabel) in document order (index ==
+    # ordinal) so the asset extractor can match each figure to its e-print graphic (by src) or a
+    # PDF page-crop (by label number) and keep the assetId aligned to the block.
+    figure_specs: list | None = None
 
 
 @dataclass
@@ -94,11 +104,22 @@ def parse_html_to_docmodel(
     parser_version: str,
     schema_version: str,
     generated_at: datetime,
+    macros: dict[str, str] | None = None,
+    figure_specs: list[FigureSpec] | None = None,
 ) -> DocModel:
-    """Parse LaTeXML HTML into a validated ``DocModel`` (pure given its inputs)."""
+    """Parse LaTeXML HTML into a validated ``DocModel`` (pure given its inputs).
+
+    ``macros`` is an optional KaTeX macro map from the e-print preamble (see
+    ``docmodel.macros``); it is carried on ``meta.macros`` so the renderer can resolve
+    author-defined commands that LaTeXML left verbatim in the formula LaTeX.
+
+    ``figure_specs`` is an optional out-param: when supplied it is filled with a FigureSpec per
+    FigureBlock in document order (index == figure ordinal), so the asset extractor can resolve
+    each figure's image (e-print graphic by src, else PDF page-crop by label) aligned to its block.
+    """
     soup = BeautifulSoup(html or "", "lxml")
     root = soup.find(class_="ltx_document") or soup.body or soup
-    doc_ctx = _DocCtx(paper_id=paper_id, version=version)
+    doc_ctx = _DocCtx(paper_id=paper_id, version=version, figure_specs=figure_specs)
 
     top_sections = _top_level_sections(root)
     if top_sections:
@@ -118,6 +139,7 @@ def parse_html_to_docmodel(
             "version": version,
             "title": title,
             **({"abstract": abstract} if abstract else {}),
+            **({"macros": macros} if macros else {}),
             "provenance": {
                 "sourceTier": source_tier.value,
                 "parserVersion": parser_version,
@@ -364,11 +386,20 @@ def _table_block(figure_el: Tag, sec_ctx: _SectionCtx) -> dict | None:
 
 
 def _figure_block(figure_el: Tag, sec_ctx: _SectionCtx, doc_ctx: _DocCtx) -> dict | None:
-    if figure_el.find("img") is None:
+    img = figure_el.find("img")
+    if img is None:
         return None  # no graphic to reference
     ordinal = doc_ctx.figure_ordinal
     doc_ctx.figure_ordinal += 1
     label, caption = _caption(figure_el)
+    # Record this figure's resolution hints at its ordinal so the asset extractor can align its
+    # image to this block (the append order matches the ordinal increment, keeping
+    # figure_specs[ordinal] == this block).
+    if doc_ctx.figure_specs is not None:
+        src = img.get("src") if isinstance(img, Tag) else None
+        doc_ctx.figure_specs.append(
+            FigureSpec(src=src if isinstance(src, str) else "", label=label)
+        )
     asset_ref: dict = {
         "assetId": asset_id(doc_ctx.paper_id, doc_ctx.version, AssetType.FIGURE, ordinal),
         "type": "figure",
@@ -471,13 +502,44 @@ def _inline_text(el: Tag) -> str:
     return _WS_RE.sub(" ", "".join(parts)).strip()
 
 
+def _is_figure_container(node: object) -> bool:
+    return (
+        isinstance(node, Tag)
+        and node.name == "figure"
+        and bool({"ltx_figure", "ltx_table"} & _classes(node))
+    )
+
+
+def _nearest_figure_ancestor(node: Tag) -> Tag | None:
+    parent = node.parent
+    while isinstance(parent, Tag):
+        if _is_figure_container(parent):
+            return parent
+        parent = parent.parent
+    return None
+
+
+def _own_figcaption(figure_el: Tag) -> Tag | None:
+    """The figure's OWN ``ltx_caption`` — not one belonging to a nested sub-figure panel.
+
+    LaTeXML lays a subfigure group's panel captions ("(a)", "(b)", …) out BEFORE the figure's
+    own "Figure N:" caption, so a plain descendant ``find`` grabs the first panel's "(a)" — which
+    mislabels the figure and strips its number (breaking caption-number matching). Pick the
+    figcaption whose nearest figure container is ``figure_el`` itself.
+    """
+    for figcaption in figure_el.find_all("figcaption", class_="ltx_caption"):
+        if _nearest_figure_ancestor(figcaption) is figure_el:
+            return figcaption
+    return None
+
+
 def _caption(figure_el: Tag) -> tuple[str, str]:
-    """Return ``(anchorLabel, caption)`` from an ``ltx_caption`` figcaption.
+    """Return ``(anchorLabel, caption)`` from the figure's own ``ltx_caption`` figcaption.
 
     The leading ``ltx_tag`` span ("Figure 1: ") yields the anchor label; the remaining
-    text is the caption.
+    text is the caption. Nested sub-figure panel captions are ignored (see ``_own_figcaption``).
     """
-    figcaption = figure_el.find("figcaption", class_="ltx_caption")
+    figcaption = _own_figcaption(figure_el)
     if figcaption is None:
         return "", ""
     tag = figcaption.find("span", class_="ltx_tag")

@@ -13,4 +13,9 @@ export interface PaperMetaVM {
   abstract: string;
   /** Canonical arXiv abstract page; rendered as a safe external link-out. */
   arxivUrl?: string;
+  /** Phase 2 (Q2). Discovery source label (arXiv / Semantic Scholar / OpenAlex) — agrees with
+   * the search card. Optional/additive. */
+  sourceName?: string;
+  /** Phase 2 (Q2). Source-neutral resolvable link-out (arXiv=arxivUrl, non-arXiv=sourceUrl/DOI). */
+  sourceUrl?: string;
 }

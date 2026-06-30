@@ -5,8 +5,6 @@ secret-header origin authentication, CloudFront-only network lockdown. Differenc
 frontend is browser-facing, so it carries a custom apex domain (docsuri.org) on the viewer
 side — which is what makes the httpOnly+Secure session cookie work in a real browser."""
 
-import secrets
-
 from aws_cdk import (
     CfnOutput,
     Duration,
@@ -44,7 +42,7 @@ from aws_cdk import (
 )
 from constructs import Construct
 
-from ._origin_auth import SOCIAL_ORIGIN_VERIFY_SECRET
+from ._origin_auth import social_origin_verify_secret, web_origin_verify_secret
 
 _APP_DOMAIN = "docsuri.org"  # viewer (browser-facing) — the app's public URL
 _ORIGIN_DOMAIN = "app-origin.docsuri.org"  # ALB origin name (distinct from backend's origin.*)
@@ -58,8 +56,7 @@ _ZONE_ID = "Z0084324NUV4EPLJ7JH9"
 _VIEWER_CERT_ARN = "arn:aws:acm:us-east-1:028317349537:certificate/8973dd50-5acb-4cb6-9a68-c64ddcdf0243"  # noqa: E501
 # com.amazonaws.global.cloudfront.origin-facing in ap-northeast-2.
 _CLOUDFRONT_PREFIX_LIST = "pl-22a6434b"
-# Per-synth origin-auth secret (never in source); see compute_stack for the rationale.
-_ORIGIN_VERIFY_SECRET = secrets.token_urlsafe(32)
+_LIBRARY_ENTRY_PATH = "/library/saved"
 
 
 class FrontendStack(Stack):
@@ -73,6 +70,12 @@ class FrontendStack(Stack):
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
+
+        # X-Origin-Verify secrets (web: our WebCdn→ALB; social: shared with the backend ALB for the
+        # /auth/social/* edge). Read from SSM at deploy time so synth is deterministic — see
+        # ._origin_auth.
+        origin_verify = web_origin_verify_secret(self)
+        social_verify = social_origin_verify_secret(self)
 
         repo = ecr.Repository.from_repository_name(self, "FrontendRepo", "docsuri-frontend")
         cluster = ecs.Cluster(self, "Cluster", cluster_name="docsuri-frontend", vpc=vpc)
@@ -93,6 +96,7 @@ class FrontendStack(Stack):
         container_env = {
             "NODE_ENV": "production",
             "DOCSURI_GATEWAY_URL": gateway_url,
+            "DOCSURI_LIBRARY_ENTRY_PATH": _LIBRARY_ENTRY_PATH,
         }
 
         # --- ALB + Fargate (HTTPS :443 with ACM cert + Route53 alias app-origin.docsuri.org) ---
@@ -140,7 +144,7 @@ class FrontendStack(Stack):
             "VerifiedOriginOnly",
             priority=1,
             conditions=[
-                elbv2.ListenerCondition.http_header("X-Origin-Verify", [_ORIGIN_VERIFY_SECRET])
+                elbv2.ListenerCondition.http_header("X-Origin-Verify", [origin_verify])
             ],
             action=elbv2.ListenerAction.forward([self.service.target_group]),
         )
@@ -163,7 +167,7 @@ class FrontendStack(Stack):
             protocol_policy=cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
             https_port=443,
             origin_ssl_protocols=[cloudfront.OriginSslPolicy.TLS_V1_2],
-            custom_headers={"X-Origin-Verify": _ORIGIN_VERIFY_SECRET},
+            custom_headers={"X-Origin-Verify": origin_verify},
         )
         # Backend origin for the social-login redirects only (Option A, FR-27). Sends the SHARED
         # verify secret (accepted as a 2nd value on the backend ALB rule in ComputeStack).
@@ -172,7 +176,7 @@ class FrontendStack(Stack):
             protocol_policy=cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
             https_port=443,
             origin_ssl_protocols=[cloudfront.OriginSslPolicy.TLS_V1_2],
-            custom_headers={"X-Origin-Verify": SOCIAL_ORIGIN_VERIFY_SECRET},
+            custom_headers={"X-Origin-Verify": social_verify},
         )
         self.cdn = cloudfront.Distribution(
             self, "WebCdn",
@@ -216,3 +220,4 @@ class FrontendStack(Stack):
 
         CfnOutput(self, "AppUrl", value=f"https://{_APP_DOMAIN}", description="Public app URL")
         CfnOutput(self, "CdnDomain", value=self.cdn.distribution_domain_name)
+        CfnOutput(self, "LibraryEntryPath", value=_LIBRARY_ENTRY_PATH)

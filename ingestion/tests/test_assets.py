@@ -9,10 +9,16 @@ from hypothesis import strategies as st
 from docsuri_ingestion.asset_extraction import (
     ImageNormalizer,
     caption_kind,
+    crop_assets_from_specs,
     finalize_assets,
 )
 from docsuri_ingestion.domain.assets import RawAssetCandidate, asset_id
 from docsuri_ingestion.domain.enums import AssetSourceMode, AssetType
+
+
+def test_crop_assets_from_specs_empty_is_noop_without_pdfium() -> None:
+    # No specs -> short-circuit before importing the (env-gated) render backend.
+    assert crop_assets_from_specs(b"%PDF", [], paper_id="p", version=1) == ()
 
 # ---------------------------------------------------------------- caption_kind
 
@@ -21,16 +27,28 @@ from docsuri_ingestion.domain.enums import AssetSourceMode, AssetType
     "text,expected",
     [
         ("Figure 1: overview", AssetType.FIGURE),
-        ("Fig. 2 results", AssetType.FIGURE),
+        ("Fig. 2: results", AssetType.FIGURE),
         ("Table 3 — metrics", AssetType.TABLE),
-        ("  table 10 ", AssetType.TABLE),
+        ("Figure1:Ourreparametrization", AssetType.FIGURE),  # no-space PDF extraction
+        ("Figure 4. Caption with a period delimiter", AssetType.FIGURE),
+        ("  table 10: latency ", AssetType.TABLE),
+        ("Table 6 shows that, surprisingly, LoRA", None),  # body sentence, NOT a caption
         ("As shown in Figure", None),  # no number
+        ("Figure 1 overview", None),  # no caption delimiter after the number
         ("Section 2", None),
         ("", None),
     ],
 )
 def test_caption_kind(text: str, expected: AssetType | None) -> None:
     assert caption_kind(text) == expected
+
+
+def test_caption_kind_and_number() -> None:
+    from docsuri_ingestion.asset_extraction import caption_kind_and_number
+
+    assert caption_kind_and_number("Figure 3: subspace similarity") == (AssetType.FIGURE, 3)
+    assert caption_kind_and_number("Table12:hyperparameters") == (AssetType.TABLE, 12)
+    assert caption_kind_and_number("Table 6 shows that") is None
 
 
 # ---------------------------------------------------------------- finalize_assets (P7)
@@ -86,6 +104,25 @@ def test_pbt_p7_finalize_deterministic_and_contiguous_ordinals(raw) -> None:
         assert ordinals == list(range(len(ordinals)))  # contiguous per type
         ids = [a.meta.asset_id for a in first if a.meta.type is kind]
         assert len(ids) == len(set(ids))  # unique
+
+
+# ---------------------------------------------------- caption matching (asset id alignment)
+
+
+def _fig(caption: str, x: float, page: int = 0) -> RawAssetCandidate:
+    return RawAssetCandidate(
+        type=AssetType.FIGURE,
+        image=b"img",
+        source_mode=AssetSourceMode.PAGE_CROP,
+        caption=caption,
+        page=page,
+        x=x,
+    )
+
+
+def test_no_anchors_keeps_positional_legacy_behavior() -> None:
+    cands = [_fig("Figure 2: b", x=0.0), _fig("Figure 1: a", x=1.0)]
+    assert [a.meta.ordinal for a in finalize_assets("p", 1, cands)] == [0, 1]
 
 
 # ---------------------------------------------------------------- ImageNormalizer

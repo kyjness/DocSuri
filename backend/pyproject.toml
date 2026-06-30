@@ -22,7 +22,8 @@ dependencies = [
     "uvicorn[standard]>=0.29",
     # Runtime for the in-tree accounts (U3) module — modules share the shell's stack (§5-A).
     # accounts has no pyproject of its own, so deploy unit ① declares its third-party deps:
-    #   argon2-cffi → password hashing · httpx → reCAPTCHA v3 client · pyotp → admin TOTP MFA.
+    #   argon2-cffi → password hashing · httpx → reCAPTCHA/OIDC HTTP · cryptography → ORCID JWKS
+    #   verification · pyotp → admin TOTP MFA.
     "sqlalchemy>=2.0,<3",
     # psycopg 3 — SQLAlchemy Postgres driver (db.py) + the migration runner. binary wheel.
     "psycopg[binary]>=3.1",
@@ -30,6 +31,7 @@ dependencies = [
     "pydantic>=2.7,<3",
     "argon2-cffi>=23.0",
     "httpx>=0.27",
+    "cryptography>=42",
     "pyotp>=2.9",
     # boto3 → SES (verification email) + CloudWatch observability adapter.
     "boto3>=1.34",

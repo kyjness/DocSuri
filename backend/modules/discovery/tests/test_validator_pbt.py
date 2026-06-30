@@ -32,6 +32,16 @@ def test_empty_and_whitespace_rejected() -> None:
 
 def test_control_chars_rejected() -> None:
     assert _validator.validate("hello\x00world").ok is False
+    # C0 controls other than the whitespace set are rejected (BR-1): e.g. \x1f (unit separator).
+    assert _validator.validate("a\x1fb").ok is False
+
+
+def test_whitespace_controls_are_collapsed_not_rejected() -> None:
+    # \t\n\v\f\r are whitespace, not control-char rejections (BR-1/BR-2): they pass validation
+    # and normalize collapses them to a single space (matching the _CONTROL exclusion comment).
+    for ws in ("\t", "\n", "\v", "\f", "\r"):
+        assert _validator.validate(f"a{ws}b").ok is True
+        assert _validator.normalize(f"a{ws}b").text == "a b"
 
 
 def test_too_long_rejected() -> None:

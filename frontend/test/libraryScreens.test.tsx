@@ -40,6 +40,9 @@ describe('LibraryScreen (US-L2)', () => {
 describe('SavedSearchScreen (US-L1)', () => {
   it('lists saved searches and reruns one inline', async () => {
     render(<SavedSearchScreen />);
+    expect(screen.queryByRole('link', { name: '라이브러리' })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '저장한 검색' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '검색 이력' })).toBeInTheDocument();
     await waitFor(() => expect(screen.getAllByTestId('saved-item').length).toBeGreaterThan(0));
     await userEvent.click(screen.getAllByTestId('saved-rerun')[0]);
     expect(await screen.findByTestId('saved-rerun-result')).toBeInTheDocument();
@@ -50,6 +53,9 @@ describe('SavedSearchScreen (US-L1)', () => {
 describe('HistoryScreen (US-L3)', () => {
   it('lists history and clears it', async () => {
     render(<HistoryScreen />);
+    expect(screen.queryByRole('link', { name: '라이브러리' })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '저장한 검색' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '검색 이력' })).toBeInTheDocument();
     await waitFor(() => expect(screen.getAllByTestId('history-item').length).toBeGreaterThan(0));
     await userEvent.click(screen.getByTestId('history-clear'));
     expect(await screen.findByTestId('state-view-empty')).toBeInTheDocument();

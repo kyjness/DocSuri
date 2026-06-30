@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from .models import AccountProfile, Consents, Subscription
+from .models import AccountProfile, Consents, OrcidIdentity, Subscription
 
 
 @runtime_checkable
@@ -31,3 +31,4 @@ class AccountRepository(Protocol):
     def get_profile(self, user_id: str) -> AccountProfile | None: ...
     def get_consents(self, user_id: str) -> Consents | None: ...
     def set_nightly_push(self, user_id: str, agreed: bool) -> Consents | None: ...
+    def get_orcid_identity(self, user_id: str) -> OrcidIdentity | None: ...

@@ -8,6 +8,7 @@ from typing import Any
 
 from docsuri_shared.dtos import DocModel
 from docsuri_shared.vector_spec import DIMENSIONS, EMBEDDING_SPEC
+from pydantic import ValidationError
 
 from docsuri_ingestion.domain.enums import FailureReason
 from docsuri_ingestion.domain.errors import RetriableIngestionError, ValidationViolationError
@@ -82,7 +83,14 @@ class S3DocModelStore:
             if exc.response.get("Error", {}).get("Code") in {"NoSuchKey", "404", "NotFound"}:
                 return None
             raise
-        return DocModel.model_validate_json(response["Body"].read())
+        try:
+            return DocModel.model_validate_json(response["Body"].read())
+        except ValidationError:
+            # An artifact cached under an older schema (e.g. pre-``fullText``) no longer
+            # deserializes. Treat it as a cache miss so the builder rebuilds and re-caches a
+            # valid doc-model, rather than crashing the job. The builder's parserVersion gate
+            # already forces a rebuild on version drift; this covers the harder schema break.
+            return None
 
     def put(self, doc: DocModel) -> str:
         key = self._key(doc.meta.paperId, doc.meta.version)

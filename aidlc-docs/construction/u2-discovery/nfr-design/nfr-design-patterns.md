@@ -5,6 +5,8 @@
 **상태**: 확정(계획 게이트 승인)
 **고도**: 패턴·정책. 수치(타임아웃 ms·재시도·TTL·동시성)·캐시 스토어·배포 타깃·리전은 Infra Design.
 
+> **페이즈 2 개정(2026-06-29, 재인셉션)**: 출력 필터(§4) 소스 중립 투영 + `blockRefs`/`sourceProvenance` 비노출 추가(Q2·Q3), specVersion 불일치 폴백 패턴 명시(§1.1). 임베딩 모델=Cohere Embed v4·specVersion v2 불변(재색인 불요).
+
 ---
 
 ## 1. 복원력 패턴 (Resilience)
@@ -22,6 +24,7 @@ graph TD
 
 - **임베딩(Bedrock) 실패/타임아웃 → 즉시 lexical-only 폴백**(저하 명시, US-R2): lexical 인덱스가 존재하므로 폴백 경로 있음.
 - **OpenSearch(인덱스) 실패/타임아웃 → fail-closed**: 검색 자체 불가 → 일반화 비기술 에러(INV-3, SEC-15, NFR-R1 조용한 오답 금지). 폴백 경로 없음.
+- **specVersion 불일치(reader≠writer) → lexical-only 폴백 + 경보**(페이즈 2/N1): `HybridRetriever` 초기화 시 활성 인덱스 manifest `specVersion`을 컴파일 reader `specVersion`과 1회 검증, 불일치 시 혼합 임베딩 공간 오염 방지 위해 벡터 leg 비활성(lexical-only)·모니터링 경보. alias는 `assert_same_space()` 통과 후에만 전환되므로 활성 인덱스는 항상 동일 공간(`business-rules.md §6`). D6 DocModel(Block) 인덱스 컷오버도 동일 alias·동치 게이트 경로로 소비(임베딩 모델 불변).
 - **재시도**: 동기 경로는 0~최소(idempotent read라도 레이턴시 우선). 구체 타임아웃/재시도 수치는 Infra(DS-1).
 
 ### 1.2 의존성별 서킷 브레이커 (Q2=A · RES-9)
@@ -69,7 +72,7 @@ graph TD
 | 계층 | 패턴 | 트레이스 |
 |---|---|---|
 | 진입 `QueryValidator` | 도메인 입력 검증·새니타이즈(≤500자·제어문자·NFC) — U6 게이트웨이 InputValidationGuard와 **이중** | SEC-5, BR-1/2 |
-| 출력 `ResultAssembler` | 내부 필드 비노출 필터(카드 7필드만; raw/RRF 점수·vector·chunkId 제거) | SEC-9, BR-6/15, INV-2 |
+| 출력 `ResultAssembler` | 내부 필드 비노출 필터(카드=소스 중립 투영 §5.1 + `sourceName`/`sourceUrl`; raw/RRF 점수·vector·chunkId·**blockRefs·sourceProvenance** 제거) | SEC-9, BR-6/15, INV-2 |
 | 전역 `FastAPI exception_handler` | 미처리 예외 → 일반화 비기술 에러(스택/내부 비노출), fail-closed | SEC-15, BR-16, INV-3 |
 | 로깅 | requestId 상관 구조화 로그, **PII/시크릿·질의 원문 정책 준수** | SEC-3, BR-17 |
 

@@ -4,16 +4,6 @@
   gap: 1rem;
 }
 
-.cached {
-  align-self: flex-start;
-  margin: 0;
-  padding: 0.125rem 0.5rem;
-  font-size: 0.75rem;
-  color: var(--color-accent);
-  background: var(--color-accent-soft-bg);
-  border-radius: 999px;
-}
-
 .field {
   display: flex;
   flex-direction: column;

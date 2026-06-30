@@ -26,9 +26,13 @@ class MockVectorStoreAdapter:
     def __init__(self, records: Sequence[IndexRecord] = tuple(fixtures.RECORDS)) -> None:
         self._records = list(records)
 
-    def knn_search(self, vector: Sequence[float], top_k: int) -> list[ScoredRecord]:
+    def knn_search(
+        self, vector: Sequence[float], top_k: int, abstract_only: bool = False
+    ) -> list[ScoredRecord]:
         scored: list[ScoredRecord] = []
         for record in self._records:
+            if abstract_only and record.section != "abstract":
+                continue
             score = sum(a * b for a, b in zip(vector, record.vector, strict=True))
             if score > 0:
                 scored.append((record, score))
@@ -45,12 +49,26 @@ class MockLexicalIndexAdapter:
     def __init__(self, records: Sequence[IndexRecord] = tuple(fixtures.RECORDS)) -> None:
         self._records = list(records)
 
-    def bm25_search(self, terms: Sequence[str], top_k: int) -> list[ScoredRecord]:
+    def bm25_search(
+        self,
+        terms: Sequence[str],
+        top_k: int,
+        fields: Sequence[str] = ("title", "abstract", "lexicalTerms"),
+    ) -> list[ScoredRecord]:
         wanted = {t.lower() for t in terms}
+        selected = set(fields)
         scored: list[ScoredRecord] = []
         for record in self._records:
-            text = f"{record.title} {record.abstract} {record.lexicalTerms}"
-            tokens = set(text.lower().split())
+            # Honor the requested field set so lite (title+abstract) realistically excludes
+            # body-only matches, mirroring the real multi_match.
+            parts = []
+            if "title" in selected:
+                parts.append(record.title)
+            if "abstract" in selected:
+                parts.append(record.abstract)
+            if "lexicalTerms" in selected:
+                parts.append(record.lexicalTerms)
+            tokens = set(" ".join(parts).lower().split())
             overlap = len(wanted & tokens)
             if overlap > 0:
                 scored.append((record, float(overlap)))
@@ -80,12 +98,19 @@ class FailingEmbeddingAdapter:
 
 
 class FailingVectorStoreAdapter:
-    def knn_search(self, vector: Sequence[float], top_k: int) -> list[ScoredRecord]:
+    def knn_search(
+        self, vector: Sequence[float], top_k: int, abstract_only: bool = False
+    ) -> list[ScoredRecord]:
         raise IndexUnavailable("mock index outage")
 
 
 class FailingLexicalIndexAdapter:
     """RES-12: index outage → fail-closed (no fallback for the index)."""
 
-    def bm25_search(self, terms: Sequence[str], top_k: int) -> list[ScoredRecord]:
+    def bm25_search(
+        self,
+        terms: Sequence[str],
+        top_k: int,
+        fields: Sequence[str] = ("title", "abstract", "lexicalTerms"),
+    ) -> list[ScoredRecord]:
         raise IndexUnavailable("mock index outage")

@@ -139,3 +139,21 @@ DQ5 전용 횡단 계층의 정문 + 운영(관측성·비용 가드·헬스·AI
 | **MypageController** | 마이페이지 기능 동기 REST 진입점. | 라우트 매핑; 프로필 조회, 개인화 설정 변경, 데이터 내보내기/삭제 위임; 인증 컨텍스트 전파(SEC-8) | `GET /api/mypage/profile`, `PUT /api/mypage/settings`, `GET /api/mypage/export` | US-A5, US-P6, SEC-8 |
 | **UserPreferencesService** | 개인 설정(개인화, UI 테마 등) 관리 오케스트레이션. | 사용자 설정 조회 및 변경; U9 개인화 선호도 갱신 위임; U3 연동 | `getPreferences`, `updatePreferences` | US-P6, SEC-8 |
 | **DataExportService** | 사용자 데이터(이력, 저장 검색, 라이브러리) 내보내기. | GDPR 준수 데이터 내보내기(Data Portability); U4 등 도메인 데이터 조회 후 JSON/CSV 등 형식 변환 다운로드 제공 | `exportUserData` | FR-28, SEC-8 |
+
+---
+
+## U11 — Evidence Formation Agent (문헌탐색·근거형성 Agent, 재인셉션 Phase 4)
+
+> DQ1=A 모듈형 모놀리스 내 API 모듈(+긴 분석용 비동기 잡 옵션). 로그인 필수 온디맨드 대화형 경로(Q7=A 멀티턴). U6 게이트웨이 단일 진입. LLM Agent가 Search·DocModel 도구를 자율 오케스트레이션해 EvidenceItem(statement + supporting[] + conflicting[])을 추출·비교한다. 근거 없으면 FR-5 기권(날조 금지). EvidenceFormationPort(shared/ports §4) 단일 구현자(D5) — U12 연구아이디어 Agent(미래)가 소비.
+
+| 컴포넌트 | 목적 | 핵심 책임 | 인터페이스 | Trace |
+|---|---|---|---|---|
+| **EvidenceChatController** | 세션 CRUD + 채팅 턴 동기 REST 진입점(SSE 스트리밍). | 세션 생성/목록/삭제·채팅 메시지 수신·스트리밍 응답(FR-36); 인증 컨텍스트 전파(SEC-8); fail-closed 에러(SEC-15) | `POST /api/evidence/sessions`, `GET /api/evidence/sessions`, `DELETE /api/evidence/sessions/:id`, `POST /api/evidence/sessions/:id/messages` (SSE), `GET /api/evidence/sessions/:id` | FR-36, FR-38, SEC-8, SEC-15, US-EV1, US-EV7, US-EV8 |
+| **EvidenceAgentOrchestrator** | LLM-driven Agent 코어 — 도구 자율 오케스트레이션·멀티턴 맥락 유지·스트리밍 출력. | 요청/후속 질문 해석; EvidencePaperSearchTool·EvidenceDocModelTool을 자율 순서로 호출; EvidenceExtractor로 명제 추출; EvidenceComparisonAssembler로 결과 조립; 근거 없으면 EvidenceAbstainResult 반환(FR-5); SSE 청크 스트리밍(NFR-P6) | `run(request, ctx) -> AsyncStream<EvidenceChunk>`, `continueSession(sessionId, followUp, ctx) -> AsyncStream<EvidenceChunk>` | FR-36, FR-37, FR-5, NFR-P6, C-2, Q7=A, US-EV2, US-EV5 |
+| **EvidencePaperSearchTool** | Agent가 호출하는 논문 검색 도구 어댑터. | auto/mixed scope 시 주제 쿼리로 코퍼스 검색(공유 벡터 스토어); explicit scope 시 paper_ids 직접 조회; IndexRecord 목록 반환 | `searchPapers(query, scope, paperIds?) -> IndexRecord[]` | FR-37, Q4=A, US-EV2, US-EV3 |
+| **EvidenceDocModelTool** | Agent가 호출하는 DocModel 블록 읽기 도구 어댑터. | paperId+recordRef로 오브젝트 스토리지에서 DocModel 블록 조회; anchor 기반 섹션 슬라이싱 | `fetchBlocks(paperId, recordRef, anchor?) -> DocModelBlock[]` | FR-37, FR-18, US-EV2 |
+| **EvidenceExtractor** | DocModel 블록에서 EvidenceItem 추출(C-2 추출 전용). | 논문 본문에서 핵심 주장·방법·결과 수치·한계 명제 추출(Q1=A); SourceRef(paperId·recordRef·anchor·quote) 구성; 생성 산문 금지(C-2, FR-5); confidence 제외(Q3=B) | `extractItems(blocks, paperId, recordRef) -> EvidenceItem[]` | FR-37, FR-5, C-2, QT-8, US-EV2 |
+| **EvidenceComparisonAssembler** | EvidenceItem 목록을 비교표 + 쟁점 오버레이로 조립(Q2=A). | 지지/상충 출처 기반 쟁점 오버레이 계산; coverage 메타(사용 논문 수·쿼리) 조립; EvidenceResult(state=ok) 반환 | `assemble(items, coverage) -> EvidenceResult`, `buildConflictOverlay(items) -> ConflictMatrix` | FR-37, Q2=A, US-EV2 |
+| **AttachmentDocModelAdapter** | 사용자 첨부 문서를 doc-model 파이프라인으로 일시 처리(Q6=A). | 첨부 핸들 수신 → DocModel 블록 추출(U1 파이프라인 재사용, transient); 형식·크기 검증; 원시 파일 미저장 | `processAttachment(handle) -> DocModelBlock[]` | FR-37, FR-18, Q6=A, US-EV4 |
+| **EvidenceSessionRepository** | 근거형성 세션·결과 owner-scoped 영속(SEC-8). | 세션 생성/조회/목록/턴 추가/삭제/초기화; owner 키 강제(SEC-8 백스톱); 타 소유자 비가시 | `createSession`, `loadSession`, `listSessions`, `appendTurn`, `deleteSession`, `resetAllSessions` | FR-38, SEC-8, US-EV7, US-EV8 |
+| **EvidenceFormationService** | **EvidenceFormationPort(D5) 단일 구현자** — U12 연구아이디어 Agent에 Tool로 노출. | `form_evidence(request, ctx)`를 EvidenceAgentOrchestrator로 라우팅; 긴 분석은 비동기 잡 오프로드(NFR-P6, Q9=A); EvidenceResult \| EvidenceAbstainResult 반환; 재구현 금지(U12 only via port) | `form_evidence(request, ctx) -> EvidenceResult \| EvidenceAbstainResult` (EvidenceFormationPort 구현) | D5, NFR-P6, FR-37, US-EV9 |

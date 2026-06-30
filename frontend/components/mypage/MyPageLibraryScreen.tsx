@@ -14,7 +14,7 @@ import type { RecentlyViewedItemVM } from '@/types/mypage';
 
 // MyPageLibraryScreen (U10) — 관심 논문(U4 library, real)과 최근 본 논문(U9, mock until the
 // paper_opened 이벤트가 머지됨)을 상단 탭으로 묶은 화면. "저장한 검색"/"검색 이력"(U4)은 별도
-// 기능이라 탭으로 합치지 않고, 관심 탭에서 /library로 빠져나가는 링크만 둔다.
+// 기능이라 탭으로 합치지 않고, 관심 탭에서 /library/saved로 빠져나가는 링크만 둔다.
 
 type Tab = 'interest' | 'recent';
 
@@ -27,7 +27,7 @@ function LibraryTabsNav({ active }: { active: Tab }) {
         aria-current={active === 'interest' ? 'page' : undefined}
         data-testid="mypage-library-tab-interest"
       >
-        관심
+        관심 논문
       </Link>
       <Link
         href="/mypage/library/recent"
@@ -66,7 +66,7 @@ function InterestTab() {
 
   return (
     <>
-      <Link href="/library" className={styles.more} data-testid="mypage-library-saved-history">
+      <Link href="/library/saved" className={styles.more} data-testid="mypage-library-saved-history">
         저장한 검색 · 검색 이력 보기
       </Link>
 

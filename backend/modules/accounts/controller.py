@@ -1,8 +1,11 @@
+import json
 import logging
 import os
 import secrets
+import time
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
+from typing import Protocol
 
 from backend.middleware.rate_limit import InProcessWindowLimiter, RedisRateLimiter
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
@@ -12,9 +15,15 @@ from sqlalchemy.orm import Session
 
 from .guard import AuthorizationGuard, Decision
 from .integrations.email import get_email_client
-from .integrations.oidc import GoogleOidcVerifier, pkce_challenge
+from .integrations.oidc import (
+    GoogleOidcVerifier,
+    OrcidOidcVerifier,
+    fetch_orcid_public_record,
+    pkce_challenge,
+)
 from .integrations.recaptcha import RecaptchaClient
 from .models import (
+    AccountStatus,
     DomainException,
     OidcProvider,
     Principal,
@@ -223,6 +232,150 @@ def get_social_login_service(repo: CredentialRepository = Depends(get_credential
     return SocialLoginService(repo)
 
 
+def get_orcid_verifier() -> OrcidOidcVerifier:
+    # client_id/secret = ECS env(시크릿은 Secrets Manager). 미설정 시 토큰 교환 실패 → Fail-Closed.
+    return OrcidOidcVerifier(
+        client_id=os.getenv("ORCID_OIDC_CLIENT_ID", ""),
+        client_secret=os.getenv("ORCID_OIDC_CLIENT_SECRET", ""),
+        env=os.getenv("ORCID_OIDC_ENV", "prod"),
+    )
+
+
+_OIDC_STATE_TTL_SECONDS = 600
+
+
+class _OidcStateStore(Protocol):
+    async def put(self, state: str, *, provider: str, nonce: str, code_verifier: str) -> None: ...
+
+    async def consume(self, state: str, *, provider: str) -> dict[str, str] | None: ...
+
+
+class _InProcessOidcStateStore:
+    def __init__(self):
+        self._records: dict[str, tuple[float, dict[str, str]]] = {}
+
+    def _prune(self) -> None:
+        now = time.monotonic()
+        for state, (expires_at, _) in list(self._records.items()):
+            if expires_at <= now:
+                self._records.pop(state, None)
+
+    async def put(self, state: str, *, provider: str, nonce: str, code_verifier: str) -> None:
+        self._prune()
+        self._records[state] = (
+            time.monotonic() + _OIDC_STATE_TTL_SECONDS,
+            {"provider": provider, "nonce": nonce, "code_verifier": code_verifier},
+        )
+
+    async def consume(self, state: str, *, provider: str) -> dict[str, str] | None:
+        self._prune()
+        record = self._records.pop(state, None)
+        if record is None:
+            return None
+        _, payload = record
+        return payload if payload.get("provider") == provider else None
+
+
+class _RedisOidcStateStore:
+    def __init__(self, *, redis_host: str, redis_port: int, use_tls: bool):
+        import redis.asyncio as redis
+
+        self._client = redis.Redis(
+            host=redis_host,
+            port=redis_port,
+            ssl=use_tls,
+            decode_responses=True,
+            socket_timeout=2,
+        )
+
+    def _key(self, state: str) -> str:
+        return f"oidc:state:{state}"
+
+    async def put(self, state: str, *, provider: str, nonce: str, code_verifier: str) -> None:
+        payload = json.dumps(
+            {"provider": provider, "nonce": nonce, "code_verifier": code_verifier},
+            separators=(",", ":"),
+        )
+        await self._client.set(self._key(state), payload, ex=_OIDC_STATE_TTL_SECONDS)
+
+    async def consume(self, state: str, *, provider: str) -> dict[str, str] | None:
+        raw = await self._client.getdel(self._key(state))
+        if raw is None:
+            return None
+        payload = json.loads(raw)
+        return payload if payload.get("provider") == provider else None
+
+
+@lru_cache(maxsize=1)
+def get_oidc_state_store() -> _OidcStateStore:
+    host = os.getenv("REDIS_HOST", "").strip()
+    if host:
+        return _RedisOidcStateStore(
+            redis_host=host,
+            redis_port=int(os.getenv("REDIS_PORT") or "6379"),
+            use_tls=os.getenv("REDIS_TLS", "").strip().lower() in {"1", "true", "yes", "on"},
+        )
+    return _InProcessOidcStateStore()
+
+
+async def _store_oidc_state(
+    store: _OidcStateStore,
+    state: str,
+    *,
+    provider: OidcProvider,
+    nonce: str,
+    code_verifier: str,
+) -> None:
+    try:
+        await store.put(state, provider=provider.value, nonce=nonce, code_verifier=code_verifier)
+    except Exception as e:
+        raise HTTPException(
+            status_code=503,
+            detail="일시적으로 소셜 로그인을 시작할 수 없습니다. 잠시 후 다시 시도해 주세요.",
+        ) from e
+
+
+async def _consume_oidc_state(
+    request: Request,
+    state: str,
+    *,
+    provider: OidcProvider,
+    store: _OidcStateStore,
+) -> dict[str, str]:
+    cookie_state = request.cookies.get("oidc_state")
+    if not cookie_state or not secrets.compare_digest(cookie_state, state):
+        raise HTTPException(status_code=400, detail="소셜 로그인 상태 검증에 실패했습니다. 다시 시도해 주세요.")
+    try:
+        payload = await store.consume(state, provider=provider.value)
+    except Exception as e:
+        raise HTTPException(
+            status_code=503,
+            detail="일시적으로 소셜 로그인을 확인할 수 없습니다. 잠시 후 다시 시도해 주세요.",
+        ) from e
+    if payload is None:
+        raise HTTPException(status_code=400, detail="소셜 로그인 상태 검증에 실패했습니다. 다시 시도해 주세요.")
+    return payload
+
+
+def _orcid_redirect_uri(request: Request) -> str:
+    """ORCID에 등록된 콜백 URI. 명시 env 우선, 없으면 공개 앱/요청 베이스에서 파생."""
+    explicit = os.getenv("ORCID_OIDC_REDIRECT_URI", "").strip()
+    if explicit:
+        return explicit
+    base = _app_base()
+    if base:
+        return f"{base}/auth/social/orcid/callback"
+    return str(request.base_url) + "auth/social/orcid/callback"
+
+
+def _ensure_orcid_configured(verifier: OrcidOidcVerifier) -> None:
+    if not verifier.is_configured:
+        raise HTTPException(
+            status_code=503,
+            detail="ORCID 로그인이 아직 설정되지 않았습니다.",
+        )
+
+
 def _app_base() -> str:
     """공개 앱(프런트) 베이스 URL — 소셜 로그인 후 리다이렉트 대상."""
     return os.getenv("PUBLIC_APP_URL", "").strip().rstrip("/")
@@ -243,6 +396,20 @@ def _clear_oidc_cookies(resp: RedirectResponse) -> None:
     resp.delete_cookie("oidc_state")
     resp.delete_cookie("oidc_nonce")
     resp.delete_cookie("oidc_verifier")
+
+
+def _principal_for_social_account(account_id: str, repo: CredentialRepository) -> Principal:
+    account = repo.get_by_id(account_id)
+    if account is None:
+        raise HTTPException(status_code=500, detail="소셜 로그인 계정 조회에 실패했습니다.")
+    if account.status != AccountStatus.ACTIVE.value:
+        raise HTTPException(status_code=401, detail="비활성화된 계정입니다.")
+    try:
+        role = UserRole(account.role)
+    except (ValueError, TypeError):
+        role = UserRole.USER
+    # 소셜 로그인은 로그인 시점 MFA 미통과(관리자 제어 평면은 별도 TOTP 승격 필요, BR-A7).
+    return Principal(user_id=account_id, role=role, mfa_verified=False)
 
 
 def _clear_session_cookie(resp: Response) -> None:
@@ -505,12 +672,16 @@ async def delete_account(
 async def social_google_start(
     request: Request,
     verifier: GoogleOidcVerifier = Depends(get_social_verifier),
+    state_store: _OidcStateStore = Depends(get_oidc_state_store),
 ):
-    """소셜 로그인 시작 (FR-27) — state·nonce 발급(httpOnly 쿠키) 후 Google 인가 페이지로 리다이렉트."""
+    """소셜 로그인 시작 (FR-27) — state·nonce 발급(서버 저장) 후 Google 인가 페이지로 리다이렉트."""
     state = secrets.token_urlsafe(24)
     nonce = secrets.token_urlsafe(24)
-    # PKCE(감사 #8): verifier는 쿠키로만 보관하고 challenge(S256)만 Google에 보낸다.
+    # PKCE(감사 #8): verifier는 서버 저장소에만 보관하고 challenge(S256)만 Google에 보낸다.
     code_verifier = secrets.token_urlsafe(64)
+    await _store_oidc_state(
+        state_store, state, provider=OidcProvider.GOOGLE, nonce=nonce, code_verifier=code_verifier
+    )
     auth_url = verifier.build_authorization_url(
         _social_redirect_uri(request), state, nonce, pkce_challenge(code_verifier)
     )
@@ -518,8 +689,6 @@ async def social_google_start(
     # samesite=lax라야 Google 콜백 복귀 GET에 쿠키가 실린다. 10분 단명.
     cookie = {"httponly": True, "secure": True, "samesite": "lax", "max_age": 600}
     resp.set_cookie("oidc_state", state, **cookie)
-    resp.set_cookie("oidc_nonce", nonce, **cookie)
-    resp.set_cookie("oidc_verifier", code_verifier, **cookie)
     return resp
 
 
@@ -531,20 +700,21 @@ async def social_google_callback(
     verifier: GoogleOidcVerifier = Depends(get_social_verifier),
     social_svc: SocialLoginService = Depends(get_social_login_service),
     session_mgr: SessionManager = Depends(get_session_manager),
+    state_store: _OidcStateStore = Depends(get_oidc_state_store),
     repo: CredentialRepository = Depends(get_credential_repo),
     db: Session = Depends(get_db_session),
 ):
     """소셜 로그인 콜백 (FR-27/BR-A9) — CSRF(state)·nonce 검증 → 신원 조정 → 세션 발급 →
     앱으로 리다이렉트. 기존 *비밀번호* 계정과 충돌(H1)하면 자동 병합 없이 연결 안내 페이지로 보낸다."""
-    cookie_state = request.cookies.get("oidc_state")
-    cookie_nonce = request.cookies.get("oidc_nonce")
-    cookie_verifier = request.cookies.get("oidc_verifier")
-    # CSRF: 쿼리 state와 쿠키 state가 일치해야 한다(상수시간 비교).
-    if not cookie_state or not secrets.compare_digest(cookie_state, state):
-        raise HTTPException(status_code=400, detail="소셜 로그인 상태 검증에 실패했습니다. 다시 시도해 주세요.")
+    state_payload = await _consume_oidc_state(
+        request, state, provider=OidcProvider.GOOGLE, store=state_store
+    )
     try:
         claims = await verifier.exchange_and_verify(
-            code, _social_redirect_uri(request), cookie_nonce or "", cookie_verifier
+            code,
+            _social_redirect_uri(request),
+            state_payload["nonce"],
+            state_payload["code_verifier"],
         )
         account_id = social_svc.reconcile(OidcProvider.GOOGLE, claims)
         db.commit()
@@ -560,15 +730,84 @@ async def social_google_callback(
         db.rollback()
         raise HTTPException(status_code=500, detail="소셜 로그인 처리 중 서버 장애가 발생했습니다. (Fail-Closed)") from None
 
-    account = repo.get_by_id(account_id)
-    if account is None:
-        raise HTTPException(status_code=500, detail="소셜 로그인 계정 조회에 실패했습니다.")
+    principal = _principal_for_social_account(account_id, repo)
     try:
-        role = UserRole(account.role)
-    except (ValueError, TypeError):
-        role = UserRole.USER
-    # 소셜 로그인은 로그인 시점 MFA 미통과(관리자 제어 평면은 별도 TOTP 승격 필요, BR-A7).
-    principal = Principal(user_id=account_id, role=role, mfa_verified=False)
+        session = await session_mgr.issue(principal)
+    except SessionStoreUnavailableException as e:
+        raise HTTPException(status_code=503, detail="일시적으로 로그인할 수 없습니다. 잠시 후 다시 시도해 주세요.") from e
+
+    resp = RedirectResponse(_app_base() or "/", status_code=302)
+    resp.set_cookie(
+        key="session_id", value=session.handle, httponly=True, secure=True,
+        samesite="lax", max_age=30 * 24 * 60 * 60,
+    )
+    _clear_oidc_cookies(resp)
+    return resp
+
+
+@router.get("/social/orcid/start")
+async def social_orcid_start(
+    request: Request,
+    verifier: OrcidOidcVerifier = Depends(get_orcid_verifier),
+    state_store: _OidcStateStore = Depends(get_oidc_state_store),
+):
+    """ORCID 소셜 로그인 시작 (FR-27/BR-A13) — state·nonce·PKCE 발급(서버 저장) 후 ORCID
+    인가 페이지로 리다이렉트. Google start와 동일 패턴(state 쿠키 이름 공유)."""
+    _ensure_orcid_configured(verifier)
+    state = secrets.token_urlsafe(24)
+    nonce = secrets.token_urlsafe(24)
+    code_verifier = secrets.token_urlsafe(64)
+    await _store_oidc_state(
+        state_store, state, provider=OidcProvider.ORCID, nonce=nonce, code_verifier=code_verifier
+    )
+    auth_url = verifier.build_authorization_url(
+        _orcid_redirect_uri(request), state, nonce, pkce_challenge(code_verifier)
+    )
+    resp = RedirectResponse(auth_url, status_code=302)
+    cookie = {"httponly": True, "secure": True, "samesite": "lax", "max_age": 600}
+    resp.set_cookie("oidc_state", state, **cookie)
+    return resp
+
+
+@router.get("/social/orcid/callback")
+async def social_orcid_callback(
+    request: Request,
+    code: str = Query(...),
+    state: str = Query(...),
+    verifier: OrcidOidcVerifier = Depends(get_orcid_verifier),
+    social_svc: SocialLoginService = Depends(get_social_login_service),
+    session_mgr: SessionManager = Depends(get_session_manager),
+    state_store: _OidcStateStore = Depends(get_oidc_state_store),
+    repo: CredentialRepository = Depends(get_credential_repo),
+    db: Session = Depends(get_db_session),
+):
+    """ORCID 소셜 로그인 콜백 (FR-27/BR-A13) — CSRF(state)·nonce 검증 → 이메일-없는 신원 조정 →
+    ORCID 공개 프로필(이름·소속) 캐시 → 세션 발급 → 앱으로 리다이렉트. ORCID는 이메일이 없어
+    H1(기존 비밀번호 계정 병합) 경로가 발생하지 않는다."""
+    _ensure_orcid_configured(verifier)
+    state_payload = await _consume_oidc_state(
+        request, state, provider=OidcProvider.ORCID, store=state_store
+    )
+    try:
+        claims = await verifier.exchange_and_verify(
+            code,
+            _orcid_redirect_uri(request),
+            state_payload["nonce"],
+            state_payload["code_verifier"],
+        )
+        account_id = social_svc.reconcile(OidcProvider.ORCID, claims)
+        # ORCID 공개 프로필(소속) best-effort 캐시 — 이름은 id_token, 소속은 Public API.
+        record = await fetch_orcid_public_record(claims.subject, pub_base=verifier.pub_base)
+        repo.update_orcid_profile(claims.subject, claims.name, record.get("affiliation"))
+        db.commit()
+    except DomainException as e:
+        db.rollback()
+        raise HTTPException(status_code=401, detail=str(e)) from e
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="소셜 로그인 처리 중 서버 장애가 발생했습니다. (Fail-Closed)") from None
+
+    principal = _principal_for_social_account(account_id, repo)
     try:
         session = await session_mgr.issue(principal)
     except SessionStoreUnavailableException as e:

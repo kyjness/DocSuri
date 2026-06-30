@@ -4,7 +4,7 @@ from uuid import uuid4
 from sqlalchemy import Boolean, Column, DateTime, Integer, String
 from sqlalchemy.orm import Session, declarative_base
 
-from ..models import AccountStatus, DomainException
+from ..models import AccountStatus, DomainException, OidcProvider
 
 Base = declarative_base()
 
@@ -16,7 +16,9 @@ class AccountTable(Base):
     __tablename__ = "accounts"
     
     id = Column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    email = Column(String(254), unique=True, nullable=False, index=True)
+    # BR-A13: 이메일을 제공하지 않는 프로바이더(ORCID) 가입 계정은 email=NULL. UNIQUE는 유지하되
+    # Postgres는 다중 NULL을 유일성 위반으로 보지 않으므로 ORCID 계정 다수가 공존한다.
+    email = Column(String(254), unique=True, nullable=True, index=True)
     password_hash = Column(String(255), nullable=False)
     status = Column(String(20), default=AccountStatus.PENDING.value, nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
@@ -65,16 +67,22 @@ def has_usable_password(account: "AccountTable") -> bool:
 
 
 class SocialIdentityTable(Base):
-    """소셜 신원 연결 (FR-27 / BR-A9). (provider, provider_subject)는 전역 유일.
-    status: LINKED | PENDING_CONFIRMATION(H1 — 기존 비밀번호 계정 명시적 연결 대기)."""
+    """소셜 신원 연결 (FR-27 / BR-A9·BR-A13). (provider, provider_subject)는 전역 유일.
+    status: LINKED | PENDING_CONFIRMATION(H1 — 기존 비밀번호 계정 명시적 연결 대기).
+    orcid_*: ORCID(provider='ORCID') 공개 프로필 캐시 — 마이그레이션 006이 추가, provider!='ORCID'
+    행에서는 항상 NULL. works(논문 1:N)는 캐시하지 않고 마이페이지 조회 시마다 ORCID API에서 취득."""
     __tablename__ = "social_identities"
 
     provider = Column(String(20), primary_key=True)
     provider_subject = Column(String(255), primary_key=True)
     account_id = Column(String(36), nullable=False, index=True)
-    email_at_link = Column(String(254), nullable=False)
+    # BR-A13: 이메일 미제공 프로바이더(ORCID)는 NULL (마이그레이션 009가 NOT NULL 해제).
+    email_at_link = Column(String(254), nullable=True)
     linked_at = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
     status = Column(String(24), default="LINKED", nullable=False)
+    orcid_name = Column(String(255), nullable=True)
+    orcid_affiliation = Column(String(255), nullable=True)
+    orcid_synced_at = Column(DateTime, nullable=True)
 
 
 class EmailChangeRequestTable(Base):
@@ -102,6 +110,8 @@ class AccountDeletionTable(Base):
     requested_at = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
     purge_after = Column(DateTime, nullable=False, index=True)
     state = Column(String(20), default=AccountStatus.DEACTIVATED.value, nullable=False)
+    # S2: 파기 반복 실패 횟수. 임계 초과 시 state=PURGE_FAILED(DLQ)로 격리해 무한 재시도를 끊는다.
+    purge_attempts = Column(Integer, default=0, nullable=False)
 
 
 class AccountWithdrawalBackupTable(Base):
@@ -116,7 +126,7 @@ class AccountWithdrawalBackupTable(Base):
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid4()))
     original_account_id = Column(String(36), nullable=False, index=True)
-    email = Column(String(254), nullable=False)
+    email = Column(String(254), nullable=True)
     status = Column(String(20), nullable=False)
     signed_up_at = Column(DateTime, nullable=False)
     withdrawn_at = Column(DateTime, nullable=False)
@@ -244,9 +254,10 @@ class CredentialRepository:
         )
 
     def create_social_identity(
-        self, provider: str, subject: str, account_id: str, email_at_link: str, status: str = "LINKED"
+        self, provider: str, subject: str, account_id: str, email_at_link: str | None, status: str = "LINKED"
     ) -> SocialIdentityTable:
-        """소셜 신원을 계정에 연결합니다 (FR-27/BR-A9)."""
+        """소셜 신원을 계정에 연결합니다 (FR-27/BR-A9·BR-A13). email_at_link은 이메일 미제공
+        프로바이더(ORCID)에서 None."""
         rec = SocialIdentityTable(
             provider=provider,
             provider_subject=subject,
@@ -275,10 +286,11 @@ class CredentialRepository:
         self._session.flush()
         return len(rows)
 
-    def create_social_account(self, email: str) -> AccountTable:
-        """소셜 가입 — 비밀번호 없는 ACTIVE 계정 생성 (BR-A9: 프로바이더 검증 이메일이므로
-        PENDING 우회). password_hash는 매칭 불가 센티넬이라 비밀번호 로그인은 불가."""
-        if self.get_by_email(email):
+    def create_social_account(self, email: str | None) -> AccountTable:
+        """소셜 가입 — 비밀번호 없는 ACTIVE 계정 생성. 이메일 제공 프로바이더(Google)는 BR-A9
+        (검증 이메일이므로 PENDING 우회), 이메일 미제공 프로바이더(ORCID)는 BR-A13 (email=NULL).
+        password_hash는 매칭 불가 센티넬이라 비밀번호 로그인은 불가."""
+        if email is not None and self.get_by_email(email):
             raise DomainException("이미 등록된 이메일 주소입니다.")
         account = AccountTable(
             id=str(uuid4()),
@@ -291,6 +303,30 @@ class CredentialRepository:
         self._session.add(account)
         self._session.flush()
         return account
+
+    def update_orcid_profile(self, subject: str, name: str | None, affiliation: str | None) -> None:
+        """ORCID 신원의 캐시 프로필(이름·소속)을 갱신한다 (BR-A13 / 마이페이지). 콜백 시 ORCID
+        Public API 결과를 캐시. 신원이 없으면 무시(멱등)."""
+        rec = self.get_social_identity(OidcProvider.ORCID.value, subject)
+        if rec is None:
+            return
+        rec.orcid_name = name
+        rec.orcid_affiliation = affiliation
+        rec.orcid_synced_at = datetime.now(UTC)
+        self._session.add(rec)
+        self._session.flush()
+
+    def get_orcid_identity(self, account_id: str) -> SocialIdentityTable | None:
+        """계정의 LINKED ORCID 신원을 반환한다 (마이페이지 ORCID 카드용). 없으면 None."""
+        return (
+            self._session.query(SocialIdentityTable)
+            .filter(
+                SocialIdentityTable.account_id == account_id,
+                SocialIdentityTable.provider == OidcProvider.ORCID.value,
+                SocialIdentityTable.status == "LINKED",
+            )
+            .first()
+        )
 
     # ── 이메일 변경 (FR-28 / BR-A10) ────────────────────────────────────────────
     def create_email_change_request(
@@ -431,6 +467,26 @@ class CredentialRepository:
         rec = self.get_account_deletion(account_id)
         if rec is not None:
             rec.state = "PURGED"
+            self._session.add(rec)
+            self._session.flush()
+
+    def increment_deletion_attempts(self, account_id: str) -> int:
+        """파기 시도 횟수를 1 증가시키고 새 값을 반환한다(S2 — 독성 레코드 DLQ 가드용).
+        실패한 파기 트랜잭션을 롤백한 뒤 별도 트랜잭션에서 호출해 시도 횟수를 영속화한다."""
+        rec = self.get_account_deletion(account_id)
+        if rec is None:
+            return 0
+        rec.purge_attempts = (rec.purge_attempts or 0) + 1
+        self._session.add(rec)
+        self._session.flush()
+        return rec.purge_attempts
+
+    def mark_deletion_failed(self, account_id: str) -> None:
+        """반복 실패한 삭제 레코드를 PURGE_FAILED(DLQ)로 격리한다(S2). due 조회는 DEACTIVATED만
+        보므로 격리된 행은 자동 제외되어 무한 재시도가 끊긴다. 운영의 수동 재조정 대상."""
+        rec = self.get_account_deletion(account_id)
+        if rec is not None:
+            rec.state = "PURGE_FAILED"
             self._session.add(rec)
             self._session.flush()
 

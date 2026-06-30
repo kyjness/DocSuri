@@ -51,10 +51,15 @@ class DedupStateKind(StrEnum):
 
 
 class AssetType(StrEnum):
-    """FR-17 figure/table asset kind (display-only)."""
+    """FR-17 figure/table asset kind (display-only).
+
+    ``FORMULA`` is the PDF/GROBID page-crop equation image — the FormulaBlock fallback when no
+    recoverable LaTeX exists (TD-12). HTML-sourced formulas carry LaTeX and use no asset.
+    """
 
     FIGURE = "figure"
     TABLE = "table"
+    FORMULA = "formula"
 
 
 class AssetSourceMode(StrEnum):

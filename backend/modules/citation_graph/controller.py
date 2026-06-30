@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 from typing import Any
 from urllib.parse import quote
@@ -15,6 +16,9 @@ from backend.modules.library.schemas import LibraryItemCreateDTO
 from backend.modules.library.services.library import LibraryService
 
 MAX_DEPTH = 2
+ARXIV_ID_RE = re.compile(r"^(?:[a-z-]+(?:\.[A-Z]{2})?/\d{7}|\d{4}\.\d{4,5})(?:v\d+)?$", re.I)
+ARXIV_VERSION_RE = re.compile(r"v\d+$", re.I)
+DOI_RE = re.compile(r"^10\.\d{4,9}/\S+$", re.I)
 
 
 def _max_visible_nodes() -> int:
@@ -123,7 +127,7 @@ class SemanticScholarProvider:
         headers = {"x-api-key": self._api_key} if self._api_key else {}
         timeout = float(os.getenv("CITATION_GRAPH_PROVIDER_TIMEOUT_SECONDS", "2"))
         retries = int(os.getenv("CITATION_GRAPH_PROVIDER_RETRIES", "1"))
-        encoded_paper_id = quote(paper_id, safe="")
+        encoded_paper_id = quote(_semantic_scholar_paper_id(paper_id), safe="")
         url = f"https://api.semanticscholar.org/graph/v1/paper/{encoded_paper_id}/references"
         params = {
             "fields": "title,year,citationCount,externalIds,paperId,url",
@@ -141,6 +145,21 @@ class SemanticScholarProvider:
                 if attempt >= retries:
                     return "unavailable", []
         return "unavailable", []
+
+
+def _semantic_scholar_paper_id(paper_id: str) -> str:
+    value = paper_id.strip()
+    prefix, sep, rest = value.partition(":")
+    if sep and prefix.upper() in {"ARXIV", "DOI", "PMID", "PMCID", "MAG", "ACL", "CORPUSID", "URL"}:
+        normalized = ARXIV_VERSION_RE.sub("", rest) if prefix.upper() == "ARXIV" else rest
+        return f"{prefix.upper()}:{normalized}"
+    if ARXIV_ID_RE.match(value):
+        return f"ARXIV:{ARXIV_VERSION_RE.sub('', value)}"
+    if DOI_RE.match(value):
+        return f"DOI:{value}"
+    if value.startswith(("http://", "https://")):
+        return f"URL:{value}"
+    return value
 
 
 def _feature_enabled() -> None:

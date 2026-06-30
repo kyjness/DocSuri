@@ -32,7 +32,6 @@ interface TranslationViewProps {
 
 export function TranslationView({
   translation,
-  cached,
   showGlossary = false,
   assetsById,
 }: TranslationViewProps) {
@@ -56,10 +55,10 @@ export function TranslationView({
 
   return (
     <div className={styles.root} data-testid="translation-view">
-      {cached ? (
-        <span className={styles.cached} data-testid="translation-cached">
-          저장된 결과
-        </span>
+      {translation.docModel.meta.title ? (
+        <h1 className={styles.paperTitle} data-testid="translation-title">
+          {translation.docModel.meta.title}
+        </h1>
       ) : null}
 
       {showGlossary && translation.keptTerms.length > 0 ? (

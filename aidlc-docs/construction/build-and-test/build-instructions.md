@@ -13,6 +13,43 @@
 
 ---
 
+# U11 Novelty Agent Build Instructions — 2026-06-30
+
+## Prerequisites
+
+- Python runtime available as `python`.
+- Backend test dependencies installed from `backend/pyproject.toml`.
+- Local source packages on `PYTHONPATH` for app-shell checks:
+
+```powershell
+$env:PYTHONPATH='shared/python/src;ops/src;backend/modules/discovery/src;backend/modules/summarization/src'
+```
+
+If the backend suite reports unsupported async tests, install the declared test plugin:
+
+```powershell
+python -m pip install "pytest-asyncio>=0.23"
+```
+
+## Build Steps
+
+```powershell
+python -m compileall backend/modules/novelty backend/wiring.py backend/app.py ops/cdk/stacks/novelty_stack.py ops/cdk/stacks/compute_stack.py ops/cdk/app.py
+```
+
+Expected result: compileall completes without syntax errors.
+
+## CDK Synthesis
+
+```powershell
+cd ops/cdk
+cdk synth
+```
+
+Verified result on 2026-06-30: `cdk synth` completed successfully and synthesized `Docsuri-Novelty` to `ops/cdk/cdk.out`. The CDK CLI emitted existing construct warnings for cross-stack reference strength, ECS `minHealthyPercent`, and security group egress.
+
+---
+
 ## U1 Ingestion (`ingestion/`)
 
 생성된 U1 Ingestion 워커와 그 `shared/python` 의존성을 대상으로 합니다.

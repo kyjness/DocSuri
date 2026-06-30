@@ -62,8 +62,13 @@ class RequestContext:
 
 @dataclass(frozen=True, slots=True)
 class SummaryRequest:
-    """Result-card on-demand action (FR-12/13). ``persona`` applies to summary only;
-    ``view`` is a client render hint and is NOT part of cache identity (Q9)."""
+    """Result-card on-demand action (FR-12/13). ``persona`` applies to summary only.
+
+    View presets were dropped (Q9 폐기): there is no ``view`` request field and no view-derived
+    generation variant — persona (expert/beginner) is the only generation axis. Any display
+    slicing (full / tl;dr / per-section) is a pure U5 client-render concern over the same §3
+    JSON, never a U7 input or cache-identity component.
+    """
 
     paper_id: str
     version: int

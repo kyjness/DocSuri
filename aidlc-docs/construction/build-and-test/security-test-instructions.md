@@ -92,3 +92,29 @@ Manual review checklist:
 - Confirm CDK purge failure alarm is deployed with ops alert subscription configured.
 
 ---
+
+# U11 Novelty Agent Security Test Instructions — 2026-06-30
+
+Run security-relevant U11 tests:
+
+```powershell
+python -m pytest backend/tests/test_novelty.py -q
+```
+
+Covered security/privacy checks:
+
+- owner isolation blocks cross-owner job reads
+- supported outputs cannot claim evidence without `sourceRefs`
+- external URLs require HTTPS and reject localhost/private-style IP targets
+- query minimization strips whitespace/newlines before external search
+- Notion export requires explicit preview approval before completion
+- unsupported manuscript types are rejected at the API boundary
+
+Manual review checklist:
+
+- Confirm deploy env keeps `NOVELTY_AGENT_ENABLED=true`.
+- Confirm API task can send only to the novelty queue and read/write only the `novelty/` S3 prefix.
+- Confirm no plaintext Notion token is stored in novelty job payloads.
+- Confirm real external adapters preserve the allowlist and timeout/degraded behavior.
+
+---

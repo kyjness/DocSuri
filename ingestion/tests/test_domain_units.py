@@ -230,7 +230,7 @@ def test_docmodel_abstract_chunk_has_empty_lexical_terms() -> None:
     )
 
     records = IndexRecordAssembler().assemble(paper, chunks, embedding_batch).records
-    abstract_record = next(record for record in records if record.section == "Abstract")
+    abstract_record = next(record for record in records if record.section == "abstract")
     body_record = next(record for record in records if record.section == "Body")
 
     assert abstract_record.lexicalTerms == ""

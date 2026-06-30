@@ -122,7 +122,16 @@ class SummarizationOrchestrationService:
         user_id = ctx.auth_session.user_id
 
         # 0. cache lookup (read-through) — HIT ends here (LLM 0 calls, §11).
-        glossary_ver = self._glossary_version(user_id)
+        # Summary output only varies with PROMPT-ENFORCED terms, so it keys on a content signature
+        # of that subset; translate also varies with post-substitution terms, so it keys on the
+        # full monotonic version. This keeps a translate-only term edit from forking the per-user
+        # summary cache into an identical re-summary (NFR-C1), while the content signature (unlike a
+        # filtered MAX) still invalidates when a prompt-enforced term is demoted (BR-S1).
+        glossary_ver = (
+            self._glossary.prompt_glossary_signature(user_id)
+            if request.task == Task.SUMMARY
+            else self._glossary.glossary_version(user_id)
+        )
         key = build_cache_key(
             request, glossary_ver=glossary_ver, model_ver=self._model_ver, user_id=user_id
         )
@@ -295,15 +304,6 @@ class SummarizationOrchestrationService:
         return refs
 
     # --- helpers -------------------------------------------------------------
-    def _glossary_version(self, user_id: str | None) -> int:
-        repo = getattr(self._glossary, "_repo", None)
-        if repo is not None:
-            try:
-                return repo.get_glossary_version(user_id)
-            except Exception:  # noqa: BLE001 — versioning failure → shared baseline
-                return 0
-        return 0
-
     def _emit(self, name: str, value: float, request, *, verdict: str | None = None) -> None:
         """Non-blocking telemetry → U6 ObservabilityHub. MUST NOT raise (off response path)."""
         try:

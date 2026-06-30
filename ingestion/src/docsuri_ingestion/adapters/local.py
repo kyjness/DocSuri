@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -10,6 +10,7 @@ from docsuri_shared.dtos import DocModel
 from docsuri_shared.events import NewArxivEvent
 from docsuri_shared.vector_spec import DIMENSIONS, IndexRecord
 
+from docsuri_ingestion.domain.canonical import source_priority_from_tier
 from docsuri_ingestion.domain.enums import DedupDecision, DedupStateKind, FailureReason
 from docsuri_ingestion.domain.errors import RetriableIngestionError
 from docsuri_ingestion.domain.models import (
@@ -59,6 +60,24 @@ class FakeArxivSource:
     def fetch_html_source(self, arxiv_id: str):
         del arxiv_id
         return None
+
+
+def _winner_supersedes(new: CanonicalDedupState, old: CanonicalDedupState) -> bool:
+    """Whether ``new`` should overwrite ``old`` as canonical winner: higher source priority, or
+    same priority and a newer-or-equal version (BR-C3/BR-14)."""
+    new_p = source_priority_from_tier(new.winning_source_tier)
+    old_p = source_priority_from_tier(old.winning_source_tier)
+    if new_p != old_p:
+        return new_p < old_p
+    return new.winning_version >= old.winning_version
+
+
+def _merge_seen_sources(old: tuple, new: tuple) -> tuple:
+    merged = list(old)
+    for source in new:
+        if source not in merged:
+            merged.append(source)
+    return tuple(merged)
 
 
 class InMemoryControlPlaneStore:
@@ -154,8 +173,17 @@ class InMemoryControlPlaneStore:
         return tuple(state for state in self._canonical.values() if state.paper_id == paper_id)
 
     def upsert_canonical_dedup_state(self, state: CanonicalDedupState) -> None:
+        # Guarded, monotonic upsert (BR-C3/BR-14): keep the higher-priority/newer winner and
+        # always merge seen_sources, so two sources racing on one canonical_key can't lost-update
+        # each other. Mirrors the Postgres ON CONFLICT guard.
         with self._lock:
-            self._canonical[state.canonical_key] = state
+            existing = self._canonical.get(state.canonical_key)
+            merged = _merge_seen_sources(
+                existing.seen_sources if existing else (), state.seen_sources
+            )
+            supersedes = existing is None or _winner_supersedes(state, existing)
+            winner = state if supersedes else existing
+            self._canonical[state.canonical_key] = replace(winner, seen_sources=merged)
 
     def delete_canonical_dedup_state_for_paper(self, paper_id: str) -> None:
         with self._lock:

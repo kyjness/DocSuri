@@ -253,15 +253,18 @@ class IndexRecordAssembler:
         chunk: Chunk,
         vector: Sequence[float],
     ) -> IndexRecord:
-        lexical_terms = ""
-        if normalize_text(chunk.section).lower() != "abstract":
-            lexical_terms = normalize_text(chunk.text)
+        is_abstract = normalize_text(chunk.section).lower() == "abstract"
+        lexical_terms = "" if is_abstract else normalize_text(chunk.text)
+        # Canonicalize the abstract chunk's section to a stable lowercase keyword so readers can
+        # term-filter it (U2 lite scope restricts k-NN to ``section=abstract``). The docmodel
+        # path labels it "Abstract" (heading title); body sections keep their human label.
+        section = "abstract" if is_abstract else chunk.section
         return IndexRecord(
             chunkId=chunk.chunk_id,
             paperId=paper.paper_id,
             version=paper.version,
             vector=list(vector),
-            section=chunk.section,
+            section=section,
             lexicalTerms=lexical_terms,
             blockRefs=[
                 {
@@ -303,7 +306,9 @@ def _docmodel_block_text(block) -> str:
     if kind == "paragraph":
         return normalize_text(block.text)
     if kind == "formula":
-        return normalize_text(block.latex)
+        # Image-only formulas (PDF page-crop fallback, no recoverable LaTeX) carry no text —
+        # they are display-only and not indexed for search.
+        return normalize_text(block.latex) if getattr(block, "latex", None) else ""
     if kind == "table":
         lines: list[str] = []
         label = getattr(block, "anchorLabel", "") or ""

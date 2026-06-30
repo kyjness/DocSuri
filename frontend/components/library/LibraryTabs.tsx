@@ -5,7 +5,6 @@ import styles from './Library.module.css';
 type Tab = 'library' | 'saved' | 'history';
 
 const TABS: { key: Tab; href: string; label: string; testid: string }[] = [
-  { key: 'library', href: '/library', label: '라이브러리', testid: 'tab-library' },
   { key: 'saved', href: '/library/saved', label: '저장한 검색', testid: 'tab-saved' },
   { key: 'history', href: '/library/history', label: '검색 이력', testid: 'tab-history' },
 ];

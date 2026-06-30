@@ -22,7 +22,7 @@
 ## 핵심 설계 반영
 
 - **혼합 추출(Q2=C/BR-23)**: e-print(LaTeX) 그래픽 직접(structured) → 없/실패 시 PDF page-crop(캡션 정규식 근접). 표는 항상 page-crop(TD-12).
-- **결정성(P7)**: `finalize_assets` (page,y,x) 정렬·type별 ordinal·결정적 `asset_id`. 순수 함수 → PBT.
+- **결정성(P7)·assetId 정합**: `finalize_assets` (page,y,x) 정렬·표는 위치 기반 ordinal. **그림 ordinal은 doc-model FigureBlock 캡션에 매칭**(`figure_caption_anchors`→`_match_figure_ordinals`) — 추출 순서(e-print 파일명/page 위치)가 HTML 읽기 순서와 달라도 저장 assetId가 그 블록을 가리키도록 정합. 앵커 미제공 시 기존 위치 기반 폴백(하위호환). page-crop 경로(캡션 보유)는 정합 보장·캡션 없는 e-print structured 그림은 위치 기반 잔존·TEI/GROBID는 크롭 스펙이 동일 assetId 보유로 기존 정합 불변. 순수 함수 → PBT.
 - **이미지 보안(TD-13/15/BR-24)**: 안전 디코더 재인코딩(WebP), 픽셀 상한(bomb 가드), 메타 스트립, 원본 바이트 비저장.
 - **정합(P8)**: S3 put → RDS upsert 순서. CHANGED=버전 행/객체 교체, tombstone=삭제.
 - **best-effort(Q4=A/BR-27)**: 자산 단계는 **인덱스 커밋 후** 호출·전체 try/except → `mark_ingested`/워터마크 전진 비차단. 실패는 `ASSET_*` 메트릭/로그.

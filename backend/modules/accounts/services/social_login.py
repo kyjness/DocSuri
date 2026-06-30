@@ -22,13 +22,27 @@ from ..repository.credential import CredentialRepository, has_usable_password
 logger = logging.getLogger(__name__)
 
 
+def _account_id_for_existing_link(link) -> str:
+    if link.status == "LINKED":
+        return link.account_id
+    if link.status == "PENDING_CONFIRMATION":
+        raise SocialLinkConfirmationRequired(
+            "이 이메일은 비밀번호로 가입된 계정입니다. 비밀번호로 로그인한 뒤 소셜 계정을 연결해 주세요."
+        )
+    raise DomainException("소셜 계정 연결 상태가 올바르지 않습니다.")
+
+
 @dataclass(frozen=True)
 class OidcClaims:
-    """프로바이더 id_token에서 서명·nonce 검증 후 추출한 신뢰 클레임 (FR-27)."""
+    """프로바이더 id_token에서 서명·nonce 검증 후 추출한 신뢰 클레임 (FR-27).
+
+    이메일 제공 프로바이더(Google)는 email/email_verified를 채운다(BR-A9). 이메일을 제공하지
+    않는 프로바이더(ORCID)는 email=None이며 name(표시용)만 채운다(BR-A13)."""
 
     subject: str
-    email: str
-    email_verified: bool
+    email: str | None = None
+    email_verified: bool = False
+    name: str | None = None  # ORCID 마이페이지 표시용 (id_token given_name/family_name)
 
 
 class SocialLoginService:
@@ -46,14 +60,18 @@ class SocialLoginService:
               `SocialLinkConfirmationRequired` (H1 pre-hijacking 방어).
             - 비밀번호 없음(소셜-only) → 자동 연결(LINKED).
           이메일의 기존 계정 없음 → ACTIVE 신규 계정 생성 + LINKED.
+
+        이메일을 제공하지 않는 프로바이더(ORCID, claims.email is None)는 BR-A13 경로로 분기한다.
         """
+        if claims.email is None:
+            return self._reconcile_emailless(provider, claims)
         if not claims.email_verified:
             raise DomainException("프로바이더가 이메일을 검증하지 않아 로그인할 수 없습니다.")
         provider_v = provider.value
 
         existing_link = self._repo.get_social_identity(provider_v, claims.subject)
         if existing_link is not None:
-            return existing_link.account_id
+            return _account_id_for_existing_link(existing_link)
 
         email = normalize_email(claims.email)
         account = self._repo.get_by_email(email)
@@ -76,6 +94,21 @@ class SocialLoginService:
         # 소셜-only(비밀번호 없는) 기존 계정 → 자동 연결.
         self._repo.create_social_identity(provider_v, claims.subject, account.id, email, status="LINKED")
         logger.info(f"Social auto-link: account {account.id} linked to {provider_v}.")
+        return account.id
+
+    def _reconcile_emailless(self, provider: OidcProvider, claims: OidcClaims) -> str:
+        """BR-A13: 이메일을 제공하지 않는 프로바이더(ORCID)의 신원 조정.
+
+        이메일이 없어 동일인 판정(이메일 매칭·H1 자동 병합)이 불가하므로 `(provider, subject)`
+        단독으로 신원을 성립시킨다. 기존 연결이 있으면 그 계정을, 없으면 email=NULL인 ACTIVE
+        신규 계정을 생성한다(role=USER, 비밀번호 자격증명 없음)."""
+        provider_v = provider.value
+        existing_link = self._repo.get_social_identity(provider_v, claims.subject)
+        if existing_link is not None:
+            return _account_id_for_existing_link(existing_link)
+        account = self._repo.create_social_account(None)
+        self._repo.create_social_identity(provider_v, claims.subject, account.id, None, status="LINKED")
+        logger.info(f"Social signup (emailless): new ACTIVE account {account.id} via {provider_v}.")
         return account.id
 
     def confirm_pending_links(self, account_id: str) -> int:

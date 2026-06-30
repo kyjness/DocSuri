@@ -72,7 +72,7 @@
     "DocModel": {
       "type": "object",
       "title": "DocModel",
-      "description": "The structured paper artifact: fullText plus a nested section tree of typed content blocks. fullText is the complete reading-order text projection of the paper. Tables are DATA (rows/cols), formulas are LaTeX, figures/table-images are webp references by assetId (pixels are NOT embedded — base64 bloat avoided; reuse assets/{paperId}/{version}/{assetId}.webp). Deterministic: same source HTML -> same DocModel (LLM extraction forbidden). Trace: D1, D8, P7.",
+      "description": "The structured paper artifact: fullText plus a nested section tree of typed content blocks. fullText is the complete reading-order text projection of the paper. Tables are DATA (rows/cols), formulas are LaTeX (page-crop image fallback when no LaTeX is recoverable — PDF/GROBID path), figures/table-images are webp references by assetId (pixels are NOT embedded — base64 bloat avoided; reuse assets/{paperId}/{version}/{assetId}.webp). Deterministic: same source HTML -> same DocModel (LLM extraction forbidden). Trace: D1, D8, P7.",
       "properties": {
         "meta": { "$ref": "#/$defs/DocModelMeta" },
         "fullText": {
@@ -98,6 +98,11 @@
         "version": { "type": "integer", "description": "Paper version; doc-model is keyed (paperId, version). Trace: D6." },
         "title": { "type": "string", "description": "Paper title (rendered as document title in the rich view)." },
         "abstract": { "type": "string", "description": "Optional abstract plain text (translate task uses the abstract directly; rich view shows it). Trace: BR-S2." },
+        "macros": {
+          "type": "object",
+          "description": "Optional KaTeX macro map (\"\\\\name\" -> expansion) extracted from the e-print LaTeX preamble (\\newcommand / \\providecommand / \\DeclareMathOperator / \\def). The renderer passes it to KaTeX so author-defined commands in formula LaTeX resolve instead of rendering as red unsupported-command errors. Additive/optional — absent when no e-print preamble was available; consumers ignore it if unset. Trace: BR-30, TD-16.",
+          "additionalProperties": { "type": "string" }
+        },
         "provenance": { "$ref": "#/$defs/Provenance" }
       },
       "required": ["paperId", "version", "title", "provenance"],
@@ -219,16 +224,17 @@
     "FormulaBlock": {
       "type": "object",
       "title": "FormulaBlock",
-      "description": "A display (block-level) equation as LaTeX. Inline math lives in ParagraphBlock.text instead. Trace: D1.",
+      "description": "A display (block-level) equation. LaTeX is preferred (KaTeX renders it; agents read it verbatim and it is indexed for search). When the source carries no recoverable LaTeX (the PDF/GROBID path: a formula is rendered pixels, not LaTeX source) the equation degrades to a page-crop image via `assetRef` — display-only, not searchable. Exactly one of `latex` / `assetRef` is the render source; `latex` wins when both are present. Inline math lives in ParagraphBlock.text instead. Trace: D1, TD-16.",
       "properties": {
         "id": { "type": "string", "description": "Deterministic block id / anchor handle, e.g. \"s3.eq2\". Trace: Q2-decision." },
         "type": { "const": "formula" },
-        "latex": { "type": "string", "description": "LaTeX (converted from source MathML when needed; HTML-borne <math> coverage ~94% per Q1 spike). Rendered by KaTeX/MathJax. Trace: D1, TD-16." },
+        "latex": { "type": "string", "description": "LaTeX (converted from source MathML when needed; HTML-borne <math> coverage ~94% per Q1 spike). Rendered by KaTeX/MathJax. Absent on the PDF/GROBID path when no LaTeX is recoverable — `assetRef` carries the image instead. Trace: D1, TD-16." },
+        "assetRef": { "$ref": "#/$defs/AssetRef", "description": "Page-crop image fallback for a formula with no recoverable LaTeX (PDF/GROBID path). assetRef.type is \"formula\". Display-only — not indexed for search. Trace: FR-17, TD-12." },
         "display": { "type": "boolean", "description": "Always true for a FormulaBlock (display/block equation); present for renderer clarity." },
         "anchorLabel": { "type": "string", "description": "Equation number as in the paper, e.g. \"(3)\"." },
         "mathmlSource": { "type": "string", "description": "Optional original MathML, retained for fidelity/debugging." }
       },
-      "required": ["id", "type", "latex"],
+      "required": ["id", "type"],
       "additionalProperties": false
     },
 
@@ -293,7 +299,7 @@
       "description": "A REFERENCE to a stored image asset — assetId, not pixels and not an object_ref. The read API (getDocModel / GET /api/papers/{id}/assets) issues a short-lived signed URL at read time; the doc-model artifact never stores the URL or object_ref (SEC-9). Mirrors the existing AssetRef in summarization.schema.json minus the runtime-only `url`. Trace: FR-17, SEC-9, D8/D5.",
       "properties": {
         "assetId": { "type": "string", "description": "Deterministic asset id keying assets/{paperId}/{version}/{assetId}.webp and the paper_asset row. Trace: FR-17." },
-        "type": { "type": "string", "enum": ["figure", "table"], "description": "Asset kind." },
+        "type": { "type": "string", "enum": ["figure", "table", "formula"], "description": "Asset kind. \"formula\" is a page-crop equation image used only as the FormulaBlock fallback when no LaTeX is recoverable (PDF/GROBID path). Trace: FR-17, TD-12." },
         "ordinal": { "type": "integer", "description": "Display order within its type (figure/table). Trace: FR-17." },
         "caption": { "type": "string", "description": "Caption (mirrors the parent block caption; convenience for asset-only views)." },
         "sourceMode": { "type": "string", "enum": ["structured", "page-crop"], "description": "How the image was obtained: structured graphic extraction or page-crop fallback. Trace: TD-11/TD-12." }

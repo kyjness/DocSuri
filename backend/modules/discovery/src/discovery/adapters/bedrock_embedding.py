@@ -1,7 +1,7 @@
 """BedrockCohereQueryEmbedder — real ``EmbeddingAdapter`` (vector-spec §1).
 
 The reader-side mirror of U1's ``BedrockCohereEmbeddingPort``: SAME model/space, but
-``input_type=search_query`` (Cohere v3 asymmetry — writer embeds documents, reader the
+``input_type=search_query`` (Cohere Embed v4 asymmetry — writer embeds documents, reader the
 query; vector-spec §1). A transient Bedrock failure raises ``EmbeddingUnavailable`` so the
 orchestrator degrades to lexical-only (Q1/BR-16). A dimension mismatch is NOT transient —
 it means the query was embedded in a different space than the index (full re-embed
@@ -19,7 +19,7 @@ from ..ports.search_ports import EmbeddingUnavailable
 
 
 class BedrockCohereQueryEmbedder:
-    """Query embedding via Bedrock (Cohere Embed Multilingual v3, reader=search_query)."""
+    """Query embedding via Bedrock (Cohere Embed Multilingual v4, reader=search_query)."""
 
     def __init__(
         self,

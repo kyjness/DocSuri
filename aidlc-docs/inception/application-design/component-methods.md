@@ -197,3 +197,33 @@
 | IncidentEventPublisher | `publishAlert(alert: OpsAlert) -> void` | 운영 경보 IR/COE 라우팅 발행 | OpsAlert → void |
 | OpsDashboardService | `getDashboard(window: TimeWindow) -> OpsDashboardView` | 지연·에러율·처리량·건강도·지출·서킷 상태 OP 뷰 모델 | TimeWindow → OpsDashboardView |
 | OpsDashboardService | `listIncidents(filter: IncidentFilter) -> IncidentList` | 세 인시던트 클래스 상태·경보 이력 조회 | IncidentFilter → IncidentList |
+
+---
+
+## U11 — Evidence Formation Agent
+
+> **스트리밍 주석**: `sendMessage`는 SSE 청크 스트림을 반환(NFR-P6). 긴 분석은 `EvidenceJobService`가 비동기 잡으로 처리하며 `getJobResult`로 폴링.
+
+| 컴포넌트 | 시그니처 | 목적 | 입력 → 출력 |
+|---|---|---|---|
+| EvidenceChatController | `createSession(authCtx: AuthContext, body: SessionCreateDTO) -> HttpResponse<EvidenceSessionDTO>` | 새 근거형성 세션 생성 | AuthContext, SessionCreateDTO{title?} → HttpResponse<EvidenceSessionDTO>(201) |
+| EvidenceChatController | `listSessions(authCtx: AuthContext, page: PageParams) -> HttpResponse<EvidenceSessionPageDTO>` | 소유자 세션 목록 조회 | AuthContext, PageParams → HttpResponse<EvidenceSessionPageDTO>(200) |
+| EvidenceChatController | `getSession(authCtx: AuthContext, sessionId: Id) -> HttpResponse<EvidenceSessionResultDTO>` | 특정 세션 결과·이력 재열람 | AuthContext, Id → HttpResponse<EvidenceSessionResultDTO>(200) \| 404 |
+| EvidenceChatController | `sendMessage(authCtx: AuthContext, sessionId: Id, body: EvidenceMessageDTO) -> StreamingResponse<EvidenceChunkDTO>` | 채팅 턴 전송 → 스트리밍 근거형성 응답(SSE) | AuthContext, Id, EvidenceMessageDTO{topic, scope?, paperIds?, attachments?} → SSE stream |
+| EvidenceChatController | `deleteSession(authCtx: AuthContext, sessionId: Id) -> HttpResponse<void>` | 소유 세션 삭제(타 소유 NotFound) | AuthContext, Id → HttpResponse<void>(204) \| 404 |
+| EvidenceChatController | `resetAllSessions(authCtx: AuthContext) -> HttpResponse<void>` | 전체 세션 초기화 | AuthContext → HttpResponse<void>(204) |
+| EvidenceAgentOrchestrator | `run(request: EvidenceRequest, ctx: AgentContext) -> AsyncStream<EvidenceChunk>` | 첫 질문: 도구 자율 오케스트레이션 → 스트리밍 근거형성 | EvidenceRequest, AgentContext → AsyncStream<EvidenceChunk>(EvidenceResult \| EvidenceAbstainResult 종착) |
+| EvidenceAgentOrchestrator | `continueSession(sessionId: Id, followUp: str, ctx: AgentContext) -> AsyncStream<EvidenceChunk>` | 후속 질문: 이전 턴 맥락 참조 → 스트리밍 | Id, str, AgentContext → AsyncStream<EvidenceChunk> |
+| EvidencePaperSearchTool | `searchPapers(query: str, scope: EvidenceScope, paperIds?: str[]) -> IndexRecord[]` | Agent 호출 논문 검색 도구 | str, EvidenceScope, str[]? → IndexRecord[] |
+| EvidenceDocModelTool | `fetchBlocks(paperId: str, recordRef: str, anchor?: str) -> DocModelBlock[]` | Agent 호출 DocModel 블록 읽기 | str, str, str? → DocModelBlock[] |
+| EvidenceExtractor | `extractItems(blocks: DocModelBlock[], paperId: str, recordRef: str) -> EvidenceItem[]` | 블록에서 EvidenceItem 추출(추출 전용, C-2) | DocModelBlock[], str, str → EvidenceItem[](statement+supporting+conflicting, confidence 없음 Q3=B) |
+| EvidenceComparisonAssembler | `assemble(items: EvidenceItem[], coverage: EvidenceCoverage) -> EvidenceResult` | EvidenceItems → 비교표+쟁점 오버레이 EvidenceResult | EvidenceItem[], EvidenceCoverage → EvidenceResult(state=ok) |
+| EvidenceComparisonAssembler | `buildConflictOverlay(items: EvidenceItem[]) -> ConflictMatrix` | 지지/상충 출처 기반 쟁점 오버레이 계산 | EvidenceItem[] → ConflictMatrix |
+| AttachmentDocModelAdapter | `processAttachment(handle: AttachmentHandle) -> DocModelBlock[]` | 첨부 문서 doc-model 파이프라인 일시 처리(원시 파일 미저장) | AttachmentHandle → DocModelBlock[] |
+| EvidenceSessionRepository | `createSession(userId: Id, meta: SessionMeta) -> EvidenceSession` | owner 키 강제 포함 세션 영속화 | Id, SessionMeta → EvidenceSession |
+| EvidenceSessionRepository | `loadSession(userId: Id, sessionId: Id) -> Optional<EvidenceSession>` | 소유자 범위 세션 단건 조회 | Id, Id → Optional<EvidenceSession> |
+| EvidenceSessionRepository | `listSessions(userId: Id, page: PageParams) -> Page<EvidenceSession>` | 소유자 범위 세션 최근순 목록 | Id, PageParams → Page<EvidenceSession> |
+| EvidenceSessionRepository | `appendTurn(sessionId: Id, turn: EvidenceTurn) -> void` | 세션 턴 추가 영속 | Id, EvidenceTurn → void |
+| EvidenceSessionRepository | `deleteSession(userId: Id, sessionId: Id) -> boolean` | 소유자 범위 세션 삭제 | Id, Id → boolean(삭제 성공 여부) |
+| EvidenceSessionRepository | `resetAllSessions(userId: Id) -> void` | 소유자 전체 세션 삭제 | Id → void |
+| EvidenceFormationService | `async form_evidence(request: EvidenceRequest, ctx: Any) -> EvidenceResult \| EvidenceAbstainResult` | **EvidenceFormationPort(D5) 구현 — U12 Tool 진입점**. EvidenceAgentOrchestrator 라우팅; 긴 분석은 잡 오프로드 | EvidenceRequest, Any → EvidenceResult(state=ok) \| EvidenceAbstainResult(state=abstain) |

@@ -1,11 +1,11 @@
 # unit-of-work-story-map.md — 스토리 → 유닛 매핑
 
 **단계**: INCEPTION → Units Generation · **일자**: 2026-06-15
-**근거**: `stories.md`(53개), `unit-of-work.md`(U1~U9·U11). 각 스토리에 **주 소유 유닛(Owner)** + 기여 유닛.
+**근거**: `stories.md`(45개), `unit-of-work.md`(U1~U9). 각 스토리에 **주 소유 유닛(Owner)** + 기여 유닛. (구 통합 U11 연구 에이전트 스토리는 2유닛 분리로 제거 — 신규 인셉션 사이클에서 재생성.)
 
 ---
 
-## 매핑 (53개 전수)
+## 매핑 (45개 전수)
 
 | 스토리 | Owner | 기여 유닛 |
 |---|---|---|
@@ -22,7 +22,7 @@
 | **US-A3** 비밀번호 재설정 | U3 | U5(재설정 화면), U6(레이트리밋), 이메일=Resend |
 | **US-A4** 소셜 로그인(Google OIDC) | U3 | U5(소셜 버튼·콜백 UI), U6(게이트웨이), 외부 Google OIDC |
 | **US-A5** 비번/이메일 변경 | U3 | U5/U10(설정 UI), 이메일=Resend |
-| **US-A6** 계정 삭제(소프트+유예 캐스케이드) | U3 | U4·U2·U11(owner-scoped 데이터 **이벤트 구독·파기**), U5/U10(UI) |
+| **US-A6** 계정 삭제(소프트+유예 캐스케이드) | U3 | U4·U2(owner-scoped 데이터 **이벤트 구독·파기**), U5/U10(UI) |
 | **US-A7** 인증 에러 표면화·입력 견고화 | U3 | U5(에러 표면화·재발송 UX) |
 | **US-L1** 검색 저장 | U4 | U5 |
 | **US-L2** 라이브러리 | U4 | U5 |
@@ -54,14 +54,6 @@
 | **US-P5** 요약/번역 기본값 개인화 | U9 | U7(기본값 적용), U5(옵션 UI) |
 | **US-P6** 개인화 제어권 | U9 | U5(설정 UI), U3(사용자/인가) |
 | **US-P7** 개인화 운영 관측성과 저하 | U6 | U9(저하/집계 신호원) |
-| **US-RA1** 전용 진입+모드 선택+대화 입력 | U11 | U5(전용 네비/대화 UI), U6(게이트웨이), U3(로그인) |
-| **US-RA2** 문서 첨부 | U11 | U5(업로드 UI), U6(검증/게이트웨이) |
-| **US-RA3** 다논문 검색·교차확인 근거 정리(모드 A) | U11 | U2(검색 read), U7(doc-model/근거화 재사용) |
-| **US-RA4** 근거화·출처·기권 | U11 | U6(근거화 후크) |
-| **US-RA5** 결과·세션 영속+전용 메뉴 재열람 | U11 | U5(세션 리스트 UI), U3(인가) |
-| **US-RA6** 온디맨드 진행상태·부분결과·비차단 저하 | U11 | U5(진행 표시), U6(관측) |
-| **US-RA7** 비용 게이트+근거화 운영 관측성 | U6 | U11(에이전트 경로·관측 신호원) |
-| **US-RA8** novelty 비교(모드 B·다음 사이클) | U11 | U8(외부 API 캐시 패턴·차기), U2(검색) |
 
 ## 유닛별 스토리 묶음
 - **U1 Ingestion** — US-I1, US-I2, US-I3 (+US-H1/US-D2 Corpus 인덱스 백킹)
@@ -73,15 +65,14 @@
 - **U7 Summarization** — US-S1, US-S2, US-S3, US-S4, US-S5 (+US-S6 요약 경로 기여)
 - **U8 Citation Graph** — US-CG1, US-CG2, US-CG3, US-CG4, US-CG5 (+US-CG6 관측 신호원)
 - **U9 Personalization** — US-P1, US-P2, US-P3, US-P4, US-P5, US-P6 (+US-P7 관측 신호원)
-- **U11 Research Agent** — US-RA1, US-RA2, US-RA3, US-RA4, US-RA5, US-RA6, US-RA8 (+US-RA7 관측 신호원; US-RA8 모드 B 다음 사이클)
 
 ## 전수 할당 검증
-- 스토리 **53개** = US-H1 + US-D1..D7(7) + **US-A1..A7(7)** + US-L1..L3(3) + US-I1..I3(3) + US-R1..R5(5) + **US-S1..S6(6)** + **US-CG1..CG6(6)** + **US-P1..P7(7)** + **US-RA1..RA8(8)** → **전부 Owner 배정 완료(미할당 0)**.
+- 스토리 **45개** = US-H1 + US-D1..D7(7) + **US-A1..A7(7)** + US-L1..L3(3) + US-I1..I3(3) + US-R1..R5(5) + **US-S1..S6(6)** + **US-CG1..CG6(6)** + **US-P1..P7(7)** → **전부 Owner 배정 완료(미할당 0)**.
 - 횡단 스토리(US-D5 근거화)는 Owner=U6(단일 권위 후크), 기여=U2(어댑터) — Application Design 단일-소유자 규칙과 일치.
 - US-H1(히어로)은 통합 슬라이스 — Owner=U5(프런트 표면), 다수 유닛 백킹(US-D*/US-A1으로 실현).
 - **U7 추가(2026-06-18)**: US-S1..S5 Owner=U7(요약/번역 신규 책임), US-S6은 비용게이트·근거화 운영이라 Owner=U6(단일 권위) 기여=U7 — 단일-소유자 규칙 일치. U7은 U1(전문)·U6(근거화/비용)에 의존하나 코드 의존 그래프는 비순환 유지(`unit-of-work-dependency.md` §비순환 검증).
 - **U8 추가(2026-06-19)**: US-CG1..CG5 Owner=U8(각주 트리 신규 책임), US-CG6은 운영 관측성이라 Owner=U6 기여=U8 — 단일-소유자 규칙 일치. U8은 U3/U6 인증 경로와 U4 저장 계약에 의존하나 역호출이 없어 코드 의존 그래프는 비순환 유지.
 - **U9 추가(2026-06-23)**: US-P1..P6 Owner=U9(행동 이벤트/프로필/제어 신규 책임), US-P7은 운영 관측성이라 Owner=U6 기여=U9 — 단일-소유자 규칙 일치. U9는 U3/U6 인증·관측 경로에 의존하고 U2/U4/U7/U5는 U9를 비차단 호출하나, U9 역호출이 없어 코드 의존 그래프는 비순환 유지.
-- **U11 추가(2026-06-24)**: US-RA1..RA6·RA8 Owner=U11(연구 에이전트 신규 책임), US-RA7은 비용게이트·근거화 운영이라 Owner=U6 기여=U11 — 단일-소유자 규칙 일치. U11은 U2(검색)·U3/U6(인증·근거화·비용)·U7(doc-model/근거화 재사용)에 의존하고(+모드 B 차기 U8 캐시 패턴·U9 개인화 비차단), 어느 유닛도 U11을 역호출하지 않아 코드 의존 그래프는 비순환 유지. **US-RA8(novelty 모드 B)은 Owner=U11이나 다음 사이클 구현**(Q4=A). U10=마이페이지(타 팀원)는 본 문서 미반영 — 번호 점유 가정으로 본 유닛은 U11.
-- **U3 확장 — 계정 프로덕션화(2026-06-24)**: US-A3~A7 Owner=**U3**(재설정·소셜 OIDC·비번/이메일 변경·삭제·입력 견고화 — 신규 에픽 아님, 에픽 2 확장). **경계(Q2=A)**: U10 마이페이지(타 팀원)=프로필/설정 **UI만**, U3=백엔드 `/auth/*` 엔드포인트·도메인 규칙 소유. **신규 의존**: U3→외부 Google OIDC(콜백·토큰 교환). **삭제 캐스케이드**: U4/U2/U11은 이미 U3 인증에 의존하므로 U3가 이들을 **직접 호출하면 순환** — 따라서 캐스케이드는 **이벤트 구동**(U3가 `AccountDeleted` 발행 → U4/U2/U11이 각자 owner-scoped 데이터 구독·파기)으로 의존성 역전(U11↔U6 `shared/ports` 패턴 동일) → **코드 의존 그래프 비순환 유지**. 이벤트 계약·유예 잡 메커니즘 = Construction(Functional/Infra Design).
-- **U1 확장 — Corpus 완성형(2026-06-26)**: US-I1~I3 Owner=**U1** 유지. 멀티소스 수집(arXiv/Semantic Scholar/OpenAlex), GROBID, eager DocModel, DocModel Block 청킹/임베딩/index generation, source watermark, retry/DLQ는 모두 write-side Corpus 파이프라인 책임이므로 신규 유닛을 만들지 않는다. U2/U7/U11은 Corpus/DocModel capability read 소비자이며 코드 의존 그래프 비순환 유지.
+- **연구 에이전트(2026-06-28 재구성)**: 구 통합 U11(US-RA1~8)은 폐기되고 **문헌탐색·근거형성 / 연구아이디어 2유닛으로 분리**(차터 §4) — 스토리·Owner·의존은 신규 인셉션 사이클에서 재생성한다.
+- **U3 확장 — 계정 프로덕션화(2026-06-24)**: US-A3~A7 Owner=**U3**(재설정·소셜 OIDC·비번/이메일 변경·삭제·입력 견고화 — 신규 에픽 아님, 에픽 2 확장). **경계(Q2=A)**: U10 마이페이지(타 팀원)=프로필/설정 **UI만**, U3=백엔드 `/auth/*` 엔드포인트·도메인 규칙 소유. **신규 의존**: U3→외부 Google OIDC(콜백·토큰 교환). **삭제 캐스케이드**: U4/U2는 이미 U3 인증에 의존하므로 U3가 이들을 **직접 호출하면 순환** — 따라서 캐스케이드는 **이벤트 구동**(U3가 `AccountDeleted` 발행 → U4/U2가 각자 owner-scoped 데이터 구독·파기)으로 의존성 역전(U7↔U6 `shared/ports` 패턴 동일) → **코드 의존 그래프 비순환 유지**. (분리될 연구 에이전트 유닛도 동일 이벤트 구독 패턴으로 편입 예정.) 이벤트 계약·유예 잡 메커니즘 = Construction(Functional/Infra Design).
+- **U1 확장 — Corpus 완성형(2026-06-26)**: US-I1~I3 Owner=**U1** 유지. 멀티소스 수집(arXiv/Semantic Scholar/OpenAlex), GROBID, eager DocModel, DocModel Block 청킹/임베딩/index generation, source watermark, retry/DLQ는 모두 write-side Corpus 파이프라인 책임이므로 신규 유닛을 만들지 않는다. U2/U7은 Corpus/DocModel capability read 소비자이며 코드 의존 그래프 비순환 유지.

@@ -19,6 +19,16 @@ interface ResultCardProps {
 
 export function ResultCard({ card, bookmark, action }: ResultCardProps) {
   const detailHref = `/paper/${encodeURIComponent(card.arxivId)}`;
+  // Source-neutral label + link-out (FR-4/FR-5, Phase 2 Q2): arXiv keeps "arXiv:<id>"; a
+  // non-arXiv result (Semantic Scholar / OpenAlex) shows its source name. The link-out uses
+  // the source-neutral sourceUrl, guarded to http(s) so a malformed/hostile scheme can't ride
+  // the href (external-link safety); rel=noopener noreferrer prevents tabnabbing/referrer leak.
+  const sourceName = card.sourceName ?? 'arXiv';
+  const isArxiv = sourceName.toLowerCase() === 'arxiv';
+  const sourceLabel = isArxiv ? `arXiv:${card.arxivId}` : sourceName;
+  const sourceTestId = isArxiv ? 'result-card-arxiv-id' : 'result-card-source';
+  const sourceUrl =
+    card.sourceUrl && /^https?:\/\//i.test(card.sourceUrl) ? card.sourceUrl : undefined;
 
   return (
     <article className={styles.card} data-testid="result-card">
@@ -35,7 +45,19 @@ export function ResultCard({ card, bookmark, action }: ResultCardProps) {
           </>
         ) : null}
         <span aria-hidden="true"> · </span>
-        <span data-testid="result-card-arxiv-id">arXiv:{card.arxivId}</span>
+        {sourceUrl ? (
+          <a
+            className={styles.sourceLink}
+            href={sourceUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            data-testid={sourceTestId}
+          >
+            {sourceLabel}
+          </a>
+        ) : (
+          <span data-testid={sourceTestId}>{sourceLabel}</span>
+        )}
       </p>
       {card.abstractSnippet ? (
         <Link className={styles.snippetLink} href={detailHref} data-testid="result-card-snippet">

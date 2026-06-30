@@ -10,7 +10,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from docsuri_shared.ports import CostGuardCircuitBreaker, ObservabilityHub
+from docsuri_shared.ports import (
+    CostGuardCircuitBreaker,
+    GroundingValidatorRegistry,
+    ObservabilityHub,
+    ValidatorRegistration,
+)
 
 from .adapters.bedrock_llm import BedrockLlmGateway
 from .adapters.rds_glossary import RdsGlossaryRepository
@@ -31,6 +36,26 @@ from .service.orchestrator import SummarizationOrchestrationService
 class SummarizationBundle:
     orchestrator: SummarizationOrchestrationService
     settings: SummarizationSettings
+    grounding_registry: GroundingValidatorRegistry
+
+
+def build_grounding_registry(validator: GroundingValidator) -> GroundingValidatorRegistry:
+    """Register U7's ``GroundingValidator`` in the shared grounding registry as the ``summary``
+    domain with ``advisory`` authority (D3 / ports.md §2.1).
+
+    U7 verifies document fidelity (SOFT anchor drop / fail-closed abstain) — it is NOT the
+    system grounding gate. Enforcement authority is reserved for the ``search`` domain (U6),
+    and the registry guard rejects any enforcement claim here. The orchestrator still calls
+    ``validate`` directly (call seam unchanged); this registry is the governance catalog that
+    records who owns which domain and who may enforce.
+    """
+    registry = GroundingValidatorRegistry()
+    registry.register(
+        ValidatorRegistration(
+            domain="summary", authority="advisory", owner_unit="U7", validator=validator
+        )
+    )
+    return registry
 
 
 def build_real_orchestrator(
@@ -106,6 +131,10 @@ def build_real_orchestrator(
                 region_name=settings.region_name,
             )
 
+    # Document-fidelity grounding gate (BR-S7). Built once so it can be both injected into the
+    # orchestrator (the call seam) and registered in the shared grounding catalog (governance).
+    grounding = GroundingValidator()
+
     orchestrator = SummarizationOrchestrationService(
         store=store,
         source_selector=SourceSelector(
@@ -115,7 +144,7 @@ def build_real_orchestrator(
         glossary_resolver=GlossaryResolver(glossary_repo),
         length_router=LengthRouter(),
         llm=llm,
-        grounding=GroundingValidator(),
+        grounding=grounding,
         assembler=ResultAssembler(),
         cost_guard=cost_guard,
         observability=observability,
@@ -128,4 +157,8 @@ def build_real_orchestrator(
         # Structured translation (BR-S18) drives the translate path; reuses the same LLM gateway.
         structured_translator=StructuredTranslator(llm),
     )
-    return SummarizationBundle(orchestrator=orchestrator, settings=settings)
+    return SummarizationBundle(
+        orchestrator=orchestrator,
+        settings=settings,
+        grounding_registry=build_grounding_registry(grounding),
+    )

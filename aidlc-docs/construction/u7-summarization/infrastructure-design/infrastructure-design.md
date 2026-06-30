@@ -3,6 +3,7 @@
 **단계**: CONSTRUCTION → Infrastructure Design · **유닛**: U7 Summarization · **일자**: 2026-06-19
 **근거**: 계획서 `u7-summarization-infrastructure-design-plan.md`(9문 전수 A) · NFR Design(논리 컴포넌트) · 시스템 전역 `construction/infrastructure-design/infrastructure-design.md`.
 **핵심**: **신규 관리형 서비스 0** — 전부 기존 프로덕션 자산 재사용. U7은 기존 인프라에 **자원 증분 추가**(프리픽스·키스페이스·테이블·IAM·비용 라인). 리전 = **ap-northeast-2(서울)**.
+**페이즈 3 amendment(2026-06-29, 코드 검증)**: **신규 인프라 0 재확인** — 레지스트리 등재·QT-1 충실도 평가 하니스(`summarization/eval/`)는 순수 Python(단위 CI 레인·자격증명/스토리지/컴퓨트 증분 0); lazy doc-model 빌드 큐는 deprecate(레거시 백필 전용·D6 eager로 대체). §4 비용 임계 정합 확인: CDK `CfnBudget amount=1600·threshold=80%`(=$1,280) = `cost_guard.warning_ratio 0.80` 미러(코드 검증).
 
 ---
 
@@ -32,7 +33,7 @@
 - 용량: ~2KB×30만 ≈ 600MB(무시 수준).
 
 ### 2.2 ElastiCache Redis 핫캐시 (Q3)
-- **기존 클러스터 + 키스페이스 프리픽스 `sum:`**(세션 캐시와 분리). 값 = 요약/번역 JSON. **TTL**(구체값 Code-gen).
+- **기존 클러스터 + 키스페이스 프리픽스 `sum:`**(세션 캐시와 분리). 값 = 요약/번역 JSON. **TTL 필수**(만료없는 키 금지 — `s3_redis_store.py` `set(..., ex=ttl)`; 구체값 Code-gen). S3 영구 immutable과 2티어(미스 시 S3 read→Redis backfill)는 NFR Design §2.1.
 - 메모리: 요약 ~2KB·핫셋 한정 → CloudWatch `DatabaseMemoryUsagePercentage` 모니터. 신규 노드 0.
 
 ### 2.3 RDS PostgreSQL 개인 용어집 (Q4)
@@ -70,7 +71,7 @@ CREATE INDEX idx_user_glossary_owner ON user_glossary (user_id);
 
 - **CloudWatch 메트릭**: U7 토큰·비용(모델별)·지연·근거화 결과 → ObservabilityHub→CloudWatch(`CLOUDWATCH_NAMESPACE`, 기존 G3 경로).
 - **비용 라인**: 시스템 비용표에 **U7 라인 추가**(Bedrock Sonnet/Haiku 토큰, 가변). distinct×1 영구저장으로 bounded.
-- **알람**: 기존 **AWS Budget($1,280 임계)·OpsAlerts** 토픽에 U7 반영. 앱 레벨 CostGuard(U6)는 인트라데이 게이트(RES-11a).
+- **알람**: 기존 **AWS Budget($1,280 임계 = $1,600 × 0.80)·OpsAlerts** 토픽에 U7 반영 — CDK `CfnBudget amount=1600·threshold=80%`가 인앱 `cost_guard.warning_ratio 0.80`을 미러(코드 검증). 앱 레벨 CostGuard(U6)는 인트라데이 게이트(RES-11a·NFR Req §6).
 - 신규 스택/대시보드 0.
 
 ---
@@ -85,7 +86,7 @@ CREATE INDEX idx_user_glossary_owner ON user_glossary (user_id);
 
 ## 6. CI 자격증명 (Q7)
 
-- **단위 레인**(Fixture/Stub): 자격증명 불필요·항상 실행.
+- **단위 레인**(Fixture/Stub): 자격증명 불필요·항상 실행. **QT-1 충실도 평가 하니스**(`summarization/eval/`·`run_grounding_eval`)도 순수·결정적이라 이 레인에서 회귀로 상시 실행(외부 의존 0).
 - **통합 게이트 레인**: 스코프된 **CI IAM 역할**(OIDC, 기존 CD 패턴) — Bedrock 모델·S3 `summaries/`·테스트 RDS/Redis 한정. PR 게이트 또는 주기 실행.
 - **⚠️ CI 파이프라인 = 조율 존**.
 
@@ -99,6 +100,7 @@ CREATE INDEX idx_user_glossary_owner ON user_glossary (user_id);
 | S3 저장 | ~무시(600MB) |
 | Redis/RDS | **0**(기존 노드/인스턴스 공존) |
 | **Bedrock 토큰** | **가변**(요약 Sonnet ≈$0.1~0.2/건·번역 Haiku ≈$0.01~0.02/건, distinct×1 bounded) |
+| QT-1 평가 하니스 | **0**(순수 Python·단위 CI 레인·외부 의존 없음) |
 | 신규 관리형 서비스 | **0** |
 
 > 증분 인프라 비용 ≈ **Bedrock 토큰(가변)** 중심. NFR-C1 상한 여유(현재 ~$370-400 사용). 비동기 잡 인프라 v1 미프로비저닝(Q8).

@@ -12,14 +12,21 @@ import type { NextRequest } from 'next/server';
 // requires 'unsafe-eval'. Allow it ONLY in development; production stays strict
 // (no unsafe-eval) per SEC-4.
 const isDev = process.env.NODE_ENV !== 'production';
-const scriptSrc = ["'self'", "'unsafe-inline'", ...(isDev ? ["'unsafe-eval'"] : [])].join(' ');
+const scriptSrc = [
+  "'self'",
+  "'unsafe-inline'",
+  "https://www.google.com/recaptcha/",
+  "https://www.gstatic.com/recaptcha/",
+  ...(isDev ? ["'unsafe-eval'"] : []),
+].join(' ');
 
 const CSP = [
   "default-src 'self'",
   `script-src ${scriptSrc}`,
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data:",
-  "connect-src 'self'",
+  "connect-src 'self' https://www.google.com/recaptcha/",
+  "frame-src 'self' https://www.google.com/recaptcha/",
   "object-src 'none'",
   "base-uri 'self'",
   "frame-ancestors 'self'",

@@ -22,7 +22,7 @@ export default async function TranslatePage({
   return (
     <RouteGuard redirectTo={`/paper/${id}/translate`}>
       <div className={screen.screen}>
-        <AppHeader title="본문 번역" backHref={`/paper/${id}`} />
+        <AppHeader title="전문 번역" backHref={`/paper/${id}`} />
         <main className={page.page}>
           <FullTranslationIsland paperId={id} version={version} />
         </main>

@@ -25,6 +25,11 @@ function buildTransport(req: NextRequest): Transport {
   return new MockTransport();
 }
 
+function forwardedHeaders(req: NextRequest): Record<string, string> | undefined {
+  const recaptchaToken = req.headers.get('x-recaptcha-token');
+  return recaptchaToken ? { 'X-Recaptcha-Token': recaptchaToken } : undefined;
+}
+
 async function proxy(req: NextRequest, path: string[]): Promise<NextResponse> {
   const method = req.method as TransportMethod;
   const upstreamPath = `/${path.join('/')}${req.nextUrl.search}`;
@@ -45,6 +50,7 @@ async function proxy(req: NextRequest, path: string[]): Promise<NextResponse> {
     method,
     path: upstreamPath,
     body,
+    headers: forwardedHeaders(req),
     idempotent: method === 'GET',
   });
 
@@ -66,6 +72,9 @@ export async function GET(req: NextRequest, ctx: Ctx): Promise<NextResponse> {
   return proxy(req, (await ctx.params).path);
 }
 export async function POST(req: NextRequest, ctx: Ctx): Promise<NextResponse> {
+  return proxy(req, (await ctx.params).path);
+}
+export async function PATCH(req: NextRequest, ctx: Ctx): Promise<NextResponse> {
   return proxy(req, (await ctx.params).path);
 }
 export async function DELETE(req: NextRequest, ctx: Ctx): Promise<NextResponse> {

@@ -63,6 +63,7 @@ export interface ApiClientOptions {
 export interface PageQuery {
   limit?: number;
   cursor?: string;
+  query?: string;
 }
 
 const DEFAULT_PAGE_LIMIT = 20;
@@ -70,6 +71,7 @@ const DEFAULT_PAGE_LIMIT = 20;
 function pageQuery(params?: PageQuery): string {
   const sp = new URLSearchParams({ limit: String(params?.limit ?? DEFAULT_PAGE_LIMIT) });
   if (params?.cursor) sp.set('cursor', params.cursor);
+  if (params?.query) sp.set('query', params.query);
   return `?${sp.toString()}`;
 }
 
@@ -91,7 +93,14 @@ export class ApiClient {
   /** Submit a search; returns a classified terminal outcome (FR-11). */
   async search(query: string): Promise<SearchOutcome> {
     const body: SearchRequest = { query };
-    const res = await this.request({ method: 'POST', path: '/api/search', body, idempotent: true });
+    // idempotent: false — POST /api/search records search history on the backend.
+    // Retrying on 500 would create duplicate history entries.
+    const res = await this.request({
+      method: 'POST',
+      path: '/api/search',
+      body,
+      idempotent: false,
+    });
     if (res.status === 200 || res.status === 400) {
       return classifySearchResponse(res.body);
     }
@@ -281,11 +290,12 @@ export class ApiClient {
    * MFA is an admin-only control (BR-A7) with no login-time challenge, so any
    * non-success is normalized to a user-facing error (401 → generalized auth).
    */
-  async login(req: LoginRequest): Promise<void> {
+  async login(req: LoginRequest, recaptchaToken?: string): Promise<void> {
     const res = await this.request({
       method: 'POST',
       path: '/auth/login',
       body: req,
+      headers: recaptchaToken ? { 'X-Recaptcha-Token': recaptchaToken } : undefined,
       idempotent: false,
     });
     if (res.status === 200 || res.status === 204) return;
@@ -541,7 +551,8 @@ export class ApiClient {
     throw normalizeHttpError(res.status, serverMessage(res.body));
   }
 
-  /** ORCID 무료 API 공개 레코드 (MOCK). loginProvider !== 'ORCID'면 404 -> null. */
+  /** ORCID 공개 프로필 (REAL — U3 `GET /mypage/orcid-profile`, FR-27/BR-A13). 이름·소속은
+   * 로그인 시 캐시한 값, works는 ORCID Public API 라이브. loginProvider !== 'ORCID'면 404 -> null. */
   async getOrcidProfile(): Promise<OrcidProfileVM | null> {
     const res = await this.request({
       method: 'GET',

@@ -1,0 +1,1 @@
+export const ORCID_LOGIN_ENABLED = process.env.NEXT_PUBLIC_ORCID_LOGIN_ENABLED === '1';

@@ -6,6 +6,8 @@
 **프로덕션 스코프**: 단일 프로덕션 트랙(데모 폐기). U2는 배포 ① API의 **모듈**(독립 앱 아님) — app-shell·게이트웨이는 U6/@ELSAPHABA 조율 존.
 **cross-lingual(TD-3)**: 사용자는 **한국어로 질의**하고 **영어 arXiv 코퍼스**를 검색한다(KR↔EN 동일 임베딩 공간; reader=`search_query`).
 
+> **페이즈 2 개정(2026-06-29, 재인셉션)**: 멀티소스(arXiv·Semantic Scholar·OpenAlex)·DocModel(Block) 인덱스 소비 반영 — ① 카드/근거 식별자·링크를 **소스 중립**으로 일반화(Q2), ② 검색 폭 **scope(lite/full)** 추가(#236 랜딩), ③ 인덱스 `blockRefs`·`sourceProvenance`는 **INTERNAL 유지**(외부 노출 페이즈 3·4 이월, Q3), ④ Grounding(Search) **U6 단일권위 유지**(Q4·INV-1 불변). 임베딩 모델·specVersion 불변(재색인 불요 — 이미 **Cohere Embed v4·specVersion v2** 라이브). _(2026-06-29 정정: §9 VectorSpec 'Cohere v3'→**v4** 표기 back-sync 완료. discovery reader 코드 docstring `bedrock_embedding.py`의 'v3'도 동일 stale — 별건 코드 정리로 제안.)_
+
 ---
 
 ## 1. 식별자 & 표시 값타입
@@ -18,6 +20,8 @@
 | **Relevance** | **표시용 관련도 신호**(순위 파생) | **Q3=A**: 정렬 순위에서 파생한 비-raw 표시값. **내부 raw 점수/RRF 점수는 비노출(SEC-9)**. 구체 표시 형태(등급/별점/퍼센트)는 U5 UI 연동 — FD는 "순위 파생 비-raw"로 의미만 고정. |
 | **DegradationMode** | enum `NORMAL` \| `RERANK_OFF` \| `LEXICAL_ONLY` | 저하 단계(Q6=A 2단계 + 정상). `BudgetState.degradeMode`에서 파생, `ResultMeta`/`DegradedResultDTO`에 표면화. |
 | **GroundingVerdict** | enum `pass` \| `block` \| `abstain` | U6 `GroundingDecision.verdict`(포트 소유). U2는 매핑만. |
+| **SearchScope** | enum `lite` \| `full` | 검색 폭(#236·페이즈 2). `lite`(기본)=제목+초록 BM25 + 초록 chunk k-NN(저지연·NFR-P1 SLA 대상); `full`=본문 chunk 포함 하이브리드 고recall(에이전트 심층·비-SLA). 부재 시 lite. |
+| **SourceRef** | `sourceName`(arXiv\|Semantic Scholar\|OpenAlex), `resolvableUrl`(소스 중립 실재 링크) | 소스 표기·해소 가능 링크(페이즈 2/Q2). arXiv=arxivUrl, 비-arXiv=sourceUrl/DOI. `IndexRecord.sourceProvenance`(INTERNAL)에서 **카드 노출용으로만** 투영(나머지 provenance 필드는 비노출, SEC-9). |
 
 ---
 
@@ -25,7 +29,7 @@
 
 | 엔티티 | 필드(개념) | 비고 |
 |---|---|---|
-| **SearchRequest** | `query: string`, `options?` | 동기 검색 진입 입력(`shared/dtos`). `query`는 FR-1/SEC-5 검증 대상. `options`는 잠정(타입 정제 시 확정). |
+| **SearchRequest** | `query: string`, `scope?: lite\|full`, `options?` | 동기 검색 진입 입력(`shared/dtos`). `query`는 FR-1/SEC-5 검증 대상. **`scope`(페이즈 2/#236)**: 검색 폭 — `lite`(기본·사람 검색창·저지연 NFR-P1) / `full`(에이전트 심층·비-SLA). `options`는 잠정(타입 정제 시 확정). |
 | **RequestContext** | `authSession`, `degradationSignal`, `requestId` | 게이트웨이(U6)가 주입. **Q5=A**: `authSession`은 인증 필수(deny-by-default) — userId 출처. `degradationSignal`은 비용 저하 신호. `requestId`는 관측성 상관 키. |
 | **ValidationResult** | `ok: bool`, `reason?` | `QueryValidator.validate` 산출. ok=false → `ValidationErrorDTO`(fail-closed, SEC-15). |
 | **NormalizedQuery** | `text: string` | `QueryValidator.normalize` 산출. **Q7=A**: 트림+공백 collapse+**유니코드 NFC**로 결정적(PBT-02 멱등). **한국어 포함 다국어 허용**(cross-lingual). |
@@ -38,7 +42,7 @@
 |---|---|---|
 | **DegradationSignal** | `llmEnabled: bool`, `rerankEnabled: bool` | `BudgetState`(U6 포트)에서 파생. **Q6=A**: `rerankEnabled=false`→LLM 리랭킹 생략(U2 baseline은 Q3=A로 이미 리랭킹 없음 → 사실상 무변화), `llmEnabled=false`→질의 임베딩 생략·lexical-only 폴백. |
 | **QueryPlan** | `embeddingVector?`, `lexicalTerms`, `filterHints?`, `mode` | `QueryUnderstandingExpander.expand` 산출. **Q1=A**: `embeddingVector`=질의 임베딩(공유 VectorSpec, **reader=`search_query`**, cross-lingual)·`lexicalTerms`=질의 토큰화. **동의어/LLM 재작성 없음.** `mode`=hybrid \| lexical-only(저하 시). |
-| **Candidate** | `paperId`, `arxivId`, **retrievedRecord 참조**(실재 IndexRecord), `retrievalScore`(내부) | 단일 후보. **FR-5 사전조건**: 실재 IndexRecord(해소 가능 arXiv ID/링크)에 매핑. `retrievalScore`는 **내부(SEC-9 비노출)**. |
+| **Candidate** | `paperId`, `arxivId`, `sourceRef`(소스 표기·소스 중립 링크), **retrievedRecord 참조**(실재 IndexRecord), `retrievalScore`(내부) | 단일 후보. **FR-5 사전조건**: 실재 IndexRecord(**소스 중립** 해소 가능 ID/링크 — arXiv/비-arXiv)에 매핑(페이즈 2/Q2). `retrievalScore`는 **내부(SEC-9 비노출)**. |
 | **CandidateSet** | `candidates[]`, `retrievalMode` | `HybridRetriever.retrieve` 산출. **Q2=A**: 벡터+lexical 후보를 **RRF 병합**, **PaperId 단위 디덥**(같은 논문 복수 청크→최상위 1건, PBT-07 멱등·결과셋 보존). `retrievalMode`=hybrid \| lexical-only. |
 | **RankedResults** | `ranked[]`(순서 보존), `rankingMode` | `RelevanceRanker.rank` 산출. **Q3=A**: 병합 점수 내림차순·상위 N 절단(**Q10=A: N=20**), **LLM 리랭킹 없음(baseline)**. N 미만이면 가용분만(US-D3). `rankingMode`=baseline. 순서 안정성 PBT-03. |
 
@@ -73,7 +77,7 @@
 
 ### 5.1 `ResultCardVM` 카드 필드 — vector-spec.md IndexRecord 카드 필드(FR-4)와 동일 (FROZEN-인접)
 
-> **불변식**: 6개는 IndexRecord 카드 필드의 외부 투영, `relevance`는 랭킹 파생 표시값. 내부 필드(`vector`·`lexicalTerms`·`chunkId`·`section`·`categories`·전체 `abstract`)는 카드 비노출(SEC-9).
+> **불변식**: IndexRecord 카드 필드의 외부 투영 + `relevance`(랭킹 파생 표시값). **페이즈 2(Q2)**: 비-arXiv 노출을 위해 `sourceName`·소스 중립 `sourceUrl` 추가(arXiv 경로 무변경). 내부 필드(`vector`·`lexicalTerms`·`chunkId`·`section`·`categories`·전체 `abstract`·**`blockRefs`·`sourceProvenance`**)는 카드 비노출(SEC-9); `blockRefs`/`sourceProvenance` 외부 노출은 페이즈 3·4 이월(Q3, `sourceName`/`sourceUrl` 투영분 제외).
 
 | 카드 필드 | 타입 | IndexRecord 출처 | 트레이스 |
 |---|---|---|---|
@@ -83,7 +87,9 @@
 | `arxivId` | string | `arxivId`(표시용, 버전 포함 가능) | FR-4 |
 | `abstractSnippet` | string | `abstractSnippet`(전체 초록 비노출, 스니펫만) | FR-4, FR-5 |
 | `relevance` | (표시용) | 랭킹 순위 파생(raw 점수 비노출) | FR-3, FR-4, SEC-9 |
-| `arxivUrl` | string | `arxivUrl`(**해소 가능 실재 링크** — FR-5 근거화) | FR-4, FR-5 |
+| `arxivUrl` | string | `arxivUrl`(**해소 가능 실재 링크** — FR-5 근거화; arXiv 경로) | FR-4, FR-5 |
+| `sourceName` | string | `sourceProvenance.sourceName`(소스 표기 — arXiv/Semantic Scholar/OpenAlex) | FR-4, 페이즈 2/Q2 |
+| `sourceUrl` | string | 소스 중립 해소 가능 실재 링크(arXiv=arxivUrl, 비-arXiv=sourceUrl/DOI) — FR-5 근거화 | FR-4, FR-5, 페이즈 2/Q2 |
 
 ---
 
@@ -143,8 +149,8 @@ SearchResponse = SearchResultPageDTO | AbstainDTO | DegradedResultDTO | Validati
 
 | 계약 | 역할 | 불변식 |
 |---|---|---|
-| **VectorSpec** | reader(질의 임베딩) | U1 writer ↔ U2 reader **동일 임베딩 공간**(Cohere Embed Multilingual v3·1024·코사인·**reader=`search_query`**). specVersion 일치. cross-lingual(KR↔EN). |
-| **IndexRecord** | reader(후보 레코드) | 카드 필드 §5.1 투영·근거화 검증 대상(FR-5). 내부 필드 비노출(SEC-9). |
+| **VectorSpec** | reader(질의 임베딩) | U1 writer ↔ U2 reader **동일 임베딩 공간**(**Cohere Embed Multilingual v4·1024**·코사인·specVersion v2·**reader=`search_query`**). specVersion 일치. cross-lingual(KR↔EN). _(2026-06-29 정정: v3→v4 — NFR-S2 반영, 실제 `vector-spec.yaml` model=Cohere Embed v4.)_ |
+| **IndexRecord** | reader(후보 레코드) | 카드 필드 §5.1 투영(페이즈 2: +소스 중립 `sourceName`/`sourceUrl`)·근거화 검증 대상(FR-5). 내부 필드 비노출(SEC-9) — `blockRefs`·`sourceProvenance` 포함(Q3: 외부 노출 페이즈 3·4 이월). |
 | **search DTO** | 생산 | `SearchResponse` union·`ResultCardVM`. |
 | **SearchExecutedEvent** | 생산 | 🔒 FROZEN. 비차단(Q11). |
 | **ports**(Grounding·Cost·Observability) | 의존 | 단일 권위=U6. U2는 정형/조회/emit만(재구현 금지). |

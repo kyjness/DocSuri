@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from ..models import AccountProfile, Consents, Subscription
+from ..models import AccountProfile, Consents, OrcidIdentity, Subscription
 
 
 class InMemorySubscriptionRepository:
@@ -33,6 +33,7 @@ class InMemoryAccountRepository:
     def __init__(self) -> None:
         self._profiles: dict[str, AccountProfile] = {}
         self._consents: dict[str, Consents] = {}
+        self._orcid: dict[str, OrcidIdentity] = {}
 
     def seed(
         self,
@@ -54,8 +55,21 @@ class InMemoryAccountRepository:
             nightly_push_agreed=nightly_push_agreed,
         )
 
+    def seed_orcid(
+        self,
+        user_id: str,
+        *,
+        orcid_id: str,
+        name: str | None = None,
+        affiliation: str | None = None,
+    ) -> None:
+        self._orcid[user_id] = OrcidIdentity(orcid_id=orcid_id, name=name, affiliation=affiliation)
+
     def get_profile(self, user_id: str) -> AccountProfile | None:
         return self._profiles.get(user_id)
+
+    def get_orcid_identity(self, user_id: str) -> OrcidIdentity | None:
+        return self._orcid.get(user_id)
 
     def get_consents(self, user_id: str) -> Consents | None:
         return self._consents.get(user_id)

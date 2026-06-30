@@ -61,7 +61,7 @@
 
 ### AccountDeletionService (비동기 상태 전이 및 캐스케이드 추적)
 - **책임**: 계정 파기 요청 처리 및 GDPR 완전 삭제 캐스케이드(Defense-in-Depth). 사용자의 삭제 요청 시 계정을 소프트 비활성화하고 비동기 워커로 실제 삭제와 연계 시스템 데이터 삭제 보장을 오케스트레이션.
-- **오케스트레이션**: AccountController(sync) → `requestDeletion` (status=DEACTIVATED 설정 후 `purgeJob` 백그라운드 큐). 비동기 워커가 `purgeJob` 실행: U3 DB 레코드 물리 삭제 → `AccountDeleted` 이벤트 발행 → 구독자(U2, U4, U11)의 `AccountPurged` 완료 이벤트 수신 대기 및 추적. SLA 초과 시 `CascadeOverdue` 경보 트리거(GDPR 보장).
+- **오케스트레이션**: AccountController(sync) → `requestDeletion` (status=DEACTIVATED 설정 후 `purgeJob` 백그라운드 큐). 비동기 워커가 `purgeJob` 실행: U3 DB 레코드 물리 삭제 → `AccountDeleted` 이벤트 발행 → 구독자(U2, U4)의 `AccountPurged` 완료 이벤트 수신 대기 및 추적. SLA 초과 시 `CascadeOverdue` 경보 트리거(GDPR 보장).
 - **Trace**: FR-28, US-A6, SEC-8, GDPR
 
 ### PasswordResetService (동기 흐름 위임)
@@ -164,3 +164,24 @@
 - `MypageController`
 - `UserPreferencesService`
 - `DataExportService`
+
+---
+
+## U11 — Evidence Formation Agent 서비스 (재인셉션 Phase 4 / requirements "[U4]")
+
+> 공통: 모든 호출은 U6 게이트웨이(authn/authz·rate-limit·비용·관측성) 통과 후 진입. 스트리밍 응답(SSE)은 응답 엣지 근거화 게이트를 통과한다.
+
+### EvidenceChatService (동기 스트리밍 — SSE)
+- **책임**: 사용자 채팅 턴 오케스트레이션 — 세션 진입·생성, Agent 실행, 스트리밍 응답, 턴 영속(FR-36, FR-37, NFR-P6).
+- **오케스트레이션**: `EvidenceChatController`(sync, SSE) → 세션 load/create(`EvidenceSessionRepository`) → `EvidenceAgentOrchestrator.run(request, ctx)` → 스트림 `EvidenceChunk` 반환 → 완료 시 `EvidenceSessionRepository.appendTurn`(turn 영속) → SSE 종료. 후속 질문은 `continueSession`(멀티턴 맥락 유지, Q7=A). 긴 분석은 `EvidenceJobService`로 오프로드(NFR-P6, Q9=A).
+- **Trace**: FR-36, FR-37, NFR-P6, Q7=A, US-EV1, US-EV2, US-EV5
+
+### EvidenceSessionManagementService (동기 CRUD)
+- **책임**: 세션 목록·삭제·초기화 오케스트레이션 — owner-scoped SEC-8 소유권 강제(FR-38).
+- **오케스트레이션**: `EvidenceChatController` → 소유권 확인(`U3.AuthorizationGuard` 위임) → `EvidenceSessionRepository.listSessions/deleteSession/resetAllSessions` → 응답. 타 소유자 세션은 NotFound 일반화(SEC-9, SEC-15).
+- **Trace**: FR-38, SEC-8, SEC-9, SEC-15, US-EV7, US-EV8
+
+### EvidenceJobService (비동기 잡 옵션 — 긴 다논문 분석)
+- **책임**: 스트리밍 SLA를 초과하는 긴 다논문 분석을 비동기 잡으로 오프로드(NFR-P6, Q9=A, U7 잡 패턴 재사용).
+- **오케스트레이션**: 요청 수신 → 즉시 `jobId` 응답(폴링 URL 포함) → `EvidenceAgentOrchestrator` 실행을 비동기 잡 큐에 발행(event) → 워커가 결과 완료 후 `EvidenceSessionRepository`에 저장 → 클라이언트는 `GET /api/evidence/jobs/:id`로 상태/결과 폴링.
+- **Trace**: NFR-P6, Q9=A, US-EV9

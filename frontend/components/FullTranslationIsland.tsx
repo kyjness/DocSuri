@@ -37,7 +37,7 @@ export function FullTranslationIsland({ paperId, version }: { paperId: string; v
     return (
       <StateView
         kind="loading"
-        title="본문 번역 중… (시간이 걸릴 수 있어요)"
+        title="전문 번역 중… (시간이 걸릴 수 있어요)"
         message="잠시만 기다려 주세요."
       />
     );

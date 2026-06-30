@@ -20,6 +20,7 @@ from sqlalchemy.orm import sessionmaker
 
 from .repository.credential import CredentialRepository
 from .services.account_deletion import AccountDeletionService, build_account_deleted_publisher
+from .services.owner_data_purge import SqlOwnerDataPurger
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,12 @@ async def run_purge(session) -> int:
     """주어진 DB 세션으로 유예 파기 1회 실행 후 커밋한다. 파기 계정 수를 반환한다."""
     repo = CredentialRepository(session)
     # purge_job은 SessionManager를 쓰지 않는다(세션 무효화는 소프트삭제 시점에 완료) → None.
-    svc = AccountDeletionService(repo, session_manager=None, publisher=build_account_deleted_publisher())
+    svc = AccountDeletionService(
+        repo,
+        session_manager=None,
+        publisher=build_account_deleted_publisher(),
+        owner_data_purger=SqlOwnerDataPurger(session),
+    )
     purged = await svc.purge_job()
     session.commit()
     return purged

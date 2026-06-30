@@ -35,7 +35,7 @@
 
 ```
 DocModel
- ├─ meta : { paperId, version, title, abstract?, provenance }
+ ├─ meta : { paperId, version, title, abstract?, macros?, provenance }
  ├─ fullText : string  ← 읽기 순서 전문 텍스트 투영본
  └─ sections[] (재귀)
       Section { id, title, blocks[], sections[] }   ← sections = 하위섹션
@@ -44,14 +44,14 @@ DocModel
 
 ### 2.0 `fullText`
 
-`fullText`는 모든 텍스트 보유 요소를 읽기 순서로 투영한 문자열이다. 포함 대상은 섹션 제목, 문단, 표 캡션·셀, 수식 LaTeX, 그림 캡션, 리스트 항목, 코드다. 단, 그림 픽셀은 포함하지 않는다. 이미지 자체가 필요한 소비자는 `figure.assetRef.assetId`로 `assets/{paperId}/{version}/{assetId}.webp`를 읽는다.
+`fullText`는 모든 텍스트 보유 요소를 읽기 순서로 투영한 문자열이다. 포함 대상은 섹션 제목, 문단, 표 캡션·셀, 수식 LaTeX, 그림 캡션, 리스트 항목, 코드다. 단, 그림 픽셀은 포함하지 않으며, **LaTeX가 없는 이미지 폴백 수식**(PDF/GROBID 경로)도 텍스트가 없으므로 포함하지 않는다. 이미지 자체가 필요한 소비자는 `figure.assetRef.assetId`(또는 이미지 수식의 `formula.assetRef.assetId`)로 `assets/{paperId}/{version}/{assetId}.webp`를 읽는다.
 
 ### 2.1 Block 타입 (6)
 | type | 핵심 필드 | 비고 |
 |---|---|---|
 | `paragraph` | `text` | 인라인 수식은 `\( ... \)` LaTeX로 본문에 임베드(KaTeX 렌더·프롬프트가 LaTeX 그대로 읽음) |
 | `table` | `rows[]`(셀=`text`·`isHeader`·`colspan`/`rowspan`) · `caption` · `anchorLabel`("Table 3") · `assetRef?` | **D8: 데이터, 크롭 이미지 아님.** `assetRef`는 비-HTML 폴백 시 크롭만 |
-| `formula` | `latex` · `display` · `anchorLabel`("(3)") · `mathmlSource?` | 디스플레이 수식. MathML→LaTeX 변환(Q1: `<math>` 보유 94%) |
+| `formula` | `latex?` · `assetRef?`(type=`formula`) · `display` · `anchorLabel`("(3)") · `mathmlSource?` | 디스플레이 수식. **`latex` 우선**(KaTeX 렌더·검색 인덱싱·에이전트가 그대로 읽음), **복원 가능한 LaTeX가 없으면**(PDF/GROBID 경로: 수식이 LaTeX 소스가 아니라 픽셀) `assetRef` 페이지-크롭 이미지로 폴백(표시 전용·검색 비대상). 둘 중 하나는 존재(파서가 강제); 둘 다 있으면 `latex` 우선. MathML→LaTeX 변환(Q1: `<math>` 보유 94%). `latex`는 비수식 레이아웃 마크업(`\centering`·`\@…` 내부 매크로·`\label{}`·`[Image #n]` 자리표시자)을 정제해 저장(KaTeX 빨간 에러 토큰 방지). 폴백 워커는 행렬(`mtable`)·액센트(`mover`)·limits(`munderover`)를 변환 |
 | `figure` | `assetRef`(assetId·type·ordinal) · `caption` · `anchorLabel`("Figure 2") | webp 참조; U5 `AssetGallery`+앵커 매처 재사용 |
 | `list` | `ordered` · `items[]` | 중첩 리스트는 가산적 후속 |
 | `code` | `text` · `language?` | 알고리즘/코드 verbatim |
@@ -73,11 +73,12 @@ DocModel
 
 ## 4. 생성·provenance·캐시
 
-- **소스 사다리(Q6)**: `native HTML → ar5iv → e-print LaTeX → (최후) PDF 파싱`. `provenance.sourceTier ∈ {native_html, ar5iv, eprint_latex, pdf}`. Q1 스파이크: native+ar5iv 90%·HTML 전무 ~9%(PDF 폴백 실필요).
+- **소스 사다리(Q6)**: `native HTML → ar5iv → e-print LaTeX → (최후) PDF/GROBID TEI`. `provenance.sourceTier ∈ {native_html, ar5iv, eprint_latex, pdf}`. Q1 스파이크: native+ar5iv 90%·HTML 전무 ~9%(PDF 폴백 실필요). 비arXiv(S2/OpenAlex)는 HTML이 없으므로 항상 PDF/GROBID 경로.
 - **결정성(D1)**: LLM 추출 금지(표 숫자 환각 방지) — 결정적 파서만(BR-30·TD-16: lxml/BeautifulSoup·MathML→LaTeX).
+- **수식 매크로(`meta.macros`)**: LaTeXML이 펼치지 못한 저자 정의 명령(`\R` 등)은 `<math alttext>`에 그대로 남아 KaTeX에서 빨간 미정의-명령 에러로 보인다. 빌더가 **e-print preamble**의 `\newcommand`/`\renewcommand`/`\providecommand`/`\DeclareMathOperator`/`\def`를 KaTeX 매크로 맵으로 추출해 `meta.macros`에 싣고(결정적·best-effort, 실패 시 생략), 렌더러(`renderMath`)가 이를 KaTeX `macros`로 넘겨 논문별로 해석한다. e-print 부재·파싱 실패 시 필드는 생략(가산적·옵셔널).
 - **캐시/생성(D6 개정)**: `(paperId, version)` 키. `provenance.parserVersion`/`schemaVersion` 변경 또는 version 변경·철회(tombstone) 시 무효화. U1 builder와 U7/S3 reader는 shared doc-model version contract를 사용하며, reader도 version mismatch를 cache miss로 취급해 stale S3 object를 노출하지 않는다. Corpus phase-1은 수집 시 eager 생성하며, legacy lazy build는 누락분·재빌드·백필 호환 경로로만 사용한다.
 - **저장**: `doc-model/{paperId}/v{version}.json`(단일 버킷·prefix, SSE-KMS, 공개 차단 — U1 Infra §1.1b). 이미지 바이트 분리: `assets/{paperId}/{version}/{assetId}.webp`(유지) + RDS `paper_asset`(유지) 재사용 — **재추출 0**.
-- **PDF/GROBID 폴백 결정**: rich HTML이 없는 논문은 `sourceTier=pdf` DocModel로 degrade하고, 구조를 추정하지 않은 단일 paragraph block을 만든다. Phase 7에서 PDF/GROBID 구조화 품질을 올리기 전까지 이 downgrade는 승인된 v1 동작이다.
+- **PDF/GROBID 경로**: rich HTML이 없는 논문(비arXiv 포함)은 `sourceTier=pdf`로 GROBID **TEI를 구조화 파싱**한다(`parse_tei_to_docmodel`): `<div>/<head>`→섹션, `<p>`→문단(인라인 ref/수식 텍스트 보존), `<table>`→**구조화 데이터(rows/cells)**(좌표 보유 시 page-crop `assetRef` 폴백 가산·아래), `<figure>`→이미지 `assetRef`, block `<formula>`→이미지 `assetRef`(type=`formula`). 신뢰 가능한 LaTeX가 없으므로 수식은 LaTeX 대신 page-crop 이미지로 degrade(검색 비대상). figure/table은 GROBID이 묶어 내보내므로 `coords`(page,y)로 정렬해 배치한다. TEI 결손·파싱 실패 시에만 **단일 paragraph block의 평탄 DocModel**(`parse_text_to_docmodel`)로 last-rung 폴백한다(메트릭 노출). 그림·수식·표 이미지는 TEI `coords`를 같은 walk에서 크롭 spec(블록과 동일 assetId)으로 수집해, 멀티모달 활성 시 PDF를 page-crop해 채운다(ordinal 정합 보장·best-effort). **표는 구조화 데이터가 주 표현으로 남고**(검색·근거화·에이전트 대상), 좌표가 있을 때만 보조 폴백 이미지를 `assetRef`로 가산한다(D8): GROBID 셀 복원이 깨진 표를 이후 비전 리더가 이미지로 재판독할 수 있도록 — 데이터를 대체하지 않는다.
 
 ---
 

@@ -117,6 +117,41 @@ def _render_email_change_notice(new_email: str, revoke_link: str = "") -> tuple[
     return subject, body_text, body_html
 
 
+def _render_account_exists_notice() -> tuple[str, str, str]:
+    """(subject, text, html) — 이미 가입된 주소로 가입이 재시도될 때 기존 소유자에게 보내는 안내
+    (S1/SEC-BR-2 — 계정 열거 방지). 가입 응답은 신규와 동일하게 일반화하고, '계정이 이미 있다'는
+    사실은 오직 등록된 본인 메일함으로만 알린다. 링크는 PUBLIC_APP_URL 설정 시에만 포함한다."""
+    app = os.getenv("PUBLIC_APP_URL", "").strip().rstrip("/")
+    login_text = (
+        f"\n로그인: {app}/login\n비밀번호 재설정: {app}/reset-password\n" if app else ""
+    )
+    login_html = (
+        f'<p><a href="{app}/login">로그인</a> · '
+        f'<a href="{app}/reset-password">비밀번호 재설정</a></p>'
+        if app
+        else ""
+    )
+    subject = "[DocSuri] 이미 가입된 계정이 있습니다"
+    body_text = (
+        "회원님의 이메일 주소로 이미 DocSuri 계정이 등록되어 있습니다.\n"
+        "새로 가입하실 필요 없이 로그인하시거나, 비밀번호가 기억나지 않으면 비밀번호 재설정을 이용해 주세요.\n"
+        "본인이 가입을 시도하지 않으셨다면 이 메일을 무시하셔도 됩니다.\n"
+        f"{login_text}"
+    )
+    body_html = f"""
+        <html>
+            <body>
+                <h3>이미 가입된 계정이 있습니다</h3>
+                <p>회원님의 이메일로 이미 DocSuri 계정이 등록되어 있습니다. 새로 가입하실 필요 없이
+                   로그인하시거나, 비밀번호가 기억나지 않으면 비밀번호 재설정을 이용해 주세요.</p>
+                {login_html}
+                <p>본인이 가입을 시도하지 않으셨다면 이 메일을 무시하셔도 됩니다.</p>
+            </body>
+        </html>
+    """
+    return subject, body_text, body_html
+
+
 def _emit_email_failure(observability_hub, e: Exception, provider: str) -> None:
     """소프트 폴백 실패 신호(EmailDeliveryFailureSignal) 발행 — 공통 헬퍼."""
     if not observability_hub:
@@ -165,6 +200,12 @@ class EmailClientInterface(ABC):
         subject, text, html = _render_email_change_notice(new_email, revoke_link)
         return await self._send(email, subject, text, html)
 
+    async def send_account_exists_notice_email(self, email: str) -> bool:
+        """이미 가입된 주소로 가입이 재시도될 때 기존 소유자에게 안내를 보낸다 (S1/SEC-BR-2 — 가입
+        응답을 신규와 동일하게 일반화하면서도 본인에게는 계정 존재를 알린다)."""
+        subject, text, html = _render_account_exists_notice()
+        return await self._send(email, subject, text, html)
+
 
 class MockEmailClient(EmailClientInterface):
     """로컬 테스트를 위해 실제 이메일을 발송하지 않고 터미널 콘솔에 출력하는 Mock 이메일 클라이언트"""
@@ -172,30 +213,32 @@ class MockEmailClient(EmailClientInterface):
     # 인증 토큰이 at-rest 해시로 저장된 뒤로 DB에서 원문을 복구할 수 없으므로, 로컬/테스트에서
     # 원문 토큰을 여기 보관해 전체 가입→검증 플로우를 검증할 수 있게 한다(SEC-BR-1 보완).
     last_verification_token: str | None = None
+    last_password_reset_token: str | None = None
 
     async def send_verification_email(self, email: str, token: str, signup_link: str) -> bool:
         self.last_verification_token = token
         logger.info("================ [MOCK EMAIL DELIVERY] ================")
-        logger.info(f"To: {email}")
+        logger.info("To: [redacted]")
         logger.info("Subject: DocSuri 이메일 인증 안내")
-        logger.info(f"Verification Token: {token}")
-        logger.info(f"Verification Link: {signup_link}?token={token}")
+        logger.info("Verification token captured in MockEmailClient.last_verification_token.")
+        logger.info("Verification link omitted from logs because it contains a bearer token.")
         logger.info("=========================================================")
         return True
 
     async def send_password_reset_email(self, email: str, token: str, reset_link: str) -> bool:
+        self.last_password_reset_token = token
         logger.info("================ [MOCK PASSWORD RESET EMAIL] ================")
-        logger.info(f"To: {email}")
-        logger.info(f"Reset Token: {token}")
-        logger.info(f"Reset Link: {reset_link}?token={token}")
+        logger.info("To: [redacted]")
+        logger.info("Reset token captured in MockEmailClient.last_password_reset_token.")
+        logger.info("Reset link omitted from logs because it contains a bearer token.")
         logger.info("=============================================================")
         return True
 
     async def _send(self, to: str, subject: str, text: str, html: str) -> bool:
         logger.info("================ [MOCK EMAIL DELIVERY] ================")
-        logger.info(f"To: {to}")
+        logger.info("To: [redacted]")
         logger.info(f"Subject: {subject}")
-        logger.info(f"Body: {text}")
+        logger.info("Body omitted from logs because transactional email can contain recipient secrets.")
         logger.info("=========================================================")
         return True
 
@@ -212,8 +255,17 @@ class SESEmailClient(EmailClientInterface):
     def _get_client(self):
         if self._client is None:
             import boto3
-            # 컨테이너에 투과 주입된 IAM Role 또는 기본 자격 증명 사용
-            self._client = boto3.client("ses", region_name=self._region_name)
+            from botocore.config import Config
+
+            # S5: NFR §2.1 SES 3.0s 예산. 기본 botocore 타임아웃(~60s)이면 행이 걸린 SES 엔드포인트가
+            # to_thread 워커를 수십 초 잡아 가용성을 해친다. 연결/읽기를 3s로 죄고 재시도는 끈다
+            # (소프트 폴백이 상위에서 가입 트랜잭션을 보존하므로 boto3 자체 재시도는 불필요).
+            # 컨테이너에 투과 주입된 IAM Role 또는 기본 자격 증명 사용.
+            self._client = boto3.client(
+                "ses",
+                region_name=self._region_name,
+                config=Config(connect_timeout=3, read_timeout=3, retries={"max_attempts": 0}),
+            )
         return self._client
 
     async def send_verification_email(self, email: str, token: str, signup_link: str) -> bool:
@@ -236,10 +288,7 @@ class SESEmailClient(EmailClientInterface):
                     },
                 )
             )
-            logger.info(
-                f"Verification email sent successfully via SES to {email}. "
-                f"MessageId: {response.get('MessageId')}"
-            )
+            logger.info("Verification email sent successfully via SES. MessageId: %s", response.get("MessageId"))
             return True
         except Exception as e:
             logger.error(f"Amazon SES 이메일 발송 실패 (Soft-Fallback 활성): {str(e)}")
@@ -265,7 +314,7 @@ class SESEmailClient(EmailClientInterface):
                     },
                 )
             )
-            logger.info(f"Password reset email sent via SES to {email}. MessageId: {response.get('MessageId')}")
+            logger.info("Password reset email sent via SES. MessageId: %s", response.get("MessageId"))
             return True
         except Exception as e:
             logger.error(f"Amazon SES 재설정 메일 발송 실패 (Soft-Fallback): {str(e)}")
@@ -288,7 +337,7 @@ class SESEmailClient(EmailClientInterface):
                     },
                 )
             )
-            logger.info(f"Email sent via SES to {to}. MessageId: {response.get('MessageId')}")
+            logger.info("Email sent via SES. MessageId: %s", response.get("MessageId"))
             return True
         except Exception as e:
             logger.error(f"Amazon SES 발송 실패 (Soft-Fallback): {str(e)}")
@@ -314,7 +363,7 @@ class ResendEmailClient(EmailClientInterface):
         link = f"{signup_link}?token={token}"
         subject, body_text, body_html = _render_verification_email(link)
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=3.0) as client:  # S5: NFR §2.1 메일 발송 예산
                 resp = await client.post(
                     self._ENDPOINT,
                     headers={"Authorization": f"Bearer {self._api_key}"},
@@ -327,10 +376,10 @@ class ResendEmailClient(EmailClientInterface):
                     },
                 )
             if resp.status_code in (200, 201):
-                logger.info(f"Verification email sent via Resend to {email}.")
+                logger.info("Verification email sent via Resend.")
                 return True
             # 4xx/5xx — 소프트 폴백(가입 트랜잭션 유지) + 실패 신호
-            logger.error(f"Resend 이메일 발송 실패 status={resp.status_code} body={resp.text[:200]}")
+            logger.error("Resend 이메일 발송 실패 status=%s", resp.status_code)
             _emit_email_failure(self._observability_hub, RuntimeError(f"resend_status_{resp.status_code}"), provider="resend")
             return False
         except Exception as e:
@@ -342,7 +391,7 @@ class ResendEmailClient(EmailClientInterface):
         link = f"{reset_link}?token={token}"
         subject, body_text, body_html = _render_password_reset_email(link)
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=3.0) as client:  # S5: NFR §2.1 메일 발송 예산
                 resp = await client.post(
                     self._ENDPOINT,
                     headers={"Authorization": f"Bearer {self._api_key}"},
@@ -355,9 +404,9 @@ class ResendEmailClient(EmailClientInterface):
                     },
                 )
             if resp.status_code in (200, 201):
-                logger.info(f"Password reset email sent via Resend to {email}.")
+                logger.info("Password reset email sent via Resend.")
                 return True
-            logger.error(f"Resend 재설정 메일 발송 실패 status={resp.status_code} body={resp.text[:200]}")
+            logger.error("Resend 재설정 메일 발송 실패 status=%s", resp.status_code)
             _emit_email_failure(self._observability_hub, RuntimeError(f"resend_status_{resp.status_code}"), provider="resend")
             return False
         except Exception as e:
@@ -367,7 +416,7 @@ class ResendEmailClient(EmailClientInterface):
 
     async def _send(self, to: str, subject: str, text: str, html: str) -> bool:
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=3.0) as client:  # S5: NFR §2.1 메일 발송 예산
                 resp = await client.post(
                     self._ENDPOINT,
                     headers={"Authorization": f"Bearer {self._api_key}"},
@@ -380,9 +429,9 @@ class ResendEmailClient(EmailClientInterface):
                     },
                 )
             if resp.status_code in (200, 201):
-                logger.info(f"Email sent via Resend to {to}.")
+                logger.info("Email sent via Resend.")
                 return True
-            logger.error(f"Resend 발송 실패 status={resp.status_code} body={resp.text[:200]}")
+            logger.error("Resend 발송 실패 status=%s", resp.status_code)
             _emit_email_failure(self._observability_hub, RuntimeError(f"resend_status_{resp.status_code}"), provider="resend")
             return False
         except Exception as e:

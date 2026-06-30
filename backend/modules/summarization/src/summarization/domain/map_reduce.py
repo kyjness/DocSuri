@@ -19,17 +19,13 @@ from __future__ import annotations
 
 from ..ports.ports import LlmGatewayPort
 from .models import Glossary, RefinedSource, Section, SummaryDraft, SummaryRequest
+from .token_estimate import CHARS_PER_TOKEN, estimate_tokens
 
 # Per-chunk budget kept below the single-call context budget so each map call fits comfortably;
 # overlap re-includes a tail of the previous chunk so a result split across a boundary is not
 # orphaned. Both are conservative defaults (runtime-tunable, NFR).
 _DEFAULT_CHUNK_BUDGET_TOKENS = 30_000
 _DEFAULT_OVERLAP_CHARS = 2_000
-_CHARS_PER_TOKEN = 4  # matches the refiner's cheap estimate
-
-
-def _estimate_tokens(text: str) -> int:
-    return max(1, len(text) // _CHARS_PER_TOKEN)
 
 
 class MapReduceSummarizer:
@@ -64,13 +60,13 @@ class MapReduceSummarizer:
         cur = ""
         for piece in self._section_pieces(refined):
             for seg in self._fit(piece):  # each seg <= budget
-                if cur and _estimate_tokens(cur) + _estimate_tokens(seg) > self._budget:
+                if cur and estimate_tokens(cur) + estimate_tokens(seg) > self._budget:
                     chunks.append(cur)
                     cur = self._tail(cur)  # carry overlap into the next chunk
                 cur += seg
         if cur.strip():
             chunks.append(cur)
-        return [RefinedSource(body=c, token_count=_estimate_tokens(c)) for c in chunks]
+        return [RefinedSource(body=c, token_count=estimate_tokens(c)) for c in chunks]
 
     def _section_pieces(self, refined: RefinedSource) -> list[str]:
         """Slice the body at section starts so chunks fall on section boundaries. With no
@@ -90,7 +86,7 @@ class MapReduceSummarizer:
     def _fit(self, text: str) -> list[str]:
         """Hard-split a single oversized piece (a section larger than the budget) into
         budget-sized character windows; most pieces pass through unchanged."""
-        limit = self._budget * _CHARS_PER_TOKEN
+        limit = self._budget * CHARS_PER_TOKEN
         if len(text) <= limit:
             return [text]
         return [text[i : i + limit] for i in range(0, len(text), limit)]
@@ -117,4 +113,4 @@ class MapReduceSummarizer:
         body = "\n\n".join(blocks)
         # One synthetic section so downstream span logic stays well-formed.
         section = Section(label="부분 요약 모음", start=0, end=len(body))
-        return RefinedSource(body=body, sections=(section,), token_count=_estimate_tokens(body))
+        return RefinedSource(body=body, sections=(section,), token_count=estimate_tokens(body))

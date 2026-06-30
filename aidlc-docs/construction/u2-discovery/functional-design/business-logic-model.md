@@ -22,11 +22,14 @@ U2 동기 읽기 경로의 단일 도메인 오케스트레이터. 요청→응�
 2. degradation 파생     (RequestContext.degradationSignal ← BudgetState.degradeMode)
    └─ DegradationSignal{llmEnabled, rerankEnabled} 계산
 3. expand               (QueryUnderstandingExpander)  — Q1=A
-   ├─ llmEnabled=true  → QueryPlan{embeddingVector(search_query, cross-lingual) + lexicalTerms, mode=hybrid}
-   └─ llmEnabled=false → QueryPlan{lexicalTerms, mode=lexical-only}  (임베딩 생략, 저하)
+   ├─ llmEnabled=true  → QueryPlan{embeddingVector(search_query, cross-lingual) + lexicalTerms, mode=hybrid, scope}
+   └─ llmEnabled=false → QueryPlan{lexicalTerms, mode=lexical-only, scope}  (임베딩 생략, 저하)
+   · scope ← SearchRequest.scope (lite 기본 | full). 저하 여부와 독립.
 4. retrieve             (HybridRetriever)  — Q2=A
    ├─ hybrid      → 벡터 ANN + lexical BM25 후보 → RRF 병합 → PaperId 단위 디덥
-   └─ lexical-only→ lexical BM25 후보만 (저하 폴백)
+   │   · **scope=lite**(사람 검색창, P50<3s): ANN=**초록 chunk 한정**(section=abstract, 논문당 1벡터) · BM25=**title+abstract**. 교차언어 유지(벡터 살림), 본문 미검색.
+   │   · **scope=full**(문헌·근거 에이전트 / "본문까지 검색" 토글): ANN=**전체 chunk** · BM25=**title+abstract+lexicalTerms**(본문 포함). 고recall.
+   └─ lexical-only→ lexical BM25 후보만 (저하 폴백; scope의 BM25 필드 규칙은 동일 적용)
    └─ 후보 0 → NoMatchResult로 종단 (명시적 빈 페이지 resultCount=0 — abstain 아님)
 5. rank                 (RelevanceRanker)  — Q3=A, Q10=A
    └─ 병합 점수에 personalizationDecision.searchBoosts 가산 → 내림차순 · 상위 N=20 절단 · LLM 리랭킹 없음 · 안정 정렬(PBT-03)
@@ -39,7 +42,7 @@ U2 동기 읽기 경로의 단일 도메인 오케스트레이터. 요청→응�
 8. assemble             (ResultAssembler)  — FR-4, FR-11, SEC-9, PBT-09
    └─ GroundedResults → SearchResultPageDTO | (degradeMode 활성 시) DegradedResultDTO
    └─ AbstainResult   → AbstainDTO
-9. (응답 후, 비차단)     publishSearchExecuted(userId, query, timestamp, resultCount)  — Q11=A
+9. (응답 후, 비차단)     publishSearchExecuted(userId, requestId, query, timestamp, resultCount)  — Q11=A
 ```
 
 ### 1.2 근거화 invocation 경계 (INV-1)
@@ -48,7 +51,7 @@ U2 동기 읽기 경로의 단일 도메인 오케스트레이터. 요청→응�
 - **개발/테스트 시점**(Q8=A): U6 미완 동안 U2는 `shared/ports`의 **테스트 스텁**(pass-through verdict=pass 기본 + abstain 강제 케이스)으로 검증. 실 강제는 U6 교체.
 
 ### 1.3 이벤트 경로 (Q11=A — 비차단)
-- 성공(또는 결과 반환) 응답 **후** `publishSearchExecuted(userId, query, timestamp, resultCount)` 발행 → 이벤트 백본 → U4 이력.
+- 성공(또는 결과 반환) 응답 **후** `publishSearchExecuted(userId, requestId, query, timestamp, resultCount)` 발행 → 이벤트 백본 → U4 이력.
 - **fire-and-forget**: 발행 실패는 검색 응답에 영향 없음(관측성 로그만). NFR-P1 P50<3s 경로 **밖**.
 - `userId`는 `RequestContext.authSession` 출처(Q5=A 인증 필수).
 
@@ -90,7 +93,7 @@ U2 동기 읽기 경로의 단일 도메인 오케스트레이터. 요청→응�
 
 ### 3.5 RelevanceRanker — `rank(CandidateSet, QueryPlan, DegradationSignal, topN, PersonalizationDecision?) -> RankedResults` (Q3=A, Q10=A, PBT-03)
 - 병합 점수 산출 후, 전달된 `PersonalizationDecision`이 존재하고 `enabled=true`인 경우, 각 후보의 카테고리/키워드에 매칭되는 `searchBoosts`를 **기본 적합성 점수에 가산(additive)** 방식으로 적용한다.
-- **개인화 제약 준수(NFR-P5)**: U9가 강제하는 boost magnitude bounds(최대 총합 0.2 등)를 신뢰하여, 상위 30% 이내 후보 간의 미세 순위 변동만 발생하도록 가중치를 흡수한다.
+- **개인화 제약 준수(FR-20)**: U9가 강제하는 boost magnitude bounds(최대 총합 0.2 등)를 신뢰하여, 상위 30% 이내 후보 간의 미세 순위 변동만 발생하도록 가중치를 흡수한다.
 - 병합+부스트 조정 점수 기준 내림차순 정렬 → **상위 N=20 절단**(N 미만이면 가용분만, US-D3). **LLM 리랭킹 없음(baseline)**.
 - **순서 안정성(PBT-03)**: 동률 안정 정렬, 동일 입력→동일 순서. **QT-2 관련도 평가셋 출력 표면**(한국어 질의 포함 — TD-3). raw 점수 비노출(SEC-9).
 
@@ -99,8 +102,8 @@ U2 동기 읽기 경로의 단일 도메인 오케스트레이터. 요청→응�
 - `mapDecision(GroundingDecision) -> GroundedResults | AbstainResult`: pass→결과, abstain/block→기권. **enforce 호출은 U6 게이트웨이**.
 
 ### 3.7 ResultAssembler — `assemble(GroundedResults | AbstainResult, DegradationSignal) -> SearchResponse` (FR-4/11, SEC-9, PBT-09)
-- **근거화 구조적 방어(GroundingStructuralGuard)**: U6 게이트웨이의 1차 근거화 후크가 우회되거나 실패할 경우를 대비한 2차(Defense-in-Depth) 구조적 방어 기제로, 모든 조립된 `ResultCardVM`이 알려진 `IndexRecord`의 식별자(`arxivId`, `paperId`)로 해석 가능한 유효한 `arxivUrl`을 갖는지 런타임에 확인한다. 위반 시 조립을 즉시 중단하고 `AbstainDTO`를 반환하여 Fail-Closed 원칙을 지킨다.
-- GroundedResults(≥1) → 카드 DTO 매핑(§domain-entities §5.1 7필드) + ResultMeta(건수·degraded·mode). degradeMode 활성 시 DegradedResultDTO.
+- **근거화 구조적 방어(GroundingStructuralGuard)** *(2026-06-29 개정 — 페이즈 2/Q2)*: U6 게이트웨이의 1차 근거화 후크가 우회되거나 실패할 경우를 대비한 2차(Defense-in-Depth) 구조적 방어 기제로, 모든 조립된 `ResultCardVM`이 알려진 `IndexRecord`의 식별자(`paperId` + 소스 식별자)로 해석 가능한 **소스 중립 실재 링크**(arXiv=`arxivUrl`, 비-arXiv=`sourceUrl`/DOI)를 갖는지 런타임에 확인한다. 위반 카드는 **드롭**하여 근거 없는 카드를 노출하지 않으며(card-level Fail-Closed), 잔여를 1..N로 재랭킹한다; **전량 드롭 시** 명시적 빈 페이지(resultCount=0, BR-9)로 종단한다(abstain 아님) — 단일 불량 레코드가 페이지 전체를 침몰시키지 않는다. (arXiv-only `arxivUrl` 단일 검사는 비-arXiv 카드를 오탈락시키므로 소스 중립으로 일반화.)
+- GroundedResults(≥1) → 카드 DTO 매핑(§domain-entities §5.1; 페이즈 2: 소스 중립 `sourceName`/`sourceUrl` 포함) + ResultMeta(건수·degraded·mode). degradeMode 활성 시 DegradedResultDTO.
 - NoMatchResult(또는 GroundedResults 빈 items) → SearchResultPageDTO(cards=[], resultCount=0) — 명시적 빈 페이지(배너 없음).
 - AbstainResult → AbstainDTO(근거화 거부 전용). 폰 우선 직렬화(NFR-U1). **내부 점수·디버그 비노출(SEC-9)**. **DTO 라운드트립(PBT-09)**.
 - **무매치 = 명시적 빈 페이지**(개정): 후보 0/무매치는 §1에서 NoMatchResult로 종단 → count:0 명시. abstain(근거화 거부)과 구분(U5 B3-a). "조용한 결과 금지"는 count:0 명시로 충족.

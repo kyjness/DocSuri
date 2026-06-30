@@ -9,13 +9,13 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-
 from backend.modules.accounts.models import AccountStatus, DomainException
 from backend.modules.accounts.password import get_password_hasher
 from backend.modules.accounts.repository.credential import Base, CredentialRepository
 from backend.modules.accounts.services.account_deletion import AccountDeletionService
+from backend.modules.accounts.services.owner_data_purge import SqlOwnerDataPurger
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import sessionmaker
 
 
 @pytest.fixture
@@ -99,8 +99,69 @@ async def test_purge_job_cascades_credential_artifacts(session):
 
 
 @pytest.mark.asyncio
+async def test_purge_job_cascades_owner_scoped_same_rds_tables(session):
+    repo = CredentialRepository(session)
+    acct = _active_account(repo, session)
+    other = _active_account(repo, session, email="other@docsuri.org")
+    session.execute(
+        text("CREATE TABLE saved_searches (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL)")
+    )
+    session.execute(
+        text("CREATE TABLE user_behavior_events (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL)")
+    )
+    session.execute(
+        text("CREATE TABLE novelty_jobs (job_id TEXT PRIMARY KEY, owner_id TEXT NOT NULL)")
+    )
+    session.execute(text("CREATE TABLE user_glossary (id TEXT PRIMARY KEY, user_id TEXT NOT NULL)"))
+    for table, id_col, owner_col in (
+        ("saved_searches", "id", "owner_id"),
+        ("user_behavior_events", "id", "owner_id"),
+        ("novelty_jobs", "job_id", "owner_id"),
+        ("user_glossary", "id", "user_id"),
+    ):
+        session.execute(
+            text(f"INSERT INTO {table} ({id_col}, {owner_col}) VALUES (:id, :owner)"),
+            {"id": f"{table}-owned", "owner": acct.id},
+        )
+        session.execute(
+            text(f"INSERT INTO {table} ({id_col}, {owner_col}) VALUES (:id, :owner)"),
+            {"id": f"{table}-other", "owner": other.id},
+        )
+    session.commit()
+
+    svc = AccountDeletionService(
+        repo,
+        AsyncMock(),
+        AsyncMock(),
+        owner_data_purger=SqlOwnerDataPurger(session),
+        grace_days=0,
+    )
+    await svc.request_deletion(acct.id, "OldPw123!@x")
+    session.commit()
+
+    await svc.purge_job(now=_naive(days=1))
+    session.commit()
+
+    for table, owner_col in (
+        ("saved_searches", "owner_id"),
+        ("user_behavior_events", "owner_id"),
+        ("novelty_jobs", "owner_id"),
+        ("user_glossary", "user_id"),
+    ):
+        assert session.execute(
+            text(f"SELECT COUNT(*) FROM {table} WHERE {owner_col} = :owner"),
+            {"owner": acct.id},
+        ).scalar_one() == 0
+        assert session.execute(
+            text(f"SELECT COUNT(*) FROM {table} WHERE {owner_col} = :owner"),
+            {"owner": other.id},
+        ).scalar_one() == 1
+
+
+@pytest.mark.asyncio
 async def test_purge_job_isolates_failing_publish(session):
-    # 한 계정의 발행 실패가 나머지 due 계정의 파기를 막지 않는다(HOL 제거·행별 트랜잭션·at-least-once).
+    # 한 계정의 발행 실패가 나머지 due 계정의 파기를 막지 않는다.
+    # HOL 제거·행별 트랜잭션·at-least-once.
     repo = CredentialRepository(session)
     good = _active_account(repo, session, email="good@docsuri.org")
     bad = _active_account(repo, session, email="bad@docsuri.org")
@@ -214,6 +275,31 @@ async def test_purge_writes_5y_withdrawal_backup_without_credentials(session):
 
 
 @pytest.mark.asyncio
+async def test_purge_writes_withdrawal_backup_for_orcid_account_without_email(session):
+    from backend.modules.accounts.repository.credential import AccountWithdrawalBackupTable
+
+    repo = CredentialRepository(session)
+    acct = repo.create_social_account(None)
+    repo.create_social_identity("ORCID", "0000-0002-1825-0097", acct.id, None)
+    acct_id = acct.id
+    session.commit()
+    svc = AccountDeletionService(repo, AsyncMock(), AsyncMock(), grace_days=0)
+
+    await svc.request_deletion(acct_id)
+    session.commit()
+    await svc.purge_job(now=_naive(days=1))
+    session.commit()
+
+    backup = (
+        session.query(AccountWithdrawalBackupTable)
+        .filter(AccountWithdrawalBackupTable.original_account_id == acct_id)
+        .one()
+    )
+    assert backup.email is None
+    assert repo.get_by_id(acct_id) is None
+
+
+@pytest.mark.asyncio
 async def test_request_deletion_requires_correct_password(session):
     # 감사 H7: 비밀번호 계정 탈퇴는 현재 비밀번호 재인증 필수(CSRF·세션탈취 방어).
     repo = CredentialRepository(session)
@@ -227,7 +313,8 @@ async def test_request_deletion_requires_correct_password(session):
 
 
 def test_withdrawal_backup_is_idempotent(session):
-    # 파기 잡 at-least-once 재시도 시 동일 계정에 중복 5년 백업 행이 쌓이지 않아야 한다(리뷰 should-fix).
+    # 파기 잡 at-least-once 재시도 시 동일 계정에
+    # 중복 5년 백업 행이 쌓이지 않아야 한다(리뷰 should-fix).
     from backend.modules.accounts.repository.credential import AccountWithdrawalBackupTable
 
     repo = CredentialRepository(session)

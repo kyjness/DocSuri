@@ -61,8 +61,11 @@ class EmbeddingAdapter(Protocol):
 class VectorStoreAdapter(Protocol):
     """k-NN (ANN) reader over the shared OpenSearch index (FR-2; single reader)."""
 
-    def knn_search(self, vector: Sequence[float], top_k: int) -> list[ScoredRecord]:
-        """Return up to ``top_k`` records in similarity order. Raises ``IndexUnavailable``."""
+    def knn_search(
+        self, vector: Sequence[float], top_k: int, abstract_only: bool = False
+    ) -> list[ScoredRecord]:
+        """Return up to ``top_k`` records in similarity order. ``abstract_only`` restricts the
+        search to abstract chunks (lite scope: 1 vector/paper). Raises ``IndexUnavailable``."""
         ...
 
 
@@ -70,8 +73,14 @@ class VectorStoreAdapter(Protocol):
 class LexicalIndexAdapter(Protocol):
     """BM25 lexical reader over the shared OpenSearch index (FR-2; lexical fallback US-R2)."""
 
-    def bm25_search(self, terms: Sequence[str], top_k: int) -> list[ScoredRecord]:
-        """Return up to ``top_k`` records in BM25 order. Raises ``IndexUnavailable``."""
+    def bm25_search(
+        self,
+        terms: Sequence[str],
+        top_k: int,
+        fields: Sequence[str] = ("title", "abstract", "lexicalTerms"),
+    ) -> list[ScoredRecord]:
+        """Return up to ``top_k`` records in BM25 order over ``fields`` (lite vs full scope:
+        title+abstract vs +body). Raises ``IndexUnavailable``."""
         ...
 
 

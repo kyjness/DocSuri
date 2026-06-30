@@ -49,7 +49,7 @@ class _FakeCursor:
     def __init__(self) -> None:
         self.params: tuple | None = None
 
-    def __enter__(self) -> "_FakeCursor":
+    def __enter__(self) -> _FakeCursor:
         return self
 
     def __exit__(self, *exc: object) -> bool:
@@ -66,7 +66,7 @@ class _FakeConn:
     def __init__(self) -> None:
         self.cur = _FakeCursor()
 
-    def __enter__(self) -> "_FakeConn":
+    def __enter__(self) -> _FakeConn:
         return self
 
     def __exit__(self, *exc: object) -> bool:

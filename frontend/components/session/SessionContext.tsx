@@ -13,6 +13,7 @@ type SessionStatus = 'loading' | 'anonymous' | 'authenticated';
 interface SessionValue {
   status: SessionStatus;
   user: SessionInfo | null;
+  signingOut: boolean;
   refresh: () => Promise<void>;
   signOut: () => Promise<void>;
 }
@@ -22,6 +23,7 @@ const SessionCtx = createContext<SessionValue | null>(null);
 export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [status, setStatus] = useState<SessionStatus>('loading');
   const [user, setUser] = useState<SessionInfo | null>(null);
+  const [signingOut, setSigningOut] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -35,11 +37,13 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const signOut = useCallback(async () => {
+    setSigningOut(true);
     try {
       await getApiClient().logout();
     } finally {
       setUser(null);
       setStatus('anonymous');
+      setSigningOut(false);
     }
   }, []);
 
@@ -48,8 +52,8 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   }, [refresh]);
 
   const value = useMemo<SessionValue>(
-    () => ({ status, user, refresh, signOut }),
-    [status, user, refresh, signOut],
+    () => ({ status, user, signingOut, refresh, signOut }),
+    [status, user, signingOut, refresh, signOut],
   );
 
   return <SessionCtx.Provider value={value}>{children}</SessionCtx.Provider>;

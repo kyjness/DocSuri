@@ -8,7 +8,8 @@ core never calls ``enforce`` (INV-1); the gateway/router applies the injected ho
 
 External contracts come from :mod:`docsuri_shared` (DTOs/events/vector-spec/ports) — never
 forked. Real adapters (OpenSearch/Bedrock) are interfaces only here; mocks live in
-:mod:`discovery.mocks` (MR-1/4). SEC-9: cards expose only the 7 projected fields.
+:mod:`discovery.mocks` (MR-1/4). SEC-9: cards expose only the projected fields
+(Phase 2 Q2 adds source-neutral sourceName/sourceUrl; blockRefs/sourceProvenance stay internal).
 """
 
 from __future__ import annotations

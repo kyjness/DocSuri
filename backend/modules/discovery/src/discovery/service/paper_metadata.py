@@ -16,12 +16,15 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict
 
+from ..domain.source_ref import source_ref
 from ..ports.search_ports import IndexUnavailable, PaperLookupAdapter, SearchUnavailable
 
 
 class PaperMetaDTO(BaseModel):
     """External paper-detail header contract (GET /api/papers/{id}). Mirrors the frontend
-    hand-authored ``PaperMetaVM`` (arxivId/title/authors/year/abstract/arxivUrl)."""
+    hand-authored ``PaperMetaVM`` (arxivId/title/authors/year/abstract/arxivUrl). Phase 2 (Q2):
+    adds source-neutral ``sourceName``/``sourceUrl`` so the detail header agrees with the search
+    card on a non-arXiv paper's discovery source and link-out (FR-5)."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -31,6 +34,8 @@ class PaperMetaDTO(BaseModel):
     year: int
     abstract: str
     arxivUrl: str
+    sourceName: str | None = None
+    sourceUrl: str | None = None
 
 
 class PaperMetadataService:
@@ -47,6 +52,7 @@ class PaperMetadataService:
             raise SearchUnavailable("paper lookup unavailable") from exc
         if record is None:
             return None
+        source_name, source_url = source_ref(record)
         return PaperMetaDTO(
             arxivId=record.arxivId,
             title=record.title,
@@ -54,4 +60,6 @@ class PaperMetadataService:
             year=record.year,
             abstract=record.abstract,
             arxivUrl=record.arxivUrl,
+            sourceName=source_name,
+            sourceUrl=source_url,
         )

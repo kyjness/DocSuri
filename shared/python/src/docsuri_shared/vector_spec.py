@@ -15,12 +15,18 @@ from __future__ import annotations
 import dataclasses
 from dataclasses import dataclass
 
-from ._generated.vector_spec.index_record_schema import ArxivCategory, DocModelBlockRef, IndexRecord
+from ._generated.vector_spec.index_record_schema import (
+    ArxivCategory,
+    DocModelBlockRef,
+    IndexRecord,
+    SourceProvenance,
+)
 
 __all__ = [
     "ArxivCategory",
     "DocModelBlockRef",
     "IndexRecord",
+    "SourceProvenance",
     "VectorSpec",
     "EMBEDDING_SPEC",
     "SPEC_VERSION",

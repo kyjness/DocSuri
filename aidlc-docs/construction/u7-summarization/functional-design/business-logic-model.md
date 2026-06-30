@@ -40,7 +40,7 @@
       ▼
 8. assemble+write     ResultAssembler → SummaryStoreAdapter write-through(영구+핫) → emitTelemetry(비차단)
       ▼ 스트리밍
-[ 클라이언트: 점진 렌더 + "출처 보기"(앵커) + 뷰 프리셋(재생성 0) ]
+[ 클라이언트(U5): 점진 렌더 + "출처 보기"(앵커) + 표시 슬라이싱(클라이언트 렌더·재생성 0) ]
 ```
 
 ---
@@ -57,6 +57,7 @@
 
 ### 3.3 `SourceSelector` (Q1)
 - `summary` → `FullTextSourceAdapter`로 **doc-model read**(전문; cache miss 시 U1 doc-model lazy 생성 트리거 — BR-30/U1 §7). `translate` → 초록(보유). 전문 부재/라이선스X → 초록 폴백 + `fallbackReason`(NFR-R2), 둘 다 부재 → `SourceUnavailableDTO`.
+  - **lazy 빌드 트리거 = deprecate(D6/Q5 — 레거시 백필 전용)**: 목표는 U1 수집시점 **eager** doc-model 빌드(실패 시 flat-text degrade·None 미발생 → "인덱스 ⊆ doc-model" 성립)라 신규 수집분은 read miss가 안 나야 한다. lazy 트리거는 eager 빌드 이전 수집분 백필용으로 **한시 유지**(`DocModelBuildQueuePort` deprecated)·백필 완료 후 제거 대상. 신규 의존 금지.
 - **(D2)** 입력 소스만 `.txt`→doc-model 교체 — 선택·폴백·DTO 로직 불변.
 
 ### 3.4 `InputRefiner` (Q2=B / Q6=A)
@@ -83,6 +84,7 @@
 ### 3.8 `GroundingValidator` (Q4=A / Q15=A)
 - **결정적 체크만**(LLM-judge 미사용): ① 앵커 실재성(섹션/표/span이 `RefinedSource`에 실재?) ② 수치 일치(정규화 비교 95.3%↔0.953) ③ 스키마 완전성 ④ 잘림/빈출력.
 - 판정 → `AnchorVerdict`. **1차 실패 → 1회 재시도 → 그래도 실패 시 기권(fail-closed)**. 정당한 코퍼스밖 abstain은 재시도 없음.
+- **레지스트리 등재(D3 / `shared/ports` §2.1)**: 합성 시점(`real_wiring.build_grounding_registry`)에 `GroundingValidatorRegistry`에 `domain=summary`·`authority=advisory`·`owner_unit=U7`로 등재된다. enforcement 권위는 `search`(U6) 단독이며 레지스트리 가드가 요약의 enforcement 주장을 거부한다(단일 근거화 권위 = 검색 한정). **호출 경로는 불변** — 오케스트레이터가 `validate`를 직접 호출(seam 유지)하고, 레지스트리는 "누가 어느 도메인을 소유·강제하는가"를 기록하는 거버넌스 카탈로그다. 별개 배포 단위이므로 런타임 단일 싱글톤이 아니라 모듈별 등재.
 
 ### 3.9 `ResultAssembler`
 - 통과 → `SummaryResultDTO`(draft/translation + anchors + meta). 후치환 용어집 적용(3.5 경로2). write-through + telemetry.

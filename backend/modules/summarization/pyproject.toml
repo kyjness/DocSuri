@@ -17,7 +17,7 @@ api = ["fastapi>=0.110"]
 # Real-first adapters (TD-S12): Bedrock streaming (Sonnet/Haiku), S3 + Redis store,
 # RDS glossary. No Production Mock Adapter ships — unit tests use test-only Fixtures/Stubs;
 # integration tests self-skip when boto3 / redis / psycopg or live deps are absent.
-real = ["boto3>=1.34", "redis>=5.0", "psycopg[binary]>=3.1"]
+real = ["boto3>=1.34", "redis>=5.0", "psycopg[binary]>=3.1", "psycopg_pool>=3.1"]
 
 [dependency-groups]
 dev = ["pytest>=8.0", "hypothesis>=6.100", "ruff>=0.6"]

@@ -21,7 +21,10 @@ export class HttpTransport implements Transport {
   constructor(private readonly config: HttpTransportConfig) {}
 
   async send(req: TransportRequest): Promise<TransportResponse> {
-    const headers: Record<string, string> = { 'content-type': 'application/json' };
+    const headers: Record<string, string> = {
+      ...(req.body !== undefined ? { 'content-type': 'application/json' } : {}),
+      ...(req.headers ?? {}),
+    };
     if (this.config.cookieHeader) headers['cookie'] = this.config.cookieHeader;
 
     const res = await fetch(`${this.config.baseUrl}${req.path}`, {

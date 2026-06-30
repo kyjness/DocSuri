@@ -12,7 +12,8 @@ import unicodedata
 from .models import NormalizedQuery, ValidationResult
 
 MAX_QUERY_LEN = 500  # FR-1/SEC-5 (BR-1)
-_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")  # control/null (excl. \t\n\r\f\v)
+# Reject C0 controls + DEL; \t\n\v\f\r are whitespace (collapsed by normalize, not rejected).
+_CONTROL = re.compile(r"[\x00-\x08\x0e-\x1f\x7f]")
 _WHITESPACE = re.compile(r"\s+")
 
 

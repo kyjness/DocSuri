@@ -9,8 +9,8 @@ import pytest
 from docsuri_ingestion.migrate import _STEPS, run_step
 
 
-def test_steps_are_exactly_the_three_migration_phases():
-    assert set(_STEPS) == {"provision", "backfill", "cutover"}
+def test_steps_are_exactly_the_known_one_off_phases():
+    assert set(_STEPS) == {"provision", "backfill", "backfill_external", "cutover"}
 
 
 def test_run_step_rejects_unknown_step_before_side_effects():

@@ -7,11 +7,13 @@ from uuid import uuid4
 
 from docsuri_shared.dtos import DocModel, DocModelResultDTO, SourceTier, SourceUnavailableDTO
 
-from .asset_extraction import AssetExtractor
+from .asset_extraction import AssetExtractor, crop_assets_from_specs
 from .config import CORPUS_SLICE_CATEGORIES, WITHDRAWAL_MARKERS
 from .corpus_sources import CorpusSourceAdapterSet, CorpusTextCandidate, SourcePaperRecord
 from .docmodel import DocModelBuilder
-from .domain.canonical import canonical_key
+from .docmodel.tei import tei_crop_specs
+from .domain.assets import AssetCropSpec, FigureSpec
+from .domain.canonical import canonical_key, source_priority_from_tier
 from .domain.enums import DedupDecision, FailureClass, FailureReason, JobKind, SourceName
 from .domain.errors import IngestionError, PermanentIngestionError
 from .domain.models import (
@@ -97,6 +99,11 @@ class IngestionPipelineService:
         self._embedding_v2 = embedding_v2
         self._vector_index_v2 = vector_index_v2
         self._corpus_sources = corpus_sources
+
+    def is_rebuild_active(self) -> bool:
+        """Whether a SEED_REBUILD holds the single-writer lock (BR-13). The worker fences in-flight
+        INCREMENTAL/EVENT jobs out of a rebuild window with this."""
+        return self._control_plane.is_rebuild_active()
 
     def build_doc_model(
         self, job: IngestionJob
@@ -199,7 +206,9 @@ class IngestionPipelineService:
         )
         paper = self._parser.parse(raw_document)
 
-        doc_model = self._build_doc_model_before_index(metadata, raw_document.text)
+        doc_model, figure_specs = self._build_doc_model_before_index(
+            metadata, raw_document.text
+        )
         keys = self._canonical_keys_for_metadata(metadata, paper.year)
         existing = self._canonical_state_for_keys(keys)
         decision = self._index_paper(
@@ -208,6 +217,7 @@ class IngestionPipelineService:
             doc_model=doc_model,
             watermark_name="arxiv",
             asset_metadata=metadata,
+            asset_figure_specs=figure_specs,
         )
         if decision is not DedupDecision.STALE and not paper.withdrawal_detected:
             self._record_canonical_winner(
@@ -246,13 +256,14 @@ class IngestionPipelineService:
         )
         paper = self._paper_from_source_record(record, candidate, job, key)
 
-        doc_model = self._build_doc_model_from_paper(paper, SourceTier.pdf)
+        doc_model, record_crops = self._build_doc_model_from_record(paper, candidate)
         decision = self._index_paper(
             job,
             paper,
             doc_model=doc_model,
             watermark_name=record.source_name.value.lower(),
             asset_metadata=None,
+            record_asset_ctx=(record, candidate, record_crops),
         )
         if decision is not DedupDecision.STALE and not paper.withdrawal_detected:
             self._record_canonical_winner(
@@ -272,6 +283,11 @@ class IngestionPipelineService:
         doc_model: DocModel | None,
         watermark_name: str,
         asset_metadata,
+        asset_figure_specs: tuple[FigureSpec, ...] = (),
+        record_asset_ctx: tuple[
+            SourcePaperRecord, CorpusTextCandidate, tuple[AssetCropSpec, ...] | None
+        ]
+        | None = None,
     ) -> DedupDecision:
         if paper.withdrawal_detected:
             return self._tombstone(job, paper, watermark_name=watermark_name)
@@ -369,7 +385,9 @@ class IngestionPipelineService:
         self._control_plane.advance_watermark(watermark_name, paper.updated_at)
         # FR-17 assets: best-effort, AFTER the index commit so it can never block (BR-27).
         if asset_metadata is not None:
-            self._store_assets_best_effort(paper, asset_metadata)
+            self._store_assets_best_effort(paper, asset_metadata, asset_figure_specs)
+        elif record_asset_ctx is not None:
+            self._store_record_assets_best_effort(paper, *record_asset_ctx)
         self._control_plane.record_job_finished(job.job_id, success=True)
         self._observability.emit_metric(
             "ingestion.paper.indexed",
@@ -603,9 +621,14 @@ class IngestionPipelineService:
         self._observability.emit_metric("ingestion.paper.tombstoned", 1.0, {"kind": job.kind.value})
         return DedupDecision.CHANGED
 
-    def _store_assets_best_effort(self, paper, metadata) -> None:
+    def _store_assets_best_effort(
+        self, paper, metadata, figure_specs: tuple[FigureSpec, ...] = ()
+    ) -> None:
         """Extract + store figure/table assets (FR-17). Never raises — assets are a
-        display-only, non-blocking side path (BR-27); failures are observed, not propagated."""
+        display-only, non-blocking side path (BR-27); failures are observed, not propagated.
+
+        ``figure_specs`` (the doc-model FigureBlocks, document order) lets the extractor resolve
+        each figure's image aligned to its block; empty falls back to the legacy scan."""
         if not (self._asset_extractor and self._asset_store and self._asset_source):
             return
         # Classify by where it fails (§7.3): fetch/extract → EXTRACT, persistence → STORE.
@@ -614,7 +637,65 @@ class IngestionPipelineService:
             eprint = self._asset_source.fetch_eprint(metadata)
             pdf = self._asset_source.fetch_pdf(metadata)
             extracted = self._asset_extractor.extract(
-                paper_id=paper.paper_id, version=paper.version, pdf=pdf, eprint=eprint
+                paper_id=paper.paper_id,
+                version=paper.version,
+                pdf=pdf,
+                eprint=eprint,
+                figure_specs=figure_specs or None,
+            )
+            reason = FailureReason.ASSET_STORE_FAILURE
+            if extracted:
+                self._asset_store.store_assets(paper.paper_id, paper.version, extracted)
+            self._observability.emit_metric(
+                "ingestion.assets.stored", float(len(extracted)), {"paperId": paper.paper_id}
+            )
+        except Exception as exc:  # noqa: BLE001 - best-effort: never block indexing (BR-27)
+            self._observability.emit_log(
+                {
+                    "type": "asset_pipeline_failure",
+                    "reason": reason.value,
+                    "paperId": paper.paper_id,
+                    "error": str(exc),
+                }
+            )
+            self._observability.emit_metric("ingestion.assets.failed", 1.0, {})
+
+    def _store_record_assets_best_effort(
+        self,
+        paper,
+        record: SourcePaperRecord,
+        candidate: CorpusTextCandidate,
+        crops: tuple[AssetCropSpec, ...] | None = None,
+    ) -> None:
+        """Coordinate page-crop figure/formula assets for a non-arXiv (TEI) paper (FR-17).
+
+        Renders the TEI crop specs — whose assetIds match the doc-model blocks — to WebP. Reuses
+        the crop specs gathered during the doc-model build (``crops``) instead of re-parsing the
+        TEI, and the PDF bytes already fetched for GROBID (``candidate.pdf``) instead of
+        re-fetching — the latter also keeps the crop aligned to the exact bytes the TEI
+        coordinates came from. Falls back to re-parsing / re-fetching only when those are
+        unavailable. Gated on the asset store being wired (multimodal enabled); best-effort and
+        never raises (BR-27)."""
+        if self._asset_store is None or self._corpus_sources is None or not candidate.tei:
+            return
+        reason = FailureReason.ASSET_EXTRACT_FAILURE
+        try:
+            specs = (
+                list(crops)
+                if crops is not None
+                else tei_crop_specs(
+                    candidate.tei, paper_id=paper.paper_id, version=paper.version
+                )
+            )
+            if not specs:
+                return
+            pdf = (
+                candidate.pdf
+                if candidate.pdf is not None
+                else self._corpus_sources.fetch_record_pdf(record)
+            )
+            extracted = crop_assets_from_specs(
+                pdf, specs, paper_id=paper.paper_id, version=paper.version
             )
             reason = FailureReason.ASSET_STORE_FAILURE
             if extracted:
@@ -638,17 +719,29 @@ class IngestionPipelineService:
             return
         try:
             self._asset_store.remove_assets(paper_id)
-        except Exception:  # noqa: BLE001 - best-effort cleanup
+        except Exception as exc:  # noqa: BLE001 - best-effort cleanup
+            self._observability.emit_log(
+                {"type": "asset_remove_failure", "paperId": paper_id, "error": str(exc)}
+            )
             self._observability.emit_metric("ingestion.assets.remove_failed", 1.0, {})
 
-    def _build_doc_model_before_index(self, metadata, fallback_text: str) -> DocModel | None:
-        """Eagerly build/cache the doc-model before index exposure (phase-1 Corpus)."""
+    def _build_doc_model_before_index(
+        self, metadata, fallback_text: str
+    ) -> tuple[DocModel | None, tuple[FigureSpec, ...]]:
+        """Eagerly build/cache the doc-model before index exposure (phase-1 Corpus).
+
+        Returns the doc-model plus a FigureSpec per FigureBlock in document order — the eager asset
+        step uses them to resolve each figure's image aligned to its block. Empty when no figures
+        were parsed (text fallback) or on a cache hit (the parse is skipped); the extractor then
+        falls back to its legacy scan."""
         if self._doc_model_builder is None:
-            return None
-        result = self._doc_model_builder.build(metadata)
+            return None, ()
+        figure_specs: list[FigureSpec] = []
+        result = self._doc_model_builder.build(metadata, figure_specs=figure_specs)
         status = result.status
         cached = str(getattr(result, "cached", "")).lower()
         if isinstance(result, SourceUnavailableDTO):
+            figure_specs = []  # PDF/text fallback carries no structured figures
             result = self._doc_model_builder.build_from_text(
                 metadata, fallback_text, source_tier=SourceTier.pdf
             )
@@ -659,27 +752,41 @@ class IngestionPipelineService:
             1.0,
             {"status": status, "cached": cached},
         )
-        return result.docModel
+        return result.docModel, tuple(figure_specs)
 
-    def _build_doc_model_from_paper(
-        self, paper: ParsedPaper, source_tier: SourceTier
-    ) -> DocModel | None:
+    def _build_doc_model_from_record(
+        self, paper: ParsedPaper, candidate: CorpusTextCandidate
+    ) -> tuple[DocModel | None, tuple[AssetCropSpec, ...] | None]:
+        """Structured doc-model for a non-arXiv source record from its GROBID TEI.
+
+        ``build_from_tei`` parses the TEI (sections/tables/figures/formulas) and degrades to the
+        flat-text doc-model when the TEI is absent/unparseable — so a GROBID quirk never blocks
+        the index path. The figure/formula crop specs are gathered during that single parse and
+        returned, so the asset step reuses them instead of re-parsing the TEI. On a cache hit no
+        parse runs here, so crops is returned as None and the asset step re-derives them."""
         if self._doc_model_builder is None:
-            return None
-        result = self._doc_model_builder.build_from_paper(
+            return None, None
+        crops: list[AssetCropSpec] = []
+        result = self._doc_model_builder.build_from_tei(
             paper.paper_id,
             paper.version,
             paper.title,
             paper.abstract,
+            candidate.tei or "",
             paper.full_text,
-            source_tier=source_tier,
+            source_tier=SourceTier.pdf,
+            crops=crops,
         )
         self._observability.emit_metric(
             "ingestion.docmodel.eager_build",
             1.0,
-            {"status": "pdf_fallback", "cached": str(result.cached).lower()},
+            {"status": "tei" if candidate.tei else "pdf_fallback",
+             "cached": str(result.cached).lower()},
         )
-        return result.docModel
+        # A cache hit skips the TEI parse, so an empty list there means "not derived" (not "no
+        # crops"); signal None so the asset step parses the TEI itself.
+        record_crops = None if result.cached else tuple(crops)
+        return result.docModel, record_crops
 
 
 class RefreshOrchestrationService:
@@ -743,6 +850,35 @@ class RefreshOrchestrationService:
         finally:
             self._control_plane.release_rebuild_lock(owner)
 
+    def backfill_external_sources(self, since: datetime, until: datetime) -> int:
+        """Bounded one-off backfill of the non-arXiv corpus sources (SS/OpenAlex) over an explicit
+        [since, until] window — the run-scoped path the daily tick can't cover (its watermark
+        starts at now(), so it only harvests forward and queues ~0). arXiv is left untouched: no
+        seed re-harvest, no rebuild lock. Enqueues source-record SEED jobs (exempt from the BR-13
+        incremental fence) that the worker drains into the index; the per-paper watermark advance
+        hands the source off to the daily tick. Idempotent — canonical dedup + chunkId upsert make
+        re-runs safe."""
+        queued = 0
+        for source_name in self._enabled_sources:
+            if source_name is SourceName.ARXIV:
+                continue
+            # Per-source isolation: one source exhausting its retries (e.g. unauthenticated SS
+            # rate-limited to abort) must not drop the others — log + skip and carry on, mirroring
+            # on_schedule_tick. Each source's paged fetch already retries transient blips, so this
+            # only catches a sustained/permanent failure of that whole source.
+            try:
+                queued += self._queue_external_source(
+                    source_name, since=since, until=until, kind=JobKind.SEED_REBUILD
+                )
+            except Exception as exc:  # noqa: BLE001 — defensive boundary around one source
+                self._observability.emit_metric(
+                    "ingestion.backfill.external.failed",
+                    1.0,
+                    {"source": source_name.value, "error": type(exc).__name__},
+                )
+        self._observability.emit_metric("ingestion.backfill.external.queued", float(queued), {})
+        return queued
+
     def on_schedule_tick(self) -> int:
         if self._control_plane.is_rebuild_active():
             self._observability.emit_metric(
@@ -767,7 +903,16 @@ class RefreshOrchestrationService:
         for source_name in self._enabled_sources:
             if source_name is SourceName.ARXIV:
                 continue
-            queued += self._queue_external_incremental(source_name)
+            # Per-source isolation: a single source failing (e.g. an upstream 4xx/timeout)
+            # must not abort the whole tick or crash the worker — skip it and carry on.
+            try:
+                queued += self._queue_external_incremental(source_name)
+            except Exception as exc:  # noqa: BLE001 — defensive boundary around one source
+                self._observability.emit_metric(
+                    "ingestion.source.incremental.failed",
+                    1.0,
+                    {"source": source_name.value, "error": type(exc).__name__},
+                )
         self._observability.emit_metric("ingestion.incremental.queued", float(queued), {})
         return queued
 
@@ -877,14 +1022,8 @@ def _source_priority(source_name: SourceName) -> int:
 
 
 def _source_priority_from_tier(source_tier: str) -> int:
-    normalized = source_tier.upper()
-    if "ARXIV" in normalized or source_tier in {"native_html", "ar5iv", "eprint_latex", "pdf"}:
-        return _source_priority(SourceName.ARXIV)
-    if "SEMANTIC_SCHOLAR" in normalized:
-        return _source_priority(SourceName.SEMANTIC_SCHOLAR)
-    if "OPENALEX" in normalized:
-        return _source_priority(SourceName.OPENALEX)
-    return _source_priority(SourceName.OPENALEX)
+    # Single source of truth shared with the control-plane guarded upsert (domain.canonical).
+    return source_priority_from_tier(source_tier)
 
 
 def detect_withdrawal_proxy(title: str, abstract: str, text: str) -> bool:

@@ -37,6 +37,7 @@ from ..domain.models import (
     NoMatchResult,
     RankedResults,
     RequestContext,
+    SearchScope,
 )
 from ..domain.ranker import TOP_N, RelevanceRanker
 from ..domain.retriever import HybridRetriever
@@ -72,8 +73,14 @@ class SearchOutcome:
 
 
 def _derive_degradation(budget) -> tuple[DegradeMode, DegradationSignal]:
-    """Map the U6 advisory degrade mode to U2's signal (BR-11). U2 does not judge cost."""
+    """Map the U6 advisory degrade mode to U2's signal (BR-11). U2 does not judge cost.
+
+    ``degrade_mode`` is an opaque port value (BudgetState is PROVISIONAL): unwrap an Enum to its
+    ``.value`` so a plain ``Enum`` (whose ``str()`` is ``"Class.MEMBER"``) maps the same as a
+    ``StrEnum``/``str``. An unrecognized mode falls through to NORMAL (safe default — full
+    functionality, no degrade banner)."""
     raw = getattr(budget, "degrade_mode", None)
+    raw = getattr(raw, "value", raw)  # Enum → wire value; str/StrEnum unchanged
     mode_str = (str(raw) if raw is not None else "normal").lower().replace("_", "-")
     if mode_str == "lexical-only":
         return DegradeMode.LEXICAL_ONLY, DegradationSignal(llm_enabled=False, rerank_enabled=False)
@@ -123,16 +130,18 @@ class SearchOrchestrationService:
             return SearchOutcome(response=SearchResponse(error))
 
         normalized = self._validator.normalize(request.query)
+        # Caller-requested breadth; the human search box default is lite (no k-NN, P50<3s).
+        scope = SearchScope.FULL if request.scope == "full" else SearchScope.LITE
         budget = self._cost_guard.get_budget_state()  # U6 single authority (read-only)
         degrade_mode, degradation = _derive_degradation(budget)
 
         try:
-            plan = self._expander.expand(normalized, degradation)
+            plan = self._expander.expand(normalized, degradation, scope)
         except EmbeddingUnavailable:
             # Dependency fail-fast (Q1/BR-16): embedding down → lexical-only degrade.
             degrade_mode = DegradeMode.LEXICAL_ONLY
             plan = self._expander.expand(
-                normalized, DegradationSignal(llm_enabled=False, rerank_enabled=False)
+                normalized, DegradationSignal(llm_enabled=False, rerank_enabled=False), scope
             )
 
         try:

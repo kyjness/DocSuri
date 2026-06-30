@@ -42,16 +42,10 @@ function AnchorChips({
   );
 }
 
-export function SummaryView({ summary, cached, onAnchor }: SummaryViewProps) {
+export function SummaryView({ summary, onAnchor }: SummaryViewProps) {
   const { anchors } = summary;
   return (
     <div className={styles.root} data-testid="summary-view">
-      {cached ? (
-        <p className={styles.cached} data-testid="summary-cached">
-          저장된 결과
-        </p>
-      ) : null}
-
       <section className={styles.field}>
         <h4 className={styles.label}>한 줄 요약</h4>
         <p className={styles.body}>{summary.tldr}</p>

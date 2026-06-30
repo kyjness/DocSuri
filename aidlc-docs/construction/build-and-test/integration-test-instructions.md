@@ -15,6 +15,41 @@ Accounts 모듈 내 컴포넌트(Controller, Service, Repository) 간 결합과 
 
 ---
 
+# U11 Novelty Agent Integration Test Instructions — 2026-06-30
+
+Run U11 plus app-shell checks with local source packages:
+
+```powershell
+$env:PYTHONPATH='shared/python/src;ops/src;backend/modules/discovery/src;backend/modules/summarization/src'
+python -m pytest backend/tests/test_novelty.py backend/tests/test_app_shell.py -q
+```
+
+Observed result:
+
+- 29 passed
+
+Run the backend suite after installing declared test dependencies:
+
+```powershell
+python -m pip install "pytest-asyncio>=0.23"
+$env:PYTHONPATH='shared/python/src;ops/src;backend/modules/discovery/src;backend/modules/summarization/src'
+python -m pytest backend/tests -q
+```
+
+Observed result:
+
+- Passed with 1 skipped test and existing Starlette cookie deprecation warnings.
+
+Key scenarios:
+
+- U11 appears in the app-shell module registry.
+- U11 routes mount without breaking existing modules.
+- `NOVELTY_AGENT_ENABLED=true` activates the API path by default.
+- U11 status/result/cancel endpoints use owner-scoped repository access.
+- Existing app-shell discovery/accounts/middleware smoke checks still pass with local packages present.
+
+---
+
 ## U1 — Ingestion Integration Tests
 
 ### Current Integration Status

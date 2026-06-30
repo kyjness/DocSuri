@@ -37,6 +37,36 @@ def _principal() -> Principal:
     return Principal(user_id=str(uuid4()), role=UserRole.USER)
 
 
+def test_orcid_profile_404_when_not_orcid_user(monkeypatch) -> None:
+    # 비-ORCID 계정(시드 없음) → 404.
+    client = _client(monkeypatch, principal=_principal(), account_repo=InMemoryAccountRepository())
+    resp = client.get("/mypage/orcid-profile")
+    assert resp.status_code == 404
+
+
+def test_orcid_profile_returns_cached_identity_plus_live_works(monkeypatch) -> None:
+    async def _fake_record(orcid_id, **kw):
+        return {"affiliation": "ignored-uses-cache", "works": [{"title": "Paper A", "year": 2020}]}
+
+    monkeypatch.setattr(controller, "fetch_orcid_public_record", _fake_record)
+    principal = _principal()
+    account_repo = InMemoryAccountRepository()
+    account_repo.seed_orcid(
+        principal.user_id,
+        orcid_id="0000-0002-1825-0097",
+        name="Josiah Carberry",
+        affiliation="Brown",
+    )
+    client = _client(monkeypatch, principal=principal, account_repo=account_repo)
+    resp = client.get("/mypage/orcid-profile")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["orcidId"] == "0000-0002-1825-0097"
+    assert body["name"] == "Josiah Carberry"
+    assert body["affiliation"] == "Brown"  # 캐시 값 사용
+    assert body["works"] == [{"title": "Paper A", "year": 2020}]  # 라이브 fetch
+
+
 def test_get_subscription_defaults_to_none_when_never_subscribed(monkeypatch) -> None:
     resp = _client(monkeypatch, principal=_principal()).get("/mypage/subscription")
     assert resp.status_code == 200

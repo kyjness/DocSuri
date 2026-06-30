@@ -78,10 +78,16 @@ class OpenSearchVectorStoreAdapter:
         self._client = client
         self._index = index_name
 
-    def knn_search(self, vector: Sequence[float], top_k: int) -> list[ScoredRecord]:
+    def knn_search(
+        self, vector: Sequence[float], top_k: int, abstract_only: bool = False
+    ) -> list[ScoredRecord]:
+        knn: dict[str, Any] = {"vector": list(vector), "k": top_k}
+        if abstract_only:
+            # Efficient k-NN filtering: restrict the ANN search to abstract chunks (lite scope).
+            knn["filter"] = {"term": {"section": "abstract"}}
         body = {
             "size": top_k,
-            "query": {"knn": {"vector": {"vector": list(vector), "k": top_k}}},
+            "query": {"knn": {"vector": knn}},
         }
         try:
             response = self._client.search(index=self._index, body=body)
@@ -131,13 +137,18 @@ class OpenSearchLexicalIndexAdapter:
         self._client = client
         self._index = index_name
 
-    def bm25_search(self, terms: Sequence[str], top_k: int) -> list[ScoredRecord]:
+    def bm25_search(
+        self,
+        terms: Sequence[str],
+        top_k: int,
+        fields: Sequence[str] = ("title", "abstract", "lexicalTerms"),
+    ) -> list[ScoredRecord]:
         body = {
             "size": top_k,
             "query": {
                 "multi_match": {
                     "query": " ".join(terms),
-                    "fields": ["title", "abstract", "lexicalTerms"],
+                    "fields": list(fields),
                 }
             },
         }

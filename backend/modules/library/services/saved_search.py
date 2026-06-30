@@ -17,6 +17,7 @@ from ..schemas import (
 from ..validation import (
     UserDataDTOAndValidation,
     build_page,
+    normalize_query,
     to_saved_dto,
 )
 
@@ -60,7 +61,12 @@ class SavedSearchService:
         object.__setattr__(ret_dto, "was_created", True)
         return ret_dto
 
-    def list(self, principal: Principal, params) -> SavedSearchPageDTO:
+    def list(self, principal: Principal, params, *, query: str | None = None) -> SavedSearchPageDTO:
+        if query is not None:
+            normalized = normalize_query(query)
+            entity = self._repo.saved_searches.find_by_normalized(principal.user_id, normalized)
+            items = [to_saved_dto(entity)] if entity is not None else []
+            return SavedSearchPageDTO(items=items, nextCursor=None)
         return build_page(
             self._repo.saved_searches.list_page,
             principal.user_id,

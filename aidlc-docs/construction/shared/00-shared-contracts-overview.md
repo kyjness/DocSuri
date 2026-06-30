@@ -13,7 +13,7 @@
 - **설계 위치**: 본 디렉터리 `aidlc-docs/construction/shared/`(계약 **명세**). 런타임 패키지(repo-root `shared/`) 코드 생성은 Code Generation 단계.
 - **코드 위치(예정)**: `shared/{vector-spec, dtos, events, ports}` (모노레포 UQ2=A).
 
-## 2. 계약 구성 (5)
+## 2. 계약 구성 (6)
 | 계약 | 파일 | 상태 | 1차 생산자 | 1차 소비자 |
 |---|---|---|---|---|
 | **VectorSpec + IndexRecord** | `vector-spec.md` | 🔒 FROZEN | U1(writer) | U2(reader) |
@@ -21,6 +21,7 @@
 | **Events**(이벤트 백본) | `events.md` | 🟡 일부 FROZEN | U1/U2/U3/U6 | U4/U6 |
 | **Ports**(횡단 후크 IF) | `ports.md` | 🟡 일부 FROZEN | U6(구현) | U2/U1(의존) |
 | **doc-model**(구조화 문서모델) | `docmodel.md` | 🔒 FROZEN | U1(builder) | U7·U5·에이전트 |
+| **EvidenceFormationPort**(Agent 근거형성 포트) | `evidence-formation-port.md` | 🟡 PROVISIONAL | 문헌탐색·근거형성 Agent | 연구아이디어 Agent |
 
 > **doc-model**(2026-06-23 피벗 추가): 요약/번역 입력·자체 리치뷰·에이전트 toolschema의 공용 계약. 게이트=`plans/docmodel-foundation-pivot-plan.md`, 스키마=`shared/dtos/docmodel.schema.json`.
 

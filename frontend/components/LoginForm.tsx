@@ -8,10 +8,57 @@ import { getApiClient, UserFacingError } from '@/lib/api';
 import { useSession } from './session/SessionContext';
 import { validateEmail, validateRequiredPassword } from '@/lib/api/validate';
 import { AuthField } from './AuthField';
+import { ORCID_LOGIN_ENABLED } from '@/lib/socialLogin';
 
 // LoginForm (LC-1, US-A2, BR-U5-16) — generalized auth errors (credential
 // existence not disclosed). On success, refresh the session and return to the
 // preserved destination.
+
+type RecaptchaApi = {
+  ready(callback: () => void): void;
+  execute(siteKey: string, options: { action: string }): Promise<string>;
+};
+
+declare global {
+  interface Window {
+    grecaptcha?: RecaptchaApi;
+  }
+}
+
+let recaptchaScriptLoad: Promise<void> | null = null;
+
+function recaptchaSiteKey(): string | undefined {
+  const value = process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY?.trim();
+  return value || undefined;
+}
+
+function loadRecaptcha(siteKey: string): Promise<void> {
+  if (typeof window === 'undefined' || window.grecaptcha) return Promise.resolve();
+  if (recaptchaScriptLoad) return recaptchaScriptLoad;
+
+  recaptchaScriptLoad = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = `https://www.google.com/recaptcha/api.js?render=${encodeURIComponent(siteKey)}`;
+    script.async = true;
+    script.defer = true;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('recaptcha-load-failed'));
+    document.head.appendChild(script);
+  });
+  return recaptchaScriptLoad;
+}
+
+async function recaptchaToken(action: string): Promise<string | undefined> {
+  const siteKey = recaptchaSiteKey();
+  if (!siteKey) return undefined;
+  await loadRecaptcha(siteKey);
+  if (!window.grecaptcha) throw new Error('recaptcha-unavailable');
+  return new Promise((resolve, reject) => {
+    window.grecaptcha?.ready(() => {
+      window.grecaptcha?.execute(siteKey, { action }).then(resolve, reject);
+    });
+  });
+}
 
 export function LoginForm() {
   const router = useRouter();
@@ -65,7 +112,8 @@ export function LoginForm() {
     setResendMsg(null);
     setSubmitting(true);
     try {
-      await getApiClient().login({ email: email.trim(), password });
+      const token = await recaptchaToken('login');
+      await getApiClient().login({ email: email.trim(), password }, token);
       await refresh();
       router.push(redirectTo);
     } catch (err) {
@@ -153,6 +201,11 @@ export function LoginForm() {
       >
         Google로 계속하기
       </a>
+      {ORCID_LOGIN_ENABLED ? (
+        <a className={styles.socialButton} href="/auth/social/orcid/start" data-testid="login-orcid">
+          ORCID로 계속하기
+        </a>
+      ) : null}
     </form>
   );
 }

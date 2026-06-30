@@ -152,6 +152,39 @@ alone**; the dependants (callers) are **U2 and U1**.
 
 ---
 
+## 4. EvidenceFormationPort — 다논문 근거형성 단일 권한 포트 (D5)
+
+- **Owner (impl):** U4 — 문헌탐색·근거형성 Agent (화랑님). 단독 구현자.
+- **Consumer:** U12 — 연구아이디어 Agent (석현님). 주입 lib으로 소비. **재구현 금지**.
+- **State:** 🔒 **FROZEN** (D5 계약 게이트 — Q1~Q3 확정 후 동결, 2026-06-29).
+- **순환 차단:** `U12 → shared/ports(추상) ← U4`. U12가 U4 구체 모듈 직접 import 금지.
+- **데이터 스키마 SSOT:** `../dtos/evidence.schema.json` (§5-B, `_generated/dtos/evidence_schema.py`로 생성).
+
+| 메서드 | 시그니처 | 상태 | 의미 | Trace |
+|---|---|---|---|---|
+| `form_evidence` | `async form_evidence(request: EvidenceRequest, ctx) -> EvidenceResult \| EvidenceAbstainResult` | 🔒 FROZEN | 다논문 교차확인 → 근거 비교·정리 → 출처·기권. U12 Research Gap/Novelty 판단 입력. | Q1, Q3, Q4, Q9, FR-5, SEC-9, C-2, D5 |
+
+**타입 카드** (계약 형태 — 직렬화 포맷 아님. SSOT: `../dtos/evidence.schema.json`):
+
+| 타입 | 필드 | 의미 |
+|---|---|---|
+| `EvidenceRequest` | `topic`(연구 주제/질문) · `scope`(auto\|explicit\|mixed — Q4=A) · `paperIds?`(명시 집합) · `attachments?`(첨부 — Q6=A) · `constraints?`(기간/분야/논문수 — FD 이월) | 근거형성 입력. |
+| `EvidenceResult` | `state: ok` · `claims: EvidenceItem[]` · `coverage: EvidenceCoverage` | 근거형성 성공 산출. |
+| `EvidenceAbstainResult` | `state: abstain` · `abstainReason` (비기술 사유 — SEC-9) | 근거 0건/범위 밖 기권(FR-5, 날조 금지). |
+| `EvidenceItem` | `statement`(추출 근거 명제) · `supporting: SourceRef[]` · `conflicting: SourceRef[]` (confidence 제외 — Q3=B) | 근거 명제 + 지지/상충 출처. confidence는 U12가 자체 산출. |
+| `SourceRef` | `paperId`(arXiv ID) · `recordRef`(IndexRecord 핸들) · `anchor?`(DocModel Block id) · `quote?`(원문 스니펫) | 출처 핸들 — 기존 계약 재사용(vector-spec §2, summarization AnchorTarget). |
+| `EvidenceCoverage` | `paperCount: int` · `queryUsed?: str` | 사용 논문 수·쿼리 요약(투명성, 내부 점수 미노출 SEC-9). |
+
+**단일 권한 불변식 (U12 준수 필수):**
+- U12는 `form_evidence`를 직접 호출한다 — 재구현하거나 U4 내부 모듈을 import하지 않는다.
+- `EvidenceItem.statement`는 논문 추출 근거 명제만 — 생성 산문 금지(C-2).
+- `state=abstain`이면 U12는 날조 없이 기권으로 처리(FR-5).
+- `abstainReason`은 비기술 코드만 — 내부 위반 상세/점수 비노출(SEC-9).
+
+**변경 정책:** 동결된 시그니처 변경 시 **shared 계약 PR + U4(화랑님)·U12(석현님) 사인오프** 필수 (기존 ports 변경정책 준용).
+
+---
+
 ## Per-language stubs
 
 Ports are method interfaces bound to a backend language; unlike the JSON Schema data

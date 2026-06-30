@@ -37,6 +37,19 @@ class AccountProfile:
 
 
 @dataclass
+class OrcidIdentity:
+    """ORCID로 로그인한 사용자의 캐시된 공개 프로필 (BR-A13 / 마이페이지 ORCID 카드).
+
+    REAL U3 social_identities(provider='ORCID')에서 읽는다: orcid_id=provider_subject, name/
+    affiliation은 로그인 시 캐시한 값. works(저작물 1:N)는 캐시하지 않고 조회 시 ORCID Public
+    API에서 라이브로 가져온다(마이그레이션 006 설계)."""
+
+    orcid_id: str
+    name: str | None
+    affiliation: str | None
+
+
+@dataclass
 class Consents:
     """A user's consent flags (read-only for the two mandatory ones; nightly push is togglable).
 

@@ -62,6 +62,13 @@ _RDS_SECRET_ARN = (
     "arn:aws:secretsmanager:ap-northeast-2:028317349537:secret:"
     "DocsuriComputePostgresSecre-9qclXydED0pl-30WA1V"
 )
+# Semantic Scholar API key (x-api-key) for the corpus harvest — created out-of-band in Secrets
+# Manager; referenced by full ARN so the worker (and daily tick) authenticate SS. Plain-string
+# secret (no JSON field). ponytail: hardcoded id, revisit only if the secret is recreated.
+_SS_API_KEY_SECRET_ARN = (
+    "arn:aws:secretsmanager:ap-northeast-2:028317349537:secret:"
+    "docsuri/semantic-scholar-api-key-ExoKCk"
+)
 
 
 class IngestionStack(Stack):
@@ -131,10 +138,15 @@ class IngestionStack(Stack):
             self, "Cluster", cluster_name="docsuri", vpc=vpc,
             security_groups=[],
         )
+        # grobid/grobid:0.8.0 is the full deep-learning image (~20GB extracted, bundles
+        # TensorFlow) — the 20GB Fargate default ephemeral storage overflows on pull
+        # (CannotPullContainerError: no space left on device). Bump disk to fit it, and RAM
+        # so GROBID has headroom alongside the worker.
         task_def = ecs.FargateTaskDefinition(
             self, "WorkerTaskDef",
-            cpu=1024,
-            memory_limit_mib=3072,
+            cpu=2048,
+            memory_limit_mib=8192,
+            ephemeral_storage_gib=80,
         )
 
         # Control-plane DSN WITHOUT the password — libpq reads PGPASSWORD (injected as a secret
@@ -143,6 +155,9 @@ class IngestionStack(Stack):
         control_plane_dsn = f"postgresql://docsuri_admin@{_RDS_ENDPOINT}:{_RDS_PORT}/docsuri"
         db_secret = secretsmanager.Secret.from_secret_complete_arn(
             self, "DbSecret", _RDS_SECRET_ARN
+        )
+        ss_api_key_secret = secretsmanager.Secret.from_secret_complete_arn(
+            self, "SsApiKeySecret", _SS_API_KEY_SECRET_ARN
         )
 
         task_def.add_container(
@@ -163,8 +178,16 @@ class IngestionStack(Stack):
                 "DOCSURI_S3_BUCKET": self.bucket.bucket_name,
                 "DOCSURI_BEDROCK_MODEL_ID": _BEDROCK_MODEL_ID,
                 "DOCSURI_OPENSEARCH_ENDPOINT": f"https://{opensearch_domain.domain_endpoint}",
-                "DOCSURI_OPENSEARCH_INDEX": "docsuri-corpus-v1",
+                # Post-v4-cutover: live search reads alias docsuri-corpus -> v2, so the worker
+                # must write to v2. v1 is the retired pre-migration index; dual-write scaffolding
+                # (bedrock_model_id_v2) stays unset now the migration is done.
+                "DOCSURI_OPENSEARCH_INDEX": "docsuri-corpus-v2",
                 "DOCSURI_OPENSEARCH_ALIAS": "docsuri-corpus",
+                # SS/OpenAlex re-enabled after fixing the SS bulk-search 400 (commit c7bd065d)
+                # and adding per-source isolation to on_schedule_tick — a bad source now logs +
+                # skips instead of crashing the worker. Watermarks seeded to now(), so the daily
+                # tick harvests only forward deltas; a real SS/OpenAlex corpus needs a separate
+                # bounded backfill (DOCSURI_BACKFILL_START/END), not enabled here.
                 "DOCSURI_CORPUS_SOURCES": "ARXIV,SEMANTIC_SCHOLAR,OPENALEX",
                 "DOCSURI_GROBID_URL": "http://127.0.0.1:8070",
                 "DOCSURI_OPENSEARCH_INDEX_V2": "docsuri-corpus-v2",
@@ -177,6 +200,13 @@ class IngestionStack(Stack):
             },
             secrets={
                 "PGPASSWORD": ecs.Secret.from_secrets_manager(db_secret, "password"),
+                # SS API key → x-api-key header (settings.semantic_scholar_api_key). Injecting it
+                # here also grants the execution role read on the secret, so the daily tick + any
+                # CDK-managed task is authed (the manual :13 revision used for the one-off backfill
+                # is outside CDK and superseded once this deploys).
+                "DOCSURI_SEMANTIC_SCHOLAR_API_KEY": ecs.Secret.from_secrets_manager(
+                    ss_api_key_secret
+                ),
             },
         )
 
@@ -217,6 +247,11 @@ class IngestionStack(Stack):
 
         # Grant SQS consume + S3 read/write + Bedrock embed-model invoke to the task role
         self.queue.grant_consume_messages(task_def.task_role)
+        # The worker also PRODUCES to the main queue — on_schedule_tick / backfill_external /
+        # trigger_full_rebuild all send_job onto it. grant_consume_messages alone (receive/delete)
+        # left SendMessage as an implicitDeny, so every worker-side enqueue failed with a botocore
+        # ClientError. Grant send too.
+        self.queue.grant_send_messages(task_def.task_role)
         dlq.grant_send_messages(task_def.task_role)
         self.bucket.grant_read_write(task_def.task_role)
         task_def.add_to_task_role_policy(

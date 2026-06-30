@@ -12,9 +12,14 @@ from pydantic import ValidationError
 
 from docsuri_shared import dtos
 
-# Card may expose ONLY these 7 fields (dtos.md §1.1 = IndexRecord card projection + relevance).
-CARD_ALLOWED = {"title", "authors", "year", "arxivId", "abstractSnippet", "relevance", "arxivUrl"}
-# Internal IndexRecord fields that must never appear on a card (SEC-9).
+# Card may expose ONLY these fields (dtos.md §1.1 = IndexRecord card projection + relevance;
+# Phase 2 Q2 adds source-neutral sourceName/sourceUrl).
+CARD_ALLOWED = {
+    "title", "authors", "year", "arxivId", "abstractSnippet", "relevance", "arxivUrl",
+    "sourceName", "sourceUrl",
+}
+# Internal IndexRecord fields that must never appear on a card (SEC-9; blockRefs/sourceProvenance
+# stay internal per Phase 2 Q3 — only the derived sourceName/sourceUrl are projected).
 INDEX_INTERNAL = {
     "vector",
     "lexicalTerms",
@@ -24,6 +29,8 @@ INDEX_INTERNAL = {
     "paperId",
     "version",
     "abstract",
+    "blockRefs",
+    "sourceProvenance",
 }
 
 RESPONSE_DTOS = [
@@ -52,7 +59,7 @@ U4_OWNED_ITEM_DTOS = [
 ]
 
 
-def test_card_exposes_exactly_the_seven_fields():
+def test_card_exposes_exactly_the_projected_fields():
     assert set(dtos.ResultCardVM.model_fields) == CARD_ALLOWED
 
 

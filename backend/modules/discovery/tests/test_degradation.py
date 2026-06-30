@@ -2,15 +2,43 @@
 
 from __future__ import annotations
 
+from enum import Enum
+
 from docsuri_shared.dtos import DegradedResultDTO
 
 from discovery.api import run_search
-from discovery.domain.models import AuthSession, RequestContext
+from discovery.domain.models import AuthSession, DegradeMode, RequestContext
 from discovery.mocks import build_mock_orchestrator
+from discovery.service.orchestrator import _derive_degradation
 
 
 def _ctx() -> RequestContext:
     return RequestContext(auth_session=AuthSession(user_id="u1"), request_id="req-1")
+
+
+class _PlainEnumMode(Enum):
+    """A plain Enum whose str() is "Class.MEMBER" — what U6 might emit (BudgetState PROVISIONAL)."""
+
+    LEXICAL_ONLY = "LEXICAL_ONLY"
+
+
+class _Budget:
+    def __init__(self, degrade_mode) -> None:
+        self.degrade_mode = degrade_mode
+
+
+def test_derive_degradation_unwraps_plain_enum() -> None:
+    # BR-11: a plain Enum must map by its .value, not silently fall through to NORMAL (which it
+    # would, since str(_PlainEnumMode.LEXICAL_ONLY) == "_PlainEnumMode.LEXICAL_ONLY").
+    mode, signal = _derive_degradation(_Budget(_PlainEnumMode.LEXICAL_ONLY))
+    assert mode is DegradeMode.LEXICAL_ONLY
+    assert signal.llm_enabled is False
+
+
+def test_derive_degradation_unknown_mode_is_normal() -> None:
+    # Unrecognized / absent degrade mode → NORMAL (safe default — full functionality, no banner).
+    assert _derive_degradation(_Budget("something-unexpected"))[0] is DegradeMode.NORMAL
+    assert _derive_degradation(_Budget(None))[0] is DegradeMode.NORMAL
 
 
 def test_rerank_off_is_degraded_banner() -> None:

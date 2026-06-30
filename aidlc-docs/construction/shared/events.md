@@ -22,8 +22,8 @@
 | 인제스천 실패 신호 | 🟡 PROVISIONAL | U1.IngestFailureHandler.emitFailureSignal | U6.ObservabilityHub | at-least-once · 멱등 | RES-7, US-I2/I3 |
 | AI 인시던트(`ClassifiedIncident`) | 🟡 PROVISIONAL | U6.IncidentEventPublisher.publishIncident | Event Backbone → IR/COE·OpsDashboardService | at-least-once · 멱등(requestId 상관) | RES-11(a/b/c), US-R4 |
 | 운영 경보(`OpsAlert`) | 🟡 PROVISIONAL | U6.IncidentEventPublisher.publishAlert | Event Backbone → IR/COE | at-least-once · 멱등 | RES-7, RES-11, US-R4 |
-| `AccountDeleted` | 🟡 PROVISIONAL | U3.AccountDeletionService.purgeJob (**유예 경과 후 발행**) | U4·U2·U11 (각자 owner-scoped 파기) | at-least-once · **멱등(`accountId` 키)** · DLQ | FR-28, US-A6, SEC-8 |
-| `AccountPurged` | 🟡 PROVISIONAL | U4·U2·U11 (파기 완료 후 발행) | U3.AccountDeletionService (완료 추적) | at-least-once · 멱등(`accountId`+`unit`) | FR-28, GDPR |
+| `AccountDeleted` | 🟡 PROVISIONAL | U3.AccountDeletionService.purgeJob (**유예 경과 후 발행**) | U4·U2 (각자 owner-scoped 파기) | at-least-once · **멱등(`accountId` 키)** · DLQ | FR-28, US-A6, SEC-8 |
+| `AccountPurged` | 🟡 PROVISIONAL | U4·U2 (파기 완료 후 발행) | U3.AccountDeletionService (완료 추적) | at-least-once · 멱등(`accountId`+`unit`) | FR-28, GDPR |
 | `PaperRetractedEvent` | 🟡 PROVISIONAL | U1.VectorIndexWriter (철회 툼스톤 생성 시) | U4.LibraryService (철회 상태 마킹) | at-least-once · 멱등(`paperId`) | BR-L5 보완 |
 | `DocModelBuildRequestedEvent` | 🟡 PROVISIONAL | U7.SummaryService (doc-model 캐시 미스 시) | U1.DocModelBuilder | at-least-once · 멱등(`paperId`+`version`) | doc-model lazy build |
 
@@ -56,7 +56,7 @@ U1 인제스천 파이프라인에서 arXiv 원문이 철회(retracted)되거나
 - **생산자**: `U1.VectorIndexWriter` — 기존 논문 식별자에 대해 철회 상태가 업데이트되거나 툼스톤 레코드가 생성될 때 발행.
 - **소비자**: `U4.LibraryService` — 이벤트를 수신하여 라이브러리에 저장된 `LibraryItem` 중 해당 `paperId`를 가진 항목의 메타데이터에 `retracted: true` 플래그를 추가로 마킹. 데이터는 삭제하지 않고 보존하여 사용자 경험을 유지하면서 신뢰성 문제만 알린다.
 
-## 1b. U3 → U4·U2·U11 — `AccountDeleted` 🟡 PROVISIONAL *(계정 프로덕션화, 2026-06-24)*
+## 1b. U3 → U4·U2 — `AccountDeleted` 🟡 PROVISIONAL *(계정 프로덕션화, 2026-06-24)*
 
 계정 영구 파기(유예 경과 후 `purgeJob`) 시 발행되는 캐스케이드 파기 이벤트. **소프트 삭제 시점이 아니라 파기 시점에 발행**(유예 동안 데이터 보존·복구 가능, H2).
 
@@ -67,17 +67,17 @@ U1 인제스천 파이프라인에서 arXiv 원문이 철회(retracted)되거나
 | `eventId` | string | 발행 단위 유일 ID(at-least-once 중복 식별) |
 
 - **생산자**: `U3.AccountDeletionService.purgeJob` — `purge_after` 경과분 일괄 발행.
-- **소비자**: U4(라이브러리·저장검색)·U2(이력)·U11(연구세션) — 각자 owner-scoped 데이터 파기. **멱등(`accountId`)**, 실패 시 재시도 → **DLQ**.
-- **완료 검증(#1 리뷰, GDPR)**: 각 구독자는 자신의 파기 트랜잭션이 완료되면 `AccountPurged{accountId, unit, purgedAt}` 이벤트를 발행한다. U3는 이를 수신하여 캐스케이드 완료 상태를 추적하고, 최대 허용 지연(예: 7일) 내에 모든 필수 구독자(U2, U4, U11)의 확인이 수신되지 않으면 명시적인 `CascadeOverdue` 경보를 발생시킨다. (단순 감사 로그 의존 배제)
+- **소비자**: U4(라이브러리·저장검색)·U2(이력) — 각자 owner-scoped 데이터 파기. **멱등(`accountId`)**, 실패 시 재시도 → **DLQ**. (분리될 연구 에이전트 유닛은 생성 시 동일 구독 패턴으로 편입.)
+- **완료 검증(#1 리뷰, GDPR)**: 각 구독자는 자신의 파기 트랜잭션이 완료되면 `AccountPurged{accountId, unit, purgedAt}` 이벤트를 발행한다. U3는 이를 수신하여 캐스케이드 완료 상태를 추적하고, 최대 허용 지연(예: 7일) 내에 모든 필수 구독자(U2, U4)의 확인이 수신되지 않으면 명시적인 `CascadeOverdue` 경보를 발생시킨다. (단순 감사 로그 의존 배제)
 - **유예 기간 N**: 기본 제안 **30일**(운영 정책·법적 요건으로 조정 — Infra Design 확정).
 - **순서**: U3 파기와 캐스케이드 간 순서 보장 없음(결과적 일관성); 구독자 멱등으로 재정렬 무해.
 
 ### 1b-2. 구독자 → U3 — `AccountPurged` 🟡 PROVISIONAL
-각 구독자(U4, U2, U11)가 AccountDeleted에 따른 자원 파기를 완료한 후 발행하는 명시적 확인 신호.
+각 구독자(U4, U2)가 AccountDeleted에 따른 자원 파기를 완료한 후 발행하는 명시적 확인 신호.
 | 필드 | 타입 | 의미 |
 |---|---|---|
 | `accountId` | string | 대상 계정 ID |
-| `unit` | string | 완료한 유닛 식별자 (예: "U4", "U2", "U11") |
+| `unit` | string | 완료한 유닛 식별자 (예: "U4", "U2") |
 | `purgedAt` | timestamp | 실제 파기 완료 시각 |
 
 ---

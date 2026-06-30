@@ -3,6 +3,7 @@ import hashlib
 import logging
 import secrets
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 from docsuri_shared.events import AccountCreated
 
@@ -48,14 +49,20 @@ class SignupService:
         #  - CPU 바운드 KDF가 이벤트 루프를 차단하지 않게 한다.
         password_hash = await asyncio.to_thread(self._hasher.hash, password)
 
-        # 3. 이메일 중복 검증
+        # 3. 이메일 중복 검증 — 계정 열거 방지(S1/SEC-BR-2)
         existing_account = self._repo.get_by_email(email_vo.value)
         if existing_account:
             # 가입 충돌 신호 수집: SEC-3 PII 최소화 — 이메일 파생 식별자 대신 일반화된 'reason'만 발행한다
             # (shared/events/account-signals.schema.json 의 SignupAbuseSignal 규약).
             if self._observability_hub:
                 self._observability_hub.emit_metric("SignupAbuseSignal", 1, {"reason": "duplicate_email"})
-            raise DomainException("이미 등록된 이메일 주소입니다. 다른 이메일을 입력하거나 비밀번호 찾기를 이용해 주세요.")
+            # 구별 가능한 에러로 중복을 노출하면 가입 열거 오라클이 된다(신규=201 vs 중복=400).
+            # 대신 신규 가입과 **동일한 일반 201 응답**을 반환하고, '계정이 이미 있다'는 사실은 오직
+            # 기존 소유자 메일함으로만 안내한다(resend_verification·password-reset과 동일한 열거-안전 패턴).
+            # 반환 account_id는 영속화되지 않는 무작위 값 — 어떤 식별 정보도 노출하지 않는다.
+            await self._email_client.send_account_exists_notice_email(email_vo.value)
+            logger.info("Signup for an existing email; generic response + owner notice (enumeration-safe).")
+            return str(uuid4())
 
         # 4. PENDING 상태로 계정 생성 (BR-A5)
         account = self._repo.create_account(email_vo.value, password_hash)
@@ -75,7 +82,7 @@ class SignupService:
         )
         
         if not email_sent:
-            logger.warning(f"Verification email sending failed for {email_vo.value}, but registration transaction continues.")
+            logger.warning("Verification email sending failed, but registration transaction continues.")
 
         # 7. 관측성 이벤트/감사 로깅 (SEC-BR-1 민감정보 제외)
         if self._observability_hub:
@@ -113,7 +120,7 @@ class SignupService:
             email=email_vo.value, token=token, signup_link=verification_link_base
         )
         if not email_sent:
-            logger.warning(f"Resend verification email failed for {email_vo.value}; account remains PENDING.")
+            logger.warning("Resend verification email failed; account remains PENDING.")
         return email_sent
 
     async def verify_email(self, token: str) -> bool:

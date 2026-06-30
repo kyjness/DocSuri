@@ -35,6 +35,10 @@ class IngestionSettings(BaseModel):
     semantic_scholar_api_key: str | None = Field(
         default=None, alias="DOCSURI_SEMANTIC_SCHOLAR_API_KEY"
     )
+    # OpenAlex "polite pool" contact — sent as the `mailto` query param. Without it requests land
+    # in the throttled common pool and 429 (observed on the very first /works page). Email kept
+    # out of source; supplied via env.
+    openalex_mailto: str | None = Field(default=None, alias="DOCSURI_OPENALEX_MAILTO")
     request_timeout_seconds: float = Field(default=30.0, alias="DOCSURI_REQUEST_TIMEOUT_SECONDS")
     index_stats_ttl_seconds: float = Field(default=60.0, alias="DOCSURI_INDEX_STATS_TTL_SECONDS")
     arxiv_rate_per_second: float = Field(default=0.33, alias="DOCSURI_ARXIV_RATE_PER_SECOND")

@@ -93,6 +93,8 @@ _Resiliency 옵트인은 `requirements.md` 확정 전에 필수 요구사항 명
 - [x] **Units Generation 리뷰 — 재인셉션 페이즈 1 / U1 Corpus (2026-06-26)**: `u1-corpus-units-review-plan.md` 생성 및 `unit-of-work.md`/`unit-of-work-dependency.md`/`unit-of-work-story-map.md` 최소 개정. 결론: 신규 유닛 없음, 기존 **U1 Ingestion**이 멀티소스 Corpus 생성 파이프라인 owner 유지. U2/U7/U11은 Corpus/DocModel capability read 소비자이며 코드 의존 그래프 비순환. U1 arXiv-only 문구를 멀티소스 Corpus/DocModel/OpenSearch/S3 wording으로 정정. **다음: 리뷰 승인 후 U1 Functional Design.**
 - [x] **INCEPTION 완료 — 재인셉션 페이즈 1 / U1 Corpus (2026-06-26)**: Requirements Analysis, User Stories, Workflow Planning, U1-only Application Design amendment, Units Generation review 모두 승인 완료. PR 본문 `202606261630_PR.md` 작성. 다음 단계는 Construction의 U1 Functional Design.
 - [x] **요구사항 개정 — 신규 유닛 연구 에이전트(대화형 문헌탐색·근거형성 / 아이디어 novelty) 편입 (2026-06-24, 브랜치 `feature/research-agent`·PR #170)**: 명확화 `requirement-verification-questions-research-agent.md`(인셉션 고도 18문항; **Q5=B·Q7=A[재현성 판정 제외]·Q13=X·Q14=B·Q18=A, 나머지 권장**) → `requirements.md`에 **FR-22(대화형 근거형성·모드 A·v1)·FR-23(novelty 비교·모드 B·차기 구현)·FR-24(대화형 입력+첨부)·FR-25(결과·세션 영속+전용 네비 진입)·NFR-P5(온디맨드 비-SLA·비차단)·NFR-C1 Agent 비용 보강·QT-8(근거·novelty 인수)·§12 Agent 카브아웃·C-2 추출·비교 경계** + 성공기준 #7·추적성 9행 등재. **v1=모드 A 구현, 모드 B(novelty)는 다음 사이클**(Q4=A). 생성 산문·재현성 판정 제외(C-2). 설계 입력 `summarization-translation-pipeline.md`(line 374 "파이프라인 재사용 + 유사논문 검색 노드"). **HOW(코퍼스 확장·외부 API·출력 스키마·근거표 컬럼·LLM 모델·멀티턴·네비/세션 UI)는 Construction(Functional/NFR/Infra Design) 라운드로 이월.** 유닛 번호 미배정(마이페이지 U10·개인화추천·트렌드/알림·구독제 이후). **Q18=A → Requirements 등재 완료; User Stories는 별도 승인으로 진행, Units·Construction은 후속.**
+- [x] **재인셉션 차터/베이스라인 개정 — 에이전트 2유닛 분리 정리 + 로드맵 갱신 (2026-06-28, 브랜치 `chore/reinception-research-split`)**: 리버스 엔지니어링 결과 반영. ① **구 u11(통합 연구 에이전트) 단독 문서 일괄 제거** — D2(2026-06-26) "문헌탐색·근거형성 / 연구아이디어 **2유닛 분리**" 승인으로 단일 u11 산출물이 stale화됨: `construction/u11-research-agent/`(8) + `construction/plans/u11-research-agent-*`(4) + `inception/plans/research-agent-*`(3) + `requirement-verification-questions-research-agent.md` 삭제. ② **연구아이디어 Agent 구체 방식 삭제** — 차터 §3 페이즈 6의 상세 파이프라인(Research Gap→Novelty→Proposal ASCII)·사용 Tool 목록 제거, "방식 미확정·인셉션 질문지로 결정"으로 축소. ③ **문헌탐색·근거형성 Agent** — 구체 파이프라인/방식은 인셉션 질문지로 결정, **UI 방식(채팅 형식·모드만 다르게)은 유효**로 명시. ④ **로드맵 갱신**(차터 §3 + `code-baseline-2026-06.md` 표): 페이즈 3(요약/번역)·4(Grounding)를 **하나로 병합**(함께 진행), 이후 한 칸씩 당김(5→4 문헌탐색·6→5 연구아이디어·7→6 Corpus대량·8→7 검색품질) — **7 페이즈**(개인화 추천 페이즈는 도입 검토했다가 제외). ⑤ **담당 정정**: 페이즈 4(문헌탐색·근거형성) **본인→화랑님**, 본인 담당 페이즈(2·3·7)는 **본인→유진님** 표기, 페이즈 5(연구아이디어)=석현님 유지(석현님·준희님 등 팀원은 '님' 표기). ⑥ **5→4 의존 완화**: 연구아이디어→문헌탐색 단방향 의존을 **확정에서 "기본 제안"으로 완화**(차터 D2/D5/§4) — 의존 여부·범위는 requirements 질문지에서 확정, D5 계약게이트 병렬은 "의존 확정 시"에만 적용. ⑦ **구 U11 임베디드 항목 제거(완료)**: `requirements.md`(FR-22~25·NFR-P5·QT-8·§12 Agent 카브아웃·C-2 Agent 경계·성공기준 #7·추적성 9행), `stories.md`(에픽9 US-RA1~8·페르소나맵·추적성·푸터, 53→45 스토리), `unit-of-work*.md`(U11 행/주석/배포·코드트리, 의존 매트릭스 U11 열·행, 스토리맵 US-RA·카운트), 계정삭제 캐스케이드의 U11/연구세션 참조까지 정리. 신규 인셉션 사이클이 2유닛으로 재생성할 자리만 주석으로 표시.
+- [x] **에이전트 의존 확정(A) + 문헌탐색·근거형성 유닛 질문지·공유 계약 골격 (2026-06-28, 브랜치 `chore/reinception-research-split`)**: ① **5→4 의존 확정(A)** — 연구아이디어→문헌탐색 단방향 의존을 "기본 제안"에서 **확정**으로 back-sync(차터 D2/D5/§3·§4·§4.1·§4.2·§5), D5 계약게이트 병렬 적용. 계약 *디테일*은 4 질문지 후 동결. ② **문헌탐색·근거형성 유닛 인셉션 질문지 생성**(`requirement-verification-questions-literature-evidence-agent.md`, 담당 화랑님, Q1~Q18 초안·답변 대기) — 차터가 미룬 HOW(근거 산출물·근거표·검색 scope·코퍼스·모델·동기/비동기·세션·UI·비용·보안 + **5에 노출할 근거 출력 DTO**)를 질의. novelty/모드 B는 범위 밖(페이즈 5). ③ **공유 Tool 포트 계약 골격 갱신**(`agent-tool-port-contract-draft.md`, 구 #223[CLOSED] 초안을 페이즈 4→5 번호·의존 A·grounding 페이즈 3으로 승격): `EvidenceFormationPort.form_evidence` + `EvidenceResult/EvidenceItem/SourceRef`(IndexRecord·DocModel Block id·Summary Anchor 재사용). evidence 필드 디테일은 질문지 Q1~Q3 종속, 확정 시 `shared/`로 승격·동결 → D5 병렬 잠금 해제. ④ PR #232 리뷰 후속: personas.md/account-production Q/docmodel-pivot-plan의 폐기 ID(QT-8·FR-22) 댕글링 주석 정리, u2-discovery NFR-P5 오인용→FR-20.
 - [x] **요구사항 개정 — U3 Accounts 프로덕션화 (2026-06-24, 브랜치 `feature/u3-accounts-production`)**: 팀 보고 'login not operating' 진단 결과 U3 코드·계약·인프라 정상, 근인 = `/auth/login` **422**(`LoginRequest extra='forbid'`+필수필드 → 바디 형상 스큐)가 프런트 `normalizeHttpError` `unknown`('문제가 발생했습니다…')으로 표면화(라이브 프로브 재현: 정상 `{email,password}`→401, 추가/누락 필드→422). 단발 패치 대신 사용자 지시로 U3를 프로덕션급 확장 → Requirements Analysis 재진입. 명확화 `requirement-verification-questions-account-production.md` Q1~Q8 답변(**Q1=ABCD·Q2=A·Q3=Google·Q5=A**, 미서피스 **Q4·Q6·Q7·Q8=권장**) → `requirements.md`에 **FR-26(비밀번호 재설정: Resend·단일사용 30분 토큰·전세션 무효화·열거방지)·FR-27(소셜 OIDC, Google v1·검증이메일 자동연결·신규 ACTIVE)·FR-28(계정 라이프사이클: 비번/이메일 변경·소프트삭제+유예 비동기파기+owner-scoped 캐스케이드 U4/U2/U11)·FR-29(인증 입력 견고화: 공개 인증 추가필드 무시+4xx/422 명확 표면화 — 422 근인 해소)** + 성공기준 #8 + 추적성 행 + **BR-A8~A12 참조** 등재. 경계: U3=백엔드 엔드포인트/규칙 소유, **U10 마이페이지=프로필/설정 UI만**(타 팀원 병행·미커밋). **다음(별도 승인): User Stories(에픽 3 Accounts 보강: 재설정·소셜·라이프사이클) → Units Generation(U3 확장·U10 경계 주석) → Construction(U3 Functional/NFR/Infra Design **HOW 라운드**: OIDC 라이브러리·재설정 토큰/소셜 연결 테이블 스키마·세션 재발급·삭제 유예 잡·DB 마이그레이션 → Code Generation → Build&Test).** 리뷰 게이트 대기.
 - [x] **사용자 스토리 개정 — U3 Accounts 프로덕션화 (2026-06-24, `feature/u3-accounts-production`, 사용자 "approved & continue" 승인)**: 방법론=기존 에픽 기반·INVEST·Given/When/Then(9개 선례 동일; `inception/plans/story-generation-plan-account-production.md` 권장안 일괄 채택). `stories.md` **에픽 2 — 계정**에 5 스토리 추가(**US-A3 비밀번호 재설정·US-A4 소셜 로그인 Google OIDC·US-A5 비번/이메일 변경·US-A6 계정 삭제(소프트+유예 캐스케이드)·US-A7 인증 에러 표면화·입력 견고화**) → 총 **53 스토리/10 에픽**. 페르소나 P1/P2 매핑(US-A1..A7)·추적성(FR-26→A3·FR-27→A4·FR-28→A5/A6·FR-29→A7)·커버 푸터 갱신. FR-26~29 전수 커버. **다음(별도 승인): Units Generation(U3 확장·U10 경계 주석) → Construction(Functional/NFR/Infra Design HOW 라운드).** 리뷰 게이트 대기.
 - [x] **Units Generation 개정 — U3 Accounts 프로덕션화 (2026-06-24, `feature/u3-accounts-production`, 사용자 "approve & continue" 승인)**: 신규 유닛 없음 — 기존 **U3 확장**. `unit-of-work-story-map.md`에 US-A3~A7 Owner=U3 매핑(총 **53 스토리**·미할당 0) + U3 요약/카운트/노트 갱신. **경계(Q2=A)**: U10 마이페이지(타 팀원)=프로필/설정 UI만·U3=백엔드 `/auth/*` 소유. **신규 의존**: U3→외부 Google OIDC(콜백). **삭제 캐스케이드=이벤트 구동**(U3 `AccountDeleted` 발행 → U4/U2/U11 구독·각자 owner-scoped 파기)으로 U3↔U4/U2/U11 **순환 회피**(의존성 역전, U11↔U6 `shared/ports` 패턴)·코드 DAG 비순환 유지. 기존-유닛 확장이라 `unit-of-work.md`(유닛 정의)·dependency 매트릭스 세부는 story-map 노트로 일원화. **다음(별도 승인): Construction — U3 Functional Design(HOW: OIDC 인가코드 흐름·재설정 토큰/소셜 연결 테이블 스키마·AccountDeleted 이벤트 계약·삭제 유예 잡·DB 마이그레이션) → NFR/Infra Design → Code Generation → Build&Test.** 리뷰 게이트 대기.
@@ -522,3 +524,116 @@ _Resiliency 옵트인은 `requirements.md` 확정 전에 필수 요구사항 명
 - Scope boundary: v1 = 모드 A 구현; novelty(모드 B)는 다음 사이클(Q4=A). 생성 산문·재현성 판정 제외(C-2). HOW(코퍼스 확장·외부 API·출력 스키마·근거표 컬럼·모델·멀티턴·네비/세션 UI)는 Construction 라운드로 이월.
 - Current gate: Requirements review/approval (PR #170). Next stage (별도 승인): User Stories → Units Generation → Construction.
 - Code generated: no.
+
+## Novelty Agent — Infrastructure Design Complete / Code Generation Plan Ready
+
+- Date: 2026-06-29
+- Stage: CONSTRUCTION / Infrastructure Design + Code Generation plan gate
+- Trigger: 차별화(novelty) 형성 Agent 구현을 위한 AI-DLC 질문지 답변 반영 및 다음 단계 진행.
+- Branch: `docs/novelty-agent-questionnaire`
+- Inputs:
+  - `aidlc-docs/inception/requirements/requirement-verification-questions-novelty-agent.md`
+  - `requirement-verification-questions-answer-1.md`
+  - `FD-Answer-1.md`
+  - `nfr-answer.md`
+  - `nfr-design-review.md`
+  - `infradesign-answer.md`
+  - `aidlc-docs/construction/shared/evidence-formation-port.md`
+- Answers reflected:
+  - Q1~Q7=A, Q8=B(뉴스 검색 v1 제외), Q9~Q28=A, Q29=C, Q30=A, Q31=A, Q32=B.
+  - Functional Design Q1~Q16=A.
+  - `EvidenceItem.conflicting`/`confidence`는 PROVISIONAL optional 필드로 모델링한다.
+  - DOCX는 신규 파서 의존성이 필요하므로 v1에서 제외하고 차기 사이클 후보로 둔다.
+- Requirements updated:
+  - `aidlc-docs/inception/requirements/requirements.md`
+  - Added FR-30..35, NFR-P5, NFR-R3, QT-10, novelty Agent §12 carve-out, success criterion #9, traceability row.
+- User stories updated:
+  - `aidlc-docs/inception/user-stories/stories.md`
+  - Added Epic 9 with US-NV1..US-NV9.
+  - Updated persona/story and FR/story coverage maps.
+  - `aidlc-docs/inception/user-stories/personas.md` updated for P1/P2/OP novelty goals and ops responsibility.
+- Plans created:
+  - `aidlc-docs/inception/plans/novelty-agent-user-stories-assessment.md`
+  - `aidlc-docs/inception/plans/novelty-agent-story-generation-plan.md`
+  - `aidlc-docs/construction/plans/novelty-agent-functional-design-plan.md` (Functional Design 질문 16개, 답변 반영 완료)
+- Functional Design artifacts generated:
+  - `aidlc-docs/construction/novelty-agent/functional-design/domain-entities.md`
+  - `aidlc-docs/construction/novelty-agent/functional-design/business-logic-model.md`
+  - `aidlc-docs/construction/novelty-agent/functional-design/business-rules.md`
+  - `aidlc-docs/construction/novelty-agent/functional-design/frontend-components.md`
+- NFR Requirements plan created:
+  - `aidlc-docs/construction/plans/novelty-agent-nfr-requirements-plan.md` (NFR Requirements 질문 14개, 답변 반영 완료; Q4=B, 나머지 A)
+- NFR Requirements artifacts generated:
+  - `aidlc-docs/construction/novelty-agent/nfr-requirements/nfr-requirements.md`
+  - `aidlc-docs/construction/novelty-agent/nfr-requirements/tech-stack-decisions.md`
+- NFR Design plan created:
+  - `aidlc-docs/construction/plans/novelty-agent-nfr-design-plan.md` (NFR Design 질문 10개, 답변 반영 완료; 전부 A, Q3는 Last-Event-ID replay 제외)
+- NFR Design artifacts generated:
+  - `aidlc-docs/construction/novelty-agent/nfr-design/nfr-design-patterns.md`
+  - `aidlc-docs/construction/novelty-agent/nfr-design/logical-components.md`
+- Infrastructure Design plan created:
+  - `aidlc-docs/construction/plans/novelty-agent-infrastructure-design-plan.md` (Infrastructure Design 질문 10개, 답변 반영 완료; 전부 A)
+- Infrastructure Design artifacts generated:
+  - `aidlc-docs/construction/novelty-agent/infrastructure-design/infrastructure-design.md`
+  - `aidlc-docs/construction/novelty-agent/infrastructure-design/deployment-architecture.md`
+- Code Generation plan created:
+  - `aidlc-docs/construction/plans/novelty-agent-code-generation-plan.md` (승인 질문 답변 대기)
+- Scope boundary:
+  - novelty Agent consumes EvidenceFormationPort/SourceRef; it does not implement literature/evidence formation internals.
+  - v1 external search = GitHub + datasets; news search is next cycle.
+  - v1 manuscript upload = PDF/Markdown/TXT; DOCX is next cycle.
+  - No novelty score, "newness proven" judgment, paper prose generation, or code skeleton generation.
+- Current gate: `novelty-agent-code-generation-plan.md` 승인 질문 답변 대기.
+- Code generated: no.
+
+## Novelty Agent — Code Generation Complete
+
+- Date: 2026-06-30
+- Stage: CONSTRUCTION / Code Generation
+- Completed plan:
+  - `aidlc-docs/construction/plans/novelty-agent-code-generation-plan.md`
+- Created application code:
+  - `backend/modules/novelty/`
+  - `backend/modules/novelty/migrations/001_create_novelty_tables.sql`
+  - `backend/tests/test_novelty.py`
+- Modified application/infrastructure code:
+  - `backend/app.py`
+  - `backend/migrations/__main__.py`
+  - `backend/wiring.py`
+  - `backend/tests/test_app_shell.py`
+  - `ops/cdk/app.py`
+  - `ops/cdk/stacks/compute_stack.py`
+  - `ops/cdk/stacks/novelty_stack.py`
+- Code summary:
+  - `aidlc-docs/construction/novelty-agent/code/summary.md`
+- Verification:
+  - `python -m pytest backend/tests/test_novelty.py -q` -> 10 passed
+  - `python -m ruff check backend/modules/novelty backend/wiring.py backend/app.py backend/migrations/__main__.py backend/tests/test_novelty.py backend/tests/test_app_shell.py ops/cdk/stacks/novelty_stack.py ops/cdk/stacks/compute_stack.py ops/cdk/app.py` -> passed
+  - `python -m compileall backend/modules/novelty backend/wiring.py ops/cdk/stacks/novelty_stack.py ops/cdk/app.py` -> passed
+  - `cd ops/cdk; cdk synth` -> passed with existing CDK warnings
+  - Combined `backend/tests/test_novelty.py backend/tests/test_app_shell.py` attempted but the local shell lacks existing `docsuri_shared`, `docsuri_ops`, and discovery imports required by pre-existing app-shell assertions.
+- Current gate: Code Generation review/approval. Next recommended stage: Build and Test after approval.
+- Code generated: yes.
+
+## Novelty Agent — Build and Test Complete
+
+- Date: 2026-06-30
+- Stage: CONSTRUCTION / Build and Test
+- Code Generation approval:
+  - User approved: "`Approve code generation and proceed to Build & Test`를 진행해 주세요."
+- Build/test documents updated:
+  - `aidlc-docs/construction/build-and-test/build-instructions.md`
+  - `aidlc-docs/construction/build-and-test/unit-test-instructions.md`
+  - `aidlc-docs/construction/build-and-test/integration-test-instructions.md`
+  - `aidlc-docs/construction/build-and-test/performance-test-instructions.md`
+  - `aidlc-docs/construction/build-and-test/contract-test-instructions.md`
+  - `aidlc-docs/construction/build-and-test/security-test-instructions.md`
+  - `aidlc-docs/construction/build-and-test/build-and-test-summary.md`
+- Verification:
+  - `python -m pytest backend/tests/test_novelty.py -q` -> 10 passed
+  - `$env:PYTHONPATH='shared/python/src;ops/src;backend/modules/discovery/src;backend/modules/summarization/src'; python -m pytest backend/tests/test_novelty.py backend/tests/test_app_shell.py -q` -> 24 passed
+  - `$env:PYTHONPATH='shared/python/src;ops/src;backend/modules/discovery/src;backend/modules/summarization/src'; python -m pytest backend/tests -q` -> passed with 1 skipped test after installing declared `pytest-asyncio` dependency
+  - `python -m ruff check backend/modules/novelty backend/wiring.py backend/app.py backend/migrations/__main__.py backend/tests/test_novelty.py backend/tests/test_app_shell.py ops/cdk/stacks/novelty_stack.py ops/cdk/stacks/compute_stack.py ops/cdk/app.py` -> passed
+  - `python -m compileall backend/modules/novelty backend/wiring.py backend/app.py ops/cdk/stacks/novelty_stack.py ops/cdk/stacks/compute_stack.py ops/cdk/app.py` -> passed
+  - `cd ops/cdk; cdk synth` -> passed with existing CDK warnings
+- Current gate: Build and Test review/approval. Next stage per AI-DLC is Operations placeholder.

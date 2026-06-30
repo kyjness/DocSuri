@@ -10,7 +10,13 @@ raises ``IndexUnavailable`` (OpenSearch = one store for both k-NN and BM25) → 
 
 from __future__ import annotations
 
-from .models import Candidate, CandidateSet, QueryPlan, RetrievalMode
+from .models import Candidate, CandidateSet, QueryPlan, RetrievalMode, SearchScope
+
+# BM25 field sets by scope. LITE matches the paper's "card" text only (title+abstract) for a
+# fast, high-precision human search; FULL adds the per-chunk body (``lexicalTerms``) so the
+# agent can find concepts that appear only deep in the body. Trace: FR-2.
+_LITE_FIELDS = ("title", "abstract")
+_FULL_FIELDS = ("title", "abstract", "lexicalTerms")
 
 # k-NN/BM25 candidate breadth before fusion (> top-N so ranking has headroom). NFR/Infra tune.
 # Raised for full-body multi-chunk indexing: one paper now spans many chunks, so a fixed
@@ -28,11 +34,20 @@ class HybridRetriever:
 
     def retrieve(self, plan: QueryPlan, degradation) -> CandidateSet:  # noqa: ARG002
         result_lists = []
+        full = plan.scope is SearchScope.FULL
+        # Both scopes run k-NN (cross-lingual); scope changes only its breadth. LITE restricts the
+        # vector search to abstract chunks (one per paper — fast, paper-level semantic match);
+        # FULL searches every chunk (body included) for deep recall.
         if plan.mode is RetrievalMode.HYBRID and plan.embedding_vector is not None:
             result_lists.append(
-                self._vector_store.knn_search(plan.embedding_vector, RETRIEVAL_TOP_K)
+                self._vector_store.knn_search(
+                    plan.embedding_vector, RETRIEVAL_TOP_K, abstract_only=not full
+                )
             )
-        result_lists.append(self._lexical_index.bm25_search(plan.lexical_terms, RETRIEVAL_TOP_K))
+        fields = _FULL_FIELDS if full else _LITE_FIELDS
+        result_lists.append(
+            self._lexical_index.bm25_search(plan.lexical_terms, RETRIEVAL_TOP_K, fields=fields)
+        )
 
         fused = _reciprocal_rank_fusion(result_lists)
         mode = RetrievalMode.HYBRID if len(result_lists) > 1 else RetrievalMode.LEXICAL_ONLY

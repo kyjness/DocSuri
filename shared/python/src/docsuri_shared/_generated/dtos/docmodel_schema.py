@@ -111,35 +111,6 @@ class TableCell(BaseModel):
     rowspan: int | None = Field(None, description='Row span (default 1).', ge=1)
 
 
-class FormulaBlock(BaseModel):
-    """
-    A display (block-level) equation as LaTeX. Inline math lives in ParagraphBlock.text instead. Trace: D1.
-    """
-
-    model_config = ConfigDict(
-        extra='forbid',
-    )
-    id: str = Field(
-        ...,
-        description='Deterministic block id / anchor handle, e.g. "s3.eq2". Trace: Q2-decision.',
-    )
-    type: Literal['formula']
-    latex: str = Field(
-        ...,
-        description='LaTeX (converted from source MathML when needed; HTML-borne <math> coverage ~94% per Q1 spike). Rendered by KaTeX/MathJax. Trace: D1, TD-16.',
-    )
-    display: bool | None = Field(
-        None,
-        description='Always true for a FormulaBlock (display/block equation); present for renderer clarity.',
-    )
-    anchorLabel: str | None = Field(
-        None, description='Equation number as in the paper, e.g. "(3)".'
-    )
-    mathmlSource: str | None = Field(
-        None, description='Optional original MathML, retained for fidelity/debugging.'
-    )
-
-
 class ListItem(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -166,11 +137,12 @@ class CodeBlock(BaseModel):
 
 class Type(StrEnum):
     """
-    Asset kind.
+    Asset kind. "formula" is a page-crop equation image used only as the FormulaBlock fallback when no LaTeX is recoverable (PDF/GROBID path). Trace: FR-17, TD-12.
     """
 
     figure = 'figure'
     table = 'table'
+    formula = 'formula'
 
 
 class SourceMode(StrEnum):
@@ -194,7 +166,10 @@ class AssetRef(BaseModel):
         ...,
         description='Deterministic asset id keying assets/{paperId}/{version}/{assetId}.webp and the paper_asset row. Trace: FR-17.',
     )
-    type: Type = Field(..., description='Asset kind.')
+    type: Type = Field(
+        ...,
+        description='Asset kind. "formula" is a page-crop equation image used only as the FormulaBlock fallback when no LaTeX is recoverable (PDF/GROBID path). Trace: FR-17, TD-12.',
+    )
     ordinal: int = Field(
         ..., description='Display order within its type (figure/table). Trace: FR-17.'
     )
@@ -237,6 +212,39 @@ class TableRow(BaseModel):
         extra='forbid',
     )
     cells: list[TableCell]
+
+
+class FormulaBlock(BaseModel):
+    """
+    A display (block-level) equation. LaTeX is preferred (KaTeX renders it; agents read it verbatim and it is indexed for search). When the source carries no recoverable LaTeX (the PDF/GROBID path: a formula is rendered pixels, not LaTeX source) the equation degrades to a page-crop image via `assetRef` — display-only, not searchable. Exactly one of `latex` / `assetRef` is the render source; `latex` wins when both are present. Inline math lives in ParagraphBlock.text instead. Trace: D1, TD-16.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    id: str = Field(
+        ...,
+        description='Deterministic block id / anchor handle, e.g. "s3.eq2". Trace: Q2-decision.',
+    )
+    type: Literal['formula']
+    latex: str | None = Field(
+        None,
+        description='LaTeX (converted from source MathML when needed; HTML-borne <math> coverage ~94% per Q1 spike). Rendered by KaTeX/MathJax. Absent on the PDF/GROBID path when no LaTeX is recoverable — `assetRef` carries the image instead. Trace: D1, TD-16.',
+    )
+    assetRef: AssetRef | None = Field(
+        None,
+        description='Page-crop image fallback for a formula with no recoverable LaTeX (PDF/GROBID path). assetRef.type is "formula". Display-only — not indexed for search. Trace: FR-17, TD-12.',
+    )
+    display: bool | None = Field(
+        None,
+        description='Always true for a FormulaBlock (display/block equation); present for renderer clarity.',
+    )
+    anchorLabel: str | None = Field(
+        None, description='Equation number as in the paper, e.g. "(3)".'
+    )
+    mathmlSource: str | None = Field(
+        None, description='Optional original MathML, retained for fidelity/debugging.'
+    )
 
 
 class FigureBlock(BaseModel):
@@ -295,6 +303,10 @@ class DocModelMeta(BaseModel):
     abstract: str | None = Field(
         None,
         description='Optional abstract plain text (translate task uses the abstract directly; rich view shows it). Trace: BR-S2.',
+    )
+    macros: dict[str, str] | None = Field(
+        None,
+        description='Optional KaTeX macro map ("\\\\name" -> expansion) extracted from the e-print LaTeX preamble (\\newcommand / \\providecommand / \\DeclareMathOperator / \\def). The renderer passes it to KaTeX so author-defined commands in formula LaTeX resolve instead of rendering as red unsupported-command errors. Additive/optional — absent when no e-print preamble was available; consumers ignore it if unset. Trace: BR-30, TD-16.',
     )
     provenance: Provenance
 
@@ -370,7 +382,7 @@ class Section(BaseModel):
 
 class DocModel(BaseModel):
     """
-    The structured paper artifact: fullText plus a nested section tree of typed content blocks. fullText is the complete reading-order text projection of the paper. Tables are DATA (rows/cols), formulas are LaTeX, figures/table-images are webp references by assetId (pixels are NOT embedded — base64 bloat avoided; reuse assets/{paperId}/{version}/{assetId}.webp). Deterministic: same source HTML -> same DocModel (LLM extraction forbidden). Trace: D1, D8, P7.
+    The structured paper artifact: fullText plus a nested section tree of typed content blocks. fullText is the complete reading-order text projection of the paper. Tables are DATA (rows/cols), formulas are LaTeX (page-crop image fallback when no LaTeX is recoverable — PDF/GROBID path), figures/table-images are webp references by assetId (pixels are NOT embedded — base64 bloat avoided; reuse assets/{paperId}/{version}/{assetId}.webp). Deterministic: same source HTML -> same DocModel (LLM extraction forbidden). Trace: D1, D8, P7.
     """
 
     model_config = ConfigDict(

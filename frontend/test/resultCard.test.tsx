@@ -54,4 +54,35 @@ describe('ResultCard', () => {
     expect(title).toHaveTextContent('<img src=x onerror=alert(1)>');
     expect(title.querySelector('img')).toBeNull();
   });
+
+  it('shows the source name and an external link-out for a non-arXiv result (Q2)', () => {
+    render(
+      <ResultCard
+        card={{
+          ...base,
+          sourceName: 'Semantic Scholar',
+          sourceUrl: 'https://www.semanticscholar.org/paper/abc',
+        }}
+      />,
+    );
+    const source = screen.getByTestId('result-card-source');
+    expect(source).toHaveTextContent('Semantic Scholar');
+    expect(source).toHaveAttribute('href', 'https://www.semanticscholar.org/paper/abc');
+    expect(source).toHaveAttribute('rel', 'noopener noreferrer');
+    expect(source).toHaveAttribute('target', '_blank');
+  });
+
+  it('keeps the arXiv label and links out via sourceUrl when present (Q2)', () => {
+    render(<ResultCard card={{ ...base, sourceName: 'arXiv', sourceUrl: base.arxivUrl }} />);
+    const source = screen.getByTestId('result-card-arxiv-id');
+    expect(source).toHaveTextContent('arXiv:1706.03762v5');
+    expect(source).toHaveAttribute('href', base.arxivUrl);
+  });
+
+  it('does not render a hostile link scheme as an href (external-link safety)', () => {
+    render(<ResultCard card={{ ...base, sourceName: 'OpenAlex', sourceUrl: 'javascript:alert(1)' }} />);
+    const source = screen.getByTestId('result-card-source');
+    expect(source).toHaveTextContent('OpenAlex');
+    expect(source.tagName).toBe('SPAN'); // unsafe scheme dropped → plain span, not an <a>
+  });
 });

@@ -5,6 +5,8 @@
 **원칙**: 기술 무관 결정·검증·제약. 수치(타임아웃·RRF 파라미터·topN 외)는 NFR Requirements 확정.
 **프로덕션 스코프**: 단일 프로덕션 트랙(데모 폐기). cross-lingual(한국어 질의·TD-3) 전제.
 
+> **페이즈 2 개정(2026-06-29, 재인셉션)**: 멀티소스·DocModel(Block) 인덱스 소비 반영 — BR-18(근거 전제) 소스 중립화·BR-15(SEC-9 비노출)에 `blockRefs`/`sourceProvenance` 추가·BR-4b(검색 폭 scope·#236) 신설. Grounding(Search) 단일권위(BR-7·INV-1)·개인화 boost(BR-5·FR-20)는 **기존 규칙 유지**(변경 없음).
+
 ---
 
 ## 1. 비즈니스 규칙 (BR)
@@ -15,7 +17,8 @@
 | **BR-2 (질의 정규화·결정성)** | `normalize` = 트림 + 공백 collapse + **유니코드 NFC**. 결정적·멱등(PBT-02). **한국어 포함 다국어 허용**(스크립트 allowlist 금지 — cross-lingual 보호). | FR-1, PBT-02, Q7=A, TD-3 |
 | **BR-3 (질의 확장)** | `expand` = 질의 임베딩(**공유 VectorSpec, reader=`search_query`**, cross-lingual KR↔EN) + lexical 텀(토큰화). **동의어/LLM 재작성 없음**(결정성·NFR-C1). `llmEnabled=false`→임베딩 생략·lexical-only. | FR-2, NFR-C1, Q1=A, TD-3 |
 | **BR-4 (하이브리드 병합·디덥)** | 벡터 ANN + lexical BM25 후보를 **RRF 병합**; **PaperId 단위 디덥**(같은 논문 복수 청크→최상위 1건). 멱등·결과셋 보존(PBT-07). | FR-2, PBT-07, Q2=A |
-| **BR-5 (랭킹·상위 N)** | 병합 점수에 U9 `PersonalizationDecision`의 부스트(가산적, 최대 총합 0.2 한도 내)를 적용하여 내림차순 정렬 · **상위 N=20** 절단(N 미만=가용분만, 패딩/오류 없음). **LLM 리랭킹 없음(baseline)**. 순서 안정성(PBT-03). | FR-3, QT-2, Q3=A, Q10=A, NFR-P5 |
+| **BR-4b (검색 폭 scope)** *(2026-06-29 — #236/페이즈 2)* | `SearchRequest.scope`: `lite`(기본·사람 검색창)=제목+초록 BM25 + 초록 chunk k-NN(저지연·**NFR-P1 SLA 대상**); `full`(에이전트 심층)=본문 chunk 포함 하이브리드 고recall(**비-SLA**). 부재⇒lite. RRF 병합·PaperId 디덥(BR-4)은 scope 무관 동일. | FR-2, NFR-P1, #236 |
+| **BR-5 (랭킹·상위 N)** | 병합 점수에 U9 `PersonalizationDecision`의 부스트(가산적, 최대 총합 0.2 한도 내)를 적용하여 내림차순 정렬 · **상위 N=20** 절단(N 미만=가용분만, 패딩/오류 없음). **LLM 리랭킹 없음(baseline)**. 순서 안정성(PBT-03). | FR-3, QT-2, Q3=A, Q10=A, FR-20 |
 | **BR-6 (relevance 표시값)** | 카드 `relevance`=**순위 파생 비-raw 표시 신호**. **내부 raw/RRF 점수·디버그 비노출(SEC-9)**. 구체 표시 형태는 U5 UI 연동. | FR-3/4, SEC-9, Q3=A |
 | **BR-7 (근거화 단일 권위 — INV-1)** | U2는 `enforce`를 **호출하지 않는다**. 유일 invocation = U6 게이트웨이 post-handler. U2는 `toGroundingInput`(정형)·`mapDecision`(verdict 매핑)만 — 독자 차단·인시던트 발행 없음. | FR-5, US-D5, INV-1 |
 | **BR-8 (verdict 매핑)** | `verdict=pass`→GroundedResults; `verdict=abstain\|block`→AbstainResult(날조 0건). 내부 위반 상세 비노출. | FR-5, US-D5/D6, Q4=A |
@@ -25,10 +28,10 @@
 | **BR-12 (비용 단일 권위)** | U2는 비용/예산을 **독자 판정하지 않는다**. `getBudgetState` 조회·분기만. 누적/임계/서킷 전이는 U6 내부. | NFR-C1, Q6=A, Q8=A |
 | **BR-13 (인증 전제)** | `POST /api/search`는 **인증 필수**(deny-by-default, SEC-8). authn 강제는 U6 게이트웨이; U2는 `RequestContext.authSession` 신뢰·userId 사용(SearchExecuted). 미인증은 게이트웨이 401. | SEC-8, FR-10, Q5=A |
 | **BR-14 (SearchExecuted 비차단)** | 성공 응답 **후** `publishSearchExecuted(userId, query, timestamp, resultCount)` 발행. **fire-and-forget**: 발행 실패는 응답에 무영향(관측 로그만), NFR-P1 경로 밖. | FR-10, NFR-P1, US-L3, Q11=A |
-| **BR-15 (SEC-9 비노출 — INV-2)** | 외부 DTO에 내부 필드(owner userId·raw/RRF 점수·디버그·트레이스·`vector`/`lexicalTerms`/`chunkId`/`section`·전체 `abstract`) 비노출. 카드는 §domain-entities §5.1의 7필드만. | SEC-9 |
+| **BR-15 (SEC-9 비노출 — INV-2)** *(2026-06-29 개정 — 페이즈 2)* | 외부 DTO에 내부 필드(owner userId·raw/RRF 점수·디버그·트레이스·`vector`/`lexicalTerms`/`chunkId`/`section`/**`blockRefs`/`sourceProvenance`**·전체 `abstract`) 비노출(Q3: `blockRefs`/`sourceProvenance` 외부 노출 페이즈 3·4 이월). 카드는 §domain-entities §5.1(페이즈 2: 소스 중립 `sourceName`/`sourceUrl` 추가 투영). | SEC-9 |
 | **BR-16 (fail-closed — INV-3)** | 모든 외부 어댑터 호출(expand/retrieve) 타임아웃·서킷(RES-9, 수치 NFR). 처리 중 예외는 전역 핸들러가 **일반화 비기술 에러**로 매핑(스택/내부 식별자 비노출), 권한·검증 우회 없음. | SEC-15, NFR-R1, FR-11 |
 | **BR-17 (관측성)** | 단계 지연·검색/근거화 건강도·degradeMode를 `ObservabilityHub.emit*` 제출(requestId 상관). **PII/시크릿 금지(SEC-3)** — 질의 원문 로깅 정책은 SEC-3 준수. | NFR-O1, SEC-3 |
-| **BR-18 (FR-5 근거화 전제)** | 노출되는 모든 카드는 **실재 IndexRecord**(해소 가능 arXiv ID/링크)에 매핑. 후보 단계부터 실재 레코드 참조 보유 — 날조 0건(QT-1, U6 enforce 검증). | FR-5, QT-1 |
+| **BR-18 (FR-5 근거화 전제)** *(2026-06-29 개정 — 페이즈 2/Q2)* | 노출되는 모든 카드는 **실재 IndexRecord**(**소스 중립** 해소 가능 ID/링크 — arXiv=arxivUrl·비-arXiv=sourceUrl/DOI)에 매핑. 후보 단계부터 실재 레코드 참조 보유 — 날조 0건(QT-1, U6 enforce 검증). U6 enforce의 실재 링크 검증도 소스 중립으로 일반화(단일권위 유지, BR-7). | FR-5, QT-1 |
 
 ---
 
@@ -96,7 +99,7 @@
 
 ## 6. 공유 계약 정합 주석
 
-- **VectorSpec(reader)**: U2.QueryUnderstandingExpander(`expand`, **reader=`search_query`**)는 U1.EmbeddingGatewayAdapter(writer=`search_document`)와 **동일 임베딩 공간**(Cohere Embed Multilingual v3·1024·코사인·specVersion 일치). cross-lingual(KR↔EN). 변경=전체 재임베딩(단방향).
-- **VectorSpec 런타임 검증(Reader 측)**: 혼합 임베딩 공간으로 인한 시맨틱 오염을 방지하기 위해 `HybridRetriever.retrieve()`는 반환된 레코드의 `modelVer` 메타데이터를 확인한다. 컴파일된 `specVersion`과 불일치할 경우 런타임 호환성 에러로 간주하여 어휘(Lexical) 기반 검색 모드로 저하(fallback) 처리하고 모니터링 시스템에 경보를 전송한다.
+- **VectorSpec(reader)**: U2.QueryUnderstandingExpander(`expand`, **reader=`search_query`**)는 U1.EmbeddingGatewayAdapter(writer=`search_document`)와 **동일 임베딩 공간**(**Cohere Embed Multilingual v4·1024**·코사인·specVersion v2 일치). cross-lingual(KR↔EN). 변경=전체 재임베딩(단방향). _(2026-06-29 정정: v3→v4 — NFR-S2 반영.)_
+- **VectorSpec 런타임 검증(Reader 측)**: 혼합 임베딩 공간으로 인한 시맨틱 오염을 방지하기 위해 `HybridRetriever`는 **인덱스 open(리트리버 초기화) 시점에 활성 인덱스 manifest의 `specVersion`을 컴파일된 reader `specVersion`과 1회 검증**한다. 불일치 시 런타임 호환성 에러로 간주하여 어휘(Lexical) 기반 검색 모드로 저하(fallback) 처리하고 모니터링 시스템에 경보를 전송한다. per-record `modelVer` 재검사는 사용하지 않는다 — alias는 candidate index가 `assert_same_space()`(specVersion·model·dimensions·distanceMetric·normalize)를 통과한 뒤에만 전환되므로 활성 인덱스는 항상 동일-공간이고, `modelVer` 단일 필드는 dim/metric/normalize 변경을 못 잡는 부분 가드라 cutover 불변식과 중복이다. (N1 결정 2026-06-28, @kyjness; `shared/vector-spec.md §4` FROZEN 불변 · 근거=`operations/code-reviews/2026-06-28/designreview-audit.md`.)
 - **search DTO 생산 / SearchExecutedEvent 생산 / ports 의존**: 형상·시그니처는 `shared/` SSOT 정합. 가산적 진화만(필드 추가=하위호환). 단일 권위(근거화·비용=U6)·재구현 금지.
 - **단일 reader 경계**: U2.HybridRetriever만 공유 벡터 인덱스를 읽는다(U1=단일 writer).

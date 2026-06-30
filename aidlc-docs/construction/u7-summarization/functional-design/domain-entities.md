@@ -38,7 +38,7 @@
 | `task` | `enum{summary, translate}` | 요약 또는 번역 | §5 |
 | `targetLang` | `enum{ko}` | 번역 대상 언어(v1 한국어 단일, Q7=A) | FR-13 |
 | `persona` | `enum{expert, beginner}?` | 요약 수준(생성 변형, 논문당 최대 2벌) | FR-14, Q9 |
-| `view` | `enum{full, tldr, results, method, reviewer}?` | 표시 프리셋(생성 무관·클라이언트 렌더 힌트) | §9.2, Q9 |
+| ~~`view`~~ | — | **폐기(Q9 / 코드 부재)** — `view` 요청 필드 없음. 표시 슬라이싱은 U5 클라이언트 렌더(생성·캐시 무관) | §9.2, Q9 |
 
 > `view`는 **생성 신원이 아니다**(캐시 키 미포함). 같은 §3 출력의 클라이언트 렌더 변형(재생성 0). 서버는 풍부한 전체 출력을 생산하고 `view` 적용은 U5.
 

@@ -12,7 +12,8 @@ export interface DocModelRequest {
 /** A reference to a stored image asset (assetId only — never a url/object_ref, SEC-9). */
 export interface DocAssetRef {
   assetId: string;
-  type: 'figure' | 'table';
+  /** "formula" is a page-crop equation image used only as the FormulaBlock fallback (PDF path). */
+  type: 'figure' | 'table' | 'formula';
   ordinal: number;
   caption?: string;
   sourceMode?: 'structured' | 'page-crop';
@@ -46,11 +47,17 @@ export interface DocTableBlock {
   assetRef?: DocAssetRef;
 }
 
-/** A display (block-level) equation as LaTeX (rendered by KaTeX). */
+/**
+ * A display (block-level) equation. LaTeX is preferred (rendered by KaTeX, searchable);
+ * when the source has no recoverable LaTeX (PDF/GROBID path) it degrades to a page-crop
+ * image via `assetRef` (display-only). Exactly one of `latex` / `assetRef` is the render
+ * source; `latex` wins when both are present.
+ */
 export interface DocFormulaBlock {
   id: string;
   type: 'formula';
-  latex: string;
+  latex?: string;
+  assetRef?: DocAssetRef;
   display?: boolean;
   anchorLabel?: string;
 }
@@ -110,6 +117,9 @@ export interface DocModelMeta {
   version: number;
   title: string;
   abstract?: string;
+  /** KaTeX macro map (`\name` -> expansion) from the e-print preamble, passed to the renderer
+   *  so author-defined commands resolve instead of rendering as unsupported-command errors. */
+  macros?: Record<string, string>;
   provenance: DocProvenance;
 }
 

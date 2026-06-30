@@ -97,7 +97,10 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
                 timeout_seconds=settings.request_timeout_seconds,
             )
         if SourceName.OPENALEX in enabled_sources:
-            openalex = OpenAlexCorpusSource(timeout_seconds=settings.request_timeout_seconds)
+            openalex = OpenAlexCorpusSource(
+                timeout_seconds=settings.request_timeout_seconds,
+                mailto=settings.openalex_mailto,
+            )
     corpus_sources = CorpusSourceAdapterSet(
         arxiv=arxiv,
         grobid=grobid,
@@ -149,6 +152,10 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
             bucket=settings.s3_bucket or "",
             kms_key_id=settings.asset_kms_key_id,
         ),
+        # Reuse the asset e-print source (when assets are enabled) to read the author's LaTeX
+        # preamble for KaTeX macros — best-effort, so None (assets off) just omits macros.
+        eprint_source=asset_source,
+        observability=observability,
     )
     pipeline = IngestionPipelineService(
         arxiv=arxiv,

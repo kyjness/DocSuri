@@ -42,6 +42,31 @@ const META: Record<string, PaperMetaVM> = {
       'Deeper neural networks are more difficult to train. We present a residual learning framework to ease the training of networks that are substantially deeper than those used previously. We explicitly reformulate the layers as learning residual functions with reference to the layer inputs.',
     arxivUrl: 'https://arxiv.org/abs/1512.03385',
   },
+  // Phase 2 (Q2): detail metadata for the multi-source demo cards (searchFixtures) so a click
+  // through resolves real metadata, not the generic placeholder. These papers are cross-listed
+  // on arXiv, so the detail viewer (arXiv-based) renders them.
+  '2005.14165v4': {
+    arxivId: '2005.14165v4',
+    title: 'Language Models are Few-Shot Learners',
+    authors: ['Tom B. Brown', 'Benjamin Mann', 'Nick Ryder', 'Melanie Subbiah'],
+    year: 2020,
+    abstract:
+      'Recent work has demonstrated substantial gains on many NLP tasks and benchmarks by pre-training on a large corpus of text followed by fine-tuning on a specific task. We show that scaling up language models greatly improves task-agnostic, few-shot performance, sometimes even reaching competitiveness with prior state-of-the-art fine-tuning approaches.',
+    arxivUrl: 'https://arxiv.org/abs/2005.14165',
+    sourceName: 'Semantic Scholar',
+    sourceUrl: 'https://www.semanticscholar.org/paper/6b85b63579a916f705a8e10a49bd8d849d91b1fc',
+  },
+  '2006.11239v2': {
+    arxivId: '2006.11239v2',
+    title: 'Denoising Diffusion Probabilistic Models',
+    authors: ['Jonathan Ho', 'Ajay Jain', 'Pieter Abbeel'],
+    year: 2020,
+    abstract:
+      'We present high quality image synthesis results using diffusion probabilistic models, a class of latent variable models inspired by considerations from nonequilibrium thermodynamics. Our best results are obtained by training on a weighted variational bound designed according to a novel connection between diffusion probabilistic models and denoising score matching with Langevin dynamics.',
+    arxivUrl: 'https://arxiv.org/abs/2006.11239',
+    sourceName: 'OpenAlex',
+    sourceUrl: 'https://openalex.org/W3030163527',
+  },
 };
 
 /**

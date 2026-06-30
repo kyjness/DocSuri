@@ -16,6 +16,7 @@ import re
 from docsuri_shared.dtos import DocModel
 
 from .models import RefinedSource, Section, SourceText, Table
+from .token_estimate import estimate_tokens
 
 # A references/bibliography heading ends the body (everything after is noise).
 _REFERENCES_RE = re.compile(r"^\s*(references|bibliography)\s*$", re.IGNORECASE | re.MULTILINE)
@@ -53,11 +54,6 @@ def _strip_noise_lines(text: str) -> str:
             continue
         kept.append(line)
     return "\n".join(kept)
-
-
-def _estimate_tokens(text: str) -> int:
-    """Cheap, deterministic token estimate (~4 chars/token). Real caps are a runtime tune."""
-    return max(1, len(text) // 4)
 
 
 def _clean(text: str) -> str:
@@ -124,8 +120,12 @@ class InputRefiner:
             if kind == "paragraph":
                 emit(b.text.strip() + "\n\n")
             elif kind == "formula":
-                formulas.append(_clean(b.latex))
-                emit(b.latex + "\n\n")
+                # Image-only formulas (PDF/GROBID page-crop fallback) carry no LaTeX — they are
+                # display-only with no text to summarize, so skip them here. Guarding avoids a
+                # TypeError on the optional latex field (re.sub/str concat against None).
+                if b.latex:
+                    formulas.append(_clean(b.latex))
+                    emit(b.latex + "\n\n")
             elif kind == "table":
                 label = _clean(b.anchorLabel or "")
                 caption = _clean(b.caption or "")
@@ -159,7 +159,7 @@ class InputRefiner:
             tables=tuple(tables),
             captions=tuple(captions),
             formulas=tuple(formulas),
-            token_count=_estimate_tokens(body),
+            token_count=estimate_tokens(body),
         )
 
     def refine(self, raw: str) -> RefinedSource:
@@ -185,7 +185,7 @@ class InputRefiner:
             captions=captions,
             formulas=formulas,
             preserved=preserved,
-            token_count=_estimate_tokens(body),
+            token_count=estimate_tokens(body),
         )
 
     @staticmethod

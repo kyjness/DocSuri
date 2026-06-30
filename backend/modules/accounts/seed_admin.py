@@ -70,7 +70,12 @@ def main() -> int:
         logger.error("DOCSURI_ADMIN_EMAIL · DOCSURI_ADMIN_PASSWORD · DATABASE_URL 환경변수가 모두 필요합니다.")
         return 2
     engine = create_engine(database_url)
-    Base.metadata.create_all(engine)  # 테이블 부재 시 생성(로컬/초기). 프로덕션은 마이그레이션 선행.
+    # N5: create_all은 ORM 모델에서 테이블을 만들어 SQL 마이그레이션과 드리프트할 수 있다(프로덕션은
+    # 마이그레이션이 선행). 로컬/초기 부트스트랩(ENV=local) 또는 명시 opt-in일 때만 수행한다.
+    env = os.getenv("ENV", "local").strip().lower()
+    create_all_optin = os.getenv("DOCSURI_SEED_CREATE_ALL", "").strip().lower() in {"1", "true", "yes", "on"}
+    if env == "local" or create_all_optin:
+        Base.metadata.create_all(engine)
     session = sessionmaker(bind=engine)()
     try:
         account_id = seed_admin(session, email, password)

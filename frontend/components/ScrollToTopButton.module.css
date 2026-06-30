@@ -1,0 +1,52 @@
+/* Floating "맨 위로" control for the long reading surfaces (본문 / 본문 번역). Portalled to <body>
+   and pinned (position is set inline from the phone-frame corner) so it stays fixed while the
+   content scrolls. Transparent background — only the glyph shows — coloured by the active theme
+   so it reads on both light and dark surfaces; a soft drop-shadow keeps it legible over busy
+   content, and a faint surface tint appears on hover/focus for affordance. */
+.btn {
+  position: fixed;
+  z-index: 900; /* below the zoom overlay (1000) */
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.625rem;
+  line-height: 1;
+  color: var(--color-text);
+  background: transparent;
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.4));
+  /* Hidden until the reader scrolls down; fade + slide in. */
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(8px);
+  transition:
+    opacity 0.18s ease,
+    transform 0.18s ease,
+    visibility 0.18s ease,
+    background-color 0.15s ease;
+}
+
+.btn:hover,
+.btn:focus-visible {
+  background: var(--color-surface);
+}
+
+.visible {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn {
+    transition:
+      opacity 0.18s ease,
+      visibility 0.18s ease,
+      background-color 0.15s ease;
+    transform: none;
+  }
+}

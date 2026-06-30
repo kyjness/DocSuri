@@ -10,6 +10,7 @@ Returns a ``(system, user)`` pair — adapters map it onto the Bedrock message f
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 
 from ..domain.models import (
@@ -21,11 +22,36 @@ from ..domain.models import (
     TranslationSegment,
 )
 
+# Our prompt-isolation delimiter tags. External paper text is wrapped in these and declared DATA,
+# but a body / segment that itself contains a literal ``</paper>`` (or ``</segments>``) could close
+# the data region early and have whatever follows read as instructions. Strip the tags from the
+# data before wrapping so the breakout is impossible — defense-in-depth behind the "treat as data"
+# instruction (Prompt Injection). Real papers don't use these XML-ish tags as content, so removal
+# is loss-free.
+_DELIM_RE = re.compile(r"</?(?:paper|segments)\s*>", re.IGNORECASE)
+
+
+def _strip_delimiters(text: str) -> str:
+    return _DELIM_RE.sub("", text)
+
+# Persona only shapes WORDING/treatment within the §3 fields — the JSON structure is identical
+# for both (no extra/missing fields). All grounding rules in the system prompt still apply, so
+# neither persona may add facts beyond the provided text.
 _PERSONA_RULES = {
-    Persona.EXPERT: "전문용어·약어·수식을 유지한다.",
+    Persona.EXPERT: (
+        "독자는 해당 분야 전문가다.\n"
+        "  · 논문의 전문용어·약어·수식·지표 이름을 원문 그대로 쓴다(음차·치환·생략 금지).\n"
+        "  · 방법론·모델·데이터셋 이름은 줄이지 말고 정확히 표기한다.\n"
+        "  · 비유·배경 설명은 넣지 말고 핵심만 압축한다.\n"
+        "  · 정량 결과는 수치·단위를 원문 그대로 인용한다."
+    ),
     Persona.BEGINNER: (
-        "전문용어는 첫 등장 시 괄호로 설명하고, 약어는 첫 등장 시 원문을 전개하며, "
-        "수식은 자연어 해설을 덧붙인다(이후 등장은 원어 유지)."
+        "독자는 입문자(학부 수준)다.\n"
+        "  · 전문용어는 첫 등장 시 괄호로 쉬운 설명을 덧붙이고, 약어는 첫 등장 시 원문을 전개한다"
+        "(이후 등장은 원어 유지 — 음차·치환하지 않는다).\n"
+        "  · 수식·지표는 무엇을 뜻하는지 자연어로 풀어 준다.\n"
+        "  · 직관적 비유는 이해에 필요한 경우에만 쓰고, 부정확하거나 과도한 비유는 피한다.\n"
+        "  · 쉬운 문장을 쓰되, 원문에 없는 사실은 추가하지 않는다."
     ),
 }
 
@@ -64,7 +90,7 @@ def build_summary_prompt(
         f"- 용어집:\n{_glossary_block(glossary)}\n"
         f"- 출력은 다음 JSON 계약을 정확히 따른다: {_JSON_CONTRACT}"
     )
-    user = f"<paper>\n{refined.body}\n</paper>"
+    user = f"<paper>\n{_strip_delimiters(refined.body)}\n</paper>"
     return system, user
 
 
@@ -90,7 +116,7 @@ def build_translate_segments_prompt(
         '- 출력은 {"translations": {"<id>": "<번역텍스트>"}, "keptTerms": [str]} JSON으로 한다.'
     )
     payload = json.dumps(
-        [{"id": s.id, "text": s.text} for s in segments], ensure_ascii=False
+        [{"id": s.id, "text": _strip_delimiters(s.text)} for s in segments], ensure_ascii=False
     )
     user = f"<segments>\n{payload}\n</segments>"
     return system, user

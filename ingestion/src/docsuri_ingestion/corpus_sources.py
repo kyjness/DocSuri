@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 
+from .adapters.grobid import _tei_to_text
 from .domain.enums import FailureReason, SourceName
 from .domain.errors import PermanentIngestionError
 from .domain.models import MetadataRecord
@@ -87,11 +88,20 @@ class CorpusTextCandidate:
     payload_kind: str
     text: str
     source_url: str
+    # Raw GROBID TEI (non-arXiv PDF path) for the structured doc-model parser; None when the
+    # source is arXiv (HTML/PDF text path) or GROBID is not in play.
+    tei: str | None = None
+    # The source PDF bytes already fetched for the GROBID call, retained in-memory so the
+    # (gated, best-effort) figure/formula crop step reuses them instead of re-fetching — which
+    # also guarantees the crop renders against the SAME bytes the TEI coordinates were computed
+    # from. None when not from the PDF/GROBID path. In-memory only: the candidate is never
+    # serialized (the queue job carries the SourcePaperRecord, not this candidate).
+    pdf: bytes | None = None
 
 
 @runtime_checkable
 class GrobidPort(Protocol):
-    def extract_text(self, pdf: bytes) -> str: ...
+    def extract_tei(self, pdf: bytes) -> str: ...
 
 
 @runtime_checkable
@@ -160,6 +170,13 @@ class CorpusSourceAdapterSet:
         pdf = provider.fetch_pdf(record)
         return self.extract_pdf_text(record, pdf)
 
+    def fetch_record_pdf(self, record: SourcePaperRecord) -> bytes:
+        """Re-fetch the source PDF bytes for the (gated, best-effort) asset crop path.
+
+        Kept separate from ``extract_record_text`` so the text/doc-model contract never carries
+        raw PDF bytes; the bytes are consumed in-memory by the crop renderer and never stored."""
+        return self._external_provider(record.source_name).fetch_pdf(record)
+
     def extract_pdf_text(self, record: SourcePaperRecord, pdf: bytes) -> CorpusTextCandidate:
         if record.source_name not in {SourceName.SEMANTIC_SCHOLAR, SourceName.OPENALEX}:
             raise PermanentIngestionError(
@@ -173,7 +190,10 @@ class CorpusSourceAdapterSet:
                 reason=FailureReason.DEPENDENCY_UNAVAILABLE,
                 stage="grobid",
             )
-        text = self._grobid.extract_text(pdf).strip()
+        # One GROBID call yields the structured TEI; the flat text projection is derived from it
+        # (the doc-model parser consumes the TEI, withdrawal/scan paths consume the text).
+        tei = self._grobid.extract_tei(pdf)
+        text = _tei_to_text(tei).strip()
         if not text:
             raise PermanentIngestionError(
                 "GROBID returned empty text",
@@ -187,6 +207,8 @@ class CorpusSourceAdapterSet:
             payload_kind="PDF",
             text=text,
             source_url=record.pdf_url or "",
+            tei=tei,
+            pdf=pdf,
         )
 
     def _external_provider(self, source_name: SourceName) -> ExternalCorpusSourcePort:

@@ -6,6 +6,7 @@ import styles from './AuthForm.module.css';
 import { getApiClient, UserFacingError } from '@/lib/api';
 import { validateEmail, validateRequiredPassword } from '@/lib/api/validate';
 import { AuthField } from './AuthField';
+import { ORCID_LOGIN_ENABLED } from '@/lib/socialLogin';
 
 // SignupForm (LC-1, US-A1, BR-U5-2/13) — client validation mirrors
 // accounts.schema.json (presence/format). Password is input-only (SEC-12/3);
@@ -89,6 +90,11 @@ export function SignupForm() {
       >
         Google로 계속하기
       </a>
+      {ORCID_LOGIN_ENABLED ? (
+        <a className={styles.socialButton} href="/auth/social/orcid/start" data-testid="signup-orcid">
+          ORCID로 계속하기
+        </a>
+      ) : null}
     </form>
   );
 }

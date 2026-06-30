@@ -23,14 +23,18 @@ beforeEach(() => {
 });
 
 describe('MyPageLibraryScreen (U10)', () => {
-  it('renders the 관심/최근 tabs with the interest tab active by default, plus a link out to /library', async () => {
+  it('renders the 관심 논문/최근 tabs with the interest tab active by default, plus a link out to saved searches', async () => {
     render(<MyPageLibraryScreen active="interest" />);
     expect(await screen.findByTestId('mypage-library-tab-interest')).toHaveAttribute(
       'aria-current',
       'page',
     );
+    expect(screen.getByTestId('mypage-library-tab-interest')).toHaveTextContent('관심 논문');
     expect(screen.getByTestId('mypage-library-tab-recent')).not.toHaveAttribute('aria-current');
-    expect(screen.getByTestId('mypage-library-saved-history')).toHaveAttribute('href', '/library');
+    expect(screen.getByTestId('mypage-library-saved-history')).toHaveAttribute(
+      'href',
+      '/library/saved',
+    );
   });
 
   it('renders the recently-viewed list on the recent tab', async () => {

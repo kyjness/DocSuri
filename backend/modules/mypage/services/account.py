@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from backend.modules.accounts.models import Principal
 
-from ..models import AccountProfile, Consents
+from ..models import AccountProfile, Consents, OrcidIdentity
 from ..ports import AccountRepository
 from ..schemas import AccountProfileDTO, ConsentsDTO
 
@@ -45,3 +45,8 @@ class AccountService:
     def set_nightly_push(self, principal: Principal, agreed: bool) -> ConsentsDTO | None:
         consents = self._repo.set_nightly_push(principal.user_id, agreed)
         return _consents_to_dto(consents) if consents is not None else None
+
+    def get_orcid_identity(self, principal: Principal) -> OrcidIdentity | None:
+        """캐시된 ORCID 신원(이름·소속)을 반환한다. works(라이브 fetch)는 컨트롤러가 보강한다.
+        ORCID 비로그인 계정은 None(-> 404)."""
+        return self._repo.get_orcid_identity(principal.user_id)

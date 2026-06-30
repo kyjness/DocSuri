@@ -14,7 +14,23 @@ import { mockListLibrary, mockListSaved, mockListHistory } from '@/mocks/library
 // DTO contract test (LC-7) — the mock fixtures must conform to the generated
 // types (which derive from shared/dtos). If the schema/types drift, this fails.
 
+// Phase 2 (Q2): cards additively expose source-neutral sourceName/sourceUrl (optional).
+// blockRefs/sourceProvenance themselves stay internal (Q3) — never on a card.
 const CARD_FIELDS: (keyof ResultCardVM)[] = [
+  'title',
+  'authors',
+  'year',
+  'arxivId',
+  'abstractSnippet',
+  'relevance',
+  'arxivUrl',
+  'sourceName',
+  'sourceUrl',
+];
+
+// The always-present card fields. sourceName/sourceUrl are additive (optional), so they are NOT
+// here — but every required field must still be present (completeness), not just "no leak".
+const REQUIRED_CARD_FIELDS: (keyof ResultCardVM)[] = [
   'title',
   'authors',
   'year',
@@ -31,9 +47,22 @@ describe('DTO contract', () => {
     expect(typeof page.meta.degraded).toBe('boolean');
   });
 
-  it('every card exposes exactly the 7 contract fields (SEC-9)', () => {
+  it('every card key is an allowed contract field — no internal leak (SEC-9)', () => {
+    // sourceName/sourceUrl are optional (additive), so assert each key is in the allowed set
+    // rather than an exact count: the SEC-9 invariant is that no INTERNAL field ever leaks.
+    // Completeness is held separately (next test) so a dropped REQUIRED field is still caught.
     for (const card of pageResponse.cards) {
-      expect(Object.keys(card).sort()).toEqual([...CARD_FIELDS].sort());
+      for (const key of Object.keys(card)) {
+        expect(CARD_FIELDS).toContain(key);
+      }
+    }
+  });
+
+  it('every card carries all required contract fields — no field dropped (completeness)', () => {
+    // Relaxing exact-match for optional fields must not lose the missing-required-field check:
+    // a card that drops e.g. arxivUrl would otherwise still pass the leak test above.
+    for (const card of pageResponse.cards) {
+      expect(Object.keys(card)).toEqual(expect.arrayContaining(REQUIRED_CARD_FIELDS));
     }
   });
 

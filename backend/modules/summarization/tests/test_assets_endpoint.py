@@ -177,6 +177,17 @@ class _FakeS3:
         return f"https://signed/{Params['Key']}?e={ExpiresIn}"
 
 
+def test_list_assets_query_excludes_formula_crops() -> None:
+    """The manifest query must restrict to AssetView kinds (figure | table). U1 also writes
+    type="formula" page-crop rows (doc-model viewer display assets) into paper_asset; surfacing
+    them here breaks GET /assets validation and pollutes the U5 figure gallery."""
+    conn = _FakeConn([])
+    reader = RdsS3AssetReader(connection=conn, s3_client=_FakeS3())
+    list(reader.list_assets("2401.00001", 1))
+    sql = conn._cur.executed[0]
+    assert "type IN ('figure', 'table')" in sql
+
+
 def test_reader_lists_and_presigns() -> None:
     rows = [
         ("2401.00001:v1:figure:0", "figure", 0, "Figure 1", "page-crop",

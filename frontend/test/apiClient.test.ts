@@ -47,6 +47,16 @@ describe('ApiClient retry policy', () => {
     });
   });
 
+  it('sends login reCAPTCHA token through the transport header', async () => {
+    let seen: TransportRequest | undefined;
+    const t = transportOf(async (req) => {
+      seen = req;
+      return { status: 200, body: { status: 'success' } };
+    });
+    await new ApiClient(t, fast).login({ email: 'a@b.co', password: 'Abcdef123!' }, 'captcha-token');
+    expect(seen?.headers).toEqual({ 'X-Recaptcha-Token': 'captcha-token' });
+  });
+
   it('normalizes a transport throw to a network UserFacingError', async () => {
     const t = transportOf(async () => {
       throw new Error('boom');
@@ -59,12 +69,12 @@ describe('ApiClient retry policy', () => {
   it('dedups concurrent identical idempotent requests', async () => {
     const t = transportOf(async () => {
       await new Promise((r) => setTimeout(r, 20));
-      return { status: 200, body: pageResponse };
+      return { status: 200, body: { userId: 'u', expiresAt: 'x' } };
     });
     const client = new ApiClient(t, fast);
-    const [a, b] = await Promise.all([client.search('같은질의'), client.search('같은질의')]);
-    expect(a.kind).toBe('page');
-    expect(b.kind).toBe('page');
+    const [a, b] = await Promise.all([client.currentSession(), client.currentSession()]);
+    expect(a).toEqual({ userId: 'u', expiresAt: 'x' });
+    expect(b).toEqual({ userId: 'u', expiresAt: 'x' });
     expect(t.calls).toBe(1);
   });
 });

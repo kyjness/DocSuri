@@ -10,6 +10,35 @@
 
 ---
 
+# U11 Novelty Agent Performance Test Instructions — 2026-06-30
+
+No standalone load test was executed for U11 in this local Build & Test pass.
+
+Performance checks for staging:
+
+- Job create/status/cancel endpoints should remain lightweight owner-scoped DB reads/writes.
+- SSE progress reads should stream persisted progress events and fall back to polling.
+- Worker concurrency should remain bounded by the novelty SQS queue and cost guard.
+- External search adapters must stay bounded by timeout, allowlist, and degraded-result behavior.
+
+Suggested staging validation:
+
+```powershell
+# Target endpoints:
+# - POST /api/novelty/jobs
+# - GET /api/novelty/jobs/{job_id}
+# - GET /api/novelty/jobs/{job_id}/events
+# - GET /api/novelty/jobs/{job_id}/result
+```
+
+Acceptance:
+
+- API request path does not run long external searches inline.
+- Worker failure lands in retry/DLQ paths with observable progress/degraded state.
+- No Notion export proceeds without preview approval.
+
+---
+
 ## 1. Purpose / 목적
 
 ### 1.1. U1 Ingestion

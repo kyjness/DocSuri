@@ -17,7 +17,12 @@ from discovery.domain.models import Candidate, DegradeMode, GroundedResults, NoM
 from discovery.mocks.fixtures import RECORDS
 
 _assembler = ResultAssembler()
-_CARD_FIELDS = {"title", "authors", "year", "arxivId", "abstractSnippet", "relevance", "arxivUrl"}
+# Phase 2 (Q2): the card additively exposes source-neutral sourceName/sourceUrl. blockRefs/
+# sourceProvenance themselves stay INTERNAL (Q3) — the set below is the full exposed surface.
+_CARD_FIELDS = {
+    "title", "authors", "year", "arxivId", "abstractSnippet", "relevance", "arxivUrl",
+    "sourceName", "sourceUrl",
+}
 
 
 def _roundtrip(response: SearchResponse) -> None:
@@ -48,7 +53,8 @@ def test_success_page_roundtrip_and_card_shape(n: int) -> None:
     response = _assembler.assemble(GroundedResults(items=items), DegradeMode.NORMAL)
     assert isinstance(response.root, SearchResultPageDTO)
     _roundtrip(response)
-    # SEC-9 (INV-2): a card exposes exactly the 7 projected fields — no internal fields.
+    # SEC-9 (INV-2): a card exposes exactly the projected fields — no internal fields
+    # (vector/chunkId/section/blockRefs/sourceProvenance never leak).
     for card in response.root.cards:
         assert set(card.model_dump().keys()) == _CARD_FIELDS
 

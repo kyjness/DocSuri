@@ -16,7 +16,10 @@ export class RouteHandlerTransport implements Transport {
     const hasBody = req.body !== undefined;
     const res = await fetch(`${this.basePath}${req.path}`, {
       method: req.method,
-      headers: hasBody ? { 'content-type': 'application/json' } : undefined,
+      headers: {
+        ...(hasBody ? { 'content-type': 'application/json' } : {}),
+        ...(req.headers ?? {}),
+      },
       body: hasBody ? JSON.stringify(req.body) : undefined,
       // Same-origin so the httpOnly session cookie rides along; never cache
       // authenticated/personalized responses (P-P3).

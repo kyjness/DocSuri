@@ -97,6 +97,32 @@ def test_put_then_get_round_trips(store) -> None:
     assert fetched.sections[0].blocks[0].root.text == "Body."
 
 
+def test_get_treats_stale_schema_artifact_as_miss(store) -> None:
+    """A doc-model cached under an older schema (here: pre-``fullText``) must read as a miss
+    so the builder rebuilds it, not crash the job with a ValidationError (prod incident)."""
+    s3_store, fake = store
+    stale = json.dumps(
+        {
+            "meta": {
+                "paperId": "2503.02879",
+                "version": 1,
+                "title": "t",
+                "provenance": {
+                    "sourceTier": "ar5iv",
+                    "parserVersion": "old@0",
+                    "schemaVersion": "0.9.0",
+                    "generatedAt": "2026-06-29T00:00:00Z",
+                },
+            },
+            # NOTE: no top-level "fullText" — the field that became required.
+            "sections": [{"id": "s1", "title": "", "blocks": []}],
+        }
+    ).encode("utf-8")
+    fake.objects["doc-model/2503.02879/v1.json"] = {"Body": stale}
+
+    assert s3_store.get("2503.02879", 1) is None
+
+
 def test_remove_drops_all_cached_versions(store) -> None:
     s3_store, fake = store
     s3_store.put(_doc())

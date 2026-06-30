@@ -54,8 +54,10 @@ class UserRole(str, Enum):
     ADMIN = "ADMIN"
 
 class OidcProvider(str, Enum):
-    """소셜 로그인 신원공급자 (FR-27). v1=GOOGLE; GITHUB/APPLE은 차기 사이클."""
+    """소셜 로그인 신원공급자 (FR-27). GOOGLE=이메일 제공(BR-A9); ORCID=이메일 미제공(BR-A13).
+    GITHUB/APPLE은 차기 사이클."""
     GOOGLE = "GOOGLE"
+    ORCID = "ORCID"
 
 class Action(str, Enum):
     READ = "READ"

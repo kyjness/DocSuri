@@ -21,10 +21,13 @@ class RdsGlossaryRepository:
 
     def _connect(self) -> Any:
         if self._conn is not None:
+            # Injected connection (tests use a fake). The call site's ``with self._connect()``
+            # drives its context manager — for a real psycopg connection that commits/closes on
+            # exit, so inject a fresh (or fake) connection, not a long-lived shared one.
             return self._conn
-        import psycopg  # lazy: only the `real` extra needs psycopg
+        from ._pg import connection  # lazy: only the `real` extra needs psycopg
 
-        return psycopg.connect(self._dsn)
+        return connection(self._dsn)  # pooled (graceful fallback to direct connect)
 
     def get_user_glossary(self, user_id: str) -> Sequence[TermMapping]:
         sql = (
@@ -61,6 +64,10 @@ class RdsGlossaryRepository:
             "RETURNING glossary_ver"
         )
         with self._connect() as conn, conn.cursor() as cur:
+            # Serialize concurrent upserts for the SAME user so the MAX(glossary_ver)+1 read-then-
+            # write can't race two edits onto one version (which would leave the second edit not
+            # invalidating cached results, BR-S1). Transaction-scoped — auto-released at commit.
+            cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (user_id,))
             cur.execute(sql, (user_id, term_from, term_to, user_id, prompt_enforced))
             conn.commit()
             row = cur.fetchone()

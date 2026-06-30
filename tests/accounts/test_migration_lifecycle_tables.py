@@ -18,12 +18,15 @@ from backend.modules.accounts.repository.credential import (
     SocialIdentityTable,
 )
 
-# 003은 라이프사이클 테이블을 만들고, 이후 additive 마이그레이션(007: email_change_requests에
-# revoke_token_hash 추가)이 컬럼을 덧붙인다. 파리티 검사는 둘 다 적용해야 모델과 일치한다.
+# 003은 라이프사이클 테이블을 만들고, 이후 additive 마이그레이션이 컬럼을 덧붙인다(006:
+# social_identities에 orcid_* 추가, 007: email_change_requests에 revoke_token_hash 추가). 파리티
+# 검사는 전부 적용해야 모델과 일치한다. (009/010은 DROP NOT NULL이라 SQLite 미지원·신규 컬럼 없음 → 제외.)
 MIGRATIONS = [
     Path("backend/modules/accounts/migrations/003_create_lifecycle_tables.sql"),
+    Path("backend/modules/accounts/migrations/006_add_orcid_columns_to_social_identities.sql"),
     Path("backend/modules/accounts/migrations/007_add_email_change_revoke_token.sql"),
     Path("backend/modules/accounts/migrations/008_create_account_withdrawal_backups.sql"),
+    Path("backend/modules/accounts/migrations/011_add_purge_attempts.sql"),  # S2: account_deletions.purge_attempts
 ]
 
 

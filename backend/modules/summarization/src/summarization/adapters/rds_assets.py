@@ -31,10 +31,13 @@ class RdsS3AssetReader:
 
     def _connect(self) -> Any:
         if self._conn is not None:
+            # Injected connection (tests use a fake). The call site's ``with self._connect()``
+            # drives its context manager — for a real psycopg connection that commits/closes on
+            # exit, so inject a fresh (or fake) connection, not a long-lived shared one.
             return self._conn
-        import psycopg  # lazy: only the `real` extra needs psycopg
+        from ._pg import connection  # lazy: only the `real` extra needs psycopg
 
-        return psycopg.connect(self._dsn)
+        return connection(self._dsn)  # pooled (graceful fallback to direct connect)
 
     def _client(self) -> Any:
         if self._s3 is None:
@@ -44,9 +47,14 @@ class RdsS3AssetReader:
         return self._s3
 
     def list_assets(self, paper_id: str, version: int) -> Sequence[StoredAsset]:
+        # Restrict to the summary asset gallery's kinds (AssetView = figure | table). U1 also
+        # writes type="formula" page-crop rows for the doc-model viewer's image-fallback equations
+        # (display-only); those must not surface here or they break GET /assets validation and
+        # pollute the U5 figure gallery. The literal IN list mirrors the AssetView enum.
         sql = (
             "SELECT asset_id, type, ordinal, caption, source_mode, object_ref, page_ref, bbox "
-            "FROM paper_asset WHERE paper_id = %s AND version = %s ORDER BY type, ordinal"
+            "FROM paper_asset WHERE paper_id = %s AND version = %s "
+            "AND type IN ('figure', 'table') ORDER BY type, ordinal"
         )
         # U1 writes the manifest under the bare paper_id (version is a separate column); strip
         # the version suffix the app carries so the lookup matches (else no figures/tables).

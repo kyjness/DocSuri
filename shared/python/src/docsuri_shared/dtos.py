@@ -7,6 +7,11 @@ Producers: U2 (search), U3 (accounts), U4 (library). Consumer: U5.
 SEC-9/SEC-8/SEC-12 invariants (no internal fields, no owner userId in bodies,
 password input-only) are enforced by the schemas (``additionalProperties: false`` ⇒
 pydantic ``extra='forbid'``) and checked by ``tests/test_security_invariants.py``.
+
+Exception (FR-29/BR-A12): the U3 public-auth INPUT DTOs — SignupRequest, LoginRequest,
+PasswordResetRequest, PasswordResetConfirm — intentionally use ``additionalProperties: true``
+(pydantic default ``extra='ignore'``) so a stray body field from front/back version skew is
+ignored instead of 422-ing the whole auth flow. Their RESPONSE DTOs stay ``extra='forbid'``.
 """
 
 from __future__ import annotations

@@ -82,6 +82,16 @@ def process_message(runtime, message) -> None:
             queue.ack(message)
         return
 
+    if job.kind in (JobKind.INCREMENTAL, JobKind.EVENT) and runtime.pipeline.is_rebuild_active():
+        # BR-13 single-writer: a full rebuild is in progress and re-harvests this window, so drop
+        # the in-flight incremental/event job rather than let it advance the watermark the rebuild
+        # just reset (watermark pollution). The rebuild re-covers this paper.
+        runtime.observability.emit_metric(
+            "ingestion.incremental.fenced", 1.0, {"kind": job.kind.value}
+        )
+        queue.ack(message)
+        return
+
     try:
         if job.kind is JobKind.BUILD_DOC_MODEL:
             # Lazy doc-model build (BR-30/D6) — separate from the index pipeline.
@@ -90,6 +100,14 @@ def process_message(runtime, message) -> None:
             runtime.pipeline.ingest_one(job)
     except IngestionError as exc:
         if exc.failure_class is FailureClass.PERMANENT:
+            if job.kind is JobKind.BUILD_DOC_MODEL:
+                # ingest_one DLQs + signals internally before re-raising; the doc-model build path
+                # does not, so surface its permanent failures here (BR-15/17) instead of silently
+                # acking and dropping them.
+                runtime.observability.emit_failure_signal(
+                    job.job_id, stage=exc.stage, error=exc.public_error()
+                )
+                queue.send_to_dlq(message.body, reason=exc.public_error())
             queue.ack(message)
     except Exception as exc:  # noqa: BLE001 - never let one unexpected error crash-loop the worker
         # An exception outside the failure taxonomy (e.g. an unguarded parse) must not escape

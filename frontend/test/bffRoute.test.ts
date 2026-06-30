@@ -4,19 +4,32 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 // handler can be exercised under the (jsdom) test runtime.
 vi.mock('server-only', () => ({}));
 
-// Pin the BFF onto the mock transport and stub it to return 204 No Content — the exact upstream
-// shape (a successful DELETE: un-bookmark / delete saved search / clear history) that used to be
-// turned into a 500 by NextResponse.json() attaching a body to a 204. Locks the route-level fix.
+// Pin the BFF onto a lightweight mock transport. DELETE returns the exact upstream shape
+// (successful un-bookmark/delete/clear history) that used to become a 500 when
+// NextResponse.json() attached a body to 204; PATCH locks settings updates through the BFF.
 vi.mock('@/lib/api/mockTransport', () => ({
   MockTransport: class {
-    async send() {
+    async send(req: { method: string; body?: unknown }) {
+      if (req.method === 'PATCH') {
+        return {
+          status: 200,
+          body: {
+            userId: 'mock-user',
+            enabled: Boolean((req.body as { enabled?: unknown } | undefined)?.enabled),
+            rawEventsDeletedAt: null,
+            profileResetAt: null,
+            updatedAt: '2026-06-25T00:00:00Z',
+          },
+          setCookies: [],
+        };
+      }
       return { status: 204, body: null, setCookies: [] };
     }
   },
 }));
 
 import { NextRequest } from 'next/server';
-import { DELETE } from '@/app/bff/[...path]/route';
+import { DELETE, PATCH } from '@/app/bff/[...path]/route';
 
 describe('BFF proxy (app/bff/[...path]/route)', () => {
   beforeEach(() => {
@@ -29,5 +42,19 @@ describe('BFF proxy (app/bff/[...path]/route)', () => {
 
     expect(res.status).toBe(204);
     expect(await res.text()).toBe('');
+  });
+
+  it('relays PATCH bodies for personalization settings updates', async () => {
+    const req = new NextRequest('http://localhost/bff/api/personalization/settings', {
+      method: 'PATCH',
+      body: JSON.stringify({ enabled: false }),
+      headers: { 'content-type': 'application/json' },
+    });
+    const res = await PATCH(req, {
+      params: Promise.resolve({ path: ['api', 'personalization', 'settings'] }),
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({ enabled: false });
   });
 });

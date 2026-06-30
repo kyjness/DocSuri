@@ -14,7 +14,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
 from backend.modules.accounts.repository.credential import CredentialRepository
 
-from ..models import AccountProfile, Consents, Subscription
+from ..models import AccountProfile, Consents, OrcidIdentity, Subscription
 from ..schemas import SubscriptionPlan, SubscriptionStatusValue
 
 
@@ -129,4 +129,16 @@ class SqlAccountRepository:
             privacy_policy_agreed=account.privacy_policy_agreed,
             terms_of_service_agreed=account.terms_of_service_agreed,
             nightly_push_agreed=account.nightly_push_agreed,
+        )
+
+    def get_orcid_identity(self, user_id: str) -> OrcidIdentity | None:
+        """계정의 LINKED ORCID 신원(캐시된 이름·소속 포함)을 반환한다 (BR-A13 / 마이페이지).
+        ORCID로 로그인하지 않은 계정은 None(-> 404)."""
+        rec = self._repo.get_orcid_identity(user_id)
+        if rec is None:
+            return None
+        return OrcidIdentity(
+            orcid_id=rec.provider_subject,
+            name=rec.orcid_name,
+            affiliation=rec.orcid_affiliation,
         )

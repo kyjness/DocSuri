@@ -23,6 +23,9 @@ dependencies = [
     # lxml >=6.1: PYSEC-2026-87 fixed in 6.1.0 (pip-audit / Security Scan gate).
     "lxml>=6.1,<7",
     "beautifulsoup4>=4.12,<5",
+    # NFR §0.5: parse untrusted arXiv/OAI/GROBID XML with DTD/entity expansion forbidden
+    # (entity-expansion DoS guard). Pure-Python, PSF-2.0 — permissive (SEC-10).
+    "defusedxml>=0.7,<1",
 ]
 
 [project.optional-dependencies]

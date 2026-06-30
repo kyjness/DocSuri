@@ -113,6 +113,49 @@ def test_refine_doc_model_body_stays_aligned_with_root_full_text() -> None:
         assert expected in refined.body
 
 
+def test_refine_doc_model_skips_image_only_formula() -> None:
+    """A PDF/GROBID page-crop formula carries no LaTeX (assetRef only). Projecting it must not
+    crash on the optional latex field — it is display-only, so it is simply omitted from the
+    summary input (regression for the latex=None TypeError)."""
+    doc = DocModel.model_validate(
+        {
+            "meta": {
+                "paperId": "2401.00002",
+                "version": 1,
+                "title": "T",
+                "provenance": {
+                    "sourceTier": "pdf",
+                    "parserVersion": "p@1",
+                    "schemaVersion": "1.0.0",
+                    "generatedAt": "2026-06-23T00:00:00Z",
+                },
+            },
+            "fullText": "Results\n\nWe report accuracy.",
+            "sections": [
+                {
+                    "id": "s1",
+                    "title": "Results",
+                    "blocks": [
+                        {"id": "s1.p1", "type": "paragraph", "text": "We report accuracy."},
+                        {
+                            "id": "s1.eq1",
+                            "type": "formula",
+                            "display": True,
+                            "anchorLabel": "(3)",
+                            "assetRef": {"assetId": "a1", "type": "formula", "ordinal": 0},
+                        },
+                    ],
+                }
+            ],
+        }
+    )
+
+    refined = InputRefiner().refine_doc_model(doc)  # must not raise
+
+    assert refined.formulas == ()  # image-only formula contributes no LaTeX
+    assert "We report accuracy." in refined.body
+
+
 def test_refine_source_dispatches_on_doc_model() -> None:
     refiner = InputRefiner()
     via_doc = refiner.refine_source(SourceText(kind=SourceKind.FULL_TEXT, doc_model=_doc()))

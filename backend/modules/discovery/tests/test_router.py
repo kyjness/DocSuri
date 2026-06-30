@@ -12,7 +12,11 @@ import pytest
 
 pytest.importorskip("fastapi")
 
-from discovery.api.router import build_app  # noqa: E402 — after importorskip
+from discovery.api.router import (  # noqa: E402 — after importorskip
+    _ANONYMOUS_USER_ID,
+    _resolve_user_id,
+    build_app,
+)
 from discovery.mocks import build_mock_orchestrator  # noqa: E402
 from discovery.service.orchestrator import SearchUnavailable  # noqa: E402
 
@@ -20,6 +24,32 @@ from discovery.service.orchestrator import SearchUnavailable  # noqa: E402
 def _app():
     bundle = build_mock_orchestrator()
     return build_app(bundle.orchestrator, bundle.grounding_hook)
+
+
+class _Principal:
+    def __init__(self, user_id: str) -> None:
+        self.user_id = user_id
+
+
+def test_resolve_user_id_prefers_gateway_principal() -> None:
+    # SEC-8/BR-13: a gateway-injected principal always wins, in both prod and dev — the
+    # X-User-Id header is ignored when an authenticated principal is present.
+    assert _resolve_user_id(_Principal("u-real"), "spoofed", allow_dev_user=False) == "u-real"
+    assert _resolve_user_id(_Principal("u-real"), "spoofed", allow_dev_user=True) == "u-real"
+
+
+def test_resolve_user_id_production_ignores_spoofable_header() -> None:
+    # /api/search is auth-OPTIONAL: anonymous requests arrive with principal=None. Prod must
+    # NOT trust the client X-User-Id header (it is U4's history owner key — spoofing it injects
+    # history into another account, SEC-8) → fixed anonymous id regardless of the header.
+    assert _resolve_user_id(None, "victim@example.com", allow_dev_user=False) == _ANONYMOUS_USER_ID
+    assert _resolve_user_id(None, None, allow_dev_user=False) == _ANONYMOUS_USER_ID
+
+
+def test_resolve_user_id_dev_app_honors_header() -> None:
+    # The standalone mock-first app (build_app) opts in to the header for multi-user dev testing.
+    assert _resolve_user_id(None, "dev-bob", allow_dev_user=True) == "dev-bob"
+    assert _resolve_user_id(None, None, allow_dev_user=True) == "dev-user"
 
 
 def test_search_unavailable_handler_is_generic_503() -> None:

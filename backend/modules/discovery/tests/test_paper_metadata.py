@@ -28,6 +28,36 @@ def test_known_paper_by_paper_id_projects_full_metadata() -> None:
     # The detail endpoint exposes the FULL abstract (the paper's own page), not just a snippet.
     assert meta.abstract == "We apply diffusion models to predict protein structure from sequence."
     assert meta.arxivUrl == "https://arxiv.org/abs/2401.00001"
+    # Phase 2 (Q2): an arXiv-only record (no provenance) defaults to the arXiv source.
+    assert meta.sourceName == "arXiv"
+    assert meta.sourceUrl == "https://arxiv.org/abs/2401.00001"
+
+
+def test_non_arxiv_paper_projects_source_neutral_link() -> None:
+    # Phase 2 (Q2): the detail header agrees with the search card — a non-arXiv-sourced record
+    # surfaces its source name and source link (not arXiv).
+    from docsuri_shared.vector_spec import SourceProvenance
+
+    from discovery.mocks.fixtures import RECORDS
+
+    prov = SourceProvenance(
+        sourceName="Semantic Scholar",
+        sourceId="s2:1",
+        sourceTier="oa",
+        sourceUrl="https://www.semanticscholar.org/paper/x",
+        doi="",
+        arxivId="",
+    )
+    record = RECORDS[0].model_copy(update={"sourceProvenance": prov})
+
+    class _Lookup:
+        def fetch_paper(self, paper_id: str):  # noqa: ARG002
+            return record
+
+    meta = PaperMetadataService(_Lookup()).get_paper_meta("2401.00001")
+    assert meta is not None
+    assert meta.sourceName == "Semantic Scholar"
+    assert meta.sourceUrl == "https://www.semanticscholar.org/paper/x"
 
 
 def test_known_paper_by_display_arxiv_id() -> None:

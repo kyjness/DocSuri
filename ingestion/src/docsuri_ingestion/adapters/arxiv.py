@@ -18,6 +18,7 @@ from docsuri_ingestion.full_text_extraction import (
     pdf_to_text,
 )
 from docsuri_ingestion.resilience import RetryPolicy, TokenBucket
+from docsuri_ingestion.xmlsafe import safe_fromstring
 
 _log = logging.getLogger("docsuri.ingestion.arxiv")
 
@@ -119,7 +120,7 @@ class ArxivHttpSource:
         }
         body = self._get_text(self._oai_base_url, params=params, stage="fetch_license")
         try:
-            license_el = ET.fromstring(body).find(".//arxiv:license", OAI_NS)
+            license_el = safe_fromstring(body).find(".//arxiv:license", OAI_NS)
         except ET.ParseError:
             # Best-effort backfill: a malformed OAI response must not escape the failure
             # taxonomy and crash the worker. Degrade to the unenriched record — license stays
@@ -197,16 +198,20 @@ class ArxivHttpSource:
         import httpx
 
         url = f"{base}/{arxiv_id}"
+        from docsuri_ingestion.http_limits import ResponseTooLargeError, read_capped
+
         self._rate_limiter.acquire()
         try:
-            with httpx.Client(timeout=self._timeout_seconds, follow_redirects=True) as client:
-                response = client.get(url)
-        except httpx.HTTPError:
+            with (
+                httpx.Client(timeout=self._timeout_seconds, follow_redirects=True) as client,
+                client.stream("GET", url) as response,
+            ):
+                content_type = response.headers.get("content-type", "").lower()
+                if response.status_code == 200 and "html" in content_type:
+                    return read_capped(response).decode("utf-8", errors="replace")
+                return None
+        except (httpx.HTTPError, ResponseTooLargeError):
             return None
-        content_type = response.headers.get("content-type", "").lower()
-        if response.status_code == 200 and "html" in content_type:
-            return response.text
-        return None
 
     def _oai_list_records(
         self,
@@ -253,10 +258,35 @@ class ArxivHttpSource:
     def _get_bytes(self, url: str, *, params: dict[str, str] | None, stage: str) -> bytes:
         import httpx
 
+        from docsuri_ingestion.http_limits import ResponseTooLargeError, read_capped
+
         self._rate_limiter.acquire()
         try:
-            with httpx.Client(timeout=self._timeout_seconds, follow_redirects=True) as client:
-                response = client.get(url, params=params)
+            with (
+                httpx.Client(timeout=self._timeout_seconds, follow_redirects=True) as client,
+                client.stream("GET", url, params=params) as response,
+            ):
+                if response.status_code == 404:
+                    raise PermanentIngestionError(
+                        "arXiv resource not found",
+                        reason=FailureReason.FETCH_FAILURE,
+                        stage=stage,
+                    )
+                if response.status_code == 429 or response.status_code >= 500:
+                    raise RetriableIngestionError(
+                        f"arXiv returned retriable status {response.status_code}",
+                        reason=FailureReason.RATE_LIMITED
+                        if response.status_code == 429
+                        else FailureReason.FETCH_FAILURE,
+                        stage=stage,
+                    )
+                if response.status_code >= 400:
+                    raise PermanentIngestionError(
+                        f"arXiv returned permanent status {response.status_code}",
+                        reason=FailureReason.FETCH_FAILURE,
+                        stage=stage,
+                    )
+                return read_capped(response)
         except httpx.TimeoutException as exc:
             raise RetriableIngestionError(
                 "arXiv request timed out",
@@ -269,33 +299,17 @@ class ArxivHttpSource:
                 reason=FailureReason.FETCH_FAILURE,
                 stage=stage,
             ) from exc
-
-        if response.status_code == 404:
+        except ResponseTooLargeError as exc:
             raise PermanentIngestionError(
-                "arXiv resource not found",
+                "arXiv response exceeded size cap",
                 reason=FailureReason.FETCH_FAILURE,
                 stage=stage,
-            )
-        if response.status_code == 429 or response.status_code >= 500:
-            raise RetriableIngestionError(
-                f"arXiv returned retriable status {response.status_code}",
-                reason=FailureReason.RATE_LIMITED
-                if response.status_code == 429
-                else FailureReason.FETCH_FAILURE,
-                stage=stage,
-            )
-        if response.status_code >= 400:
-            raise PermanentIngestionError(
-                f"arXiv returned permanent status {response.status_code}",
-                reason=FailureReason.FETCH_FAILURE,
-                stage=stage,
-            )
-        return response.content
+            ) from exc
 
 
 def parse_atom_feed(body: str) -> list[MetadataRecord]:
     try:
-        root = ET.fromstring(body)
+        root = safe_fromstring(body)
     except ET.ParseError as e:
         raise PermanentIngestionError(
             f"Failed to parse XML Atom feed: {e}",
@@ -367,7 +381,7 @@ def _build_oai_record(metadata: ET.Element) -> MetadataRecord:
 
 def parse_oai_records(body: str) -> list[MetadataRecord]:
     try:
-        root = ET.fromstring(body)
+        root = safe_fromstring(body)
     except ET.ParseError as e:
         raise PermanentIngestionError(
             f"Failed to parse XML OAI records: {e}",
@@ -389,7 +403,7 @@ def parse_oai_records(body: str) -> list[MetadataRecord]:
 
 def parse_oai_resumption_token(body: str) -> str | None:
     try:
-        root = ET.fromstring(body)
+        root = safe_fromstring(body)
     except ET.ParseError as e:
         raise PermanentIngestionError(
             f"Failed to parse XML OAI resumption token: {e}",

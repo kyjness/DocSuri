@@ -87,3 +87,26 @@ Covered contracts:
 Future contract tests should be added when U2/U7/U5 call U9 directly.
 
 ---
+
+# U11 Novelty Agent Contract Test Instructions — 2026-06-30
+
+U11 v1 contracts are backend-local plus provisional adapter seams for U2 full search, Agent-Browser, similarity check, and Notion export.
+
+Current contract checks:
+
+```powershell
+python -m pytest backend/tests/test_novelty.py -q
+```
+
+Covered contracts:
+
+- job request/result/progress DTO shape
+- manuscript content-type boundary: PDF, Markdown, TXT only
+- supported artifact outputs require `sourceRefs`
+- experiment-plan artifacts require research question, hypotheses, datasets, metrics, and risks
+- Notion export cannot complete before preview approval
+- SSE progress events encode persisted job progress
+
+Future contract tests should be added when real U2 full-search, Agent-Browser, and Notion adapters replace the no-op seams.
+
+---

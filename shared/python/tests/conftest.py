@@ -50,7 +50,8 @@ def valid_index_record_dict() -> dict:
 
 
 def valid_card_dict() -> dict:
-    """A schema-valid ResultCardVM payload (the 7 externally exposed fields)."""
+    """A schema-valid ResultCardVM payload (externally exposed fields; Phase 2 Q2 adds
+    source-neutral sourceName/sourceUrl)."""
     return {
         "title": "Attention Is All You Need",
         "authors": ["A. Vaswani"],
@@ -59,4 +60,6 @@ def valid_card_dict() -> dict:
         "abstractSnippet": "We propose the Transformer ...",
         "relevance": 0.92,
         "arxivUrl": "https://arxiv.org/abs/2106.01234",
+        "sourceName": "arXiv",
+        "sourceUrl": "https://arxiv.org/abs/2106.01234",
     }

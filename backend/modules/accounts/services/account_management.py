@@ -123,7 +123,8 @@ class AccountManagementService:
         # M2/H5: 현재(기존) 이메일로 변경 시도 알림 + 취소(revoke) 링크 — 세션 없이도 본인이 탈취를
         # 차단할 수 있게 한다. revoke_link_base 미지정(로컬 등)이면 링크 없는 알림만 보낸다.
         revoke_link = f"{revoke_link_base}?token={revoke_token}" if revoke_link_base else ""
-        await self._email_client.send_email_change_notice_email(account.email, new_norm, revoke_link)
+        if account.email:
+            await self._email_client.send_email_change_notice_email(account.email, new_norm, revoke_link)
 
     async def revoke_email_change(self, revoke_token: str) -> None:
         """현(기존) 주소 소유자가 보류 중인 이메일 변경을 취소한다(세션 불필요, 단일 사용, H5)."""

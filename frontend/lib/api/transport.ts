@@ -10,6 +10,7 @@ export interface TransportRequest {
   method: TransportMethod;
   path: string;
   body?: unknown;
+  headers?: Record<string, string>;
   /** Safe to retry once on a transient failure (P-R1). */
   idempotent: boolean;
 }

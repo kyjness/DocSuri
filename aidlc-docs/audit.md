@@ -2505,3 +2505,285 @@ This time, find and resolve all potential issues.
 **Context**: CONSTRUCTION — Code Generation follow-up implementation verification.
 
 ---
+## U11 Novelty Agent Requirements Questionnaire Request
+**Timestamp**: 2026-06-28T06:15:17Z
+**User Input**: "차별화 (novelty) 형성 에이전트를 구현하고 싶습니다.
+유닛 번호는 U11, U11에는 `문헌탐색&근거형성 에이전트`와 `차별화 (novelty) 에이전트`가 할당됩니다.
+작동 과정은 대략적으로
+
+```text
+1. 유저가 자신이 작성한 논문을 업로드 하거나, \"~~~를 연구하고 싶다\"를 입력
+2. 먼저 `문헌DB탐색 & 주장근거 형성 에이전트`가 작동 (논문을 업로드 했을 경우) (단순 원샷 검색시 생략)
+3-1. `문헌DB탐색 & 주장근거 형성 에이전트`의 결과물을 내부 corpus retrieval에서 논문 검색
+3-2. 유저의 원샷 검색을 내부 corpus retrieval에서 논문 검색
+4. `GitHub 검색`, `최신 뉴스 검색`, `관련 데이터셋 검색` -> `Agent-Browser` 이용 검색
+5. 기존 한계 분석
+6. 실험 아이디어 생성
+7. 실험 계획 작성
+8. Notion 저장 (Notion MCP 이용)
+```
+입니다.
+aidlc 개발 과정을 적용하여 개발하려고 합니다. 질문지를 형성해 주세요."
+**AI Response**: "AI-DLC Requirements Analysis 재진입으로 판단하고, 공통 규칙·질문 형식·기존 research-agent 요구사항 문서를 확인한 뒤 U11 전용 요구사항 검증 질문지를 생성한다."
+**Context**: INCEPTION / Requirements Analysis — U11 novelty agent questionnaire.
+
+---
+## U11 Novelty Agent Requirements Questionnaire Complete
+**Timestamp**: 2026-06-28T06:18:56Z
+**User Input**: ""
+**AI Response**: "U11 문헌탐색·근거형성 / 차별화(novelty) 에이전트 요구사항 검증 질문지를 aidlc-docs/inception/requirements/requirement-verification-questions-u11-novelty-agent.md에 생성했다. 질문 26개와 [Answer] 태그 26개를 확인했다."
+**Context**: INCEPTION / Requirements Analysis — U11 novelty agent questionnaire complete.
+
+---
+## U11 Novelty Agent Questionnaire Scope Correction Request
+**Timestamp**: 2026-06-28T06:26:15Z
+**User Input**: "잠깐만요!! `문헌탐색 & 근거형성 에이전트`는 개발 목표가 아닙니다. U11 안에 두 에이전트를 병렬로 둔다는 의미이고, 현재 과정은 두 에이전트 중 `차별화 (novelty) 에이전트`를 개발하는 과정입니다. `문헌탐색 & 근거형성 에이전트`는 타 과정에서 개발중이니 신경쓰지 말고, 공통협약 구조에만 집중해 주세요. 그러므로, aidlc-docs\\inception\\requirements\\requirement-verification-questions-u11-novelty-agent.md 내용을 다시 수정해 주세요."
+**AI Response**: "U11 질문지의 개발 대상을 차별화(novelty) 에이전트로 한정하고, 문헌탐색 & 근거형성 에이전트는 병렬 upstream producer로 취급해 공통 협약/계약 질문만 남기도록 수정한다."
+**Context**: INCEPTION / Requirements Analysis — U11 novelty agent questionnaire scope correction.
+
+---
+## U11 Novelty Agent Questionnaire Scope Correction Complete
+**Timestamp**: 2026-06-28T06:27:50Z
+**User Input**: ""
+**AI Response**: "requirement-verification-questions-u11-novelty-agent.md를 novelty 에이전트 개발 전용 질문지로 다시 작성했다. 문헌탐색 & 근거형성 에이전트 구현 질문은 제거하고, U11 공통 계약/EvidenceBundle/source reference/프라이버시/실행 방식/품질 게이트 중심으로 정리했다. 질문 26개와 [Answer] 태그 26개를 확인했다."
+**Context**: INCEPTION / Requirements Analysis — U11 novelty agent questionnaire scope correction complete.
+
+---
+## PR Document Creation Request
+**Timestamp**: 2026-06-28T06:52:12Z
+**User Input**: ".github\\PULL_REQUEST_TEMPLATE.md 을 기반으로 202606291600_1_PR.md를 작성해 주세요."
+**AI Response**: ".github/PULL_REQUEST_TEMPLATE.md 구조를 확인하고, 최신 U11 novelty questionnaire 변경 내용을 기반으로 202606291600_1_PR.md를 작성했다."
+**Context**: Documentation — PR description generation.
+
+---
+## U11 Novelty Questionnaire Cross Review Revision Request
+**Timestamp**: 2026-06-28T08:12:26Z
+**User Input**: "Cross-Review.md 를 참고하여 aidlc-docs\\inception\\requirements\\requirement-verification-questions-u11-novelty-agent.md 질문지를 다시 수정해 주세요."
+**AI Response**: "Cross-Review.md를 읽고 U11 novelty 질문지를 기존 U11 산출물 재스코핑/개정 질문지로 다시 작성한다."
+**Context**: INCEPTION / Requirements Analysis — U11 novelty questionnaire cross-review revision.
+
+---
+## U11 Novelty Questionnaire Cross Review Revision Complete
+**Timestamp**: 2026-06-28T08:16:00Z
+**User Input**: ""
+**AI Response**: "Cross-Review.md 지적을 반영해 requirement-verification-questions-u11-novelty-agent.md를 기존 U11 산출물 개정/재스코핑 질문지로 교체하고, 질문/답변 태그 수와 diff whitespace를 확인했다."
+**Context**: INCEPTION / Requirements Analysis — U11 novelty questionnaire cross-review revision complete.
+
+---
+## U1 Figure AssetId Caption Alignment (Audit Hardening)
+**Timestamp**: 2026-06-29T02:16:57Z
+**User Input**: "Add this change to u1-audit-hardening and update the documents too."
+**AI Response**: "arXiv HTML+e-print 경로에서 doc-model 그림 assetId(HTML 읽기 순서)와 자산 추출 ordinal((page,y,x)/파일명 순서)이 독립 산출돼 어긋날 수 있는 잠재 정합 결함을 수정했다. `finalize_assets`에 doc-model FigureBlock 캡션 기반 그림 ordinal 매칭(`figure_caption_anchors`·`_match_figure_ordinals`)을 추가하고 `_store_assets_best_effort(doc_model)`로 배선했다. 앵커가 없으면 기존 위치 기반(positional) 동작을 유지한다(하위호환). page-crop 경로(캡션 보유)는 정합을 보장하고, 캡션 없는 e-print structured 그림은 위치 기반으로 잔존(문서화), TEI/GROBID 경로는 크롭 스펙이 동일 assetId를 보유해 기존 정합이 불변이다. 테스트 4건 추가, 자산 스위트(test_assets·test_asset_wiring) 통과, ruff 통과. 설계 문서 `u1-multimodal-asset-code-summary.md`의 ordinal 설명을 갱신했다."
+**Context**: CONSTRUCTION / U1 Audit Hardening — arXiv 그림 자산 assetId 캡션 정합 결함 수정 + 설계 문서 갱신.
+
+---
+## U1 SSRF DNS-Rebinding Pin + Metadata Fetch Cap (Audit Hardening)
+**Timestamp**: 2026-06-29T03:11:59Z
+**User Input**: "fix the findings first, then start the deployment process on the develop branch."
+**AI Response**: "배포 준비 감사에서 도출한 잔여 findings를 수정했다. (1) should-fix — `corpus_http.py`의 SSRF 가드 TOCTOU/DNS-rebinding 갭: `_assert_public_host`가 호스트를 검증한 뒤 `client.stream`이 연결 시 호스트를 재해석(re-resolve)해, 공격자 제어 `openAccessPdf.url` 호스트가 검증 시점엔 공인 IP·연결 시점엔 사설/메타데이터 IP를 반환하면 우회 가능했다. `_assert_public_host`를 `(host, pinned_ip)` 반환으로 바꾸고 신규 `_pin_url`로 검증한 IP에 직접 연결(Host 헤더·`sni_hostname` 확장으로 원 호스트명 보존 → TLS 인증서 검증은 호스트명 기준, httpcore 1.0.9 `server_hostname` 확인)하도록 `_get_bytes` 리다이렉트 루프를 배선해 검증=연결 주소를 일치시켰다(테스트 transport 주입 시는 핀 생략). (2) nit — S2/OpenAlex 메타데이터 JSON fetch(`_request`)가 PDF 경로와 달리 무제한 read였던 것을 `client.stream`+`read_capped`(64 MiB, NFR §0.5)로 캡하고 `_response_json`을 bytes 파싱으로 전환. (3) nit — GROBID `response.text` 무제한 read는 내부 사이드카(공격자 비제어)·입력 PDF가 이미 fetch-cap·다운스트림 `safe_fromstring` 32 MiB 캡으로 이중 방어돼 의도적으로 미수정(스트리밍 전환은 monkeypatch 테스트 재작성 비용 대비 실익 없음)으로 문서화했다. 핀 로직 테스트 2건 추가(`_assert_public_host` 핀 반환·`_pin_url` 포트/경로/IPv6 보존), ingestion 스위트 211 passed·1 skipped, ruff 통과. Verdict: APPROVE(블로킹 없음)."
+**Context**: CONSTRUCTION / U1 Audit Hardening — SSRF DNS-rebinding IP 핀 + 메타데이터 fetch 사이즈 캡(SEC-15 / NFR §0.5); GROBID 무제한 read는 이중 방어 근거로 accept.
+
+---
+## Novelty Agent Requirements Questionnaire Request
+**Timestamp**: 2026-06-29T08:17:45Z
+**User Input**: "차별화 (novelty) 형성 에이전트를 구현하고 싶습니다.
+에이전트는 `문헌탐색&근거형성 에이전트`와 `차별화 (novelty)` 에이전트 가 있습니다.
+작동 과정은 인풋이 무엇이냐에 따라 두 과정으로 갈립니다.
+인풋이 자연어 질문일 경우
+
+```
+1. 유저가 \"~~~를 연구하고 싶다\" 유형의 자연어를입력
+2. 유저의 자연어 검색을 내부 corpus retrieval에서 논문 검색
+3. `GitHub 검색`, `최신 뉴스 검색`, `관련 데이터셋 검색` -> `Agent-Browser` 이용 검색
+4. 기존에 완료된 유사 아이디어 논문 정리
+5. 차별점이 추가된 실험 아이디어 추천
+6. 실험 계획 작성
+7. Notion 저장 (Notion MCP 이용)
+```
+
+인풋이 작성중인 논문 문서류일 경우
+
+```
+1. 유저가 자신이 작성한 논문 문서를 업로드
+2. 문서를 청킹해 내부 corpus retrieval에서 논문 검색
+3. `GitHub 검색`, `최신 뉴스 검색`, `관련 데이터셋 검색` -> `Agent-Browser` 이용 검색
+4. 기존에 완료된 유사 아이디어 논문 정리
+5. 문장 유사도 (표절), AI 어투 검사하여 경고 (a.k.a 카피킬러)
+5. 차별점이 추가된 실험 아이디어 추천
+6. 실험 계획 작성
+7. Notion 저장 (Notion MCP 이용)
+```
+
+입니다.
+U2의 전문 Full 검색 기능을 활용하도록 합니다.
+공유계약 문서를 준수해야 합니다.
+에이전트의 탐구 프로세스 과정이 프론트에 출력되어야 합니다.
+aidlc 개발 과정을 적용하여 개발하려고 합니다. 질문지를 형성해 주세요."
+**AI Response**: "AI-DLC Requirements Analysis 질문지 생성을 수행한다. 기존 novelty 질문지는 과거 답변 산출물이므로 덮어쓰지 않고, 현재 2-agent/EvidenceFormationPort/U2 Full 검색/Agent-Browser/Notion MCP 요구를 반영한 새 질문지를 생성한다."
+**Context**: INCEPTION / Requirements Analysis — novelty Agent questionnaire.
+
+---
+## Novelty Agent Answers Reflected And Next Steps
+**Timestamp**: 2026-06-29T09:10:47Z
+**User Input**: "requirement-verification-questions-answer-1.md 의 답변을 반영하여 질문지를 확정하고, 다음 단계를 진행해 주세요."
+**AI Response**: "답변 파일을 반영해 novelty Agent 질문지를 확정하고, 요구사항 FR-30~35/NFR-P5/R3/QT-10을 requirements.md에 추가했다. 이어서 User Stories 단계로 진행해 에픽 9(US-NV1~US-NV9), 페르소나/스토리 맵, FR 커버리지 맵을 갱신하고 Functional Design 계획 파일을 생성했다."
+**Context**: INCEPTION / Requirements Analysis + User Stories; CONSTRUCTION / Functional Design planning — novelty Agent.
+
+---
+## Novelty Agent Functional Design Question Gate Created
+**Timestamp**: 2026-06-29T09:10:47Z
+**User Input**: "다음 질문지가 나올 때까지 과정을 쭉 진행해 주세요."
+**AI Response**: "Requirements/User Stories 반영 이후 Functional Design 단계로 진행해 `aidlc-docs/construction/plans/novelty-agent-functional-design-plan.md`에 Q1~Q16 질문 게이트를 생성했다. 답변 전에는 Functional Design 산출물을 생성하지 않는다."
+**Context**: CONSTRUCTION / Functional Design — novelty Agent question gate.
+
+---
+## Novelty Agent Functional Design Complete
+**Timestamp**: 2026-06-29T18:49:45Z
+**User Input**: "FD-Answer-1.md 을 반영하여 질문지를 확정하고, 다음 단계를 진행해 주세요."
+**AI Response**: "FD-Answer-1.md의 Q1~Q16=A 답변을 Functional Design 질문지에 반영하고, EvidenceFormationPort의 provisional 필드(conflicting/confidence)는 optional로 다루도록 고정했다. `domain-entities.md`, `business-logic-model.md`, `business-rules.md`, `frontend-components.md`를 생성하고 현재 게이트를 Functional Design review/approval로 갱신했다."
+**Context**: CONSTRUCTION / Functional Design — novelty Agent artifacts generated.
+
+---
+## Novelty Agent NFR Requirements Question Gate Created
+**Timestamp**: 2026-06-29T18:54:56Z
+**User Input**: "다음 질문지 생성 단계까지 쭉 진행해 주세요.!"
+**AI Response**: "Functional Design 승인 후속 진행 지시로 해석해 NFR Requirements 단계로 이동하고, `aidlc-docs/construction/plans/novelty-agent-nfr-requirements-plan.md`에 Q1~Q14 질문 게이트를 생성했다. 답변 전에는 NFR Requirements 산출물을 생성하지 않는다."
+**Context**: CONSTRUCTION / NFR Requirements — novelty Agent question gate.
+
+---
+## Novelty Agent NFR Requirements Complete And NFR Design Question Gate Created
+**Timestamp**: 2026-06-29T19:11:54Z
+**User Input**: "nfr-answer.md 을 반영하여 질문지를 확정하고, 다음 질문지를 출력해 주세요."
+**AI Response**: "nfr-answer.md의 답변(Q4=B, 나머지 A)을 NFR Requirements 질문지에 반영했다. DOCX parser는 shared ingestion/doc-model 또는 evidence parser boundary에 두고 novelty Agent는 parsed Evidence만 소비하도록 고정했으며, LLM 출력 검증은 U6 GroundingEnforcementHook을 복제하지 않는 novelty-local validation으로 정리했다. `nfr-requirements.md`, `tech-stack-decisions.md`를 생성하고 다음 단계 질문지 `novelty-agent-nfr-design-plan.md` Q1~Q10을 생성했다."
+**Context**: CONSTRUCTION / NFR Requirements complete; NFR Design question gate.
+
+---
+## Novelty Agent NFR Design Complete And Infrastructure Question Gate Created
+**Timestamp**: 2026-06-29T21:54:23Z
+**User Input**: "nfr-design-review.md 를 반영하여 질문지를 확정하고, 다음 질문지 단계까지 쭉 진행해 주세요."
+**AI Response**: "nfr-design-review.md를 반영해 DOCX를 v1 범위에서 제외하고 PDF/Markdown/TXT로 원고 업로드 범위를 축소했다. NFR Design 질문지 Q1~Q10은 전부 A로 확정하되 Q3는 Last-Event-ID 기반 replay를 v1 제외로 제한했다. `nfr-design-patterns.md`, `logical-components.md`를 생성하고 다음 단계 질문지 `novelty-agent-infrastructure-design-plan.md` Q1~Q10을 생성했다."
+**Context**: CONSTRUCTION / NFR Design complete; Infrastructure Design question gate.
+
+---
+## Novelty Agent Infrastructure Design Complete And Code Generation Plan Created
+**Timestamp**: 2026-06-30T00:23:44Z
+**User Input**: "infradesign-answer.md 와 질문지의 답변을 반영하여 질문지를 확정하고, 다음 단계를 진행해 주세요."
+**AI Response**: "infradesign-answer.md와 Infrastructure Design 질문지 답변(Q1~Q10=A)을 반영했다. 기존 AWS CDK/Fargate/SQS/RDS/S3/U6 패턴을 재사용하되 SSE와 SSRF/egress guard, Notion 사용자 토큰 암호화는 신규 구현 또는 신규 통제로 명시했다. `infrastructure-design.md`, `deployment-architecture.md`를 생성하고 다음 단계 `novelty-agent-code-generation-plan.md` 승인 게이트를 생성했다."
+**Context**: CONSTRUCTION / Infrastructure Design complete; Code Generation planning gate.
+
+---
+## Novelty Agent Code Generation Complete
+**Timestamp**: 2026-06-30T00:56:55Z
+**User Input**: "이제 코드를 생성해 주세요."
+**AI Response**: "Code Generation Part 2 approval로 해석해 Novelty Agent backend module, SQL migration, app-shell wiring, tests, CDK worker stack, API deployment env values, code summary, and plan checkbox updates를 생성했다. Verification: novelty tests passed, ruff passed, compileall passed, cdk synth passed; combined app-shell test still requires existing local dependencies docsuri_shared/docsuri_ops/discovery."
+**Context**: CONSTRUCTION / Code Generation — Novelty Agent.
+
+---
+## Build and Test Stage
+**Timestamp**: 2026-06-30T01:07:46Z
+**User Input**: "`Approve code generation and proceed to Build & Test`를 진행해 주세요."
+**AI Response**: "Code Generation approval을 기록하고 Novelty Agent Build & Test 문서를 갱신했다. U11 unit tests, U11+app-shell tests, backend tests, ruff, compileall, and CDK synth 검증 결과를 build-and-test summary에 반영했다."
+**Build Status**: Success
+**Test Status**: Pass
+**Files Generated/Updated**:
+- build-instructions.md
+- unit-test-instructions.md
+- integration-test-instructions.md
+- performance-test-instructions.md
+- contract-test-instructions.md
+- security-test-instructions.md
+- build-and-test-summary.md
+**Context**: CONSTRUCTION / Build and Test — Novelty Agent.
+
+
+---
+## Novelty Agent Degraded Completion Patch
+**Timestamp**: 2026-06-30T01:39:18Z
+**User Input**: "좋아요. 그럼 그렇게 수정해 주세요."
+**AI Response**: "no-op/degraded adapter 결과가 하나라도 있으면 Novelty Agent worker가 최종 job state를 DEGRADED로 종료하도록 수정하고, degraded/non-degraded worker tests를 갱신했다."
+**Context**: CONSTRUCTION / Code patch — Novelty Agent worker final state.
+
+---
+## Cross Review 1 Reflected
+**Timestamp**: 2026-06-30T02:33:06Z
+**User Input**: "Cross-Review-1.md 를 반영하여 코드를 수정해 주세요."
+**AI Response**: "Cross-Review-1.md의 지적을 반영해 public IP literal URL allowlist 우회를 차단하고, API job 생성 후 queue URL이 있으면 SQS enqueue/no queue면 inline mock processing을 수행하도록 수정했다. Novelty worker에 SQS polling/ack loop를 추가하고, dead notion_connections migration을 제거했으며, supported adapter output without sourceRefs를 FAILED가 아닌 DEGRADED로 처리하도록 테스트를 보강했다."
+**Context**: CONSTRUCTION / Code patch — Novelty Agent cross review fixes.
+
+---
+## Cross Review 2 Reflected
+**Timestamp**: 2026-06-30T11:45:28Z
+**User Input**: "Cross-Review-2.md 를 반영하여 코드를 수정해 주세요. 리뷰 1을 통해 수정된 사항일 경우 넘어가 주세요."
+**AI Response**: "Cross-Review-2.md에서 Review-1로 이미 반영된 API enqueue, worker SQS loop, public IP literal SSRF guard 항목은 건너뛰었다. 남은 CDK RDS hardcoding 지적은 NoveltyStack DB endpoint/port/security group/secret을 props와 CDK context로 주입하도록 수정했고, manuscript degraded branch test를 추가했다. Verification: novelty tests 14 passed, U11+app-shell tests 28 passed, backend tests passed with 1 skipped, ruff passed, compileall passed, cdk synth passed with existing warnings."
+**Context**: CONSTRUCTION / Code patch — Novelty Agent cross review 2 fixes.
+
+---
+## Cross Review 3 Reflected
+**Timestamp**: 2026-06-30T12:52:58Z
+**User Input**: "Cross-Review-3.md 를 반영하여 코드를 수정하고 PR 문서를 작성해 주세요."
+**AI Response**: "Cross-Review-3.md를 반영해 Novelty worker가 job 처리 중 FAILED 상태를 기록한 경우 rollback으로 실패 상태를 지우지 않고 commit+ack 하도록 수정했다. malformed payload/missing job 등 FAILED 기록 전 오류는 기존 retry/DLQ 경로를 유지한다. whitespace 오류를 정리하고 Cross-Review-3 전용 PR 문서를 작성했다. Verification: novelty tests 15 passed, U11+app-shell tests 29 passed, backend tests passed with 1 skipped, ruff passed, compileall passed, git diff --check origin/develop passed, cdk synth passed with existing warnings."
+**Context**: CONSTRUCTION / Code patch — Novelty Agent cross review 3 fixes.
+
+---
+## Agent Chat Frontend Requirements Questions
+**Timestamp**: 2026-06-30T14:27:45Z
+**User Input**: "좋아요. 이제 프론트엔드를 만들어 봅시다. 조건은 ```Plain Text
+내비게이션 바 가운데에 추가
+멀티턴 채팅
+채팅 시작시 문헌탐색&근거형성 / novelty 둘 중 하나 선택
+이후 변경 불가
+화면의 왼쪽 위 메뉴바 생성하여 과거 세션 로딩 (ChatGPT, Gemini와 유사)
+파일 추가 버튼은 채팅바 왼쪽 `+` 버튼
+에이전트의 탐구 프로세스 과정이 프론트에 출력
+``` 입니다. aidlc 개발 과정을 적용하여 개발하려고 합니다. 질문지를 형성해 주세요."
+**AI Response**: "AI-DLC common rules, requirements-analysis rules, extension opt-in prompts, existing requirements, Novelty Agent functional design, and frontend navigation structure를 확인한 뒤 Agent Chat Frontend 요구사항 검증 질문지 `aidlc-docs/inception/requirements/requirement-verification-questions-agent-chat-frontend.md`를 생성했다. 질문지는 nav/route/mode lock/session drawer/API seam/file attach/progress display/failure state/Notion export/security/resiliency/PBT 결정을 포함한다."
+**Context**: INCEPTION / Requirements Analysis — Agent Chat Frontend clarification questions.
+
+---
+## Agent Chat Frontend Requirement Answers Confirmed
+**Timestamp**: 2026-06-30T09:06:06Z
+**User Input**: "requirement-question-answer.md 의 내용을 반영하여 질문지의 답을 확정해 주세요."
+**AI Response**: "Applied answers from requirement-question-answer.md to the Agent Chat Frontend requirement verification questions. Explicit answers were reflected for Q1, Q2, Q3, Q4, Q5, Q9, Q11, Q12, Q13, and Q16; unanswered items were set to the recommended option A."
+**Context**: INCEPTION / Requirements Analysis — Agent Chat Frontend.
+## U3 Review Findings Remediation
+**Timestamp**: 2026-06-30T04:48:56Z
+**User Input**: "resolve all issues and commit to the PR"
+**AI Response**: "U3 aidlc-unit-review findings remediation requested. Proceeding on PR branch `feat/novelty-agent` / `origin/pr/263` with targeted fixes for social-link confirmation bypass, AccountDeleted cascade consumers, PII-safe account logs, and reCAPTCHA login wiring; will verify and commit to the PR branch."
+**Context**: CONSTRUCTION / Code patch — U3 Accounts review remediation.
+
+---
+## U3 Review Findings Remediation Completion
+**Timestamp**: 2026-06-30T04:58:58Z
+**User Input**: "resolve all issues and commit to the PR"
+**AI Response**: "Resolved U3 review findings: pending social links remain non-authenticating until confirmation, account purge worker now has a same-RDS owner-scoped data purge backstop after AccountDeleted publication, account email logs no longer include recipient/token/link/body values, and frontend login sends reCAPTCHA v3 tokens through the BFF header path with CSP allowances. Validation passed: backend ruff, focused account pytest suite, frontend Vitest API/BFF tests, frontend tsc, diff check, and PII log-pattern scan."
+**Context**: CONSTRUCTION / Code patch completion — U3 Accounts review remediation.
+
+---
+## Research And Novelty Chat Session APIs
+**Timestamp**: 2026-06-30T06:06:49Z
+**User Input**: "좋아요. 문헌탐색&근거형성 (research_jobs) 와, 차별화 (novelty_jobs)의 채팅 세션을 분리하는 것으로, API들을 추가해 주세요."
+**AI Response**: "Adding separated chat session persistence APIs for literature evidence formation (`research_jobs`) and novelty formation (`novelty_jobs`) while keeping storage tables and API prefixes separate."
+**Context**: CONSTRUCTION / Code patch — Research and Novelty chat sessions.
+
+---
+## PR Document And Commit Message
+**Timestamp**: 2026-06-30T06:16:46Z
+**User Input**: "좋아요. pr 문서와 커밋 메시지를 작성해 주세요."
+**AI Response**: "Creating a pull request document from the repository template and preparing a commit message for the staged chat session API changes."
+**Context**: Documentation / PR preparation.
+
+---
+## Cross Review Reflected
+**Timestamp**: 2026-06-30T06:48:11Z
+**User Input**: "Cross-Review.md 를 반영하여, 코드를 수정해 주세요."
+**AI Response**: "Reflected Cross-Review.md cleanup findings: kept novelty_messages creation only in the new 002 migration, collapsed duplicate research chat request DTOs, removed redundant service-level content stripping, and added a boundary test for blank novelty topics."
+**Context**: CONSTRUCTION / Code patch — Research and Novelty chat session API review fixes.
+
+---
+## PR Document And Staged Commit Message
+**Timestamp**: 2026-06-30T06:49:50Z
+**User Input**: "PR 문서와, 스테이징의 커밋 메시지를 작성해 주세요."
+**AI Response**: "Created a PR document for the currently staged Cross-Review cleanup changes and prepared the matching commit message."
+**Context**: Documentation / PR preparation.
+
+---

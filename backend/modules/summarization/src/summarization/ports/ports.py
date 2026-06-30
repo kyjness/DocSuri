@@ -30,6 +30,8 @@ __all__ = [
     "SummaryStorePort",
     "FullTextSourcePort",
     "DocModelReadPort",
+    "DocModelBuildQueuePort",
+    "SummaryJobQueuePort",
     "GlossaryRepositoryPort",
     "AssetReadPort",
 ]
@@ -106,7 +108,13 @@ class DocModelBuildQueuePort(Protocol):
     """Trigger U1's lazy doc-model build (BR-30/D6) on a read miss. The read side only enqueues
     a ``BUILD_DOC_MODEL`` job onto U1's queue — it never imports/runs the builder (boundary B:
     consumer enqueues, ingestion worker produces). Idempotent at the producer (a cache hit
-    short-circuits the build), so a duplicate enqueue is cheap."""
+    short-circuits the build), so a duplicate enqueue is cheap.
+
+    DEPRECATED (D6, Q5) — legacy backfill path only. The target is eager doc-model build at
+    ingestion time, which degrades to flat-text on failure (never None), so "index ⊆ doc-model"
+    holds and a read miss should not occur for newly-ingested papers. This lazy trigger is kept
+    transitionally to backfill papers ingested before eager build shipped, and is slated for
+    removal once the corpus is backfilled. Do not build new dependencies on it."""
 
     def enqueue_build(self, paper_id: str, version: int) -> None:
         """Best-effort enqueue of a doc-model build for ``(paper_id, version)``. MUST NOT raise
@@ -151,7 +159,10 @@ class GlossaryRepositoryPort(Protocol):
         ...
 
     def get_glossary_version(self, user_id: str) -> int:
-        """Return the user's current ``glossary_ver`` (0 when none → shared baseline)."""
+        """Return the user's current ``glossary_ver`` (0 when none → shared baseline). Reflects
+        ALL terms — the translate cache identity (post-substitution terms affect translation). The
+        summary cache instead keys on a content signature of the prompt-enforced subset, derived
+        from ``get_user_glossary`` (see ``GlossaryResolver.prompt_glossary_signature``)."""
         ...
 
     def upsert_term(
