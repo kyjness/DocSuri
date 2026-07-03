@@ -93,6 +93,20 @@ def test_u6_middleware_trusts_proxy_stamped_hop_not_spoofable_leftmost() -> None
     assert different_trusted.status_code == 200  # different trusted hop → different bucket
 
 
+def test_rate_limit_key_supports_cloudfront_alb_chain() -> None:
+    class _Client:
+        host = "10.0.0.10"
+
+    class Req:
+        headers = {"X-Forwarded-For": "198.51.100.20, 203.0.113.7"}
+        client = _Client()
+
+    assert (
+        _rate_limit_key(Req(), trust_proxy_headers=True, trusted_proxy_count=2)
+        == "198.51.100.20"
+    )
+
+
 def test_rate_limit_key_handles_missing_client() -> None:
     class RequestWithoutClient:
         headers: dict[str, str] = {}

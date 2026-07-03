@@ -14,18 +14,48 @@ import type { GlossaryUpsertResultDTO, GlossaryTermDTO } from '@/types/glossary'
 // button and the block-zoom from a scrolled position). English for 본문, Korean for 본문 번역.
 function _fillerSections(lang: 'en' | 'ko'): DocSection[] {
   const en = [
-    ['Background', 'Recurrent and convolutional models dominated sequence transduction, but their sequential computation limited parallelism and made long-range dependencies expensive to learn. This section reviews that prior work and motivates an attention-only design.'],
-    ['Training', 'Models were trained on the standard WMT 2014 English-German and English-French datasets using byte-pair encoding. We used the Adam optimizer with a warmup schedule, label smoothing, and residual dropout, and averaged the last checkpoints for evaluation.'],
-    ['Results', 'On English-German the model establishes a new state of the art while training in a fraction of the time of prior best models. On English-French it reaches competitive quality at substantially lower training cost, confirming that attention alone is sufficient.'],
-    ['Analysis', 'We ablate the number of attention heads, the key dimension, and the model size. Too few heads hurt quality, while excessively large key dimensions provide no benefit, suggesting a sweet spot that balances capacity and optimization difficulty.'],
-    ['Conclusion', 'The Transformer replaces recurrence entirely with self-attention, enabling far more parallelism and shorter paths between any two positions. We expect attention-based architectures to generalize beyond text to other modalities and tasks.'],
+    [
+      'Background',
+      'Recurrent and convolutional models dominated sequence transduction, but their sequential computation limited parallelism and made long-range dependencies expensive to learn. This section reviews that prior work and motivates an attention-only design.',
+    ],
+    [
+      'Training',
+      'Models were trained on the standard WMT 2014 English-German and English-French datasets using byte-pair encoding. We used the Adam optimizer with a warmup schedule, label smoothing, and residual dropout, and averaged the last checkpoints for evaluation.',
+    ],
+    [
+      'Results',
+      'On English-German the model establishes a new state of the art while training in a fraction of the time of prior best models. On English-French it reaches competitive quality at substantially lower training cost, confirming that attention alone is sufficient.',
+    ],
+    [
+      'Analysis',
+      'We ablate the number of attention heads, the key dimension, and the model size. Too few heads hurt quality, while excessively large key dimensions provide no benefit, suggesting a sweet spot that balances capacity and optimization difficulty.',
+    ],
+    [
+      'Conclusion',
+      'The Transformer replaces recurrence entirely with self-attention, enabling far more parallelism and shorter paths between any two positions. We expect attention-based architectures to generalize beyond text to other modalities and tasks.',
+    ],
   ];
   const ko = [
-    ['배경', '순환·합성곱 모델이 시퀀스 변환을 지배했지만, 순차적 계산이 병렬화를 제한하고 장거리 의존성 학습을 비싸게 만들었다. 이 절에서는 선행 연구를 정리하고 어텐션 전용 설계의 동기를 설명한다.'],
-    ['학습', '표준 WMT 2014 영어-독일어 및 영어-프랑스어 데이터셋에서 바이트-페어 인코딩으로 학습했다. 워밍업 스케줄을 가진 Adam 최적화기, 레이블 스무딩, 잔차 드롭아웃을 사용하고 마지막 체크포인트들을 평균했다.'],
-    ['결과', '영어-독일어에서 이전 최고 모델 대비 훨씬 짧은 학습 시간으로 새로운 최고 성능을 달성한다. 영어-프랑스어에서도 더 낮은 학습 비용으로 경쟁력 있는 품질에 도달하여, 어텐션만으로 충분함을 확인한다.'],
-    ['분석', '어텐션 헤드 수, 키 차원, 모델 크기를 제거 실험한다. 헤드가 너무 적으면 품질이 떨어지고, 키 차원이 지나치게 크면 이득이 없어, 용량과 최적화 난이도 사이의 적정점이 존재함을 시사한다.'],
-    ['결론', 'Transformer는 순환을 셀프 어텐션으로 완전히 대체하여 병렬성을 크게 높이고 임의의 두 위치 사이 경로를 짧게 만든다. 어텐션 기반 구조가 텍스트를 넘어 다른 모달리티와 과제로 일반화될 것으로 기대한다.'],
+    [
+      '배경',
+      '순환·합성곱 모델이 시퀀스 변환을 지배했지만, 순차적 계산이 병렬화를 제한하고 장거리 의존성 학습을 비싸게 만들었다. 이 절에서는 선행 연구를 정리하고 어텐션 전용 설계의 동기를 설명한다.',
+    ],
+    [
+      '학습',
+      '표준 WMT 2014 영어-독일어 및 영어-프랑스어 데이터셋에서 바이트-페어 인코딩으로 학습했다. 워밍업 스케줄을 가진 Adam 최적화기, 레이블 스무딩, 잔차 드롭아웃을 사용하고 마지막 체크포인트들을 평균했다.',
+    ],
+    [
+      '결과',
+      '영어-독일어에서 이전 최고 모델 대비 훨씬 짧은 학습 시간으로 새로운 최고 성능을 달성한다. 영어-프랑스어에서도 더 낮은 학습 비용으로 경쟁력 있는 품질에 도달하여, 어텐션만으로 충분함을 확인한다.',
+    ],
+    [
+      '분석',
+      '어텐션 헤드 수, 키 차원, 모델 크기를 제거 실험한다. 헤드가 너무 적으면 품질이 떨어지고, 키 차원이 지나치게 크면 이득이 없어, 용량과 최적화 난이도 사이의 적정점이 존재함을 시사한다.',
+    ],
+    [
+      '결론',
+      'Transformer는 순환을 셀프 어텐션으로 완전히 대체하여 병렬성을 크게 높이고 임의의 두 위치 사이 경로를 짧게 만든다. 어텐션 기반 구조가 텍스트를 넘어 다른 모달리티와 과제로 일반화될 것으로 기대한다.',
+    ],
   ];
   const rows = lang === 'en' ? en : ko;
   return rows.map(([title, text], i) => ({
@@ -116,6 +146,12 @@ export const abstractTranslationResponse: TranslationOkDTO = {
       ],
     },
     keptTerms: ['Transformer', 'attention', 'BLEU'],
+    // seed keep-as-is present (English) + the attention mapping (Korean is in the text)
+    standardGlossary: [
+      { term: 'Transformer' },
+      { term: 'BLEU' },
+      { term: 'attention', translated: '어텐션' },
+    ],
   },
 };
 
@@ -160,7 +196,8 @@ export const fullTranslationResponse: TranslationOkDTO = {
             {
               id: 's3.eq1',
               type: 'formula',
-              latex: '\\mathrm{Attention}(Q,K,V)=\\mathrm{softmax}\\left(\\frac{QK^{T}}{\\sqrt{d_{k}}}\\right)V',
+              latex:
+                '\\mathrm{Attention}(Q,K,V)=\\mathrm{softmax}\\left(\\frac{QK^{T}}{\\sqrt{d_{k}}}\\right)V',
               display: true,
               anchorLabel: '(1)',
             },
@@ -222,23 +259,33 @@ export const fullTranslationResponse: TranslationOkDTO = {
       ],
     },
     keptTerms: ['Transformer', 'encoder', 'decoder', 'self-attention'],
+    // Transformer = keep-as-is standard (English); attention→어텐션 mapping appears in the text
+    standardGlossary: [{ term: 'Transformer' }, { term: 'attention', translated: '어텐션' }],
   },
 };
 
 // Personal glossary (Phase 1/2a) — an in-memory store so the dev preview behaves like the
 // real round-trip: upsert remembers termFrom→termTo and bumps a version, and the list reads
 // it back so the badge editor pre-fills a previously saved rendering.
-const mockGlossary = new Map<string, string>();
+const mockGlossary = new Map<string, { termTo: string; promptEnforced: boolean }>();
 let mockGlossaryVer = 0;
 
-export function mockUpsertGlossaryTerm(termFrom: string, termTo: string): GlossaryUpsertResultDTO {
-  mockGlossary.set(termFrom, termTo);
+export function mockUpsertGlossaryTerm(
+  termFrom: string,
+  termTo: string,
+  promptEnforced = false,
+): GlossaryUpsertResultDTO {
+  mockGlossary.set(termFrom, { termTo, promptEnforced });
   mockGlossaryVer += 1;
   return { status: 'ok', glossaryVer: mockGlossaryVer };
 }
 
 export function mockListGlossaryTerms(): GlossaryTermDTO[] {
-  return [...mockGlossary.entries()].map(([termFrom, termTo]) => ({ termFrom, termTo }));
+  return [...mockGlossary.entries()].map(([termFrom, { termTo, promptEnforced }]) => ({
+    termFrom,
+    termTo,
+    promptEnforced,
+  }));
 }
 
 /** Reset the in-memory glossary so tests start from a clean store (no cross-test bleed). */
@@ -246,6 +293,46 @@ export function resetMockGlossary(): void {
   mockGlossary.clear();
   mockGlossaryVer = 0;
 }
+
+function substituteWeak(text: string): string {
+  let out = text;
+  for (const [termFrom, { termTo, promptEnforced }] of mockGlossary) {
+    if (promptEnforced || !termFrom) continue; // strong needs a real regenerate; weak = post-sub
+    out = out.split(termFrom).join(termTo);
+  }
+  return out;
+}
+
+// Walk the doc-model recursively, substituting weak terms in the human-readable string fields.
+function overlayNode(node: unknown): void {
+  if (Array.isArray(node)) {
+    node.forEach(overlayNode);
+    return;
+  }
+  if (!node || typeof node !== 'object') return;
+  const obj = node as Record<string, unknown>;
+  for (const field of ['fullText', 'text', 'title', 'caption']) {
+    if (typeof obj[field] === 'string') obj[field] = substituteWeak(obj[field]);
+  }
+  overlayNode(obj.sections);
+  overlayNode(obj.blocks);
+}
+
+/** Dev-only: mirror the server's read-time weak overlay so applying a 원어 유지 term visibly changes
+ * the mock translation. Strong terms would need a real re-generation the mock can't do, so they are
+ * left untouched. No-op (returns the shared fixture) when the user has no weak terms. */
+export function withWeakOverlay(res: TranslationOkDTO): TranslationOkDTO {
+  const hasWeak = [...mockGlossary.values()].some((v) => !v.promptEnforced);
+  if (!hasWeak) return res;
+  const clone = structuredClone(res);
+  overlayNode(clone.translation.docModel);
+  return clone;
+}
+
+// Dev preview only: personalize one non-standard kept term ('encoder' → 인코더) so the "원어 유지
+// 용어" section shows a saved rendering out of the box. Tests reset the store first, so they start
+// empty. Non-standard terms save weak (표준 용어 are the strong / re-translated case).
+mockUpsertGlossaryTerm('encoder', '인코더', false);
 
 // FR-17 figure/table assets (dev preview). Inline SVG data URLs render without network.
 const _ph = (label: string, fill: string): string =>
@@ -320,7 +407,8 @@ export const docModelResponse: DocModelOkDTO = {
           {
             id: 's3.eq1',
             type: 'formula',
-            latex: '\\mathrm{Attention}(Q,K,V)=\\mathrm{softmax}\\left(\\frac{QK^{T}}{\\sqrt{d_{k}}}\\right)V',
+            latex:
+              '\\mathrm{Attention}(Q,K,V)=\\mathrm{softmax}\\left(\\frac{QK^{T}}{\\sqrt{d_{k}}}\\right)V',
             display: true,
             anchorLabel: '(1)',
           },

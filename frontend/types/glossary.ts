@@ -4,11 +4,14 @@
 // regenerate once the backend glossary contract is finalized.
 
 /** Request to POST /api/glossary. `termFrom` is the kept-as-is English term the user
- * tapped; `termTo` is their preferred Korean rendering. Phase 1 treats it as a simple
- * noun applied to translation via deterministic post-substitution. */
+ * tapped; `termTo` is their preferred Korean rendering. `promptEnforced` selects strong
+ * (프롬프트 강제 — rides into the prompt, re-generates the full-text translation) vs the
+ * default weak (후치환 — read-time overlay on the shared base, no re-generation). */
 export interface GlossaryTermUpsertDTO {
   termFrom: string;
   termTo: string;
+  /** Strong (강한) when true; omitted/false = weak (약한) post-substitution. */
+  promptEnforced?: boolean;
 }
 
 /** Result of a successful upsert. `glossaryVer` is the user's bumped glossary version;
@@ -19,10 +22,12 @@ export interface GlossaryUpsertResultDTO {
   glossaryVer: number;
 }
 
-/** One saved personal term (GET /api/glossary). Only the two display fields are exposed. */
+/** One saved personal term (GET /api/glossary). `promptEnforced` lets the editor render a
+ * saved term as strong (강한) vs weak (약한). */
 export interface GlossaryTermDTO {
   termFrom: string;
   termTo: string;
+  promptEnforced?: boolean;
 }
 
 /** The caller's saved personal terms — used to pre-fill the badge editor (Phase 2a). */

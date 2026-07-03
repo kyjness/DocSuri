@@ -1,29 +1,35 @@
 .wrap {
-  /* Static so the popover's containing block is the glossary section (which is
-     position:relative), letting the editor span the section width instead of overflowing
-     the viewport from a badge near the right edge. */
+  /* NOT positioned — the editor popover anchors to the `.terms` row (position:relative), so it
+     spans that row's width and can never push the page sideways on a narrow (mobile) viewport. */
   display: inline-flex;
 }
 
-/* Tappable kept-term chip — compact. */
+/* Kept-term chip. Blue = 아직 안 바꾼 용어 / amber(주황) = 내가 번역어를 지정한 용어. */
 .term {
   font-size: 0.8125rem;
   padding: 0.25rem 0.625rem;
   color: var(--color-accent);
   background: var(--color-accent-soft-bg);
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--color-accent);
   border-radius: 999px;
   cursor: pointer;
 }
 
 .term:hover,
 .term[aria-expanded='true'] {
-  border-color: var(--color-accent);
+  filter: brightness(0.97);
+}
+
+/* Personalized chip (the user saved a rendering) — amber, so "내가 지정한 용어" stands out. */
+.term[data-saved='true'] {
+  color: var(--color-warn-text);
+  background: var(--color-warn-bg);
+  border-color: var(--color-warn-text);
 }
 
 .popover {
-  /* Anchored to the glossary section (not the badge), spanning its full width: the editor
-     always stays inside the viewport — never cut off, never pushing the page sideways. */
+  /* Spans the `.terms` row (its positioned ancestor) below the badges — fixed to that width, so it
+     stays inside the page on mobile (no horizontal shift) and the input keeps a roomy width. */
   position: absolute;
   top: calc(100% + 0.375rem);
   left: 0;
@@ -33,6 +39,9 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem;
+  /* Cap the width on wide (desktop) viewports so the input isn't overly long; on a narrow (mobile)
+     row it spans the full `.terms` width (< cap), still without pushing the page sideways. */
+  max-width: 22rem;
   padding: 0.625rem 0.75rem;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
@@ -66,16 +75,19 @@
   cursor: not-allowed;
 }
 
+/* Un-stage a pending edit — secondary (text) button so it reads as the lesser action next to 저장. */
+.clear {
+  font-size: 0.8125rem;
+  padding: 0.25rem 0.5rem;
+  color: var(--color-danger);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
 .savedNote {
   flex: 1 1 100%;
   font-size: 0.8125rem;
   line-height: 1.5;
   color: var(--color-accent);
-  white-space: nowrap;
-}
-
-.error {
-  flex-basis: 100%;
-  font-size: 0.75rem;
-  color: var(--color-danger);
 }

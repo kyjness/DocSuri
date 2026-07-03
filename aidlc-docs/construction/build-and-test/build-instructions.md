@@ -281,3 +281,41 @@ cdk synth
 Verified result on 2026-06-23: `cdk synth` completed successfully and synthesized templates to `ops/cdk/cdk.out`. The CDK CLI emitted existing construct warnings for cross-stack reference strength, ECS `minHealthyPercent`, and security group egress; no U9 synth blocker remained.
 
 ---
+
+# Agent Chat Frontend Build Instructions — 2026-07-01
+
+## Prerequisites
+
+- Node and Corepack available.
+- Frontend dependencies installed from `frontend/pnpm-lock.yaml`.
+- Playwright WebKit installed for local E2E:
+
+```powershell
+corepack pnpm@9.15.9 --dir frontend exec -- playwright install webkit
+```
+
+## Build Steps
+
+```powershell
+corepack pnpm@9.15.9 --dir frontend exec -- tsc --noEmit
+corepack pnpm@9.15.9 --dir frontend build
+```
+
+Expected result:
+
+- TypeScript completes with no errors.
+- Next.js production build completes and includes `/agent` in the route table.
+
+Observed result on 2026-07-01:
+
+- `tsc --noEmit`: PASS.
+- `next build`: PASS; `/agent` route size `6.18 kB`, first-load JS `131 kB`.
+
+## E2E Server Note
+
+Playwright uses the configured `webServer` command in `frontend/playwright.config.ts`.
+For this local E2E pass, `scripts/prepare-standalone-assets.mjs` copies `.next/static`
+and `public/` into `.next/standalone` before `node .next/standalone/server.js` starts.
+This keeps E2E aligned with the configured standalone output while serving static chunks.
+
+---

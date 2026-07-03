@@ -18,6 +18,7 @@ from discovery.api.router import (  # noqa: E402 — after importorskip
     build_app,
 )
 from discovery.mocks import build_mock_orchestrator  # noqa: E402
+from discovery.ports.search_ports import IndexUnavailable  # noqa: E402
 from discovery.service.orchestrator import SearchUnavailable  # noqa: E402
 
 
@@ -58,6 +59,31 @@ def test_search_unavailable_handler_is_generic_503() -> None:
     response = handler(None, SearchUnavailable("opensearch host db-1 connection timeout"))
     assert response.status_code == 503
     assert b"db-1" not in response.body  # no internal detail leaked (SEC-9)
+
+
+def test_search_unavailable_handler_logs_request_correlated_store_cause(caplog) -> None:
+    # The 503 log line must be self-contained: the request id AND the real store cause (walked from
+    # the __cause__ chain: SearchUnavailable → which query failed → the OpenSearch error) so an
+    # incident needs no timestamp join to a separate adapter log. Detail stays server-side (SEC-9).
+    from types import SimpleNamespace
+
+    app = _app()
+    handler = app.exception_handlers[SearchUnavailable]
+    root = TimeoutError("connect timed out")
+    idx = IndexUnavailable("OpenSearch k-NN query failed after 3 attempt(s)")
+    idx.__cause__ = root
+    exc = SearchUnavailable("search index unavailable")
+    exc.__cause__ = idx
+    request = SimpleNamespace(state=SimpleNamespace(request_id="req-123"))
+
+    with caplog.at_level("WARNING"):
+        response = handler(request, exc)
+
+    assert response.status_code == 503
+    logged = caplog.text
+    assert "req-123" in logged  # request correlation
+    assert "after 3 attempt(s)" in logged  # which query + retry budget
+    assert "TimeoutError" in logged and "connect timed out" in logged  # real root cause
 
 
 def test_global_catch_all_handler_is_generic_500() -> None:

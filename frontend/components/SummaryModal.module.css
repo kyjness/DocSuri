@@ -1,14 +1,14 @@
-/* Mobile-first modal: full-height bottom sheet on phones, centered card on wider
-   viewports. Backdrop dims the body-first detail page behind it. */
+/* Modal: a centered card on every viewport (phone included). Backdrop dims the body-first
+   detail page behind it. */
 .backdrop {
   position: fixed;
   inset: 0;
   z-index: 50;
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: center;
   background: rgba(17, 24, 39, 0.5);
-  padding: 0;
+  padding: 1rem;
 }
 
 .panel {
@@ -19,8 +19,8 @@
   max-height: 88vh;
   padding: 0.75rem 1rem 1.25rem;
   background: var(--color-surface, #fff);
-  border-radius: 1rem 1rem 0 0;
-  box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.18);
+  border-radius: 1rem;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.22);
   overflow: hidden;
   outline: none;
 }
@@ -87,15 +87,24 @@
   display: none;
 }
 
+/* Cap the centered card's width from tablet up (phones use the full width minus padding). */
 @media (min-width: 480px) {
-  .backdrop {
-    align-items: center;
-    padding: 1rem;
-  }
-
   .panel {
     max-width: 32rem;
-    max-height: 86vh;
-    border-radius: 1rem;
+  }
+}
+
+/* Desktop: a larger reading panel — the summary / translation has room to breathe instead
+   of a phone-width card floating in the middle of a wide screen. */
+@media (min-width: 768px) {
+  .panel {
+    max-width: 46rem;
+    max-height: 90vh;
+    padding: 1rem 1.5rem 1.5rem;
+    gap: 1rem;
+  }
+
+  .heading {
+    font-size: 1.25rem;
   }
 }

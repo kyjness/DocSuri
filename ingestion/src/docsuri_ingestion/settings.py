@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from typing import Literal
 
 from pydantic import BaseModel, Field, SecretStr, ValidationError
 
@@ -28,6 +29,11 @@ class IngestionSettings(BaseModel):
     control_plane_dsn: str | None = Field(default=None, alias="DOCSURI_CONTROL_PLANE_DSN")
     sqs_queue_url: str | None = Field(default=None, alias="DOCSURI_SQS_QUEUE_URL")
     sqs_dlq_url: str | None = Field(default=None, alias="DOCSURI_SQS_DLQ_URL")
+    # Priority doc-model build queue (BR-30/D6). Separate from the bulk ingestion queue so
+    # reader-triggered BUILD_DOC_MODEL jobs (viewer/citation tree) are not starved behind a large
+    # backfill. Optional — unset → worker polls only the main queue (backward compatible).
+    docmodel_queue_url: str | None = Field(default=None, alias="DOCSURI_DOCMODEL_QUEUE_URL")
+    docmodel_dlq_url: str | None = Field(default=None, alias="DOCSURI_DOCMODEL_DLQ_URL")
     corpus_sources: str = Field(
         default="ARXIV,SEMANTIC_SCHOLAR,OPENALEX", alias="DOCSURI_CORPUS_SOURCES"
     )
@@ -40,8 +46,22 @@ class IngestionSettings(BaseModel):
     # out of source; supplied via env.
     openalex_mailto: str | None = Field(default=None, alias="DOCSURI_OPENALEX_MAILTO")
     request_timeout_seconds: float = Field(default=30.0, alias="DOCSURI_REQUEST_TIMEOUT_SECONDS")
+    # Wall-clock cap for one resilience dependency_call. Must exceed the worst LEGITIMATE
+    # multi-request chain (politeness-paced html→ar5iv→pdf + pdfplumber on a big PDF ≈ 2-3 min);
+    # 30s (= one request's timeout) killed slow-but-healthy papers and tripped the arxiv
+    # circuit breaker into fast-fail storms (2026-07-02 drain incident).
+    dependency_timeout_seconds: float = Field(
+        default=180.0, alias="DOCSURI_DEPENDENCY_TIMEOUT_SECONDS"
+    )
     index_stats_ttl_seconds: float = Field(default=60.0, alias="DOCSURI_INDEX_STATS_TTL_SECONDS")
     arxiv_rate_per_second: float = Field(default=0.33, alias="DOCSURI_ARXIV_RATE_PER_SECOND")
+    worker_max_messages: int = Field(default=1, alias="DOCSURI_WORKER_MAX_MESSAGES")
+    worker_loop_delay_seconds: float = Field(
+        default=3.0, alias="DOCSURI_WORKER_LOOP_DELAY_SECONDS"
+    )
+    worker_queue_mode: Literal["all", "bulk", "docmodel"] = Field(
+        default="all", alias="DOCSURI_WORKER_QUEUE_MODE"
+    )
     max_chunks_per_paper: int = Field(default=128, alias="DOCSURI_MAX_CHUNKS_PER_PAPER")
     max_chunk_chars: int = Field(default=2400, alias="DOCSURI_MAX_CHUNK_CHARS")
     chunk_overlap_chars: int = Field(default=240, alias="DOCSURI_CHUNK_OVERLAP_CHARS")

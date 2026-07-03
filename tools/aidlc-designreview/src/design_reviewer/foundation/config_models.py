@@ -53,7 +53,7 @@ class AWSConfig(BaseModel):
     guardrail_id: Optional[str] = Field(
         None,
         description="Amazon Bedrock Guardrail ID for content filtering and safety controls. "
-        "See docs/ai-security/BEDROCK_GUARDRAILS.md for setup instructions.",
+        "See the Amazon Bedrock Guardrails documentation for setup instructions.",
     )
     guardrail_version: Optional[str] = Field(
         None,

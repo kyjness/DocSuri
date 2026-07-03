@@ -40,6 +40,47 @@
 
 All routes are gated by `PERSONALIZATION_ENABLED`; CDK deploy default is enabled.
 
+## Search-Boost Application — Shadow Mode (US-P4, added 2026-07-01)
+
+The decision path is now consumed by U2 discovery **in shadow** — measured, not applied. The
+user-visible ranking is unchanged; only a metric is emitted.
+
+- **BR-P8 clamp at the source** (`service.py` `_to_search_boosts`): `search_decision` now emits
+  contract-compliant boosts (each ∈ [-0.1, +0.1], Σ|boost| ≤ 0.2) instead of raw [0,1] category
+  weights. Consumers never re-clamp.
+- **Relative-boost formula + top-30% rule** (`discovery/domain/ranker.py` `shadow_rerank_diff`,
+  pure): boost is multiplicative and relative to each candidate's own score, applied only within
+  the top 30% of ranked results, so it nudges rank without flipping the overall order. Returns a
+  diff (`positions_changed`, `max_shift`, `boosted_count`) against the baseline; the baseline is
+  what the caller keeps.
+- **In-process wiring** (`backend/wiring.py`): the discovery orchestrator gets a `search_boosts`
+  callable (default no-op) bound — via the existing `_event_publisher` patch idiom — to U9's read
+  port with a per-request session. The search hot path reads only an existing cached profile
+  (`cached_search_boosts`) and never lazily aggregates raw behavior events inline; PostgreSQL reads
+  apply `PERSONALIZATION_DECISION_TIMEOUT_MS` via `statement_timeout`. Gated by
+  `PERSONALIZATION_ENABLED`. Fail-open (BR-P13): any error / `disabled` / `no_profile` → empty
+  boosts → today's exact baseline.
+- **Metrics**: `personalization.rerank_shadow` (positions changed),
+  `personalization.rerank_shadow.max_shift`, and
+  `personalization.rerank_shadow.boosted_count`, each with dim `scope=search`, in the
+  `DocSuri/Production` namespace.
+- **Go-live**: replace `shadow_rerank_diff`'s `reordered` as the returned order (one line) after
+  the shadow numbers confirm nudges-not-flips.
+- **Deferred**: summary/translation defaults (US-P5), `keywordWeights` surfacing.
+
+PR: #300 (branch `feature/u9-search-boost-shadow` → develop).
+
+### Review Remediation (2026-07-01)
+
+- BR-P8 total budget now remains within `Σ|boost| ≤ 0.2` after normalization; regression is
+  covered by a Hypothesis invariant with the three-equal-category counterexample.
+- Discovery shadow reads use `cached_search_boosts`, which reads only existing settings/profile
+  rows and never performs lazy raw-event aggregation in the search request path.
+- Shadow observability now emits positions changed, max shift, and boosted count.
+- Verification: focused personalization/discovery tests passed, app-shell/orchestrator tests
+  passed, backend+discovery sweep passed, touched-file Ruff passed, `git diff --check` passed,
+  and `git merge-tree origin/develop HEAD` produced a clean merge tree.
+
 ## Tables
 
 Created by `backend/modules/personalization/migrations/001_create_personalization_tables.sql`:

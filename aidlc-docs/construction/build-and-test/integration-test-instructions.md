@@ -223,3 +223,34 @@ Key scenarios:
 - Existing backend app-shell routes continue to mount with local source packages present.
 
 ---
+
+# Agent Chat Frontend Integration Test Instructions — 2026-07-01
+
+Agent Chat v1 integration is frontend-local: the `/agent` route, session UI,
+`ApiClient` methods, and `MockTransport` agent endpoints are exercised together.
+
+Run the focused UI integration tests:
+
+```powershell
+corepack pnpm@9.15.9 --dir frontend exec -- vitest run test/agentChatScreen.test.tsx --reporter=dot
+```
+
+Run the browser smoke test:
+
+```powershell
+corepack pnpm@9.15.9 --dir frontend exec -- playwright test e2e/agent-chat.spec.ts --reporter=line
+```
+
+Observed results:
+
+- UI integration: 3 tests passed inside `test/agentChatScreen.test.tsx`.
+- Browser smoke: 1 Playwright test passed.
+
+Key scenarios:
+
+- protected `/agent` route renders with an authenticated mock session
+- mode selection creates a locked Agent Chat session
+- message send appends assistant output and timeline progress
+- session drawer can load a previous session
+
+---

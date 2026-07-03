@@ -8,6 +8,7 @@ import pytest
 from docsuri_shared.dtos import DocModel
 from docsuri_shared.vector_spec import DIMENSIONS, IndexRecord
 
+import docsuri_ingestion.worker as worker_module
 from docsuri_ingestion.adapters.aws import OpenSearchVectorIndex
 from docsuri_ingestion.adapters.local import (
     FailingEmbeddingPort,
@@ -25,6 +26,7 @@ from docsuri_ingestion.domain.canonical import canonical_key
 from docsuri_ingestion.domain.enums import DedupDecision, FailureReason, JobKind, SourceName
 from docsuri_ingestion.domain.errors import PermanentIngestionError, RetriableIngestionError
 from docsuri_ingestion.domain.models import CanonicalDedupState, IndexRecordBatch, IngestionJob
+from docsuri_ingestion.settings import IngestionSettings
 from docsuri_ingestion.worker import job_from_payload, process_message
 
 from .conftest import build_test_pipeline
@@ -264,6 +266,87 @@ def test_worker_dispatches_legacy_type_less_ingest_job() -> None:
     assert queue.acked == ["legacy-job"]
     assert queue.dlq == []
     assert seen[0].job_id == "job-1"
+
+
+def test_worker_main_uses_configured_polling_limits(monkeypatch) -> None:
+    class FakeEvent:
+        def __init__(self) -> None:
+            self.stopped = False
+            self.waits: list[float] = []
+
+        def is_set(self) -> bool:
+            return self.stopped
+
+        def wait(self, timeout: float) -> None:
+            self.waits.append(timeout)
+            self.stopped = True
+
+    class FakeQueue:
+        def __init__(self) -> None:
+            self.calls: list[int] = []
+
+        def receive_messages(self, max_messages: int = 10):
+            self.calls.append(max_messages)
+            return []
+
+    event = FakeEvent()
+    queue = FakeQueue()
+    docmodel_queue = FakeQueue()
+    settings = IngestionSettings(
+        DOCSURI_WORKER_MAX_MESSAGES=25,
+        DOCSURI_WORKER_LOOP_DELAY_SECONDS=7.5,
+    )
+    runtime = SimpleNamespace(queue=queue, docmodel_queue=docmodel_queue)
+
+    monkeypatch.setattr(worker_module, "_shutdown_event", event)
+    monkeypatch.setattr(worker_module.IngestionSettings, "from_env", lambda: settings)
+    monkeypatch.setattr(worker_module, "build_production_runtime", lambda _settings: runtime)
+
+    assert worker_module.main([]) == 0
+
+    assert docmodel_queue.calls == [10]
+    assert queue.calls == [10]
+    assert event.waits == [7.5]
+
+
+def test_worker_main_docmodel_mode_does_not_poll_bulk_queue(monkeypatch) -> None:
+    class FakeEvent:
+        def __init__(self) -> None:
+            self.stopped = False
+
+        def is_set(self) -> bool:
+            return self.stopped
+
+        def wait(self, timeout: float) -> None:
+            del timeout
+            self.stopped = True
+
+    class FakeQueue:
+        def __init__(self, messages=None) -> None:
+            self.messages = messages or []
+            self.calls: list[int] = []
+
+        def receive_messages(self, max_messages: int = 10):
+            self.calls.append(max_messages)
+            return self.messages
+
+    event = FakeEvent()
+    queue = FakeQueue()
+    docmodel_queue = FakeQueue()
+    settings = IngestionSettings(
+        DOCSURI_WORKER_QUEUE_MODE="docmodel",
+        DOCSURI_DOCMODEL_QUEUE_URL="https://sqs.example/docmodel",
+    )
+    runtime = SimpleNamespace(queue=queue, docmodel_queue=docmodel_queue)
+
+    monkeypatch.setattr(worker_module, "_shutdown_event", event)
+    monkeypatch.setattr(worker_module.IngestionSettings, "from_env", lambda: settings)
+    monkeypatch.setattr(worker_module, "build_production_runtime", lambda _settings: runtime)
+
+    assert worker_module.main([]) == 0
+
+    assert docmodel_queue.calls == [1]
+    assert queue.calls == []
 
 
 def test_queue_payload_preserves_corpus_retry_metadata() -> None:
@@ -1038,3 +1121,93 @@ def test_changed_version_replaces_stale_chunks() -> None:
     # across versions, and identical body shape yields the same chunk count (not doubled).
     assert all(record.version == 2 for record in index.records.values())
     assert len(index.records) == v1_count
+
+
+# --- patch #2: ingestion-blockage observability + NUL sanitization -----------------
+
+def _sample_index_record() -> IndexRecord:
+    return IndexRecord(
+        chunkId="2401.00001:0000",
+        paperId="2401.00001",
+        version=1,
+        vector=[0.0] * DIMENSIONS,
+        section="abstract",
+        lexicalTerms="retrieval augmented generation",
+        blockRefs=[],
+        title="A Test Paper",
+        authors=["A. Author"],
+        year=2024,
+        arxivId="2401.00001v1",
+        abstract="Abstract",
+        abstractSnippet="Abstract",
+        arxivUrl="https://arxiv.org/abs/2401.00001",
+        categories=["cs.LG"],
+    )
+
+
+def test_bulk_failure_summary_keeps_fields_and_truncates_reason() -> None:
+    from docsuri_ingestion.adapters.aws import _bulk_failure_summary
+
+    out = _bulk_failure_summary(
+        [{"_id": "p:0", "status": 400,
+          "error": {"type": "mapper_parsing_exception", "reason": "x" * 500}}]
+    )
+    assert out[0]["id"] == "p:0"
+    assert out[0]["status"] == 400
+    assert out[0]["type"] == "mapper_parsing_exception"
+    assert out[0]["reason"].endswith("…") and len(out[0]["reason"]) <= 201
+
+
+def test_bulk_failure_summary_caps_the_list() -> None:
+    from docsuri_ingestion.adapters.aws import _bulk_failure_summary
+
+    failures = [{"_id": f"p:{i}", "status": 400, "error": {}} for i in range(20)]
+    assert len(_bulk_failure_summary(failures)) == 5
+
+
+def test_bulk_upsert_logs_rejection_reason_before_raising(caplog) -> None:
+    import logging
+
+    from docsuri_ingestion.domain.errors import RetriableIngestionError
+    from docsuri_ingestion.domain.models import IndexRecordBatch
+
+    class RejectingClient:
+        def bulk(self, body):  # OpenSearch returns HTTP 200 with per-item failures
+            return {
+                "errors": True,
+                "items": [
+                    {
+                        "index": {
+                            "_id": "2401.00001:0000",
+                            "status": 400,
+                            "error": {
+                                "type": "strict_dynamic_mapping_exception",
+                                "reason": "mapping set to strict, dynamic introduction not allowed",
+                            },
+                        }
+                    }
+                ],
+            }
+
+    index = OpenSearchVectorIndex.__new__(OpenSearchVectorIndex)
+    index._client = RejectingClient()
+    index._index_name = "papers"
+    index._stats_cache = FakeStatsCache()
+    index._last_write_timestamp = None
+
+    batch = IndexRecordBatch(
+        paper_id="2401.00001", version=1, records=(_sample_index_record(),)
+    )
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(RetriableIngestionError):
+            index.bulk_upsert(batch)
+    # The previously-discarded per-item reason is now visible for diagnosis.
+    assert "strict_dynamic_mapping_exception" in caplog.text
+
+
+def test_no_nul_strips_nul_bytes_for_postgres_text() -> None:
+    from docsuri_ingestion.adapters.assets import _no_nul
+
+    assert _no_nul("Figure 1\x00 caption") == "Figure 1 caption"
+    assert _no_nul("") == ""
+    assert _no_nul(None) is None

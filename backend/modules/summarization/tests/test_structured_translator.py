@@ -171,6 +171,44 @@ def test_duplicate_block_ids_translate_independently() -> None:
     assert texts == ["번역:first", "번역:second"]
 
 
+def test_truncated_chunk_is_resplit_and_retried() -> None:
+    # Math-heavy regression: token estimates under-count LaTeX, so an "in-budget" chunk can
+    # overflow the model's output cap and come back truncated (partial JSON). The translator must
+    # re-split the truncated chunk and retry the halves so every field is still translated — not
+    # silently left as source text (which the orchestrator would abstain as empty_translation).
+    class _TruncateFirstBatch:
+        """Models a math-heavy overflow: the initial oversized batch truncates (only its first
+        segment comes back), the smaller retry halves fit. Records every batch size."""
+
+        def __init__(self) -> None:
+            self.batches: list[int] = []
+            self._first = True
+
+        def translate_segments(self, segments, request, glossary) -> TranslationSegmentsResult:
+            self.batches.append(len(segments))
+            if self._first and len(segments) > 1:
+                self._first = False
+                return TranslationSegmentsResult(
+                    translations={segments[0].id: f"번역:{segments[0].text}"},
+                    truncated=True,
+                )
+            return TranslationSegmentsResult(
+                translations={s.id: f"번역:{s.text}" for s in segments}
+            )
+
+    llm = _TruncateFirstBatch()
+    # One big chunk (huge budget) → truncates → re-splits into halves that fit.
+    draft = StructuredTranslator(llm, chunk_budget_tokens=10_000).translate(
+        _rich_doc(), _req(), Glossary()
+    )
+    doc_dict = draft.doc_model.model_dump(mode="json")
+    # Full coverage after re-split: no translatable field left as source text.
+    assert all(text.startswith("번역:") for _id, text, _set in iter_text_fields(doc_dict))
+    # It fanned out: the oversized batch, then the two retried halves.
+    assert len(llm.batches) == 3
+    assert llm.batches[1] + llm.batches[2] == llm.batches[0]
+
+
 def test_missing_translation_falls_back_to_original_text() -> None:
     class _Partial:
         def translate_segments(self, segments, request, glossary) -> TranslationSegmentsResult:
@@ -182,3 +220,21 @@ def test_missing_translation_falls_back_to_original_text() -> None:
     texts = [t for _id, t, _s in iter_text_fields(draft.doc_model.model_dump(mode="json"))]
     assert "번역됨" in texts
     assert "We propose a model." in texts  # untranslated segment preserved verbatim
+
+
+def test_unresolvable_truncation_fails_closed() -> None:
+    # A leaf (single segment) that still truncates at the model's output cap cannot be split
+    # further. The translator must NOT accept/cache a known-truncated (partial) translation as
+    # success — it fails closed (raises LlmUnavailable → orchestrator abstains). QT-5 HARD fail.
+    import pytest
+
+    from summarization.ports.ports import LlmUnavailable
+
+    class _AlwaysTruncate:
+        def translate_segments(self, segments, request, glossary) -> TranslationSegmentsResult:
+            return TranslationSegmentsResult(
+                translations={s.id: f"번역:{s.text}" for s in segments}, truncated=True
+            )
+
+    with pytest.raises(LlmUnavailable):
+        StructuredTranslator(_AlwaysTruncate()).translate(_rich_doc(), _req(), Glossary())

@@ -25,8 +25,9 @@ backend/modules/summarization/
 - **Q2 정제 / Q6 섹션**: `domain/refiner.py` = 참고문헌·Header/Footer·페이지번호·저작권·저자정보 제거; **캡션·Appendix·Supplementary·수식 보존**; 정규식 섹션 도출(실패 시 span-only).
 - **Q5 스트리밍**: `service/orchestrator.py` = 생성-버퍼-검증-점진렌더(완성 draft를 근거화 통과 후 노출, FR-5 날조 0).
 - **저하 3계층**: 비용(`CostDegradedDTO`, U6 `get_budget_state`) ≠ 장애(`LlmUnavailable`→1회 재시도→`AbstainDTO`) ≠ 소스부재(초록 폴백/`SourceUnavailableDTO`).
-- **Q8 용어집**: `domain/glossary.py` = keep-as-is·핵심 매핑은 프롬프트 강제; 사용자 선호 단순 명사는 **결정적 후치환**(한국어 조사 안전 = 좌측 경계만 매칭).
-- **Q7 캐시 키**: `domain/cache_key.py` = immutable `(paper,version,task,lang,persona,glossaryVer,modelVer,promptVer)`; S3 경로·Redis `sum:` 키.
+- **Q8 용어집**: `domain/glossary.py` = keep-as-is·핵심 매핑은 프롬프트 강제(강한 용어); 사용자 선호 단순 명사는 **읽기시 결정적 후치환 오버레이**(한국어 조사 안전 = 좌측 경계만 매칭). `assembler.assemble_translation`은 **공유 베이스**를 조립·저장하고 `assembler.overlay_translation`이 읽을 때 약한 용어를 얹는다(BR-S4/NFR-C1). 시드 용어집은 `seed_cache_segment()`로 편집 시 자동 무효화.
+- **Q7 캐시 키**: `domain/cache_key.py` = immutable `(paper,version,task,lang,persona,glossaryVer(=프롬프트-강제 시그니처),[ownerId],[seedVer],modelVer,promptVer)`; S3 경로·Redis `sum:` 키. 약한 용어는 키에 안 들어감(공유 베이스).
+- **긴 입력 병렬 map**: `domain/parallel.py` `map_bounded`(바운드·순서보존·fail-fast)를 `structured_translator`(번역 map-only)·`map_reduce`(요약 map)가 공유 — 지연 감소·결과 불변·비용 중립.
 - **real-first(Q10/Q11/TD-S12)**: 어댑터는 실 구현 단일본(Bedrock/S3/Redis/RDS); **Production Mock Adapter 없음**. 단위 테스트는 `tests/stubs.py` 테스트 전용 Fixture/Stub. 통합 테스트는 자격증명 부재 시 self-skip.
 - **TD-S3/S4 모델**: 요약=`claude-sonnet-4-6` / 번역=`claude-haiku-4-5`, Bedrock `invoke_model_with_response_stream`.
 

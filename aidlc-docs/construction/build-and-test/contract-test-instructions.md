@@ -101,12 +101,36 @@ python -m pytest backend/tests/test_novelty.py -q
 Covered contracts:
 
 - job request/result/progress DTO shape
-- manuscript content-type boundary: PDF, Markdown, TXT only
+- manuscript content-type boundary: Markdown and TXT accepted; PDF/DOCX rejected until parser/upload handle support exists
 - supported artifact outputs require `sourceRefs`
-- experiment-plan artifacts require research question, hypotheses, datasets, metrics, and risks
+- experiment-plan artifacts require research question, novelty angle, hypotheses, baselines, procedure, datasets, metrics, resources, risks, evidence status, and source refs
 - Notion export cannot complete before preview approval
 - SSE progress events encode persisted job progress
 
 Future contract tests should be added when real U2 full-search, Agent-Browser, and Notion adapters replace the no-op seams.
+
+---
+
+# Agent Chat Frontend Contract Test Instructions — 2026-07-01
+
+Agent Chat Frontend v1 uses a frontend API seam that mirrors the planned backend session APIs.
+The real backend adapter is not implemented in this frontend slice.
+
+Current contract checks:
+
+```powershell
+corepack pnpm@9.15.9 --dir frontend exec -- tsc --noEmit
+corepack pnpm@9.15.9 --dir frontend exec -- vitest run test/agentChatReducer.test.ts test/agentChatScreen.test.tsx --reporter=dot
+```
+
+Covered contracts:
+
+- `AgentMode` accepts `evidence` and `novelty`.
+- `ApiClient` exposes `listAgentSessions`, `loadAgentSession`, `deleteAgentSession`, and `sendAgentMessage`.
+- `MockTransport` implements the frontend seam through `/api/research/jobs` and `/api/novelty/jobs`.
+- frontend send payload carries `mode`, `content`, and attachment metadata.
+- timeline and assistant responses remain typed through `AgentSendMessageResult`.
+
+Future contract tests should be added when backend research/novelty session APIs replace the mock transport.
 
 ---

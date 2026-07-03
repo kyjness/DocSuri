@@ -67,8 +67,9 @@
     },
     "blockRefs": {
       "type": "array",
-      "description": "Structured DocModel block refs covered by this chunk. Empty only for legacy/plain-text chunks. INTERNAL provenance used by QT-9 BlockRef validation; not searched or exposed externally. Trace: BR-C8, BR-C13, QT-9.",
-      "items": { "$ref": "#/$defs/DocModelBlockRef" }
+      "description": "Structured DocModel block refs covered by this chunk. Empty only for legacy/plain-text chunks. INTERNAL provenance used by QT-9 BlockRef validation; not searched or exposed externally. Optional-with-default: absent on the pre-blockRefs corpus (indexed before this field existed), so readers must tolerate its absence — it is write-only provenance no read path consumes. Trace: BR-C8, BR-C13, QT-9.",
+      "items": { "$ref": "#/$defs/DocModelBlockRef" },
+      "default": []
     },
     "title": {
       "type": "string",
@@ -124,7 +125,6 @@
     "vector",
     "section",
     "lexicalTerms",
-    "blockRefs",
     "title",
     "authors",
     "year",

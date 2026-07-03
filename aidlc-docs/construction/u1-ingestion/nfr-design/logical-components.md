@@ -8,7 +8,7 @@
 
 ## 0. U1 Corpus 논리 컴포넌트 우선 적용 개정 (2026-06-26)
 
-> **우선순위**: 본 섹션은 U1 Corpus 재인셉션의 최신 NFR Design이다. 아래 §1~§5의 arXiv-only, Cohere v3, 단일 `Watermark`, `Chunker`, `VectorIndexWriter` 설명과 충돌하면 **본 섹션을 우선한다**. 기존 섹션은 과거 결정과 멀티모달 자산 설계 추적으로 보존한다.
+> **우선순위**: 본 섹션은 U1 Corpus 재인셉션의 최신 NFR Design이다. 아래 §1~§5의 arXiv-only, Cohere v4(현 임베딩 모델), 단일 `Watermark`, `Chunker`, `VectorIndexWriter` 설명과 충돌하면 **본 섹션을 우선한다**. 기존 섹션은 과거 결정과 멀티모달 자산 설계 추적으로 보존한다.
 
 ### 0.1 Corpus component topology
 

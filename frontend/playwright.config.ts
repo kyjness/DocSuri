@@ -11,7 +11,8 @@ export default defineConfig({
     ...devices['iPhone 13'],
   },
   webServer: {
-    command: 'pnpm build && pnpm start',
+    command:
+      'corepack pnpm@9.15.9 build && node scripts/prepare-standalone-assets.mjs && node .next/standalone/server.js',
     url: 'http://localhost:3000',
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,

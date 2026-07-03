@@ -18,17 +18,31 @@ describe('DocModelViewer', () => {
     expect(within(toc).getByText('Model Architecture')).toBeTruthy();
 
     // Table is rendered as DATA (numbers/cells visible, not a crop image — D8).
-    expect(screen.getByRole('table')).toBeTruthy();
+    const table = screen.getByRole('table');
+    expect(table).toBeTruthy();
     expect(screen.getByText('Self-Attention')).toBeTruthy();
     expect(screen.getByText('Layer Type')).toBeTruthy();
+    // D1 regression guard: the table must stay directly in the a11y tree — no ancestor
+    // wraps it in role="button" (the old ZoomTrigger swallowed the whole block into one
+    // opaque, unlabeled control and screen readers lost every cell).
+    expect(table.closest('[role="button"]')).toBeNull();
 
-    // Figure joins the /assets signed url by assetId.
-    const img = await screen.findByRole('img');
-    expect(img.getAttribute('src')).toContain('data:image/svg');
-    expect(img.getAttribute('loading')).toBe('lazy');
+    // Figure joins the /assets signed url by assetId. Scoped to actual <img> tags: the
+    // formula-fallback placeholder also carries role="img" (D5), so a plain findByRole('img')
+    // is ambiguous once that fix landed.
+    const imgs = await screen.findAllByRole('img');
+    const img = imgs.find((el) => el.tagName === 'IMG');
+    expect(img).toBeTruthy();
+    expect(img!.getAttribute('src')).toContain('data:image/svg');
+    expect(img!.getAttribute('loading')).toBe('lazy');
+    expect(img!.closest('[role="button"]')).toBeNull();
 
     // Display formula rendered by KaTeX (emits .katex markup).
     expect(document.querySelector('.katex')).toBeTruthy();
+
+    // Each table/figure/formula gets its OWN adjacent zoom button (D1, BR-U5-22) rather than
+    // the content itself being the trigger.
+    expect(screen.getAllByTestId('docmodel-zoom-trigger').length).toBeGreaterThan(0);
   });
 
   it('keeps a numbered formula as a placeholder when it has neither LaTeX nor a crop image', async () => {
@@ -66,13 +80,34 @@ describe('DocModelViewer', () => {
     expect(toTop).toHaveAttribute('tabindex', '0');
   });
 
-  it('opens the block-zoom overlay over a tapped block', async () => {
+  it('opens the block-zoom overlay over a tapped block and manages focus (D2)', async () => {
     render(<DocModelViewer paperId="2401.00001" version={1} anchor={null} />);
     await screen.findByRole('heading', { name: 'Model Architecture' });
     expect(screen.queryByTestId('block-zoom')).toBeNull();
-    // Each figure/table/formula is wrapped in a "크게 보기" zoom trigger.
+    // Each figure/table/formula has an adjacent "크게 보기" zoom button (D1).
     const triggers = screen.getAllByRole('button', { name: '크게 보기' });
+    triggers[0].focus();
     fireEvent.click(triggers[0]);
     expect(screen.getByTestId('block-zoom')).toBeTruthy();
+
+    // Opening the dialog moves focus to its close button (D2, BR-U5-20).
+    const closeButton = screen.getByTestId('block-zoom-close');
+    expect(document.activeElement).toBe(closeButton);
+
+    // Closing it restores focus to the trigger that opened it.
+    fireEvent.click(closeButton);
+    expect(screen.queryByTestId('block-zoom')).toBeNull();
+    expect(document.activeElement).toBe(triggers[0]);
+  });
+
+  it('moves focus to the target section when a TOC link is activated (D3)', async () => {
+    render(<DocModelViewer paperId="2401.00001" version={1} anchor={null} />);
+    await screen.findByRole('heading', { name: 'Model Architecture' });
+    const tocLink = screen.getAllByTestId('docmodel-toc-link')[0];
+    fireEvent.click(tocLink);
+    const href = tocLink.getAttribute('href') ?? '';
+    const target = document.getElementById(href.slice(1));
+    expect(target).toBeTruthy();
+    expect(document.activeElement).toBe(target);
   });
 });

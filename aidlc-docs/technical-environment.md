@@ -113,7 +113,7 @@ RETAIN-policy resources (RDS, S3, OpenSearch) need an explicit teardown plan.
 
 ### Architecture Patterns
 
-- Backend = **modular monolith**, single FastAPI app-shell, units U1–U11 as modules.
+- Backend = **modular monolith**, single FastAPI app-shell — units U1–U9 plus the **U11 evidence agent** as in-process modules (U10 My Page is a separate surface; the **U12 novelty agent** runs as a separate worker, `Docsuri-Novelty`/`NOVELTY_AGENT_ENABLED`).
 - Corpus index: **single writer** (U1) / single logical reader path (U2) with
   blue/green **index generations + atomic alias cutover**; lexical-only degradation
   on cost-circuit OPEN.

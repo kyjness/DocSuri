@@ -8,6 +8,7 @@ in until it is promoted (U4 library precedent).
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -91,26 +92,32 @@ class SummaryCacheKey:
     glossary_ver: int
     model_ver: str
     prompt_ver: str
-    # Owner of a personalized artifact (set only when glossary_ver > 0). glossary_ver is a
-    # per-user counter, not a content identity, so two different users can both be at ver=1
-    # with different terms — without owner scoping their keys would collide and one would be
-    # served the other's personalized translation. None for the shared baseline (ver == 0).
+    # Owner of a personalized artifact (set only when glossary_ver > 0). glossary_ver is the
+    # prompt-enforced content signature: 0 (no prompt-enforced terms) is the shared, owner-agnostic
+    # baseline; a positive signature is owner-scoped so two users' distinct term sets never collide.
     owner_id: str | None = None
+    # Content version of the shared seed glossary. Empty while the seed matches the shipped
+    # baseline (path unchanged → existing objects stay valid); a seed edit makes it non-empty so
+    # the path changes and exactly the affected objects invalidate (see seed_cache_segment).
+    seed_ver: str = ""
 
     def object_path(self) -> str:
         """S3 object path (infrastructure-design §2.1). Immutable → permanent (INV-5).
 
-        ``glossaryVer`` is part of the path so a personal-term change (glossaryVer++) yields a
-        new key → cache miss → re-translation (BR-S1: invalidation by key change, no manual
-        flush). Personalized artifacts (glossary_ver > 0) additionally carry ``owner_id`` so
-        per-user counters that share an integer don't collide across users; the baseline
-        (glossary_ver == 0, no personal terms) stays owner-agnostic and shared.
+        ``glossaryVer`` (the prompt-enforced content signature) is part of the path so adding/
+        editing a prompt-enforced term yields a new key → miss → regenerate (BR-S1: invalidation
+        by key change, no manual flush). A positive signature additionally carries ``owner_id`` so
+        distinct per-user term sets don't collide; the baseline (0, no prompt-enforced terms) stays
+        owner-agnostic and shared — post-substitution (weak) terms don't alter the path (they are a
+        read-time overlay on the shared base). ``seed_ver`` appends only when the seed diverges from
+        the shipped baseline, so a seed edit self-invalidates without touching unaffected objects.
         """
         owner = f"_u{self.owner_id}" if self.owner_id else ""
+        seed = f"_s{self.seed_ver}" if self.seed_ver else ""
         return (
             f"summaries/{self.paper_id}/v{self.version}/"
             f"{self.task}_{self.target_lang}_{self.scope}_{self.persona}"
-            f"_g{self.glossary_ver}{owner}_{self.model_ver}_{self.prompt_ver}.json"
+            f"_g{self.glossary_ver}{owner}{seed}_{self.model_ver}_{self.prompt_ver}.json"
         )
 
     def redis_key(self) -> str:
@@ -235,10 +242,15 @@ class TranslationSegment:
 @dataclass(frozen=True, slots=True)
 class TranslationSegmentsResult:
     """Gateway translation result: ``translations`` maps segment id → Korean text;
-    ``kept_terms`` are terms left untranslated (BR-S4)."""
+    ``kept_terms`` are terms left untranslated (BR-S4). ``truncated`` is set when the model
+    hit its output-token cap mid-batch, so the returned JSON may be partial (fewer segments
+    than requested) — the translator re-splits such a chunk and retries the halves, and it is
+    logged so a math-heavy 'empty_translation' can be traced to output truncation, not a
+    genuinely blank response."""
 
     translations: dict[str, str]
     kept_terms: tuple[str, ...] = ()
+    truncated: bool = False
 
 
 # --- Grounding (Q4 — U7-owned deterministic gate) ----------------------------
@@ -274,8 +286,12 @@ class SummaryResultDTO:
     meta: dict[str, str] = field(default_factory=dict)
     cached: bool = False
 
-    def to_dict(self) -> dict:
-        """SEC-9 whitelist — only user-facing fields (no tokens/cost/cache-key/model id)."""
+    def to_dict(self, strong_overrides: Mapping[str, str] | None = None) -> dict:
+        """SEC-9 whitelist — only user-facing fields (no tokens/cost/cache-key/model id).
+
+        ``strong_overrides`` = the user's effective prompt-enforced terms (term_from lower →
+        term_to) for this fork; the translation branch needs them so a 표준 용어 whose seed
+        rendering an override replaced keeps its (editable) chip (BR-S4)."""
         out: dict = {
             "status": "ok",
             "task": str(self.task),
@@ -304,11 +320,52 @@ class SummaryResultDTO:
         if self.translation is not None:
             # Mirror the doc-model read path (router): emit the translated doc-model with
             # ``exclude_none`` so absent optional fields stay absent (schema parity).
+            # ``standardGlossary`` = shared-seed standard terms present in THIS paper (BR-S4).
+            # Presence is judged by EFFECTIVE rendering so a strong personal override keeps its
+            # (editable) chip instead of vanishing when it replaces the seed value in the text:
+            #  · keep-as-is seed — overridden → present iff the override rendering is in the text
+            #    (an editable strong chip, pre-filled); else → present iff the model kept it in
+            #    English (``kept_terms``).
+            #  · mapping seed — present iff its effective rendering (override, else the seed Korean)
+            #    is in the text. Without this, attention→주목 drops 어텐션 and the chip would
+            #    vanish, breaking the 표준 용어 edit path. Lazy import avoids a cycle.
+            from .glossary import SEED_KEEP_AS_IS, SEED_MAPPINGS, is_glossary_worthy
+
+            doc = self.translation.doc_model.model_dump(mode="json", exclude_none=True)
+            translated_text = doc.get("fullText") or ""
+            overrides = strong_overrides or {}
+            std_glossary: list[dict] = []
+            seen: set[str] = set()
+            # Drop math notation the model reported as "kept" (Greek vars, W_q, L(w+delta)…) so the
+            # 원어 유지 용어 list shows keywords/names, not symbols (BR-S4). Seeds pass the filter.
+            display_kept = [t for t in self.translation.kept_terms if is_glossary_worthy(t)]
+            kept_by_lower: dict[str, str] = {}
+            for t in display_kept:  # first-seen casing wins (case-insensitive dedup)
+                kept_by_lower.setdefault(t.lower(), t)
+            for s in SEED_KEEP_AS_IS:  # keep-as-is standard (English) or its strong override
+                key = s.lower()
+                if key in seen:
+                    continue
+                eff = overrides.get(key)
+                if eff:
+                    if eff in translated_text:
+                        std_glossary.append({"term": s, "translated": eff})
+                        seen.add(key)
+                elif key in kept_by_lower:
+                    std_glossary.append({"term": kept_by_lower[key]})
+                    seen.add(key)
+            for m in SEED_MAPPINGS:  # mapping standard (en→ko), by effective rendering
+                key = m.term_from.lower()
+                if key in seen:  # keep-as-is and mapping are disjoint — guard a double chip anyway
+                    continue
+                eff = overrides.get(key) or m.term_to
+                if eff and eff in translated_text:
+                    std_glossary.append({"term": m.term_from, "translated": eff})
+                    seen.add(key)
             out["translation"] = {
-                "docModel": self.translation.doc_model.model_dump(
-                    mode="json", exclude_none=True
-                ),
-                "keptTerms": list(self.translation.kept_terms),
+                "docModel": doc,
+                "keptTerms": display_kept,
+                "standardGlossary": std_glossary,
             }
         return out
 

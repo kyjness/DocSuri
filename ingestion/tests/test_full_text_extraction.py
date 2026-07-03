@@ -108,3 +108,96 @@ def test_fetch_full_text_classifies_unparseable_pdf_as_permanent(monkeypatch) ->
         src.fetch_full_text(sample_metadata())
     assert excinfo.value.reason == FailureReason.PARSE_FAILURE
     assert excinfo.value.stage == "fetch_full_text"
+
+
+def test_fetch_full_text_prefers_pdf_when_html_conversion_is_truncated(monkeypatch) -> None:
+    # A truncated ar5iv conversion returns HTTP 200 but only a sentence of body — worse than the
+    # PDF text, so fetch_full_text must fall through to the PDF rather than storing the fragment.
+    from docsuri_ingestion.adapters import arxiv as arxiv_mod
+    from docsuri_ingestion.adapters.arxiv import ArxivHttpSource
+
+    src = ArxivHttpSource()
+    monkeypatch.setattr(
+        src, "_try_get_html", lambda arxiv_id: ("<p>Abstract. Let us start.</p>", "html://x")
+    )
+    monkeypatch.setattr(src, "_get_bytes", lambda url, *, params, stage: b"%PDF-stub")
+    monkeypatch.setattr(arxiv_mod, "pdf_to_text", lambda pdf: "Full recovered PDF body. " * 200)
+
+    raw = src.fetch_full_text(sample_metadata())
+    assert "Full recovered PDF body." in raw.text
+    assert "/pdf/" in raw.source_url  # took the PDF rung, not the truncated HTML
+
+
+def test_fetch_full_text_keeps_complete_html_conversion(monkeypatch) -> None:
+    # A complete HTML conversion (body well above the floor) stays the preferred source and the
+    # PDF is never fetched.
+    from docsuri_ingestion.adapters.arxiv import ArxivHttpSource
+
+    src = ArxivHttpSource()
+    long_html = "<p>" + ("Complete body paragraph. " * 300) + "</p>"
+
+    def _no_pdf(*_a, **_k):
+        raise AssertionError("PDF must not be fetched when HTML is complete")
+
+    monkeypatch.setattr(src, "_try_get_html", lambda arxiv_id: (long_html, "html://x"))
+    monkeypatch.setattr(src, "_get_bytes", _no_pdf)
+
+    raw = src.fetch_full_text(sample_metadata())
+    assert raw.source_url == "html://x"
+    assert "Complete body paragraph." in raw.text
+
+
+def test_fetch_full_text_falls_back_to_short_html_when_pdf_permanently_unavailable(
+    monkeypatch,
+) -> None:
+    # Truncated HTML present + the PDF is PERMANENTLY gone (404 → PermanentIngestionError from
+    # _get_bytes, before any parse). A fragment beats failing the paper, so it must fall back to
+    # the short HTML rather than propagating the fetch error (regression: only pdf_to_text parse
+    # errors used to be caught, so a PDF 404 failed a paper that had usable HTML).
+    from docsuri_ingestion.adapters.arxiv import ArxivHttpSource
+    from docsuri_ingestion.domain.enums import FailureReason
+    from docsuri_ingestion.domain.errors import PermanentIngestionError
+
+    src = ArxivHttpSource()
+
+    def _pdf_404(url, *, params, stage):
+        raise PermanentIngestionError(
+            "arXiv resource not found", reason=FailureReason.FETCH_FAILURE, stage=stage
+        )
+
+    monkeypatch.setattr(
+        src, "_try_get_html", lambda arxiv_id: ("<p>Abstract. Let us start.</p>", "html://x")
+    )
+    monkeypatch.setattr(src, "_get_bytes", _pdf_404)
+
+    raw = src.fetch_full_text(sample_metadata())
+    assert raw.source_url == "html://x"  # settled for the short HTML fragment
+    assert "Let us start." in raw.text
+
+
+def test_fetch_full_text_propagates_retriable_pdf_failure_over_short_html(monkeypatch) -> None:
+    # Truncated HTML present + a TRANSIENT PDF failure (5xx/timeout → RetriableIngestionError).
+    # This must propagate so a later retry can still recover the full PDF, rather than prematurely
+    # caching the fragment as the paper's full text.
+    import pytest
+
+    from docsuri_ingestion.adapters.arxiv import ArxivHttpSource
+    from docsuri_ingestion.domain.enums import FailureReason
+    from docsuri_ingestion.domain.errors import RetriableIngestionError
+
+    src = ArxivHttpSource()
+
+    def _pdf_503(url, *, params, stage):
+        raise RetriableIngestionError(
+            "arXiv returned retriable status 503",
+            reason=FailureReason.FETCH_FAILURE,
+            stage=stage,
+        )
+
+    monkeypatch.setattr(
+        src, "_try_get_html", lambda arxiv_id: ("<p>Abstract. Let us start.</p>", "html://x")
+    )
+    monkeypatch.setattr(src, "_get_bytes", _pdf_503)
+
+    with pytest.raises(RetriableIngestionError):
+        src.fetch_full_text(sample_metadata())

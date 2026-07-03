@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -23,14 +23,15 @@ _ARXIV_URL_PREFIX = re.compile(r"^(?:https?://)?(?:www\.)?arxiv\.org/(?:abs|pdf)
 class GroundingEnforcementHook:
     def enforce(self, candidate: Any, retrieved: Sequence[Any]) -> GroundingDecision:
         retrieved_ids = _record_ids(retrieved)
-        exposed = tuple(_candidate_references(candidate))
+        # One entry per exposed card: its id, or None if the card exposes no arxivId/paperId/url.
+        references = [_candidate_reference(item) for item in _candidate_items(candidate)]
 
         if not retrieved_ids:
             return GroundingDecision(
                 verdict="abstain",
                 violations=(GroundingViolation("no_retrieved_records", "no retrieved records"),),
             )
-        if not exposed:
+        if not any(references):
             return GroundingDecision(
                 verdict="abstain",
                 violations=(
@@ -41,17 +42,27 @@ class GroundingEnforcementHook:
                 ),
             )
 
-        violations = tuple(
-            GroundingViolation(
-                code="fabricated_reference",
-                message="candidate reference was not present in retrieved records",
-                arxiv_id=ref,
-            )
-            for ref in exposed
-            if _normalize_identifier(ref) not in retrieved_ids
-        )
+        violations: list[GroundingViolation] = []
+        for ref in references:
+            if not ref:
+                # An exposed card carrying NO id, shown alongside grounded cards, can't be
+                # provenance-checked — fail closed rather than let it pass unverified. (Finding 4)
+                violations.append(
+                    GroundingViolation(
+                        "missing_reference",
+                        "exposed card has no grounded reference",
+                    )
+                )
+            elif _normalize_identifier(ref) not in retrieved_ids:
+                violations.append(
+                    GroundingViolation(
+                        code="fabricated_reference",
+                        message="candidate reference was not present in retrieved records",
+                        arxiv_id=ref,
+                    )
+                )
         if violations:
-            return GroundingDecision(verdict="block", violations=violations)
+            return GroundingDecision(verdict="block", violations=tuple(violations))
         return GroundingDecision(verdict="pass")
 
     def run_eval_set(self, eval_set: Any) -> dict[str, Any]:
@@ -103,15 +114,14 @@ def _record_ids(records: Sequence[Any]) -> set[str]:
     return values
 
 
-def _candidate_references(candidate: Any) -> Iterable[str]:
-    for item in _candidate_items(candidate):
-        record = _get(item, "record")
-        source = record if record is not None else item
-        for attr in ("arxivId", "paperId", "arxivUrl"):
-            value = _get(source, attr)
-            if value:
-                yield str(value)
-                break
+def _candidate_reference(item: Any) -> str | None:
+    record = _get(item, "record")
+    source = record if record is not None else item
+    for attr in ("arxivId", "paperId", "arxivUrl"):
+        value = _get(source, attr)
+        if value:
+            return str(value)
+    return None
 
 
 def _candidate_items(candidate: Any) -> tuple[Any, ...]:

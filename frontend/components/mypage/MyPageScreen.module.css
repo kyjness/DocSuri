@@ -7,6 +7,18 @@
   padding: 12px 14px 28px;
 }
 
+/* Desktop: keep the cards in a centered, readable column instead of stretching the full
+   content width — the settings-page pattern. Applies to every mypage sub-screen (shared). */
+@media (min-width: 768px) {
+  .screen {
+    width: 100%;
+    max-width: 720px;
+    margin-inline: auto;
+    padding: 16px 0 40px;
+    gap: 14px;
+  }
+}
+
 .card {
   display: flex;
   flex-direction: column;
@@ -100,6 +112,10 @@
   color: var(--color-text);
 }
 
+.menuCard:hover {
+  border-color: var(--color-accent);
+}
+
 .menuCard > span:first-child {
   display: flex;
   flex-direction: column;
@@ -113,19 +129,23 @@
 
 .tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 4px;
 }
 
 .tab {
-  flex: 1;
+  flex: 1 1 calc(50% - 4px);
   text-align: center;
   padding: 8px 10px;
+  border: 0;
   border-radius: 8px;
   font-size: 14px;
+  font-family: inherit;
   text-decoration: none;
   color: var(--color-text);
   background: var(--color-surface);
+  cursor: pointer;
   min-height: 40px;
   line-height: 24px;
 }

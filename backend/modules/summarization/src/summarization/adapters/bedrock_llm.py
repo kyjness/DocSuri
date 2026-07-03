@@ -117,17 +117,28 @@ class BedrockLlmGateway:
         # A translation's output volume tracks its input, so it needs a generous token cap; the
         # StructuredTranslator chunks upstream (output-bounded) so each call stays within this 8192
         # ceiling — the same cap the summary path uses to avoid mid-JSON truncation.
-        payload = self._invoke_json(self._translate_model, system, user, max_tokens=8192)
+        payload = self._invoke_json(
+            self._translate_model, system, user, max_tokens=8192, graceful_truncation=True
+        )
         raw = payload.get("translations", {})
         translations = {str(k): str(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
         return TranslationSegmentsResult(
             translations=translations,
             kept_terms=tuple(str(t) for t in payload.get("keptTerms", [])),
+            # Surface an output-cap truncation so the translator can re-split + retry, and so a
+            # partial batch is diagnosable rather than silently degrading to an empty translation.
+            truncated=bool(payload.get("_truncated", False)),
         )
 
     # --- bedrock plumbing ----------------------------------------------------
     def _invoke_json(
-        self, model_id: str, system: str, user: str, *, max_tokens: int = 2000
+        self,
+        model_id: str,
+        system: str,
+        user: str,
+        *,
+        max_tokens: int = 2000,
+        graceful_truncation: bool = False,
     ) -> dict:
         if not self._cb.allow_request():
             raise LlmUnavailable("Bedrock LLM circuit breaker is OPEN")
@@ -144,7 +155,20 @@ class BedrockLlmGateway:
                 time.sleep(2 ** attempt * 0.5)
             try:
                 text, truncated = self._stream_text(model_id, body)
-                payload = _parse_json(text)
+                try:
+                    payload = _parse_json(text)
+                except (ValueError, json.JSONDecodeError):
+                    # A response stopped at max_tokens is usually cut MID-STRING, so its JSON can't
+                    # be parsed at all — a raw re-raise loses the truncation signal and the whole
+                    # batch hard-fails (the observed full-translation abstain on long papers). For a
+                    # re-splittable caller (translate), surface the truncation so the chunk is split
+                    # into smaller batches — each emits less output and fits the cap — instead of
+                    # abstaining. A parse failure on a COMPLETE response is genuine bad output and
+                    # still raises (retry then abstain).
+                    if not (graceful_truncation and truncated):
+                        raise
+                    self._cb.record_success()  # the call succeeded; only the batch was oversized
+                    return {"_truncated": True}
                 payload["_truncated"] = truncated
                 self._cb.record_success()
                 return payload
@@ -178,11 +202,63 @@ class BedrockLlmGateway:
         return text, truncated
 
 
+_STRUCTURAL_ESCAPE = set('"\\/')
+_HEX_DIGITS = set("0123456789abcdefABCDEF")
+
+
+def _escape_stray_backslashes(blob: str) -> str:
+    """Escape stray backslashes so raw LaTeX in a JSON string value survives ``json.loads``.
+
+    Math-heavy translations make the model echo raw LaTeX (``\\mathcal``, ``\\rho``, ``\\nabla``)
+    into JSON string values. An unescaped ``\\`` is invalid JSON and fails the strict parse — the
+    whole batch then abstains (generation_unavailable), the observed full-translation failure on
+    equation-heavy papers. Walk the blob and double every stray backslash, preserving ONLY:
+      • the structural escapes ``\\"`` ``\\\\`` ``\\/``, and
+      • a *true* ``\\uXXXX`` (backslash-u followed by exactly four hex digits).
+    Crucially, the single-letter escapes ``\\b \\f \\n \\r \\t`` are NOT treated as valid here:
+    countless LaTeX commands begin with those letters (``\\rho`` ``\\nabla`` ``\\theta`` ``\\beta``
+    ``\\frac``), and a translation value carries no real control characters — so ``\\r`` is far more
+    likely the start of ``\\rho`` than a carriage return. This runs ONLY after the strict parse has
+    already failed, so a well-formed payload (where ``\\n`` really is a newline) never reaches it.
+    Backslashes appear only inside string values, so scanning the whole blob is safe."""
+    out: list[str] = []
+    i, n = 0, len(blob)
+    while i < n:
+        ch = blob[i]
+        if ch == "\\":
+            nxt = blob[i + 1] if i + 1 < n else ""
+            if nxt in _STRUCTURAL_ESCAPE:
+                out.append(ch)
+                out.append(nxt)
+                i += 2
+                continue
+            if nxt == "u" and i + 6 <= n and all(c in _HEX_DIGITS for c in blob[i + 2 : i + 6]):
+                out.append(blob[i : i + 6])  # genuine \uXXXX unicode escape
+                i += 6
+                continue
+            out.append("\\\\")  # stray backslash → escape it so the LaTeX survives as a literal
+            i += 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def _parse_json(text: str) -> dict:
     start, end = text.find("{"), text.rfind("}")
     if start == -1 or end == -1:
         raise ValueError("no JSON object in model output")
-    return json.loads(text[start : end + 1])
+    blob = text[start : end + 1]
+    # Sanitize BEFORE the first parse, not only on failure: LaTeX commands that begin with a JSON
+    # escape letter (``\r``ho, ``\n``abla, ``\t``heta, ``\b``eta, ``\f``rac) are *valid* JSON, so a
+    # raw parse would SILENTLY corrupt them (``\r`` → carriage return) instead of raising. Escaping
+    # stray backslashes first preserves the LaTeX; fall back to the raw parse if sanitizing somehow
+    # yields invalid JSON (it only adds escapes, so this is defensive). Fail-closed: still raises →
+    # retry/abstain upstream.
+    try:
+        return json.loads(_escape_stray_backslashes(blob))
+    except json.JSONDecodeError:
+        return json.loads(blob)
 
 
 def _to_summary_draft(payload: dict) -> SummaryDraft:

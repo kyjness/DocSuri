@@ -5,7 +5,7 @@ This plan details the implementation steps for the Cohere Embed v4.0 migration, 
 
 ## Unit Context
 - **Target Unit**: `v4-migration` (Cross-cutting: U1 Ingestion, U2 Discovery, Ops)
-- **Implemented Requirements**: FR-17 (Dual-write), NFR-M2 (Blue/Green Migration), NFR-S2 (v4 Model Cutover)
+- **Implemented Requirements**: FR-21 (Dual-write), NFR-M2 (Blue/Green Migration), NFR-S2 (v4 Model Cutover)
 - **Key Patterns**: Fail-Open Dual-Write, Idempotent Backfill, Instant Cutover
 
 ## Execution Steps
@@ -30,9 +30,9 @@ This plan details the implementation steps for the Cohere Embed v4.0 migration, 
   - **File**: `ops/migrations/v4_migration/provision_v2_index.py` (New File)
   - **Action**: Create script to provision `docsuri-corpus-v2` with k-NN mapping (dimension=1024).
 
-- [x] **Step 6**: **Ops Migration - Backfill Script**
-  - **File**: `ops/migrations/v4_migration/backfill_v4.py` (New File)
-  - **Action**: Create a standalone script to fetch historical data from the arXiv API, embed it using Bedrock (`embed-multilingual-v4.0`), and write to `docsuri-corpus-v2`.
+- [x] **Step 6**: **Backfill Runner (`migrate.py`)**
+  - **File**: `ingestion/src/docsuri_ingestion/migrate.py`
+  - **Action**: Backfill runner invoked in-VPC as a one-off ECS task (`python -m docsuri_ingestion.worker backfill`): SigV4-signs requests, fetches historical data via the OAI harvest path, embeds using Bedrock (`embed-multilingual-v4.0`), and writes to `docsuri-corpus-v2`. (The earlier standalone `backfill_v4.py` was removed — it sent unsigned requests → 403.)
 
 - [x] **Step 7**: **Ops Migration - Cutover Script**
   - **File**: `ops/migrations/v4_migration/cutover_alias.py` (New File)

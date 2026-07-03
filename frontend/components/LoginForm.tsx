@@ -9,6 +9,7 @@ import { useSession } from './session/SessionContext';
 import { validateEmail, validateRequiredPassword } from '@/lib/api/validate';
 import { AuthField } from './AuthField';
 import { ORCID_LOGIN_ENABLED } from '@/lib/socialLogin';
+import { safeRedirect } from '@/lib/redirect';
 
 // LoginForm (LC-1, US-A2, BR-U5-16) — generalized auth errors (credential
 // existence not disclosed). On success, refresh the session and return to the
@@ -64,7 +65,7 @@ export function LoginForm() {
   const router = useRouter();
   const params = useSearchParams();
   const { refresh } = useSession();
-  const redirectTo = params.get('redirect') ?? '/search';
+  const redirectTo = safeRedirect(params.get('redirect'));
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -202,7 +203,11 @@ export function LoginForm() {
         Google로 계속하기
       </a>
       {ORCID_LOGIN_ENABLED ? (
-        <a className={styles.socialButton} href="/auth/social/orcid/start" data-testid="login-orcid">
+        <a
+          className={styles.socialButton}
+          href="/auth/social/orcid/start"
+          data-testid="login-orcid"
+        >
           ORCID로 계속하기
         </a>
       ) : null}

@@ -107,7 +107,7 @@
 
 | 엔티티 | 필드(개념) | 비고 |
 |---|---|---|
-| **SearchExecutedEvent** | `userId`, `query`, `timestamp`, `resultCount` | 🔒 FROZEN(`shared/events`). `SearchOrchestrationService.publishSearchExecuted` 발행 → U4 이력. **Q11=A**: 성공 응답 **후 fire-and-forget·비차단**(NFR-P1 P50<3s 경로 밖). `userId`=세션 출처(Q5=A). |
+| **SearchExecutedEvent** | `userId`, `requestId`, `query`, `timestamp`, `resultCount` | 🔒 FROZEN(`shared/events`). `SearchOrchestrationService.publishSearchExecuted` 발행 → U4 이력. **Q11=A**: 성공 응답 **후 fire-and-forget·비차단**(NFR-P1 P50<3s 경로 밖). `userId`=세션 출처(Q5=A). `requestId`=이벤트 고유 식별자(의도적 반복 쿼리와 재전달 구분 — U4 멱등 기록 키). |
 
 ---
 

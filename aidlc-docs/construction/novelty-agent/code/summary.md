@@ -10,8 +10,8 @@
 - `backend/modules/novelty/repository.py`: owner-scoped in-memory and SQL repositories plus artifact-store seam.
 - `backend/modules/novelty/service.py`: job creation, status/result, cancel, artifact validation, Notion preview/approval/export invariant.
 - `backend/modules/novelty/controller.py`: `/api/novelty` routes for job create/status/result/cancel, SSE progress snapshot, and Notion approval flow.
-- `backend/modules/novelty/worker.py`: SQS polling/ack loop, SQS payload parser, stage progress emission, degraded no-op adapter behavior.
-- `backend/modules/novelty/adapters.py`: seams for U2 full search, external browser search, similarity check, and Notion export.
+- `backend/modules/novelty/worker.py`: SQS polling/ack loop, SQS payload parser, stage progress emission, Bedrock LLM draft consumption, degraded adapter behavior.
+- `backend/modules/novelty/adapters.py`: U2 full search, external API search, manuscript similarity, Bedrock LLM draft, and Notion export seams.
 - `backend/modules/novelty/validators.py`: source-key normalization, source-ref requirements for supported outputs, experiment-plan shape validation.
 - `backend/modules/novelty/security.py`: external query minimization and SSRF/egress URL guard.
 - `backend/modules/novelty/streaming.py`: persisted progress events encoded as SSE snapshots.
@@ -46,11 +46,12 @@
   - `DOCSURI_NOVELTY_ARTIFACT_BUCKET`
   - `DOCSURI_NOVELTY_ARTIFACT_PREFIX`
 - API task role can send novelty jobs and read/write `s3://docsuri-papers-fulltext-*/novelty/*`.
+- Novelty worker now receives `DOCSURI_NOVELTY_LLM_MODEL_ID` and can invoke the configured Anthropic Bedrock model for similar works, novelty candidates, and experiment plans.
 
 ## Tests and Verification
 
 - Added `backend/tests/test_novelty.py`.
-- Covered source-key normalization, source-ref validation, owner isolation, state transition guard, Notion approval invariant, SSRF guard, worker completion/failure ack paths, manuscript degraded path, SSE encoding, API create/status/cancel, and unsupported manuscript rejection.
+- Covered source-key normalization, source-ref validation, owner isolation, state transition guard, Notion approval invariant, SSRF guard, Bedrock LLM source-ref mapping, worker completion/failure ack paths, manuscript degraded path, SSE encoding, API create/status/cancel, and unsupported manuscript rejection.
 
 Commands run:
 
@@ -59,10 +60,16 @@ Commands run:
 - `python -m ruff check backend/modules/novelty backend/wiring.py backend/app.py backend/migrations/__main__.py backend/tests/test_novelty.py backend/tests/test_app_shell.py ops/cdk/stacks/novelty_stack.py ops/cdk/stacks/compute_stack.py ops/cdk/app.py` -> passed
 - `python -m compileall backend/modules/novelty backend/wiring.py ops/cdk/stacks/novelty_stack.py ops/cdk/app.py` -> passed
 - `cd ops/cdk; cdk synth` -> passed with existing CDK warnings; synthesized `Docsuri-Novelty`.
+- `uv run pytest tests/test_novelty.py tests/test_app_shell.py tests/test_research.py -q` -> 40 passed
+- `uv run ruff check modules/novelty tests/test_novelty.py wiring.py` -> passed
+- `uv run ruff check stacks app.py` from `ops/cdk` -> passed
+- `python -m compileall -q modules/novelty wiring.py` from `backend` -> passed
+- `python -m compileall -q .` from `ops/cdk` -> passed
+- `cdk synth` from `ops/cdk` -> failed before `Docsuri-Novelty` synthesis at the pre-existing `Docsuri-CICD` `OpenIdConnectProvider`/jsii initialization path.
 
 ## Deferred Items
 
-- Real U2 full-search, Agent-Browser, similarity, and Notion clients are adapter seams in this code pass.
+- Notion export remains an approval-gated adapter seam.
 - News search remains out of v1 scope.
 - DOCX upload remains out of v1 scope.
 - No novelty score or "newness proven" judgment is generated.

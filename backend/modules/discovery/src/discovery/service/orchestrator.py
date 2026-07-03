@@ -14,6 +14,7 @@ fallback (degraded); index failure → ``SearchUnavailable`` (fail-closed, INV-3
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -39,7 +40,7 @@ from ..domain.models import (
     RequestContext,
     SearchScope,
 )
-from ..domain.ranker import TOP_N, RelevanceRanker
+from ..domain.ranker import TOP_N, RelevanceRanker, shadow_rerank_diff
 from ..domain.retriever import HybridRetriever
 from ..domain.validator import QueryValidator
 from ..ports.search_ports import (
@@ -61,6 +62,7 @@ class GroundingPending:
     ranked: RankedResults
     degrade_mode: DegradeMode
     user_id: str
+    request_id: str
     query: str
 
 
@@ -111,6 +113,7 @@ class SearchOrchestrationService:
         observability: ObservabilityHub,
         event_publisher: EventPublisher,
         top_n: int = TOP_N,
+        search_boosts: Callable[[str], dict[str, float]] | None = None,
     ) -> None:
         self._validator = validator
         self._expander = expander
@@ -122,6 +125,9 @@ class SearchOrchestrationService:
         self._observability = observability
         self._event_publisher = event_publisher
         self._top_n = top_n
+        # US-P4 personalization boosts, best-effort. Default no-op; wiring patches in the real
+        # provider (a per-request call into U9's read port). SHADOW: measured, not applied.
+        self._search_boosts = search_boosts or (lambda _user_id: {})
 
     def plan_and_retrieve(self, request: SearchRequest, ctx: RequestContext) -> SearchOutcome:
         validation = self._validator.validate(request.query)
@@ -157,10 +163,11 @@ class SearchOrchestrationService:
             # zero-result query no longer inflates the hallucination/abstain rate. Zero-result
             # visibility comes from the SearchExecuted event (resultCount=0) below. (US-R4)
             response = self._assembler.assemble(NoMatchResult(), degrade_mode)
-            self._publish(ctx.auth_session.user_id, request.query, 0)
+            self._publish(ctx.auth_session.user_id, ctx.request_id, request.query, 0)
             return SearchOutcome(response=response)
 
         ranked = self._ranker.rank(candidates, plan, degradation, self._top_n)
+        self._emit_rerank_shadow(ctx.auth_session.user_id, ranked)
         grounding_input = self._grounding_adapter.to_grounding_input(ranked, plan)
         self._observability.emit_metric(
             "discovery.search.candidates", float(len(ranked.ranked)), {"mode": degrade_mode.value}
@@ -171,6 +178,7 @@ class SearchOrchestrationService:
                 ranked=ranked,
                 degrade_mode=degrade_mode,
                 user_id=ctx.auth_session.user_id,
+                request_id=ctx.request_id,
                 query=request.query,
             )
         )
@@ -180,8 +188,38 @@ class SearchOrchestrationService:
         result = self._grounding_adapter.map_decision(decision, pending.ranked)
         response = self._assembler.assemble(result, pending.degrade_mode)
         self._emit_grounding_health(getattr(decision, "verdict", "unknown"))
-        self._publish(pending.user_id, pending.query, result_count(response))
+        self._publish(pending.user_id, pending.request_id, pending.query, result_count(response))
         return response
+
+    def _emit_rerank_shadow(self, user_id: str, ranked: RankedResults) -> None:
+        """SHADOW ONLY (US-P4): compute the bounded personalization re-rank that WOULD happen and
+        emit it as a metric — the order returned to the user is UNCHANGED. Best-effort (BR-P13):
+        any failure (U9 down, no profile) is swallowed and search proceeds on the baseline. Go
+        live later by applying ``shadow_rerank_diff``'s reordering instead of just measuring it.
+        """
+        try:
+            boosts = self._search_boosts(user_id)
+        except Exception:  # noqa: BLE001 — personalization never fails search
+            return
+        if not boosts:
+            return
+        try:
+            diff = shadow_rerank_diff(ranked, boosts)
+            self._observability.emit_metric(
+                "personalization.rerank_shadow", float(diff.positions_changed), {"scope": "search"}
+            )
+            self._observability.emit_metric(
+                "personalization.rerank_shadow.max_shift",
+                float(diff.max_shift),
+                {"scope": "search"},
+            )
+            self._observability.emit_metric(
+                "personalization.rerank_shadow.boosted_count",
+                float(diff.boosted_count),
+                {"scope": "search"},
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
     def _emit_grounding_health(self, verdict: str) -> None:
         """Emit the grounding-health signal — the 'hallucination' AI-incident class (US-R4).
@@ -195,17 +233,16 @@ class SearchOrchestrationService:
         Must NOT raise — observability is advisory and off the response-correctness path.
         """
         try:
-            self._observability.emit_metric(
-                "discovery.search.grounding", 1.0, {"verdict": verdict}
-            )
+            self._observability.emit_metric("discovery.search.grounding", 1.0, {"verdict": verdict})
         except Exception:  # noqa: BLE001
             pass
 
-    def _publish(self, user_id: str, query: str, count: int) -> None:
+    def _publish(self, user_id: str, request_id: str, query: str, count: int) -> None:
         """Fire-and-forget SearchExecuted (BR-14). Failure MUST NOT affect the response."""
         try:
             event = SearchExecutedEvent(
                 userId=user_id,
+                requestId=request_id,
                 query=query,
                 timestamp=datetime.now(UTC),
                 resultCount=count,

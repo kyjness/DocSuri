@@ -33,7 +33,7 @@
 
 ## Use Case: Start Manuscript Job
 
-1. 사용자는 PDF, Markdown, TXT 원고를 업로드한다.
+1. 사용자는 Markdown 또는 TXT 원고 참조를 제출한다. PDF/DOCX는 shared parser/upload handle이 확정될 때까지 v1 backend에서 거절한다.
 2. Orchestrator는 `NoveltyJobRequest(input_type=manuscript)`와 owner-scoped `manuscript_ref`를 만든다.
 3. 공통 ingestion/doc-model 또는 문헌탐색·근거형성 경로가 파싱한 Evidence/SourceRef만 소비한다.
 4. 파싱 실패는 내부 오류를 숨기고 사용자용 실패 사유로 표시한다.

@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
-
 from backend.modules.library.history_consumer import SearchHistoryEventConsumer
 from backend.modules.library.models import NotFoundError
 from backend.modules.library.schemas import PageParams
@@ -13,8 +12,20 @@ from backend.modules.library.services import history as hist_mod
 from docsuri_shared.events import SearchExecutedEvent
 
 
-def _event(owner_id: str, query: str, when: datetime, count: int = 3) -> SearchExecutedEvent:
-    return SearchExecutedEvent(userId=owner_id, query=query, timestamp=when, resultCount=count)
+def _event(
+    owner_id: str,
+    query: str,
+    when: datetime,
+    count: int = 3,
+    request_id: str = "req-1",
+) -> SearchExecutedEvent:
+    return SearchExecutedEvent(
+        userId=owner_id,
+        requestId=request_id,
+        query=query,
+        timestamp=when,
+        resultCount=count,
+    )
 
 
 def test_record_is_idempotent_at_least_once(make_services, make_principal):
@@ -30,12 +41,30 @@ def test_record_is_idempotent_at_least_once(make_services, make_principal):
     assert len(page.items) == 1
 
 
+def test_distinct_request_ids_record_repeated_query(make_services, make_principal):
+    """BR-L7: requestId distinguishes intentional repeated identical searches."""
+    _s, _l, hist, _repo, _a = make_services()
+    p = make_principal()
+    when = datetime.now(UTC)
+    first = hist.record_search(_event(p.user_id, "q1", when, request_id="req-a"))
+    second = hist.record_search(_event(p.user_id, "q1", when, request_id="req-b"))
+    assert first is not None
+    assert second is not None
+    assert len(hist.list(p, PageParams(limit=10)).items) == 2
+
+
 def test_consumer_validates_and_records(make_services, make_principal):
     _s, _l, hist, _repo, _a = make_services()
     p = make_principal()
     consumer = SearchHistoryEventConsumer(hist)
     entry = consumer.consume(
-        {"userId": p.user_id, "query": "via dict", "timestamp": datetime.now(UTC).isoformat(), "resultCount": 7}
+        {
+            "userId": p.user_id,
+            "requestId": "req-dict",
+            "query": "via dict",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "resultCount": 7,
+        }
     )
     assert entry is not None
     page = hist.list(p, PageParams(limit=10))

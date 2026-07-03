@@ -11,6 +11,7 @@ from docsuri_shared import events
 def test_search_executed_event_frozen_shape_roundtrip():
     payload = {
         "userId": "u1",
+        "requestId": "req-1",
         "query": "diffusion models",
         "timestamp": "2026-06-16T00:00:00Z",
         "resultCount": 5,
@@ -19,10 +20,18 @@ def test_search_executed_event_frozen_shape_roundtrip():
     assert ev.resultCount == 5
     assert set(events.SearchExecutedEvent.model_fields) == {
         "userId",
+        "requestId",
         "query",
         "timestamp",
         "resultCount",
     }
+
+
+def test_paper_retracted_event_roundtrip():
+    ev = events.PaperRetractedEvent.model_validate(
+        {"paperId": "2401.00001v2", "timestamp": "2026-06-16T00:00:00Z"}
+    )
+    assert ev.paperId == "2401.00001v2"
 
 
 @pytest.mark.parametrize(

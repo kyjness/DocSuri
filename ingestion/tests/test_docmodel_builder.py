@@ -11,10 +11,32 @@ from docsuri_ingestion.adapters.local import sample_metadata
 from docsuri_ingestion.docmodel.builder import DocModelBuilder
 from docsuri_ingestion.docmodel.parser import parse_html_to_docmodel
 
+# A body long enough (non-abstract text ≥ the builder's completeness floor) to represent a
+# COMPLETE conversion — a truncated ar5iv conversion is exercised separately by _TRUNCATED_HTML.
+_BODY_PARAGRAPH = "This is a full paragraph of body prose. " * 20  # ~800 chars
 _HTML = (
     '<article class="ltx_document"><section class="ltx_section" id="S1">'
     '<h2 class="ltx_title ltx_title_section">Intro</h2>'
-    '<div class="ltx_para"><p class="ltx_p">Body.</p></div></section></article>'
+    f'<div class="ltx_para"><p class="ltx_p">{_BODY_PARAGRAPH}</p></div></section></article>'
+)
+
+# A COMPLETE paper whose body prose lives entirely in a SUBSECTION (nested section tree). The
+# top-level section has no direct blocks — the completeness gate must recurse into child sections.
+_NESTED_BODY_HTML = (
+    '<article class="ltx_document"><section class="ltx_section" id="S1">'
+    '<h2 class="ltx_title ltx_title_section">Intro</h2>'
+    '<section class="ltx_subsection" id="S1.SS1">'
+    '<h3 class="ltx_title ltx_title_subsection">Sub</h3>'
+    f'<div class="ltx_para"><p class="ltx_p">{_BODY_PARAGRAPH}</p></div>'
+    '</section></section></article>'
+)
+
+
+# ar5iv (LaTeXML) conversion failed: HTTP 200 but the body is a single sentence (abstract-only).
+_TRUNCATED_HTML = (
+    '<article class="ltx_document"><section class="ltx_section" id="S1">'
+    '<h2 class="ltx_title ltx_title_section">Preliminaries</h2>'
+    '<div class="ltx_para"><p class="ltx_p">Let us start.</p></div></section></article>'
 )
 
 
@@ -209,6 +231,71 @@ def test_source_unavailable_when_no_html() -> None:
     assert isinstance(result, SourceUnavailableDTO)
     assert result.status == "source_unavailable"
     assert store.put_calls == []
+
+
+def test_build_degrades_to_source_unavailable_when_conversion_is_truncated() -> None:
+    # A broken ar5iv conversion returns HTML 200 but only a sentence of body (the rest of the
+    # LaTeX failed to convert). It must NOT be cached as a complete doc-model — degrade to
+    # source_unavailable (arXiv link-out) instead of shipping a fragment as the full text.
+    store = _FakeStore(cached=None)
+    source = _FakeSource((_TRUNCATED_HTML, SourceTier.ar5iv))
+    result = _builder(source, store).build(sample_metadata("2401.00001v1"))
+    assert isinstance(result, SourceUnavailableDTO)
+    assert store.put_calls == []  # nothing cached
+
+
+def test_build_counts_body_in_nested_subsections() -> None:
+    # Regression: a complete paper's body prose can live entirely in a subsection. The
+    # completeness gate must recurse into child sections — otherwise the top-level section has no
+    # direct blocks, body length reads 0, and the paper is wrongly degraded to source_unavailable
+    # (throwing away a valid structured HTML doc-model for the flat PDF fallback).
+    store = _FakeStore(cached=None)
+    source = _FakeSource((_NESTED_BODY_HTML, SourceTier.ar5iv))
+    result = _builder(source, store).build(sample_metadata("2401.00001v1"))
+    assert isinstance(result, DocModelResultDTO)  # NOT degraded
+    assert len(store.put_calls) == 1
+
+
+def test_completeness_gate_counts_non_paragraph_body_blocks() -> None:
+    # Regression: body prose can live in list items / table cells, not only paragraphs. The gate
+    # summed only block["text"], so a complete paper whose non-abstract body is mostly a list/table
+    # (little direct paragraph text) read ~0 and was wrongly degraded. Every text-bearing block
+    # type must contribute to the length signal.
+    from docsuri_ingestion.docmodel.builder import _non_abstract_body_len
+
+    item = {"text": "A substantial bulleted contribution describing the method in detail. "}
+    doc = DocModel.model_validate(
+        {
+            "meta": {
+                "paperId": "2401.00001",
+                "version": 1,
+                "title": "T",
+                "provenance": {
+                    "sourceTier": "ar5iv",
+                    "parserVersion": DOCMODEL_PARSER_VERSION,
+                    "schemaVersion": DOCMODEL_SCHEMA_VERSION,
+                    "generatedAt": "1970-01-01T00:00:00Z",
+                },
+            },
+            "fullText": "x",
+            "sections": [
+                {  # abstract excluded from the body signal
+                    "id": "s0",
+                    "title": "Abstract",
+                    "blocks": [{"id": "s0.p1", "type": "paragraph", "text": "Short abstract."}],
+                },
+                {  # body carried entirely by a list — no direct paragraph text
+                    "id": "s1",
+                    "title": "Method",
+                    "blocks": [
+                        {"id": "s1.l1", "type": "list", "ordered": False, "items": [item] * 10}
+                    ],
+                },
+            ],
+        }
+    )
+    # 10 items × ~68 chars ≈ 680 > the 500 floor; the old paragraph-only count would read 0.
+    assert _non_abstract_body_len(doc) >= 500
 
 
 def test_invalidate_drops_cached_versions() -> None:

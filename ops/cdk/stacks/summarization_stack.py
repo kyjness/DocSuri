@@ -19,6 +19,12 @@ from aws_cdk import (
     aws_applicationautoscaling as appscaling,
 )
 from aws_cdk import (
+    aws_cloudwatch as cloudwatch,
+)
+from aws_cdk import (
+    aws_cloudwatch_actions as cw_actions,
+)
+from aws_cdk import (
     aws_ec2 as ec2,
 )
 from aws_cdk import (
@@ -31,7 +37,16 @@ from aws_cdk import (
     aws_iam as iam,
 )
 from aws_cdk import (
+    aws_logs as logs,
+)
+from aws_cdk import (
     aws_secretsmanager as secretsmanager,
+)
+from aws_cdk import (
+    aws_sns as sns,
+)
+from aws_cdk import (
+    aws_sns_subscriptions as subs,
 )
 from aws_cdk import (
     aws_sqs as sqs,
@@ -64,6 +79,13 @@ class SummarizationStack(Stack):
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
+        _DEFAULT_OPS_ALERT_EMAIL = "corpseonthemission@icloud.com"
+        _ctx_alert_emails = self.node.try_get_context("ops_alert_email")
+        _raw_alert_emails = (
+            _DEFAULT_OPS_ALERT_EMAIL if _ctx_alert_emails is None else _ctx_alert_emails
+        )
+        ops_alert_emails = [e.strip() for e in _raw_alert_emails.split(",") if e.strip()]
+
         account = Stack.of(self).account
         papers_bucket_arn = f"arn:aws:s3:::docsuri-papers-fulltext-{account}"
 
@@ -82,6 +104,22 @@ class SummarizationStack(Stack):
             encryption=sqs.QueueEncryption.SQS_MANAGED,
             dead_letter_queue=sqs.DeadLetterQueue(max_receive_count=3, queue=dlq),
         )
+        ops_alerts = sns.Topic(self, "OpsAlerts", display_name="docsuri-summary-ops-alerts")
+        for email in ops_alert_emails:
+            ops_alerts.add_subscription(subs.EmailSubscription(email))
+        summary_age_alarm = self.queue.metric_approximate_age_of_oldest_message(
+            period=Duration.minutes(5),
+            statistic="Maximum",
+        ).create_alarm(
+            self,
+            "SummaryQueueAgeAlarm",
+            threshold=900,
+            evaluation_periods=1,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+            alarm_description="Summary jobs are waiting more than 15 minutes before processing",
+        )
+        summary_age_alarm.add_alarm_action(cw_actions.SnsAction(ops_alerts))
 
         # --- ECS Fargate: summary worker (reuses the docsuri-api image, worker entrypoint) ---
         repo = ecr.Repository.from_repository_name(self, "ApiRepo", "docsuri-api")
@@ -107,11 +145,24 @@ class SummarizationStack(Stack):
                 "DOCSURI_SUMMARY_BUCKET": f"docsuri-papers-fulltext-{account}",
                 "DOCSURI_SUMMARY_JOB_QUEUE_URL": self.queue.queue_url,
                 "DOCSURI_MAP_REDUCE_ENABLED": "true",  # worker must hold the map-reduce summarizer
+                # Full-text translation runs on THIS worker and must read the structured doc-model;
+                # without this flag the reader is unwired and translation degrades to a plain-text
+                # head-only fallback. Mirrors the API service flag (compute stack).
+                "DOCSURI_DOCMODEL_VIEWER_ENABLED": "true",
                 "DATABASE_URL": database_url,  # personal glossary (no Redis — S3-only store here)
                 "CLOUDWATCH_NAMESPACE": "DocSuri/Production",
                 "CLOUDWATCH_LOG_GROUP": "/docsuri/ops",
             },
             secrets={"PGPASSWORD": ecs.Secret.from_secrets_manager(db_secret, "password")},
+        )
+        ops_log_group = logs.LogGroup.from_log_group_name(self, "OpsLogGroup", "/docsuri/ops")
+        ops_log_group.grant_write(task_def.task_role)
+        task_def.add_to_task_role_policy(
+            iam.PolicyStatement(
+                actions=["cloudwatch:PutMetricData"],
+                resources=["*"],
+                conditions={"StringEquals": {"cloudwatch:namespace": "DocSuri/Production"}},
+            )
         )
 
         self.service = ecs.FargateService(

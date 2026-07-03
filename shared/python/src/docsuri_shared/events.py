@@ -47,12 +47,16 @@ from ._generated.events.ingestion_schema import (
     U1IngestionBackboneEvents as IngestionEvent,
 )
 
+# U1 → U4 (paper-retracted.schema.json)
+from ._generated.events.paper_retracted_schema import PaperRetractedEvent
+
 # U2 → U4 (search-executed.schema.json) — 🔒 FROZEN
 from ._generated.events.search_executed_schema import SearchExecutedEvent
 
 __all__ = [
     # frozen
     "SearchExecutedEvent",
+    "PaperRetractedEvent",
     # ingestion
     "NewArxivEvent",
     "IngestionFailureSignal",

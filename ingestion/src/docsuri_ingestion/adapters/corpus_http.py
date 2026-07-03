@@ -543,9 +543,16 @@ def _https_url(value: object) -> str | None:
 def _license_url(value: object) -> str | None:
     if not isinstance(value, str):
         return None
-    normalized = value.strip().lower()
-    if "creativecommons.org" in normalized or "arxiv.org/licenses/nonexclusive" in normalized:
-        return value.strip()
+    raw = value.strip()
+    parsed = urlsplit(raw)
+    host = (parsed.hostname or "").lower()
+    path = parsed.path.lower()
+    if parsed.scheme in {"http", "https"} and (
+        (host == "creativecommons.org" and path.startswith(("/licenses/", "/publicdomain/")))
+        or (host == "arxiv.org" and path.startswith("/licenses/nonexclusive"))
+    ):
+        return raw
+    normalized = raw.lower()
     cc = normalized.replace("_", "-").replace(" ", "-")
     if cc in {"cc-by", "ccby"}:
         return "https://creativecommons.org/licenses/by/4.0/"

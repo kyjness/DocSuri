@@ -93,7 +93,7 @@ class BaseAgent(ABC):
             logger.warning(
                 "⚠️  Bedrock Guardrails NOT configured for agent '%s'. "
                 "This is acceptable for development/testing but STRONGLY RECOMMENDED "
-                "for production. See docs/ai-security/BEDROCK_GUARDRAILS.md",
+                "for production. See the Amazon Bedrock Guardrails documentation.",
                 agent_name,
             )
 

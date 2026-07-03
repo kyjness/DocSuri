@@ -198,6 +198,41 @@ def test_semantic_scholar_provider_fetches_oa_pdf_records() -> None:
     assert source.fetch_pdf(records[0]) == b"%PDF"
 
 
+def test_semantic_scholar_rejects_spoofed_license_host() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {
+                        "paperId": "s2-1",
+                        "title": "Paper",
+                        "abstract": "Abstract",
+                        "authors": [{"name": "Ada"}],
+                        "year": 2025,
+                        "publicationDate": "2025-01-01",
+                        "isOpenAccess": True,
+                        "externalIds": {"DOI": "10.1000/x"},
+                        "openAccessPdf": {
+                            "url": "https://example.test/paper.pdf",
+                            "license": (
+                                "https://example.test/?next="
+                                "https://creativecommons.org/licenses/by/4.0/"
+                            ),
+                        },
+                    }
+                ]
+            },
+        )
+
+    source = SemanticScholarCorpusSource(
+        base_url="https://example.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert source.fetch_incremental(datetime(2025, 1, 1, tzinfo=UTC), ("cs.LG",)) == []
+
+
 def test_semantic_scholar_bulk_request_omits_limit_and_updated_field() -> None:
     # /paper/search/bulk 400s on `limit` (it paginates by `token`) and on the non-existent
     # `updated` field — regression guard for the 400 that crashed the live tick.

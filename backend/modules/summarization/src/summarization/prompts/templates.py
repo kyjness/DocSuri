@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from collections.abc import Sequence
 
 from ..domain.models import (
@@ -33,6 +34,26 @@ _DELIM_RE = re.compile(r"</?(?:paper|segments)\s*>", re.IGNORECASE)
 
 def _strip_delimiters(text: str) -> str:
     return _DELIM_RE.sub("", text)
+
+
+# User-writable glossary terms ride into the SYSTEM prompt's "사용자 선호 매핑" line. Neutralize
+# them so a crafted term can't break out of the line and inject instructions (Prompt Injection):
+# drop delimiter tags and our field separators (→ ;), strip every Unicode control (Cc — C0/C1/DEL)
+# and format (Cf — zero-width joiners, word-joiner, BOM…) char, then collapse whitespace (newlines
+# and LS/PS/NBSP included) to a single space. Removing Cf also stops an invisible char (e.g. ZWSP
+# in "atte​ntion") from dodging seed de-dup and re-introducing a double instruction. Seed
+# terms are trusted (code-authored) — only user overrides are sanitized.
+
+
+def _sanitize_term(text: str) -> str:
+    out: list[str] = []
+    for c in _strip_delimiters(text):
+        cat = unicodedata.category(c)
+        if cat == "Cf":
+            continue  # DELETE zero-width/format chars so an invisible char can't dodge seed de-dup
+        # controls (Cc — C0/C1/DEL) and our field separators become a space (word boundary kept)
+        out.append(" " if (c in "→;" or cat == "Cc") else c)
+    return re.sub(r"\s+", " ", "".join(out)).strip()
 
 # Persona only shapes WORDING/treatment within the §3 fields — the JSON structure is identical
 # for both (no extra/missing fields). All grounding rules in the system prompt still apply, so
@@ -63,13 +84,30 @@ _JSON_CONTRACT = (
 
 
 def _glossary_block(glossary: Glossary) -> str:
-    keep = ", ".join(glossary.keep_as_is)
+    # Build the user's strong overrides FIRST (sanitized). A term counts as "overridden" only when
+    # the override survives neutralization (non-empty both sides) AND is keyed on the SANITIZED
+    # term_from — so suppression matches exactly what is emitted: a crafted term_from can't evade
+    # the de-dup, and an override that neutralizes to empty never drops a governed seed term without
+    # a replacement.
+    user_pairs = []
+    overridden: set[str] = set()
+    for m in glossary.user_overrides:
+        if not m.prompt_enforced:
+            continue
+        tf, tt = _sanitize_term(m.term_from), _sanitize_term(m.term_to)
+        if tf and tt:
+            user_pairs.append(f"{tf}→{tt}")
+            overridden.add(tf.lower())
+    # A user strong override replaces the seed for the SAME term in BOTH the keep-as-is line
+    # (e.g. Transformer) and the seed mappings (e.g. attention→어텐션), so the prompt never carries
+    # a contradictory double instruction ("keep English" + "render as X").
+    keep = ", ".join(t for t in glossary.keep_as_is if t.lower() not in overridden)
     maps = "; ".join(
-        f"{m.term_from}→{m.term_to}" for m in glossary.seed_mappings if m.prompt_enforced
+        f"{m.term_from}→{m.term_to}"
+        for m in glossary.seed_mappings
+        if m.prompt_enforced and m.term_from.lower() not in overridden
     )
-    user = "; ".join(
-        f"{m.term_from}→{m.term_to}" for m in glossary.user_overrides if m.prompt_enforced
-    )
+    user = "; ".join(user_pairs)
     parts = [f"미번역 유지(영어 그대로): {keep}", f"용어 매핑: {maps}"]
     if user:
         parts.append(f"사용자 선호 매핑: {user}")
@@ -86,6 +124,14 @@ def build_summary_prompt(
         "- 제공된 텍스트 안에서만 요약하라. 근거가 없으면 지어내지 말고 해당 항목을 비워라.\n"
         "- 각 주장에 원문 근거 위치(섹션/표/그림 + 인용 span)를 anchors에 부기하라.\n"
         "- 초록에 잘 안 나오는 결과 수치·한계·재현성을 본문/표에서 끌어내라.\n"
+        # 수식·기호는 유니코드 텍스트로 풀어쓰지 말고 LaTeX 구분자로 감싸 프론트가 렌더하게 한다.
+        # 원문에 있는 표기만 사용하고 새 수식을 만들지 않는다(환각 방지).
+        "- 수식·기호·변수는 LaTeX로 표기하고 구분자로 감싸라: 인라인은 $ … $, 별도 줄은 $$ … $$."
+        " 원문에 없는 수식은 만들지 말고 원문 표기를 그대로 옮겨라.\n"
+        # 가독성: 여러 항목은 마크다운 불릿으로 나눠 프론트가 목록으로 렌더한다. 리터럴 '\n' 금지.
+        "- method·results·limitations에 항목이 여럿이면 각 항목을 마크다운 불릿(줄 시작 '- ')으로"
+        " 나누고, 핵심 수치·지표·용어는 **굵게** 표시하라. 문단 구분은 실제 줄바꿈으로 하고"
+        " 리터럴 '\\n' 문자열은 쓰지 마라.\n"
         f"- 수준 규칙: {_PERSONA_RULES[request.persona]}\n"
         f"- 용어집:\n{_glossary_block(glossary)}\n"
         f"- 출력은 다음 JSON 계약을 정확히 따른다: {_JSON_CONTRACT}"

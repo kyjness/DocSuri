@@ -52,10 +52,20 @@ export interface SummaryVM {
  * while structural/verbatim fields (block & section ids, formula LaTeX, table numeric cells,
  * figure assetRefs) are copied from the source unchanged. Block/section ids mirror the source
  * doc-model so it renders with the SAME rich viewer as the original body. keptTerms = terms
- * kept untranslated. */
+ * kept untranslated; standardGlossary = DocSuri standard (shared-seed) terms present in THIS
+ * paper — see StandardGlossaryItem. */
 export interface TranslationVM {
   docModel: DocModel;
   keptTerms: string[];
+  standardGlossary?: StandardGlossaryItem[];
+}
+
+/** A DocSuri standard glossary term present in the paper (shared seed). Both kinds are editable as
+ * strong overrides. `translated` is set only for mapping terms (e.g. attention→어텐션), where it
+ * pre-fills the editor; when absent the term is a keep-as-is standard term (kept in English). */
+export interface StandardGlossaryItem {
+  term: string;
+  translated?: string;
 }
 
 /** Honest source note (e.g. abstract-based fallback). Internal — no sensitive fields. */
@@ -153,7 +163,4 @@ export interface AssetsLicenseUnavailableDTO {
   status: 'license_unavailable';
 }
 
-export type PaperAssetsResponseDTO =
-  | AssetsOkDTO
-  | AssetsLicenseUnavailableDTO
-  | UnauthorizedDTO;
+export type PaperAssetsResponseDTO = AssetsOkDTO | AssetsLicenseUnavailableDTO | UnauthorizedDTO;

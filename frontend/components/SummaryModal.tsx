@@ -99,7 +99,9 @@ export function SummaryModal({ paperId, version, view, onClose, onAnchor }: Summ
 
   function renderResult() {
     if (state.status === 'idle' || state.status === 'loading') {
-      return <StateView kind="loading" title={LOADING_TITLE[view]} message="잠시만 기다려 주세요." />;
+      return (
+        <StateView kind="loading" title={LOADING_TITLE[view]} message="잠시만 기다려 주세요." />
+      );
     }
     const { outcome } = state;
     switch (outcome.kind) {
@@ -114,15 +116,17 @@ export function SummaryModal({ paperId, version, view, onClose, onAnchor }: Summ
       case 'translation':
         return <TranslationView translation={outcome.translation} cached={outcome.cached} />;
       case 'pending': {
-        // Long summary running as a background job (BR-S6/BR-S8): the hook is polling.
-        const hint = outcome.retryAfterMs
-          ? ` (~${Math.ceil(outcome.retryAfterMs / 1000)}초 후 재시도)`
-          : '';
+        // This state renders ONLY when the API returned `pending` — i.e. the work was dispatched
+        // to a background job (BR-S6/BR-S8) and the hook keeps polling (short inline waits never
+        // reach here). So it's accurate to tell the user it's running in the background, and to set
+        // the "it's running, may take a while" expectation up front so the wait doesn't read as a
+        // failure — without promising a specific duration we can't reliably predict.
+        const noun = view === 'summary' ? '요약' : '번역';
         return (
           <StateView
             kind="loading"
-            title="요약 준비 중…"
-            message={`긴 논문이라 요약을 만들고 있어요. 잠시만 기다려 주세요.${hint}`}
+            title={`${noun} 생성 중…`}
+            message={`AI가 백그라운드에서 ${noun}을 만들고 있어요. 논문이 길면 시간이 걸릴 수 있어요. 완료되면 여기에 표시돼요.`}
           />
         );
       }
@@ -140,11 +144,7 @@ export function SummaryModal({ paperId, version, view, onClose, onAnchor }: Summ
   }
 
   return (
-    <div
-      className={styles.backdrop}
-      onClick={onClose}
-      data-testid="summary-modal-backdrop"
-    >
+    <div className={styles.backdrop} onClick={onClose} data-testid="summary-modal-backdrop">
       <div
         ref={panelRef}
         className={styles.panel}

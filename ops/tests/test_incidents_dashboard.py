@@ -4,15 +4,20 @@ from datetime import timedelta
 
 from docsuri_ops.adapters.local import CapturingAlertPublisher, InMemoryIncidentStore
 from docsuri_ops.dashboard import OpsDashboardService
-from docsuri_ops.domain.enums import IncidentClass, Severity
+from docsuri_ops.domain.enums import IncidentClass, Severity, SignalKind
 from docsuri_ops.domain.models import (
     AlertRecord,
     ClassifiedIncidentRecord,
     DashboardWindow,
     IncidentCandidate,
+    TelemetryEvent,
     utc_now,
 )
-from docsuri_ops.incidents import AiIncidentDetectorSuite, IncidentEventPublisher
+from docsuri_ops.incidents import (
+    AiIncidentDetectorSuite,
+    IncidentEventPublisher,
+    PublishOutcome,
+)
 
 
 def test_incident_suite_classifies_three_res11_classes() -> None:
@@ -63,8 +68,9 @@ def test_incident_publisher_emits_shared_events_and_suppresses_duplicates() -> N
         signal_id="sig-cost",
     )
 
-    assert publisher.publish_candidate(candidate)
-    assert not publisher.publish_candidate(candidate)
+    assert publisher.publish_candidate(candidate) is PublishOutcome.PUBLISHED
+    # A redelivered duplicate is an idempotent success (ack-able), not a failure. (Finding 1)
+    assert publisher.publish_candidate(candidate) is PublishOutcome.DUPLICATE
 
     assert len(store.incidents) == 1
     assert len(store.alerts) == 1
@@ -124,3 +130,35 @@ def test_dashboard_metrics_none_for_write_only_store() -> None:
     assert view.error_rate is None
     assert view.throughput is None
     assert view.grounding_health is None
+
+
+def test_grounding_event_without_verdict_raises_incident_fail_closed() -> None:
+    # Finding 3: a malformed GROUNDING telemetry event (no verdict) must NOT be silently treated
+    # as "pass" — it defaults to abstain, so a hallucination incident is raised (fail-closed).
+    suite = AiIncidentDetectorSuite()
+    event = TelemetryEvent(
+        event_id="gnd-noverdict",
+        kind=SignalKind.GROUNDING,
+        request_id="req-gnd",
+        payload={},  # no "verdict" key
+    )
+
+    candidate = suite.evaluate(event)
+
+    assert candidate is not None
+    assert candidate.incident_class == IncidentClass.HALLUCINATION
+
+
+def test_usage_event_uses_zero_value_not_payload_fallback() -> None:
+    # Finding 5: a real 0.0 usage value must be used as 0.0, not treated as falsy and replaced by
+    # payload["amountUsd"]. A $0 event is below every threshold → no incident.
+    suite = AiIncidentDetectorSuite()
+    event = TelemetryEvent(
+        event_id="usage-zero",
+        kind=SignalKind.USAGE,
+        request_id="req-usage",
+        value=0.0,
+        payload={"amountUsd": 999.0},  # would trip the spike threshold if wrongly used
+    )
+
+    assert suite.evaluate(event) is None

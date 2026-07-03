@@ -33,6 +33,63 @@ _SOURCE_UNAVAILABLE_REASON = (
     "We could not find a rich-renderable source (arXiv HTML) for this paper version."
 )
 
+# Some arXiv papers have a broken ar5iv (LaTeXML) conversion — the HTML returns 200 but the body
+# is truncated to the abstract + a sentence or two (the rest of the LaTeX failed to convert). The
+# parser faithfully extracts the little that is there, so a truncated conversion would otherwise be
+# stored as a "complete" doc-model. Gate on the non-abstract body length: a real paper has
+# thousands of characters of body prose, so a floor this low never trips a genuinely complete paper
+# but reliably catches the abstract-only truncations. A tripped gate degrades to source_unavailable
+# (arXiv link-out) — honest — rather than shipping a fragment as the full text. (A PDF→GROBID
+# fallback that actually recovers the body is a separate follow-up.)
+_MIN_BODY_TEXT_CHARS = 500
+
+
+def _block_text_len(block: dict) -> int:
+    """Length of a block's renderable text, per block type. Paragraph/code carry ``text``, but
+    body prose also lives in list items, table cells, and figure/table captions — counting only
+    ``block['text']`` reads 0 for a paper whose body is mostly lists/tables and wrongly degrades a
+    complete conversion. Mirror the full-text projection so every text-bearing block contributes."""
+    kind = block.get("type")
+    if kind in ("paragraph", "code"):
+        return len(block.get("text") or "")
+    if kind == "formula":
+        return len(block.get("latex") or "")
+    if kind == "list":
+        return sum(len(item.get("text") or "") for item in block.get("items") or [])
+    if kind in ("figure", "table"):
+        total = len(block.get("caption") or "")
+        if kind == "table":
+            for row in block.get("rows") or []:
+                for cell in row.get("cells") or []:
+                    total += len(str(cell.get("text") or ""))
+        return total
+    return len(block.get("text") or "")
+
+
+def _non_abstract_body_len(doc: DocModel) -> int:
+    """Character count of the doc-model body EXCLUDING the abstract section — the signal that
+    separates a complete conversion from an abstract-only truncation.
+
+    Recurses into nested subsections: the parser builds a nested section tree (ltx_section →
+    ltx_subsection → …) and a normal paper's body prose often lives entirely in subsections, so
+    counting only the top-level sections' direct blocks would read 0 and wrongly degrade a
+    complete paper. Counts every text-bearing block type (not just paragraphs) for the same
+    reason — see ``_block_text_len``."""
+
+    def _count(sections: object) -> int:
+        total = 0
+        for section in sections or []:
+            label = str(section.get("title") or section.get("heading") or "").strip().lower()
+            if label == "abstract":
+                continue  # skip the abstract subtree at any depth
+            for block in section.get("blocks") or []:
+                if isinstance(block, dict):
+                    total += _block_text_len(block)
+            total += _count(section.get("sections"))
+        return total
+
+    return _count(doc.model_dump(mode="json").get("sections"))
+
 
 @runtime_checkable
 class ClockPort(Protocol):
@@ -111,6 +168,14 @@ class DocModelBuilder:
             macros=self._extract_macros(metadata),
             figure_specs=figure_specs,
         )
+        if _non_abstract_body_len(doc) < _MIN_BODY_TEXT_CHARS:
+            # Broken ar5iv conversion (HTML 200 but abstract-only) — do NOT cache a truncated
+            # doc-model as "complete"; degrade to source_unavailable so the viewer links out to
+            # arXiv instead of showing a fragment. Observed so the truncation rate is trackable.
+            self._emit("ingestion.docmodel.truncated_source", 1.0)
+            return SourceUnavailableDTO(
+                status="source_unavailable", reason=_SOURCE_UNAVAILABLE_REASON
+            )
         self._store.put(doc)
         return DocModelResultDTO(status="ok", cached=False, docModel=doc)
 

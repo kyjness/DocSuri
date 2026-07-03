@@ -128,8 +128,8 @@ US-L3 / FR-10. 검색 이력은 두 경로로 나뉜다 — **WRITE는 이벤트
 
 ### 4.1. 검색 이력 기록 (`recordSearch`) — 멱등 at-least-once 소비 (BR-L7/INV-L3/D7) → §6
 - `SearchExecutedEvent`(🔒FROZEN) 소비 알고리즘. **동기 검색 경로 밖에서** 수행되며 검색 응답을 지연시키지 않는다(NFR-P1). 멱등 소비의 상세는 §6 참조. 요약:
-  1. 이벤트(`userId`, `query`, `timestamp`, `resultCount`) 수신.
-  2. `dedupe_key = sha256(owner_id | executed_at.isoformat() | query)` 산출(D7).
+  1. 이벤트(`userId`, `requestId`, `query`, `timestamp`, `resultCount`) 수신.
+  2. `dedupe_key = sha256(owner_id | requestId | query)` 산출(D7).
   3. `(owner_id, dedupe_key)` 존재 시 **무시(중복 행 생성 금지)** — at-least-once → exactly-once row(INV-L3).
   4. 미존재 시 `HistoryEntry` 기록 + 보존 한도(§4.4) 적용 + 감사.
 
@@ -170,7 +170,7 @@ US-L3 / FR-10. 검색 이력은 두 경로로 나뉜다 — **WRITE는 이벤트
 
 ## 6. 검색 이력 멱등 at-least-once 소비 (D7 / INV-L3 / BR-L7)
 
-`SearchHistoryService.recordSearch`는 `SearchExecutedEvent`(🔒FROZEN, `shared/events/search-executed.schema.json`)를 구독한다. 이 이벤트는 **성공한 검색 응답 이후** U2 `SearchOrchestrationService.publishSearchExecuted(userId, query, timestamp, resultCount)`가 발행하며, **동기 검색 경로(NFR-P1 P50<3s) 밖에서** 발행/소비된다 — 검색 응답을 블로킹하지 않는다.
+`SearchHistoryService.recordSearch`는 `SearchExecutedEvent`(🔒FROZEN, `shared/events/search-executed.schema.json`)를 구독한다. 이 이벤트는 **성공한 검색 응답 이후** U2 `SearchOrchestrationService.publishSearchExecuted(userId, requestId, query, timestamp, resultCount)`가 발행하며, **동기 검색 경로(NFR-P1 P50<3s) 밖에서** 발행/소비된다 — 검색 응답을 블로킹하지 않는다.
 
 ### 6.1. 멱등 기록 알고리즘
 1. **이벤트 수신**: `SearchExecutedEvent{userId, requestId, query, timestamp, resultCount}`. `userId`를 `owner_id`로, `timestamp`를 `executed_at`(aware UTC)로 매핑한다.
@@ -215,7 +215,7 @@ US-L3 / FR-10. 검색 이력은 두 경로로 나뉜다 — **WRITE는 이벤트
 |---|---|---|---|
 | **SavedSearch** | `id: str(uuid4)`, `owner_id: str`, `query: str`, `label: str\|None`, `normalized_query: str`, `created_at: datetime(aware,UTC)` | `(owner_id, normalized_query)` 유일(BR-L1). `normalized_query`·`owner_id` 비노출(SEC-9) | FR-8, US-L1 |
 | **LibraryItem** | `id: str(uuid4)`, `owner_id: str`, `arxiv_id: str`, `meta: LibraryItemMeta`, `added_at: datetime` | `(owner_id, arxiv_id)` 멱등(BR-L3). meta 스냅샷 가용성 격리(D5/BR-L5) | FR-9, US-L2 |
-| **HistoryEntry** | `id: str(uuid4)`, `owner_id: str`, `query: str`, `executed_at: datetime`, `result_count: int`, `dedupe_key: str` | `dedupe_key`=sha256(owner_id\|executed_at_iso\|query)(D7). `dedupe_key`·`owner_id` 비노출(SEC-9) | FR-10, US-L3 |
+| **HistoryEntry** | `id: str(uuid4)`, `owner_id: str`, `query: str`, `executed_at: datetime`, `result_count: int`, `dedupe_key: str` | `dedupe_key`=sha256(owner_id\|requestId\|query)(D7). `dedupe_key`·`owner_id` 비노출(SEC-9) | FR-10, US-L3 |
 | **LibraryItemMeta**(값 객체, 스냅샷) | `title: str(≤500, 필수)`, `authors: list[str](≤50개, 각 ≤200)`, `year: int\|None(1900..2100)`, `arxiv_id: str`, `abstract_snippet: str\|None(≤1000)`, `arxiv_url: str\|None` | U2 `ResultCardVM` 카드 필드 미러(dtos.md §1.1). `meta: Any` 정제(D5) | FR-9, US-L2, FR-4 |
 | **Principal / Action / AccountId / Decision** | (U3 정의 REUSE) | `backend.modules.accounts.models`+`.guard`. SEC-8 단일 권위점, **재정의 금지** | SEC-8 |
 

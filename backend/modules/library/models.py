@@ -31,6 +31,10 @@ class QuotaExceededError(DomainException):
     """Per-owner storage cap reached (BR-L2 saved=200 / BR-L4 library=1000; maps to HTTP 409)."""
 
 
+class GatewayUnavailableError(DomainException):
+    """The gateway-fronted search path is unavailable for rerun (maps to HTTP 503)."""
+
+
 class NotFoundError(DomainException):
     """Resource absent OR owned by another principal.
 

@@ -247,6 +247,30 @@ def test_subfigure_uses_own_caption_not_first_panel() -> None:
     assert figure.anchorLabel == "Figure 4"  # NOT "(a)"
     assert figure.caption == "Overall result"
     assert specs[0].label == "Figure 4"  # numbered label flows to the asset extractor
+    # Multi-panel: src is blanked so the asset extractor page-crops the WHOLE figure (all panels)
+    # instead of imaging only the first sub-panel's e-print graphic.
+    assert specs[0].src == ""
+
+
+def test_single_image_figure_keeps_eprint_src() -> None:
+    """A single-image figure keeps its <img src> so the asset extractor images the
+    original-quality e-print graphic (the blank-src page-crop path is multi-panel only)."""
+    html = (
+        '<html><body><div class="ltx_document">'
+        '<section class="ltx_section"><h2>1 Results</h2>'
+        '<figure class="ltx_figure"><img src="plot.png"/>'
+        '<figcaption class="ltx_caption">'
+        '<span class="ltx_tag">Figure 1: </span>A plot</figcaption>'
+        "</figure></section></div></body></html>"
+    )
+    specs: list = []
+    parse_html_to_docmodel(
+        html, paper_id="2401.00010", version=1, title="T", abstract=None,
+        source_tier=SourceTier.ar5iv, parser_version="p", schema_version="1.0.0",
+        generated_at=_FIXED_TS, figure_specs=specs,
+    )
+    assert specs[0].src == "plot.png"
+    assert specs[0].label == "Figure 1"
 
 
 def test_list_and_code_blocks() -> None:
@@ -257,6 +281,31 @@ def test_list_and_code_blocks() -> None:
     assert [i.text for i in list_block.items] == ["first", "second"]
     code_block = next(b for b in _blocks(sub) if isinstance(b, CodeBlock))
     assert code_block.text == "def f():\n    return 1"
+
+
+def test_algorithm_listing_line_numbers_and_soft_wrap() -> None:
+    """An algorithm float's numbered listing lines get their number split off with a space
+    (not glued "1:Flow"), and an author soft-wrap inside one numbered step is folded to one line."""
+    html = (
+        '<html><body><div class="ltx_document">'
+        '<section class="ltx_section"><h2>1 Method</h2>'
+        '<div class="ltx_float ltx_float_algorithm">'
+        '<div class="ltx_listing">'
+        '<div class="ltx_listingline">'
+        '<span class="ltx_tag ltx_tag_listingline">1:</span>Require model,\nlearning rate</div>'
+        '<div class="ltx_listingline">'
+        '<span class="ltx_tag ltx_tag_listingline">2:</span> return x</div>'
+        "</div></div></section></div></body></html>"
+    )
+    doc = parse_html_to_docmodel(
+        html, paper_id="2401.00011", version=1, title="T", abstract=None,
+        source_tier=SourceTier.ar5iv, parser_version="p", schema_version="1.0.0",
+        generated_at=_FIXED_TS,
+    )
+    code = next(
+        b.root for s in doc.sections for b in s.blocks if isinstance(b.root, CodeBlock)
+    )
+    assert code.text == "1: Require model, learning rate\n2:  return x"
 
 
 def test_block_ids_reset_per_section() -> None:
@@ -350,3 +399,51 @@ def test_text_fallback_docmodel_has_stable_paragraph_block_ref() -> None:
     assert block.id == "s1.p1"
     assert block.text == "First line. Second line."
     assert doc.meta.provenance.sourceTier is SourceTier.pdf
+
+
+def test_code_block_drops_duplicate_math_annotation() -> None:
+    # A <math> inside an algorithm listing carries both presentation MathML (unicode) and a TeX
+    # <annotation> LaTeX source. The code text must keep only the readable unicode, not both
+    # concatenated (regression: "𝐱←𝗓𝖾𝗋𝗈𝖾𝗌(n)\bm{\mathrm{x}}\leftarrow\mathsf{zeroes}(n)").
+    html = (
+        '<article class="ltx_document">'
+        '<section class="ltx_section" id="S1">'
+        '<h2 class="ltx_title ltx_title_section">Algorithm</h2>'
+        '<div class="ltx_listing"><div class="ltx_listingline">1: '
+        '<math alttext="\\bm{x}"><semantics><mrow><mi>\U0001d431</mi></mrow>'
+        '<annotation encoding="application/x-tex">'
+        '\\bm{\\mathrm{x}}\\leftarrow\\mathsf{zeroes}(n)</annotation>'
+        '</semantics></math></div></div>'
+        '</section></article>'
+    )
+    doc = _parse(html)
+    code = next(b for b in _blocks(_body_sections(doc)[0]) if isinstance(b, CodeBlock))
+    assert "\U0001d431" in code.text  # unicode presentation kept (readable)
+    assert "\\mathsf{zeroes}" not in code.text  # TeX annotation dropped — no duplication
+    assert "\\leftarrow" not in code.text
+
+
+def test_table_ignores_nested_header_table_rows() -> None:
+    # A stacked column header "Relevance Rank / ↑" is a NESTED <table> inside the header cell.
+    # The parser must NOT pull the nested rows up as phantom single-cell main rows (which made the
+    # column headers spill down the first column). Only the real header + data rows survive.
+    html = (
+        '<article class="ltx_document">'
+        '<section class="ltx_section" id="S1">'
+        '<h2 class="ltx_title ltx_title_section">Results</h2>'
+        '<figure class="ltx_table"><table class="ltx_tabular">'
+        '<tr class="ltx_tr"><th class="ltx_th">Model</th>'
+        '<th class="ltx_th"><table class="ltx_tabular">'
+        '<tr class="ltx_tr"><td class="ltx_td">Relevance Rank</td></tr>'
+        '<tr class="ltx_tr"><td class="ltx_td">up</td></tr></table></th></tr>'
+        '<tr class="ltx_tr"><td class="ltx_td">Supervised</td><td class="ltx_td">0.478</td></tr>'
+        '</table></figure>'
+        '</section></article>'
+    )
+    doc = _parse(html)
+    table = next(b for b in _blocks(_body_sections(doc)[0]) if isinstance(b, TableBlock))
+    assert len(table.rows) == 2  # header + data only — no phantom nested rows
+    # every row has the full column count (2); no stray single-cell row
+    assert all(len(r.cells) == 2 for r in table.rows)
+    # nested header content is flattened into the parent header cell
+    assert "Relevance Rank" in table.rows[0].cells[1].text

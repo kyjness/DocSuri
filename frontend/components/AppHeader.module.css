@@ -58,26 +58,33 @@
   white-space: nowrap;
 }
 
+/* Inline desktop nav — hidden on phones (the BottomNav tab bar owns navigation there). */
 .nav {
-  display: flex;
+  display: none;
   align-items: center;
-  gap: 14px;
+  gap: 18px;
+}
+
+@media (min-width: 768px) {
+  .nav {
+    display: flex;
+  }
 }
 
 .navLink {
-  font-size: 13px;
+  font-size: 14px;
   text-decoration: none;
-  color: var(--color-text);
+  color: var(--color-text-muted);
   min-height: 40px;
   display: inline-flex;
   align-items: center;
 }
 
-.signout {
-  border: none;
-  background: none;
-  color: var(--color-text-muted);
-  font-size: 13px;
-  cursor: pointer;
-  min-height: 40px;
+.navLink:hover {
+  color: var(--color-text);
+}
+
+.navLink[data-active='true'] {
+  color: var(--color-accent);
+  font-weight: 600;
 }

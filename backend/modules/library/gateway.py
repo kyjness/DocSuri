@@ -24,6 +24,8 @@ from docsuri_shared.dtos import (
 
 from backend.modules.accounts.models import Principal
 
+from .models import GatewayUnavailableError
+
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
@@ -59,12 +61,7 @@ class DiscoverySearchGateway:
         grounding_hook = getattr(self._app.state, "grounding_hook", None)
 
         if bundle is None or grounding_hook is None:
-            return SearchResultSetDTO(
-                SearchResultPageDTO(
-                    cards=[],
-                    meta=ResultMeta(resultCount=0, degraded=False, degradationMode=None),
-                )
-            )
+            raise GatewayUnavailableError("search temporarily unavailable")
 
         ctx = RequestContext(
             auth_session=AuthSession(user_id=principal.user_id),
@@ -78,13 +75,8 @@ class DiscoverySearchGateway:
                 None,
                 partial(run_search, bundle.orchestrator, grounding_hook, request, ctx),
             )
-        except Exception:
-            return SearchResultSetDTO(
-                SearchResultPageDTO(
-                    cards=[],
-                    meta=ResultMeta(resultCount=0, degraded=False, degradationMode=None),
-                )
-            )
+        except Exception as exc:
+            raise GatewayUnavailableError("search temporarily unavailable") from exc
 
         root = response.root
 

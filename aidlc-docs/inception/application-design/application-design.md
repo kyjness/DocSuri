@@ -21,7 +21,7 @@
 
 ---
 
-## 2. 6 유닛 요약
+## 2. 유닛 요약 (핵심 U1~U6 + U11 Evidence Agent + U12 Novelty Agent)
 
 | 유닛 | 역할 | 경로 종류 | 핵심 컴포넌트 |
 |---|---|---|---|
@@ -32,6 +32,8 @@
 | **U5 Frontend** | SSR 폰 우선 웹 UI | 동기 REST(프런트) | AppShell, PhoneMockupFrame, SecurityHeaderPolicy, SearchScreen, ResultList, ResultCard, AccountScreens, LibraryHistoryScreens, StateView, ApiClient |
 | **U6 Reliability/Ops** | DQ5 전용 횡단 미들웨어/게이트웨이 + 운영(관측성·비용 가드·헬스·AI 인시던트) | 동기 게이트 + 이벤트 운영 백본 | ApiGatewayMiddleware, AuthnAuthzGuard, InputValidationGuard, RateLimiter, CostGuardCircuitBreaker, GroundingEnforcementHook, ObservabilityHub, HealthCheckService, ReliabilityEvalProbe, AiIncidentDetectorSuite(+3 detectors), IncidentEventPublisher, OpsDashboardService |
 | **U11 Evidence Agent** *(재인셉션 Phase 4 / requirements "[U4]")* | 로그인 필수 대화형 다논문 문헌탐색·근거형성 Agent. LLM이 Search·DocModel 도구를 자율 오케스트레이션해 EvidenceItem(핵심 주장·방법·결과·한계) 추출·비교; 근거 없으면 기권(FR-5). EvidenceFormationPort(D5) 단일 구현자 | 동기 REST(SSE 스트리밍) + 비동기 잡 | EvidenceChatController, EvidenceAgentOrchestrator, EvidencePaperSearchTool, EvidenceDocModelTool, EvidenceExtractor, EvidenceComparisonAssembler, AttachmentDocModelAdapter, EvidenceSessionRepository, EvidenceFormationService |
+| **U12 Novelty Agent** *(별도 인셉션 사이클 — 2026-06-29 / 번호 확정 2026-06-30)* | 차별화(novelty)/연구아이디어 형성 Agent: EvidenceFormationPort(U11)·U2 `full`·GitHub/데이터셋 외부 탐색을 소비해 유사 연구 정리·bounded 차별화 아이디어·실험 계획·원고 위험 신호·승인형 Notion export 생성(FR-30~35) | 비동기 잡(생성/폴링/취소) | 상세 컴포넌트·FD/NFR/Infra는 `construction/novelty-agent/` (코드/CDK 구 U11 네이밍 잔존) |
+| **U13 Agent Chat Frontend** *(별도 프론트 사이클 — 2026-07-01)* | `/agent` 단일 route에서 U11/U12 Agent mode 선택, 세션 drawer, 멀티턴 채팅, 첨부, 탐구 과정 timeline, mock/real transport seam을 제공하는 프론트엔드 셸 | Next.js route + client state | 상세 컴포넌트는 `agent-chat-frontend-components.md`·`agent-chat-frontend-services.md` 참조 |
 
 ---
 
@@ -75,6 +77,8 @@ U6 ApiGatewayMiddleware는 모든 사용자向 동기 REST의 단일 진입이�
 | FR-38 근거형성 세션 영속·사용자 제어 | U11.EvidenceSessionRepository, U11.EvidenceChatController |
 | NFR-P6 스트리밍 우선·비동기 잡 | U11.EvidenceChatController(SSE), U11.EvidenceJobService |
 | QT-8 근거형성 근거화·불변식 | U11.EvidenceExtractor(C-2·FR-5), U11.EvidenceFormationService(D5 계약 테스트) |
+| FR-30~35·NFR-P5/R3·QT-10 (novelty) [U12] | **별도 인셉션 사이클 — 컴포넌트 추적은 `construction/novelty-agent/functional-design/` 참조** (Evidence(U11) Tool 소비; novelty 전용 컴포넌트는 본 핵심 개요 밖) |
+| FR-40~43·NFR-P7·QT-11 (Agent Chat Frontend) [U13] | U13.AgentRouteShell, AgentChatScreen, AgentModePicker, AgentSessionDrawer, AgentMessageList, AgentProgressTimeline, AgentComposer, AgentAttachmentDrawer, AgentTransportService, AgentChatReducer |
 
 ### 표준 QT / 스토리 커버리지 (비평 보강 반영)
 | ID | 소유자 |
@@ -96,3 +100,7 @@ U6 ApiGatewayMiddleware는 모든 사용자向 동기 REST의 단일 진입이�
 - [`component-methods.md`](./component-methods.md) — 메서드 시그니처·목적·입출력(상세 규칙은 Functional Design)
 - [`services.md`](./services.md) — 서비스 정의·책임·오케스트레이션(동기 vs 이벤트)
 - [`component-dependency.md`](./component-dependency.md) — 의존성 매트릭스·통신 패턴·데이터 흐름·ASCII 흐름도
+- [`agent-chat-frontend-components.md`](./agent-chat-frontend-components.md) — U13 Agent Chat Frontend 컴포넌트
+- [`agent-chat-frontend-component-methods.md`](./agent-chat-frontend-component-methods.md) — U13 메서드·view model
+- [`agent-chat-frontend-services.md`](./agent-chat-frontend-services.md) — U13 프론트 서비스 경계
+- [`agent-chat-frontend-component-dependency.md`](./agent-chat-frontend-component-dependency.md) — U13 의존성·데이터 흐름

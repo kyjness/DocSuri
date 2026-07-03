@@ -20,6 +20,7 @@ from .domain.models import (
     CanonicalDedupState,
     EmbeddingBatch,
     IngestionJob,
+    MetadataRecord,
     ParsedPaper,
     Tombstone,
 )
@@ -174,11 +175,16 @@ class IngestionPipelineService:
             if job.source_record is not None:
                 return self._ingest_source_record(job)
 
-            metadata = self._resilience.dependency_call(
-                "arxiv",
-                "fetch_metadata",
-                lambda: self._arxiv.fetch_metadata(job.arxiv_ref or ""),
-            )
+            if job.arxiv_metadata is not None:
+                # Harvest already fetched this via bulk OAI-PMH — skip the per-paper
+                # round-trip (arXiv politeness budget) and its breaker exposure.
+                metadata = MetadataRecord.from_payload(job.arxiv_metadata)
+            else:
+                metadata = self._resilience.dependency_call(
+                    "arxiv",
+                    "fetch_metadata",
+                    lambda: self._arxiv.fetch_metadata(job.arxiv_ref or ""),
+                )
             return self.ingest_metadata(job, metadata)
         except IngestionError as exc:
             self._control_plane.record_job_finished(
@@ -830,6 +836,7 @@ class RefreshOrchestrationService:
                         job_id=new_job_id("seed"),
                         kind=JobKind.SEED_REBUILD,
                         arxiv_ref=metadata.arxiv_ref,
+                        arxiv_metadata=metadata.to_payload(),
                     )
                 )
                 queued += 1

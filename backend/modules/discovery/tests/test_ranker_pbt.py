@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -10,9 +12,10 @@ from discovery.domain.models import (
     CandidateSet,
     DegradationSignal,
     QueryPlan,
+    RankedResults,
     RetrievalMode,
 )
-from discovery.domain.ranker import TOP_N, RelevanceRanker
+from discovery.domain.ranker import TOP_N, RelevanceRanker, ShadowDiff, shadow_rerank_diff
 from discovery.mocks.fixtures import RECORDS
 
 _ranker = RelevanceRanker()
@@ -50,3 +53,35 @@ def test_order_is_stable_deterministic(scores: list[float]) -> None:
 def test_fewer_than_n_returns_all() -> None:
     ranked = _ranker.rank(_candidates([0.1, 0.2]), _plan, _degradation, TOP_N)
     assert len(ranked.ranked) == 2
+
+
+def _shadow_c(paper_id: str, score: float, categories: list[str]) -> Candidate:
+    # shadow_rerank_diff only reads record.categories / record.paperId — stub avoids the 1024-dim
+    # vector an IndexRecord requires.
+    return Candidate(
+        record=SimpleNamespace(paperId=paper_id, categories=list(categories)),
+        retrieval_score=score,
+    )
+
+
+def test_shadow_rerank_diff_boosts_within_band() -> None:
+    # Baseline (score desc): A .30 / B .29 / C .10 / D .05. Boost cs.AI → B*1.1=.319 > A.
+    ranked = RankedResults(
+        ranked=(
+            _shadow_c("A", 0.30, ["cs.LG"]),
+            _shadow_c("B", 0.29, ["cs.AI"]),
+            _shadow_c("C", 0.10, ["cs.AI"]),
+            _shadow_c("D", 0.05, ["cs.LG"]),
+        )
+    )
+    diff = shadow_rerank_diff(ranked, {"cs.AI": 0.1}, top_fraction=1.0)
+    assert diff.boosted_count == 2
+    assert diff.positions_changed >= 2  # A and B swap
+    assert diff.max_shift >= 1
+
+
+def test_shadow_rerank_diff_is_noop_without_matching_category() -> None:
+    ranked = RankedResults(
+        ranked=(_shadow_c("A", 0.30, ["cs.LG"]), _shadow_c("B", 0.20, ["cs.LG"]))
+    )
+    assert shadow_rerank_diff(ranked, {"cs.AI": 0.1}) == ShadowDiff(0, 0, 0)

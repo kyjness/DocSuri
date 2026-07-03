@@ -118,3 +118,28 @@ Manual review checklist:
 - Confirm real external adapters preserve the allowlist and timeout/degraded behavior.
 
 ---
+
+# Agent Chat Frontend Security Test Instructions — 2026-07-01
+
+Run security-relevant frontend checks:
+
+```powershell
+corepack pnpm@9.15.9 --dir frontend exec -- vitest run test/agentChatScreen.test.tsx --reporter=dot
+corepack pnpm@9.15.9 --dir frontend exec -- playwright test e2e/agent-chat.spec.ts --reporter=line
+```
+
+Covered security/privacy checks:
+
+- `/agent` remains behind the existing `RouteGuard`.
+- unsupported attachment types are rejected before send.
+- attachment UI stores browser metadata only in this mock-first slice.
+- user-facing errors are generic and do not expose raw transport internals.
+- no new local secret storage or backend credential path is introduced.
+
+Manual review checklist:
+
+- Confirm future real upload path keeps server-side MIME, size, and owner checks.
+- Confirm future backend session APIs enforce owner-scoped session access.
+- Confirm external adapter results do not render untrusted HTML in chat messages.
+
+---

@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 from docsuri_shared.dtos import DocModel
 from docsuri_shared.ids import chunk_id
@@ -65,10 +66,7 @@ class FetchParseProcessor:
         )
 
     def validate_open_access(self, license_url: str | None) -> None:
-        normalized = (license_url or "").strip().lower()
-        if not normalized:
-            raise LicenseRejectedError(license_url)
-        if not any(allowed in normalized for allowed in OPEN_ACCESS_LICENSE_ALLOWLIST):
+        if not _is_allowed_license_url(license_url):
             raise LicenseRejectedError(license_url)
 
     def _validate_metadata(self, metadata: MetadataRecord) -> None:
@@ -299,6 +297,27 @@ class IndexRecordAssembler:
 
 def normalize_text(text: str) -> str:
     return _WHITESPACE_RE.sub(" ", text).strip()
+
+
+def _is_allowed_license_url(license_url: str | None) -> bool:
+    raw = (license_url or "").strip()
+    if not raw:
+        return False
+    parsed = urlsplit(raw)
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    host = (parsed.hostname or "").lower()
+    path = parsed.path.lower()
+    return any(
+        host == allowed_host and path.startswith(allowed_path)
+        for allowed_host, allowed_path in _OPEN_ACCESS_LICENSE_RULES
+    )
+
+
+_OPEN_ACCESS_LICENSE_RULES = tuple(
+    ((parts.hostname or "").lower(), parts.path.lower())
+    for parts in (urlsplit(f"https://{allowed}") for allowed in OPEN_ACCESS_LICENSE_ALLOWLIST)
+)
 
 
 def _docmodel_block_text(block) -> str:

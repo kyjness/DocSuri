@@ -15,6 +15,8 @@ export interface HttpTransportConfig {
   baseUrl: string;
   /** The raw Cookie header captured server-side from the inbound request. */
   cookieHeader?: string;
+  /** Server->gateway hop timeout (ms). Defaults to 10000. */
+  timeoutMs?: number;
 }
 
 export class HttpTransport implements Transport {
@@ -33,6 +35,11 @@ export class HttpTransport implements Transport {
       body: req.body !== undefined ? JSON.stringify(req.body) : undefined,
       // Never cache personalized/authenticated responses (P-P3).
       cache: 'no-store',
+      // The BFF (app/bff/[...path]/route.ts) is the sole caller and never sets req.signal, so
+      // this server->gateway hop needs its own timeout: ApiClient's timeout only covers the
+      // browser->BFF hop, and without this a gateway hang would pin BFF sockets for ~300s and
+      // take down the whole FE (BR-U5-10, NFR-U5-R2).
+      signal: AbortSignal.timeout(this.config.timeoutMs ?? 10000),
     });
 
     let body: unknown = null;

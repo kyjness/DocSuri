@@ -20,6 +20,12 @@ from aws_cdk import (
     aws_cloudfront_origins as origins,
 )
 from aws_cdk import (
+    aws_cloudwatch as cloudwatch,
+)
+from aws_cdk import (
+    aws_cloudwatch_actions as cw_actions,
+)
+from aws_cdk import (
     aws_ec2 as ec2,
 )
 from aws_cdk import (
@@ -39,6 +45,12 @@ from aws_cdk import (
 )
 from aws_cdk import (
     aws_route53_targets as r53_targets,
+)
+from aws_cdk import (
+    aws_sns as sns,
+)
+from aws_cdk import (
+    aws_sns_subscriptions as subs,
 )
 from constructs import Construct
 
@@ -76,6 +88,12 @@ class FrontendStack(Stack):
         # ._origin_auth.
         origin_verify = web_origin_verify_secret(self)
         social_verify = social_origin_verify_secret(self)
+        _DEFAULT_OPS_ALERT_EMAIL = "corpseonthemission@icloud.com"
+        _ctx_alert_emails = self.node.try_get_context("ops_alert_email")
+        _raw_alert_emails = (
+            _DEFAULT_OPS_ALERT_EMAIL if _ctx_alert_emails is None else _ctx_alert_emails
+        )
+        ops_alert_emails = [e.strip() for e in _raw_alert_emails.split(",") if e.strip()]
 
         repo = ecr.Repository.from_repository_name(self, "FrontendRepo", "docsuri-frontend")
         cluster = ecs.Cluster(self, "Cluster", cluster_name="docsuri-frontend", vpc=vpc)
@@ -104,9 +122,9 @@ class FrontendStack(Stack):
             self, "WebService",
             cluster=cluster,
             service_name="docsuri-frontend",
-            cpu=256,
-            memory_limit_mib=512,
-            desired_count=1,
+            cpu=512,
+            memory_limit_mib=1024,
+            desired_count=2,
             task_image_options=ecs_patterns.ApplicationLoadBalancedTaskImageOptions(
                 image=ecs.ContainerImage.from_ecr_repository(repo, tag="latest"),
                 container_port=3000,
@@ -158,8 +176,41 @@ class FrontendStack(Stack):
             ],
         )
 
-        scaling = self.service.service.auto_scale_task_count(min_capacity=1, max_capacity=2)
+        scaling = self.service.service.auto_scale_task_count(min_capacity=2, max_capacity=4)
         scaling.scale_on_cpu_utilization("CpuScale", target_utilization_percent=70)
+
+        ops_alerts = sns.Topic(self, "OpsAlerts", display_name="docsuri-frontend-ops-alerts")
+        for email in ops_alert_emails:
+            ops_alerts.add_subscription(subs.EmailSubscription(email))
+
+        web_5xx_alarm = self.service.target_group.metrics.http_code_target(
+            elbv2.HttpCodeTarget.TARGET_5XX_COUNT,
+            period=Duration.minutes(5),
+            statistic="Sum",
+        ).create_alarm(
+            self,
+            "Frontend5xxAlarm",
+            threshold=10,
+            evaluation_periods=1,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+            alarm_description="DocSuri frontend target 5xx > 10 / 5min",
+        )
+        web_5xx_alarm.add_alarm_action(cw_actions.SnsAction(ops_alerts))
+
+        web_latency_alarm = self.service.target_group.metrics.target_response_time(
+            period=Duration.minutes(5),
+            statistic="p95",
+        ).create_alarm(
+            self,
+            "FrontendLatencyP95Alarm",
+            threshold=2,
+            evaluation_periods=3,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+            alarm_description="DocSuri frontend p95 latency > 2s sustained 15min",
+        )
+        web_latency_alarm.add_alarm_action(cw_actions.SnsAction(ops_alerts))
 
         # --- CloudFront: browser-trusted HTTPS at docsuri.org, encrypted+authenticated origin ---
         origin = origins.HttpOrigin(

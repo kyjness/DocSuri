@@ -16,6 +16,7 @@ modules' "pending @ELSAPHABA sign-off" notes are superseded by this.
 from __future__ import annotations
 
 import logging
+import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -29,6 +30,26 @@ from .middleware import InMemoryRateLimiter, configure_u6_middleware
 from .wiring import mount_modules
 
 log = logging.getLogger("docsuri.backend")
+
+
+def _configure_logging() -> None:
+    """Route application module logs to stdout so they reach the container log driver → CloudWatch.
+
+    The API runs under bare ``uvicorn``, which configures ONLY its own loggers; app module loggers
+    (discovery/summarization/…) otherwise fall through to Python's last-resort handler (WARNING+
+    only, INFO dropped), so per-request diagnostics — e.g. the translate abstain reason — were
+    invisible in production. Attach a single stdout handler to the ROOT logger at INFO, idempotently
+    (skip if already configured). uvicorn's own loggers set ``propagate=False`` and are not
+    reconfigured here, so access logs are not duplicated; uvicorn's later dictConfig leaves the
+    root logger (which it never targets) untouched."""
+    root = logging.getLogger()
+    if getattr(root, "_docsuri_configured", False):
+        return
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
+    root._docsuri_configured = True  # type: ignore[attr-defined]
 
 
 @asynccontextmanager
@@ -62,6 +83,7 @@ async def lifespan(app: FastAPI):
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
+    _configure_logging()
     settings = settings or Settings.from_env()
     _apply_startup_migrations(settings.database_url)
 
@@ -78,7 +100,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     observability, telemetry_store = _build_observability()
     app.state.observability = observability
     app.state.telemetry_store = telemetry_store
-    app.state.rate_limiter = InMemoryRateLimiter()
+    app.state.rate_limiter = InMemoryRateLimiter(
+        max_requests=settings.gateway_rate_limit_max_requests,
+        window_seconds=settings.gateway_rate_limit_window_seconds,
+    )
 
     (
         incident_store,

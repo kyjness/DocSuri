@@ -5,7 +5,11 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from docsuri_ops.domain.models import BudgetState, TelemetryEvent
-from docsuri_ops.incidents import AiIncidentDetectorSuite, IncidentEventPublisher
+from docsuri_ops.incidents import (
+    AiIncidentDetectorSuite,
+    IncidentEventPublisher,
+    PublishOutcome,
+)
 from docsuri_ops.ports import TelemetrySource
 
 
@@ -27,7 +31,9 @@ def run_once(
     for event in events:
         processed += 1
         candidate = suite.evaluate(event, budget_state)
-        if candidate is not None and publisher.publish_candidate(candidate):
+        if candidate is not None and (
+            publisher.publish_candidate(candidate) is PublishOutcome.PUBLISHED
+        ):
             published += 1
     return WorkerResult(processed=processed, published=published)
 
@@ -53,13 +59,15 @@ def run_polling_loop(
             if candidate is None:
                 source.ack(event)  # no incident — handled, safe to ack
                 continue
-            if publisher.publish_candidate(candidate):
+            outcome = publisher.publish_candidate(candidate)
+            if outcome is PublishOutcome.PUBLISHED:
                 published += 1
-                source.ack(event)  # incident published (or already recorded) — ack
-            # else: publish failed → leave UN-acked so the source can redeliver, instead of
-            # silently dropping the incident (PR #45 review). NB: the local InMemoryTelemetrySource
-            # does not redeliver; a real source (SQS) plus a publish-before-commit reordering in
-            # IncidentEventPublisher is needed for true at-least-once + dedup (follow-up).
+                source.ack(event)  # newly published — ack
+            elif outcome is PublishOutcome.DUPLICATE:
+                source.ack(event)  # already recorded (idempotent) — ack, don't redeliver-loop
+            # else FAILED: leave UN-acked so the source redelivers instead of silently dropping
+            # the incident. Publish-before-commit (IncidentEventPublisher) makes this safe: nothing
+            # was committed, so redelivery re-attempts cleanly. (PR #45 review + Finding 1)
         total = WorkerResult(
             processed=total.processed + processed,
             published=total.published + published,

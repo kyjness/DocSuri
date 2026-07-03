@@ -46,8 +46,13 @@ class InMemoryIncidentStore:
     _incident_seen: BoundedSeen = field(default_factory=BoundedSeen)  # bounded LRU dedup
     _alert_seen: BoundedSeen = field(default_factory=BoundedSeen)  # bounded LRU dedup
 
+    def has_incident(self, incident: ClassifiedIncidentRecord) -> bool:
+        # Non-mutating dedup check so the publisher can decide "duplicate vs new" WITHOUT
+        # committing — lets it publish-before-commit (at-least-once safety). (U6 review Finding 1)
+        return incident.dedup_key in self._incident_seen
+
     def append_incident(self, incident: ClassifiedIncidentRecord) -> bool:
-        key = f"{incident.incident_class.value}:{incident.request_id}:{incident.reason}"
+        key = incident.dedup_key
         if key in self._incident_seen:
             return False
         self._incident_seen.add(key)

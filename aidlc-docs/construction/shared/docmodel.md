@@ -63,6 +63,11 @@ DocModel
 
 ## 3. 앵커 — 결정적 id 핸들 (Q3 결정 A)
 
+> ⚠️ **앵커 모델 충돌 (미해결) — 2026-06-30 · `aidlc-suite-review` PR #280**
+> FROZEN 본 `docmodel.md §3`은 결정적 Section/Block **id 앵커**를 강제하지만, 배포된 U7 요약 경로 + `summarization.schema.json`은 레거시 **`{ target ∈ enum{section,table,figure}, quote-span(span), regex-label(label) }`** 모델을 방출하며(U7: 백엔드 무변경), `evidence-formation-port.md §3.6`은 id 기반 앵커를 전제한다.
+> 명시적 결정(U7/스키마가 id 앵커로 이행하거나 본 §3을 공식 개정·동결해제)으로 셋을 정렬하기 전까지, novelty/근거형성 에이전트의 앵커 실재성 검증은 id 앵커에 의존할 수 없다. **해결 책임자: TBD.**
+> 교차 참조: `docmodel.md §3`(본 절) · `shared/dtos/summarization.schema.json`(Anchor/AnchorTarget) · `u7-summarization/functional-design/domain-entities.md`(Anchor) · `evidence-formation-port.md §3.6`.
+
 **모든 Section·Block·표·그림·수식에 결정적 `id`를 부여**하고, 근거화·리치뷰·에이전트가 **같은 id를 가리킨다**. 기존 "섹션 라벨 + 정규식 매칭"의 취약성을 해소한다.
 
 - **id 규칙(결정성, P7)**: 동일 소스 → 동일 id. 권고 형식: 섹션 `s3`·`s3.2`(번호/위치 기반), 블록 `s3.p2`·`s3.tbl1`·`s3.eq2`·`s3.fig1`(섹션id + type약어 + ordinal). 스키마는 `id`를 문자열로만 제약(형식 규칙은 본 문서·파서 NFR).

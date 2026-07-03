@@ -63,7 +63,7 @@ def test_citation_tree_bounds_and_unresolved(monkeypatch) -> None:
     body = resp.json()
     assert body["status"] == "Partial"
     assert body["depthReturned"] <= 2
-    assert len(body["nodes"]) <= 50
+    assert len(body["nodes"]) <= 30
     assert body["nodes"][0]["nodeId"] == "2101.00001"
     assert body["nodes"][0]["saveable"] is True
     assert body["unresolved"][0]["title"] == "Unresolved paper"
@@ -263,6 +263,32 @@ def test_semantic_scholar_provider_url_encodes_path(monkeypatch) -> None:
     asyncio.run(controller.SemanticScholarProvider().references("ARXIV:1706.03762v7", 1))
 
     assert captured["url"].endswith("/paper/ARXIV%3A1706.03762/references")
+
+
+@pytest.mark.asyncio
+async def test_semantic_scholar_provider_uses_longer_retry_timeout(monkeypatch) -> None:
+    captured_timeouts = []
+
+    class FakeClient:
+        def __init__(self, timeout: float) -> None:
+            captured_timeouts.append(timeout)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            pass
+
+        async def get(self, url: str, params, headers):
+            raise httpx.TimeoutException("slow")
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+
+    status, items = await controller.SemanticScholarProvider().references("1706.03762", 1)
+
+    assert captured_timeouts == [3.0, 5.0]
+    assert status == "unavailable"
+    assert items == []
 
 
 def test_semantic_scholar_paper_id_normalizes_common_ids() -> None:

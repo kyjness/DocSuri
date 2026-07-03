@@ -4,6 +4,8 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
+from hypothesis import example, given
+from hypothesis import strategies as st
 
 from backend.app import create_app
 from backend.config import Settings
@@ -204,7 +206,45 @@ def test_api_records_and_returns_decision(monkeypatch) -> None:
     assert resp.status_code == 200
     assert resp.json()["recorded"] is True
     assert decision["reason"] == "profile_available"
-    assert decision["searchBoosts"]["cs.AI"] == 1.0
+    # BR-P8: raw weight 1.0 maps to the +0.1 boost ceiling, not 1.0.
+    assert decision["searchBoosts"]["cs.AI"] == 0.1
+
+
+def test_search_boosts_respect_brp8_bounds() -> None:
+    from backend.modules.personalization.service import _to_search_boosts
+
+    boosts = _to_search_boosts({f"cat.{i}": 1.0 for i in range(10)})
+    assert boosts
+    assert all(abs(b) <= 0.1 + 1e-9 for b in boosts.values())
+    assert sum(abs(b) for b in boosts.values()) <= 0.2 + 1e-9
+
+
+@given(
+    st.dictionaries(
+        st.from_regex(r"cat\.[A-Za-z0-9]{1,8}", fullmatch=True),
+        st.floats(min_value=-10, max_value=10, allow_nan=False, allow_infinity=False),
+        max_size=20,
+    )
+)
+@example({"cat.a": 1.0, "cat.b": 1.0, "cat.c": 1.0})
+def test_search_boosts_always_respect_brp8_bounds(weights: dict[str, float]) -> None:
+    from backend.modules.personalization.service import _to_search_boosts
+
+    boosts = _to_search_boosts(weights)
+    assert all(abs(b) <= 0.1 + 1e-9 for b in boosts.values())
+    assert sum(abs(b) for b in boosts.values()) <= 0.2 + 1e-9
+
+
+def test_cached_search_boosts_does_not_aggregate_events_inline() -> None:
+    repo = InMemoryPersonalizationRepository()
+    user_id = str(uuid4())
+    repo.insert_event(_event(user_id, "d1"))
+
+    assert PersonalizationReadPort(repo).cached_search_boosts(user_id) == {}
+    assert repo.get_profile(user_id) is None
+
+    assert PersonalizationReadPort(repo).search_decision(user_id).reason == "profile_available"
+    assert PersonalizationReadPort(repo).cached_search_boosts(user_id)["cs.AI"] == 0.1
 
 
 def test_api_settings_disable_recording(monkeypatch) -> None:

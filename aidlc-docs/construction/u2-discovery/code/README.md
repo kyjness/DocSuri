@@ -65,7 +65,7 @@ uv run --extra real pytest tests/test_opensearch_integration.py   # 3 passed (k-
 ```
 
 ## mock → real 전환 (✅ 완료, 2026-06-17)
-- `ports/search_ports.py` 인터페이스 뒤 mock을 real로 교체 완료: OpenSearch(opensearch-py k-NN/BM25)·Bedrock(boto3, Cohere v3 search_query)·EventBridge 발행. 계약(`SearchResponse`)·도메인 로직 불변(MR-4). 전환은 `real_wiring.build_real_orchestrator` ↔ `mocks.wiring.build_mock_orchestrator` 선택(어댑터만 교체).
+- `ports/search_ports.py` 인터페이스 뒤 mock을 real로 교체 완료: OpenSearch(opensearch-py k-NN/BM25)·Bedrock(boto3, Cohere v4 search_query)·EventBridge 발행. 계약(`SearchResponse`)·도메인 로직 불변(MR-4). 전환은 `real_wiring.build_real_orchestrator` ↔ `mocks.wiring.build_mock_orchestrator` 선택(어댑터만 교체).
 - **app-shell 마운트 토글**: `backend/wiring.py::_mount_discovery`가 env(`DOCSURI_OPENSEARCH_ENDPOINT`+`DOCSURI_BEDROCK_MODEL_ID`)로 real/mock 선택. 실 근거화 hook은 양 모드 공통(INV-1). ⚠️ 조율존 변경 — app-shell 소유자 사인오프 필요.
 - U6 포트 스텁(`mocks/port_stubs.py`) 중 **근거화 hook은 실 U6로 교체됨**(PR #51). 비용·관측성은 잠정 스텁(U6 프로세스 싱글턴 노출 시 교체; U2는 advisory read-only).
 - **⏳ 잔여(후속/Infra)**: 실 OpenSearch 클러스터·Bedrock 접근·이벤트 버스 프로비저닝(공유 인프라 = U1 보류 인프라 + 시스템 횡단), 캐시 스토어(분산), 정량 수치. env로 분리되어 코드는 비차단.

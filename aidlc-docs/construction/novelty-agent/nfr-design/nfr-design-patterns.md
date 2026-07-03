@@ -81,7 +81,7 @@ U6 remains the system gateway grounding authority. Novelty validation prevents u
 
 ## Manuscript Parsing Pattern
 
-v1 supports PDF, Markdown, and TXT. DOCX is deferred. Parsing stays in shared ingestion/doc-model or evidence parser boundaries. Novelty worker consumes parsed attachment/Evidence handles and does not parse manuscripts directly.
+v1 backend manuscript analysis supports Markdown and TXT object refs only. PDF and DOCX are deferred until shared ingestion/doc-model or evidence parser boundaries provide a parsed attachment handle. Novelty worker consumes parsed attachment/Evidence handles and does not add a separate PDF/DOCX parser.
 
 `EvidenceFormationPort` is still PROVISIONAL. Code generation for novelty must either wait for the upstream port freeze or use a narrow fixture/adapter seam without importing upstream internals.
 

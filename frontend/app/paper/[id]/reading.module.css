@@ -17,3 +17,14 @@
   height: 0;
   display: none; /* Chrome / Safari */
 }
+
+/* Desktop: cap the reading measure and center it — long body / translation text is far more
+   readable in a ~760px column than stretched across the full content width. */
+@media (min-width: 768px) {
+  .page {
+    align-self: center;
+    width: 100%;
+    max-width: 760px;
+    padding: 8px 0 40px;
+  }
+}

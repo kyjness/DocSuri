@@ -38,7 +38,9 @@
 ### 2.1 캐시 우선 (Q4 / §11)
 - **read-through**(Redis 핫 → S3 영구) → 미스 → 생성 → **write-through**(S3 + Redis).
 - 키 = immutable `SummaryCacheKey`. **캐시 HIT = LLM 0콜 즉시**(TTFB 주 경로·비용 0).
-- 무효화 = 키(modelVer/promptVer/glossaryVer/version) 변경 = 신규 객체(자동, stale 없음). TTL/라이프사이클은 Infra.
+- 무효화 = 키(modelVer/promptVer/glossaryVer/seedVer/version) 변경 = 신규 객체(자동, stale 없음). TTL/라이프사이클은 Infra.
+- **NFR-C1(중복 호출 방지) 강화**: translate `glossaryVer`=프롬프트-강제 시그니처(요약과 대칭)라, 약한 용어만 편집하거나 사용자 간 약한 용어가 달라도 **동일 공유 베이스**로 de-dup(약한 후치환은 읽기시 오버레이) — 종전 전체 카운터 키가 부르던 사용자별·편집별 동일-산출물 재번역을 제거. seedVer는 시드 편집만 정확히 무효화(무변경 배포는 캐시 유지).
+- **동시 map(BR-S6/S18)**: 긴 번역/요약의 청크 map은 바운드 동시 실행(`map_bounded`) — 지연 감소·**비용 중립**(호출 수·산출물 불변). 워커 상한은 Bedrock 스로틀/TPM 대비 보수적(번역>요약 상한, 요약 청크가 큼).
 - **저장 불변식(코드 검증)**: S3 = **영구·immutable**(write-through 원천), Redis 핫 = **TTL 필수**(`s3_redis_store.py` `set(..., ex=ttl)` — 만료없는 키 금지). 미스 시 S3 원천 read → Redis backfill. **요약·초록번역·전문번역(DocModel v1) 3종 동일** 저장 모델(키 차원만 상이).
 
 ### 2.2 스트리밍 ↔ 근거화 패턴 ⭐ (Q5 / BR-S8 / FR-5)

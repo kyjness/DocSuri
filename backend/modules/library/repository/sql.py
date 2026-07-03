@@ -8,15 +8,21 @@ Tables map 1:1 to ``migrations/001_create_library_tables.sql``.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Integer, String, Text, tuple_
+from sqlalchemy import JSON, DateTime, Integer, String, Text, or_, tuple_
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
 from ..models import HistoryEntry, LibraryItem, SavedSearch
 from ..schemas import LibraryItemMeta
 
 CursorKey = tuple[datetime, str]
+_VERSION_SUFFIX = re.compile(r"v\d+$")
+
+
+def _strip_version(paper_id: str) -> str:
+    return _VERSION_SUFFIX.sub("", paper_id)
 
 
 class Base(DeclarativeBase):
@@ -111,11 +117,7 @@ class SqlSavedSearchRepository:
         return _saved_to_domain(row) if row else None
 
     def count(self, owner_id: str) -> int:
-        return (
-            self._s.query(SavedSearchTable)
-            .filter(SavedSearchTable.owner_id == owner_id)
-            .count()
-        )
+        return self._s.query(SavedSearchTable).filter(SavedSearchTable.owner_id == owner_id).count()
 
     def insert(self, item: SavedSearch) -> SavedSearch:
         self._s.add(
@@ -176,19 +178,13 @@ class SqlLibraryRepository:
     def find_by_arxiv(self, owner_id: str, arxiv_id: str) -> LibraryItem | None:
         row = (
             self._s.query(LibraryItemTable)
-            .filter(
-                LibraryItemTable.owner_id == owner_id, LibraryItemTable.arxiv_id == arxiv_id
-            )
+            .filter(LibraryItemTable.owner_id == owner_id, LibraryItemTable.arxiv_id == arxiv_id)
             .first()
         )
         return _library_to_domain(row) if row else None
 
     def count(self, owner_id: str) -> int:
-        return (
-            self._s.query(LibraryItemTable)
-            .filter(LibraryItemTable.owner_id == owner_id)
-            .count()
-        )
+        return self._s.query(LibraryItemTable).filter(LibraryItemTable.owner_id == owner_id).count()
 
     def insert(self, item: LibraryItem) -> LibraryItem:
         self._s.add(
@@ -211,13 +207,34 @@ class SqlLibraryRepository:
         )
         return n > 0
 
+    def mark_retracted(self, paper_id: str) -> int:
+        base = _strip_version(paper_id)
+        rows = (
+            self._s.query(LibraryItemTable)
+            .filter(
+                or_(
+                    LibraryItemTable.arxiv_id == paper_id,
+                    LibraryItemTable.arxiv_id == base,
+                    LibraryItemTable.arxiv_id.like(f"{base}v%"),
+                )
+            )
+            .all()
+        )
+        changed = 0
+        for row in rows:
+            if row.meta.get("retracted") is True:
+                continue
+            row.meta = {**row.meta, "retracted": True}
+            changed += 1
+        if changed:
+            self._s.flush()
+        return changed
+
     def list_page(self, owner_id: str, limit: int, after: CursorKey | None) -> list[LibraryItem]:
         q = self._s.query(LibraryItemTable).filter(LibraryItemTable.owner_id == owner_id)
         if after is not None:
             q = q.filter(tuple_(LibraryItemTable.added_at, LibraryItemTable.id) < after)
-        rows = q.order_by(LibraryItemTable.added_at.desc(), LibraryItemTable.id.desc()).limit(
-            limit
-        )
+        rows = q.order_by(LibraryItemTable.added_at.desc(), LibraryItemTable.id.desc()).limit(limit)
         return [_library_to_domain(r) for r in rows]
 
 

@@ -23,7 +23,11 @@ class FakeEvents:
 
 def _event() -> SearchExecutedEvent:
     return SearchExecutedEvent(
-        userId="u1", query="diffusion", timestamp=datetime.now(UTC), resultCount=3
+        userId="u1",
+        requestId="req-1",
+        query="diffusion",
+        timestamp=datetime.now(UTC),
+        resultCount=3,
     )
 
 
@@ -39,6 +43,7 @@ def test_publish_sends_one_eventbridge_entry() -> None:
     entry = fake.calls[0][0]
     assert entry["DetailType"] == "SearchExecuted"
     assert entry["EventBusName"] == "docsuri-bus"
+    assert '"requestId":"req-1"' in entry["Detail"]
     assert '"query":"diffusion"' in entry["Detail"]
 
 

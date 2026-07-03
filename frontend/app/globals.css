@@ -77,9 +77,6 @@ body {
   padding: 0;
   background: var(--color-bg);
   color: var(--color-text);
-  /* Scroll stays; hide the scrollbar chrome app-wide (phone-first). */
-  scrollbar-width: none;
-  -ms-overflow-style: none;
   font-family:
     system-ui,
     -apple-system,
@@ -115,9 +112,20 @@ input:-webkit-autofill:active {
   outline-offset: 2px;
 }
 
-html::-webkit-scrollbar,
-body::-webkit-scrollbar {
-  width: 0;
-  height: 0;
-  display: none;
+/* Phone-first: hide the scrollbar chrome on phones (and inside the phone-width preview
+   iframe). On desktop web the native scrollbar stays, so the page is obviously scrollable
+   on the right edge. Scoped by width so the desktop view and the phone preview differ. */
+@media (max-width: 767px) {
+  html,
+  body {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+
+  html::-webkit-scrollbar,
+  body::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+    display: none;
+  }
 }

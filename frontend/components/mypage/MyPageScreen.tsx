@@ -9,7 +9,7 @@ import type { SubscriptionDTO } from '@/types/generated';
 import type { AccountProfileVM, OrcidProfileVM } from '@/types/mypage';
 
 // MyPageScreen (U10) — top-level menu over the mypage sub-screens. 계정/ORCID는 정보성이라
-// 여기 그대로 두고, 관심논문·최근 본 / 내 구독 / 설정은 한 단계 더 들어가는 메뉴 카드로만
+// 여기 그대로 두고, 관심논문·최근 본 논문·검색 / 내 구독 / 설정은 한 단계 더 들어가는 메뉴 카드로만
 // 노출한다(각 상세는 MyPageLibraryScreen/MyPageSubscriptionScreen/MyPageSettingsScreen).
 
 const LOGIN_PROVIDER_LABEL: Record<string, string> = {
@@ -93,8 +93,8 @@ export function MyPageScreen() {
 
       <Link href="/mypage/library" className={styles.menuCard} data-testid="mypage-menu-library">
         <span>
-          <span className={styles.cardTitle}>관심 논문 · 최근 본</span>
-          <span className={styles.muted}>저장한 논문과 최근에 본 논문을 모아 봅니다.</span>
+          <span className={styles.cardTitle}>관심 논문 · 최근 본 논문 · 검색</span>
+          <span className={styles.muted}>저장한 논문, 최근 본 논문, 저장한 검색과 검색 이력을 모아 봅니다.</span>
         </span>
         <span className={styles.menuArrow} aria-hidden="true">
           ›

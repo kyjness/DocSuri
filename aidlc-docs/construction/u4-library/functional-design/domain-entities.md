@@ -54,7 +54,7 @@
   - `query`: `str` (실행된 질의 문자열)
   - `executed_at`: `datetime` (검색 실행 일시; timezone-aware UTC. `SearchExecutedEvent.timestamp` 매핑)
   - `result_count`: `int` (해당 검색의 결과 수. `SearchExecutedEvent.resultCount` 매핑)
-  - `dedupe_key`: `str` (`sha256(owner_id|executed_at_iso|query)` — 멱등 기록 키, **내부 전용**, SEC-9 비노출)
+  - `dedupe_key`: `str` (`sha256(owner_id|requestId|query)` — 멱등 기록 키, **내부 전용**, SEC-9 비노출)
 - **불변식**:
   - 소유자당 최신 500건의 롤링 보존. 상한 초과 기록 시 가장 오래된 항목을 정리(prune)한다. `clearHistory`는 소유자의 전체 이력을 삭제한다 — BR-L6/D6.
   - `SearchExecutedEvent`는 🔒FROZEN이며 at-least-once 전달이다. `dedupe_key`로 중복 제거하여, 재전달이 중복 행을 생성하지 않는다(exactly-once 행) — BR-L7/D7, INV-L3.

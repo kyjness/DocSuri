@@ -20,6 +20,7 @@ from .models import (
 
 class PersonalizationRepository(Protocol):
     def get_settings(self, user_id: str) -> PersonalizationSettings: ...
+    def get_settings_if_exists(self, user_id: str) -> PersonalizationSettings | None: ...
     def set_enabled(self, user_id: str, enabled: bool) -> PersonalizationSettings: ...
     def insert_event(self, event: BehaviorEvent) -> bool: ...
     def list_events(self, user_id: str) -> list[BehaviorEvent]: ...
@@ -43,6 +44,10 @@ class InMemoryPersonalizationRepository:
     def get_settings(self, user_id: str) -> PersonalizationSettings:
         with self._lock:
             return self._settings.setdefault(user_id, PersonalizationSettings(userId=user_id))
+
+    def get_settings_if_exists(self, user_id: str) -> PersonalizationSettings | None:
+        with self._lock:
+            return self._settings.get(user_id)
 
     def set_enabled(self, user_id: str, enabled: bool) -> PersonalizationSettings:
         with self._lock:
@@ -221,6 +226,10 @@ class SqlPersonalizationRepository:
             self._s.add(row)
             self._s.flush()
         return _settings_from_row(row)
+
+    def get_settings_if_exists(self, user_id: str) -> PersonalizationSettings | None:
+        row = self._s.get(PersonalizationSettingsTable, user_id)
+        return _settings_from_row(row) if row else None
 
     def set_enabled(self, user_id: str, enabled: bool) -> PersonalizationSettings:
         self.get_settings(user_id)

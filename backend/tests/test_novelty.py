@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from io import BytesIO
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -10,7 +13,15 @@ from backend.app import create_app
 from backend.config import Settings
 from backend.modules.accounts.models import Principal, UserRole
 from backend.modules.novelty import controller
-from backend.modules.novelty.adapters import NoveltyAdapters, RetrievalBundle
+from backend.modules.novelty.adapters import (
+    BedrockNoveltyLlmClient,
+    ExternalApiSearchClient,
+    NoveltyAdapters,
+    NoveltyLlmDraft,
+    RetrievalBundle,
+    S3ManuscriptSimilarityClient,
+    U2FullSearchCorpusRetrievalClient,
+)
 from backend.modules.novelty.models import (
     ArtifactKind,
     ArtifactValidationError,
@@ -84,6 +95,31 @@ def test_owner_isolation_blocks_cross_owner_reads() -> None:
         raise AssertionError("cross-owner job read should fail closed")
 
 
+def test_service_rejects_unbound_manuscript_object_key() -> None:
+    repo = InMemoryNoveltyRepository()
+    service = NoveltyService(repo)
+
+    try:
+        service.create_job(
+            "u1",
+            NoveltyJobRequest(
+                inputType="manuscript",
+                topic="owner scoped manuscript",
+                manuscript={
+                    "fileName": "draft.md",
+                    "contentType": "text/markdown",
+                    "objectKey": "novelty/u2/other-job/draft.md",
+                },
+            ),
+        )
+    except ValueError as exc:
+        assert "owner and job" in str(exc)
+    else:  # pragma: no cover - failure path clarity
+        raise AssertionError("cross-owner manuscript objectKey should be rejected")
+
+    assert repo.list_jobs("u1") == []
+
+
 def test_state_transition_guard_rejects_backtracking() -> None:
     repo = InMemoryNoveltyRepository()
     service, owner_id, job_id = _service_job(repo)
@@ -123,6 +159,8 @@ def test_external_query_and_url_guards() -> None:
     assert is_safe_external_url("https://127.0.0.1/admin") is False
     assert is_safe_external_url("https://8.8.8.8/dns-query") is False
     assert is_safe_external_url("https://github.com.evil.example/x") is False
+    assert is_safe_external_url("https://news.google.com/search?q=rag") is False
+    assert is_safe_external_url("https://zenodo.org/records/123") is True
 
 
 def test_worker_processes_minimal_job_to_completion() -> None:
@@ -139,14 +177,317 @@ def test_worker_processes_minimal_job_to_completion() -> None:
     }
 
 
+def test_u2_corpus_adapter_maps_full_search_cards_to_source_refs() -> None:
+    from discovery.mocks import build_mock_orchestrator
+
+    bundle = build_mock_orchestrator()
+    result = U2FullSearchCorpusRetrievalClient(
+        bundle.orchestrator,
+        bundle.grounding_hook,
+    ).full_search("u1", "diffusion protein structure")
+
+    assert result.evidenceStatus is EvidenceStatus.SUPPORTED
+    assert result.items
+    assert result.items[0]["sourceRefs"][0]["url"].startswith("https://")
+
+
+def test_similarity_adapter_reads_text_manuscript_and_queries_corpus() -> None:
+    class FakeS3:
+        def get_object(self, **kwargs):
+            assert kwargs["Bucket"] == "papers"
+            assert kwargs["Key"] == "novelty/u1/job/draft.txt"
+            return {
+                "Body": BytesIO(
+                    b"This manuscript presents a robust framework for privacy preserving "
+                    b"retrieval augmented generation evaluation across domain specific "
+                    b"scientific workflows with repeated evidence checking. "
+                )
+            }
+
+    class FakeCorpus:
+        def full_search(self, owner_id: str, query: str) -> RetrievalBundle:
+            assert owner_id == "u1"
+            assert "privacy preserving" in query
+            return RetrievalBundle(
+                items=[
+                    {
+                        "title": "Privacy Preserving RAG",
+                        "sourceRefs": [
+                            {
+                                "type": "url",
+                                "identifier": "2401.00001",
+                                "url": "https://arxiv.org/abs/2401.00001",
+                            }
+                        ],
+                    }
+                ],
+                evidenceStatus=EvidenceStatus.SUPPORTED,
+            )
+
+    result = S3ManuscriptSimilarityClient(
+        bucket="papers",
+        prefix="novelty/",
+        client=FakeS3(),
+        corpus=FakeCorpus(),
+    ).check(
+        "u1",
+        {
+            "objectKey": "novelty/u1/job/draft.txt",
+            "contentType": "text/plain",
+            "jobId": "job",
+        },
+    )
+
+    assert result.evidenceStatus is EvidenceStatus.SUPPORTED
+    assert any(item["riskType"] == "sentence_similarity" for item in result.items)
+    parsed_url = urlparse(result.items[-1]["sourceRefs"][0]["url"])
+    assert parsed_url.scheme == "https"
+    assert parsed_url.hostname == "arxiv.org"
+
+
+def test_similarity_adapter_rejects_cross_owner_object_key() -> None:
+    result = S3ManuscriptSimilarityClient(
+        bucket="papers",
+        prefix="novelty/",
+        client=object(),
+        corpus=object(),
+    ).check(
+        "u1",
+        {
+            "objectKey": "novelty/u2/job/draft.txt",
+            "contentType": "text/plain",
+        },
+    )
+
+    assert result.degradedReason == "manuscript objectKey is outside owner prefix"
+
+
+def test_similarity_adapter_rejects_cross_job_object_key() -> None:
+    result = S3ManuscriptSimilarityClient(
+        bucket="papers",
+        prefix="novelty/",
+        client=object(),
+        corpus=object(),
+    ).check(
+        "u1",
+        {
+            "objectKey": "novelty/u1/other-job/draft.txt",
+            "contentType": "text/plain",
+            "jobId": "job",
+        },
+    )
+
+    assert result.degradedReason == "manuscript objectKey is outside job prefix"
+
+
+def test_external_adapter_queries_public_api_sources() -> None:
+    class Response:
+        status_code = 200
+
+        def __init__(self, payload):
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class FakeHttp:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict]] = []
+
+        def get(self, url: str, *, params: dict, headers: dict):
+            self.calls.append((url, params))
+            host = urlparse(url).hostname
+            if host == "api.github.com":
+                return Response(
+                    {
+                        "items": [
+                            {
+                                "full_name": "docsuri/novelty-baseline",
+                                "html_url": "https://github.com/docsuri/novelty-baseline",
+                                "description": "Novelty baseline",
+                                "updated_at": "2026-07-01T00:00:00Z",
+                                "stargazers_count": 7,
+                                "language": "Python",
+                                "license": {"spdx_id": "MIT"},
+                            }
+                        ]
+                    }
+                )
+            if host == "huggingface.co":
+                return Response(
+                    [
+                        {
+                            "id": "docsuri/rag-eval",
+                            "tags": ["rag", "evaluation"],
+                            "downloads": 3,
+                            "likes": 2,
+                        }
+                    ]
+                )
+            if host == "zenodo.org":
+                return Response(
+                    {
+                        "hits": {
+                            "hits": [
+                                {
+                                    "id": "123",
+                                    "doi": "10.5281/zenodo.123",
+                                    "links": {"html": "https://zenodo.org/records/123"},
+                                    "metadata": {
+                                        "title": "RAG Evaluation Dataset",
+                                        "description": "<p>Dataset for RAG evaluation.</p>",
+                                        "publication_date": "2026-06-30",
+                                        "keywords": ["rag"],
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                )
+            raise AssertionError(f"unexpected external API call: {url}")
+
+    http = FakeHttp()
+    result = ExternalApiSearchClient(http).search("privacy preserving RAG")
+
+    assert result.evidenceStatus is EvidenceStatus.SUPPORTED
+    assert {url for url, _ in http.calls} == {
+        "https://api.github.com/search/repositories",
+        "https://huggingface.co/api/datasets",
+        "https://zenodo.org/api/records",
+    }
+    assert {item["sourceType"] for item in result.items} == {"github_repo", "dataset"}
+    assert all(item["sourceRefs"] for item in result.items)
+
+
+def test_bedrock_llm_adapter_maps_source_ref_indexes_only() -> None:
+    class FakeBedrock:
+        def invoke_model(self, **kwargs):
+            body = json.loads(kwargs["body"].decode("utf-8"))
+            assert body["anthropic_version"] == "bedrock-2023-05-31"
+            payload = {
+                "similarWorks": [
+                    {
+                        "title": "Prior RAG benchmark",
+                        "summary": "Grounded baseline.",
+                        "sourceRefIndexes": [0],
+                        "url": "https://invented.example/not-used",
+                    }
+                ],
+                "noveltyCandidates": [
+                    {
+                        "title": "Freshness-aware evaluation",
+                        "rationale": "Compare recent dataset evidence against corpus baselines.",
+                        "sourceRefIndexes": [1],
+                    }
+                ],
+                "experimentPlan": {
+                    "researchQuestion": "How can RAG novelty be evaluated?",
+                    "noveltyAngle": "Evaluate freshness against grounded baselines.",
+                    "hypotheses": ["Freshness signals improve differentiation."],
+                    "baselines": ["Prior RAG benchmark"],
+                    "procedure": ["Compare against corpus and dataset baselines."],
+                    "datasets": ["RAG Evaluation Dataset"],
+                    "metrics": ["baseline delta"],
+                    "resources": ["Public dataset and evaluation script"],
+                    "risks": ["dataset mismatch"],
+                    "sourceRefIndexes": [1],
+                },
+            }
+            return {
+                "body": BytesIO(
+                    json.dumps(
+                        {"content": [{"type": "text", "text": json.dumps(payload)}]}
+                    ).encode("utf-8")
+                )
+            }
+
+    corpus_ref = {
+        "type": "url",
+        "identifier": "2401.00001",
+        "title": "Prior RAG benchmark",
+        "url": "https://arxiv.org/abs/2401.00001",
+    }
+    dataset_ref = {
+        "type": "url",
+        "identifier": "10.5281/zenodo.123",
+        "title": "RAG Evaluation Dataset",
+        "url": "https://zenodo.org/records/123",
+    }
+
+    draft = BedrockNoveltyLlmClient(
+        model_id="global.anthropic.claude-sonnet-4-6",
+        client=FakeBedrock(),
+    ).draft(
+        topic="RAG novelty evaluation",
+        corpus=RetrievalBundle(items=[{"title": "Prior", "sourceRefs": [corpus_ref]}]),
+        external=RetrievalBundle(items=[{"title": "Dataset", "sourceRefs": [dataset_ref]}]),
+    )
+
+    assert draft.degradedReason is None
+    assert draft.similarWorks["items"][0]["sourceRefs"] == [corpus_ref]
+    assert draft.noveltyCandidates["items"][0]["sourceRefs"] == [dataset_ref]
+    assert draft.experimentPlan["metrics"] == ["baseline delta"]
+    assert draft.experimentPlan["sourceRefs"] == [dataset_ref]
+    assert "Novelty score" not in draft.experimentPlan["metrics"]
+
+
 def test_worker_completes_when_adapters_are_not_degraded() -> None:
+    source_ref = {
+        "type": "url",
+        "identifier": "2401.00001",
+        "url": "https://arxiv.org/abs/2401.00001",
+    }
+
     class CleanCorpus:
         def full_search(self, owner_id: str, query: str) -> RetrievalBundle:
-            return RetrievalBundle(items=[{"title": query}])
+            return RetrievalBundle(items=[{"title": query, "sourceRefs": [source_ref]}])
 
     class CleanExternal:
         def search(self, query: str) -> RetrievalBundle:
-            return RetrievalBundle(items=[{"title": query}])
+            return RetrievalBundle(items=[{"title": query, "sourceRefs": [source_ref]}])
+
+    class CleanLlm:
+        def draft(self, *, topic, corpus, external) -> NoveltyLlmDraft:
+            return NoveltyLlmDraft(
+                similarWorks={
+                    "items": [
+                        {
+                            "title": "Prior work",
+                            "evidenceStatus": EvidenceStatus.SUPPORTED.value,
+                            "sourceRefs": [source_ref],
+                        }
+                    ],
+                    "evidenceStatus": EvidenceStatus.SUPPORTED.value,
+                    "sourceRefs": [source_ref],
+                },
+                noveltyCandidates={
+                    "items": [
+                        {
+                            "title": "Novel candidate",
+                            "evidenceStatus": EvidenceStatus.SUPPORTED.value,
+                            "sourceRefs": [source_ref],
+                        }
+                    ],
+                    "evidenceStatus": EvidenceStatus.SUPPORTED.value,
+                    "sourceRefs": [source_ref],
+                },
+                experimentPlan={
+                    "researchQuestion": topic,
+                    "noveltyAngle": "Evaluate against grounded prior work.",
+                    "hypotheses": ["Grounded difference improves novelty."],
+                    "baselines": ["Prior work"],
+                    "procedure": ["Run baseline comparison."],
+                    "datasets": ["RAG Evaluation Dataset"],
+                    "metrics": ["baseline delta"],
+                    "resources": ["Evaluation script"],
+                    "risks": ["dataset mismatch"],
+                    "evidenceStatus": EvidenceStatus.SUPPORTED.value,
+                    "sourceRefs": [source_ref],
+                },
+            )
 
     repo = InMemoryNoveltyRepository()
     _, owner_id, job_id = _service_job(repo)
@@ -155,7 +496,11 @@ def test_worker_completes_when_adapters_are_not_degraded() -> None:
         repo,
         owner_id,
         job_id,
-        adapters=NoveltyAdapters(corpus=CleanCorpus(), external=CleanExternal()),
+        adapters=NoveltyAdapters(
+            corpus=CleanCorpus(),
+            external=CleanExternal(),
+            llm=CleanLlm(),
+        ),
     )
 
     assert NoveltyService(repo).result(owner_id, job_id).job.state is JobState.COMPLETED
@@ -170,7 +515,7 @@ def test_worker_manuscript_path_records_similarity_risk_degradation() -> None:
         NoveltyJobRequest(
             inputType="manuscript",
             topic="novelty agent draft",
-            manuscript={"fileName": "draft.pdf", "contentType": "application/pdf"},
+            manuscript={"fileName": "draft.md", "contentType": "text/markdown"},
         ),
     )
 
@@ -224,6 +569,45 @@ def test_worker_loop_acks_successful_message() -> None:
 
     assert acked == [message]
     assert NoveltyService(repo).result(owner_id, job_id).job.state is JobState.DEGRADED
+
+
+def test_worker_loop_acks_missing_job_message_as_stale() -> None:
+    class CountingRepo(InMemoryNoveltyRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.commits = 0
+            self.rollbacks = 0
+
+        def commit(self) -> None:
+            self.commits += 1
+
+        def rollback(self) -> None:
+            self.rollbacks += 1
+
+    class Message:
+        def __init__(self, body):
+            self.body = body
+
+    repo = CountingRepo()
+    message = Message({"ownerId": "u1", "jobId": "missing"})
+    acked: list[Message] = []
+    calls = 0
+
+    def receive():
+        nonlocal calls
+        calls += 1
+        return [message] if calls == 1 else []
+
+    run_worker(
+        repo_factory=lambda: repo,
+        receive=receive,
+        ack=acked.append,
+        should_stop=lambda: calls > 1,
+    )
+
+    assert acked == [message]
+    assert repo.commits == 1
+    assert repo.rollbacks == 0
 
 
 def test_worker_loop_commits_and_acks_recorded_failure() -> None:
@@ -337,13 +721,40 @@ def test_api_rejects_unsupported_manuscript(monkeypatch) -> None:
             "inputType": "manuscript",
             "topic": "novelty agent",
             "manuscript": {
-                "fileName": "draft.docx",
-                "contentType": "application/vnd.openxmlformats",
+                "fileName": "draft.pdf",
+                "contentType": "application/pdf",
             },
         },
     )
 
     assert resp.status_code == 422
+
+
+def test_api_marks_job_failed_when_sqs_dispatch_fails(monkeypatch) -> None:
+    class BrokenSqs:
+        def send_message(self, **kwargs):
+            del kwargs
+            raise RuntimeError("sqs down")
+
+    import boto3
+
+    principal = _principal()
+    repo = InMemoryNoveltyRepository()
+    monkeypatch.setenv(
+        "DOCSURI_NOVELTY_JOB_QUEUE_URL",
+        "https://sqs.ap-northeast-2.amazonaws.com/123/docsuri-novelty-agent-job-queue",
+    )
+    monkeypatch.setattr(boto3, "client", lambda *_args, **_kwargs: BrokenSqs())
+    client = _client(monkeypatch, principal, repo)
+
+    resp = client.post(
+        "/api/novelty/jobs",
+        json={"inputType": "natural_language", "topic": "adaptive literature review agent"},
+    )
+
+    jobs = repo.list_jobs(principal.user_id)
+    assert resp.status_code == 503
+    assert jobs[0].state is JobState.FAILED
 
 
 def test_api_rejects_blank_topic_before_job_is_created(monkeypatch) -> None:

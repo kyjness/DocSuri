@@ -80,7 +80,7 @@ Novelty Agent runs long-running research-assist jobs from natural language input
 
 | ID | Requirement |
 |---|---|
-| NFR-NV-MP1 | v1 manuscript upload supports PDF, Markdown, and TXT. DOCX is deferred to a later cycle because no existing parser path is present. |
+| NFR-NV-MP1 | v1 backend manuscript analysis supports Markdown and TXT object refs only. PDF and DOCX parser support is deferred until a shared extraction/upload handle path exists. |
 | NFR-NV-MP2 | Novelty Agent consumes parsed Evidence/SourceRef only; parser failures must produce user-safe parse failure states without leaking document internals. |
 
 ## Test Requirements

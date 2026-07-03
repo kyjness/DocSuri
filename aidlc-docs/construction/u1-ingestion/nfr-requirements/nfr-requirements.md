@@ -9,7 +9,7 @@
 
 ## 0. U1 Corpus NFR 우선 적용 개정 (2026-06-26)
 
-> **우선순위**: 본 섹션은 2026-06-26 U1 Corpus 재인셉션(FR-6, FR-18, NFR-C1, QT-9)을 반영한 최신 NFR Requirements다. 아래 §1~§11의 5년 arXiv-only, Cohere v3, section/full-text chunking, lazy DocModel 설명과 충돌하면 **본 섹션을 우선한다**.
+> **우선순위**: 본 섹션은 2026-06-26 U1 Corpus 재인셉션(FR-6, FR-18, NFR-C1, QT-9)을 반영한 최신 NFR Requirements다. 아래 §1~§11의 5년 arXiv-only, Cohere v4(현 임베딩 모델), section/full-text chunking, lazy DocModel 설명과 충돌하면 **본 섹션을 우선한다**.
 
 ### 0.1 확장성·처리량
 
@@ -74,7 +74,7 @@
 - **부분 인덱싱 금지(NFR-R1)**: 논문 단위 원자성(BR-7) + INV-1 커밋 순서.
 
 ## 4. 비용 (Cost) — NFR-C1
-- **임베딩 비용 동인**: cross-lingual 임베딩(Cohere Embed Multilingual v3, Bedrock) 토큰 과금(전문 청킹 = 논문당 다중 청크). 디덥(BR-4)으로 재처리 재임베딩 0; 본문 크기 정책(BR-21)으로 청크 폭주 통제.
+- **임베딩 비용 동인**: cross-lingual 임베딩(Cohere Embed Multilingual v4, Bedrock) 토큰 과금(전문 청킹 = 논문당 다중 청크). 디덥(BR-4)으로 재처리 재임베딩 0; 본문 크기 정책(BR-21)으로 청크 폭주 통제.
 - **텔레메트리**: 호출수/토큰/배치 카운트 계측 → U6 비용 텔레메트리(NFR-C1 RES-11(a) 신호 공급).
 - **NFR-C1 월 상한 = $1600/월(확정, 2026-06-16)** — 팀 AWS 크레딧 전액, **시스템 전역**(전 유닛 합계). 기존 $300 제안값 대체(NFR-S1이 규모별 재설정 허용). U1 임베딩+스토리지는 그 슬라이스; **U6.CostGuardCircuitBreaker가 시스템 상한 강제**. 유닛별 배분/세부 산정은 Infra Design.
 
@@ -97,7 +97,7 @@
 - U1은 비동기 워커, 사용자 표면 없음. OP CLI/런북 인체공학은 Operations(AS-5).
 
 ## 9. VectorSpec 확정값 [전역]
-- **Cross-lingual 임베딩(Cohere Embed Multilingual v3, Bedrock) · 1024 차원 · 코사인 거리.** 한국어·영어 질의를 영어 코퍼스와 동일 공간 매핑(TD-3). U1 writer ↔ U2 reader 동일(불변식). 소유=공유 임베딩 게이트웨이 레이어(UQ5=A); U1(빌드 #1) PIN; 후속 유닛 재결정 없음(NS-5).
+- **Cross-lingual 임베딩(Cohere Embed Multilingual v4, Bedrock) · 1024 차원 · 코사인 거리.** 한국어·영어 질의를 영어 코퍼스와 동일 공간 매핑(TD-3). U1 writer ↔ U2 reader 동일(불변식). 소유=공유 임베딩 게이트웨이 레이어(UQ5=A); U1(빌드 #1) PIN; 후속 유닛 재결정 없음(NS-5).
 - **가정(팀 확인)**: 질의 언어 한국어/혼합 → cross-lingual; 영어 전용이면 Titan V2 대안. **QT-2 평가셋에 한국어 질의 포함**해 검증.
 - **ANN 호환 게이트**: 선택 스토어(OpenSearch k-NN) 인덱스가 1024차원·코사인 지원 확인(domain-entities §8 / business-rules §6 동일 공간 불변식).
 - **전환 비용**: VectorSpec 변경 = 전체 코퍼스 재임베딩(수십만) → 사실상 단방향.

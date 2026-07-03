@@ -39,6 +39,13 @@ export function classifySearchResponse(body: unknown): SearchOutcome {
     if (!meta || meta.resultCount === 0) {
       return { kind: 'empty', meta: meta ?? { resultCount: 0, degraded: false } };
     }
+    if (meta.degraded === true) {
+      // E5 (BR-U5-8/12): a page-shaped body can signal degraded via meta.degraded without a
+      // top-level `mode` key. The check above (top-level `mode` present) only caught the case
+      // where the backend ALSO sent `mode`; this catches the meta-only signal so it still
+      // resolves to the same 'degraded' outcome instead of silently falling through as 'page'.
+      return { kind: 'degraded', cards: body.cards as ResultCardVM[], meta, mode: undefined };
+    }
     return { kind: 'page', cards: body.cards as ResultCardVM[], meta };
   }
   if ('message' in body) {

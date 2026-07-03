@@ -110,3 +110,55 @@
 .link {
   color: var(--color-accent);
 }
+
+/* Desktop: an article page. A horizontal action toolbar on top, a large title/abstract
+   header, then the full body (doc-model) inline below — no separate 본문 navigation, since
+   the doc-model is pre-stored. Centered to a wide-but-readable measure. Mobile is unchanged
+   (top action bar + bottom 전문/전문 번역 buttons → separate route). */
+@media (min-width: 768px) {
+  .root {
+    /* Fill the whole content area (no inner cap) so the article uses the full frame width. */
+    max-width: none;
+    gap: 1.25rem;
+  }
+
+  /* Top toolbar: horizontal, with all buttons the same fixed width (not stretched, not
+     content-sized) so 요약 / 초록 번역 / 각주 트리 / 전문 번역 line up evenly. */
+  .actionsBar {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    gap: 0.625rem;
+  }
+
+  .actionsBar .action {
+    flex: 0 0 auto;
+    width: 9rem;
+    padding: 0;
+  }
+
+  .meta {
+    gap: 1rem;
+  }
+
+  /* The header reads as a real article head on the wide screen. */
+  .title {
+    font-size: 2.25rem;
+    line-height: 1.2;
+  }
+
+  .authors {
+    font-size: 1rem;
+  }
+
+  .abstract {
+    font-size: 1.0625rem;
+    line-height: 1.75;
+  }
+
+  /* The inline full body, separated from the abstract by a rule. */
+  .inlineBody {
+    margin-top: 0.5rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--color-border);
+  }
+}

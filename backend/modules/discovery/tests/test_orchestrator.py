@@ -25,8 +25,10 @@ def _ctx() -> RequestContext:
 def test_success_returns_ranked_page_and_publishes() -> None:
     bundle = build_mock_orchestrator()
     resp = run_search(
-        bundle.orchestrator, bundle.grounding_hook,
-        SearchRequest(query="diffusion models for protein structure"), _ctx(),
+        bundle.orchestrator,
+        bundle.grounding_hook,
+        SearchRequest(query="diffusion models for protein structure"),
+        _ctx(),
     )
     assert isinstance(resp.root, SearchResultPageDTO)
     assert resp.root.cards
@@ -35,6 +37,7 @@ def test_success_returns_ranked_page_and_publishes() -> None:
     arxiv_ids = [c.arxivId for c in resp.root.cards]
     assert len(arxiv_ids) == len(set(arxiv_ids))
     assert len(bundle.event_publisher.events) == 1  # FR-10 non-blocking publish (BR-14)
+    assert bundle.event_publisher.events[0].requestId == "req-1"
     assert bundle.event_publisher.events[0].resultCount == len(resp.root.cards)
 
 
@@ -42,20 +45,25 @@ def test_no_match_is_empty_page_not_abstain() -> None:
     # A no-match is an explicit empty page (resultCount=0), NOT an abstain (BR-9 / U5 B3-a).
     bundle = build_mock_orchestrator()
     resp = run_search(
-        bundle.orchestrator, bundle.grounding_hook,
-        SearchRequest(query="zzz nonsense token"), _ctx(),
+        bundle.orchestrator,
+        bundle.grounding_hook,
+        SearchRequest(query="zzz nonsense token"),
+        _ctx(),
     )
     assert isinstance(resp.root, SearchResultPageDTO)
     assert resp.root.cards == []
     assert resp.root.meta.resultCount == 0
+    assert bundle.event_publisher.events[0].requestId == "req-1"
     assert bundle.event_publisher.events[0].resultCount == 0
 
 
 def test_grounding_verdict_abstain_maps_to_abstain() -> None:
     bundle = build_mock_orchestrator(grounding_verdict="abstain")
     resp = run_search(
-        bundle.orchestrator, bundle.grounding_hook,
-        SearchRequest(query="diffusion protein"), _ctx(),
+        bundle.orchestrator,
+        bundle.grounding_hook,
+        SearchRequest(query="diffusion protein"),
+        _ctx(),
     )
     assert isinstance(resp.root, AbstainDTO)
 
@@ -72,8 +80,10 @@ def test_validation_error_does_not_publish() -> None:
 def test_korean_query_matches_english_paper_cross_lingual() -> None:
     bundle = build_mock_orchestrator()
     resp = run_search(
-        bundle.orchestrator, bundle.grounding_hook,
-        SearchRequest(query="확산 모델 단백질 구조"), _ctx(),
+        bundle.orchestrator,
+        bundle.grounding_hook,
+        SearchRequest(query="확산 모델 단백질 구조"),
+        _ctx(),
     )
     assert isinstance(resp.root, SearchResultPageDTO)
     assert resp.root.cards[0].arxivId.startswith("2401.00001")

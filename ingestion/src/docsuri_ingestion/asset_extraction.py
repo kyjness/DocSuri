@@ -276,6 +276,8 @@ class AssetExtractor:
                     for member in sorted(files, key=lambda m: m.name):
                         members_by_stem.setdefault(_member_stem(member.name), member)
                     for ordinal, spec in enumerate(figure_specs):
+                        if not spec.src:
+                            continue  # blanked src (e.g. multi-panel) → page-crop the whole figure
                         member = members_by_stem.get(_member_stem(spec.src))
                         if member is None:
                             continue  # unmatched figure → page-crop fill by caption number

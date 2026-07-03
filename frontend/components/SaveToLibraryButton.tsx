@@ -24,7 +24,9 @@ export interface SaveTarget {
   arxivUrl?: string;
 }
 
-type SaveState = 'idle' | 'saving' | 'saved' | 'removing' | 'error';
+// 'removeError' (distinct from the add path's 'error') is a visible, retryable un-save
+// failure — the item is still saved, so the button must stay pressed/pressable (BR-U5-10).
+type SaveState = 'idle' | 'saving' | 'saved' | 'removing' | 'error' | 'removeError';
 
 export function SaveToLibraryButton({ card }: { card: SaveTarget }) {
   const savedLibrary = useSavedLibrary();
@@ -46,8 +48,9 @@ export function SaveToLibraryButton({ card }: { card: SaveTarget }) {
   const onToggle = async () => {
     if (state === 'saving' || state === 'removing') return; // ignore while a request is in flight
 
-    // Un-save: a second press removes the saved item.
-    if (state === 'saved') {
+    // Un-save: a second press removes the saved item. Also reachable from 'removeError' so a
+    // failed removal can be retried by tapping again.
+    if (state === 'saved' || state === 'removeError') {
       if (!itemId) return;
       setState('removing');
       try {
@@ -57,7 +60,9 @@ export function SaveToLibraryButton({ card }: { card: SaveTarget }) {
         setItemId(null);
         setState('idle');
       } catch {
-        setState('saved'); // removal failed → still in the library
+        // Removal failed → still in the library, but now VISIBLE + retryable (unlike the old
+        // silent revert to 'saved', which gave the user no feedback that un-saving failed).
+        setState('removeError');
       }
       return;
     }
@@ -86,17 +91,22 @@ export function SaveToLibraryButton({ card }: { card: SaveTarget }) {
     }
   };
 
-  const saved = state === 'saved';
+  // The item is still in the library after a failed removal, so the button stays "pressed"
+  // (and pressable, since busy only covers the in-flight states) — the user can just tap again.
+  const saved = state === 'saved' || state === 'removeError';
   const busy = state === 'saving' || state === 'removing';
-  const label = saved
-    ? '라이브러리에서 빼기'
-    : state === 'removing'
-      ? '빼는 중'
-      : state === 'error'
-        ? '담기 실패 — 다시 시도'
-        : state === 'saving'
-          ? '담는 중'
-          : '라이브러리에 담기';
+  const label =
+    state === 'removeError'
+      ? '빼기 실패 — 다시 시도'
+      : saved
+        ? '라이브러리에서 빼기'
+        : state === 'removing'
+          ? '빼는 중'
+          : state === 'error'
+            ? '담기 실패 — 다시 시도'
+            : state === 'saving'
+              ? '담는 중'
+              : '라이브러리에 담기';
 
   return (
     <button

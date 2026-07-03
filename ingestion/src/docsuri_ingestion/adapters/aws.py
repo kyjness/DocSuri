@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -14,6 +15,8 @@ from docsuri_ingestion.domain.enums import FailureReason
 from docsuri_ingestion.domain.errors import RetriableIngestionError, ValidationViolationError
 from docsuri_ingestion.domain.models import IndexRecordBatch, IndexStats, ParsedPaper, Tombstone
 from docsuri_ingestion.ports import QueueMessage
+
+_log = logging.getLogger(__name__)
 
 # Cohere Embed on Bedrock accepts at most 96 texts per invoke_model call.
 _BEDROCK_EMBED_BATCH_LIMIT = 96
@@ -237,6 +240,17 @@ class OpenSearchVectorIndex:
         response = self._client.bulk(body=body)
         failures = collect_bulk_failures(response)
         if failures:
+            # Surface WHY each item was rejected (id + status + error type + truncated reason).
+            # Without this the per-item reason from the bulk response was discarded, so a hard
+            # write block (mapping conflict, strict-dynamic, parse error) was invisible — only
+            # the retry/backlog symptom showed. WARNING (not the document body) so a mapper
+            # error that echoes the offending value can't dump indexed content to logs.
+            _log.warning(
+                "OpenSearch bulk_upsert rejected %d/%d item(s): %s",
+                len(failures),
+                len(batch.records),
+                _bulk_failure_summary(failures),
+            )
             raise RetriableIngestionError(
                 f"OpenSearch bulk had {len(failures)} failed item(s)",
                 reason=FailureReason.BULK_INDEX_PARTIAL_FAILURE,
@@ -369,12 +383,23 @@ class SqsMessage:
 
 
 class SqsQueue:
-    def __init__(self, *, queue_url: str, dlq_url: str, region_name: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        queue_url: str,
+        dlq_url: str,
+        region_name: str | None = None,
+        wait_time_seconds: int = 20,
+    ) -> None:
         import boto3
 
         self._client = boto3.client("sqs", region_name=region_name)
         self._queue_url = queue_url
         self._dlq_url = dlq_url
+        # Per-instance long-poll window. The main ingestion queue keeps the 20s default; the
+        # priority doc-model queue is built with 0 (short poll) so an empty doc-model queue never
+        # blocks the loop from getting back to the backfill queue (worker.py polls doc-model first).
+        self._wait_time_seconds = wait_time_seconds
 
     def send_job(self, job) -> None:
         self._client.send_message(
@@ -388,7 +413,7 @@ class SqsQueue:
         response = self._client.receive_message(
             QueueUrl=self._queue_url,
             MaxNumberOfMessages=max_messages,
-            WaitTimeSeconds=20,
+            WaitTimeSeconds=self._wait_time_seconds,
         )
         messages = []
         for message in response.get("Messages", []):
@@ -436,3 +461,34 @@ def collect_bulk_failures(response: dict[str, Any]) -> list[dict[str, Any]]:
         if status >= 300:
             failures.append(operation)
     return failures
+
+
+def _bulk_failure_summary(
+    failures: list[dict[str, Any]], *, limit: int = 5
+) -> list[dict[str, Any]]:
+    """Compact, log-safe view of bulk per-item failures: id + status + error type + a TRUNCATED
+    reason.
+
+    DECISION (records the review tradeoff): unlike the U2 read path — which logs field paths ONLY,
+    never values (SEC-9) — the write path deliberately keeps a truncated ``reason``. An OpenSearch
+    mapper error names the failing field ONLY inside ``reason`` (there is no separate structured
+    field for it), so dropping the reason would collapse diagnosis to a bare error type and defeat
+    the whole point of surfacing the rejection. The value a reason may echo is public arXiv corpus
+    metadata (non-sensitive) and this is an internal ops log — so the asymmetry is an accepted,
+    bounded tradeoff: capped at 200 chars (keeps the leading ``field [X] of type [Y]`` prefix,
+    trims long value previews) and to the first few items so one bad batch can't flood the log."""
+    summary: list[dict[str, Any]] = []
+    for operation in failures[:limit]:
+        error = operation.get("error") or {}
+        reason = str(error.get("reason", ""))
+        if len(reason) > 200:
+            reason = reason[:200] + "…"
+        summary.append(
+            {
+                "id": operation.get("_id"),
+                "status": operation.get("status"),
+                "type": error.get("type"),
+                "reason": reason,
+            }
+        )
+    return summary

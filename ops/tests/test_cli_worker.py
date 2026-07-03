@@ -84,6 +84,43 @@ def test_polling_loop_does_not_ack_events_whose_publish_fails() -> None:
     assert source.acked == []  # left un-acked for redelivery
 
 
+def test_polling_loop_acks_duplicate_redelivery_instead_of_looping() -> None:
+    # Finding 1: a redelivered duplicate (same incident, new message id) must be acked, not left
+    # un-acked like a transient failure — else a real redelivering source loops forever (poison).
+    store = InMemoryIncidentStore()
+    sink = CapturingAlertPublisher()
+    publisher = IncidentEventPublisher(store, sink)
+    payload = {"status": "success", "resultCount": 0, "cards": []}
+    first = TelemetryEvent(
+        event_id="dup-1",
+        kind=SignalKind.PARTIAL_RESULT,
+        request_id="req-dup",
+        payload=payload,
+    )
+    # New event_id so the detector's own dedup doesn't short-circuit it to "no incident", but the
+    # SAME request_id + reason → same incident dedup key → the publisher sees it as a duplicate.
+    redelivered = TelemetryEvent(
+        event_id="dup-2",
+        kind=SignalKind.PARTIAL_RESULT,
+        request_id="req-dup",
+        payload=payload,
+    )
+    source = InMemoryTelemetrySource()
+    source.queued.extend([first, redelivered])
+
+    result = run_polling_loop(
+        source,
+        AiIncidentDetectorSuite(),
+        publisher,
+        max_messages=2,
+        stop_after=1,
+    )
+
+    assert result.published == 1  # only the first is a NEW incident
+    assert source.acked == ["dup-1", "dup-2"]  # BOTH acked — the duplicate isn't retried forever
+    assert len(store.incidents) == 1
+
+
 def test_cli_reliability_eval_outputs_json(capsys) -> None:
     assert main(["run-reliability-eval"]) == 0
 

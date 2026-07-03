@@ -47,9 +47,7 @@ export function ScrollToTopButton() {
     const onScroll = (e: Event) => {
       const target = e.target;
       const scroller =
-        target instanceof HTMLElement
-          ? target
-          : (document.scrollingElement as HTMLElement | null);
+        target instanceof HTMLElement ? target : (document.scrollingElement as HTMLElement | null);
       if (!scroller) return;
       scrollerRef.current = scroller;
       setVisible(scroller.scrollTop > SHOW_AFTER_PX);
@@ -68,6 +66,7 @@ export function ScrollToTopButton() {
       aria-label="맨 위로"
       aria-hidden={!visible}
       tabIndex={visible ? 0 : -1}
+      data-testid="scroll-to-top"
     >
       ↑
     </button>,

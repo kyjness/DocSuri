@@ -50,6 +50,23 @@ def test_injected_hub_receives_search_candidates_metric() -> None:
     assert "discovery.search.candidates" in [m[0] for m in hub.metrics]
 
 
+def test_rerank_shadow_metrics_include_movement_size() -> None:
+    hub = RecordingHub()
+    bundle = build_mock_orchestrator(observability=hub)
+    bundle.orchestrator._search_boosts = lambda _user_id: {"cs.AI": 0.1}
+    run_search(
+        bundle.orchestrator,
+        bundle.grounding_hook,
+        SearchRequest(query="diffusion protein structure"),
+        _ctx(),
+    )
+
+    names = {name for name, _value, _tags in hub.metrics}
+    assert "personalization.rerank_shadow" in names
+    assert "personalization.rerank_shadow.max_shift" in names
+    assert "personalization.rerank_shadow.boosted_count" in names
+
+
 def test_injected_hub_receives_grounding_health_metric() -> None:
     """US-R4 grounding-health signal (hallucination incident class), emitted on finalize.
 

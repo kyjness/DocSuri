@@ -9,7 +9,7 @@
 | Component | Responsibility |
 |---|---|
 | `NoveltyJobLauncher` | 자연어 topic 입력, 원고 업로드, constraints, export 희망 여부를 받아 job 생성. |
-| `ManuscriptUploadField` | PDF, Markdown, TXT 첨부와 파싱 실패 메시지 표시. |
+| `ManuscriptUploadField` | Markdown/TXT 첨부와 PDF/DOCX 차단 또는 파싱 실패 메시지 표시. |
 | `NoveltyProgressTimeline` | `ProgressEvent.state`, current tool, source count, degraded/failure 상태 표시. |
 | `PartialResultSections` | stage snapshot별 부분 결과 접기/펼치기. |
 | `SimilarWorkTable` | 유사 연구 표 표시. |

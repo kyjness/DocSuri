@@ -26,6 +26,7 @@ from docsuri_shared.dtos import (
     SavedSearchPageDTO,
     SearchResultSetDTO,
 )
+from docsuri_shared.events import PaperRetractedEvent
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 __all__ = [
@@ -36,6 +37,7 @@ __all__ = [
     "LibraryItemMeta",
     "LibraryPageDTO",
     "PageParams",
+    "PaperRetractedEvent",
     "SavedSearchCreateDTO",
     "SavedSearchDTO",
     "SavedSearchPageDTO",
@@ -69,4 +71,8 @@ class LibraryItemMeta(BaseModel):
     )
     arxivUrl: str | None = Field(
         None, max_length=512, description="Resolvable arXiv link (FR-4/FR-5)."
+    )
+    retracted: bool = Field(
+        False,
+        description="True after U4 consumes PaperRetractedEvent for this paper (BR-L5).",
     )

@@ -36,6 +36,8 @@ class RuntimeServices:
     queue: object
     observability: object
     corpus_sources: object | None = None
+    # Optional priority doc-model build queue (BR-30/D6). None → worker polls only `queue`.
+    docmodel_queue: object | None = None
 
 
 def build_local_runtime() -> RuntimeServices:
@@ -113,9 +115,22 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
         dlq_url=settings.sqs_dlq_url or "",
         region_name=settings.aws_region,
     )
+    # Priority doc-model build queue (BR-30/D6) — reader-triggered BUILD_DOC_MODEL jobs land here,
+    # off the bulk-backfill queue. Short poll (wait_time_seconds=0) so the worker's priority drain
+    # never blocks the backfill queue. None when the URL is unset (feature off, single-queue).
+    docmodel_queue = (
+        SqsQueue(
+            queue_url=settings.docmodel_queue_url,
+            dlq_url=settings.docmodel_dlq_url or settings.sqs_dlq_url or "",
+            region_name=settings.aws_region,
+            wait_time_seconds=0,
+        )
+        if settings.docmodel_queue_url
+        else None
+    )
     resilience = IngestionResilienceService(
         observability,
-        timeout_seconds=settings.request_timeout_seconds,
+        timeout_seconds=settings.dependency_timeout_seconds,
     )
     failure_handler = IngestFailureHandler(queue, observability)
     # FR-17 multimodal assets (display-only). Wired only when the flag is on — the three
@@ -204,6 +219,7 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
         queue=queue,
         observability=observability,
         corpus_sources=corpus_sources,
+        docmodel_queue=docmodel_queue,
     )
 
 

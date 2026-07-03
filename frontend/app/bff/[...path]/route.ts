@@ -17,10 +17,13 @@ import type { Transport, TransportMethod } from '@/lib/api/transport';
 // principal (request.state.principal) for /library/* and /api/search; that gateway
 // auth-injection is tracked separately (backend coordination zone, system-infra step).
 
-function buildTransport(req: NextRequest): Transport {
+function buildTransport(req: NextRequest): Transport | null {
   const baseUrl = process.env.DOCSURI_GATEWAY_URL;
   if (baseUrl) {
     return new HttpTransport({ baseUrl, cookieHeader: req.headers.get('cookie') ?? undefined });
+  }
+  if (process.env.NODE_ENV === 'production' && process.env.DOCSURI_BFF_ALLOW_MOCK !== '1') {
+    return null;
   }
   return new MockTransport();
 }
@@ -46,13 +49,31 @@ async function proxy(req: NextRequest, path: string[]): Promise<NextResponse> {
     }
   }
 
-  const res = await buildTransport(req).send({
-    method,
-    path: upstreamPath,
-    body,
-    headers: forwardedHeaders(req),
-    idempotent: method === 'GET',
-  });
+  const transport = buildTransport(req);
+  if (!transport) {
+    return NextResponse.json(
+      { message: '일시적인 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.' },
+      { status: 503 },
+    );
+  }
+
+  let res;
+  try {
+    res = await transport.send({
+      method,
+      path: upstreamPath,
+      body,
+      headers: forwardedHeaders(req),
+      idempotent: method === 'GET',
+    });
+  } catch {
+    // Gateway hang/timeout (HttpTransport AbortSignal.timeout) — fail fast so a slow
+    // upstream can't pin BFF sockets into an FE-wide outage (BR-U5-10, NFR-U5-R2).
+    return NextResponse.json(
+      { message: '요청 시간이 초과되었습니다. 잠시 후 다시 시도해 주세요.' },
+      { status: 504 },
+    );
+  }
 
   // 204 No Content / 304 Not Modified must not carry a body — NextResponse.json() always
   // attaches one, and the Response constructor then throws ("Invalid response status code

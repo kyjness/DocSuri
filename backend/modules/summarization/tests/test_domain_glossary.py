@@ -2,8 +2,36 @@
 
 from __future__ import annotations
 
-from summarization.domain.glossary import GlossaryResolver
+import pytest
+
+from summarization.domain.glossary import GlossaryResolver, is_glossary_worthy
 from summarization.domain.models import Glossary, TermMapping
+
+
+@pytest.mark.parametrize(
+    "term",
+    [
+        # model / method / dataset / metric names + acronyms — real keywords
+        "SAM", "TransUNet", "iTransformer", "TimeMixer++", "CIFAR-100", "MSE", "HD95",
+        "Segment Anything", "Softmax", "Hessian", "Danskin", "ETTh1", "SSFormer-L", "T5",
+    ],
+)
+def test_is_glossary_worthy_keeps_keywords(term: str) -> None:
+    assert is_glossary_worthy(term) is True
+
+
+@pytest.mark.parametrize(
+    "term",
+    [
+        # Greek variables / LaTeX commands standing alone
+        "theta", "eta", "rho", "nabla", "partial", "rangle", "odot", "varepsilon", "mid",
+        # sub/superscripts, expressions, LaTeX fragments, relations, single letters, citations
+        "W_q", "nabla_theta", "L_att^sm", "L(w+delta)", "O(rho^2)", "mathbb{E}", "sqrt{2eta T}",
+        "1/L", "H=96", "partial theta", "eta Td", "w-eta", "F", "S", "He et al., 2023",
+    ],
+)
+def test_is_glossary_worthy_drops_math_notation(term: str) -> None:
+    assert is_glossary_worthy(term) is False
 
 
 def test_resolve_fail_soft_on_repo_error() -> None:
@@ -19,17 +47,13 @@ def test_resolve_fail_soft_on_repo_error() -> None:
 
 
 class _TermRepo:
-    """A repo whose term set can be swapped per test, returning the version/terms shape."""
+    """A repo whose term set can be swapped per test."""
 
-    def __init__(self, terms: tuple[TermMapping, ...] = (), version: int = 0) -> None:
+    def __init__(self, terms: tuple[TermMapping, ...] = ()) -> None:
         self.terms = terms
-        self.version = version
 
     def get_user_glossary(self, user_id):
         return self.terms
-
-    def get_glossary_version(self, user_id):
-        return self.version
 
 
 def test_summary_signature_ignores_post_substitution_edits() -> None:
@@ -74,8 +98,20 @@ def test_summary_signature_degrades_to_baseline_on_fault() -> None:
     assert GlossaryResolver(None).prompt_glossary_signature("u1") == 0
 
 
-def test_full_version_unaffected() -> None:
-    assert GlossaryResolver(_TermRepo(version=5)).glossary_version("u1") == 5
+def test_signature_of_matches_prompt_glossary_signature() -> None:
+    # signature_of is the pure (no-I/O) core; prompt_glossary_signature is resolve()+signature_of.
+    # The orchestrator uses signature_of on an already-resolved glossary — they must agree.
+    terms = (
+        TermMapping("attention", "어텐션", prompt_enforced=True),
+        TermMapping("잠재공간", "latent space", prompt_enforced=False),
+    )
+    repo = _TermRepo(terms=terms)
+    resolver = GlossaryResolver(repo)
+    glossary = resolver.resolve("u1")
+    assert GlossaryResolver.signature_of(glossary) == resolver.prompt_glossary_signature("u1")
+    # Pure over a Glossary with only weak terms → baseline (0), like the wrapper.
+    weak_only = Glossary(user_overrides=(TermMapping("주의", "어텐션", prompt_enforced=False),))
+    assert GlossaryResolver.signature_of(weak_only) == 0
 
 
 def test_post_substitute_applies_user_simple_noun() -> None:
@@ -105,3 +141,35 @@ def test_resolve_includes_seed_keep_as_is() -> None:
     glossary = GlossaryResolver(None).resolve("user-1")
     assert "Transformer" in glossary.keep_as_is
     assert glossary.user_overrides == ()
+
+
+# --- personal strong override may replace a shared seed mapping (lock removed, BR-S4) -----------
+
+
+class _CapRepo:
+    """Owner-scoped repo that records upsert calls (and never returns saved terms)."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple] = []
+
+    def get_user_glossary(self, user_id):
+        return ()
+
+    def upsert_term(self, user_id, term_from, term_to, *, prompt_enforced):
+        self.calls.append((user_id, term_from, term_to, prompt_enforced))
+        return 1
+
+
+def test_strong_override_of_seed_mapping_is_allowed() -> None:
+    # No lock: a personal STRONG override of a shared seed mapping (attention→어텐션) is permitted —
+    # it wins over the seed for that user (precedence handled in the prompt, see _glossary_block).
+    repo = _CapRepo()
+    ver = GlossaryResolver(repo).upsert_term("u1", "attention", "주목", prompt_enforced=True)
+    assert ver == 1
+    assert repo.calls == [("u1", "attention", "주목", True)]
+
+
+def test_weak_override_delegates() -> None:
+    repo = _CapRepo()
+    GlossaryResolver(repo).upsert_term("u1", "encoder", "인코더", prompt_enforced=False)
+    assert repo.calls == [("u1", "encoder", "인코더", False)]

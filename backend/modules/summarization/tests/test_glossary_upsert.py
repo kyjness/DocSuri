@@ -17,6 +17,8 @@ from summarization.api.router import build_router
 from summarization.domain.glossary import GlossaryResolver
 from summarization.domain.models import Glossary, TermMapping
 
+from .stubs import make_orchestrator
+
 
 class _FakeRepo:
     def __init__(self) -> None:
@@ -24,9 +26,6 @@ class _FakeRepo:
 
     def get_user_glossary(self, user_id: str):
         return ()
-
-    def get_glossary_version(self, user_id: str) -> int:
-        return 0
 
     def upsert_term(self, user_id, term_from, term_to, *, prompt_enforced) -> int:
         self.calls.append((user_id, term_from, term_to, prompt_enforced))
@@ -76,10 +75,10 @@ class _FakeOrchestrator:
         self.terms = terms or []
         self.calls: list[tuple] = []
 
-    def upsert_glossary_term(self, user_id, term_from, term_to) -> int:
+    def upsert_glossary_term(self, user_id, term_from, term_to, *, prompt_enforced=False) -> int:
         if self.fail:
             raise RuntimeError("db down")
-        self.calls.append((user_id, term_from, term_to))
+        self.calls.append((user_id, term_from, term_to, prompt_enforced))
         return 3
 
     def list_glossary_terms(self, user_id) -> list[dict]:
@@ -117,7 +116,8 @@ def test_glossary_endpoint_upserts_and_returns_version() -> None:
     })
     assert status == 201
     assert body == {"status": "ok", "glossaryVer": 3}
-    assert orch.calls == [("u1", "attention", "주의집중")]
+    # No promptEnforced in the payload → weak (post-substitution) by default.
+    assert orch.calls == [("u1", "attention", "주의집중", False)]
 
 
 def test_glossary_endpoint_requires_principal() -> None:
@@ -159,3 +159,57 @@ def test_glossary_endpoint_fails_closed_on_repo_error() -> None:
     )
     assert status == 503
     assert body == {"status": "unavailable"}
+
+
+# --- strong-term opening: promptEnforced threading, strict boolean, list flag ---------------------
+
+
+class _TermsRepo:
+    """Owner-scoped repo returning a fixed term set (for the list-shape test)."""
+
+    def __init__(self, terms: tuple[TermMapping, ...]) -> None:
+        self._terms = terms
+
+    def get_user_glossary(self, user_id: str):
+        return self._terms
+
+
+def test_glossary_endpoint_threads_strong_flag() -> None:
+    orch = _FakeOrchestrator()
+    status, _body = _invoke(
+        orch,
+        principal={"user_id": "u1"},
+        payload={"termFrom": "MyModel", "termTo": "내모델", "promptEnforced": True},
+    )
+    assert status == 201
+    assert orch.calls == [("u1", "MyModel", "내모델", True)]
+
+
+def test_glossary_endpoint_promptEnforced_is_strict_boolean() -> None:
+    # Only JSON `true` enables strong; a truthy non-boolean must NOT silently escalate into the
+    # prompt (a stray "true" string, 1, … → weak).
+    orch = _FakeOrchestrator()
+    _invoke(
+        orch,
+        principal={"user_id": "u1"},
+        payload={"termFrom": "a", "termTo": "b", "promptEnforced": "true"},
+    )
+    assert orch.calls == [("u1", "a", "b", False)]
+
+
+def test_list_glossary_terms_exposes_prompt_enforced_flag() -> None:
+    # The badge editor must tell strong from weak; the listing surfaces the flag (nothing else).
+    orch = make_orchestrator(
+        glossary_resolver=GlossaryResolver(
+            _TermsRepo(
+                (
+                    TermMapping("MyModel", "내모델", prompt_enforced=True),
+                    TermMapping("cat", "고양이", prompt_enforced=False),
+                )
+            )
+        )
+    )
+    assert orch.list_glossary_terms("u1") == [
+        {"termFrom": "MyModel", "termTo": "내모델", "promptEnforced": True},
+        {"termFrom": "cat", "termTo": "고양이", "promptEnforced": False},
+    ]

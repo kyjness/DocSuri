@@ -4,6 +4,17 @@
   gap: 14px;
 }
 
+/* Desktop: a centered, fixed-width auth card instead of full-width inputs — the standard
+   sign-in layout. Covers login / signup / reset / verify (shared form styles). */
+@media (min-width: 768px) {
+  .form {
+    align-self: center;
+    width: 100%;
+    max-width: 400px;
+    margin-top: 24px;
+  }
+}
+
 .field {
   display: flex;
   flex-direction: column;

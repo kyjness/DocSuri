@@ -4,6 +4,22 @@
   gap: 12px;
 }
 
+/* Desktop: a responsive card grid (fills 2–3 columns by width) instead of one tall
+   single column. Cards align to the top so uneven heights don't stretch. */
+@media (min-width: 768px) {
+  .list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    align-items: start;
+    gap: 16px;
+  }
+
+  /* The degraded banner spans the full row above the cards. */
+  .banner {
+    grid-column: 1 / -1;
+  }
+}
+
 .banner {
   margin: 0;
   padding: 10px 14px;

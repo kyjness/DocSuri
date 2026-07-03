@@ -1,0 +1,10 @@
+.screen {
+  min-height: 0;
+  padding-bottom: 12px;
+}
+
+@media (min-width: 768px) {
+  .screen {
+    padding-bottom: 24px;
+  }
+}

@@ -1,7 +1,7 @@
 # unit-of-work-story-map.md — 스토리 → 유닛 매핑
 
 **단계**: INCEPTION → Units Generation · **일자**: 2026-06-15
-**근거**: `stories.md`(45개), `unit-of-work.md`(U1~U9). 각 스토리에 **주 소유 유닛(Owner)** + 기여 유닛. (구 통합 U11 연구 에이전트 스토리는 2유닛 분리로 제거 — 신규 인셉션 사이클에서 재생성.)
+**근거**: `stories.md`(핵심 45 + US-NV1~9[U12] + US-EV1~9[U11]), `unit-of-work.md`(U1~U12). 각 스토리에 **주 소유 유닛(Owner)** + 기여 유닛. (구 통합 U11 연구 에이전트 스토리는 2유닛 분리로 제거 후 **에픽 9 US-NV(U12 novelty)·에픽 10 US-EV(U11 evidence)로 재생성 완료** — 2026-06-29; 아래 U11/U12 묶음 참조. 정정 2026-06-30, `aidlc-suite-review` PR #280.)
 
 ---
 
@@ -65,6 +65,8 @@
 - **U7 Summarization** — US-S1, US-S2, US-S3, US-S4, US-S5 (+US-S6 요약 경로 기여)
 - **U8 Citation Graph** — US-CG1, US-CG2, US-CG3, US-CG4, US-CG5 (+US-CG6 관측 신호원)
 - **U9 Personalization** — US-P1, US-P2, US-P3, US-P4, US-P5, US-P6 (+US-P7 관측 신호원)
+- **U11 Evidence Agent** — US-EV1~9 (에픽 10; 문헌탐색·근거형성. requirements 초안 `[U4]` 오기 → U11 정정 2026-06-30)
+- **U12 Novelty Agent** — US-NV1~9 (에픽 9; 차별화 novelty·별도 인셉션 사이클로 빌드 `construction/novelty-agent/`. US-NV9=운영 관측성 페르소나 OP)
 
 ## 전수 할당 검증
 - 스토리 **45개** = US-H1 + US-D1..D7(7) + **US-A1..A7(7)** + US-L1..L3(3) + US-I1..I3(3) + US-R1..R5(5) + **US-S1..S6(6)** + **US-CG1..CG6(6)** + **US-P1..P7(7)** → **전부 Owner 배정 완료(미할당 0)**.
@@ -73,6 +75,6 @@
 - **U7 추가(2026-06-18)**: US-S1..S5 Owner=U7(요약/번역 신규 책임), US-S6은 비용게이트·근거화 운영이라 Owner=U6(단일 권위) 기여=U7 — 단일-소유자 규칙 일치. U7은 U1(전문)·U6(근거화/비용)에 의존하나 코드 의존 그래프는 비순환 유지(`unit-of-work-dependency.md` §비순환 검증).
 - **U8 추가(2026-06-19)**: US-CG1..CG5 Owner=U8(각주 트리 신규 책임), US-CG6은 운영 관측성이라 Owner=U6 기여=U8 — 단일-소유자 규칙 일치. U8은 U3/U6 인증 경로와 U4 저장 계약에 의존하나 역호출이 없어 코드 의존 그래프는 비순환 유지.
 - **U9 추가(2026-06-23)**: US-P1..P6 Owner=U9(행동 이벤트/프로필/제어 신규 책임), US-P7은 운영 관측성이라 Owner=U6 기여=U9 — 단일-소유자 규칙 일치. U9는 U3/U6 인증·관측 경로에 의존하고 U2/U4/U7/U5는 U9를 비차단 호출하나, U9 역호출이 없어 코드 의존 그래프는 비순환 유지.
-- **연구 에이전트(2026-06-28 재구성)**: 구 통합 U11(US-RA1~8)은 폐기되고 **문헌탐색·근거형성 / 연구아이디어 2유닛으로 분리**(차터 §4) — 스토리·Owner·의존은 신규 인셉션 사이클에서 재생성한다.
+- **연구 에이전트(2026-06-28 재구성 → 2026-06-29 재생성 완료)**: 구 통합 U11(US-RA1~8)은 폐기되고 **U11(문헌탐색·근거형성)·U12(novelty/연구아이디어) 2유닛으로 분리**(차터 §4). 스토리·Owner 재생성 완료 — **에픽 10 US-EV1~9 Owner=U11**, **에픽 9 US-NV1~9 Owner=U12**(운영 관측성 US-NV9는 페르소나 OP). 의존: U11→U2/U7/U6/`shared`, U12→U11(`EvidenceFormationPort`)·U2 `full`·외부탐색 — D5 포트 역전으로 비순환 유지.
 - **U3 확장 — 계정 프로덕션화(2026-06-24)**: US-A3~A7 Owner=**U3**(재설정·소셜 OIDC·비번/이메일 변경·삭제·입력 견고화 — 신규 에픽 아님, 에픽 2 확장). **경계(Q2=A)**: U10 마이페이지(타 팀원)=프로필/설정 **UI만**, U3=백엔드 `/auth/*` 엔드포인트·도메인 규칙 소유. **신규 의존**: U3→외부 Google OIDC(콜백·토큰 교환). **삭제 캐스케이드**: U4/U2는 이미 U3 인증에 의존하므로 U3가 이들을 **직접 호출하면 순환** — 따라서 캐스케이드는 **이벤트 구동**(U3가 `AccountDeleted` 발행 → U4/U2가 각자 owner-scoped 데이터 구독·파기)으로 의존성 역전(U7↔U6 `shared/ports` 패턴 동일) → **코드 의존 그래프 비순환 유지**. (분리될 연구 에이전트 유닛도 동일 이벤트 구독 패턴으로 편입 예정.) 이벤트 계약·유예 잡 메커니즘 = Construction(Functional/Infra Design).
 - **U1 확장 — Corpus 완성형(2026-06-26)**: US-I1~I3 Owner=**U1** 유지. 멀티소스 수집(arXiv/Semantic Scholar/OpenAlex), GROBID, eager DocModel, DocModel Block 청킹/임베딩/index generation, source watermark, retry/DLQ는 모두 write-side Corpus 파이프라인 책임이므로 신규 유닛을 만들지 않는다. U2/U7은 Corpus/DocModel capability read 소비자이며 코드 의존 그래프 비순환 유지.

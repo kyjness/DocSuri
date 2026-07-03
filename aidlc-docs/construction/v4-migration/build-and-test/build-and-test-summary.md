@@ -34,7 +34,7 @@
 
 1. `python -m ops.migrations.v4_migration.provision_v2_index` — create `docsuri-corpus-v2` index
 2. Deploy U1 dual-write code to ECS (live ingestion writes to both v1 and v2)
-3. `python -m ops.migrations.v4_migration.backfill_v4` — re-embed historical data into v2
+3. `python -m docsuri_ingestion.worker backfill` — re-embed historical data into v2 via the canonical `migrate.py` runner (SigV4-signed, in-VPC ECS task). The old `backfill_v4.py` was removed — it sent unsigned requests (403).
 4. `python -m ops.migrations.v4_migration.cutover_alias` — atomically swap alias → v2
 5. Post-migration: remove dual-write code, delete v1 index
 

@@ -15,7 +15,7 @@
 | TD-NV-5 | Reuse U2 `full` search through its existing port/API with bounded query, timeout, and budget. | No novelty search index or ranking fork. |
 | TD-NV-6 | Run Agent-Browser only server-side in the worker with allowlisted GitHub/dataset sources, query budgets, and timeouts. | Keeps raw user material out of external sites and prevents client-side tool exposure. |
 | TD-NV-7 | Keep manuscript parsing in shared ingestion/doc-model or evidence formation parsing, not in novelty business logic. | Preserves shared contract boundary and avoids parser duplication. |
-| TD-NV-8 | Defer DOCX support from v1. | Current codebase has no DOCX parser path; PDF/Markdown/TXT cover the lower-cost v1 manuscript scope. |
+| TD-NV-8 | Defer PDF/DOCX parser support from backend v1. | Current Novelty worker has no PDF/DOCX extraction path; Markdown/TXT object refs cover the lower-cost v1 manuscript scope. |
 | TD-NV-9 | Store uploaded manuscript references and parsed artifacts owner-scoped; delete them with novelty session deletion. | Matches privacy and delete requirements. |
 | TD-NV-10 | Use user-specific Notion OAuth/explicit connection with encrypted token storage and revocation. | Avoids shared server token and supports owner-scoped export. |
 | TD-NV-11 | Reuse U6 CostGuard/rate limit and ObservabilityHub/EventStore. | Cost/observability single authority already exists in shared ports. |
@@ -37,7 +37,7 @@ SSE is the preferred v1 progress channel. Polling is still allowed as a fallback
 
 ## Parsing Boundary
 
-PDF, Markdown, and TXT manuscript parsing is implemented through shared parsing or evidence formation. Novelty Agent consumes parsed `EvidenceResult`, `SourceRef`, and attachment/doc-model handles. DOCX is deferred to a later cycle instead of adding a new parser dependency now.
+Markdown and TXT manuscript refs are read directly by the Novelty worker. PDF and DOCX parsing must stay in shared parsing or evidence formation before Novelty consumes parsed `EvidenceResult`, `SourceRef`, and attachment/doc-model handles.
 
 ## Validation Boundary
 

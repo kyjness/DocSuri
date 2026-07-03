@@ -10,8 +10,6 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from fastapi import FastAPI
-
 from backend.modules.accounts.models import Principal, UserRole
 from backend.modules.library import controller
 from backend.modules.library.audit import InMemoryAuditSink
@@ -20,6 +18,7 @@ from backend.modules.library.repository.memory import InMemoryUserDataRepository
 from backend.modules.library.services.history import SearchHistoryService
 from backend.modules.library.services.library import LibraryService
 from backend.modules.library.services.saved_search import SavedSearchService
+from fastapi import FastAPI
 
 
 def _new_principal() -> Principal:

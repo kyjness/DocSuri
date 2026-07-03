@@ -8,11 +8,11 @@ ALLOWED_EXTERNAL_HOSTS = frozenset(
     {
         "github.com",
         "api.github.com",
-        "news.google.com",
         "huggingface.co",
         "kaggle.com",
         "www.kaggle.com",
         "paperswithcode.com",
+        "zenodo.org",
         "notion.com",
         "api.notion.com",
     }

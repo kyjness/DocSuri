@@ -35,7 +35,7 @@ class SearchHistoryService:
         """Idempotently record an executed search (at-least-once → exactly-once). Returns the new
         entry, or None when the event was a duplicate re-delivery."""
         owner = event.userId
-        key = dedupe_key(owner, event.timestamp, event.query)
+        key = dedupe_key(owner, event.requestId, event.query)
         repo = self._repo.history
 
         if repo.find_by_dedupe_key(owner, key) is not None:

@@ -1,6 +1,6 @@
 # DocModel 기반 전환 — 결정 게이트 (Structured Doc-Model Foundation Pivot)
 
-> **상태**: 결정 게이트(미착수). 본 문서는 "요약/번역 입력을 평문→구조화 문서모델(doc-model)로 전환 + 자체 리치뷰 + 에이전트 준비" 피벗의 **단일 진실원천**이다. 코드 착수 전 본 게이트의 열린 Q를 확정한다.
+> **상태**: ✅ **확정·구현·배포 완료**(D1~D8 결정 확정 + FR-12/13/17/18 라이브 — develop 반영; 아래 체크리스트 `[x]` 참조). 본 문서는 "요약/번역 입력을 평문→구조화 문서모델(doc-model)로 전환 + 자체 리치뷰 + 에이전트 준비" 피벗의 **단일 진실원천(역사 기록)**이다. _(구 "결정 게이트(미착수)" 표기는 배포 완료로 정정 — 2026-06-30, `aidlc-suite-review` PR #280.)_
 > **브랜치 예정**: `feat/docmodel-foundation` (현 작업 `fix/summarization-pipeline` 종료 후 분기)
 > **근거 SSOT**: 기존 U1 FD BR-29(전문 HTML 우선) · 멀티모달 FR-17(그림·도표 자산) · `aidlc-state.md:159-162`(비전=에이전트 후속) · `inception/requirements/summarization-translation-pipeline.md`(#9·#12 차별화/근거형성 에이전트)
 

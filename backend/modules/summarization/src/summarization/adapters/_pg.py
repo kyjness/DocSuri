@@ -1,8 +1,8 @@
 """Pooled PostgreSQL connections for the RDS read adapters.
 
-The glossary/asset readers sit on the warm summarize path — ``glossary_version`` runs on every
-request and ``get_user_glossary`` on every cache miss — so a fresh ``psycopg.connect`` per call
-adds avoidable per-request connection latency (Part 1 §2, performance). A process-wide
+The glossary/asset readers sit on the warm summarize path — ``get_user_glossary`` runs on every
+request (glossary resolve → cache-key signature) — so a fresh ``psycopg.connect`` per call
+adds avoidable per-request connection latency (performance). A process-wide
 ``psycopg_pool.ConnectionPool`` (one per DSN) reuses connections; the object yielded is an
 ordinary psycopg connection, so call sites stay unchanged.
 

@@ -17,16 +17,22 @@
 /* Personal-glossary section (전문 번역 only) — titled like the body lists, with a gap
    before the translated text below. */
 .glossary {
-  position: relative; /* containing block for a badge's editor popover (full-width, no overflow) */
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem; /* between the 표준 / 원어 유지 groups */
+  margin-bottom: 0.75rem;
+}
+
+/* One glossary group (표준 용어 / 원어 유지 용어). */
+.group {
   display: flex;
   flex-direction: column;
   gap: 0.375rem;
-  margin-bottom: 0.75rem;
 }
 
 .glossaryTitle {
   margin: 0;
-  font-size: 1.0625rem;
+  font-size: 0.9375rem;
   font-weight: 700;
   color: var(--color-text);
 }
@@ -39,10 +45,51 @@
 }
 
 .terms {
+  position: relative; /* containing block for a badge's editor popover — spans this row, no overflow */
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
   margin-top: 0.125rem;
+}
+
+/* Per-group apply bar — shown under a group once it has a pending (staged) edit; pressing it
+   persists + reflects only that group's edits. Wraps on a narrow (mobile) row. */
+.apply {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.applyNote {
+  flex: 1 1 auto;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--color-warn-text);
+}
+
+.applyButton {
+  flex: 0 0 auto;
+  min-height: 2.25rem;
+  padding: 0 0.75rem;
+  font-size: 0.8125rem;
+  color: var(--color-accent-contrast);
+  background: var(--color-accent);
+  border: none;
+  border-radius: 0.375rem;
+  cursor: pointer;
+}
+
+.applyButton:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.applyError {
+  flex-basis: 100%;
+  font-size: 0.75rem;
+  color: var(--color-danger);
 }
 
 .text {

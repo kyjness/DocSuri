@@ -81,7 +81,6 @@ class ExportStatus(StrEnum):
 
 SUPPORTED_MANUSCRIPT_CONTENT_TYPES = frozenset(
     {
-        "application/pdf",
         "text/markdown",
         "text/plain",
     }

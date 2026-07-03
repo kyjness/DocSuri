@@ -1,6 +1,6 @@
 ---
 name: aidlc-unit-review
-description: Per-unit code review for DocSuri AI-DLC units (u1-ingestion, u2-discovery, u3-accounts, u4-library, u5-frontend, u6-reliability-ops, u7-summarization, u8-citation-graph). Reviews a unit's changes against THAT unit's own functional design, NFR design, requirements, and constraints — not generic linting. FastAPI/Python-aware; emphasizes injection (SQL/param binding), authz/ACL gaps, and contract adherence. Use before merging a unit's branch.
+description: Per-unit code review for DocSuri AI-DLC units (u1-ingestion, u2-discovery, u3-accounts, u4-library, u5-frontend, u6-reliability-ops, u7-summarization, u7-summarization-frontend, u8-citation-graph, u9-personalization). Reviews a unit's changes against THAT unit's own functional design, NFR design, requirements, and constraints — not generic linting. FastAPI/Python-aware; emphasizes injection (SQL/param binding), authz/ACL gaps, and contract adherence. Use before merging a unit's branch.
 ---
 
 # AI-DLC Per-Unit Code Review

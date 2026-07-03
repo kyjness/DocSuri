@@ -9,20 +9,28 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from hypothesis import given
-from hypothesis import strategies as st
-
 from backend.modules.accounts.models import Principal, UserRole
 from backend.modules.library.models import HistoryEntry, LibraryItem, SavedSearch
-from backend.modules.library.schemas import LibraryItemMeta, SavedSearchCreateDTO, LibraryItemCreateDTO
-from backend.modules.library.validation import to_history_dto, to_library_dto, to_saved_dto, UserDataDTOAndValidation
+from backend.modules.library.schemas import (
+    LibraryItemCreateDTO,
+    LibraryItemMeta,
+    SavedSearchCreateDTO,
+)
+from backend.modules.library.validation import (
+    UserDataDTOAndValidation,
+    to_history_dto,
+    to_library_dto,
+    to_saved_dto,
+)
+from hypothesis import given
+from hypothesis import strategies as st
 
 # internal fields that MUST NEVER appear on the wire (SEC-9)
 FORBIDDEN = {"owner_id", "normalized_query", "dedupe_key", "ownerId"}
 
-_aware = st.datetimes(
-    min_value=datetime(2000, 1, 1), max_value=datetime(2100, 1, 1)
-).map(lambda d: d.replace(tzinfo=UTC))
+_aware = st.datetimes(min_value=datetime(2000, 1, 1), max_value=datetime(2100, 1, 1)).map(
+    lambda d: d.replace(tzinfo=UTC)
+)
 _text = st.text(min_size=1, max_size=200)
 _uuid = st.builds(lambda: str(uuid.uuid4()))
 
@@ -85,8 +93,12 @@ def test_history_entry_dto_roundtrip(query, count, executed, owner):
 
 # ── PBT-09 Property 2: Create DTO → validate_and_map → to_dto roundtrip ──
 
-valid_queries = st.text(min_size=1, max_size=499).map(lambda s: s.strip()).filter(lambda s: len(s) > 0)
-valid_labels = st.none() | st.text(min_size=1, max_size=199).map(lambda s: s.strip()).filter(lambda s: len(s) > 0)
+valid_queries = (
+    st.text(min_size=1, max_size=499).map(lambda s: s.strip()).filter(lambda s: len(s) > 0)
+)
+valid_labels = st.none() | (
+    st.text(min_size=1, max_size=199).map(lambda s: s.strip()).filter(lambda s: len(s) > 0)
+)
 valid_arxiv_ids = st.from_regex(r"^\d{4}\.\d{4,5}$")
 
 valid_metas = st.builds(
@@ -94,7 +106,7 @@ valid_metas = st.builds(
     title=st.text(min_size=1, max_size=200),
     authors=st.lists(st.text(min_size=1, max_size=50), max_size=5),
     year=st.none() | st.integers(min_value=1900, max_value=2100),
-    arxivId=valid_arxiv_ids
+    arxivId=valid_arxiv_ids,
 )
 
 
@@ -106,15 +118,15 @@ valid_metas = st.builds(
 def test_saved_search_create_dto_roundtrip(query, label, owner_id):
     principal = Principal(user_id=owner_id, role=UserRole.USER)
     create_dto = SavedSearchCreateDTO(query=query, label=label)
-    
+
     # 1. validate_and_map
     entity = UserDataDTOAndValidation.validate_and_map(create_dto, principal)
-    
+
     # Assert public fields match
     assert entity.owner_id == owner_id
     assert entity.query == query.strip()
     assert entity.label == (label.strip() if label else None)
-    
+
     # 2. to_dto
     dto = to_saved_dto(entity)
     assert dto.query == create_dto.query.strip()
@@ -132,19 +144,18 @@ def test_library_item_create_dto_roundtrip(arxiv_id, meta, owner_id):
     principal = Principal(user_id=owner_id, role=UserRole.USER)
     meta.arxivId = arxiv_id
     create_dto = LibraryItemCreateDTO(arXivId=arxiv_id, meta=meta)
-    
+
     # 1. validate_and_map
     entity = UserDataDTOAndValidation.validate_and_map(create_dto, principal)
-    
+
     # Assert public fields match
     assert entity.owner_id == owner_id
     assert entity.arxiv_id == arxiv_id.strip()
     assert entity.meta.title == meta.title
-    
+
     # 2. to_dto
     dto = to_library_dto(entity)
     assert dto.arXivId == arxiv_id.strip()
     assert dto.meta["title"] == meta.title
     dumped = dto.model_dump()
     assert FORBIDDEN.isdisjoint(dumped.keys())
-

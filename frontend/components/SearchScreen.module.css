@@ -10,6 +10,15 @@
   gap: 6px;
 }
 
+/* Desktop: a compact, centered search box (the results grid below stays full width). */
+@media (min-width: 768px) {
+  .form {
+    width: 100%;
+    max-width: 32rem;
+    margin-inline: auto;
+  }
+}
+
 .label {
   font-size: 13px;
   font-weight: 600;

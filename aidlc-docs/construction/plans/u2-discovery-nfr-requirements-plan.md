@@ -5,7 +5,7 @@
 **목적**: U2 비기능 요구사항 확정 + **기술 스택 선정**. FD 보류 수치(NFR-P1 예산 등) 정책 확정, mock-first 전환 경계 확정.
 **고도(altitude)**: **스택 종류 + NFR 목표(정책 형태)**를 정한다. 리전/AZ 토폴로지(RES-2)·IaC·배포 타깃(ECS/Lambda)은 **Infra Design**; CI/CD·롤백·배포 방식(RES-4)·복원력 테스트(RES-12)는 **NFR Design**; NFR-P1 **수치 실측**은 Build & Test/Infra.
 
-> **[전역] 계승(재결정 아님)**: U1(빌드 #1)이 PIN한 시스템 전역 결정을 U2가 상속한다 — **§5-A: backend 런타임=Python** · **TD-3: 임베딩=Cohere Embed Multilingual v3·1024·코사인·reader=`search_query`(cross-lingual KR↔EN)** · **TD-4: 벡터+lexical 스토어=OpenSearch** · **NFR-C1=$1600/월(시스템 전역 상한)**. 해당 질문엔 `[전역 계승]` 표기.
+> **[전역] 계승(재결정 아님)**: U1(빌드 #1)이 PIN한 시스템 전역 결정을 U2가 상속한다 — **§5-A: backend 런타임=Python** · **TD-3: 임베딩=Cohere Embed Multilingual v4·1024·코사인·reader=`search_query`(cross-lingual KR↔EN; v3→v4 마이그레이션 완료 2026-06-24, 정합 정정 2026-06-30)** · **TD-4: 벡터+lexical 스토어=OpenSearch** · **NFR-C1=$1600/월(시스템 전역 상한)**. 해당 질문엔 `[전역 계승]` 표기.
 > **[backend-shared] 조율 존**: 일부 결정(웹 프레임워크·공급망 툴링)은 backend 모듈형 모놀리스(단일 런타임·app-shell @ELSAPHABA)의 **공유 결정**이다 — U2가 제안하되 app-shell 소유자/트랙 합의 필요. `[backend-shared]` 표기.
 
 ---
@@ -32,7 +32,7 @@
   - 관측성(NFR-O1: 구조화 로그·메트릭·트레이스 — `ObservabilityHub` 제출), 유지보수성(PBT·모노레포 빌드).
   - 테스트(QT-2 관련도 평가셋 한국어 포함·QT-3 저하 평가·QT-4 PBT).
 - [x] **tech-stack-decisions.md** — ADR 형식(결정·근거·대안·전환 비용):
-  - **[전역 계승]**: API 런타임=Python · 임베딩=Cohere Multilingual v3(reader=search_query) · 스토어=OpenSearch · NFR-C1 상한.
+  - **[전역 계승]**: API 런타임=Python · 임베딩=Cohere Multilingual v4(reader=search_query) · 스토어=OpenSearch · NFR-C1 상한.
   - **[backend-shared]**: 웹 프레임워크 · 공급망 툴링(uv·락파일·SCA·SBOM·이미지 핀).
   - **U2 고유**: OpenSearch 하이브리드 질의 메커니즘(RRF) · 질의 임베딩 어댑터 · 캐싱 · PBT(Hypothesis) · **mock 어댑터 패키징/전환**.
 - [x] **mock-first 전환 경계** — 포트(어댑터) 인터페이스 + 2구현(mock 픽스처/real) DI 토글; mock 픽스처에 QT-2+한국어 cross-lingual 케이스(MR-2).
@@ -69,7 +69,7 @@
 - **[Answer]**: A
 
 **Q3 [전역 계승] — 질의 임베딩 어댑터(LlmGatewayAdapter).** 질의 임베딩(reader=`search_query`)?
-- A) **Bedrock Cohere Embed Multilingual v3(TD-3 계승)**, `input_type=search_query`(writer=search_document와 비대칭), 1024·코사인. (권장)
+- A) **Bedrock Cohere Embed Multilingual v4(TD-3 계승)**, `input_type=search_query`(writer=search_document와 비대칭), 1024·코사인. (권장)
 - B) 기타(= TD-3 재논의 — 전체 재임베딩 유발, 비권장).
 - **권장**: A — 시스템 전역 계승(VectorSpec 불변식). cross-lingual(한국어 질의). **B는 사실상 불가**(U1 코퍼스 재임베딩).
 - **[Answer]**: A

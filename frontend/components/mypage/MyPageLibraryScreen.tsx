@@ -8,35 +8,39 @@ import { cardFromMeta } from '@/lib/library/cardFromMeta';
 import { useSavedLibrary } from '@/lib/library/savedLibrary';
 import { ResultCard } from '../ResultCard';
 import { StateView } from '../StateView';
+import { HistoryScreen } from '../library/HistoryScreen';
+import { SavedSearchScreen } from '../library/SavedSearchScreen';
 import styles from './MyPageScreen.module.css';
 import type { LibraryItemDTO } from '@/types/generated';
 import type { RecentlyViewedItemVM } from '@/types/mypage';
 
-// MyPageLibraryScreen (U10) — 관심 논문(U4 library, real)과 최근 본 논문(U9, mock until the
-// paper_opened 이벤트가 머지됨)을 상단 탭으로 묶은 화면. "저장한 검색"/"검색 이력"(U4)은 별도
-// 기능이라 탭으로 합치지 않고, 관심 탭에서 /library/saved로 빠져나가는 링크만 둔다.
+// MyPageLibraryScreen (U10) — 관심 논문(U4 library, real), 최근 본 논문(U9, mock until the
+// paper_opened 이벤트가 머지됨), 저장한 검색/검색 이력(U4)을 한 화면의 상단 탭으로 묶는다.
 
-type Tab = 'interest' | 'recent';
+type Tab = 'interest' | 'recent' | 'saved' | 'history';
 
-function LibraryTabsNav({ active }: { active: Tab }) {
+const TABS: { key: Tab; label: string; testid: string }[] = [
+  { key: 'interest', label: '관심 논문', testid: 'mypage-library-tab-interest' },
+  { key: 'recent', label: '최근 본 논문', testid: 'mypage-library-tab-recent' },
+  { key: 'saved', label: '저장한 검색', testid: 'mypage-library-tab-saved' },
+  { key: 'history', label: '검색 이력', testid: 'mypage-library-tab-history' },
+];
+
+function LibraryTabsNav({ active, onSelect }: { active: Tab; onSelect: (tab: Tab) => void }) {
   return (
     <nav className={styles.tabs} aria-label="관심 논문 메뉴">
-      <Link
-        href="/mypage/library"
-        className={`${styles.tab} ${active === 'interest' ? styles.tabActive : ''}`}
-        aria-current={active === 'interest' ? 'page' : undefined}
-        data-testid="mypage-library-tab-interest"
-      >
-        관심 논문
-      </Link>
-      <Link
-        href="/mypage/library/recent"
-        className={`${styles.tab} ${active === 'recent' ? styles.tabActive : ''}`}
-        aria-current={active === 'recent' ? 'page' : undefined}
-        data-testid="mypage-library-tab-recent"
-      >
-        최근 본
-      </Link>
+      {TABS.map((tab) => (
+        <button
+          key={tab.key}
+          type="button"
+          className={`${styles.tab} ${active === tab.key ? styles.tabActive : ''}`}
+          aria-current={active === tab.key ? 'page' : undefined}
+          onClick={() => onSelect(tab.key)}
+          data-testid={tab.testid}
+        >
+          {tab.label}
+        </button>
+      ))}
     </nav>
   );
 }
@@ -66,10 +70,6 @@ function InterestTab() {
 
   return (
     <>
-      <Link href="/library/saved" className={styles.more} data-testid="mypage-library-saved-history">
-        저장한 검색 · 검색 이력 보기
-      </Link>
-
       {status === 'loading' ? <StateView kind="loading" /> : null}
       {status === 'error' ? (
         <StateView kind="error" message={error ?? undefined} onRetry={() => void reload()} />
@@ -160,10 +160,15 @@ function RecentTab() {
 }
 
 export function MyPageLibraryScreen({ active }: { active: Tab }) {
+  const [currentTab, setCurrentTab] = useState<Tab>(active);
+
   return (
     <section className={styles.screen} data-testid="mypage-library-screen">
-      <LibraryTabsNav active={active} />
-      {active === 'interest' ? <InterestTab /> : <RecentTab />}
+      <LibraryTabsNav active={currentTab} onSelect={setCurrentTab} />
+      {currentTab === 'interest' ? <InterestTab /> : null}
+      {currentTab === 'recent' ? <RecentTab /> : null}
+      {currentTab === 'saved' ? <SavedSearchScreen showTabs={false} /> : null}
+      {currentTab === 'history' ? <HistoryScreen showTabs={false} /> : null}
     </section>
   );
 }

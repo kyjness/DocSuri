@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from backend.modules.library.models import NotFoundError, QuotaExceededError, ValidationException
 from backend.modules.library.schemas import SavedSearchCreateDTO
 from backend.modules.library.services import saved_search as ss_mod
@@ -105,10 +104,11 @@ async def test_rerun_cross_owner_notfound(make_services, make_principal):
 
 def test_audit_owner_ref_is_masked(make_services, make_principal):
     import hashlib
+
     saved, _l, _h, _repo, audit = make_services()
     p = make_principal()
     saved.save(p, SavedSearchCreateDTO(query="audit test"))
-    
+
     events = audit.events
     assert len(events) > 0
     event = events[-1]

@@ -13,15 +13,15 @@ import uuid
 from datetime import UTC
 
 import pytest
-from sqlalchemy import create_engine, event
-from sqlalchemy.orm import Session
-
 from backend.modules.accounts.models import Principal, UserRole
 from backend.modules.library.audit import InMemoryAuditSink
 from backend.modules.library.gateway import StubSearchGateway
+from backend.modules.library.models import LibraryItem
 from backend.modules.library.repository.sql import Base, SavedSearchTable, SqlUserDataRepository
-from backend.modules.library.schemas import SavedSearchCreateDTO
+from backend.modules.library.schemas import LibraryItemMeta, SavedSearchCreateDTO
 from backend.modules.library.services.saved_search import SavedSearchService
+from sqlalchemy import create_engine, event
+from sqlalchemy.orm import Session
 
 
 def _restore_utc(target, _ctx):
@@ -62,3 +62,38 @@ def test_sql_resave_with_new_label_returns_fresh_label(sql_saved_service):
     assert relabeled.id == first.id  # deduped on normalized_query (BR-L1)
     assert relabeled.label == "relabel"  # fresh label, not the stale None
     assert getattr(relabeled, "was_created", True) is False  # idempotent re-save → HTTP 200
+
+
+def test_sql_mark_retracted_matches_versioned_arxiv_ids():
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    session = Session(engine)
+    repo = SqlUserDataRepository(session)
+    try:
+        repo.library.insert(
+            LibraryItem(
+                id="item-1",
+                owner_id="owner-1",
+                arxiv_id="2401.00001v1",
+                meta=LibraryItemMeta(title="Paper", arxivId="2401.00001v1"),
+            )
+        )
+        repo.library.insert(
+            LibraryItem(
+                id="item-2",
+                owner_id="owner-1",
+                arxiv_id="2401.00002",
+                meta=LibraryItemMeta(title="Other", arxivId="2401.00002"),
+            )
+        )
+
+        changed = repo.library.mark_retracted("2401.00001v2")
+        changed_again = repo.library.mark_retracted("2401.00001")
+
+        assert changed == 1
+        assert changed_again == 0
+        assert repo.library.find_by_arxiv("owner-1", "2401.00001v1").meta.retracted is True
+        assert repo.library.find_by_arxiv("owner-1", "2401.00002").meta.retracted is False
+    finally:
+        session.close()
+        engine.dispose()

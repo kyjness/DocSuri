@@ -166,9 +166,12 @@ def test_pbt_anchor_validation_soundness(span: str, ref_body: str, is_present: b
     if is_present:
         ref_body = ref_body + span
     else:
-        # Ensure span is NOT in ref_body
-        ref_body = ref_body.replace(span, "")
-        if span in ref_body:
+        # The validator matches the STRIPPED span (grounding uses ``a.span.strip()``), so ensure the
+        # STRIPPED span is absent — a raw span with trailing whitespace (e.g. '0\r') strips to '0'
+        # and would still be found even though the raw form isn't a substring.
+        stripped = span.strip()
+        ref_body = ref_body.replace(stripped, "")
+        if stripped in ref_body:
             return
             
     draft = SummaryDraft(

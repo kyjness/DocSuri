@@ -28,6 +28,16 @@ def test_app_boots_and_is_fastapi() -> None:
     assert isinstance(app, FastAPI)
 
 
+def test_settings_from_env_configures_gateway_rate_limit(monkeypatch) -> None:
+    monkeypatch.setenv("DOCSURI_GATEWAY_RATE_LIMIT_MAX_REQUESTS", "123")
+    monkeypatch.setenv("DOCSURI_GATEWAY_RATE_LIMIT_WINDOW_SECONDS", "7.5")
+
+    settings = Settings.from_env()
+
+    assert settings.gateway_rate_limit_max_requests == 123
+    assert settings.gateway_rate_limit_window_seconds == 7.5
+
+
 def test_health_and_liveness() -> None:
     client = _client()
     assert client.get("/health").json() == {"status": "ok", "service": "docsuri-backend"}
@@ -59,6 +69,18 @@ def test_module_registry_complete_and_disjoint() -> None:
         "research",
         "novelty",
     }
+    assert readyz["blocking"] == []
+
+
+def test_readyz_fails_when_required_module_is_skipped() -> None:
+    app = create_app(_TEST_SETTINGS)
+    app.state.mount_result = MountResult(skipped=[("novelty", "mount error")])
+
+    resp = TestClient(app).get("/readyz")
+
+    assert resp.status_code == 503
+    assert resp.json()["status"] == "not_ready"
+    assert resp.json()["blocking"] == ["novelty"]
 
 
 def test_discovery_and_accounts_actually_mount() -> None:
@@ -83,6 +105,26 @@ def test_discovery_search_endpoint_is_live() -> None:
     resp = _client().post("/api/search", json={"query": "transformer attention"})
     assert resp.status_code == 200
     assert "cards" in resp.json()
+
+
+def test_search_store_outage_maps_to_fail_closed_503() -> None:
+    # A store outage inside discovery raises SearchUnavailable. Mounted via build_router (not the
+    # standalone build_app), the app-shell must map it to a fail-closed, no-leak 503 — otherwise
+    # it falls through to the generic Exception→500 handler and a transient outage looks like a
+    # bug instead of a retryable 503 (INV-3/SEC-15).
+    from discovery.service.orchestrator import SearchUnavailable
+
+    app = create_app(_TEST_SETTINGS)
+
+    def _raise(*_a, **_k):
+        raise SearchUnavailable("opensearch host db-1 connection timeout")
+
+    app.state.discovery_bundle.orchestrator.plan_and_retrieve = _raise  # type: ignore[method-assign]
+    resp = TestClient(app, raise_server_exceptions=False).post("/api/search", json={"query": "x"})
+    assert resp.status_code == 503
+    assert "temporarily unavailable" in resp.json()["message"].lower()
+    assert "db-1" not in resp.text and "opensearch" not in resp.text.lower()  # no leak (SEC-9)
+    assert resp.json()["requestId"]  # echoes a correlation id, like the 500 handler (errors.py)
 
 
 def test_paper_metadata_endpoint_is_live() -> None:

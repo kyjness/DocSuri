@@ -2,8 +2,10 @@
 
 Personal term overrides live in ``user_glossary`` on the inherited RDS PostgreSQL. Every
 query is owner-scoped (``WHERE user_id = :user_id``) so one user can never read another's
-preferences. ``glossary_ver`` is the per-user version that folds into the immutable cache
-key (Q7); a preference upsert bumps it, invalidating that user's keys.
+preferences. ``glossary_ver`` is the per-user version bumped on each upsert and returned to the
+caller (the badge editor's optimistic version); the cache identity itself keys on the
+prompt-enforced content signature (weak terms are a read-time overlay on a shared base), so the
+counter is advisory here, not a cache key input.
 """
 
 from __future__ import annotations
@@ -40,13 +42,6 @@ class RdsGlossaryRepository:
                 TermMapping(term_from=row[0], term_to=row[1], prompt_enforced=bool(row[2]))
                 for row in cur.fetchall()
             ]
-
-    def get_glossary_version(self, user_id: str) -> int:
-        sql = "SELECT COALESCE(MAX(glossary_ver), 0) FROM user_glossary WHERE user_id = %s"
-        with self._connect() as conn, conn.cursor() as cur:
-            cur.execute(sql, (user_id,))
-            row = cur.fetchone()
-            return int(row[0]) if row else 0
 
     def upsert_term(
         self, user_id: str, term_from: str, term_to: str, *, prompt_enforced: bool

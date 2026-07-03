@@ -19,6 +19,7 @@ from tests.stubs import (
     StubCostGuard,
     StubFullText,
     StubLlm,
+    StubObservability,
     StubStore,
     _Budget,
     make_orchestrator,
@@ -100,11 +101,14 @@ def test_translate_path() -> None:
 def test_translate_abstains_on_empty_translation() -> None:
     # A blank LLM response (empty translations map) leaves every field falling back to the source
     # English text — that must NOT be served as a successful translation. The empty-translation
-    # gate compares against the source and abstains after a retry (BR-S18).
-    orch = make_orchestrator(llm=StubLlm(empty=True))
+    # gate compares against the source and abstains after a retry (BR-S18). A dedicated metric is
+    # emitted so this failure mode is separable from generation_unavailable in observability.
+    obs = StubObservability()
+    orch = make_orchestrator(llm=StubLlm(empty=True), observability=obs)
     result = orch.run(_req(Task.TRANSLATE, abstract="An abstract about BERT."), _ctx())
     assert isinstance(result, AbstainDTO)
     assert result.reason == "empty_translation"
+    assert any(name == "u7.translate.empty" for name, _v, _t in obs.metrics)
 
 
 def test_orchestrator_abstains_on_map_reduce_length() -> None:
@@ -231,3 +235,48 @@ def test_orchestrator_translate_enqueues_pending_on_long_input() -> None:
     out = orch.run(req, _ctx()).to_dict()
     assert out["status"] == "pending"
     assert queue.calls == [("2401.1", "u1")]
+
+
+def test_orchestrator_full_translate_dispatches_async_when_multichunk() -> None:
+    # SINGLE-CALL band (< 40K) but a large full-text translate is multi-chunk (output-bounded), so
+    # inline it would exceed the gateway timeout (504). It must be dispatched to the async job
+    # (pending → poll) instead — the worker runs it off the request path.
+    from summarization.domain.models import Scope
+
+    queue = _SpyQueue()
+    # ~11K tokens: single-call band, but above the async-dispatch threshold (6K).
+    orch = make_orchestrator(full_text=StubFullText(text="word " * 9000), summary_job_queue=queue)
+
+    req = SummaryRequest(paper_id="2401.1", version=1, task=Task.TRANSLATE, scope=Scope.FULL)
+    out = orch.run(req, _ctx()).to_dict()
+    assert out["status"] == "pending"
+    assert queue.calls == [("2401.1", "u1")]
+
+
+def test_orchestrator_large_summary_dispatches_async() -> None:
+    # A full-paper summary is one long LLM call (tens of seconds) → dispatch to the async job
+    # (pending → poll) rather than block the request until it times out. Small sources stay inline.
+    queue = _SpyQueue()
+    orch = make_orchestrator(full_text=StubFullText(text="word " * 9000), summary_job_queue=queue)
+    out = orch.run(_req(Task.SUMMARY), _ctx()).to_dict()
+    assert out["status"] == "pending"
+    assert queue.calls == [("2401.1", "u1")]
+
+
+def test_orchestrator_small_summary_stays_inline() -> None:
+    # A short source (below the async threshold) summarizes inline — no job, direct result.
+    queue = _SpyQueue()
+    orch = make_orchestrator(summary_job_queue=queue)
+    out = orch.run(_req(Task.SUMMARY, abstract="A short abstract about BERT."), _ctx()).to_dict()
+    assert out["status"] == "ok"
+    assert queue.calls == []
+
+
+def test_orchestrator_abstract_translate_stays_inline() -> None:
+    # An abstract translate (small, scope != FULL) is NOT dispatched async — it runs inline and
+    # returns a result directly, even with a job queue wired.
+    queue = _SpyQueue()
+    orch = make_orchestrator(summary_job_queue=queue)
+    out = orch.run(_req(Task.TRANSLATE, abstract="An abstract about BERT."), _ctx()).to_dict()
+    assert out["status"] == "ok"
+    assert queue.calls == []

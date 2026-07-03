@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://docsuri.dev/shared/events/paper-retracted.schema.json",
+  "title": "PaperRetractedEvent",
+  "description": "Paper retraction signal. Producer: U1.VectorIndexWriter when a retraction tombstone is generated. Consumer: U4.LibraryService marks matching saved library metadata as retracted without deleting user data. Delivery: at-least-once; consumer is idempotent by paperId. Trace: shared/events.md §1c, BR-L5.",
+  "type": "object",
+  "properties": {
+    "paperId": {
+      "type": "string",
+      "description": "Retracted paper identifier. Accepts the canonical paper id used by corpus/index records, including arXiv IDs with or without a version suffix."
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Time the retraction signal was produced."
+    }
+  },
+  "required": ["paperId", "timestamp"],
+  "additionalProperties": false
+}

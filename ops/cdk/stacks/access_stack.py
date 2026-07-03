@@ -41,8 +41,9 @@ class AccessStack(Stack):
                 # 경계는 trust(3계정·MFA·4h 세션)와 PR-감사되는 TEAM_ACCOUNT_IDS가 담당.
                 iam.ManagedPolicy.from_aws_managed_policy_name("AdministratorAccess"),
             ],
-            # ponytail: 4h 세션 — 시간당 재-MFA 마찰 줄임, 필요시 조정
-            max_session_duration=Duration.hours(4),
+            # 12h 세션 — 운영 중 수동으로 상향된 라이브 값(43200s)을 코드화해 드리프트 제거.
+            # MFA(trust 조건)가 1차 경계이고, 세션 길이는 편의↔보안 트레이드오프로 12h 채택.
+            max_session_duration=Duration.hours(12),
         )
 
         CfnOutput(

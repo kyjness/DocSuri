@@ -1,5 +1,7 @@
 # Track 2 Code Generation Questions
 
+> ⚠️ **STALE / 역사 기록 (배너 추가 2026-06-30, `aidlc-suite-review` PR #280)**: 본 문서는 U3 코드 생성 단계의 **일회성 질문지**로 이미 답변·소진되었다. 현재 단계·로드맵의 권위 SSOT는 `aidlc-state.md`·`vision.md`다. 본 문서의 로드맵 서술은 참조하지 말 것.
+
 U3 Accounts 코드 생성 단계(Code Generation Part 1) 진행을 위해 아래의 질문을 검토해 주십시오.
 
 ## Question 1

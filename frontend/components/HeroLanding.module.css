@@ -22,11 +22,19 @@
   color: var(--color-text);
 }
 
+.tagline {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--color-text);
+  max-width: 30ch;
+}
+
 .subtitle {
   margin: 0;
   font-size: 15px;
   color: var(--color-text-muted);
-  max-width: 26ch;
+  max-width: 30ch;
 }
 
 .actions {
@@ -36,6 +44,46 @@
   width: 100%;
   max-width: 280px;
   margin-top: 12px;
+}
+
+/* Desktop: a roomier, web-style hero — bigger mark/headline and side-by-side CTAs. */
+@media (min-width: 768px) {
+  .root {
+    gap: 20px;
+    padding: 80px 24px;
+  }
+
+  .logo {
+    width: 160px;
+    height: 160px;
+  }
+
+  .title {
+    font-size: 48px;
+  }
+
+  .tagline {
+    font-size: 24px;
+    max-width: 40ch;
+  }
+
+  .subtitle {
+    font-size: 18px;
+    max-width: 40ch;
+  }
+
+  .actions {
+    flex-direction: row;
+    justify-content: center;
+    max-width: none;
+    width: auto;
+  }
+
+  .primary,
+  .secondary {
+    min-width: 160px;
+    padding: 0 28px;
+  }
 }
 
 .primary {

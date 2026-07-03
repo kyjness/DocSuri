@@ -16,6 +16,13 @@ from docsuri_ingestion.domain.enums import AssetSourceMode, AssetType
 from docsuri_ingestion.domain.models import MetadataRecord
 
 
+def _no_nul(value: str | None) -> str | None:
+    """Strip NUL (0x00) bytes from text bound for PostgreSQL — psycopg rejects them outright
+    (``text fields cannot contain NUL (0x00) bytes``), which fails the whole asset upsert. PDF/TEI
+    caption extraction occasionally yields embedded NULs; dropping them is loss-free for display."""
+    return value.replace("\x00", "") if value else value
+
+
 class ArxivAssetSource:
     """Fetch PDF / e-print bytes from arXiv for asset extraction (best-effort)."""
 
@@ -144,8 +151,8 @@ class S3RdsAssetStore:
                         page_ref = EXCLUDED.page_ref, bbox = EXCLUDED.bbox
                     """,
                     (
-                        a.paper_id, a.version, a.asset_id, a.type.value, a.caption,
-                        a.section_ref, a.ordinal, a.source_mode.value, a.object_ref,
+                        a.paper_id, a.version, a.asset_id, a.type.value, _no_nul(a.caption),
+                        _no_nul(a.section_ref), a.ordinal, a.source_mode.value, a.object_ref,
                         a.page_ref, json.dumps(a.bbox) if a.bbox else None,
                     ),
                 )

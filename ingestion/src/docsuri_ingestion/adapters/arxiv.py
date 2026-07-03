@@ -28,6 +28,13 @@ OAI_NS = {
     "arxiv": "http://arxiv.org/OAI/arXiv/",
 }
 
+# A complete arXiv HTML conversion yields tens of thousands of characters of plain text. A
+# truncated ar5iv (LaTeXML) conversion — HTTP 200 but the LaTeX failed to convert past the
+# abstract + a sentence — yields only ~1-2k. Below this floor the HTML source is treated as broken
+# and the PDF text is preferred (both are valid full text, so a rare genuinely-short paper only
+# loses the HTML rung, never the text). Trace: BR-29.
+_MIN_HTML_FULLTEXT_CHARS = 3000
+
 
 def _oai_set(category: str) -> str:
     """Map an arXiv category to its OAI-PMH setSpec. arXiv OAI sets use a colon hierarchy
@@ -141,29 +148,44 @@ class ArxivHttpSource:
         """
         arxiv_id = metadata.identifier.arxiv_id
         html, html_url = self._try_get_html(arxiv_id)
-        if html is not None:
-            text = html_to_text(html)
-            if text:
-                return RawDocument(metadata=metadata, text=text, source_url=html_url)
+        html_text = html_to_text(html) if html is not None else ""
+        # A COMPLETE HTML conversion is the preferred source. A truncated one (ar5iv LaTeXML
+        # failure — HTTP 200 but only the abstract + a sentence, below the floor) is worse than
+        # the PDF text, so fall through to PDF and keep the short HTML only if the PDF is
+        # unavailable too (better a fragment than nothing).
+        if html_text and len(html_text) >= _MIN_HTML_FULLTEXT_CHARS:
+            return RawDocument(metadata=metadata, text=html_text, source_url=html_url)
 
         pdf_url = f"{self._pdf_base_url}/{arxiv_id}"
-        pdf = self._get_bytes(pdf_url, params=None, stage="fetch_full_text")
         try:
+            pdf = self._get_bytes(pdf_url, params=None, stage="fetch_full_text")
             text = pdf_to_text(pdf)
-        except FullTextExtractionError as exc:
+        except (PermanentIngestionError, FullTextExtractionError) as exc:
+            # The PDF is PERMANENTLY unavailable (404/4xx from _get_bytes) or unparseable
+            # (FullTextExtractionError): a truncated HTML body beats failing the paper — keep the
+            # short HTML "only if the PDF is unavailable too" (better a fragment than nothing).
+            # RetriableIngestionError (429/5xx/timeout) is deliberately NOT caught here: it
+            # propagates so a later retry can still recover the full PDF instead of prematurely
+            # settling for the fragment.
+            if html_text:
+                return RawDocument(metadata=metadata, text=html_text, source_url=html_url)
+            if isinstance(exc, PermanentIngestionError):
+                raise
             raise PermanentIngestionError(
                 "full text extraction could not parse the PDF payload",
                 reason=FailureReason.PARSE_FAILURE,
                 stage="fetch_full_text",
             ) from exc
-        if not text:
-            raise PermanentIngestionError(
-                "full text extraction yielded empty text",
-                reason=FailureReason.PARSE_FAILURE,
-                stage="fetch_full_text",
+        if text:
+            return RawDocument(
+                metadata=metadata, text=text, source_url=pdf_url, content_type="text/plain"
             )
-        return RawDocument(
-            metadata=metadata, text=text, source_url=pdf_url, content_type="text/plain"
+        if html_text:  # PDF empty — fall back to the (short) HTML text rather than erroring.
+            return RawDocument(metadata=metadata, text=html_text, source_url=html_url)
+        raise PermanentIngestionError(
+            "full text extraction yielded empty text",
+            reason=FailureReason.PARSE_FAILURE,
+            stage="fetch_full_text",
         )
 
     def fetch_html_source(self, arxiv_id: str) -> tuple[str, SourceTier] | None:

@@ -92,6 +92,11 @@
 | `IndexRecordRef` | `vector-spec.md` IndexRecord 핸들 |
 | `DocModelAnchor` | `docmodel.md` Section/Block id + 선택 span |
 
+> ⚠️ **앵커 모델 충돌 (미해결) — 2026-06-30 · `aidlc-suite-review` PR #280**
+> 본 §3.6의 `DocModelAnchor`(및 §3.5 `SourceRef.anchor`)는 `docmodel.md §3`의 id 기반 앵커를 **전제**하지만, 배포된 U7 요약 경로 + `summarization.schema.json`은 레거시 **`{ target ∈ enum{section,table,figure}, quote-span(span), regex-label(label) }`** 모델을 방출한다(U7: 백엔드 무변경). 즉 본 포트가 전제하는 id 앵커는 U7이 실제로 발행하는 형상과 정렬되지 않는다.
+> 명시적 결정(U7/스키마가 id 앵커로 이행하거나 `docmodel.md §3`을 공식 개정·동결해제)으로 셋을 정렬하기 전까지, novelty/근거형성 에이전트의 앵커 실재성 검증은 id 앵커에 의존할 수 없다. **해결 책임자: TBD.**
+> 교차 참조: `docmodel.md §3` · `shared/dtos/summarization.schema.json`(Anchor/AnchorTarget) · `u7-summarization/functional-design/domain-entities.md`(Anchor) · 본 `evidence-formation-port.md §3.6`.
+
 ---
 
 ## 4. 재사용 계약

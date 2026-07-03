@@ -1,7 +1,8 @@
 'use client';
 
 import { useCallback, useState } from 'react';
-import { getApiClient } from '@/lib/api';
+import { useRouter, usePathname } from 'next/navigation';
+import { getApiClient, UserFacingError } from '@/lib/api';
 import { usePaginatedList } from '@/lib/usePaginatedList';
 import { cardFromMeta } from '@/lib/library/cardFromMeta';
 import { ResultCard } from '../ResultCard';
@@ -13,6 +14,8 @@ import styles from './Library.module.css';
 // LibraryScreen (US-L2, FR-9) — the user's saved papers, rendered from preserved
 // meta snapshots (no live index). Remove is optimistic after a 2xx; cursor "더 보기".
 export function LibraryScreen() {
+  const router = useRouter();
+  const pathname = usePathname();
   const fetchPage = useCallback((cursor?: string) => getApiClient().listLibrary({ cursor }), []);
   const { items, status, error, hasMore, loadMore, reload, removeLocal } =
     usePaginatedList<LibraryItemDTO>(fetchPage);
@@ -26,7 +29,11 @@ export function LibraryScreen() {
     try {
       await getApiClient().removeFromLibrary(itemId);
       removeLocal((it) => String(it.id) === itemId);
-    } catch {
+    } catch (e) {
+      if (e instanceof UserFacingError && e.isAuth) {
+        router.push(`/login?redirect=${encodeURIComponent(pathname)}`);
+        return;
+      }
       setActionError('제거하지 못했습니다. 다시 시도해 주세요.');
     } finally {
       setBusyId(null);
@@ -41,7 +48,10 @@ export function LibraryScreen() {
         <StateView kind="error" message={error ?? undefined} onRetry={() => void reload()} />
       ) : null}
       {status !== 'loading' && status !== 'error' && items.length === 0 ? (
-        <StateView kind="empty" message="라이브러리가 비어 있습니다. 검색 결과에서 논문을 담아보세요." />
+        <StateView
+          kind="empty"
+          message="라이브러리가 비어 있습니다. 검색 결과에서 논문을 담아보세요."
+        />
       ) : null}
 
       {actionError ? (

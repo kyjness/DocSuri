@@ -2,7 +2,7 @@
 
 **단계**: CONSTRUCTION → Infrastructure Design (시스템 전역, 크리티컬 패스 ⑦) · **일자**: 2026-06-17
 **범위**: U3 배포 단위 ①이 커버하지 않는 **시스템 전역 인프라 — 벡터 검색 티어(OpenSearch) + 인제스천 워커(배포 단위 ②) + 이벤트 백본(SQS·EventBridge) + 오브젝트 스토어(S3) + ML 모델 액세스(Bedrock/Cohere)**를 정의한다.
-**관계**: U3 `infrastructure-design/`(배포 단위 ① VPC·Fargate·RDS·Redis·SES)는 **부모** — 본 문서가 동일 VPC 내 추가 티어를 정의한다. U4는 U3을 상속(인프라 변경 없음).
+**관계**: U3 `infrastructure-design/`(배포 단위 ① VPC·Fargate·RDS·Redis·Resend 외부 이메일)는 **부모** — 본 문서가 동일 VPC 내 추가 티어를 정의한다. U4는 U3을 상속(인프라 변경 없음).
 
 ---
 
@@ -21,7 +21,7 @@
 
 ## 1. Amazon OpenSearch Service — 벡터 검색 + BM25 티어
 
-U1 Ingestion이 쓰고 U2 Discovery가 읽는 **공유 벡터 인덱스**(VectorSpec 🔒FROZEN: Cohere Embed Multilingual v3, 1024-dim, cosine)의 호스팅 계층이다.
+U1 Ingestion이 쓰고 U2 Discovery가 읽는 **공유 벡터 인덱스**(VectorSpec 🔒FROZEN: Cohere Embed Multilingual v4, 1024-dim, cosine)의 호스팅 계층이다.
 
 ### 1.1. 도메인 사양
 
@@ -31,7 +31,7 @@ U1 Ingestion이 쓰고 U2 Discovery가 읽는 **공유 벡터 인덱스**(Vector
 | **엔진 버전** | OpenSearch `2.11+` (k-NN 플러그인 내장) | k-NN HNSW 1024-dim 지원 |
 | **인스턴스 타입** | `m6g.large.search` (2 vCPU / 8 GB, Graviton3) | 수십만 1024-dim 벡터 + BM25 인덱스에 충분한 메모리 여유; $1600 상한 내 |
 | **데이터 노드** | **2** (Multi-AZ, 각 AZ에 1개) | 가용성 + replica shard 분산 |
-| **스토리지** | EBS gp3, 노드당 **50 GB** (총 100 GB) | 수십만 문서 × ~5KB/doc(논문당 1벡터, Q2=B) + k-NN 그래프; 초기 여유분 포함. ILM으로 관리 |
+| **스토리지** | EBS gp3, 노드당 **50 GB** (총 100 GB) | 수십만 문서 × DocModel(Block) 전문 청킹(~1.5M 전문 청크, 논문당 다중 벡터) + k-NN 그래프; **이 용량 여유분은 종전 초록-only 단일벡터(논문당 1벡터, Q2=B) 가정으로 산정되어 과소추정**. ILM으로 관리 |
 | **마스터 노드** | 없음 (2 데이터 노드 도메인은 전용 마스터 불요) | 비용 절감 |
 | **레플리카** | index replica = 1 (2 노드 = 1 primary + 1 replica per shard) | AZ 장애 시 읽기 가용 |
 
@@ -172,19 +172,19 @@ arXiv Atom 피드 기반 near-real-time 트리거는 EventBridge Pipes(SQS→ste
 
 ## 5. Amazon Bedrock — ML 모델 액세스
 
-### 5.1. 임베딩 (Cohere Embed Multilingual v3)
+### 5.1. 임베딩 (Cohere Embed Multilingual v4)
 
 | 항목 | 값 |
 |---|---|
-| **모델 ID** | `cohere.embed-multilingual-v3` (Bedrock On-Demand) |
+| **모델 ID** | `cohere.embed-multilingual-v4` (Bedrock On-Demand) |
 | **input_type** | writer=`search_document` (U1 인제스천) / reader=`search_query` (U2 검색) |
 | **차원** | 1024 (VectorSpec FROZEN) |
 | **호출 주체** | `docsuri-ingestion-task-role` (벌크 임베딩) · `docsuri-api-task-role` (검색 질의 임베딩) |
-| **비용 추정** | ~$0.0001/1K tokens; 초기 벌크(수십만×~300 tokens avg, **제목+초록만 — issue #120 Q2=B**) ≈ $2-5 일회성; 이후 일일 수십 건 ≈ 무시 |
+| **비용 추정** | ~$0.0001/1K tokens; 초기 벌크(DocModel(Block) **전문 청킹 ~1.5M 청크** — 종전 제목+초록만(issue #120 Q2=B) 단일벡터 가정으로 산정된 이 추정치는 과소추정) ≈ $2-5 일회성; 이후 일일 수십 건 ≈ 무시 |
 
 ### 5.2. 모델 접근 권한
 
-- **Bedrock Model Access**: 계정 028317349537에서 `cohere.embed-multilingual-v3` On-Demand 활성화 필요 (사이클 1에서 use-case gate 해소 완료 — [[project-aws-integration-spike]]).
+- **Bedrock Model Access**: 계정 028317349537에서 `cohere.embed-multilingual-v4` On-Demand 활성화 필요 (사이클 1에서 use-case gate 해소 완료 — [[project-aws-integration-spike]]).
 - **IAM 정책**: 태스크 역할에 `bedrock:InvokeModel` 허용 (Resource: 해당 모델 ARN만).
 
 ---
@@ -214,7 +214,7 @@ arXiv Atom 피드 기반 near-real-time 트리거는 EventBridge Pipes(SQS→ste
 
 | 역할 이름 | 바인딩 | 허용 액션 |
 |---|---|---|
-| `docsuri-api-task-role` | 배포 단위 ① (ECS) | OpenSearch(읽기) · Bedrock `InvokeModel`(search_query **+ 요약/번역 모델 — U7**) · SES(SendEmail) · CloudWatch(PutMetricData/PutLogEvents) · **S3 `doc-model/*` GetObject + `summary/*` read/write** · **SQS `SendMessage`(`docsuri-ingestion-queue` doc-model 빌드 + `docsuri-summary-job-queue` 요약 잡)** |
+| `docsuri-api-task-role` | 배포 단위 ① (ECS) | OpenSearch(읽기) · Bedrock `InvokeModel`(search_query **+ 요약/번역 모델 — U7**) · (이메일 발송은 Resend 외부 HTTPS API — IAM `SendEmail` 권한 불요; 구 SES(SendEmail) 그랜트는 SES→Resend 전환으로 제거, 2026-06-30 정정) · CloudWatch(PutMetricData/PutLogEvents) · **S3 `doc-model/*` GetObject + `summary/*` read/write** · **SQS `SendMessage`(`docsuri-ingestion-queue` doc-model 빌드 + `docsuri-summary-job-queue` 요약 잡)** |
 | `docsuri-ingestion-task-role` | 배포 단위 ② (ECS) | OpenSearch(쓰기/삭제) · Bedrock `InvokeModel`(search_document) · S3(PutObject/GetObject — **doc-model 빌더 PutObject 포함**) · SQS(ReceiveMessage/DeleteMessage/SendMessage[DLQ]) · CloudWatch |
 | `docsuri-summary-worker-task-role` | **배포 단위 ④ (ECS — 요약 워커, 신규)** | Bedrock `InvokeModel`(요약/번역 모델) · S3 `doc-model/*` GetObject + `summary/*` read/write · SQS(Receive/DeleteMessage `docsuri-summary-job-queue` · SendMessage[DLQ]) · RDS(용어집) · CloudWatch |
 | `docsuri-eventbridge-rule-role` | EventBridge 규칙 | SQS(SendMessage) 대상 `docsuri-ingestion-queue`만 |
@@ -262,8 +262,8 @@ VPC 10.0.0.0/16 (ap-northeast-2, 2 AZ)
 
 외부 서비스 (아웃바운드 HTTPS via IGW):
   · arXiv API (OAI-PMH + Atom + e-print)
-  · Amazon Bedrock (Cohere Embed Multilingual v3)
-  · Amazon SQS / S3 / EventBridge / SES
+  · Amazon Bedrock (Cohere Embed Multilingual v4)
+  · Amazon SQS / S3 / EventBridge / Resend(외부 이메일 HTTPS API)
   · Google reCAPTCHA v3
 ```
 

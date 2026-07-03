@@ -14,6 +14,13 @@
   padding-bottom: env(safe-area-inset-bottom);
 }
 
+/* Desktop owns navigation via the top bar (AppHeader nav); hide the phone tab bar. */
+@media (min-width: 768px) {
+  .nav {
+    display: none;
+  }
+}
+
 .tab {
   flex: 1 1 0;
   display: flex;

@@ -10,7 +10,7 @@
 
 ## 0. U1 Corpus 기술 스택 우선 적용 개정 (2026-06-26)
 
-> **우선순위**: 본 섹션은 2026-06-26 U1 Corpus NFR Requirements의 최신 결정이다. 아래 TD-3의 Cohere v3, arXiv-only source, lazy DocModel, section/full-text indexing 설명과 충돌하면 **본 섹션을 우선한다**. `shared/vector-spec/vector-spec.yaml`의 `specVersion: v2`가 active vector contract다.
+> **우선순위**: 본 섹션은 2026-06-26 U1 Corpus NFR Requirements의 최신 결정이다. 아래 TD-3의 Cohere v4(현 임베딩 모델), arXiv-only source, lazy DocModel, section/full-text indexing 설명과 충돌하면 **본 섹션을 우선한다**. `shared/vector-spec/vector-spec.yaml`의 `specVersion: v2`가 active vector contract다.
 
 ### TD-C1 — 수집 소스 어댑터: 기존 Python worker + source별 HTTP adapters
 
@@ -80,8 +80,8 @@
 - **대안**: Atom API 단독(소규모엔 단순하나 수십만 하베스트엔 부적합).
 - **전환 비용**: 낮음(어댑터 교체).
 
-## TD-3 [전역] — 임베딩 모델 + VectorSpec: **Cross-lingual 임베딩(Cohere Embed Multilingual v3, Bedrock) · 1024차원 · 코사인** _(2026-06-16 팀 결정 Titan→cross-lingual)_
-- **근거**: **한국어 사용자/팀이 영어 arXiv 코퍼스를 질의** → cross-lingual 모델이 한국어 질의와 영어 논문을 동일 벡터 공간에 매핑(KR↔EN 검색). Titan V2(영어 최적)는 한국어 질의 열위. Cohere Embed Multilingual v3는 Bedrock 제공·100+ 언어·1024차원으로 **AWS 트랙·기존 VectorSpec(1024·코사인) 그대로 유지**.
+## TD-3 [전역] — 임베딩 모델 + VectorSpec: **Cross-lingual 임베딩(Cohere Embed Multilingual v4, Bedrock) · 1024차원 · 코사인** _(2026-06-16 팀 결정 Titan→cross-lingual; v3→v4 마이그레이션 완료 2026-06-24, 정합 정정 2026-06-30)_
+- **근거**: **한국어 사용자/팀이 영어 arXiv 코퍼스를 질의** → cross-lingual 모델이 한국어 질의와 영어 논문을 동일 벡터 공간에 매핑(KR↔EN 검색). Titan V2(영어 최적)는 한국어 질의 열위. Cohere Embed Multilingual v4는 Bedrock 제공·100+ 언어·1024차원으로 **AWS 트랙·기존 VectorSpec(1024·코사인) 그대로 유지**.
 - **가정(팀 확인됨, 2026-06-16)**: **cross-lingual 질의 가정 확정.** (영어 전용이었다면 Titan V2로 충분했으나 팀이 cross-lingual 채택 — 한국어 질의 대응.) cross-lingual은 KR·EN 모두 처리.
 - **교차 유닛**: U2 질의 임베딩이 **동일 모델** 사용(VectorSpec 불변식); **QT-2 관련도 평가셋에 한국어 질의 포함**해 cross-lingual 검색 품질 검증 필수.
 - **대안**: Bedrock Titan V2(영어 최적, spike 검증); 자체 호스팅 다국어 오픈 모델(multilingual-e5 / BGE-M3, GPU 운영).
@@ -89,7 +89,7 @@
 
 ## TD-4 [전역] — 벡터+lexical 스토어: **OpenSearch** _(팀 결정 2026-06-16)_
 - **요건(3종 모두 필수)**: (i) ANN 벡터 검색 + (ii) BM25/FTS lexical(U2 하이브리드 FR-2·비용 서킷 lexical 폴백 US-R2) + (iii) **per-paperId 멱등 삭제/tombstone**(FD Q13=B·BR-14·INV-1).
-- **근거**: OpenSearch는 k-NN ANN + BM25 + 신뢰성 문서 삭제를 **단일 스토어**로 충족; Bedrock KB 백킹으로도 일반적; TD-3 임베딩(Cohere Embed Multilingual v3, 1024·코사인)과 정합.
+- **근거**: OpenSearch는 k-NN ANN + BM25 + 신뢰성 문서 삭제를 **단일 스토어**로 충족; Bedrock KB 백킹으로도 일반적; TD-3 임베딩(Cohere Embed Multilingual v4, 1024·코사인)과 정합.
 - **대안**: **Aurora PostgreSQL(pgvector+FTS)** — 단일 스토어·트랜잭션 삭제·최저 운영비; **S3 Vectors + Bedrock KB**(spike 산출)는 **벡터-ANN 전용** → 동반 lexical 스토어 필요 + 삭제 최종일관성 검증 필요(요건 ii·iii 미충족).
 - **전환 비용**: 스토어 변경 = 재색인(재임베딩은 불요 if VectorSpec 동일). **팀 결정 필요**: OpenSearch(권장) vs Aurora pgvector vs S3 Vectors+동반.
 

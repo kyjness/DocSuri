@@ -81,9 +81,11 @@ def build_router(
         term = _parse_glossary_term(payload)
         if term is None:
             return JSONResponse({"status": "validation_error"}, status_code=400)
-        term_from, term_to = term
+        term_from, term_to, prompt_enforced = term
         try:
-            glossary_ver = orchestrator.upsert_glossary_term(user_id, term_from, term_to)
+            glossary_ver = orchestrator.upsert_glossary_term(
+                user_id, term_from, term_to, prompt_enforced=prompt_enforced
+            )
         except Exception:  # noqa: BLE001 — fail-closed: never surface internals (INV-4/SEC-15)
             return JSONResponse({"status": "unavailable"}, status_code=503)
         return JSONResponse({"status": "ok", "glossaryVer": glossary_ver}, status_code=201)
@@ -173,9 +175,11 @@ _MAX_TERM_FROM = 80
 _MAX_TERM_TO = 40
 
 
-def _parse_glossary_term(payload: dict) -> tuple[str, str] | None:
+def _parse_glossary_term(payload: dict) -> tuple[str, str, bool] | None:
     """Validate a personal-term upsert: both sides required, trimmed, length-bounded.
-    Returns ``(term_from, term_to)`` or None on any violation (→ 400)."""
+    Returns ``(term_from, term_to, prompt_enforced)`` or None on any violation (→ 400).
+    ``promptEnforced`` is strict-boolean (only JSON ``true`` enables strong; missing/other → weak)
+    so a stray truthy value can't silently escalate a term into the prompt."""
     if not isinstance(payload, dict):
         return None
     term_from = str(payload.get("termFrom", "")).strip()
@@ -184,7 +188,8 @@ def _parse_glossary_term(payload: dict) -> tuple[str, str] | None:
         return None
     if len(term_from) > _MAX_TERM_FROM or len(term_to) > _MAX_TERM_TO:
         return None
-    return term_from, term_to
+    prompt_enforced = payload.get("promptEnforced") is True
+    return term_from, term_to, prompt_enforced
 
 
 def _parse_request(payload: dict) -> SummaryRequest | None:

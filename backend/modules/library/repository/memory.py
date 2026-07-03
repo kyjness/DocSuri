@@ -10,11 +10,21 @@ structurally cannot cross owners — the data-layer backstop under U3's Authoriz
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 
 from ..models import HistoryEntry, LibraryItem, SavedSearch
 
 CursorKey = tuple[datetime, str]
+_VERSION_SUFFIX = re.compile(r"v\d+$")
+
+
+def _strip_version(paper_id: str) -> str:
+    return _VERSION_SUFFIX.sub("", paper_id)
+
+
+def _paper_ids_match(stored: str, event_paper_id: str) -> bool:
+    return stored == event_paper_id or _strip_version(stored) == _strip_version(event_paper_id)
 
 
 def _page(rows: list, key, limit: int, after: CursorKey | None) -> list:
@@ -90,6 +100,22 @@ class InMemoryLibraryRepository:
 
     def delete(self, owner_id: str, item_id: str) -> bool:
         return self._owner(owner_id).pop(item_id, None) is not None
+
+    def mark_retracted(self, paper_id: str) -> int:
+        changed = 0
+        for bucket in self._by_owner.values():
+            for item_id, item in list(bucket.items()):
+                if not _paper_ids_match(item.arxiv_id, paper_id) or item.meta.retracted:
+                    continue
+                bucket[item_id] = LibraryItem(
+                    id=item.id,
+                    owner_id=item.owner_id,
+                    arxiv_id=item.arxiv_id,
+                    meta=item.meta.model_copy(update={"retracted": True}),
+                    added_at=item.added_at,
+                )
+                changed += 1
+        return changed
 
     def list_page(self, owner_id: str, limit: int, after: CursorKey | None) -> list[LibraryItem]:
         return _page(

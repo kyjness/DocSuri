@@ -158,13 +158,6 @@ class GlossaryRepositoryPort(Protocol):
         """Return the user's term overrides (owner-scoped)."""
         ...
 
-    def get_glossary_version(self, user_id: str) -> int:
-        """Return the user's current ``glossary_ver`` (0 when none → shared baseline). Reflects
-        ALL terms — the translate cache identity (post-substitution terms affect translation). The
-        summary cache instead keys on a content signature of the prompt-enforced subset, derived
-        from ``get_user_glossary`` (see ``GlossaryResolver.prompt_glossary_signature``)."""
-        ...
-
     def upsert_term(
         self, user_id: str, term_from: str, term_to: str, *, prompt_enforced: bool
     ) -> int:

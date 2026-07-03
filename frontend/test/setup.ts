@@ -71,3 +71,10 @@ if (typeof window.matchMedia !== 'function') {
       dispatchEvent: () => false,
     }) as MediaQueryList;
 }
+
+// jsdom doesn't implement `Element.prototype.scrollIntoView` at all. The doc-model viewer's
+// TOC/anchor jump (D3) calls it before moving focus to the target, so any test that exercises
+// that jump needs it defined — a no-op stub is enough since layout isn't observable in jsdom.
+if (typeof Element.prototype.scrollIntoView !== 'function') {
+  Element.prototype.scrollIntoView = () => {};
+}

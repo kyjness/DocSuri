@@ -75,7 +75,8 @@ where a new idea is novel — all anchored to source.
 | Citation graph | U8 | Citation snapshots from external providers |
 | Personalization | U9 | Bounded behavior-based search boosts |
 | My Page | U10 | User settings/profile/consents |
-| Research Agent | U11 | Grounded research-idea/novelty assistance |
+| Literature/Evidence Agent | U11 | Grounded multi-paper literature search & evidence formation (extract / compare / abstain) |
+| Novelty/Research-Idea Agent | U12 | Grounded novelty assistance: similar-work, bounded ideas, experiment plans, manuscript-risk signals, Notion export |
 
 ### Integration Points
 
@@ -88,7 +89,7 @@ where a new idea is novel — all anchored to source.
 1. Search a topic → grounded, ranked results → save to library.
 2. Open a paper → grounded Korean summary with source anchors.
 3. Explore citations → see how a paper connects.
-4. Ask the research agent → grounded novelty/idea assistance.
+4. Ask the evidence agent (U11) → grounded multi-paper evidence; ask the novelty agent (U12) → grounded novelty/idea assistance.
 
 ### Scalability and Growth
 
@@ -138,7 +139,7 @@ auth, observability + alerting in place.
 
 ### Open Questions
 
-- Final grounding-contract unification across U6/U7/U11 (intentionally parallel today).
+- Final grounding-contract unification across U6/U7/U11/U12 (intentionally parallel today).
 - Read-replica/scale-out timing for the corpus index.
 
 ## How This Document Feeds Into AI-DLC

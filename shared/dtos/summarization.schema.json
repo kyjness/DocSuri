@@ -1,6 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://docsuri.dev/shared/dtos/summarization.schema.json",
+  "$comment": "ANCHOR MODEL CONFLICT (unresolved) — 2026-06-30, aidlc-suite-review PR #280. FROZEN docmodel.md §3 mandates deterministic Section/Block id anchors, but this deployed U7 summarization schema emits the legacy { target ∈ enum{section,table,figure}, quote-span (Anchor.span), regex-label (Anchor.label) } model (U7: 백엔드 무변경 / backend unchanged), and evidence-formation-port.md §3.6 assumes id-based anchors. Until an explicit decision aligns these (either U7/this schema migrate to id anchors, or docmodel.md §3 is formally amended/un-frozen), the novelty/evidence agent's anchor-reality verification cannot rely on id anchors. Resolution owner: TBD. Cross-refs: docmodel.md §3, this file's AnchorTarget/Anchor $defs, aidlc-docs/construction/u7-summarization/functional-design/domain-entities.md (Anchor), aidlc-docs/construction/shared/evidence-formation-port.md §3.6. This $comment is advisory only and changes no field schema.",
   "title": "SummaryResponse",
   "description": "U7 Summarization DTO contract. The ROOT schema describes SummaryResponse — the union (oneOf) returned by on-demand actions (FR-12/13/14) and branched by U5 ApiClient to surface status. All named DTOs (SummaryRequest, SummaryResultDTO, SummaryDraft, Anchor, TranslationDraft, PendingDTO, AbstainDTO, CostDegradedDTO, SourceUnavailableDTO) are defined in $defs for type generation.",
   "oneOf": [
@@ -162,6 +163,22 @@
           "type": "array",
           "items": { "type": "string" },
           "description": "Untranslated terminology or glossary terms kept as-is. Trace: FR-13."
+        },
+        "standardGlossary": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "term": { "type": "string", "description": "The English (source) term." },
+              "translated": {
+                "type": "string",
+                "description": "Standard Korean rendering — present only for mapping terms (e.g. attention→어텐션), where it pre-fills the editor; absent for keep-as-is terms (kept in English)."
+              }
+            },
+            "required": ["term"],
+            "additionalProperties": false
+          },
+          "description": "DocSuri standard glossary terms (shared seed) that appear in THIS paper: keep-as-is terms the model kept in English (no 'translated'), plus mapping terms whose standard Korean appears in the translation ('translated' set). The client renders a 표준 용어집; both kinds are editable as strong, prompt-enforced overrides (re-translation) — a mapping chip pre-fills its editor with the standard rendering. Trace: BR-S4."
         }
       },
       "required": ["docModel", "keptTerms"],

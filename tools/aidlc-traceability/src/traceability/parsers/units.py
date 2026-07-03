@@ -118,7 +118,7 @@ def parse_units(file_path: Path) -> tuple[list[Artifact], list[Relationship]]:
 # DocSuri fork: canonical unit-definition table row, e.g.
 #   | **U1 Ingestion** | arXiv OA ... | 독립 워커 | ② ... |
 _DS_UNIT_ROW = re.compile(
-    r"^\|\s*\*\*\s*(U\d+)\s+([^*|]+?)\s*\*\*\s*\|\s*([^|]*)\|",
+    r"^\|\s*\*\*\s*(U\d+)\s+([^*|]+?)\s*\*\*[^|]*\|\s*([^|]*)\|",
     re.IGNORECASE,
 )
 # DocSuri fork: story->unit map row, e.g.
@@ -135,7 +135,7 @@ def _parse_docsuri_units(
 ) -> tuple[list[Artifact], list[Relationship]]:
     """Parse DocSuri unit-of-work table + story->unit map table.
 
-    Returns canonical unit artifacts (id = U1..U8) and story->unit relationships.
+    Returns canonical unit artifacts (id = U1..U12) and story->unit relationships.
     """
     artifacts: list[Artifact] = []
     relationships: list[Relationship] = []

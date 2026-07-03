@@ -1,6 +1,6 @@
 # docmodel-fulltext-index-pivot-plan.md — 전문 통합 인덱스 + eager doc-model 전환 게이트
 
-**단계**: CONSTRUCTION → 교차 아키텍처 결정 게이트 · **일자**: 2026-06-24 · **상태**: 🟡 DRAFT (사용자 승인 대기)
+**단계**: CONSTRUCTION → 교차 아키텍처 결정 게이트 · **일자**: 2026-06-24 · **상태**: ✅ **확정·배포 완료**(전문 통합 인덱스 + eager doc-model 전환 라이브 — OpenSearch alias `docsuri-corpus`, ~1.5M 전문 청크; 구 🟡 DRAFT 표기 정정 2026-06-30, `aidlc-suite-review` PR #280)
 **계기**: U11 Research Agent(연구 에이전트) Functional Design — 다논문 근거형성이 **본문(표·수식·그림 캡션 포함) 단위 찾기·근거**를 요구.
 **선례(형식)**: `docmodel-foundation-pivot-plan.md`(doc-model 도입 게이트). 본 문서는 그 후속 결정.
 **SSOT 영향 원장**: `aidlc-state.md`.

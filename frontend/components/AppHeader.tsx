@@ -1,11 +1,21 @@
 'use client';
 
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { usePathname } from 'next/navigation';
 import styles from './AppHeader.module.css';
 import { useSession } from './session/SessionContext';
 
-// AppHeader (LC-1) — minimal top bar. Default: brand link + sign-out (home screens).
+// Primary destinations, mirrored from BottomNav. On desktop these render inline in the
+// header (a top nav bar); on phones the BottomNav tab bar owns navigation and these are
+// hidden. Kept here so the desktop bar reads like an ordinary web app nav.
+const NAV_LINKS = [
+  { href: '/search', label: '검색', isActive: (p: string) => p.startsWith('/search') || p.startsWith('/paper') },
+  { href: '/agent', label: '에이전트', isActive: (p: string) => p.startsWith('/agent') },
+  { href: '/mypage', label: '마이페이지', isActive: (p: string) => p.startsWith('/mypage') },
+];
+
+// AppHeader (LC-1) — minimal top bar. Default: brand link (+ desktop nav links). Sign-out
+// lives in 마이페이지 → 설정, not here.
 // Back mode (`backHref`): a left back-arrow to a FIXED destination instead of the brand, for
 // full-screen sub-routes (paper detail → /search, 본문 / 본문 번역 → the detail page). A fixed
 // destination (not history back) is deliberate: these are app routes (not browser tabs), and
@@ -17,19 +27,12 @@ interface AppHeaderProps {
 }
 
 export function AppHeader({ title, backHref }: AppHeaderProps) {
-  const { status, signOut } = useSession();
-  const router = useRouter();
+  const { status } = useSession();
+  const pathname = usePathname() ?? '';
   // Authenticated users treat the brand as the app home (search); anonymous /
   // first-time visitors land on the hero. The nav flow is silent on this, so
   // this is a code-level navigation choice.
   const brandHref = status === 'authenticated' ? '/search' : '/';
-
-  // Sign out, then return to the hero landing (`/`) so the post-logout screen matches the
-  // first-visit screen (a RouteGuard on a protected page would otherwise bounce to /login).
-  const handleSignOut = async () => {
-    await signOut();
-    router.push('/');
-  };
 
   return (
     <header className={styles.header}>
@@ -53,17 +56,25 @@ export function AppHeader({ title, backHref }: AppHeaderProps) {
         )}
         {backHref && title ? <span className={styles.titleText}>{title}</span> : null}
       </div>
-      {/* 화면 이동(검색/마이페이지)은 하단 탭바(BottomNav)가 담당한다.
-          상단은 브랜드/뒤로 + 로그아웃만 유지한다. */}
-      {status === 'authenticated' ? (
-        <button
-          type="button"
-          className={styles.signout}
-          onClick={() => void handleSignOut()}
-          data-testid="app-header-signout"
-        >
-          로그아웃
-        </button>
+      {/* On phones the bottom tab bar (BottomNav) owns 검색/마이페이지; this inline nav is
+          hidden there (CSS) and shown on desktop. In back mode (sub-routes) it's suppressed. */}
+      {status === 'authenticated' && !backHref ? (
+        <nav className={styles.nav} aria-label="주요 메뉴">
+          {NAV_LINKS.map(({ href, label, isActive }) => {
+            const active = isActive(pathname);
+            return (
+              <Link
+                key={href}
+                href={href}
+                className={styles.navLink}
+                data-active={active}
+                aria-current={active ? 'page' : undefined}
+              >
+                {label}
+              </Link>
+            );
+          })}
+        </nav>
       ) : null}
     </header>
   );

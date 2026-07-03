@@ -57,6 +57,8 @@ class Settings:
     # The rate-limit key is the X-Forwarded-For hop this many places from the right — i.e. what
     # your outermost trusted proxy stamped — never the spoofable leftmost hop. 1 = single LB.
     trusted_proxy_count: int = 1
+    gateway_rate_limit_max_requests: int = 60
+    gateway_rate_limit_window_seconds: float = 60.0
 
     @property
     def is_local(self) -> bool:
@@ -77,4 +79,10 @@ class Settings:
             trust_proxy_headers=os.getenv("TRUST_PROXY_HEADERS", "").strip().lower()
             in {"1", "true", "yes", "on"},
             trusted_proxy_count=int(os.getenv("TRUSTED_PROXY_COUNT") or "1"),
+            gateway_rate_limit_max_requests=int(
+                os.getenv("DOCSURI_GATEWAY_RATE_LIMIT_MAX_REQUESTS") or "60"
+            ),
+            gateway_rate_limit_window_seconds=float(
+                os.getenv("DOCSURI_GATEWAY_RATE_LIMIT_WINDOW_SECONDS") or "60"
+            ),
         )

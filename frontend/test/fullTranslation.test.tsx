@@ -11,8 +11,11 @@ describe('FullTranslationIsland', () => {
 
     // Structured render: the translated section heading is present (also appears in the TOC).
     expect(await screen.findByRole('heading', { name: '모델 구조' })).toBeTruthy();
-    // The kept-term glossary (핵심 용어) is exposed for the full translation, with editable badges.
-    expect(screen.getByRole('heading', { name: '핵심 용어' })).toBeTruthy();
-    expect(screen.getByText('Transformer')).toBeTruthy();
+    // Glossary split into 표준 용어 (seed standard) and 원어 유지 용어 (BR-S4).
+    expect(screen.getByRole('heading', { name: '표준 용어' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: '원어 유지 용어' })).toBeTruthy();
+    // attention (mapping) and Transformer (keep-as-is) are both editable 표준 chips.
+    expect(screen.getByRole('button', { name: 'attention' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Transformer' })).toBeInTheDocument();
   });
 });

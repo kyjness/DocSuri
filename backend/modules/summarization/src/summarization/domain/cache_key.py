@@ -1,11 +1,13 @@
 """Cache-key construction — immutable identity (§11 / BR-S1 / INV-5).
 
-Identity = (paper, version, task, lang, persona, glossaryVer, [ownerId], modelVer, promptVer).
-``glossaryVer`` invalidates a user's own cache on a term edit (per-user counter, bumped on
-upsert). But that counter is NOT a content identity — two different users can both sit at
-ver=1 with different terms — so personalized artifacts (glossaryVer > 0) also key on
-``ownerId`` to keep them from colliding across users. The baseline (glossaryVer == 0, no
-personal terms) is owner-agnostic and shared. Same key ⇒ same artifact, forever.
+Identity = (paper, version, task, lang, persona, glossaryVer, [ownerId], [seedVer], modelVer,
+promptVer). ``glossaryVer`` here is the PROMPT-ENFORCED content signature (glossary.signature_of):
+the artifact varies only with terms that ride into the prompt, so adding/editing a prompt-enforced
+term changes the key (miss → regenerate) while a post-substitution (weak) edit does NOT — weak
+terms are a read-time overlay on the shared base (NFR-C1). A positive signature is owner-scoped
+(distinct per-user term sets must not collide); signature 0 (no prompt-enforced terms) is the
+owner-agnostic shared baseline. ``seedVer`` appends only when the shared seed diverges from its
+shipped baseline, so a seed edit self-invalidates. Same key ⇒ same artifact, forever.
 """
 
 from __future__ import annotations
@@ -17,7 +19,12 @@ PROMPT_VER = "p1"
 
 
 def build_cache_key(
-    request: SummaryRequest, *, glossary_ver: int, model_ver: str, user_id: str | None
+    request: SummaryRequest,
+    *,
+    glossary_ver: int,
+    model_ver: str,
+    user_id: str | None,
+    seed_ver: str = "",
 ) -> SummaryCacheKey:
     # Identity dimensions (§11): summary varies by persona (2 variants), scope fixed to
     # full; translate varies by scope (abstract|full), persona-agnostic (single).
@@ -42,4 +49,5 @@ def build_cache_key(
         owner_id=owner_id,
         model_ver=model_ver,
         prompt_ver=PROMPT_VER,
+        seed_ver=seed_ver,
     )

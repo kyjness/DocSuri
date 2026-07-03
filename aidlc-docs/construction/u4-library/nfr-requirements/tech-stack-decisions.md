@@ -122,7 +122,7 @@
 ---
 
 ## TD-U4-13 — 이벤트 소비(History write): **`SearchExecutedEvent` 멱등 소비자 (consumer, 비-공개 POST)**
-- **결정** (D7·INV-L3·BR-L7): Search History의 **쓰기는 이벤트 구동**이다. `history_consumer.py`가 `SearchExecutedEvent`(🔒 FROZEN, at-least-once 전달)를 소비해 `HistoryEntry`를 기록하며, **공개 POST 엔드포인트가 아니다**. 멱등성은 `dedupe_key = sha256(owner_id|executed_at.isoformat()|query)`(표준 `hashlib`)로 강제 — 재전달이 중복 행을 생성하지 않는다(exactly-once row, TD-U4-3의 `(owner_id, dedupe_key)` Unique와 함께).
+- **결정** (D7·INV-L3·BR-L7): Search History의 **쓰기는 이벤트 구동**이다. `history_consumer.py`가 `SearchExecutedEvent`(🔒 FROZEN, at-least-once 전달)를 소비해 `HistoryEntry`를 기록하며, **공개 POST 엔드포인트가 아니다**. 멱등성은 `dedupe_key = sha256(owner_id|requestId|query)`(표준 `hashlib`)로 강제 — 재전달이 중복 행을 생성하지 않는다(exactly-once row, TD-U4-3의 `(owner_id, dedupe_key)` Unique와 함께).
 - **근거**: at-least-once 전달 의미론 하에서 exactly-once 영속(INV-L3)을 데이터 계층 Unique + 애플리케이션 dedupe로 이중 보장. 이벤트 계약은 FROZEN이므로 U4는 소비 측만 구현.
 - **대안**: 공개 history POST(클라이언트 위조·중복·인가 표면 증가 — 거부). 애플리케이션 dedupe만(Unique 백스톱 없으면 경합 시 중복 가능 — 거부).
 - **전환 비용**: 낮음 — 소비자/Unique 모두 U4 내부.

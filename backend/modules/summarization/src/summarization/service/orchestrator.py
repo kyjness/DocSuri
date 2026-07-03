@@ -15,6 +15,7 @@ API/presentation concern; the domain returns a complete, validated result.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 
 from docsuri_shared.dtos import DocModel
@@ -22,7 +23,7 @@ from docsuri_shared.ports import CostGuardCircuitBreaker, ObservabilityHub
 
 from ..domain.assembler import ResultAssembler
 from ..domain.cache_key import build_cache_key
-from ..domain.glossary import GlossaryResolver
+from ..domain.glossary import GlossaryResolver, seed_cache_segment
 from ..domain.grounding import GroundingValidator
 from ..domain.length_router import LengthRoute, LengthRouter
 from ..domain.map_reduce import MapReduceSummarizer
@@ -34,6 +35,7 @@ from ..domain.models import (
     GroundingInput,
     PendingDTO,
     RequestContext,
+    Scope,
     SourceUnavailableDTO,
     SummaryRequest,
     SummaryResponse,
@@ -52,10 +54,19 @@ from ..ports.ports import (
     SummaryStorePort,
 )
 
+logger = logging.getLogger(__name__)
+
 # Client poll backoff hint after a lazy build was (re)triggered on a miss (BR-30/D6).
 _BUILD_POLL_BACKOFF_MS = 2000
 # Client poll backoff hint after a long summary was enqueued as a background job (BR-S6/BR-S8).
 _SUMMARY_POLL_BACKOFF_MS = 3000
+# Generation above this input size is dispatched to the async job (pending → poll) instead of
+# running inline: a full-paper summary is one big LLM call and a full translation is several
+# output-bounded chunks — both take tens of seconds, well past the sync client/gateway budget (the
+# request 504s while the backend keeps generating and caches). Small inputs (abstract source /
+# abstract translate) stay inline (fast). The summary-worker (idle summary-job-queue) runs the
+# dispatched job off the request path.
+_ASYNC_GENERATION_MIN_TOKENS = 6_000
 
 
 def _is_cost_degraded(budget) -> bool:
@@ -122,23 +133,31 @@ class SummarizationOrchestrationService:
         user_id = ctx.auth_session.user_id
 
         # 0. cache lookup (read-through) — HIT ends here (LLM 0 calls, §11).
-        # Summary output only varies with PROMPT-ENFORCED terms, so it keys on a content signature
-        # of that subset; translate also varies with post-substitution terms, so it keys on the
-        # full monotonic version. This keeps a translate-only term edit from forking the per-user
-        # summary cache into an identical re-summary (NFR-C1), while the content signature (unlike a
-        # filtered MAX) still invalidates when a prompt-enforced term is demoted (BR-S1).
-        glossary_ver = (
-            self._glossary.prompt_glossary_signature(user_id)
-            if request.task == Task.SUMMARY
-            else self._glossary.glossary_version(user_id)
-        )
+        # Both tasks key on the PROMPT-ENFORCED content signature: the derived artifact varies only
+        # with terms that ride into the prompt. Post-substitution (weak) terms — today every
+        # personal term — are applied as a read-time overlay on a SHARED base, so a weak-only edit
+        # (or two users with different weak sets) does NOT fork the cache into an identical
+        # re-generation (NFR-C1); the content signature (unlike a filtered MAX) still invalidates
+        # when a prompt-enforced term is added/edited/demoted (BR-S1). Resolve once here and reuse
+        # for generation below (one repo fetch); the seed segment self-invalidates on a seed edit.
+        glossary = self._glossary.resolve(user_id)
         key = build_cache_key(
-            request, glossary_ver=glossary_ver, model_ver=self._model_ver, user_id=user_id
+            request,
+            glossary_ver=GlossaryResolver.signature_of(glossary),
+            model_ver=self._model_ver,
+            user_id=user_id,
+            seed_ver=seed_cache_segment(),
         )
         cached = self._store.get(key)
         if cached is not None:
             self._emit("u7.cache.hit", 1.0, request)
-            return _CachedResult(cached)
+            # Translate caches the shared base; apply the user's weak-term overlay on read (no-op
+            # when the user has no weak terms). Summary has no post-substitution — served as-is.
+            if request.task == Task.TRANSLATE:
+                cached = self._assembler.overlay_translation(cached, glossary)
+                # Clean kept-term notation on read so papers cached before this filter also benefit.
+                cached = self._assembler.filter_kept_terms(cached)
+            return _PayloadResult(cached, cached=True)
 
         # 1. cost gate (U6 single authority) — BEFORE any LLM spend.
         if _is_cost_degraded(self._cost_guard.get_budget_state()):
@@ -172,8 +191,29 @@ class SummarizationOrchestrationService:
                 self._emit("u7.job.pending", 1.0, request)
                 return PendingDTO(retry_after_ms=_SUMMARY_POLL_BACKOFF_MS)
 
-        # 4. glossary
-        glossary = self._glossary.resolve(user_id)
+        # Large single-call-band generation (a full-paper summary, or a full-text translation that
+        # is several output-bounded chunks) still runs tens of seconds — beyond the sync gateway
+        # budget, so the request would 504 while the backend keeps generating. Dispatch it to the
+        # async job (pending → client polls); the worker re-runs with allow_enqueue=False and
+        # caches. Abstract-source summaries and abstract translations stay inline (fast).
+        if (
+            allow_enqueue
+            and self._summary_job_queue is not None
+            and refined.token_count > _ASYNC_GENERATION_MIN_TOKENS
+            and (
+                request.task == Task.SUMMARY
+                or (
+                    request.task == Task.TRANSLATE
+                    and request.scope == Scope.FULL
+                    and self._translator is not None
+                )
+            )
+        ):
+            self._summary_job_queue.enqueue(request, user_id)
+            self._emit("u7.job.pending", 1.0, request)
+            return PendingDTO(retry_after_ms=_SUMMARY_POLL_BACKOFF_MS)
+
+        # 4. glossary — already resolved at step 0 (single repo fetch) and reused here.
 
         # 6-7. generate (buffer) → grounding validate, with ONE retry (BR-S7). On the MAP_REDUCE
         # band the summary is produced by the map-reduce summarizer (chunk→map→reduce); grounding
@@ -226,34 +266,69 @@ class SummarizationOrchestrationService:
                 draft = self._translator.translate(doc, request, glossary)
             except LlmUnavailable:
                 if attempt == 2:
+                    # Distinct from empty_translation: the LLM call itself failed after a retry
+                    # (Bedrock circuit / repeated errors — e.g. a math-heavy batch whose raw-LaTeX
+                    # JSON could not be parsed). Log it so this abstain mode is diagnosable, not
+                    # only a metric — otherwise it is invisible on the API request path.
+                    logger.warning(
+                        "translate abstain generation_unavailable: paper=%s v=%s scope=%s",
+                        request.paper_id, request.version, request.scope,
+                    )
                     self._emit("u7.llm.unavailable", 1.0, request)
                     return AbstainDTO(reason="generation_unavailable")
                 continue
             if not _has_translated_text(draft, doc):
                 if attempt == 2:
+                    # Distinct from ``generation_unavailable`` (LlmUnavailable above): here the
+                    # model responded but produced no usable Korean. The translator already logged
+                    # the per-chunk breakdown (returned/applied/truncated); record the terminal
+                    # abstain with paper context + a metric so the two failure modes are separable.
+                    logger.warning(
+                        "translate abstain empty_translation: paper=%s v=%s scope=%s attempts=%d",
+                        request.paper_id, request.version, request.scope, attempt,
+                    )
+                    self._emit("u7.translate.empty", 1.0, request)
                     return AbstainDTO(reason="empty_translation")
                 continue
-            result = self._assembler.assemble_translation(draft, glossary, source)
-            self._store.put(key, result.to_dict())  # write-through
+            # Assemble + cache the SHARED base (strong-term translation, no weak post-substitution);
+            # apply this user's weak-term overlay on the returned view so the first requester also
+            # sees their preferences (the cache stays the base, shared across users — NFR-C1).
+            # Pass the user's effective strong overrides so ``standardGlossary`` keeps a 표준 용어
+            # chip whose seed rendering the override replaced (BR-S4). They are part of this fork's
+            # cache signature, so the stored base is correct for every user who shares it.
+            base = self._assembler.assemble_translation(draft, source).to_dict(
+                strong_overrides={
+                    m.term_from.lower(): m.term_to
+                    for m in glossary.user_overrides
+                    if m.prompt_enforced
+                }
+            )
+            self._store.put(key, base)  # write-through (base)
             self._emit("u7.translate.ok", 1.0, request)
-            return result
+            view = self._assembler.overlay_translation(base, glossary)
+            return _PayloadResult(self._assembler.filter_kept_terms(view))
         return AbstainDTO(reason="empty_translation")
 
     # --- personal glossary (Q8 / §9.1) ---------------------------------------
     def list_glossary_terms(self, user_id: str) -> list[dict]:
-        """The user's saved personal terms as ``{termFrom, termTo}`` (owner-scoped). Used to
-        pre-fill the badge editor; exposes only the two display fields (no internal flags)."""
+        """The user's saved personal terms as ``{termFrom, termTo, promptEnforced}`` (owner-scoped).
+        Pre-fills the badge editor and lets it distinguish strong (프롬프트 강제) from weak (후치환)
+        terms; ``glossary_ver`` and other internals stay hidden."""
         return [
-            {"termFrom": m.term_from, "termTo": m.term_to}
+            {"termFrom": m.term_from, "termTo": m.term_to, "promptEnforced": m.prompt_enforced}
             for m in self._glossary.list_user_terms(user_id)
         ]
 
-    def upsert_glossary_term(self, user_id: str, term_from: str, term_to: str) -> int:
-        """Persist a personal term override; return the bumped ``glossary_ver`` (Phase 1:
-        simple-noun, applied to translation via post-substitution). The version bump folds
-        into ``build_cache_key``, invalidating the user's cached results so the next request
-        reflects the new term."""
-        return self._glossary.upsert_term(user_id, term_from, term_to)
+    def upsert_glossary_term(
+        self, user_id: str, term_from: str, term_to: str, *, prompt_enforced: bool = False
+    ) -> int:
+        """Persist a personal term override; return the bumped ``glossary_ver``.
+        ``prompt_enforced`` selects strong (프롬프트 강제 → forks the owner-scoped cache) vs weak
+        (후치환 → read-time overlay on the shared base, key unchanged). A strong override may
+        replace a shared seed mapping for that user, taking precedence in the prompt (BR-S4)."""
+        return self._glossary.upsert_term(
+            user_id, term_from, term_to, prompt_enforced=prompt_enforced
+        )
 
     # --- structured doc-model (BR-30, rich-view + summary input) -------------
     def doc_model(self, paper_id: str, version: int) -> DocModelLookup:
@@ -355,14 +430,17 @@ def _has_translated_text(draft, source: DocModel) -> bool:
     return any(o.strip() and o != s for o, s in zip(out, src, strict=False))
 
 
-class _CachedResult:
-    """Thin wrapper so a cache HIT serializes the stored payload (cached=True) directly."""
+class _PayloadResult:
+    """Thin ``SummaryResponse`` over an already-serialized payload dict — used where the response
+    is a stored/overlaid payload rather than a live DTO: a cache HIT (``cached=True``), or a fresh
+    translate whose shared base was cached but whose returned view carries the read-time weak-term
+    overlay (``cached=False``)."""
 
     __slots__ = ("_payload",)
 
-    def __init__(self, payload: dict) -> None:
+    def __init__(self, payload: dict, *, cached: bool = False) -> None:
         self._payload = dict(payload)
-        self._payload["cached"] = True
+        self._payload["cached"] = cached
 
     def to_dict(self) -> dict:
         return self._payload

@@ -19,6 +19,7 @@ The shell owns this file (CODEOWNERS ``/backend/``); module owners change only t
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -28,6 +29,13 @@ from fastapi import FastAPI
 from .config import Settings
 
 log = logging.getLogger("docsuri.backend.wiring")
+
+
+def _personalization_decision_timeout_ms() -> int:
+    try:
+        return max(1, int(os.getenv("PERSONALIZATION_DECISION_TIMEOUT_MS", "75")))
+    except ValueError:
+        return 75
 
 
 class _DirectHistoryPublisher:
@@ -146,7 +154,7 @@ def _mount_discovery(app: FastAPI, settings: Settings, result: MountResult) -> N
     # the real read path: if it is configured but its `real` extra (opensearch-py/boto3) is not
     # installed, the import raises ModuleNotFoundError → skip (no silent mock fallback).
     from discovery.adapters.settings import DiscoverySettings
-    from discovery.api.router import build_router
+    from discovery.api.router import build_router, register_search_unavailable_handler
     from docsuri_ops.grounding import GroundingEnforcementHook
 
     # Read path selection (U2 real adapters, critical path ⑥): when the shared OpenSearch
@@ -205,6 +213,27 @@ def _mount_discovery(app: FastAPI, settings: Settings, result: MountResult) -> N
     grounding_hook = GroundingEnforcementHook()
     app.state.discovery_bundle = bundle
     app.state.grounding_hook = grounding_hook
+
+    # US-P4 (SHADOW): let the orchestrator ask U9 for bounded category boosts. Resolved from
+    # app.state at request time so mount order is irrelevant; missing/failed → no boost (BR-P13).
+    def _personalization_boosts(user_id: str) -> dict[str, float]:
+        provider = getattr(app.state, "personalization_search_boosts", None)
+        if provider is None:
+            return {}
+        try:
+            return provider(user_id)
+        except Exception:  # noqa: BLE001 — personalization is best-effort, never fails search
+            return {}
+
+    bundle.orchestrator._search_boosts = _personalization_boosts
+
+    # Map a store outage to a fail-closed, no-leak 503 (INV-3/SEC-15). The standalone build_app
+    # registers this itself; mounted via build_router here, the app-shell must do it too —
+    # otherwise SearchUnavailable falls through to the generic Exception→500 handler and a
+    # transient outage looks like a bug instead of a retryable 503 (the value the router/
+    # paper_meta docstrings already promise). Reuse discovery's own handler so the SEC-9 message
+    # stays single-sourced (no dev/app-shell drift).
+    register_search_unavailable_handler(app)
 
     # The paper-detail metadata endpoint (GET /api/papers/{id}) is U2-owned (corpus data); both
     # bundles expose a paper_service. getattr keeps this resilient if a bundle predates it.
@@ -477,9 +506,51 @@ def _mount_personalization(app: FastAPI, settings: Settings, result: MountResult
         app.include_router(router)
     result.mounted.append("personalization")
 
+    # US-P4 (SHADOW): expose bounded search boosts for the discovery orchestrator. Gated by the
+    # same flag as the endpoints; a fresh read-port + session per call so the singleton
+    # orchestrator never holds a request-scoped DB session. Errors bubble to discovery's
+    # fail-open wrapper (BR-P13).
+    if os.getenv("PERSONALIZATION_ENABLED", "false").lower() in {"1", "true", "yes", "on"}:
+        from backend.modules.personalization.service import PersonalizationReadPort
+
+        observability = getattr(app.state, "observability", None)
+
+        if _is_postgres(settings.database_url):
+            from sqlalchemy import text
+
+            timeout_ms = _personalization_decision_timeout_ms()
+
+            def _search_boosts(user_id: str) -> dict[str, float]:
+                session = session_factory()
+                try:
+                    session.execute(
+                        text("select set_config('statement_timeout', :timeout, true)"),
+                        {"timeout": f"{timeout_ms}ms"},
+                    )
+                    port = PersonalizationReadPort(
+                        SqlPersonalizationRepository(session), observability=observability
+                    )
+                    return port.cached_search_boosts(user_id)
+                finally:
+                    session.close()
+        else:
+
+            def _search_boosts(user_id: str) -> dict[str, float]:
+                port = PersonalizationReadPort(repo, observability=observability)
+                return port.cached_search_boosts(user_id)
+
+        app.state.personalization_search_boosts = _search_boosts
+
 
 def _mount_novelty(app: FastAPI, settings: Settings, result: MountResult) -> None:
     from backend.modules.novelty import controller as novelty
+    from backend.modules.novelty.adapters import (
+        NoveltyAdapters,
+        U2FullSearchCorpusRetrievalClient,
+        build_external_adapter,
+        build_llm_adapter,
+        build_similarity_adapter,
+    )
     from backend.modules.novelty.repository import (
         InMemoryNoveltyRepository,
         SqlNoveltyRepository,
@@ -510,6 +581,20 @@ def _mount_novelty(app: FastAPI, settings: Settings, result: MountResult) -> Non
             return repo
 
     app.dependency_overrides[novelty.get_repo] = get_novelty_repo
+    discovery_bundle = getattr(app.state, "discovery_bundle", None)
+    grounding_hook = getattr(app.state, "grounding_hook", None)
+    if discovery_bundle is not None and grounding_hook is not None:
+        corpus = U2FullSearchCorpusRetrievalClient(
+            discovery_bundle.orchestrator,
+            grounding_hook,
+        )
+        app.state.novelty_adapters = NoveltyAdapters(
+            corpus=corpus,
+            external=build_external_adapter(),
+            similarity=build_similarity_adapter(corpus),
+            llm=build_llm_adapter(),
+        )
+        log.info("app-shell: novelty wired U2 full-search corpus adapter")
     for router in novelty.routers:
         app.include_router(router)
     result.mounted.append("novelty")

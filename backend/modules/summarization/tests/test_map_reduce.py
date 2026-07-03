@@ -56,7 +56,11 @@ def _refined_with_three_sections() -> RefinedSource:
 def test_fans_out_on_section_boundaries_then_reduces() -> None:
     llm = _RecordingLlm()
     # budget 25 tok (~100 chars); each section ~22 tok → one section per chunk → 3 maps + 1 reduce.
-    mr = MapReduceSummarizer(llm, chunk_budget_tokens=25, overlap_chars=0)
+    # max_workers=1 keeps the map serial so this test can assert the SECTION order of the recorded
+    # bodies deterministically (the parallel-map path is covered by test_parallel.py). Under the
+    # default parallel map, `_RecordingLlm.bodies` would reflect worker-completion order, not
+    # section order — a scheduling-dependent flaky assertion.
+    mr = MapReduceSummarizer(llm, chunk_budget_tokens=25, overlap_chars=0, max_workers=1)
 
     draft = mr.summarize(_refined_with_three_sections(), _REQ, None)
 

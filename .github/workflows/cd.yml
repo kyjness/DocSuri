@@ -1,150 +1,188 @@
-# CD — Build, push to ECR (sha256 digest pin), deploy to ECS Fargate.
-# Triggers on push to main (release merges from develop via git-flow).
-# Three deploy units: ① API monolith (backend) · ② Ingestion worker · ④ Frontend.
+# CD — Build, push to ECR, deploy to ECS Fargate (rolling update).
+# Triggers on push to main (release merges from develop via git-flow) and only proceeds once
+# the CI workflow has gone green for the same commit (see the require-ci gate below).
+# Deploy units: ① API monolith (backend) · ② Ingestion worker · ④ Frontend.
 name: CD
 
 on:
   push:
-    branches: [main]
+    tags: ["v*"] # manual/hotfix path — pushing a v* tag deploys that tagged release
+  workflow_call: {} # auto path — release.yml calls this after auto-tagging a push to main
 
+# Two entry points, both 1:1 with a release:
+#   • push a v* tag directly (hotfix) → OIDC sub = repo:...:ref:refs/tags/v*
+#   • release.yml (on push:main) auto-tags then calls this as a reusable workflow → OIDC sub =
+#     repo:...:ref:refs/heads/main (the caller's branch ref, NOT a tag).
+# The CD role trust (cicd_stack.py) must therefore allow BOTH subs, else the reusable-call path
+# fails at sts:AssumeRoleWithWebIdentity. All deploy jobs use env.CD_ROLE_ARN below.
 permissions:
   contents: read
-  id-token: write  # OIDC for AWS assume-role (no long-lived keys)
+  id-token: write # OIDC for AWS assume-role (no long-lived keys)
+  actions: read # require-ci reads the CI workflow's run status via the API
 
 env:
   AWS_REGION: ap-northeast-2
-  ECR_REGISTRY: ${{ vars.ECR_REGISTRY }}  # e.g. 028317349537.dkr.ecr.ap-northeast-2.amazonaws.com
+  # Non-secret infra identifiers, inlined so CD needs no GitHub org/repo variables (setting org
+  # vars requires admin:org, which we don't have). The account id is already public in
+  # ops/cdk/app.py, and the CD role is assumable ONLY via OIDC from this repo on a v* tag — knowing
+  # the ARN grants nothing. Change these here if the account/region/role ever moves.
+  ECR_REGISTRY: 028317349537.dkr.ecr.ap-northeast-2.amazonaws.com
+  CD_ROLE_ARN: arn:aws:iam::028317349537:role/docsuri-github-actions-cd
+  IMAGE_SHA: ${{ github.sha }}
+
+# Serialize ALL prod deploys (fixed group, never cancel an in-flight rollout) so two releases
+# tagged in quick succession can't race each other's ECS deployments. (audit Low #8)
+concurrency:
+  group: cd-production
+  cancel-in-progress: false
 
 jobs:
+  require-ci:
+    name: Require CI green for this commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # Gate: require CI green for THIS commit before deploying. The tagged commit was already
+      # built on its push to main/develop, so this usually finds a completed CI run immediately; it
+      # still polls (and fails closed on non-success/timeout) in case the tag was pushed with
+      # --follow-tags before that run finished. Uses the preinstalled gh CLI. (audit High #3)
+      - name: Wait for CI to succeed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          for i in $(seq 1 80); do
+            state=$(gh api \
+              "repos/${{ github.repository }}/actions/runs?head_sha=${{ github.sha }}&per_page=100" \
+              --jq '[.workflow_runs[] | select(.name=="CI")] | sort_by(.created_at)
+                    | (last // {}) | ((.status // "queued") + ":" + (.conclusion // "null"))' \
+              2>/dev/null || echo "api-error:none")
+            echo "attempt $i — CI: $state"
+            case "$state" in
+              completed:success) echo "✅ CI passed — proceeding to deploy."; exit 0 ;;
+              completed:*) echo "❌ CI concluded '$state' — refusing to deploy."; exit 1 ;;
+            esac
+            sleep 20
+          done
+          echo "⏱️ Timed out waiting for CI to finish — refusing to deploy."; exit 1
+
   build-push-api:
     name: Build & push — deploy unit ① (API)
+    needs: require-ci
     runs-on: ubuntu-latest
-    outputs:
-      image: ${{ steps.push.outputs.image }}
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
         with:
-          role-to-assume: ${{ vars.CD_ROLE_ARN }}
+          role-to-assume: ${{ env.CD_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-      - uses: aws-actions/amazon-ecr-login@v2
-        id: ecr
+      - uses: aws-actions/amazon-ecr-login@d539f0932e70871a027e9d5a9d8fc38589180a64 # v2
       - name: Build and push
-        id: push
         run: |
-          IMAGE="${{ env.ECR_REGISTRY }}/docsuri-api:${{ github.sha }}"
-          docker build -f backend/Dockerfile -t "$IMAGE" .
-          docker push "$IMAGE"
-          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE")
-          echo "image=$DIGEST" >> "$GITHUB_OUTPUT"
+          REPO="$ECR_REGISTRY/docsuri-api"
+          # Tag BOTH the immutable SHA (audit/rollback trail) and :latest. The ECS task definition
+          # resolves tag="latest" (compute_stack.py), so pushing :latest is what makes the
+          # force-new-deployment below actually roll out THIS build — without it the freshly built
+          # image was orphaned in ECR and the deploy re-pulled the old :latest. (audit High #1)
+          docker build -f backend/Dockerfile -t "$REPO:$IMAGE_SHA" -t "$REPO:latest" .
+          docker push "$REPO:$IMAGE_SHA"
+          docker push "$REPO:latest"
+          docker inspect --format='pushed {{index .RepoDigests 0}}' "$REPO:$IMAGE_SHA"
 
   build-push-ingestion:
     name: Build & push — deploy unit ② (Ingestion)
+    needs: require-ci
     runs-on: ubuntu-latest
-    outputs:
-      image: ${{ steps.push.outputs.image }}
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
         with:
-          role-to-assume: ${{ vars.CD_ROLE_ARN }}
+          role-to-assume: ${{ env.CD_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-      - uses: aws-actions/amazon-ecr-login@v2
-        id: ecr
+      - uses: aws-actions/amazon-ecr-login@d539f0932e70871a027e9d5a9d8fc38589180a64 # v2
       - name: Build and push
-        id: push
         run: |
-          IMAGE="${{ env.ECR_REGISTRY }}/docsuri-ingestion:${{ github.sha }}"
-          docker build -f ingestion/Dockerfile -t "$IMAGE" .
-          docker push "$IMAGE"
-          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE")
-          echo "image=$DIGEST" >> "$GITHUB_OUTPUT"
+          REPO="$ECR_REGISTRY/docsuri-ingestion"
+          docker build -f ingestion/Dockerfile -t "$REPO:$IMAGE_SHA" -t "$REPO:latest" .
+          docker push "$REPO:$IMAGE_SHA"
+          docker push "$REPO:latest"
+          docker inspect --format='pushed {{index .RepoDigests 0}}' "$REPO:$IMAGE_SHA"
 
   build-push-frontend:
     name: Build & push — deploy unit ④ (Frontend)
+    needs: require-ci
     runs-on: ubuntu-latest
-    outputs:
-      image: ${{ steps.push.outputs.image }}
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
         with:
-          role-to-assume: ${{ vars.CD_ROLE_ARN }}
+          role-to-assume: ${{ env.CD_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-      - uses: aws-actions/amazon-ecr-login@v2
-        id: ecr
+      - uses: aws-actions/amazon-ecr-login@d539f0932e70871a027e9d5a9d8fc38589180a64 # v2
       - name: Build and push
-        id: push
         run: |
-          IMAGE="${{ env.ECR_REGISTRY }}/docsuri-frontend:${{ github.sha }}"
-          docker build -f frontend/Dockerfile -t "$IMAGE" frontend/
-          docker push "$IMAGE"
-          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE")
-          echo "image=$DIGEST" >> "$GITHUB_OUTPUT"
+          REPO="$ECR_REGISTRY/docsuri-frontend"
+          docker build -f frontend/Dockerfile -t "$REPO:$IMAGE_SHA" -t "$REPO:latest" frontend/
+          docker push "$REPO:$IMAGE_SHA"
+          docker push "$REPO:latest"
+          docker inspect --format='pushed {{index .RepoDigests 0}}' "$REPO:$IMAGE_SHA"
 
   deploy:
     name: Deploy to ECS (rolling update)
     needs: [build-push-api, build-push-ingestion, build-push-frontend]
     runs-on: ubuntu-latest
+    # ponytail: deliberately NO `environment: production`. Binding a job to a GitHub Environment
+    # rewrites the OIDC token sub to `repo:80-hours-a-week/DocSuri:environment:production`, which
+    # the CD role trust policy (scoped to `...:ref:refs/tags/v*`) rejects → the deploy job fails at
+    # sts:AssumeRoleWithWebIdentity while the build-push jobs (tag-ref sub) succeed. Re-add ONLY
+    # after the role trust policy is widened to also allow the environment sub. (was audit Med #7)
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
         with:
-          role-to-assume: ${{ vars.CD_ROLE_ARN }}
+          role-to-assume: ${{ env.CD_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
+      # force-new-deployment restarts each service; because the task definitions reference
+      # :latest and we just pushed a new :latest, the new tasks pull THIS build's image.
       - name: Deploy API service (deploy unit ①)
         run: |
-          aws ecs update-service \
-            --cluster docsuri \
-            --service docsuri-api \
-            --force-new-deployment \
-            --task-definition "$(
-              aws ecs describe-task-definition --task-definition docsuri-api \
-                --query 'taskDefinition.taskDefinitionArn' --output text
-            )" \
-            --no-cli-pager
+          aws ecs update-service --cluster docsuri --service docsuri-api \
+            --force-new-deployment --no-cli-pager
           echo "API service deployment initiated."
 
       - name: Deploy Ingestion worker (deploy unit ②)
         run: |
-          aws ecs update-service \
-            --cluster docsuri \
-            --service docsuri-ingestion \
-            --force-new-deployment \
-            --task-definition "$(
-              aws ecs describe-task-definition --task-definition docsuri-ingestion \
-                --query 'taskDefinition.taskDefinitionArn' --output text
-            )" \
-            --no-cli-pager
+          aws ecs update-service --cluster docsuri --service docsuri-ingestion \
+            --force-new-deployment --no-cli-pager
           echo "Ingestion worker deployment initiated."
+
+      - name: Deploy Novelty worker
+        run: |
+          aws ecs update-service --cluster docsuri --service docsuri-novelty-agent-worker \
+            --force-new-deployment --no-cli-pager
+          echo "Novelty worker deployment initiated."
 
       - name: Deploy Frontend (deploy unit ④)
         run: |
-          aws ecs update-service \
-            --cluster docsuri \
-            --service docsuri-frontend \
-            --force-new-deployment \
-            --task-definition "$(
-              aws ecs describe-task-definition --task-definition docsuri-frontend \
-                --query 'taskDefinition.taskDefinitionArn' --output text
-            )" \
-            --no-cli-pager
+          aws ecs update-service --cluster docsuri-frontend --service docsuri-frontend \
+            --force-new-deployment --no-cli-pager
           echo "Frontend deployment initiated."
 
-      - name: Wait for API service stability
+      - name: Wait for services to stabilize
         run: |
-          aws ecs wait services-stable \
-            --cluster docsuri \
-            --services docsuri-api \
-            --no-cli-pager
-          echo "✅ API service stable."
+          aws ecs wait services-stable --cluster docsuri \
+            --services docsuri-api docsuri-ingestion docsuri-novelty-agent-worker --no-cli-pager
+          aws ecs wait services-stable --cluster docsuri-frontend \
+            --services docsuri-frontend --no-cli-pager
+          echo "✅ API, ingestion, novelty worker and frontend services stable."
 
       - name: Rollback on failure
         if: failure()
         run: |
-          echo "⚠️ Deployment failed — initiating rollback to previous task definition."
-          # ECS circuit-breaker with deployment rollback handles this automatically when
-          # configured (DEPLOYMENT_CIRCUIT_BREAKER enable + rollback). This step is a
-          # safeguard log; actual rollback is infra-configured, not workflow-driven.
-          echo "Check ECS console for circuit-breaker status."
+          echo "⚠️ Deployment failed — the ECS deployment circuit breaker (rollback=true, set in"
+          echo "   compute_stack.py) reverts each service to its last-stable task set automatically."
+          echo "   Check the ECS console for circuit-breaker status."

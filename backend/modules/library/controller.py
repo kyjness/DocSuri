@@ -20,6 +20,7 @@ from .audit import InMemoryAuditSink
 from .gateway import StubSearchGateway
 from .models import (
     DomainException,
+    GatewayUnavailableError,
     NotFoundError,
     QuotaExceededError,
     ValidationException,
@@ -96,6 +97,8 @@ def _to_http(exc: DomainException) -> HTTPException:
         return HTTPException(status_code=422, detail=str(exc))
     if isinstance(exc, QuotaExceededError):
         return HTTPException(status_code=409, detail=str(exc))
+    if isinstance(exc, GatewayUnavailableError):
+        return HTTPException(status_code=503, detail="search temporarily unavailable")
     if isinstance(exc, NotFoundError):
         return HTTPException(status_code=404, detail="not found")
     # AuthorizationError + any other domain error → generalized 404 (SEC-9, fail-closed)

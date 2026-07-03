@@ -10,6 +10,7 @@ Stacks are split by lifecycle/blast-radius so a network change doesn't redeploy 
 
 import aws_cdk as cdk
 from stacks.access_stack import AccessStack
+from stacks.cicd_stack import CicdStack
 from stacks.compute_stack import ComputeStack
 from stacks.frontend_stack import FrontendStack
 from stacks.ingestion_stack import IngestionStack
@@ -21,13 +22,6 @@ from stacks.summarization_stack import SummarizationStack
 app = cdk.App()
 
 env = cdk.Environment(account="028317349537", region="ap-northeast-2")
-
-
-def _required_context(name: str) -> str:
-    value = app.node.try_get_context(name)
-    if value is None or str(value).strip() == "":
-        raise ValueError(f"Missing CDK context value: {name}")
-    return str(value)
 
 
 network = NetworkStack(app, "Docsuri-Network", env=env)
@@ -56,10 +50,9 @@ summarization = SummarizationStack(
 novelty = NoveltyStack(
     app, "Docsuri-Novelty",
     vpc=network.vpc,
-    db_endpoint=_required_context("novelty_db_endpoint"),
-    db_port=int(_required_context("novelty_db_port")),
-    db_security_group_id=_required_context("novelty_db_security_group_id"),
-    db_secret_arn=_required_context("novelty_db_secret_arn"),
+    db=compute.db,
+    queue=compute.novelty_queue,
+    opensearch_domain=search.domain,
     env=env,
 )
 # Deploy unit ④ — U5 frontend. The BFF (server-side) calls the backend gateway over its
@@ -75,5 +68,9 @@ frontend = FrontendStack(
 # 부여/회수 = 목록 수정 + PR + cdk deploy Docsuri-Access.
 TEAM_ACCOUNT_IDS = ["997784789037", "416963226971", "143495498927"]
 AccessStack(app, "Docsuri-Access", account_ids=TEAM_ACCOUNT_IDS, env=env)
+
+# GitHub Actions OIDC 프로바이더 + CD 역할(cd.yml 태그 트리거 배포).
+# 감사에서 부재 확인 → IaC로 신설.
+CicdStack(app, "Docsuri-CICD", env=env)
 
 app.synth()

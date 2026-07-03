@@ -9,7 +9,7 @@ import threading
 from collections.abc import Callable, Iterable
 from typing import Any
 
-from .adapters import NoveltyAdapters, RetrievalBundle
+from .adapters import NoveltyAdapters, RetrievalBundle, build_default_novelty_adapters
 from .models import TERMINAL_STATES, ArtifactKind, EvidenceStatus, InputType, JobState
 from .repository import NoveltyRepository
 from .service import NoveltyService
@@ -105,7 +105,11 @@ def process_job(
 ) -> None:
     adapters = adapters or NoveltyAdapters()
     service = NoveltyService(repo, observability)
-    job = repo.get_job(owner_id, job_id)
+    try:
+        job = repo.get_job(owner_id, job_id)
+    except KeyError:
+        log.warning("novelty job not found; dropping stale message", extra={"jobId": job_id})
+        return
     if job.cancelled or job.state in TERMINAL_STATES:
         return
     try:
@@ -142,6 +146,10 @@ def process_job(
             external_payload,
         )
 
+        draft = adapters.llm.draft(topic=job.topic, corpus=corpus, external=external)
+        if draft.degradedReason:
+            degraded_reasons.append(draft.degradedReason)
+
         service.advance_state(
             owner_id,
             job_id,
@@ -153,11 +161,7 @@ def process_job(
             job_id,
             ArtifactKind.SIMILAR_WORKS,
             "Similar completed work",
-            {
-                "items": [],
-                "evidenceStatus": EvidenceStatus.ABSTAINED.value,
-                "sourceRefs": [],
-            },
+            draft.similarWorks,
         )
 
         if job.inputType is InputType.MANUSCRIPT and job.manuscript is not None:
@@ -167,7 +171,8 @@ def process_job(
                 JobState.CHECKING_SIMILARITY,
                 "Checking sentence similarity and AI-style risks",
             )
-            similarity = adapters.similarity.check(owner_id, job.manuscript.model_dump())
+            similarity_ref = {**job.manuscript.model_dump(), "jobId": job_id}
+            similarity = adapters.similarity.check(owner_id, similarity_ref)
             similarity_payload, degraded_reason = _payload_from_bundle(similarity)
             if degraded_reason:
                 degraded_reasons.append(degraded_reason)
@@ -190,15 +195,7 @@ def process_job(
             job_id,
             ArtifactKind.NOVELTY_CANDIDATES,
             "Novelty candidates",
-            {
-                "items": [
-                    {
-                        "title": "Add an evidence-backed differentiator after corpus retrieval",
-                        "evidenceStatus": EvidenceStatus.ABSTAINED.value,
-                        "sourceRefs": [],
-                    }
-                ]
-            },
+            draft.noveltyCandidates,
         )
 
         service.advance_state(
@@ -212,17 +209,7 @@ def process_job(
             job_id,
             ArtifactKind.EXPERIMENT_PLAN,
             "Experiment plan",
-            {
-                "researchQuestion": job.topic,
-                "hypotheses": ["A differentiator grounded in retrieved evidence improves novelty."],
-                "datasets": ["To be selected from dataset search results."],
-                "metrics": [
-                    "Novelty score",
-                    "baseline delta",
-                    "reproducibility checklist pass rate",
-                ],
-                "risks": ["Weak evidence", "dataset mismatch", "unapproved Notion export"],
-            },
+            draft.experimentPlan,
         )
         if degraded_reasons:
             service.advance_state(
@@ -309,6 +296,7 @@ def main(argv: list[str] | None = None) -> int:
         "sqs",
         region_name=os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION", "ap-northeast-2"),
     )
+    observability, cost_guard, telemetry_store = _build_worker_ops()
 
     def receive() -> list[_Message]:
         resp = sqs.receive_message(
@@ -326,14 +314,35 @@ def main(argv: list[str] | None = None) -> int:
             sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=message.receipt_handle)
 
     log.info("novelty worker started; polling queue")
-    run_worker(
-        repo_factory=repo_factory,
-        receive=receive,
-        ack=ack,
-        should_stop=_shutdown.is_set,
-    )
+    try:
+        run_worker(
+            repo_factory=repo_factory,
+            receive=receive,
+            ack=ack,
+            should_stop=_shutdown.is_set,
+            adapters=build_default_novelty_adapters(
+                observability=observability,
+                cost_guard=cost_guard,
+            ),
+            observability=observability,
+        )
+    finally:
+        close = getattr(telemetry_store, "close", None)
+        if close is not None:
+            close()
     log.info("novelty worker shut down gracefully")
     return 0
+
+
+def _build_worker_ops() -> tuple[Any, Any, Any]:
+    try:
+        from backend.app import _build_observability, _build_ops_dashboard_service
+    except ImportError:
+        return None, None, None
+
+    observability, telemetry_store = _build_observability()
+    _, cost_guard, _, _ = _build_ops_dashboard_service(telemetry_store)
+    return observability, cost_guard, telemetry_store
 
 
 if __name__ == "__main__":

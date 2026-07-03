@@ -41,9 +41,20 @@ class RdsS3AssetReader:
 
     def _client(self) -> Any:
         if self._s3 is None:
+            import os
+
             import boto3  # lazy
 
-            self._s3 = boto3.client("s3")
+            # Presign against the REGIONAL S3 endpoint. boto3's default virtual-hosted host is the
+            # global ``bucket.s3.amazonaws.com``, which (a) does not match the frontend CSP img-src
+            # (scoped to ``s3.<region>.amazonaws.com``) and (b) is region-inconsistent for a bucket
+            # outside us-east-1 → the browser's <img> GET fails and figures render as broken icons.
+            # A regional endpoint URL yields ``s3.<region>.amazonaws.com/<bucket>/…`` which the CSP
+            # allows and S3 serves directly.
+            region = os.getenv("AWS_REGION") or os.getenv("DOCSURI_AWS_REGION") or "ap-northeast-2"
+            self._s3 = boto3.client(
+                "s3", region_name=region, endpoint_url=f"https://s3.{region}.amazonaws.com"
+            )
         return self._s3
 
     def list_assets(self, paper_id: str, version: int) -> Sequence[StoredAsset]:

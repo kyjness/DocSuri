@@ -63,9 +63,9 @@ def normalize_arxiv_id(arxiv_id: str) -> str:
     return unicodedata.normalize("NFC", arxiv_id).strip()
 
 
-def dedupe_key(owner_id: str, executed_at: datetime, query: str) -> str:
+def dedupe_key(owner_id: str, request_id: str, query: str) -> str:
     """Deterministic exactly-once key for at-least-once history delivery (BR-L7/INV-L3)."""
-    basis = f"{owner_id}|{executed_at.isoformat()}|{query}"
+    basis = f"{owner_id}|{request_id}|{query}"
     return hashlib.sha256(basis.encode("utf-8")).hexdigest()
 
 
@@ -215,4 +215,3 @@ class UserDataDTOAndValidation:
             )
         else:
             raise ValidationException("Unsupported DTO type")
-

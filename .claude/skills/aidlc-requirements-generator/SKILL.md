@@ -18,7 +18,7 @@ Point the skill at source material: Figma frames/exports, PDFs, slide decks, per
 ## ID scheme (matches existing DocSuri convention)
 
 - `FR-{n}` — functional requirement (sequential: FR-1, FR-2, …)
-- `NFR-{cat}{n}` — non-functional, grouped by category letter already in use (e.g. `NFR-A1` availability, `NFR-C1` capacity, `NFR-FA` …). Reuse an existing category before minting a new one — check `aidlc-docs/inception/requirements/requirements.md` first.
+- `NFR-{cat}{n}` — non-functional, grouped by category letter already in use (e.g. `NFR-A1` availability, `NFR-C1` capacity, `NFR-P1` performance …). Reuse an existing category before minting a new one — check `aidlc-docs/inception/requirements/requirements.md` first.
 - `C-{n}` — constraint (single flat series; continue the `C-1…` sequence already in `requirements.md` §9). Record the kind — technical / business / legal-compliance — in the **Kind** column, not in the ID. Do **not** introduce `TC-`/`BC-`/`LC-` prefixes: there is no such convention here, and `LC-` is already taken (it means "Logical Component" in `aidlc-docs/construction/u5-frontend/nfr-design/`).
 
 Each requirement is one row: **ID · statement · source ref · (FR only) acceptance criterion**. Trace every item back to the document it came from.
@@ -32,7 +32,7 @@ Structure:
 ```
 ## Functional Requirements
 | ID | Requirement | Source | Acceptance |
-| FR-19 | ... | personas.md §2 | ... |
+| FR-40 | ... | personas.md §2 | ... |
 
 ## Non-Functional Requirements
 | ID | Requirement | Source |

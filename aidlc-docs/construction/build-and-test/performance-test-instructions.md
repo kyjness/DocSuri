@@ -10,6 +10,42 @@
 
 ---
 
+# Production API/Frontend Load Test — 2026-07-02
+
+Use the checked-in k6 script for the public frontend and API gateway:
+
+```bash
+brew install k6
+DOCSURI_APP_URL=https://docsuri.org \
+DOCSURI_API_URL=https://d2bsni6xhpvbw1.cloudfront.net \
+DOCSURI_VUS=20 \
+DOCSURI_HOLD=2m \
+k6 run tests/performance/api_frontend_load_test.js
+```
+
+Default thresholds:
+
+| Target | Threshold |
+|---|---|
+| Frontend `/` | p95 < 1000 ms |
+| API `/readyz` | p95 < 500 ms |
+| API `/api/search` sampled at 20% | p95 < 3000 ms |
+| Overall error rate | < 1% |
+
+Set `DOCSURI_SKIP_SEARCH=1` for a frontend/readiness-only smoke run. If p95 breaks, inspect the matching ALB p95 alarm and ECS CPU/memory metrics, then tune `ops/cdk/stacks/compute_stack.py` or `ops/cdk/stacks/frontend_stack.py` task size/max capacity and rerun the same script.
+
+Live smoke result before deploying this hardening change:
+
+| Target | Requests / concurrency | p95 | Status |
+|---|---:|---:|---|
+| Frontend `/` | 40 / 8 | 394.7 ms | 40× 200 |
+| API `/readyz` | 80 / 10 | 455.3 ms | 80× 200 |
+| API `/api/search` | 12 / 3 | 9061.0 ms | 12× 200 |
+
+Because API search p95 broke the 3000 ms threshold, the API service is raised to 1 vCPU / 2 GB, min 2, max 6 in `ops/cdk/stacks/compute_stack.py`. Re-run the k6 script after deployment; if search p95 remains high with low API CPU, investigate OpenSearch query latency and index/cache behavior before adding more API replicas.
+
+---
+
 # U11 Novelty Agent Performance Test Instructions — 2026-06-30
 
 No standalone load test was executed for U11 in this local Build & Test pass.
@@ -57,7 +93,7 @@ U3 Accounts 모듈의 핵심 비기능적 요구사항(NFR)인 **세션 검증 �
 ### 2.1. U1 Ingestion — Applicable Requirements
 
 - Corpus slice: `cs.LG`, `cs.AI`, `cs.CL`, `cs.CV`, `stat.ML` over five years.
-- Writer role: Cohere Embed Multilingual v3 `search_document`, 1024 dimensions.
+- Writer role: Cohere Embed Multilingual v4 `search_document`, 1024 dimensions.
 - Rate control: arXiv token bucket.
 - Retry policy: maximum five attempts, base one second, exponential factor two, jitter.
 - Atomicity: no `mark_ingested` unless all chunks are written and verified.
@@ -235,5 +271,29 @@ Acceptance:
 
 - U9 decision read does not dominate U2/U7 latency.
 - U9 failure produces degraded/default behavior, not primary feature failure.
+
+---
+
+# Agent Chat Frontend Performance Test Instructions — 2026-07-01
+
+No standalone load test was executed for Agent Chat Frontend in this local Build & Test pass.
+
+Observed build budget:
+
+- `/agent` route size: `6.18 kB`.
+- `/agent` first-load JS: `131 kB`.
+
+Suggested staging validation:
+
+```powershell
+corepack pnpm@9.15.9 --dir frontend build
+corepack pnpm@9.15.9 --dir frontend exec -- playwright test e2e/agent-chat.spec.ts --reporter=line
+```
+
+Acceptance:
+
+- `/agent` remains within the same first-load JS class as adjacent authenticated screens.
+- Chat message send keeps visible loading/progress state during adapter latency.
+- Attachment chips remain compact and do not push the composer off-screen on mobile.
 
 ---

@@ -135,3 +135,18 @@ def test_exposed_arxiv_ids_must_be_subset_of_retrieved_ids(ids: list[int]) -> No
     candidate = {"cards": [{"arxivId": arxiv_id} for arxiv_id in arxiv_ids]}
 
     assert hook.enforce(candidate, records).verdict == "pass"
+
+
+def test_grounding_blocks_id_less_card_shown_alongside_grounded_ones() -> None:
+    # Finding 4: a card exposing content but NO arxivId/paperId/url, shown next to a grounded
+    # card, can't be provenance-checked — it must fail closed (block), not slip through as pass.
+    hook = GroundingEnforcementHook()
+    record = make_record("2401.00001")
+
+    decision = hook.enforce(
+        {"cards": [{"arxivId": "2401.00001v1"}, {"title": "no id here"}]},
+        [record],
+    )
+
+    assert decision.verdict == "block"
+    assert any(v.code == "missing_reference" for v in decision.violations)

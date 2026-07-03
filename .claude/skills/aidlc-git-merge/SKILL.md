@@ -1,6 +1,6 @@
 ---
 name: aidlc-git-merge
-description: Resolve merge conflicts that arise from parallel unit development in DocSuri. Auto-merges AI-DLC state files (aidlc-docs/aidlc-state.md and aidlc-docs/audit.md) by combining each unit's progress records; classifies code conflicts as additive / overlapping / dependency-changing across units u1-ingestion … u8-citation-graph and proposes a resolution for each. Use when a git merge or rebase across unit branches conflicts.
+description: Resolve merge conflicts that arise from parallel unit development in DocSuri. Auto-merges AI-DLC state files (aidlc-docs/aidlc-state.md and aidlc-docs/audit.md) by combining each unit's progress records; classifies code conflicts as additive / overlapping / dependency-changing across units u1-ingestion … u9-personalization and proposes a resolution for each. Use when a git merge or rebase across unit branches conflicts.
 ---
 
 # AI-DLC Git Merge
@@ -9,7 +9,7 @@ Resolve conflicts from concurrent unit work. Two conflict classes, handled diffe
 
 ## 1. AI-DLC state files → auto-merge
 
-`aidlc-docs/aidlc-state.md` and `aidlc-docs/audit.md` are append-style progress logs. When both sides changed them, **do not pick a side** — union them: keep every unit's progress/audit entries from both branches, ordered by unit id (u1…u8) then timestamp. These files almost never have a *true* conflict; the conflict is just two units appending. Resolve automatically and report what was combined.
+`aidlc-docs/aidlc-state.md` and `aidlc-docs/audit.md` are append-style progress logs. When both sides changed them, **do not pick a side** — union them: keep every unit's progress/audit entries from both branches, ordered by unit id (u1…u9) then timestamp. These files almost never have a *true* conflict; the conflict is just two units appending. Resolve automatically and report what was combined.
 
 ## 2. Code files → classify, then resolve
 

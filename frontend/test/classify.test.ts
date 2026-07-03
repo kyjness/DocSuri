@@ -23,6 +23,22 @@ describe('classifySearchResponse', () => {
     expect(out.kind).toBe('degraded');
   });
 
+  it('classifies a page-shaped body as degraded via meta.degraded even with no top-level mode (E5, BR-U5-8/12)', () => {
+    // Same shape as pageResponse (cards + meta, no `mode` key), but meta signals degraded —
+    // the old code only looked at the top-level `mode` key, so this used to fall through to
+    // 'page' and silently hide the degradation from the UI.
+    const out = classifySearchResponse({
+      cards: pageResponse.cards,
+      meta: { resultCount: pageResponse.cards.length, degraded: true },
+    });
+    expect(out.kind).toBe('degraded');
+  });
+
+  it('still classifies an empty degraded body as empty, not degraded (ordering)', () => {
+    const out = classifySearchResponse({ cards: [], meta: { resultCount: 0, degraded: true } });
+    expect(out.kind).toBe('empty');
+  });
+
   it('classifies a validation error', () => {
     expect(classifySearchResponse(validationErrorResponse).kind).toBe('invalid');
   });

@@ -29,8 +29,9 @@ export function HeroLanding() {
       {/* eslint-disable-next-line @next/next/no-img-element -- small static brand asset (8KB); next/image not configured */}
       <img src="/logo.png" alt="" className={styles.logo} width={120} height={120} />
       <h1 className={styles.title}>DocSuri</h1>
+      <p className={styles.tagline}>논문을 독수리처럼 날카롭게 포착하다</p>
       <p className={styles.subtitle}>
-        질문을 입력하면 근거 있는 논문을 찾아드려요.
+        쏟아지는 AI·머신러닝 논문들에서 근거 있는 핵심만 받아보세요.
       </p>
 
       {status === 'anonymous' ? (

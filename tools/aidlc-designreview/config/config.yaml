@@ -51,7 +51,7 @@ aws:
 
   # Amazon Bedrock Guardrails (OPTIONAL - recommended for production)
   # Provides content filtering, PII redaction, and safety controls
-  # See docs/ai-security/BEDROCK_GUARDRAILS.md for setup instructions
+  # See Amazon Bedrock Guardrails documentation for setup instructions
   # guardrail_id: abc123xyz          # Your guardrail ID from AWS
   # guardrail_version: "1"            # Guardrail version (or "DRAFT")
 
@@ -61,7 +61,7 @@ aws:
 models:
   # Model used by all agents unless overridden below
   # Supported: claude-opus-4-6 | claude-sonnet-4-6 | claude-haiku-4-5
-  model: claude-sonnet-4-6
+  default_model: claude-sonnet-4-6
 
   # Per-agent overrides (optional — falls back to default_model)
   # critique_model: claude-opus-4-6       # more capable model for critique

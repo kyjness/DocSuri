@@ -11,6 +11,11 @@ pydantic>=2.7,<3
 argon2-cffi>=23.0
 httpx>=0.27
 pyotp>=2.9
+# cryptography → ORCID JWKS RS256 verify (integrations/oidc.py) + Fernet TOTP-secret
+# encryption (services/totp.py). Imported at accounts-controller load; absent → the whole
+# accounts module fails to mount and every /auth/* route 404s. Was silently satisfied
+# transitively until a rebuild dropped it. Keep it explicit here (was only in pyproject).
+cryptography>=42
 # boto3 → SES (account verification email) + the CloudWatch observability adapter. Without it
 # SESEmailClient/CloudWatchEventStore hit "No module named 'boto3'" and soft-fall-back.
 boto3>=1.34

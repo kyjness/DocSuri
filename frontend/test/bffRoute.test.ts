@@ -34,6 +34,7 @@ import { DELETE, PATCH } from '@/app/bff/[...path]/route';
 describe('BFF proxy (app/bff/[...path]/route)', () => {
   beforeEach(() => {
     delete process.env.DOCSURI_GATEWAY_URL; // unset → MockTransport (the stub above)
+    delete process.env.DOCSURI_BFF_ALLOW_MOCK;
   });
 
   it('relays an upstream 204 as a body-less 204 (not a 500)', async () => {
@@ -56,5 +57,23 @@ describe('BFF proxy (app/bff/[...path]/route)', () => {
 
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toMatchObject({ enabled: false });
+  });
+
+  it('fails closed in production when the gateway URL is missing', async () => {
+    const previous = process.env.NODE_ENV;
+    vi.stubEnv('NODE_ENV', 'production');
+    try {
+      const req = new NextRequest('http://localhost/bff/library/items/x', { method: 'DELETE' });
+      const res = await DELETE(req, {
+        params: Promise.resolve({ path: ['library', 'items', 'x'] }),
+      });
+
+      expect(res.status).toBe(503);
+      await expect(res.json()).resolves.toMatchObject({
+        message: '일시적인 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.',
+      });
+    } finally {
+      vi.stubEnv('NODE_ENV', previous);
+    }
   });
 });

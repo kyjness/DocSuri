@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from docsuri_shared.events import PaperRetractedEvent
+
 from backend.modules.accounts.models import Action, Principal
 
 from ..audit import make_event
@@ -37,9 +39,7 @@ class LibraryService:
 
         # BR-L4: per-owner quota.
         if repo.count(owner) >= MAX_LIBRARY_PER_OWNER:
-            raise QuotaExceededError(
-                f"library limit of {MAX_LIBRARY_PER_OWNER} reached"
-            )
+            raise QuotaExceededError(f"library limit of {MAX_LIBRARY_PER_OWNER} reached")
 
         repo.insert(entity)
         self._audit.record(make_event("library.add", "library_item", entity.id, owner))
@@ -63,6 +63,7 @@ class LibraryService:
             raise NotFoundError("library item not found")  # SEC-9 generalized
         authorize_owned(principal, Action.DELETE, entity.owner_id)  # SEC-8 single authority
         self._repo.library.delete(principal.user_id, item_id)
-        self._audit.record(
-            make_event("library.remove", "library_item", item_id, principal.user_id)
-        )
+        self._audit.record(make_event("library.remove", "library_item", item_id, principal.user_id))
+
+    def mark_retracted(self, event: PaperRetractedEvent) -> int:
+        return self._repo.library.mark_retracted(event.paperId)

@@ -81,6 +81,10 @@ class ClassifiedIncidentRecord:
     reason: str
     timestamp: datetime = field(default_factory=utc_now)
 
+    @property
+    def dedup_key(self) -> str:
+        return f"{self.incident_class.value}:{self.request_id}:{self.reason}"
+
 
 @dataclass(frozen=True, slots=True)
 class AlertRecord:

@@ -4,14 +4,14 @@ Code/synth only; deploy remains a team-controlled operation. The unit is activat
 deployment configuration, not by a later manual toggle: NOVELTY_AGENT_ENABLED is always true.
 """
 
-from aws_cdk import Duration, Stack
+from aws_cdk import Stack
 from aws_cdk import aws_applicationautoscaling as appscaling
-from aws_cdk import aws_cloudwatch as cloudwatch
 from aws_cdk import aws_ec2 as ec2
 from aws_cdk import aws_ecr as ecr
 from aws_cdk import aws_ecs as ecs
 from aws_cdk import aws_iam as iam
-from aws_cdk import aws_secretsmanager as secretsmanager
+from aws_cdk import aws_opensearchservice as opensearch
+from aws_cdk import aws_rds as rds
 from aws_cdk import aws_sqs as sqs
 from constructs import Construct
 
@@ -23,33 +23,16 @@ class NoveltyStack(Stack):
         construct_id: str,
         *,
         vpc: ec2.IVpc,
-        db_endpoint: str,
-        db_port: int,
-        db_security_group_id: str,
-        db_secret_arn: str,
+        db: rds.DatabaseInstance,
+        queue: sqs.IQueue,
+        opensearch_domain: opensearch.IDomain,
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
         account = Stack.of(self).account
         artifact_bucket_arn = f"arn:aws:s3:::docsuri-papers-fulltext-{account}"
-
-        dlq = sqs.Queue(
-            self,
-            "NoveltyJobDlq",
-            queue_name="docsuri-novelty-agent-job-dlq",
-            retention_period=Duration.days(14),
-            encryption=sqs.QueueEncryption.SQS_MANAGED,
-        )
-        self.queue = sqs.Queue(
-            self,
-            "NoveltyJobQueue",
-            queue_name="docsuri-novelty-agent-job-queue",
-            visibility_timeout=Duration.seconds(900),
-            retention_period=Duration.days(14),
-            encryption=sqs.QueueEncryption.SQS_MANAGED,
-            dead_letter_queue=sqs.DeadLetterQueue(max_receive_count=3, queue=dlq),
-        )
+        self.queue = queue
 
         repo = ecr.Repository.from_repository_name(self, "ApiRepo", "docsuri-api")
         cluster = ecs.Cluster.from_cluster_attributes(
@@ -62,14 +45,10 @@ class NoveltyStack(Stack):
         task_def = ecs.FargateTaskDefinition(self, "WorkerTaskDef", cpu=512, memory_limit_mib=1024)
 
         database_url = (
-            f"postgresql://docsuri_admin@{db_endpoint}:"
-            f"{db_port}/docsuri"
+            f"postgresql://docsuri_admin@{db.db_instance_endpoint_address}:"
+            f"{db.db_instance_endpoint_port}/docsuri"
         )
-        db_secret = secretsmanager.Secret.from_secret_complete_arn(
-            self,
-            "DbSecret",
-            db_secret_arn,
-        )
+        assert db.secret is not None
 
         task_def.add_container(
             "worker",
@@ -80,13 +59,17 @@ class NoveltyStack(Stack):
                 "AWS_DEFAULT_REGION": self.region,
                 "DATABASE_URL": database_url,
                 "NOVELTY_AGENT_ENABLED": "true",
-                "DOCSURI_NOVELTY_JOB_QUEUE_URL": self.queue.queue_url,
+                "DOCSURI_NOVELTY_JOB_QUEUE_URL": queue.queue_url,
                 "DOCSURI_NOVELTY_ARTIFACT_BUCKET": f"docsuri-papers-fulltext-{account}",
                 "DOCSURI_NOVELTY_ARTIFACT_PREFIX": "novelty/",
+                "DOCSURI_OPENSEARCH_ENDPOINT": f"https://{opensearch_domain.domain_endpoint}",
+                "DOCSURI_BEDROCK_MODEL_ID": "global.cohere.embed-v4:0",
+                "DOCSURI_NOVELTY_LLM_MODEL_ID": "global.anthropic.claude-sonnet-4-6",
+                "DOCSURI_AWS_REGION": self.region,
                 "CLOUDWATCH_NAMESPACE": "DocSuri/Production",
                 "CLOUDWATCH_LOG_GROUP": "/docsuri/ops",
             },
-            secrets={"PGPASSWORD": ecs.Secret.from_secrets_manager(db_secret, "password")},
+            secrets={"PGPASSWORD": ecs.Secret.from_secrets_manager(db.secret, "password")},
         )
 
         self.service = ecs.FargateService(
@@ -116,13 +99,13 @@ class NoveltyStack(Stack):
         rds_sg = ec2.SecurityGroup.from_security_group_id(
             self,
             "RdsSg",
-            db_security_group_id,
+            db.connections.security_groups[0].security_group_id,
             mutable=True,
         )
-        self.service.connections.allow_to(rds_sg, ec2.Port.tcp(db_port))
+        self.service.connections.allow_to(rds_sg, ec2.Port.tcp(5432))
+        self.service.connections.allow_to(opensearch_domain.connections, ec2.Port.tcp(443))
 
-        self.queue.grant_consume_messages(task_def.task_role)
-        dlq.grant_send_messages(task_def.task_role)
+        queue.grant_consume_messages(task_def.task_role)
         task_def.add_to_task_role_policy(
             iam.PolicyStatement(
                 actions=["s3:GetObject", "s3:PutObject"],
@@ -133,18 +116,43 @@ class NoveltyStack(Stack):
             iam.PolicyStatement(
                 actions=["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
                 resources=[
-                    f"arn:aws:bedrock:{self.region}::foundation-model/anthropic.*",
+                    "arn:aws:bedrock:::foundation-model/anthropic.*",
+                    "arn:aws:bedrock:*::foundation-model/anthropic.*",
+                    "arn:aws:bedrock:::foundation-model/cohere.embed-v4:0",
+                    "arn:aws:bedrock:*::foundation-model/cohere.embed-v4:0",
                     f"arn:aws:bedrock:{self.region}:{account}:inference-profile/*",
                 ],
             )
         )
-
-        dlq.metric_approximate_number_of_messages_visible().create_alarm(
-            self,
-            "NoveltyDlqAlarm",
-            threshold=0,
-            evaluation_periods=1,
-            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
-            alarm_description="Novelty agent worker messages are landing in the DLQ",
+        task_def.add_to_task_role_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "es:ESHttpGet",
+                    "es:ESHttpHead",
+                    "es:ESHttpPost",
+                ],
+                resources=[f"{opensearch_domain.domain_arn}/*"],
+            )
+        )
+        ops_log_group_arn = (
+            f"arn:aws:logs:{self.region}:{account}:log-group:/docsuri/ops"
+        )
+        task_def.task_role.add_to_principal_policy(
+            iam.PolicyStatement(
+                actions=["cloudwatch:PutMetricData"],
+                resources=["*"],
+                conditions={"StringEquals": {"cloudwatch:namespace": "DocSuri/Production"}},
+            )
+        )
+        task_def.task_role.add_to_principal_policy(
+            iam.PolicyStatement(
+                actions=["logs:CreateLogGroup"],
+                resources=[ops_log_group_arn],
+            )
+        )
+        task_def.task_role.add_to_principal_policy(
+            iam.PolicyStatement(
+                actions=["logs:CreateLogStream", "logs:DescribeLogStreams", "logs:PutLogEvents"],
+                resources=[f"{ops_log_group_arn}:*"],
+            )
         )

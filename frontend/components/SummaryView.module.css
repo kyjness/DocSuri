@@ -26,6 +26,28 @@
   word-break: break-word;
 }
 
+/* Block content produced by renderRichText (method/results/limitations): paragraphs + bullet
+   lists. Tighten the default browser margins so a multi-item results section reads compactly. */
+.body p {
+  margin: 0 0 0.5rem;
+}
+
+.body p:last-child {
+  margin-bottom: 0;
+}
+
+.body ul {
+  margin: 0.25rem 0;
+  padding-left: 1.125rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.body li {
+  word-break: break-word;
+}
+
 .list {
   margin: 0;
   padding-left: 1.125rem;

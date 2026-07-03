@@ -65,7 +65,33 @@ def _iter_supported_items(payload: Any):
 
 
 def _validate_experiment_plan(payload: dict[str, Any]) -> None:
-    required = {"researchQuestion", "hypotheses", "datasets", "metrics", "risks"}
-    missing = sorted(key for key in required if not payload.get(key))
+    text_required = {"researchQuestion", "noveltyAngle"}
+    list_required = {
+        "hypotheses",
+        "baselines",
+        "procedure",
+        "datasets",
+        "metrics",
+        "resources",
+        "risks",
+    }
+    missing = sorted(
+        key for key in text_required if not str(payload.get(key) or "").strip()
+    )
+    missing.extend(
+        sorted(
+            key
+            for key in list_required
+            if not isinstance(payload.get(key), list) or not payload[key]
+        )
+    )
+    if not isinstance(payload.get("sourceRefs"), list):
+        missing.append("sourceRefs")
+    status = payload.get("evidenceStatus")
+    valid_statuses = {item.value for item in EvidenceStatus}
+    if status not in valid_statuses:
+        missing.append("evidenceStatus")
     if missing:
         raise ArtifactValidationError(f"experiment plan missing: {', '.join(missing)}")
+    if status == EvidenceStatus.SUPPORTED.value and not payload["sourceRefs"]:
+        raise ArtifactValidationError("supported experiment plan must include sourceRefs")

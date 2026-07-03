@@ -3,6 +3,9 @@
 # runs the schema drift guard so a stale _generated/ fails the PR. The repo-root tests/ suite
 # (accounts U3 + library U4) runs in the `root-suites` job below; that job's lint step also gates
 # the tests/ tree so unused-import (F401) debt can't reappear invisibly.
+#
+# Third-party actions are pinned to a commit SHA (not a mutable major tag) — a hijacked tag can't
+# silently run in CI. The trailing `# vX` comment records the human-readable version. (audit Med #6)
 name: CI
 
 on:
@@ -14,16 +17,22 @@ on:
 permissions:
   contents: read
 
+# Cancel superseded runs on the same ref so a rapid push train doesn't stack full CI runs. (audit Low #8)
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   shared:
     name: shared (SSOT · drift · pytest)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: shared/python
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
           enable-cache: true
       - name: Schema drift guard (generated bindings match the SSOT)
@@ -36,12 +45,13 @@ jobs:
   ingestion:
     name: ingestion (U1)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: ingestion
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
           enable-cache: true
       - name: Lint
@@ -52,12 +62,13 @@ jobs:
   discovery:
     name: discovery (U2)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: backend/modules/discovery
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
           enable-cache: true
       - name: Lint
@@ -68,12 +79,13 @@ jobs:
   ops:
     name: ops (U6 reliability/detection)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: ops
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
           enable-cache: true
       - name: Lint
@@ -84,12 +96,13 @@ jobs:
   backend:
     name: backend app-shell (mounts U2/U3)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
           enable-cache: true
       - name: Lint
@@ -100,9 +113,10 @@ jobs:
   root-suites:
     name: accounts + library (root tests/ — U3 · U4)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
           enable-cache: true
       # Root tests/ (accounts U3 + library U4) import backend.modules.* and need the backend
@@ -118,15 +132,16 @@ jobs:
   frontend:
     name: frontend (U5 · tsc + vitest + type drift + build)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v3
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: pnpm/action-setup@a3252b78c470c02df07e9d59298aecedc3ccdd6d # v3
         with:
           version: 9.15.9
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
           cache: pnpm
@@ -147,14 +162,28 @@ jobs:
       - name: Build
         run: pnpm exec next build
 
+  dependency-review:
+    name: Dependency review (PR-only · npm + pip)
+    # Reviews the PR's dependency-graph diff (pnpm + Python) and fails only on a NEWLY introduced
+    # vulnerable dependency — closes the frontend-deps-unscanned gap without blocking on
+    # pre-existing debt. Public repo, so no Advanced Security needed. PR-only (no base ref on push).
+    # (audit Med #5)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4
+        with:
+          fail-on-severity: high
+
   security:
     name: Security Scan (SCA + Secrets)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
           enable-cache: true
       - name: Run pip-audit on Backend
@@ -175,9 +204,13 @@ jobs:
           # drop first-party editable path deps (not on PyPI; their third-party deps are already flattened in)
           grep -v '^-e ' ops/requirements.txt > ops/requirements.audit.txt
           uvx pip-audit -r ops/requirements.audit.txt
-      - name: Gitleaks Secret Scan
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        continue-on-error: true
-
+      # BLOCKING, license-free secret scan. The gitleaks-action v2 needs an org licence (why the
+      # old step was continue-on-error/advisory), so run the gitleaks CLI via its pinned image and
+      # fail on any finding. --no-git scans the CURRENT tree (what this PR delivers) rather than
+      # full history, so it gates new secrets without red-flagging pre-existing history leaks (which
+      # need rotation + a history scrub, not a merge block). Allowlist false positives in
+      # .gitleaks.toml; tighten to PR-range history later if wanted. (audit Med #4)
+      - name: Gitleaks secret scan (blocking)
+        run: |
+          docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.21.2 \
+            detect --source /repo --no-git --redact -v --exit-code 1

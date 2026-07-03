@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from ..ports.ports import LlmGatewayPort
 from .models import Glossary, RefinedSource, Section, SummaryDraft, SummaryRequest
+from .parallel import map_bounded
 from .token_estimate import CHARS_PER_TOKEN, estimate_tokens
 
 # Per-chunk budget kept below the single-call context budget so each map call fits comfortably;
@@ -26,6 +27,11 @@ from .token_estimate import CHARS_PER_TOKEN, estimate_tokens
 # orphaned. Both are conservative defaults (runtime-tunable, NFR).
 _DEFAULT_CHUNK_BUDGET_TOKENS = 30_000
 _DEFAULT_OVERLAP_CHARS = 2_000
+
+# Concurrent map calls (BR-S6). Kept LOWER than the translate fan-out: a summary map chunk is
+# large (~30K tok budget) vs a small translate chunk, so a few concurrent map calls already move
+# a lot of tokens/min — a modest cap keeps Bedrock TPM/throttle headroom. 1 = serial map.
+_DEFAULT_MAX_WORKERS = 3
 
 
 class MapReduceSummarizer:
@@ -38,10 +44,12 @@ class MapReduceSummarizer:
         *,
         chunk_budget_tokens: int = _DEFAULT_CHUNK_BUDGET_TOKENS,
         overlap_chars: int = _DEFAULT_OVERLAP_CHARS,
+        max_workers: int = _DEFAULT_MAX_WORKERS,
     ) -> None:
         self._llm = llm
         self._budget = chunk_budget_tokens
         self._overlap = overlap_chars
+        self._max_workers = max_workers
 
     def summarize(
         self, refined: RefinedSource, request: SummaryRequest, glossary: Glossary
@@ -50,7 +58,14 @@ class MapReduceSummarizer:
         if len(chunks) <= 1:
             # Fits one call after all (e.g. one huge section just under budget) — no fan-out.
             return self._llm.summarize(refined, request, glossary)
-        partials = [self._llm.summarize(chunk, request, glossary) for chunk in chunks]  # map
+        # Map: summarize chunks independently and concurrently (bounded). Order-preserving so the
+        # reduce input (partials, in section order) is deterministic; a map-chunk LlmUnavailable
+        # propagates (fail-fast) → the orchestrator's retry/abstain path, same as the serial map.
+        partials = map_bounded(
+            lambda chunk: self._llm.summarize(chunk, request, glossary),
+            chunks,
+            max_workers=self._max_workers,
+        )
         return self._llm.summarize(self._reduce_input(partials), request, glossary)  # reduce
 
     # --- chunking (section-aware, with overlap) ------------------------------

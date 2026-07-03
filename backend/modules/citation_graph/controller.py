@@ -22,7 +22,7 @@ DOI_RE = re.compile(r"^10\.\d{4,9}/\S+$", re.I)
 
 
 def _max_visible_nodes() -> int:
-    return int(os.getenv("CITATION_GRAPH_MAX_VISIBLE_NODES", "50"))
+    return int(os.getenv("CITATION_GRAPH_MAX_VISIBLE_NODES", "30"))
 
 
 def _snapshot_ttl_seconds() -> int:
@@ -125,7 +125,8 @@ class SemanticScholarProvider:
 
     async def references(self, paper_id: str, limit: int) -> tuple[str, list[dict[str, Any]]]:
         headers = {"x-api-key": self._api_key} if self._api_key else {}
-        timeout = float(os.getenv("CITATION_GRAPH_PROVIDER_TIMEOUT_SECONDS", "2"))
+        timeout = float(os.getenv("CITATION_GRAPH_PROVIDER_TIMEOUT_SECONDS", "3"))
+        retry_timeout = float(os.getenv("CITATION_GRAPH_PROVIDER_RETRY_TIMEOUT_SECONDS", "5"))
         retries = int(os.getenv("CITATION_GRAPH_PROVIDER_RETRIES", "1"))
         encoded_paper_id = quote(_semantic_scholar_paper_id(paper_id), safe="")
         url = f"https://api.semanticscholar.org/graph/v1/paper/{encoded_paper_id}/references"
@@ -133,16 +134,17 @@ class SemanticScholarProvider:
             "fields": "title,year,citationCount,externalIds,paperId,url",
             "limit": str(min(limit, 1000)),
         }
-        for attempt in range(retries + 1):
+        timeouts = [timeout] + [retry_timeout] * retries
+        for attempt, attempt_timeout in enumerate(timeouts):
             try:
-                async with httpx.AsyncClient(timeout=timeout) as client:
+                async with httpx.AsyncClient(timeout=attempt_timeout) as client:
                     resp = await client.get(url, params=params, headers=headers)
                 if resp.status_code == 429:
                     return "rate_limited", []
                 resp.raise_for_status()
                 return "ok", [row.get("citedPaper") or {} for row in resp.json().get("data", [])]
             except (httpx.TimeoutException, httpx.HTTPError):
-                if attempt >= retries:
+                if attempt == len(timeouts) - 1:
                     return "unavailable", []
         return "unavailable", []
 

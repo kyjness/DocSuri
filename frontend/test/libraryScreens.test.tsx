@@ -17,6 +17,10 @@ vi.mock('next/link', () => ({
 }));
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
+  // usePaginatedList/SavedSearchScreen/HistoryScreen route to `/login?redirect=<pathname>` on a
+  // mid-session 401 (E1/E2) — any fixed string is fine here since no test in this file exercises
+  // that path.
+  usePathname: () => '/library/mock',
 }));
 
 describe('LibraryScreen (US-L2)', () => {

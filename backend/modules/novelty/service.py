@@ -19,6 +19,7 @@ from .models import (
     JobResultResponse,
     JobState,
     JobStatusResponse,
+    ManuscriptRef,
     NotionExport,
     NoveltyChatMessage,
     NoveltyJob,
@@ -43,6 +44,19 @@ def _emit_metric(observability, name: str, value: float = 1.0, tags: dict | None
         pass
 
 
+def _validate_manuscript_ref(
+    owner_id: str,
+    job_id: str,
+    manuscript: ManuscriptRef,
+) -> ManuscriptRef:
+    if not manuscript.objectKey:
+        return manuscript
+    expected_prefix = f"novelty/{owner_id}/{job_id}/"
+    if not manuscript.objectKey.startswith(expected_prefix):
+        raise ValueError("manuscript objectKey must be issued for this owner and job")
+    return manuscript
+
+
 class NoveltyService:
     def __init__(self, repo: NoveltyRepository, observability=None) -> None:
         self._repo = repo
@@ -52,15 +66,24 @@ class NoveltyService:
         if dto.inputType is InputType.MANUSCRIPT:
             assert dto.manuscript is not None
             if dto.manuscript.contentType not in SUPPORTED_MANUSCRIPT_CONTENT_TYPES:
-                raise ValueError("only PDF, Markdown, and plain text manuscripts are supported")
-        job = self._repo.create_job(
-            NoveltyJob(
-                ownerId=owner_id,
-                inputType=dto.inputType,
-                topic=dto.topic,
-                manuscript=dto.manuscript,
-            )
+                raise ValueError("only Markdown and plain text manuscripts are supported")
+        job = NoveltyJob(
+            ownerId=owner_id,
+            inputType=dto.inputType,
+            topic=dto.topic,
+            manuscript=dto.manuscript,
         )
+        if job.manuscript is not None:
+            job = job.model_copy(
+                update={
+                    "manuscript": _validate_manuscript_ref(
+                        owner_id,
+                        job.jobId,
+                        job.manuscript,
+                    )
+                }
+            )
+        job = self._repo.create_job(job)
         self.record_event(job, "Novelty analysis job queued")
         self.add_message(
             owner_id,

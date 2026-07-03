@@ -19,8 +19,8 @@
 - **근거**: 공유 런타임(U2/U3/U4/U6-미들웨어)·Hypothesis(PBT)·Bedrock/OpenSearch SDK.
 - **전환 비용**: 시스템 전역 — 재논의 아님.
 
-## TD-U2-3 [전역 계승] — 질의 임베딩: **Cohere Embed Multilingual v3 (Bedrock) · 1024 · 코사인 · reader=`search_query`**
-- **결정**: TD-3 계승. U2 reader는 **`input_type=search_query`**(writer=`search_document`와 비대칭) — Cohere v3 필수.
+## TD-U2-3 [전역 계승] — 질의 임베딩: **Cohere Embed Multilingual v4 (Bedrock) · 1024 · 코사인 · reader=`search_query`**
+- **결정**: TD-3 계승. U2 reader는 **`input_type=search_query`**(writer=`search_document`와 비대칭) — Cohere v4 필수.
 - **근거**: U1 writer ↔ U2 reader **동일 임베딩 공간 불변식**(specVersion 일치). **cross-lingual**: 한국어 질의 → 영어 코퍼스(KR↔EN).
 - **대안**: 없음(변경 = 전체 코퍼스 재임베딩, 사실상 단방향).
 - **전환 비용**: 매우 높음 — VectorSpec 불변.

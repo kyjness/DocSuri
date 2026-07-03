@@ -6,12 +6,11 @@ in the OpenAPI, and a request flows through with an injected principal + the in-
 
 from __future__ import annotations
 
-from fastapi.testclient import TestClient
-
 from backend.app import create_app
 from backend.config import Settings
 from backend.modules.accounts.models import Principal, UserRole
 from backend.modules.library import controller
+from fastapi.testclient import TestClient
 
 _SETTINGS = Settings(env="test", database_url="sqlite://")
 

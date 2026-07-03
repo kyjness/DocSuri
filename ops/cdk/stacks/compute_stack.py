@@ -78,6 +78,9 @@ from aws_cdk import (
 from aws_cdk import (
     aws_sns_subscriptions as subs,
 )
+from aws_cdk import (
+    aws_sqs as sqs,
+)
 from constructs import Construct
 
 from ._origin_auth import api_origin_verify_secret, social_origin_verify_secret
@@ -142,6 +145,31 @@ class ComputeStack(Stack):
             database_name="docsuri",
         )
 
+        # ponytail: queues already exist in prod; import them until a separate CDK import migrates
+        # ownership. Creating same-name queues in this stack would fail the next Compute deploy.
+        novelty_dlq = sqs.Queue.from_queue_attributes(
+            self,
+            "NoveltyJobDlq",
+            queue_arn=f"arn:aws:sqs:{self.region}:{self.account}:docsuri-novelty-agent-job-dlq",
+            queue_url=f"https://sqs.{self.region}.amazonaws.com/{self.account}/docsuri-novelty-agent-job-dlq",
+        )
+        self.novelty_queue = sqs.Queue.from_queue_attributes(
+            self,
+            "NoveltyJobQueue",
+            queue_arn=f"arn:aws:sqs:{self.region}:{self.account}:docsuri-novelty-agent-job-queue",
+            queue_url=f"https://sqs.{self.region}.amazonaws.com/{self.account}/docsuri-novelty-agent-job-queue",
+        )
+        novelty_dlq_visible_metric = novelty_dlq.metric_approximate_number_of_messages_visible()
+        novelty_dlq_alarm = novelty_dlq_visible_metric.create_alarm(
+            self,
+            "NoveltyDlqAlarm",
+            threshold=0,
+            evaluation_periods=1,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+            alarm_description="Novelty agent worker messages are landing in the DLQ",
+        )
+
         # --- ElastiCache Redis (U3 spec: cache.t4g.micro, 2-node Multi-AZ) ---
         redis_sg = ec2.SecurityGroup(self, "RedisSg", vpc=vpc, allow_all_outbound=False)
         isolated_subnets = vpc.select_subnets(subnet_type=ec2.SubnetType.PRIVATE_ISOLATED)
@@ -188,6 +216,14 @@ class ComputeStack(Stack):
             "REDIS_HOST": redis_endpoint,
             "REDIS_PORT": redis_port,
             "REDIS_TLS": "1",  # ElastiCache transit_encryption_enabled=True → client TLS required
+            # CloudFront -> ALB -> ECS: trust the two controlled proxy hops so gateway
+            # rate-limiting keys on the viewer IP instead of collapsing all traffic to a proxy.
+            "TRUST_PROXY_HEADERS": "true",
+            "TRUSTED_PROXY_COUNT": "2",
+            # Blanket gateway backstop. Endpoint-specific account/email limits remain stricter;
+            # this cap must not trip the checked-in 20-VU production smoke load test.
+            "DOCSURI_GATEWAY_RATE_LIMIT_MAX_REQUESTS": "3000",
+            "DOCSURI_GATEWAY_RATE_LIMIT_WINDOW_SECONDS": "60",
             "SES_SENDER_EMAIL": "no-reply@docsuri.org",  # via the SES domain identity below
             # Email provider toggle. "resend" → ResendEmailClient (no SES sandbox review gate;
             # delivers to any recipient once docsuri.org is DNS-verified in Resend). Requires the
@@ -218,15 +254,16 @@ class ComputeStack(Stack):
             # DOCSURI_REDIS_URL] to mount the real path (summarization_enabled = bool(bucket)); the
             # OA-license + map-reduce gates stay OFF by default. Referenced by name to avoid a
             # cross-stack export coupling deploys (repo pattern).
-            "DOCSURI_DOCMODEL_BUILD_QUEUE_URL": (  # doc-model lazy build (BR-30, boundary B)
-                f"https://sqs.{self.region}.amazonaws.com/{self.account}/docsuri-ingestion-queue"
+            "DOCSURI_DOCMODEL_BUILD_QUEUE_URL": (
+                # doc-model lazy build (BR-30, boundary B) → dedicated PRIORITY queue, isolated from
+                # the bulk ingestion/backfill queue so reader-triggered builds (viewer/citation
+                # tree) are not starved behind a large backfill. Worker drains this queue first.
+                f"https://sqs.{self.region}.amazonaws.com/{self.account}/docsuri-docmodel-queue"
             ),
             "DOCSURI_SUMMARY_JOB_QUEUE_URL": (  # long-summary async job (BR-S12)
                 f"https://sqs.{self.region}.amazonaws.com/{self.account}/docsuri-summary-job-queue"
             ),
-            "DOCSURI_NOVELTY_JOB_QUEUE_URL": (
-                f"https://sqs.{self.region}.amazonaws.com/{self.account}/docsuri-novelty-agent-job-queue"
-            ),
+            "DOCSURI_NOVELTY_JOB_QUEUE_URL": self.novelty_queue.queue_url,
             # Activation: mounting the U7 read path (summarization_enabled = bool(bucket)). The
             # papers bucket is Ingestion-owned (same name the summary worker carries); the IAM for
             # S3 read/write + Bedrock invoke is already granted to this task role below.
@@ -237,11 +274,18 @@ class ComputeStack(Stack):
             # the ingestion queue (DOCSURI_DOCMODEL_BUILD_QUEUE_URL above) and returns `building`;
             # the ingestion worker builds + caches it. OFF → license_unavailable.
             "DOCSURI_DOCMODEL_VIEWER_ENABLED": "true",
+            # Figure/table images (본문 그림): the API presigns the S3 assets written by ingestion
+            # (which already sets this flag) and joins them to the doc-model FigureBlocks by
+            # assetId. Only OA papers are stored so rendering is license-safe (BR-SF-11). Without
+            # this the /assets manifest returns license_unavailable and figures never render even
+            # though the webp objects exist in S3.
+            "DOCSURI_MULTIMODAL_ASSETS_ENABLED": "true",
             # Long-input summaries: map-reduce band enqueues to the summary-job queue (async worker)
             # and returns `pending`; without this the MAP_REDUCE band abstains (input_too_long).
             "DOCSURI_MAP_REDUCE_ENABLED": "true",
             "CITATION_GRAPH_ENABLED": "true",
             "PERSONALIZATION_ENABLED": "true",
+            # Research is intentionally enabled in prod; keep this aligned with the live flag.
             "RESEARCH_AGENT_ENABLED": "true",
             "NOVELTY_AGENT_ENABLED": "true",
             "PERSONALIZATION_RAW_EVENT_RETENTION_DAYS": "90",
@@ -359,16 +403,16 @@ class ComputeStack(Stack):
         for email in ops_alert_emails:
             ses_events_topic.add_subscription(subs.EmailSubscription(email))
 
-        # --- ALB + Fargate service (deploy unit ①: 0.25 vCPU / 512 MB, min 1 max 2) ---
+        # --- ALB + Fargate service (deploy unit ①: 1 vCPU / 2 GB, min 2 max 6) ---
         # HTTPS :443 terminated on the ALB with the ACM cert + a Route53 alias (origin.docsuri.org
         # → ALB). CloudFront reaches the origin over HTTPS (below), so edge↔origin is encrypted.
         self.service = ecs_patterns.ApplicationLoadBalancedFargateService(
             self, "ApiService",
             cluster=cluster,
             service_name="docsuri-api",
-            cpu=256,
-            memory_limit_mib=512,
-            desired_count=1,
+            cpu=1024,
+            memory_limit_mib=2048,
+            desired_count=2,
             # ECS Exec (SSM-backed): team assumes DocsuriCrossAccountDev → `aws ecs
             # execute-command` into this task → psql to the private RDS. No EC2 bastion.
             # CDK auto-grants the task role ssmmessages:*. ponytail: shell-in only; a
@@ -438,9 +482,7 @@ class ComputeStack(Stack):
 
         # ALB health check: the API serves no `GET /`, so the default `/` probe returns
         # 404 → target marked unhealthy → deployment circuit breaker rolls the stack back.
-        # ponytail: /healthz is the cheap liveness route (no DB/Redis dep); use /readyz only
-        # if you want readiness gating once downstream deps are wired.
-        self.service.target_group.configure_health_check(path="/healthz")
+        self.service.target_group.configure_health_check(path="/readyz")
 
         # Grant the task role permission to read the RDS secret (for runtime DB connection)
         if self.db.secret:
@@ -488,12 +530,12 @@ class ComputeStack(Stack):
 
         # --- U7 summarization + doc-model IAM (피벗, infra-design §4·§7) ---
         # Single papers bucket (Docsuri-Ingestion owns it) — referenced by ARN-by-name to avoid a
-        # cross-stack export. API reads the built doc-model and read/writes the summary cache.
+        # cross-stack export. API reads built doc-model/assets and read/writes the summary cache.
         _papers_bucket = f"arn:aws:s3:::docsuri-papers-fulltext-{self.account}"
         self.service.task_definition.task_role.add_to_principal_policy(
             iam.PolicyStatement(
                 actions=["s3:GetObject"],
-                resources=[f"{_papers_bucket}/doc-model/*"],
+                resources=[f"{_papers_bucket}/doc-model/*", f"{_papers_bucket}/assets/*"],
             )
         )
         # ListBucket on the papers bucket — WITHOUT it, GetObject on a not-yet-built key returns
@@ -532,17 +574,19 @@ class ComputeStack(Stack):
                 resources=[f"{_papers_bucket}/novelty/*"],
             )
         )
-        # SendMessage: doc-model build, long-summary jobs, and novelty-agent jobs.
+        # SendMessage: doc-model build and long-summary jobs. Novelty uses the real queue object
+        # below so CloudFormation owns the dependency instead of a hand-built ARN string.
         self.service.task_definition.task_role.add_to_principal_policy(
             iam.PolicyStatement(
                 actions=["sqs:SendMessage"],
                 resources=[
+                    f"arn:aws:sqs:{self.region}:{self.account}:docsuri-docmodel-queue",
                     f"arn:aws:sqs:{self.region}:{self.account}:docsuri-ingestion-queue",
                     f"arn:aws:sqs:{self.region}:{self.account}:docsuri-summary-job-queue",
-                    f"arn:aws:sqs:{self.region}:{self.account}:docsuri-novelty-agent-job-queue",
                 ],
             )
         )
+        self.novelty_queue.grant_send_messages(self.service.task_definition.task_role)
         # Bedrock InvokeModel for the U7 summary/translate models (Anthropic on Bedrock). Sonnet
         # 4.6 / Haiku 4.5 are invoked via global inference profiles — the bare foundation-model ids
         # aren't on-demand invokable; a global profile can route the FM to any region, so grant the
@@ -570,9 +614,19 @@ class ComputeStack(Stack):
                 ],
             )
         )
+        self.service.task_definition.task_role.add_to_principal_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "es:ESHttpGet",
+                    "es:ESHttpHead",
+                    "es:ESHttpPost",
+                ],
+                resources=[f"{opensearch_domain.domain_arn}/*"],
+            )
+        )
 
-        # Autoscaling: min 1 — max 2 (U3 spec)
-        scaling = self.service.service.auto_scale_task_count(min_capacity=1, max_capacity=2)
+        # Autoscaling: min 2 for AZ/task headroom, max 6 after API search p95 broke under smoke.
+        scaling = self.service.service.auto_scale_task_count(min_capacity=2, max_capacity=6)
         scaling.scale_on_cpu_utilization("CpuScale", target_utilization_percent=70)
 
         # U9 Personalization retention cleanup: one short scheduled task, no always-on worker.
@@ -707,12 +761,28 @@ class ComputeStack(Stack):
                 value="set -c ops_alert_email=<addr>[,<addr>...] so alarms + budget page a human",
             )
 
+        novelty_queue_age_metric = self.novelty_queue.metric_approximate_age_of_oldest_message(
+            period=Duration.minutes(5),
+            statistic="Maximum",
+        )
+        novelty_queue_age_alarm = novelty_queue_age_metric.create_alarm(
+            self,
+            "NoveltyQueueAgeAlarm",
+            threshold=900,
+            evaluation_periods=1,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+            alarm_description="Novelty jobs are waiting more than 15 minutes before processing",
+        )
+        novelty_queue_age_alarm.add_alarm_action(cw_actions.SnsAction(ops_alerts))
+
         # SLO 1 — API availability: backend 5xx. Native ALB metric, no app instrumentation needed.
-        api_5xx_alarm = self.service.target_group.metrics.http_code_target(
+        api_5xx_metric = self.service.target_group.metrics.http_code_target(
             elbv2.HttpCodeTarget.TARGET_5XX_COUNT,
             period=Duration.minutes(5),
             statistic="Sum",
-        ).create_alarm(
+        )
+        api_5xx_alarm = api_5xx_metric.create_alarm(
             self, "Api5xxAlarm",
             threshold=10,  # tune: >10 backend 5xx in 5 min
             evaluation_periods=1,
@@ -723,10 +793,11 @@ class ComputeStack(Stack):
         api_5xx_alarm.add_alarm_action(cw_actions.SnsAction(ops_alerts))
 
         # SLO 2 — search latency: ALB target p95 response time. Native metric.
-        api_latency_alarm = self.service.target_group.metrics.target_response_time(
+        api_latency_metric = self.service.target_group.metrics.target_response_time(
             period=Duration.minutes(5),
             statistic="p95",
-        ).create_alarm(
+        )
+        api_latency_alarm = api_latency_metric.create_alarm(
             self, "ApiLatencyP95Alarm",
             threshold=2,  # seconds; tune to the search SLO
             evaluation_periods=3,  # 3×5min sustained → avoid paging on a single slow window
@@ -736,12 +807,13 @@ class ComputeStack(Stack):
         )
         api_latency_alarm.add_alarm_action(cw_actions.SnsAction(ops_alerts))
 
-        personalization_purge_alarm = cloudwatch.Metric(
+        personalization_purge_metric = cloudwatch.Metric(
             namespace="DocSuri/Production",
             metric_name="personalization.retention_purge_failure",
             period=Duration.minutes(5),
             statistic="Sum",
-        ).create_alarm(
+        )
+        personalization_purge_alarm = personalization_purge_metric.create_alarm(
             self,
             "PersonalizationRetentionPurgeFailureAlarm",
             threshold=0,
@@ -760,12 +832,13 @@ class ComputeStack(Stack):
         # support SEARCH (dimension wildcards) — the dimensionless total catches every error_type
         # (Resend RuntimeError, network exceptions, SES boto errors) in one alarm. threshold=0 →
         # any failure in a 5-min window pages ops instead of failing silently.
-        email_failure_alarm = cloudwatch.Metric(
+        email_failure_metric = cloudwatch.Metric(
             namespace="DocSuri/Production",
             metric_name="EmailDeliveryFailureSignal",
             period=Duration.minutes(5),
             statistic="Sum",
-        ).create_alarm(
+        )
+        email_failure_alarm = email_failure_metric.create_alarm(
             self,
             "EmailDeliveryFailureAlarm",
             threshold=0,
@@ -808,3 +881,153 @@ class ComputeStack(Stack):
                     ),
                 ],
             )
+
+        # One on-call view for the alarmed signals. Cross-stack alarm names are generated, so the
+        # queue widgets use the stable queue names and the same thresholds as their alarms.
+        dashboard = cloudwatch.Dashboard(
+            self,
+            "OpsDashboard",
+            dashboard_name="DocSuri-Production-Ops",
+        )
+        ingestion_queue_age_metric = cloudwatch.Metric(
+            namespace="AWS/SQS",
+            metric_name="ApproximateAgeOfOldestMessage",
+            dimensions_map={"QueueName": "docsuri-ingestion-queue"},
+            period=Duration.minutes(5),
+            statistic="Maximum",
+        )
+        docmodel_queue_age_metric = cloudwatch.Metric(
+            namespace="AWS/SQS",
+            metric_name="ApproximateAgeOfOldestMessage",
+            dimensions_map={"QueueName": "docsuri-docmodel-queue"},
+            period=Duration.minutes(5),
+            statistic="Maximum",
+        )
+        summary_queue_age_metric = cloudwatch.Metric(
+            namespace="AWS/SQS",
+            metric_name="ApproximateAgeOfOldestMessage",
+            dimensions_map={"QueueName": "docsuri-summary-job-queue"},
+            period=Duration.minutes(5),
+            statistic="Maximum",
+        )
+        ingestion_queue_visible_metric = cloudwatch.Metric(
+            namespace="AWS/SQS",
+            metric_name="ApproximateNumberOfMessagesVisible",
+            dimensions_map={"QueueName": "docsuri-ingestion-queue"},
+            period=Duration.minutes(5),
+            statistic="Maximum",
+        )
+        docmodel_queue_visible_metric = cloudwatch.Metric(
+            namespace="AWS/SQS",
+            metric_name="ApproximateNumberOfMessagesVisible",
+            dimensions_map={"QueueName": "docsuri-docmodel-queue"},
+            period=Duration.minutes(5),
+            statistic="Maximum",
+        )
+        summary_queue_visible_metric = cloudwatch.Metric(
+            namespace="AWS/SQS",
+            metric_name="ApproximateNumberOfMessagesVisible",
+            dimensions_map={"QueueName": "docsuri-summary-job-queue"},
+            period=Duration.minutes(5),
+            statistic="Maximum",
+        )
+
+        dashboard.add_widgets(
+            cloudwatch.TextWidget(
+                markdown=(
+                    "# DocSuri production ops\n"
+                    "Alarm tiles show the current SNS-paged signals. Graphs below use the same "
+                    "CloudWatch metrics and thresholds for quick triage."
+                ),
+                width=24,
+                height=2,
+            )
+        )
+        dashboard.add_widgets(
+            cloudwatch.AlarmWidget(title="API 5xx", alarm=api_5xx_alarm, width=8, height=4),
+            cloudwatch.AlarmWidget(
+                title="API p95 latency", alarm=api_latency_alarm, width=8, height=4
+            ),
+            cloudwatch.AlarmWidget(
+                title="Email delivery", alarm=email_failure_alarm, width=8, height=4
+            ),
+        )
+        dashboard.add_widgets(
+            cloudwatch.AlarmWidget(
+                title="Novelty queue age", alarm=novelty_queue_age_alarm, width=8, height=4
+            ),
+            cloudwatch.AlarmWidget(title="Novelty DLQ", alarm=novelty_dlq_alarm, width=8, height=4),
+            cloudwatch.AlarmWidget(
+                title="Retention purge", alarm=personalization_purge_alarm, width=8, height=4
+            ),
+        )
+        dashboard.add_widgets(
+            cloudwatch.GraphWidget(
+                title="API 5xx count",
+                left=[api_5xx_metric],
+                left_annotations=[
+                    cloudwatch.HorizontalAnnotation(value=10, label="alarm: >10 / 5m")
+                ],
+                width=12,
+                height=6,
+            ),
+            cloudwatch.GraphWidget(
+                title="API p95 latency",
+                left=[api_latency_metric],
+                left_annotations=[
+                    cloudwatch.HorizontalAnnotation(value=2, label="alarm: >2s for 15m")
+                ],
+                width=12,
+                height=6,
+            ),
+        )
+        dashboard.add_widgets(
+            cloudwatch.GraphWidget(
+                title="Queue age SLOs",
+                left=[
+                    novelty_queue_age_metric,
+                    ingestion_queue_age_metric,
+                    docmodel_queue_age_metric,
+                    summary_queue_age_metric,
+                ],
+                left_annotations=[
+                    cloudwatch.HorizontalAnnotation(value=300, label="docmodel: 5m"),
+                    cloudwatch.HorizontalAnnotation(value=900, label="novelty/summary: 15m"),
+                    cloudwatch.HorizontalAnnotation(value=1800, label="ingestion: 30m"),
+                ],
+                width=24,
+                height=6,
+            )
+        )
+        dashboard.add_widgets(
+            cloudwatch.GraphWidget(
+                title="Queue backlog and DLQ",
+                left=[
+                    self.novelty_queue.metric_approximate_number_of_messages_visible(),
+                    novelty_dlq_visible_metric,
+                    ingestion_queue_visible_metric,
+                    docmodel_queue_visible_metric,
+                    summary_queue_visible_metric,
+                ],
+                width=12,
+                height=6,
+            ),
+            cloudwatch.GraphWidget(
+                title="Application failure signals",
+                left=[email_failure_metric, personalization_purge_metric],
+                left_annotations=[cloudwatch.HorizontalAnnotation(value=0, label="alarm: >0")],
+                width=12,
+                height=6,
+            ),
+        )
+        dashboard.add_widgets(
+            cloudwatch.TextWidget(
+                markdown=(
+                    "## Cost alert\n"
+                    "AWS Budget remains the source of truth: monthly cap $1600, email alert at "
+                    "80% actual spend ($1280)."
+                ),
+                width=24,
+                height=2,
+            )
+        )

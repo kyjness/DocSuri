@@ -9,7 +9,7 @@ export default function MyPageRecentPage() {
   return (
     <RouteGuard redirectTo="/mypage/library/recent">
       <div className={styles.screen}>
-        <AppHeader title="관심 논문 · 최근 본" backHref="/mypage" />
+        <AppHeader title="관심 논문 · 최근 본 논문 · 검색" backHref="/mypage" />
         <MyPageLibraryScreen active="recent" />
       </div>
       <BottomNav />

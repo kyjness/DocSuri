@@ -1,6 +1,6 @@
-# shared/ports — 횡단 후크 인터페이스 공용 계약 🟡 PROVISIONAL
+# shared/ports — 횡단 후크 인터페이스 공용 계약 🟡 일부 FROZEN
 
-**상태**: 🟡 PROVISIONAL (U6 FD/NFR 미완 — 형상은 inception application-design 기준; U6 FD에서 정제) · **일자**: 2026-06-16
+**상태**: 🟡 **일부 FROZEN**(`enforce`/`getBudgetState` 시그니처 동결 — component-methods.md 잠금; 그 외 U6 FD/NFR 미완으로 PROVISIONAL — U6 FD에서 정제) · **일자**: 2026-06-16
 **근거**: `component-methods.md` U6(GroundingEnforcementHook·CostGuardCircuitBreaker·ObservabilityHub) · `services.md`(GatewayPipelineService·CostGuardService·GroundingGuardService·ObservabilityService) · `component-dependency.md` §2/§6 + §7 비순환성 주석(U2↔U6) · `00-shared-contracts-overview.md` §2(Ports = U6 구현·U2/U1 의존)
 **불변식**: **인터페이스는 `shared/ports`에 선언, 구현은 U6 단독, 의존(호출)은 U2/U1.** U2는 근거화·비용을 **재구현하지 않는다**(단일 권위 = U6). U2 → U6 후크는 주입된 `kind:lib` 의존(`component-dependency.md` §2/§6).
 

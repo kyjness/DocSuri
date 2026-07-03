@@ -177,13 +177,14 @@ def make_orchestrator(
     doc_model_build_queue=None,
     map_reduce_summarizer=None,
     summary_job_queue=None,
+    glossary_resolver: GlossaryResolver | None = None,
 ) -> SummarizationOrchestrationService:
     llm = llm or StubLlm()
     return SummarizationOrchestrationService(
         store=store or StubStore(),
         source_selector=SourceSelector(full_text or StubFullText()),
         refiner=InputRefiner(),
-        glossary_resolver=GlossaryResolver(None),
+        glossary_resolver=glossary_resolver or GlossaryResolver(None),
         length_router=LengthRouter(),
         llm=llm,
         grounding=GroundingValidator(),

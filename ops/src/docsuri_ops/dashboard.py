@@ -25,7 +25,10 @@ class OpsDashboardService:
             if window.contains(alert.timestamp)
         ]
         cost_state = self.cost_guard.get_budget_state() if self.cost_guard else None
-        health = self.health_service.shallow_check() if self.health_service else None
+        # Deep (not shallow): the dashboard must reflect stale-index / dependency-down, not a
+        # constant "healthy". shallow_check always returns healthy, hiding degradation — the same
+        # "don't render a falsely-healthy view" principle as the metrics below. (Finding 2)
+        health = self.health_service.deep_check() if self.health_service else None
 
         # Event-derived metrics need a store we can read back. The production
         # CloudWatchEventStore is write-only (supports_readback=False) — its metrics live in

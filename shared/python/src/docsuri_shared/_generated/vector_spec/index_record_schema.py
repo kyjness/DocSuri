@@ -76,9 +76,10 @@ class IndexRecord(BaseModel):
         ...,
         description='Analyzed chunk-body text for lexical retrieval (FR-2). Empty for abstract chunks. Title and abstract are written once in their own analyzed fields; U2 queries title + abstract + lexicalTerms together, with boost tuning deferred to search quality work and no reindex required. INTERNAL — not exposed in external DTOs (SEC-9). Trace: BR-6.',
     )
-    blockRefs: list[DocModelBlockRef] = Field(
-        ...,
-        description='Structured DocModel block refs covered by this chunk. Empty only for legacy/plain-text chunks. INTERNAL provenance used by QT-9 BlockRef validation; not searched or exposed externally. Trace: BR-C8, BR-C13, QT-9.',
+    blockRefs: list[DocModelBlockRef] | None = Field(
+        [],
+        description='Structured DocModel block refs covered by this chunk. Empty only for legacy/plain-text chunks. INTERNAL provenance used by QT-9 BlockRef validation; not searched or exposed externally. Optional-with-default: absent on the pre-blockRefs corpus (indexed before this field existed), so readers must tolerate its absence — it is write-only provenance no read path consumes. Trace: BR-C8, BR-C13, QT-9.',
+        validate_default=True,
     )
     title: str = Field(
         ...,

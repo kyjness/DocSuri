@@ -27,7 +27,7 @@ VPC (CIDR: 10.0.0.0/16, ap-northeast-2 리전)
 ├── Public Subnets (10.0.1.0/24 [AZ-A] · 10.0.2.0/24 [AZ-B])
 │   ├── Internet Gateway (IGW) 연결 (아웃바운드 인터넷 직접 통신)
 │   ├── Application Load Balancer (ALB) 배치
-│   └── ECS Fargate 컨테이너 배치 (ALB 인바운드 허용, NAT 없이 외부 reCAPTCHA/SES와 직접 통신)
+│   └── ECS Fargate 컨테이너 배치 (ALB 인바운드 허용, NAT 없이 외부 reCAPTCHA/Resend와 직접 통신)
 │
 └── Isolated Private Subnets (10.0.3.0/24 [AZ-A] · 10.0.4.0/24 [AZ-B])
     ├── 인터넷 라우팅 없음 (인터넷 게이트웨이 및 NAT 게이트웨이와 연결되지 않은 완전 고립)
@@ -37,7 +37,7 @@ VPC (CIDR: 10.0.0.0/16, ap-northeast-2 리전)
 
 ### 2.1. 비용 최적화 및 보안 무결성 분석
 - **NAT Gateway 배제 ($0/월)**:
-  - Fargate 컴퓨트 노드를 퍼블릭 서브넷에 배치하여 인터넷 게이트웨이(IGW)를 통해 직접 Google reCAPTCHA 및 Amazon SES API와 아웃바운드 통신을 전송하므로 NAT Gateway 고정 비용을 완전히 제거합니다.
+  - Fargate 컴퓨트 노드를 퍼블릭 서브넷에 배치하여 인터넷 게이트웨이(IGW)를 통해 직접 Google reCAPTCHA 및 Resend API와 아웃바운드 통신을 전송하므로 NAT Gateway 고정 비용을 완전히 제거합니다.
 - **스토리지 계층 격리**:
   - RDS 및 ElastiCache는 퍼블릭 IP가 없는 완전 고립 사설 서브넷(Isolated Private Subnet)에 배치하여 직접적인 인터넷 진입로를 원천 봉쇄합니다.
   - 보안 그룹 규칙(`RDS-SG`, `Redis-SG`)을 통해 오직 퍼블릭 서브넷 내 ECS Fargate 태스크의 사설 IP 대역만 진입할 수 있도록 엄격히 제한하여 안전성을 확보합니다.

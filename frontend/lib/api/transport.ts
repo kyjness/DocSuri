@@ -13,6 +13,12 @@ export interface TransportRequest {
   headers?: Record<string, string>;
   /** Safe to retry once on a transient failure (P-R1). */
   idempotent: boolean;
+  /** Whether a transient failure may be retried (P-R1). Defaults to `idempotent`.
+   * Set false on idempotent-for-dedup but non-retry-safe calls (e.g. cost-bearing LLM POSTs). */
+  retryable?: boolean;
+  /** Abort signal for the in-flight request; ApiClient wires it to the per-attempt timeout so a
+   * timed-out request is actually cancelled, not just abandoned (BR-U5-10). */
+  signal?: AbortSignal;
 }
 
 export interface TransportResponse {

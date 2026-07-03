@@ -25,7 +25,7 @@
 검색 이력 기록은 **공개 POST가 아니라 `SearchExecutedEvent` 소비**로 수행됩니다 (브리프 §6·§8, events.md §2 🔒FROZEN). 이 쓰기는 **동기 검색 READ 경로 밖**에서 일어나며, 검색 응답을 절대 블로킹하지 않습니다 (events.md §2 "P50<3s 동기 검색 경로 밖").
 
 - **비차단 보장**: `U2.SearchOrchestrationService.publishSearchExecuted`는 성공 응답 **직후** 이벤트 백본에 fire-and-forget으로 발행하고, `U4.SearchHistoryService.recordSearch`는 이를 비동기 구독·기록합니다. 이력 기록 실패·지연은 검색 사용자 경험에 영향을 주지 않습니다.
-- **전달 보장 → 멱등**: 백본은 **at-least-once** 전달을 전제하므로, 소비자는 **멱등 기록**해야 합니다 (`dedupe_key = sha256(owner_id|executed_at.isoformat()|query)`, D7/BR-L7/INV-L3 — §5.4 참조). 재전달 시 중복 행을 생성하지 않습니다.
+- **전달 보장 → 멱등**: 백본은 **at-least-once** 전달을 전제하므로, 소비자는 **멱등 기록**해야 합니다 (`dedupe_key = sha256(owner_id|requestId|query)`, D7/BR-L7/INV-L3 — §5.4 참조). 재전달 시 중복 행을 생성하지 않습니다.
 - **레이턴시 비목표(non-goal)**: 이력 기록은 동기 SLA 대상이 아니며, 백본 전달 지연(consumer lag)은 NFR-P1 예산에 산입하지 않습니다. 사용자가 새 이력을 조회 시점에 보지 못할 수 있는 결과적 일관성(eventual consistency)은 허용됩니다.
 
 ### 1.3. rerun 경로의 레이턴시 귀속

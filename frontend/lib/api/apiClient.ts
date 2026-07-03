@@ -53,6 +53,19 @@ import type {
   PersonalizationSettings,
   ResetPersonalizationProfileResult,
 } from '@/types/personalization';
+import type {
+  AgentMode,
+  AgentAttachment,
+  AgentAttachmentKind,
+  AgentAttachmentStatus,
+  AgentJobState,
+  AgentMessage,
+  AgentSendMessageRequest,
+  AgentSendMessageResult,
+  AgentSessionSnapshot,
+  AgentSessionSummary,
+  AgentTimelineEvent,
+} from '@/lib/agentChat/types';
 
 export interface ApiClientOptions {
   timeoutMs?: number;
@@ -67,6 +80,300 @@ export interface PageQuery {
 }
 
 const DEFAULT_PAGE_LIMIT = 20;
+const AGENT_ID_SEP = ':';
+
+type BackendResearchJob = {
+  jobId: string;
+  title: string;
+  state: 'active' | 'completed' | 'failed' | 'cancelled';
+  updatedAt: string;
+};
+type BackendResearchMessage = {
+  messageId: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  attachments?: unknown[];
+  createdAt: string;
+};
+type BackendNoveltyJob = {
+  jobId: string;
+  topic: string;
+  state: string;
+  updatedAt: string;
+};
+type BackendNoveltyMessage = BackendResearchMessage;
+type BackendNoveltyEvent = {
+  eventId: string;
+  state: string;
+  message: string;
+  payload?: Record<string, unknown>;
+  createdAt: string;
+};
+type BackendNoveltyArtifact = {
+  artifactId: string;
+  kind: string;
+  title: string;
+  payload?: Record<string, unknown>;
+  createdAt: string;
+};
+
+function encodeAgentSessionId(mode: AgentMode, rawId: string): string {
+  return `${mode}${AGENT_ID_SEP}${rawId}`;
+}
+
+function parseAgentSessionId(
+  id: string,
+  fallback: AgentMode = 'evidence',
+): { mode: AgentMode; rawId: string } {
+  const [mode, rawId] = id.split(AGENT_ID_SEP, 2);
+  if ((mode === 'evidence' || mode === 'novelty') && rawId) return { mode, rawId };
+  if (id.startsWith('agent-novelty-')) return { mode: 'novelty', rawId: id };
+  if (id.startsWith('agent-evidence-')) return { mode: 'evidence', rawId: id };
+  return { mode: fallback, rawId: id };
+}
+
+function mapResearchJob(job: BackendResearchJob): AgentSessionSummary {
+  return {
+    id: encodeAgentSessionId('evidence', job.jobId),
+    title: job.title,
+    mode: 'evidence',
+    state: mapResearchState(job.state),
+    updatedAt: job.updatedAt,
+  };
+}
+
+function mapNoveltyJob(job: BackendNoveltyJob): AgentSessionSummary {
+  return {
+    id: encodeAgentSessionId('novelty', job.jobId),
+    title: job.topic,
+    mode: 'novelty',
+    state: mapNoveltyState(job.state),
+    updatedAt: job.updatedAt,
+  };
+}
+
+function mapResearchState(state: BackendResearchJob['state']): AgentJobState {
+  if (state === 'active') return 'running';
+  if (state === 'cancelled') return 'failed';
+  return state;
+}
+
+function mapNoveltyState(state: string): AgentJobState {
+  if (state === 'queued') return 'queued';
+  if (state === 'completed' || state === 'failed' || state === 'degraded') return state;
+  if (state === 'cancelled') return 'failed';
+  return 'running';
+}
+
+function mapTimelineState(state: AgentJobState): AgentTimelineEvent['state'] {
+  if (state === 'failed') return 'failed';
+  if (state === 'degraded') return 'degraded';
+  if (state === 'completed') return 'completed';
+  return 'running';
+}
+
+function mapAgentMessage(message: BackendResearchMessage): AgentMessage {
+  const role = message.role === 'user' ? 'user' : 'agent';
+  return {
+    id: message.messageId,
+    role,
+    content: message.content,
+    createdAt: message.createdAt,
+    attachments: mapAgentAttachments(message.attachments),
+    status: 'sent' as const,
+  };
+}
+
+function mapAgentAttachments(attachments?: unknown[]): AgentAttachment[] | undefined {
+  if (!attachments?.length) return undefined;
+  return attachments.map((item, index) => {
+    const record = item && typeof item === 'object' ? (item as Record<string, unknown>) : {};
+    const name =
+      stringValue(record.name) ?? stringValue(record.fileName) ?? stringValue(record.filename);
+    const kind = attachmentKind(record.kind, stringValue(record.contentType), name);
+    return {
+      id: stringValue(record.id) ?? stringValue(record.attachmentId) ?? `attachment-${index}`,
+      name: name ?? `첨부 ${index + 1}`,
+      kind,
+      sizeBytes: numberValue(record.sizeBytes) ?? numberValue(record.size) ?? 0,
+      status: attachmentStatus(record.status),
+      error: stringValue(record.error),
+    };
+  });
+}
+
+function mapNoveltyEvent(event: BackendNoveltyEvent, index: number): AgentTimelineEvent {
+  const state = mapNoveltyState(event.state);
+  return {
+    id: event.eventId,
+    stage: event.state,
+    label: event.message,
+    detail: timelineDetail(event.payload),
+    state: mapTimelineState(state),
+    sequence: index + 1,
+  };
+}
+
+function mapNoveltyResultMessage(
+  artifacts: BackendNoveltyArtifact[],
+  fallbackCreatedAt: string,
+): AgentMessage | null {
+  if (artifacts.length === 0) return null;
+  return {
+    id: `novelty-result-${artifacts.map((artifact) => artifact.artifactId).join('-')}`,
+    role: 'agent',
+    content: [
+      'Novelty 분석 결과',
+      ...artifacts.map((artifact) => `- ${artifact.title}: ${artifactSummary(artifact)}`),
+    ].join('\n'),
+    createdAt: artifacts.at(-1)?.createdAt ?? fallbackCreatedAt,
+    status: 'sent',
+  };
+}
+
+function artifactSummary(artifact: BackendNoveltyArtifact): string {
+  const payload = artifact.payload ?? {};
+  const count = countFromPayload(payload);
+  if (artifact.kind === 'experiment_plan') {
+    return [
+      stringValue(payload.researchQuestion),
+      listValue(payload.hypotheses),
+      listValue(payload.datasets),
+      listValue(payload.metrics),
+      listValue(payload.risks),
+    ]
+      .filter(Boolean)
+      .join(' / ');
+  }
+  const firstItem = firstItemTitle(payload);
+  if (firstItem) return count ? `${firstItem} 외 ${count}건` : firstItem;
+  return count ? `${count}건` : '결과 생성됨';
+}
+
+function timelineDetail(payload?: Record<string, unknown>): string | undefined {
+  if (!payload) return undefined;
+  const parts = [
+    labeled('소스', payload.source ?? payload.sourceType ?? payload.type),
+    labeled('쿼리', payload.query),
+    labeled('요약', payload.outputSummary),
+    countFromPayload(payload) ? `결과 ${countFromPayload(payload)}건` : undefined,
+    safeReason(payload),
+  ];
+  return parts.filter(Boolean).join(' · ') || undefined;
+}
+
+function labeled(label: string, value: unknown): string | undefined {
+  const text = stringValue(value);
+  return text ? `${label}: ${text}` : undefined;
+}
+
+function safeReason(payload: Record<string, unknown>): string | undefined {
+  if (hasValue(payload.error)) return '사유: 처리 중 오류가 발생했습니다.';
+  if (hasValue(payload.degradedReasons) || hasValue(payload.reason)) {
+    return '사유: 일부 연동이 저하되어 가능한 결과만 표시합니다.';
+  }
+  return undefined;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function hasValue(value: unknown): boolean {
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === 'string') return value.trim().length > 0;
+  return value !== null && value !== undefined;
+}
+
+function listValue(value: unknown): string | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.map(stringValue).filter(Boolean).slice(0, 2).join(', ') || undefined;
+}
+
+function attachmentStatus(value: unknown): AgentAttachmentStatus {
+  return value === 'rejected' ? 'rejected' : 'ready';
+}
+
+function attachmentKind(value: unknown, contentType?: string, name?: string): AgentAttachmentKind {
+  if (value === 'pdf' || value === 'markdown' || value === 'text') return value;
+  const lowerName = name?.toLowerCase() ?? '';
+  const lowerType = contentType?.toLowerCase() ?? '';
+  if (lowerType.includes('pdf') || lowerName.endsWith('.pdf')) return 'pdf';
+  if (lowerType.includes('markdown') || lowerName.endsWith('.md')) return 'markdown';
+  if (lowerType.includes('text') || lowerName.endsWith('.txt')) return 'text';
+  return 'unknown';
+}
+
+function countFromPayload(payload: Record<string, unknown>): number | undefined {
+  const explicit = payload.count ?? payload.foundCount ?? payload.resultCount;
+  if (typeof explicit === 'number') return explicit;
+  return Array.isArray(payload.items) ? payload.items.length : undefined;
+}
+
+function firstItemTitle(payload: Record<string, unknown>): string | undefined {
+  const items = payload.items;
+  if (!Array.isArray(items)) return undefined;
+  const first = items[0];
+  if (!first || typeof first !== 'object') return undefined;
+  const item = first as Record<string, unknown>;
+  return stringValue(item.title) ?? stringValue(item.summary);
+}
+
+function toResearchBody(req: AgentSendMessageRequest) {
+  if (
+    process.env.NEXT_PUBLIC_DOCSURI_REAL_API &&
+    process.env.NEXT_PUBLIC_DOCSURI_RESEARCH_AGENT_ENABLED !== '1'
+  ) {
+    throw new UserFacingError('unknown', 'Research는 아직 실배포에서 사용할 수 없습니다.');
+  }
+  return toChatBody(req);
+}
+
+function toChatBody(req: AgentSendMessageRequest) {
+  return { content: req.content, attachments: req.attachments ?? [] };
+}
+
+function toNoveltyBody(req: AgentSendMessageRequest, created: boolean) {
+  if (!created) {
+    if (process.env.NEXT_PUBLIC_DOCSURI_REAL_API) {
+      throw new UserFacingError(
+        'unknown',
+        'Novelty 후속 대화는 아직 실배포에서 사용할 수 없습니다.',
+      );
+    }
+    return toChatBody(req);
+  }
+  const manuscript = req.attachments?.[0];
+  if (manuscript && process.env.NEXT_PUBLIC_DOCSURI_REAL_API) {
+    throw new UserFacingError(
+      'unknown',
+      '파일 업로드 연동 전에는 Novelty 첨부 분석을 사용할 수 없습니다.',
+    );
+  }
+  return {
+    inputType: manuscript ? 'manuscript' : 'natural_language',
+    topic: req.content,
+    manuscript: manuscript
+      ? {
+          fileName: manuscript.name,
+          contentType: contentTypeFor(manuscript),
+          objectKey: null,
+        }
+      : null,
+    constraints: {},
+    exportToNotion: false,
+  };
+}
+
+function contentTypeFor(attachment: AgentAttachment): string {
+  if (attachment.kind === 'pdf') return 'application/pdf';
+  if (attachment.kind === 'markdown') return 'text/markdown';
+  return 'text/plain';
+}
 
 function pageQuery(params?: PageQuery): string {
   const sp = new URLSearchParams({ limit: String(params?.limit ?? DEFAULT_PAGE_LIMIT) });
@@ -117,6 +424,8 @@ export class ApiClient {
       path: '/api/summarize',
       body: req,
       idempotent: true,
+      // dedup yes (BR-U5-18), retry no — a cost-bearing LLM POST must never double-bill (P-R1, NFR-C1).
+      retryable: false,
     });
     if (res.status === 200 || res.status === 400) {
       return classifySummarizeResponse(res.body);
@@ -269,6 +578,160 @@ export class ApiClient {
       idempotent: false,
     });
     if (res.status === 200) return res.body as ResetPersonalizationProfileResult;
+    throw normalizeHttpError(res.status, serverMessage(res.body));
+  }
+
+  // ---- agent chat frontend seam (U11/U12) -------------------------------
+
+  async listAgentSessions(mode?: AgentMode): Promise<AgentSessionSummary[]> {
+    const modes: AgentMode[] = mode ? [mode] : ['evidence', 'novelty'];
+    const results = await Promise.allSettled(
+      modes.map((item) => this.listAgentSessionsForMode(item)),
+    );
+    const fulfilled = results.filter(
+      (result): result is PromiseFulfilledResult<AgentSessionSummary[]> =>
+        result.status === 'fulfilled',
+    );
+    if (!fulfilled.length) {
+      throw (results.find((result) => result.status === 'rejected') as PromiseRejectedResult)
+        .reason;
+    }
+    const sessions = fulfilled.flatMap((result) => result.value);
+    return sessions.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
+  private async listAgentSessionsForMode(mode: AgentMode): Promise<AgentSessionSummary[]> {
+    const path = mode === 'evidence' ? '/api/research/jobs?limit=20' : '/api/novelty/jobs?limit=20';
+    const res = await this.request({
+      method: 'GET',
+      path,
+      idempotent: true,
+    });
+    if (res.status === 200) {
+      const jobs = (res.body as { jobs?: unknown[] }).jobs ?? [];
+      return jobs.map((job) =>
+        mode === 'evidence'
+          ? mapResearchJob(job as BackendResearchJob)
+          : mapNoveltyJob(job as BackendNoveltyJob),
+      );
+    }
+    throw normalizeHttpError(res.status, serverMessage(res.body));
+  }
+
+  async loadAgentSession(id: string): Promise<AgentSessionSnapshot> {
+    const target = parseAgentSessionId(id);
+    if (target.mode === 'novelty') return this.loadNoveltySession(target.rawId);
+    return this.loadResearchSession(target.rawId);
+  }
+
+  private async loadResearchSession(id: string): Promise<AgentSessionSnapshot> {
+    const res = await this.request({
+      method: 'GET',
+      path: `/api/research/jobs/${encodeURIComponent(id)}`,
+      idempotent: true,
+    });
+    if (res.status === 200) {
+      const body = res.body as { job: BackendResearchJob; messages?: BackendResearchMessage[] };
+      return {
+        session: mapResearchJob(body.job),
+        messages: (body.messages ?? []).map((message) => mapAgentMessage(message)),
+        events: [],
+      };
+    }
+    throw normalizeHttpError(res.status, serverMessage(res.body));
+  }
+
+  private async loadNoveltySession(id: string): Promise<AgentSessionSnapshot> {
+    const [jobRes, messageRes, resultRes] = await Promise.all([
+      this.request({
+        method: 'GET',
+        path: `/api/novelty/jobs/${encodeURIComponent(id)}`,
+        idempotent: true,
+      }),
+      this.request({
+        method: 'GET',
+        path: `/api/novelty/jobs/${encodeURIComponent(id)}/messages`,
+        idempotent: true,
+      }),
+      this.request({
+        method: 'GET',
+        path: `/api/novelty/jobs/${encodeURIComponent(id)}/result`,
+        idempotent: true,
+      }),
+    ]);
+    if (jobRes.status !== 200) throw normalizeHttpError(jobRes.status, serverMessage(jobRes.body));
+    if (messageRes.status !== 200) {
+      throw normalizeHttpError(messageRes.status, serverMessage(messageRes.body));
+    }
+    if (![200, 404, 409].includes(resultRes.status)) {
+      throw normalizeHttpError(resultRes.status, serverMessage(resultRes.body));
+    }
+    const jobBody = jobRes.body as { job: BackendNoveltyJob; events?: BackendNoveltyEvent[] };
+    const messageBody = messageRes.body as { messages?: BackendNoveltyMessage[] };
+    const resultBody = resultRes.body as {
+      artifacts?: BackendNoveltyArtifact[];
+    };
+    const messages = (messageBody.messages ?? []).map((message) => mapAgentMessage(message));
+    const resultMessage = mapNoveltyResultMessage(
+      resultRes.status === 200 ? (resultBody.artifacts ?? []) : [],
+      jobBody.job.updatedAt,
+    );
+    return {
+      session: mapNoveltyJob(jobBody.job),
+      messages: resultMessage ? [...messages, resultMessage] : messages,
+      events: (jobBody.events ?? []).map((event, index) => mapNoveltyEvent(event, index)),
+    };
+  }
+
+  async sendAgentMessage(
+    sessionId: string,
+    req: AgentSendMessageRequest,
+  ): Promise<AgentSendMessageResult> {
+    const target = parseAgentSessionId(sessionId, req.mode);
+    const created = sessionId.startsWith(`agent-${req.mode}-`);
+    const path =
+      target.mode === 'evidence'
+        ? created
+          ? '/api/research/jobs'
+          : `/api/research/jobs/${encodeURIComponent(target.rawId)}/messages`
+        : created
+          ? '/api/novelty/jobs'
+          : `/api/novelty/jobs/${encodeURIComponent(target.rawId)}/messages`;
+    const res = await this.request({
+      method: 'POST',
+      path,
+      body: target.mode === 'evidence' ? toResearchBody(req) : toNoveltyBody(req, created),
+      idempotent: false,
+    });
+    if (res.status !== 200 && res.status !== 201) {
+      throw normalizeHttpError(res.status, serverMessage(res.body));
+    }
+    const nextId =
+      created && target.mode === 'evidence'
+        ? encodeAgentSessionId('evidence', (res.body as { jobId: string }).jobId)
+        : created && target.mode === 'novelty'
+          ? encodeAgentSessionId('novelty', (res.body as { jobId: string }).jobId)
+          : sessionId;
+    const snapshot = await this.loadAgentSession(nextId);
+    return {
+      session: snapshot.session,
+      messages: snapshot.messages,
+      events: snapshot.events,
+      outcome: snapshot.session.state === 'failed' ? 'failed' : snapshot.session.state,
+    };
+  }
+
+  async deleteAgentSession(id: string): Promise<void> {
+    const target = parseAgentSessionId(id);
+    const res = await this.request({
+      method: 'DELETE',
+      path:
+        target.mode === 'evidence'
+          ? `/api/research/jobs/${encodeURIComponent(target.rawId)}`
+          : `/api/novelty/jobs/${encodeURIComponent(target.rawId)}`,
+      idempotent: false,
+    });
+    if (res.status === 200 || res.status === 204) return;
     throw normalizeHttpError(res.status, serverMessage(res.body));
   }
 
@@ -635,12 +1098,12 @@ export class ApiClient {
   }
 
   private async sendWithPolicy(req: TransportRequest): Promise<TransportResponse> {
-    const attempts = req.idempotent ? 2 : 1;
-    const stop = recordPath(req.path);
+    const attempts = (req.retryable ?? req.idempotent) ? 2 : 1;
+    const stop = recordPath(req.path.split('?')[0]);
     for (let i = 0; i < attempts; i++) {
       const lastAttempt = i === attempts - 1;
       try {
-        const res = await this.withTimeout(this.transport.send(req));
+        const res = await this.withTimeout((signal) => this.transport.send({ ...req, signal }));
         if (res.status >= 500 && !lastAttempt) {
           await delay(this.retryBackoffMs * (i + 1));
           continue;
@@ -661,10 +1124,16 @@ export class ApiClient {
     throw new UserFacingError('network');
   }
 
-  private withTimeout(p: Promise<TransportResponse>): Promise<TransportResponse> {
+  private withTimeout(
+    send: (signal: AbortSignal) => Promise<TransportResponse>,
+  ): Promise<TransportResponse> {
+    const controller = new AbortController();
     return new Promise((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error('timeout')), this.timeoutMs);
-      p.then(
+      const t = setTimeout(() => {
+        controller.abort();
+        reject(new Error('timeout'));
+      }, this.timeoutMs);
+      send(controller.signal).then(
         (v) => {
           clearTimeout(t);
           resolve(v);

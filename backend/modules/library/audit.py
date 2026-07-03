@@ -50,4 +50,3 @@ def make_event(action: str, entity_type: str, entity_id: str | None, owner_ref: 
         owner_ref=opaque_ref,
         at=datetime.now(UTC),
     )
-

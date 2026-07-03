@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import string
 from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
 from docsuri_shared.dtos import DocModel
 from docsuri_shared.vector_spec import DIMENSIONS
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from docsuri_ingestion.adapters.local import InMemoryControlPlaneStore, sample_metadata
 from docsuri_ingestion.domain.enums import DedupDecision, DedupStateKind, SourceName
@@ -24,6 +27,12 @@ from docsuri_ingestion.processors import (
     FetchParseProcessor,
     IndexRecordAssembler,
     detect_withdrawal,
+)
+
+_HOST_LABEL = st.text(
+    alphabet=string.ascii_lowercase + string.digits,
+    min_size=1,
+    max_size=20,
 )
 
 
@@ -46,9 +55,27 @@ def test_oa_license_validation_rejects_missing_and_unknown_allows_arxiv_and_cc()
         processor.validate_open_access(None)
     with pytest.raises(LicenseRejectedError):
         processor.validate_open_access("https://example.com/proprietary-eula")
+    with pytest.raises(LicenseRejectedError):
+        processor.validate_open_access(
+            "https://example.com/?next=https://creativecommons.org/licenses/by/4.0/"
+        )
     # Relaxed beyond CC: arXiv's default non-exclusive distribution license now passes.
     processor.validate_open_access("http://arxiv.org/licenses/nonexclusive-distrib/1.0/")
     processor.validate_open_access("https://creativecommons.org/licenses/by/4.0/")
+
+
+@settings(max_examples=50)
+@given(label=_HOST_LABEL)
+def test_oa_license_validation_rejects_cc_substring_spoofs(label: str) -> None:
+    processor = FetchParseProcessor()
+    spoofed_host = f"{label}.creativecommons.org.evil.test"
+
+    with pytest.raises(LicenseRejectedError):
+        processor.validate_open_access(f"https://{spoofed_host}/licenses/by/4.0/")
+    with pytest.raises(LicenseRejectedError):
+        processor.validate_open_access(
+            f"https://evil.test/?next=https://creativecommons.org/licenses/by/4.0/{label}"
+        )
 
 
 def test_withdrawal_detection_uses_metadata_and_full_text() -> None:

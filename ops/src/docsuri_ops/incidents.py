@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
 
 from docsuri_shared.events import (
@@ -45,7 +46,11 @@ class AiIncidentDetectorSuite:
             return self.cost_detector.evaluate_usage(
                 UsageEvent(
                     event_id=event.event_id,
-                    amount_usd=float(event.value or event.payload.get("amountUsd", 0.0)),
+                    amount_usd=(
+                        float(event.value)
+                        if event.value is not None
+                        else float(event.payload.get("amountUsd", 0.0))
+                    ),
                     source=str(event.payload.get("source", "unknown")),
                     timestamp=event.timestamp,
                     request_id=event.request_id,
@@ -73,6 +78,18 @@ class AiIncidentDetectorSuite:
         )
 
 
+class PublishOutcome(Enum):
+    """Result of publishing an incident — lets the worker decide whether to ack. (Finding 1)
+
+    A duplicate is an idempotent success (ack it), NOT a failure. Conflating the two made a
+    redelivered duplicate un-ackable → infinite redelivery (poison message) on a real source.
+    """
+
+    PUBLISHED = "published"  # newly stored + emitted → ack
+    DUPLICATE = "duplicate"  # already recorded (idempotent) → ack
+    FAILED = "failed"  # transient emit failure, nothing committed → do NOT ack, redeliver
+
+
 @dataclass(slots=True)
 class IncidentEventPublisher:
     incident_store: Any
@@ -80,7 +97,7 @@ class IncidentEventPublisher:
     event_store: Any | None = None
     _published_alerts: BoundedSeen = field(default_factory=BoundedSeen)  # bounded LRU dedup
 
-    def publish_candidate(self, candidate: IncidentCandidate) -> bool:
+    def publish_candidate(self, candidate: IncidentCandidate) -> PublishOutcome:
         record = ClassifiedIncidentRecord(
             incident_class=candidate.incident_class,
             severity=candidate.severity,
@@ -88,7 +105,7 @@ class IncidentEventPublisher:
             reason=candidate.reason,
             timestamp=candidate.timestamp,
         )
-        published = self.publish_incident(record)
+        outcome = self.publish_incident(record)
         self.publish_alert(
             AlertRecord(
                 severity=candidate.severity,
@@ -97,12 +114,15 @@ class IncidentEventPublisher:
                 timestamp=candidate.timestamp,
             )
         )
-        return published
+        return outcome
 
-    def publish_incident(self, record: ClassifiedIncidentRecord) -> bool:
-        added = self.incident_store.append_incident(record)
-        if not added:
-            return False
+    def publish_incident(self, record: ClassifiedIncidentRecord) -> PublishOutcome:
+        # Publish-before-commit for at-least-once safety: mark the incident as recorded (which
+        # suppresses future redeliveries) ONLY after the external emit succeeds. So a duplicate is
+        # ack-able, and a transient emit failure leaves nothing committed → redelivery re-attempts
+        # cleanly instead of looping forever or dropping the incident. (Finding 1)
+        if self.incident_store.has_incident(record):
+            return PublishOutcome.DUPLICATE
         event = ClassifiedIncident(
             **{
                 "class": SharedIncidentClass(record.incident_class.value),
@@ -110,7 +130,9 @@ class IncidentEventPublisher:
                 "requestId": record.request_id,
             }
         )
-        published = self.alert_publisher.publish_incident(event)
+        if not self.alert_publisher.publish_incident(event):
+            return PublishOutcome.FAILED
+        self.incident_store.append_incident(record)
         self._audit(
             {
                 "eventId": f"incident:{record.incident_class.value}:{record.request_id}",
@@ -119,7 +141,7 @@ class IncidentEventPublisher:
                 "severity": record.severity.value,
             }
         )
-        return published
+        return PublishOutcome.PUBLISHED
 
     def publish_alert(self, alert: AlertRecord) -> bool:
         if alert.dedup_key in self._published_alerts:
@@ -151,6 +173,9 @@ class IncidentEventPublisher:
 
 
 def _grounding_decision_from_payload(payload: dict) -> GroundingDecision:
-    verdict = str(payload.get("verdict", "pass"))
+    # Fail closed (INV-7): a GROUNDING telemetry event with a missing/empty verdict is malformed
+    # — default it to "abstain" (a non-pass that raises a WARNING incident) instead of silently
+    # treating it as "pass" and dropping a possible hallucination signal. (Finding 3)
+    verdict = str(payload.get("verdict") or "abstain")
     violations = tuple(payload.get("violations", ()))
     return GroundingDecision(verdict=verdict, violations=violations)

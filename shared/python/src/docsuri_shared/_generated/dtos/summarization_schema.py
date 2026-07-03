@@ -147,6 +147,17 @@ class SummaryDraft(BaseModel):
     )
 
 
+class StandardGlossaryItem(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    term: str = Field(..., description='The English (source) term.')
+    translated: str | None = Field(
+        None,
+        description='Standard Korean rendering — present only for mapping terms (e.g. attention→어텐션), where it pre-fills the editor; absent for keep-as-is terms (kept in English).',
+    )
+
+
 class SummaryMeta(BaseModel):
     """
     Summary metadata including fallback information.
@@ -328,6 +339,10 @@ class TranslationDraft(BaseModel):
     keptTerms: list[str] = Field(
         ...,
         description='Untranslated terminology or glossary terms kept as-is. Trace: FR-13.',
+    )
+    standardGlossary: list[StandardGlossaryItem] | None = Field(
+        None,
+        description="DocSuri standard glossary terms (shared seed) that appear in THIS paper: keep-as-is terms the model kept in English (no 'translated'), plus mapping terms whose standard Korean appears in the translation ('translated' set). The client renders a 표준 용어집; both kinds are editable as strong, prompt-enforced overrides (re-translation) — a mapping chip pre-fills its editor with the standard rendering. Trace: BR-S4.",
     )
 
 

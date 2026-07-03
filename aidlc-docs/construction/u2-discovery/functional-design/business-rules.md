@@ -27,7 +27,7 @@
 | **BR-11 (저하 매트릭스)** | `getBudgetState().degradeMode`(U6 단일 권위 조회): NORMAL=hybrid; RERANK_OFF=리랭킹 생략(U2 baseline상 무변화이나 배너 표면화); LEXICAL_ONLY=임베딩 생략·BM25 폴백. 저하는 `ResultMeta.degraded`/`mode`로 명시(US-R2/R3). | NFR-C1, NFR-R2, US-R2/R3, Q6=A |
 | **BR-12 (비용 단일 권위)** | U2는 비용/예산을 **독자 판정하지 않는다**. `getBudgetState` 조회·분기만. 누적/임계/서킷 전이는 U6 내부. | NFR-C1, Q6=A, Q8=A |
 | **BR-13 (인증 전제)** | `POST /api/search`는 **인증 필수**(deny-by-default, SEC-8). authn 강제는 U6 게이트웨이; U2는 `RequestContext.authSession` 신뢰·userId 사용(SearchExecuted). 미인증은 게이트웨이 401. | SEC-8, FR-10, Q5=A |
-| **BR-14 (SearchExecuted 비차단)** | 성공 응답 **후** `publishSearchExecuted(userId, query, timestamp, resultCount)` 발행. **fire-and-forget**: 발행 실패는 응답에 무영향(관측 로그만), NFR-P1 경로 밖. | FR-10, NFR-P1, US-L3, Q11=A |
+| **BR-14 (SearchExecuted 비차단)** | 성공 응답 **후** `publishSearchExecuted(userId, requestId, query, timestamp, resultCount)` 발행. **fire-and-forget**: 발행 실패는 응답에 무영향(관측 로그만), NFR-P1 경로 밖. | FR-10, NFR-P1, US-L3, Q11=A |
 | **BR-15 (SEC-9 비노출 — INV-2)** *(2026-06-29 개정 — 페이즈 2)* | 외부 DTO에 내부 필드(owner userId·raw/RRF 점수·디버그·트레이스·`vector`/`lexicalTerms`/`chunkId`/`section`/**`blockRefs`/`sourceProvenance`**·전체 `abstract`) 비노출(Q3: `blockRefs`/`sourceProvenance` 외부 노출 페이즈 3·4 이월). 카드는 §domain-entities §5.1(페이즈 2: 소스 중립 `sourceName`/`sourceUrl` 추가 투영). | SEC-9 |
 | **BR-16 (fail-closed — INV-3)** | 모든 외부 어댑터 호출(expand/retrieve) 타임아웃·서킷(RES-9, 수치 NFR). 처리 중 예외는 전역 핸들러가 **일반화 비기술 에러**로 매핑(스택/내부 식별자 비노출), 권한·검증 우회 없음. | SEC-15, NFR-R1, FR-11 |
 | **BR-17 (관측성)** | 단계 지연·검색/근거화 건강도·degradeMode를 `ObservabilityHub.emit*` 제출(requestId 상관). **PII/시크릿 금지(SEC-3)** — 질의 원문 로깅 정책은 SEC-3 준수. | NFR-O1, SEC-3 |

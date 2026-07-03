@@ -167,3 +167,26 @@ Coverage focus:
 - idempotent retention purge
 
 ---
+
+# Agent Chat Frontend Unit/UI Test Instructions — 2026-07-01
+
+Run focused Agent Chat frontend tests:
+
+```powershell
+corepack pnpm@9.15.9 --dir frontend exec -- vitest run test/agentChatReducer.test.ts test/agentChatScreen.test.tsx --reporter=dot
+```
+
+Observed result:
+
+- 2 test files passed.
+- 9 tests passed.
+
+Coverage focus:
+
+- reducer mode/session/message state transitions
+- Novelty mode session start and multi-turn send
+- previous session loading from the drawer
+- rejected attachment state and send blocking
+- mock transport interaction through `/api/research/jobs` and `/api/novelty/jobs`
+
+---

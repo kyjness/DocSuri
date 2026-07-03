@@ -301,14 +301,14 @@
 - **Given** 로그인한 사용자가 검색, 논문 조회, 라이브러리 저장/해제, 요약/번역 요청, 출처 앵커 클릭, 용어집 수정을 수행하면, **When** 해당 API 또는 UI 액션이 성공하면, **Then** 사용자별 `user_behavior_events`에 최소 이벤트가 기록된다.
 - **Given** 단순 hover, scroll, 임의 클릭, 페이지 체류 시간, **When** 사용자가 화면을 탐색하면, **Then** v1에서는 행동 이벤트로 기록하지 않는다.
 - **Given** 행동 이벤트 기록 저장소가 실패하면, **When** 본 기능 요청이 완료되어야 할 때, **Then** 요청은 실패하지 않고 개인화 이벤트만 누락/저하 신호로 남는다.
-- **Traces**: FR-18, NFR-P4, SEC-8, SEC-9, RES-9
+- **Traces**: FR-39, NFR-P4, SEC-8, SEC-9, RES-9
 
 ### US-P2 — 라이브러리 저장/해제와 출처 앵커 신호
 **As** 연구자(P1), **I want** 라이브러리 저장·해제와 출처 보기 행동이 관심 신호로 반영되기를, **so that** 내가 실제로 검토한 논문이 프로필에 반영된다.
 - **Given** 사용자가 논문을 라이브러리에 저장하면, **When** 저장이 성공하면, **Then** `library_added` 이벤트가 논문 ID와 함께 기록된다.
 - **Given** 사용자가 논문을 라이브러리에서 해제하면, **When** 삭제가 성공하면, **Then** 삭제 전 확보한 논문 ID로 `library_removed` 이벤트가 기록된다.
 - **Given** 사용자가 요약/번역의 출처 보기를 탭하면, **When** 앵커 이동이 성공하면, **Then** `source_anchor_clicked` 이벤트가 기록되며 원문 내용 자체는 저장하지 않는다.
-- **Traces**: FR-18, FR-9, FR-12, FR-13, SEC-8, QT-7
+- **Traces**: FR-39, FR-9, FR-12, FR-13, SEC-8, QT-7
 
 ### US-P3 — 사용자 관심 프로필 집계
 **As** 연구자(P1), **I want** 내 행동이 관심 주제 프로필로 집계되기를, **so that** 반복적으로 보는 분야가 다음 탐색에 반영된다.
@@ -347,7 +347,7 @@
 
 ---
 
-## 에픽 9 — 차별화(novelty) 형성 Agent *(2026-06-29 편입)*
+## 에픽 9 — 차별화(novelty) 형성 Agent *(U12, 2026-06-29 편입)*
 
 > 자연어 연구 의도 또는 업로드 원고를 받아 유사 연구를 정리하고, 근거 기반 차별화 후보와 실험 계획을 만든다. 문헌탐색·근거형성 Agent는 별도 유닛이며, 본 Agent는 `EvidenceFormationPort`/`SourceRef` 공유계약만 소비한다. v1 외부 탐색은 GitHub와 데이터셋으로 제한하고 뉴스 검색은 다음 사이클로 둔다.
 
@@ -412,7 +412,7 @@
 
 ---
 
-## 에픽 10 — 문헌탐색·근거형성 Agent *(U4, 2026-06-29 편입)*
+## 에픽 10 — 문헌탐색·근거형성 Agent *(U11, 2026-06-29 편입)*
 
 > 연구자가 여러 논문을 가로질러 근거를 형성하는 대화형 AI Agent. 검색·DocModel·요약·인용 파이프라인을 Agent가 자율 오케스트레이션해 핵심 주장·방법·결과·한계를 추출·비교하고 쟁점 오버레이로 제시. 신뢰 원칙: 날조 없음(FR-5·C-2), 근거 0건이면 기권(abstain). D5 포트(EvidenceFormationPort)를 통해 U12(연구아이디어 Agent)가 소비한다. 설계 입력: `../requirements/requirements.md` §FR-36~38, NFR-P6, QT-8.
 
@@ -475,12 +475,66 @@
 
 ---
 
+## 에픽 11 — 에이전트 채팅 프론트엔드 *(U13, 2026-07-01 편입)*
+
+> 문헌탐색·근거형성 Agent(U11)와 차별화(novelty) Agent(U12)를 하나의 `/agent` 채팅 화면에서 선택·실행하는 프론트엔드 셸. v1은 mock transport와 실제 API 연동 경계를 함께 두고, 세션별 모드 고정·과거 세션 drawer·탐구 과정 timeline·파일 첨부 상태 UX를 제공한다.
+
+### US-AG1 — 하단 네비에서 에이전트 채팅 진입
+**As** 연구자(P1/P2), **I want** 하단 네비 가운데의 `에이전트` 탭으로 채팅 화면에 들어가기를, **so that** 검색과 마이페이지 사이에서 연구 보조 Agent를 바로 시작할 수 있다.
+- **Given** 로그인한 사용자가 모바일 하단 네비를 보면, **When** `에이전트` 탭을 탭하면, **Then** `/agent` 단일 route가 열리고 탭이 현재 위치로 표시된다.
+- **Given** 데스크톱 브라우저, **When** 상단 네비를 보면, **Then** `에이전트` 진입점이 검색/마이페이지와 같은 주 메뉴로 표시된다.
+- **Given** 로그인하지 않은 사용자가 `/agent`에 접근하면, **When** route guard가 실행되면, **Then** 로그인 화면으로 이동한다.
+- **Traces**: FR-40, SEC-8
+
+### US-AG2 — 새 채팅에서 Agent 모드 선택 및 고정
+**As** 연구자(P1/P2), **I want** 새 채팅 시작 시 `문헌탐색&근거형성` 또는 `novelty` 중 하나를 선택하기를, **so that** 같은 채팅 안에서 Agent 목적이 섞이지 않게 한다.
+- **Given** 새 채팅 화면, **When** 사용자가 두 모드 중 하나를 선택하면, **Then** 입력창이 즉시 활성화되고 선택한 모드가 세션에 저장된다.
+- **Given** 이미 모드가 선택된 세션, **When** 사용자가 모드 변경을 시도하면, **Then** 현재 세션의 모드는 바꾸지 않고 새 채팅 생성을 안내한다.
+- **Given** 사용자가 과거 세션을 다시 열면, **When** 화면이 복원되면, **Then** 해당 세션의 고정 모드가 표시되고 변경할 수 없다.
+- **Traces**: FR-40, QT-11
+
+### US-AG3 — 과거 세션 drawer와 멀티턴 채팅
+**As** 연구자(P1/P2), **I want** 왼쪽 위 메뉴에서 과거 Agent 세션을 열고 같은 세션에서 대화를 이어가기를, **so that** 연구 흐름을 끊지 않고 재방문할 수 있다.
+- **Given** 사용자가 메뉴 버튼을 누르면, **When** 세션 drawer가 열리면, **Then** 내 세션 목록, 새 채팅, 삭제 동작이 표시된다.
+- **Given** 세션 목록이 있으면, **When** 사용자가 세션을 선택하면, **Then** 메시지 이력과 모드, 최종 상태가 복원된다.
+- **Given** 사용자가 메시지를 전송하면, **When** 응답이 생성되면, **Then** 이전 턴 맥락이 보존된 멀티턴 대화로 표시된다.
+- **Traces**: FR-41, SEC-8
+
+### US-AG4 — 탐구 과정 timeline 표시
+**As** 연구자(P1/P2), **I want** Agent가 수행 중인 탐구 과정을 메시지 사이의 timeline으로 보기를, **so that** 긴 분석 중에도 무엇이 진행 중인지 알 수 있다.
+- **Given** Agent 작업이 진행 중이면, **When** 단계 이벤트가 도착하면, **Then** 검색, 근거 정리, 외부 탐색, 아이디어 형성 등 단계가 시간순 timeline으로 표시된다.
+- **Given** timeline 항목이 길면, **When** 사용자가 펼치거나 접으면, **Then** 주요 상태는 유지하면서 상세 내용만 확장/축소된다.
+- **Given** 일부 source가 실패했지만 결과 생성이 가능하면, **When** timeline을 보면, **Then** 해당 source의 저하 상태와 계속 진행 중인 단계를 함께 표시한다.
+- **Traces**: FR-42, NFR-P7, QT-11
+
+### US-AG5 — 파일 첨부와 상태 UX
+**As** 연구자(P1/P2), **I want** 채팅 입력창 왼쪽 `+` 버튼으로 문서를 첨부하기를, **so that** 원고나 참고 문서를 Agent 입력에 포함할 수 있다.
+- **Given** 사용자가 `+` 버튼을 누르면, **When** 첨부 drawer가 열리면, **Then** PDF, Markdown, TXT 파일만 선택할 수 있거나 허용되지 않는 형식은 즉시 거부된다.
+- **Given** 첨부가 있는 상태에서 메시지를 전송하면, **When** 요청이 생성되면, **Then** 첨부 목록과 처리 상태가 채팅 화면에 표시된다.
+- **Given** 첨부 검증 또는 처리에 실패하면, **When** 오류가 표시되면, **Then** 내부 오류나 원문 민감정보 없이 재시도/삭제 경로를 제공한다.
+- **Traces**: FR-43, SEC-5, SEC-9, QT-11
+
+### US-AG6 — mock/real transport 경계와 실패·저하 처리
+**As** 연구자(P1/P2), **I want** mock preview와 실제 API 연동 모두에서 같은 채팅 UX를 보기를, **so that** 구현 단계별로 화면 동작이 흔들리지 않는다.
+- **Given** mock transport가 사용되면, **When** 채팅을 전송하면, **Then** v1 preview가 실제 API 응답과 같은 정규화된 메시지·timeline·상태 모델로 표시된다.
+- **Given** `/api/novelty/*` 또는 향후 evidence Agent API가 사용되면, **When** 응답이 성공·실패·저하 중 하나로 반환되면, **Then** 화면은 동일한 분류 규칙으로 completed/failed/degraded 상태를 표시한다.
+- **Given** 네트워크 또는 서버 오류가 발생하면, **When** 사용자가 화면을 보면, **Then** 비기술 메시지와 재시도 경로를 제공하고 입력 내용은 보존한다.
+- **Traces**: FR-41, FR-42, NFR-P7, QT-11
+
+### US-AG7 — 에이전트 채팅 프론트엔드 품질 게이트 *(페르소나 OP)*
+**As** 운영자(OP), **I want** 에이전트 채팅 프론트엔드의 상태 불변식과 저하 표시를 검증하기를, **so that** 사용자에게 조용한 반쪽 결과나 잘못된 세션 상태가 보이지 않게 한다.
+- **Given** 프론트엔드 테스트가 실행되면, **When** 세션 reducer와 순수 helper를 검증하면, **Then** 모드 고정, 세션 정렬, event ordering, 첨부 allowlist, 응답 분류 불변식을 PBT 후보로 다룬다.
+- **Given** UI rendering 테스트가 실행되면, **When** 모바일과 데스크톱 상태를 검증하면, **Then** 하단/상단 네비, drawer, 입력창, timeline, 실패/저하 메시지가 예시 기반 테스트로 확인된다.
+- **Traces**: QT-11, NFR-P7, NFR-O1
+
+---
+
 ## 페르소나 → 스토리 맵
 | 페르소나 | 스토리 |
 |---|---|
-| P1 (박지훈) | US-H1, US-D1..D7, US-A1..A7, US-L1, US-L2, US-L3, US-I2, US-S1..S5, US-CG1..CG5, US-P1..P6, US-NV1..NV8, US-EV1..EV8 |
-| P2 | US-H1, US-D1, US-A1..A7, US-P4, US-P5, US-P6, US-NV1, US-NV3, US-NV6, US-NV7 |
-| OP | US-I1, US-I2, US-I3, US-R1, US-R2, US-R3, US-R4, US-R5, US-S6, US-CG6, US-P7, US-NV9, US-EV9 |
+| P1 (박지훈) | US-H1, US-D1..D7, US-A1..A7, US-L1, US-L2, US-L3, US-I2, US-S1..S5, US-CG1..CG5, US-P1..P6, US-NV1..NV8, US-EV1..EV8, US-AG1..AG6 |
+| P2 | US-H1, US-D1, US-A1..A7, US-P4, US-P5, US-P6, US-NV1, US-NV3, US-NV6, US-NV7, US-AG1..AG6 |
+| OP | US-I1, US-I2, US-I3, US-R1, US-R2, US-R3, US-R4, US-R5, US-S6, US-CG6, US-P7, US-NV9, US-EV9, US-AG7 |
 
 ## FR → 스토리 커버리지
 | 요구사항 | 스토리 |
@@ -533,22 +587,29 @@
 | NFR-P3 (각주 트리 온디맨드 응답) [U8] | US-CG1 |
 | QT-6 (인용 엣지 정확도·그래프 불변식) [U8] | US-CG2, US-CG3, US-CG6 |
 | NFR-C1 (U8 citation API 쿼터 게이트) [U8] | US-CG5 |
+| FR-39 (행동 이벤트 기록) [U9] *(구 FR-18; FR-22~25 폐기 ID 회피, 2026-06-30 재번호)* | US-P1, US-P2 |
 | FR-19 (사용자 관심 프로필) [U9] | US-P3, US-P6 |
 | FR-20 (개인화 적용) [U9] | US-P4, US-P5, US-P6 |
 | NFR-P4 (개인화 비차단) [U9] | US-P1, US-P4, US-P7 |
 | QT-7 (행동/프로필 불변식) [U9] | US-P2, US-P3, US-P7 |
-| FR-30 (novelty 입력·오케스트레이션) | US-NV1, US-NV2 |
-| FR-31 (U2 full 검색·외부 탐색) | US-NV1, US-NV3, US-NV4 |
-| FR-32 (유사 연구·차별화 후보) | US-NV3, US-NV6 |
-| FR-33 (실험 계획) | US-NV6 |
-| FR-34 (원고 위험 신호) | US-NV5 |
-| FR-35 (진행상태·저장·Notion export) | US-NV7, US-NV8 |
-| NFR-P5/R3 (novelty 비동기·source별 저하) | US-NV7, US-NV9 |
-| QT-10 (novelty 품질/불변식) | US-NV3, US-NV5, US-NV9 |
-| FR-36 (근거형성 세션·멀티턴) [U4] | US-EV1, US-EV5 |
-| FR-37 (다논문 근거형성·추출·기권) [U4] | US-EV2, US-EV3, US-EV4, US-EV5, US-EV6 |
-| FR-38 (근거형성 세션 영속·사용자 제어) [U4] | US-EV7, US-EV8 |
-| NFR-P6 (스트리밍 우선·비동기 잡) [U4] | US-EV2, US-EV9 |
-| QT-8 (근거형성 근거화·불변식) [U4] | US-EV2, US-EV6, US-EV9 |
+| FR-30 (novelty 입력·오케스트레이션) [U12] | US-NV1, US-NV2 |
+| FR-31 (U2 full 검색·외부 탐색) [U12] | US-NV1, US-NV3, US-NV4 |
+| FR-32 (유사 연구·차별화 후보) [U12] | US-NV3, US-NV6 |
+| FR-33 (실험 계획) [U12] | US-NV6 |
+| FR-34 (원고 위험 신호) [U12] | US-NV5 |
+| FR-35 (진행상태·저장·Notion export) [U12] | US-NV7, US-NV8 |
+| NFR-P5/R3 (novelty 비동기·source별 저하) [U12] | US-NV7, US-NV9 |
+| QT-10 (novelty 품질/불변식) [U12] | US-NV3, US-NV5, US-NV9 |
+| FR-36 (근거형성 세션·멀티턴) [U11] | US-EV1, US-EV5 |
+| FR-37 (다논문 근거형성·추출·기권) [U11] | US-EV2, US-EV3, US-EV4, US-EV5, US-EV6 |
+| FR-38 (근거형성 세션 영속·사용자 제어) [U11] | US-EV7, US-EV8 |
+| NFR-P6 (스트리밍 우선·비동기 잡) [U11] | US-EV2, US-EV9 |
+| QT-8 (근거형성 근거화·불변식) [U11] | US-EV2, US-EV6, US-EV9 |
+| FR-40 (Agent Chat Frontend 진입·모드 선택) [U13] | US-AG1, US-AG2 |
+| FR-41 (Agent 세션 drawer와 멀티턴 채팅) [U13] | US-AG3, US-AG6 |
+| FR-42 (탐구 과정 timeline 표시) [U13] | US-AG4, US-AG6 |
+| FR-43 (파일 첨부와 상태 UX) [U13] | US-AG5 |
+| NFR-P7 (Agent Chat Frontend 반응성·상태 표시) [U13] | US-AG4, US-AG6, US-AG7 |
+| QT-11 (Agent Chat Frontend 품질/불변식) [U13] | US-AG2, US-AG4, US-AG5, US-AG6, US-AG7 |
 
-_FR-1..11 전부 커버됨(표 본문 대조 검증). **FR-12..14·NFR-P2·QT-5 = U7 에픽 6(US-S1..S6) 커버(2026-06-18 편입, 팀 합의). FR-15..16·NFR-P3·QT-6 = U8 에픽 7(US-CG1..CG6) 커버(2026-06-19 편입). FR-18·QT-9 = U1 Corpus/DocModel eager 개정(US-I1..I3 + US-S3) 커버(2026-06-26 편입). FR-19..20·NFR-P4·QT-7 = U9 에픽 8(US-P1..P7) 커버(2026-06-23 편입). FR-26..29 = 계정 에픽 2 보강(US-A3..A7) 커버(2026-06-24 편입 — 재설정·소셜 OIDC·라이프사이클·입력 견고화). FR-30..35·NFR-P5/R3·QT-10 = U12 에픽 9(US-NV1..NV9) 커버(2026-06-29 편입 — 차별화(novelty) 형성 Agent). FR-36~38·NFR-P6·QT-8 = U4 에픽 10(US-EV1..EV9) 커버(2026-06-29 편입 — 문헌탐색·근거형성 Agent).** SEC/RES의 인프라·설계 단계 항목(SEC-1/2/6/7/10/13/14, RES-1/2/3/4/10/12)은 스토리에 비매핑하고 NFR/Infra Design에서 다룬다. 적대적 비평 패스 완료(2026-06-15, 7/7 critic)._
+_FR-1..11 전부 커버됨(표 본문 대조 검증). **FR-12..14·NFR-P2·QT-5 = U7 에픽 6(US-S1..S6) 커버(2026-06-18 편입, 팀 합의). FR-15..16·NFR-P3·QT-6 = U8 에픽 7(US-CG1..CG6) 커버(2026-06-19 편입). FR-18·QT-9 = U1 Corpus/DocModel eager 개정(US-I1..I3 + US-S3) 커버(2026-06-26 편입). FR-39·FR-19·FR-20·NFR-P4·QT-7 = U9 에픽 8(US-P1..P7) 커버(2026-06-23 편입; FR-39=행동 이벤트 기록은 구 FR-18, FR-22~25 폐기 ID 회피로 신규 FR-39 재번호 2026-06-30). FR-26..29 = 계정 에픽 2 보강(US-A3..A7) 커버(2026-06-24 편입 — 재설정·소셜 OIDC·라이프사이클·입력 견고화). FR-30..35·NFR-P5/R3·QT-10 = U12 에픽 9(US-NV1..NV9) 커버(2026-06-29 편입 — 차별화(novelty) 형성 Agent). FR-36~38·NFR-P6·QT-8 = U11 에픽 10(US-EV1..EV9) 커버(2026-06-29 편입 — 문헌탐색·근거형성 Agent; requirements 초안 `[U4]` 오기 → `[U11]` 정정 2026-06-30). FR-40~43·NFR-P7·QT-11 = U13 에픽 11(US-AG1..AG7) 커버(2026-07-01 편입 — 에이전트 채팅 프론트엔드).** SEC/RES의 인프라·설계 단계 항목(SEC-1/2/6/7/10/13/14, RES-1/2/3/4/10/12)은 스토리에 비매핑하고 NFR/Infra Design에서 다룬다. 적대적 비평 패스 완료(2026-06-15, 7/7 critic)._

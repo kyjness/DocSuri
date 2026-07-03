@@ -13,41 +13,16 @@
   flex-direction: column;
 }
 
-/* Tablet and up: center a fixed-width phone mockup; inner width pinned. */
+/* Tablet and up: the app fills the window like an ordinary website, with the
+   phone-first content capped to a readable column and centered. This is step 1 — a
+   single column; per-screen multi-column desktop layouts come later. The faithful
+   phone view is a separate iframe preview (components/ViewModePreview), not a layout
+   branch here, so building real desktop layouts above never leaks into the phone view. */
 @media (min-width: 768px) {
-  .stage {
-    align-items: center;
-    background: var(--color-mockup-bg);
-    padding: 24px 0;
-  }
-
   .frame {
-    /* Galaxy logical screen (S20 Ultra / A-series, ≈412×915 CSS px) — wider than iPhone's 390.
-       Pin the mockup to a real phone screen size: width 412, height the phone's 915 but never
-       taller than the desktop window (minus the 24px top/bottom stage padding = 48px), so the
-       whole phone is always visible without the page scrolling. Content scrolls INSIDE the frame
-       (overflow-y below). min-height:0 overrides the mobile-base 100dvh so this height takes. */
-    width: 412px;
-    min-height: 0;
-    height: clamp(480px, calc(100dvh - 48px), 915px);
-    border-radius: 28px;
-    border: 1px solid var(--color-border);
-    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
-    overflow-y: auto;
-    /* Make the frame the containing block for fixed descendants so the full-screen overlays
-       (SummaryModal, CitationTreePanel, image zoom — all `position: fixed; inset: 0`) confine
-       to the phone mockup instead of spanning the desktop window, matching how they render on
-       a real phone. `contain: layout` does this without GPU compositing (no text blur). The
-       bottom tab bar is `position: sticky`, so it is unaffected and still pins to the frame. */
-    contain: layout;
-    /* Keep scrolling but hide the scrollbar chrome (mobile-mockup look). */
-    scrollbar-width: none;
-    -ms-overflow-style: none;
-  }
-
-  .frame::-webkit-scrollbar {
-    width: 0;
-    height: 0;
-    display: none;
+    /* Full window width on desktop (no side gutter). Inner screens that need a tighter
+       measure — reading / forms / mypage / the search box — set their own narrower
+       max-width, so only the wide layouts (search grid, paper detail) span the screen. */
+    max-width: none;
   }
 }

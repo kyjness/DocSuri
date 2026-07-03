@@ -6,18 +6,21 @@
 
 ## 1. 시스템 맵
 
-CDK 스택 6개 (`ops/cdk/app.py`, account/region 하드코딩 `app.py:20`):
+CDK 스택 8개 (`ops/cdk/app.py`, account/region 하드코딩 `app.py:20`):
 
 | 스택 | 배포단위 | 제공 | RemovalPolicy 트랩 |
 |---|---|---|---|
 | `Docsuri-Network` | — | VPC, 2 AZ, **NAT 0개**(비용절감), public/isolated subnet | 없음 |
-| `Docsuri-Search` | — | OpenSearch `docsuri-papers` (2.11, m6g.large ×2, kNN 1024 + BM25) | **RETAIN** (`search_stack.py:47`) |
+| `Docsuri-Search` | — | OpenSearch alias `docsuri-corpus` (2.19, m6g.large ×2, kNN 1024 + BM25) | **RETAIN** (`search_stack.py:47`) |
 | `Docsuri-Compute` | ① API | ECS Fargate `docsuri`, RDS PG16(Multi-AZ), Redis 7.1, ALB:443, CloudFront, SES | **RDS RETAIN** (`compute_stack.py:105`) |
 | `Docsuri-Ingestion` | ② Worker | SQS+DLQ, S3 `docsuri-papers-fulltext-*`, EventBridge `docsuri-arxiv-daily`(15:00 KST), Fargate worker(desired 0) | **S3 RETAIN** (`ingestion_stack.py:81`) |
 | `Docsuri-Frontend` | ④ FE | Next.js SSR Fargate, ALB, CloudFront @ docsuri.org | 없음 |
+| `Docsuri-Summarization` | Worker | ECS Fargate 요약 워커 + SQS `docsuri-summary-job-queue`(+DLQ). 장문 map-reduce 요약을 비동기 처리, 결과는 papers 버킷 `summaries/`에 write-through | 없음 |
+| `Docsuri-Novelty` | ⑪ Worker | novelty 형성 에이전트 Fargate 워커 (인셉션 유닛 **U12**; 코드/CDK는 구 U11 엄브렐러 네이밍 잔존) + SQS `docsuri-novelty-agent-job-queue`(+DLQ). `NOVELTY_AGENT_ENABLED=true`로 배포 시 활성 | 없음 |
 | `Docsuri-Access` | — | 크로스계정 팀 접근 역할 `DocsuriCrossAccountDev` (PowerUser+MFA, §9) | 없음 |
 
 > ③ Ops worker: 디텍터 코드는 `ops/src/docsuri_ops/`에 존재하나 **독립 배포 스택 없음** — 현재는 라이브러리 코드. 실배포 워커로 안 돌고 있음 (§4 갭).
+> **summarization·novelty 스택은 원래 6-스택 인벤토리 작성 이후 추가됨** (`app.py:19` `SummarizationStack`, `app.py:17` `NoveltyStack`) — 둘 다 SQS 잡 큐 기반 Fargate 백그라운드 워커. 현재 라이브 스택은 8개.
 
 ## 2. 🔴 알려진 함정 (Footguns)
 
@@ -61,7 +64,7 @@ CDK 스택 6개 (`ops/cdk/app.py`, account/region 하드코딩 `app.py:20`):
 
 ## 6. 복구 절차 (Recovery)
 
-- **RDS 복원**: RETAIN이라 실수 삭제는 막히지만 **스냅샷 복원은 한 번도 테스트 안 됨**(하드닝 항목). 자동백업 보존 7일. 복원: 최신 스냅샷 → 새 인스턴스 → compute 스택 secret 갱신. ⚠️ 검증 전엔 "백업 있음"을 신뢰하지 말 것.
+- **RDS 복원/암호화 이전**: RETAIN이라 실수 삭제는 막히지만 **스냅샷 복원은 한 번도 테스트 안 됨**(하드닝 항목). 자동백업 보존 7일. 복원: 최신 스냅샷 → 새 인스턴스 → compute 스택 secret 갱신. 암호화 이전 절차는 [rds-encryption-migration.md](rds-encryption-migration.md)를 따른다. ⚠️ 검증 전엔 "백업 있음"을 신뢰하지 말 것.
 - **비용가드 OPEN(요청거부)**: cap 일시 상향 또는 강등 모드로 운영하며 비용 원인 차단. 근본원인 전 cap만 올리지 말 것.
 - **SES 바운스 급증**: `BOUNCES_AND_COMPLAINTS` 자동 suppression(`compute_stack.py:187`)이 계정 레벨에서 재발송 차단. suppression list 확인, 발신 도메인 평판 점검.
 - **배포 롤백**: circuit breaker가 헬스체크 실패 시 자동 롤백. 수동은 직전 task definition으로 ECS 서비스 업데이트.
@@ -90,7 +93,7 @@ cdk deploy Docsuri-Compute -c ops_alert_email=ops@docsuri.org
 
 **검증 (배포 후, 라이브 — 같이 돌릴 것):**
 - ☐ **알림→사람**: CloudWatch 콘솔에서 `Api5xxAlarm`을 임시로 `Set alarm state → ALARM` → ops 메일 수신 확인. 끝나면 원복.
-- ☐ **RDS 복원**: 최신 자동 스냅샷 → 새 인스턴스로 복원 테스트 1회 → 접속 확인 후 폐기. (RETAIN이라 원본은 안전.) **검증 전엔 "백업 있음"을 신뢰하지 말 것.**
+- ☐ **RDS 복원/암호화 이전**: 최신 자동 스냅샷 → 새 인스턴스로 복원 테스트 1회 → 접속 확인 후 폐기. 암호화 이전은 [rds-encryption-migration.md](rds-encryption-migration.md) 기준으로 암호화 스냅샷 복사 → 병렬 복원 → 명시적 컷오버로 처리한다. (RETAIN이라 원본은 안전.) **검증 전엔 "백업 있음"을 신뢰하지 말 것.**
 - ☐ **번인**: 며칠 실트래픽 관찰 후 §7 임계값 튜닝.
 
 ## 9. 팀원 크로스계정 접근 (Cross-account onboarding) — `Docsuri-Access`

@@ -25,6 +25,7 @@ export class RouteHandlerTransport implements Transport {
       // authenticated/personalized responses (P-P3).
       credentials: 'same-origin',
       cache: 'no-store',
+      signal: req.signal,
     });
 
     let body: unknown = null;

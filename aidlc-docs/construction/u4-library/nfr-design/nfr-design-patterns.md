@@ -226,7 +226,7 @@ LIMIT :limit + 1                                  -- +1 로 다음 페이지 존
 이력 쓰기는 공개 POST 가 아니라 `SearchExecutedEvent` (🔒FROZEN) 소비로 수행됩니다. 이벤트 백본은 **at-least-once** 전달이므로, 재전송이 중복 행을 만들지 않도록 멱등 소비를 강제합니다.
 
 ### 8.1. dedupe_key 기반 멱등성
-- **키**: `dedupe_key = sha256(owner_id|executed_at.isoformat()|query)`. 동일 (userId, timestamp, query) 재전송은 동일 키를 산출합니다. (D7)
+- **키**: `dedupe_key = sha256(owner_id|requestId|query)`. 동일 (userId, requestId, query) 재전송은 동일 키를 산출합니다. (D7)
 - **exactly-once 행**: dedupe_key 당 정확히 1행. insert 전 dedup 조회(또는 `UNIQUE(owner_id, dedupe_key)` 위반 무시)로 재전송을 흡수합니다. (INV-L3)
 - **비블로킹 보장**: 이 소비 경로는 동기 검색 P50<3s 경로 밖에서 실행되며 검색 응답을 블로킹하지 않습니다. (NFR-P1, search-executed 이벤트 계약 명시)
 
@@ -234,7 +234,7 @@ LIMIT :limit + 1                                  -- +1 로 다음 페이지 존
 [event bus] ──(at-least-once)──> [history_consumer.recordSearch(event)]
                                           |
                                           v
-                          [compute dedupe_key = sha256(owner_id|executed_at_iso|query)]
+                          [compute dedupe_key = sha256(owner_id|requestId|query)]
                                           |
                           ┌───────────────┴───────────────┐
                           │ dedupe_key 존재? (UNIQUE)      │── yes ──> [no-op, 중복 무시]

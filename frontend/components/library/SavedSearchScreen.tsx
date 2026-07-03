@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useState } from 'react';
+import { useRouter, usePathname } from 'next/navigation';
 import { getApiClient, UserFacingError, type SearchOutcome } from '@/lib/api';
 import { usePaginatedList } from '@/lib/usePaginatedList';
 import { StateView } from '../StateView';
@@ -11,8 +12,13 @@ import styles from './Library.module.css';
 
 // SavedSearchScreen (US-L1, FR-8) — list/delete/rerun saved searches. Rerun goes
 // through the gateway (U6 -> U2) and renders the live result inline (BR-U5-9).
-export function SavedSearchScreen() {
-  const fetchPage = useCallback((cursor?: string) => getApiClient().listSavedSearches({ cursor }), []);
+export function SavedSearchScreen({ showTabs = true }: { showTabs?: boolean } = {}) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const fetchPage = useCallback(
+    (cursor?: string) => getApiClient().listSavedSearches({ cursor }),
+    [],
+  );
   const { items, status, error, hasMore, loadMore, reload, removeLocal } =
     usePaginatedList<SavedSearchDTO>(fetchPage);
 
@@ -29,7 +35,11 @@ export function SavedSearchScreen() {
       await getApiClient().deleteSavedSearch(itemId);
       removeLocal((it) => String(it.id) === itemId);
       if (rerun?.id === itemId) setRerun(null);
-    } catch {
+    } catch (e) {
+      if (e instanceof UserFacingError && e.isAuth) {
+        router.push(`/login?redirect=${encodeURIComponent(pathname)}`);
+        return;
+      }
       setActionError('삭제하지 못했습니다. 다시 시도해 주세요.');
     } finally {
       setBusyId(null);
@@ -44,6 +54,11 @@ export function SavedSearchScreen() {
       const outcome = await getApiClient().rerunSavedSearch(itemId);
       setRerun({ id: itemId, outcome });
     } catch (e) {
+      if (e instanceof UserFacingError && e.isAuth) {
+        // Session expired mid-list (BR-U5-15) — route to login rather than an inline error.
+        router.push(`/login?redirect=${encodeURIComponent(pathname)}`);
+        return;
+      }
       setActionError(e instanceof UserFacingError ? e.message : '다시 실행하지 못했습니다.');
     } finally {
       setRerunId(null);
@@ -52,13 +67,16 @@ export function SavedSearchScreen() {
 
   return (
     <section className={styles.screen} data-testid="saved-screen">
-      <LibraryTabs active="saved" />
+      {showTabs ? <LibraryTabs active="saved" /> : null}
       {status === 'loading' ? <StateView kind="loading" /> : null}
       {status === 'error' ? (
         <StateView kind="error" message={error ?? undefined} onRetry={() => void reload()} />
       ) : null}
       {status !== 'loading' && status !== 'error' && items.length === 0 ? (
-        <StateView kind="empty" message="저장한 검색이 없습니다. 검색 화면에서 검색을 저장해 보세요." />
+        <StateView
+          kind="empty"
+          message="저장한 검색이 없습니다. 검색 화면에서 검색을 저장해 보세요."
+        />
       ) : null}
 
       {actionError ? (

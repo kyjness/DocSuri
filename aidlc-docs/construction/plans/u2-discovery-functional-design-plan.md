@@ -16,7 +16,7 @@
 - **서비스(1)**: `SearchOrchestrationService` — 동기 순차 파이프라인 조정(`executeSearch`) + `publishSearchExecuted`(비차단 이벤트).
 - **capability 어댑터 이음새(mock 교체 지점, component-dependency.md §2)**: `VectorStoreAdapter`(ANN 벡터 검색) · `LexicalIndexAdapter`(BM25 lexical·하이브리드/저하 폴백) · `LlmGatewayAdapter`(질의 임베딩 생성·LLM 질의 확장·선택적 리랭킹 — U6 게이트웨이 경유). **이 셋이 mock-first에서 mock↔real로 교체되는 포트**(§4 Q9). 실 스토어=OpenSearch·임베딩=Bedrock Cohere는 NFR/Infra 확정이며 FD는 어댑터 경계만 정의(기술 무관).
 - **공유 계약(소비, 동결/잠금)**:
-  - `shared/vector-spec`(🔒FROZEN, **reader**) — 질의 임베딩이 U1 writer와 **동일 임베딩 공간**(Cohere Embed Multilingual v3·1024·코사인·**inputType 비대칭: reader=`search_query`**). **cross-lingual 시스템 결정(TD-3)**: 사용자는 **한국어로 질의**하고 **영어 arXiv 코퍼스**를 검색한다(KR↔EN 동일 공간). → 질의 임베딩은 reader=`search_query`로 호출, **QT-2 관련도 평가셋에 한국어 질의 포함**이 필수(검증 표면).
+  - `shared/vector-spec`(🔒FROZEN, **reader**) — 질의 임베딩이 U1 writer와 **동일 임베딩 공간**(Cohere Embed Multilingual v4·1024·코사인·**inputType 비대칭: reader=`search_query`**; v3→v4 마이그레이션 완료 2026-06-24, 정합 정정 2026-06-30). **cross-lingual 시스템 결정(TD-3)**: 사용자는 **한국어로 질의**하고 **영어 arXiv 코퍼스**를 검색한다(KR↔EN 동일 공간). → 질의 임베딩은 reader=`search_query`로 호출, **QT-2 관련도 평가셋에 한국어 질의 포함**이 필수(검증 표면).
   - `shared/dtos/search`(🟡PROVISIONAL, 카드 FROZEN-인접, **생산**) — `SearchRequest`/`SearchResponse` union(성공/기권/저하/검증오류) + `ResultCardVM` 7필드.
   - `shared/events/search-executed`(🔒FROZEN, **생산**) — `SearchExecutedEvent` → U4.
   - `shared/ports`(**의존**) — `GroundingEnforcementHook.enforce`(🔒, U6 호출), `CostGuardCircuitBreaker.getBudgetState`(🔒, U2 조회), `ObservabilityHub.emit*`. **U2는 근거화·비용을 재구현하지 않는다**(단일 권위 = U6).
@@ -40,7 +40,7 @@
   - 흐름: `normalize → expand(공유 VectorSpec) → retrieve(하이브리드 병합·디덥) → rank(상위 N) → [U6 게이트웨이 post-handler가 enforce] → mapDecision → assemble`.
   - **근거화 invocation 경계 명시**(INV-1): U2는 `toGroundingInput`/`mapDecision`만, enforce 호출은 U6 게이트웨이.
   - **저하 분기**(§4 Q6): `getBudgetState().degradeMode`에 따른 단계 스킵 매트릭스(LLM 확장·리랭킹 on/off → lexical 폴백).
-  - **이벤트 경로**(비차단): 성공 후 `publishSearchExecuted(userId, query, timestamp, resultCount)` — 응답 경로 밖(§4 Q11).
+  - **이벤트 경로**(비차단): 성공 후 `publishSearchExecuted(userId, requestId, query, timestamp, resultCount)` — 응답 경로 밖(§4 Q11; `requestId`=U4 멱등 디덥 키 — FROZEN `events.md` 시그니처 정합 2026-06-30).
   - 단계별 타임아웃·폴백 **정책 형태(shape)만**(수치는 NFR, AS-2).
 - [x] **business-rules.md** — 결정 규칙·검증·제약:
   - 질의 검증/정규화 규칙(§4 Q7; FR-1/SEC-5/PBT-02 결정성).
