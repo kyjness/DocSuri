@@ -12,9 +12,8 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from docsuri_shared.authz import Principal
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-
-from backend.modules.accounts.models import Principal
 
 from .audit import InMemoryAuditSink
 from .gateway import StubSearchGateway

@@ -8,7 +8,7 @@ NEVER projected onto a card (SEC-9 / INV-2) — see ``assembler.py``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 
 from docsuri_shared.vector_spec import IndexRecord
@@ -33,8 +33,9 @@ class RetrievalMode(StrEnum):
 
 class SearchScope(StrEnum):
     """Retrieval breadth requested by the caller (distinct from ``RetrievalMode``, which is the
-    degradation state). ``LITE`` is the human search box (BM25 over title+abstract, no k-NN —
-    P50<3s); ``FULL`` is hybrid over the full-body chunk index for the agent / opt-in toggle.
+    degradation state). ``LITE`` is the human search box (BM25 over title+abstract; k-NN
+    restricted to abstract chunks — one vector/paper, P50<3s); ``FULL`` is hybrid over the
+    full-body chunk index for the agent / opt-in toggle.
     Maps from the external ``docsuri_shared.dtos.Scope`` at the orchestrator boundary."""
 
     LITE = "lite"
@@ -99,10 +100,28 @@ class Candidate:
     """A retrieved candidate bound to a real IndexRecord (FR-5 premise).
 
     ``retrieval_score`` is INTERNAL (RRF/merge score) — never exposed on a card (SEC-9).
+
+    ``ranking_score`` is the SINGLE sort key the ranker reads (BR-5): score-*supplying* stages
+    are decoupled from the score-*sorting* stage. Retrieval seeds it to ``retrieval_score``; a
+    reranker (or a future personalization stage) overwrites it via ``with_ranking_score`` — the
+    ranker never learns which stage set it, it only sorts by ``ranking_score``. Left None at
+    construction → seeded to ``retrieval_score`` in ``__post_init__`` (so a plain
+    ``Candidate(record, retrieval_score)`` is baseline-ordered and existing call sites are
+    unaffected); always a float afterwards.
     """
 
     record: IndexRecord
     retrieval_score: float
+    ranking_score: float | None = field(default=None)
+
+    def __post_init__(self) -> None:
+        # Seed the sort key from retrieval when a supplying stage did not set it (frozen: bypass).
+        if self.ranking_score is None:
+            object.__setattr__(self, "ranking_score", self.retrieval_score)
+
+    def with_ranking_score(self, score: float) -> Candidate:
+        """Frozen copy with a new sort key — the reranker/personalization *supply* stage."""
+        return replace(self, ranking_score=score)
 
 
 @dataclass(frozen=True, slots=True)

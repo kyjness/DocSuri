@@ -20,7 +20,7 @@ class EvidenceScope(StrEnum):
 
 class SourceRef(BaseModel):
     """
-    단일 출처 핸들 — 기존 계약 재사용. paperId = IndexRecord.arxivId(vector-spec §2). recordRef = IndexRecord 식별자(실재성 검증 핸들). anchor = DocModel Section/Block id(summarization AnchorTarget 동일 방식). quote = 원문 스니펫(근거 인용, 선택). 내부 벡터/청크/점수 미노출(SEC-9). Trace: FR-5, SEC-9, vector-spec §2, summarization.schema.json AnchorTarget.
+    단일 출처 핸들 — 기존 계약 재사용. paperId = IndexRecord.arxivId(vector-spec §2). 사용자 업로드 문서는 paperId="userdoc:{uuid}", recordRef="upload:{ownerId}:{jobId}:{attachmentId}" — 실재 arXiv id가 없으므로 arxiv.org URL 조립 금지(무날조). recordRef = IndexRecord 식별자(실재성 검증 핸들). anchor = DocModel Section/Block id(summarization AnchorTarget 동일 방식). quote = 원문 스니펫(근거 인용, 선택). 내부 벡터/청크/점수 미노출(SEC-9). Trace: FR-5, SEC-9, vector-spec §2, summarization.schema.json AnchorTarget.
     """
 
     model_config = ConfigDict(
@@ -28,11 +28,11 @@ class SourceRef(BaseModel):
     )
     paperId: str = Field(
         ...,
-        description='표시용 arXiv ID(버전 포함 가능). Source: IndexRecord.arxivId. Trace: FR-5, vector-spec §2.',
+        description='출처 문서 id. arXiv: 표시용 arXiv ID(버전 포함 가능, Source: IndexRecord.arxivId). 사용자 업로드: "userdoc:{uuid}" 네임스페이스 — 실재 arXiv id 없음, arxiv.org URL 조립 금지(무날조). Trace: FR-5, vector-spec §2.',
     )
     recordRef: str = Field(
         ...,
-        description='IndexRecord 식별자(실재성 검증 핸들). 내부 벡터·청크 정보 미포함. Trace: FR-5, vector-spec §2.',
+        description='IndexRecord 식별자(실재성 검증 핸들). 사용자 업로드: "upload:{ownerId}:{jobId}:{attachmentId}". 내부 벡터·청크 정보 미포함. Trace: FR-5, vector-spec §2.',
     )
     anchor: str | None = Field(
         None,
@@ -124,7 +124,7 @@ class EvidenceRequest(BaseModel):
     topic: str = Field(
         ...,
         description='연구 주제 또는 근거형성 질문. Trace: FR-1, SEC-5.',
-        max_length=1000,
+        max_length=2000,
         min_length=1,
     )
     scope: EvidenceScope | None = Field(

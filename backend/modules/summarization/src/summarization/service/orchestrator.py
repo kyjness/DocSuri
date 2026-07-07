@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 from dataclasses import replace
 
+from docsuri_shared.docmodel_contract import DOCMODEL_PARSER_VERSION
 from docsuri_shared.dtos import DocModel
 from docsuri_shared.ports import CostGuardCircuitBreaker, ObservabilityHub
 
@@ -36,6 +37,7 @@ from ..domain.models import (
     PendingDTO,
     RequestContext,
     Scope,
+    SourceText,
     SourceUnavailableDTO,
     SummaryRequest,
     SummaryResponse,
@@ -58,6 +60,25 @@ logger = logging.getLogger(__name__)
 
 # Client poll backoff hint after a lazy build was (re)triggered on a miss (BR-30/D6).
 _BUILD_POLL_BACKOFF_MS = 2000
+
+
+def _doc_parser_version(doc: DocModel) -> str | None:
+    """Parser version a served doc-model was built with (None if the shape is unexpected)."""
+    meta = getattr(doc, "meta", None)
+    provenance = getattr(meta, "provenance", None)
+    return getattr(provenance, "parserVersion", None)
+
+
+def _source_doc_parser(source: SourceText) -> str:
+    """The doc-model parser generation a derived summary/translation is keyed on. A stale
+    (older-parser) doc keys its output under ITS OWN generation: a later request against the healed
+    (current-parser) doc keys elsewhere and misses it (key rotation) rather than serving stale
+    output — and, unlike skipping the write entirely, the async job path can still deliver its
+    result via the cache (the write IS the worker→poll handoff). Sources with no doc-model (abstract
+    / legacy .txt) carry no parser dimension → the current generation."""
+    doc = getattr(source, "doc_model", None)
+    ver = _doc_parser_version(doc) if doc is not None else None
+    return ver or DOCMODEL_PARSER_VERSION
 # Client poll backoff hint after a long summary was enqueued as a background job (BR-S6/BR-S8).
 _SUMMARY_POLL_BACKOFF_MS = 3000
 # Generation above this input size is dispatched to the async job (pending → poll) instead of
@@ -141,23 +162,24 @@ class SummarizationOrchestrationService:
         # when a prompt-enforced term is added/edited/demoted (BR-S1). Resolve once here and reuse
         # for generation below (one repo fetch); the seed segment self-invalidates on a seed edit.
         glossary = self._glossary.resolve(user_id)
-        key = build_cache_key(
-            request,
-            glossary_ver=GlossaryResolver.signature_of(glossary),
-            model_ver=self._model_ver,
-            user_id=user_id,
-            seed_ver=seed_cache_segment(),
-        )
-        cached = self._store.get(key)
+
+        def _cache_key(docmodel_parser: str) -> object:
+            return build_cache_key(
+                request,
+                glossary_ver=GlossaryResolver.signature_of(glossary),
+                model_ver=self._model_ver,
+                user_id=user_id,
+                seed_ver=seed_cache_segment(),
+                docmodel_parser=docmodel_parser,
+            )
+
+        # Fast pre-select read on the CURRENT-parser key: a healed/hot paper hits here with zero
+        # source fetch. A stale doc's output lives under its own generation's key, resolved after
+        # source-select below, so this fast read misses it (correct — the fast key is @current).
+        key_current = _cache_key(DOCMODEL_PARSER_VERSION)
+        cached = self._store.get(key_current)
         if cached is not None:
-            self._emit("u7.cache.hit", 1.0, request)
-            # Translate caches the shared base; apply the user's weak-term overlay on read (no-op
-            # when the user has no weak terms). Summary has no post-substitution — served as-is.
-            if request.task == Task.TRANSLATE:
-                cached = self._assembler.overlay_translation(cached, glossary)
-                # Clean kept-term notation on read so papers cached before this filter also benefit.
-                cached = self._assembler.filter_kept_terms(cached)
-            return _PayloadResult(cached, cached=True)
+            return self._serve_cached(cached, request, glossary)
 
         # 1. cost gate (U6 single authority) — BEFORE any LLM spend.
         if _is_cost_degraded(self._cost_guard.get_budget_state()):
@@ -168,6 +190,30 @@ class SummarizationOrchestrationService:
         source = self._source.select(request)
         if source is None:
             return SourceUnavailableDTO(reason="no_full_text_or_abstract")
+
+        # Self-heal parity with doc_model() (BR-30): the summary/translation input path also
+        # consumes servable doc-models straight from the reader. If an older-parser doc was
+        # selected, ALSO enqueue a background rebuild so it heals to the current parser — otherwise
+        # a user who only ever summarizes/translates (never opens the rich view) would pin the stale
+        # doc forever. The stale doc is still used for THIS response; its derived result is cached
+        # under the stale doc's OWN generation key (below), which the healed doc's key rotates past.
+        if (
+            self._docmodel_build_queue is not None
+            and source.doc_model is not None
+            and _doc_parser_version(source.doc_model) != DOCMODEL_PARSER_VERSION
+        ):
+            self._docmodel_build_queue.enqueue_build(request.paper_id, request.version)
+
+        # Key derived artifacts on the ACTUAL doc-model generation. For a healed/hot doc this equals
+        # ``key_current`` (already missed above). For a stale doc it is a DISTINCT key: re-check the
+        # store under it — this is where the async job path delivers, so the poll finds the worker's
+        # write here (before re-enqueuing) instead of looping. Both the worker (write) and the poll
+        # (read) re-run this same computation, so their keys align.
+        key = _cache_key(_source_doc_parser(source))
+        if key != key_current:
+            cached = self._store.get(key)
+            if cached is not None:
+                return self._serve_cached(cached, request, glossary)
 
         # 3. refine (structure-aware; doc-model direct or legacy .txt regex — D2) → 5. length
         #    route (shape; over-cap or map-reduce → abstain).
@@ -225,6 +271,16 @@ class SummarizationOrchestrationService:
             response = self._run_summary(request, source, refined, glossary, key, summarizer)
         return response
 
+    def _serve_cached(self, cached: object, request, glossary) -> _PayloadResult:
+        # Shared cache-hit handler (fast pre-select read + actual-generation re-check). Translate
+        # caches the shared base; apply the user's weak-term overlay + kept-term cleanup on read
+        # (no-op when the user has no weak terms). Summary has no post-substitution — served as-is.
+        self._emit("u7.cache.hit", 1.0, request)
+        if request.task == Task.TRANSLATE:
+            cached = self._assembler.overlay_translation(cached, glossary)
+            cached = self._assembler.filter_kept_terms(cached)
+        return _PayloadResult(cached, cached=True)
+
     # --- summary path --------------------------------------------------------
     def _run_summary(self, request, source, refined, glossary, key, summarizer) -> SummaryResponse:
         # ``summarizer`` is the single-call LLM gateway or the map-reduce summarizer (same
@@ -244,7 +300,9 @@ class SummarizationOrchestrationService:
                 # (table/paraphrase/math spans) are dropped, not abstained on.
                 draft = replace(draft, anchors=verdict.kept_anchors)
                 result = self._assembler.assemble_summary(draft, source)
-                self._store.put(key, result.to_dict())  # write-through
+                # Write-through under the actual-generation ``key`` (stale docs key on their own
+                # generation, so this is async-safe and never pins stale output past the heal).
+                self._store.put(key, result.to_dict())
                 self._emit("u7.summary.ok", 1.0, request)
                 return result
             if attempt == 2:
@@ -303,7 +361,9 @@ class SummarizationOrchestrationService:
                     if m.prompt_enforced
                 }
             )
-            self._store.put(key, base)  # write-through (base)
+            # Write-through (base) under the actual-generation ``key`` — async-safe (the write is
+            # the worker→poll handoff) and never pins stale output past the heal (key rotation).
+            self._store.put(key, base)
             self._emit("u7.translate.ok", 1.0, request)
             view = self._assembler.overlay_translation(base, glossary)
             return _PayloadResult(self._assembler.filter_kept_terms(view))
@@ -344,6 +404,15 @@ class SummarizationOrchestrationService:
             return DocModelLookup()
         doc = self._docmodel_reader.get_doc_model(paper_id, version)
         if doc is not None:
+            # Serve the clean doc now. If an older parser built it, ALSO enqueue a background
+            # rebuild so it heals to the current parser (BR-30 self-heal) — otherwise accepting
+            # older-but-servable docs would pin them forever. The doc is still served meanwhile,
+            # so there is no blank screen while the rebuild runs.
+            if (
+                self._docmodel_build_queue is not None
+                and _doc_parser_version(doc) != DOCMODEL_PARSER_VERSION
+            ):
+                self._docmodel_build_queue.enqueue_build(paper_id, version)
             return DocModelLookup(doc=doc)
         if self._docmodel_build_queue is not None:
             self._docmodel_build_queue.enqueue_build(paper_id, version)

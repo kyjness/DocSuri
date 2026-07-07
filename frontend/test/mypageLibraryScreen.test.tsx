@@ -60,5 +60,8 @@ describe('MyPageLibraryScreen (U10)', () => {
     );
     expect(await screen.findByTestId('mypage-recent-list')).toBeInTheDocument();
     expect(screen.getAllByTestId('mypage-recent-item').length).toBeGreaterThan(0);
+    // Titles are resolved from the paper-metadata endpoint (mock), not the recently-viewed row —
+    // the fixture id resolves to the mock's generic label, proving the display-side lookup ran.
+    expect(await screen.findByText('arXiv 논문 1706.03762')).toBeInTheDocument();
   });
 });

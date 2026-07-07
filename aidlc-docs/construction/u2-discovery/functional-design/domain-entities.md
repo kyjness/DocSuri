@@ -42,9 +42,9 @@
 |---|---|---|
 | **DegradationSignal** | `llmEnabled: bool`, `rerankEnabled: bool` | `BudgetState`(U6 포트)에서 파생. **Q6=A**: `rerankEnabled=false`→LLM 리랭킹 생략(U2 baseline은 Q3=A로 이미 리랭킹 없음 → 사실상 무변화), `llmEnabled=false`→질의 임베딩 생략·lexical-only 폴백. |
 | **QueryPlan** | `embeddingVector?`, `lexicalTerms`, `filterHints?`, `mode` | `QueryUnderstandingExpander.expand` 산출. **Q1=A**: `embeddingVector`=질의 임베딩(공유 VectorSpec, **reader=`search_query`**, cross-lingual)·`lexicalTerms`=질의 토큰화. **동의어/LLM 재작성 없음.** `mode`=hybrid \| lexical-only(저하 시). |
-| **Candidate** | `paperId`, `arxivId`, `sourceRef`(소스 표기·소스 중립 링크), **retrievedRecord 참조**(실재 IndexRecord), `retrievalScore`(내부) | 단일 후보. **FR-5 사전조건**: 실재 IndexRecord(**소스 중립** 해소 가능 ID/링크 — arXiv/비-arXiv)에 매핑(페이즈 2/Q2). `retrievalScore`는 **내부(SEC-9 비노출)**. |
+| **Candidate** | `paperId`, `arxivId`, `sourceRef`(소스 표기·소스 중립 링크), **retrievedRecord 참조**(실재 IndexRecord), `retrievalScore`(내부), `rankingScore`(내부·정렬 키) | 단일 후보. **FR-5 사전조건**: 실재 IndexRecord(**소스 중립** 해소 가능 ID/링크 — arXiv/비-arXiv)에 매핑(페이즈 2/Q2). `retrievalScore`는 provenance(**내부·SEC-9 비노출**). `rankingScore`(2026-07-06 페이즈 7)=ranker의 단일 정렬 키·불변 복사로 갱신: retrieval이 `retrievalScore`로 시드, 재랭킹(BR-5b)/개인화가 덮어씀(공급↔정렬 분리, BR-5). 미설정 시 `retrievalScore`로 자동 시드(baseline). |
 | **CandidateSet** | `candidates[]`, `retrievalMode` | `HybridRetriever.retrieve` 산출. **Q2=A**: 벡터+lexical 후보를 **RRF 병합**, **PaperId 단위 디덥**(같은 논문 복수 청크→최상위 1건, PBT-07 멱등·결과셋 보존). `retrievalMode`=hybrid \| lexical-only. |
-| **RankedResults** | `ranked[]`(순서 보존), `rankingMode` | `RelevanceRanker.rank` 산출. **Q3=A**: 병합 점수 내림차순·상위 N 절단(**Q10=A: N=20**), **LLM 리랭킹 없음(baseline)**. N 미만이면 가용분만(US-D3). `rankingMode`=baseline. 순서 안정성 PBT-03. |
+| **RankedResults** | `ranked[]`(순서 보존), `rankingMode` | `RelevanceRanker.rank` 산출. **Q3=A**: **`rankingScore` 내림차순**·상위 N 절단(**Q10=A: N=20**). 재랭킹은 상류(오케스트레이터)에서 `rankingScore`를 공급하고 ranker는 정렬만(BR-5/5b, 2026-07-06). 미배선/예산 저하/실패 시 `rankingScore`=RRF 융합점수라 baseline 동일. N 미만이면 가용분만(US-D3). 순서 안정성 PBT-03. |
 
 ---
 
@@ -123,10 +123,11 @@ NormalizedQuery{text} ──(ok=false)──▶ ValidationErrorDTO (fail-closed,
 QueryPlan{embeddingVector?(cross-lingual), lexicalTerms, mode} ◀── DegradationSignal(BudgetState.degradeMode)
    │                                                                  (llmEnabled=false → mode=lexical-only)
    ▼ HybridRetriever.retrieve (Q2=A: RRF 병합 · PaperId 단위 디덥, PBT-07)
-CandidateSet{candidates[](실재 IndexRecord 참조), retrievalMode}
+CandidateSet{candidates[](rankingScore=retrievalScore 시드), retrievalMode}
    │
-   ▼ RelevanceRanker.rank (Q3=A: 점수 내림차순 · 상위 N=20(Q10) · LLM 리랭킹 없음, PBT-03)
-RankedResults{ranked[], rankingMode=baseline}
+   ▼ [옵션] RerankAdapter (BR-5b: 상위 M cross-encoder 재랭킹 → rankingScore 갱신 · 예산/실패 시 skip=baseline)
+   ▼ RelevanceRanker.rank (Q3=A: rankingScore 내림차순 · 상위 N=20(Q10), PBT-03)
+RankedResults{ranked[], rankingMode}
    │
    ▼ GroundingAdapter.toGroundingInput  (INV-1: enforce는 U6 게이트웨이 post-handler 단일 호출)
 GroundingInput ──[U6 enforce]──▶ GroundingDecision{verdict, violations[]}

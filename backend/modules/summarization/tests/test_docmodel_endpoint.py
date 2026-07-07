@@ -200,6 +200,38 @@ def test_reader_treats_schema_version_mismatch_as_miss() -> None:
     assert reader.get_doc_model("2401.00001", 2) is None
 
 
+def test_reader_rejects_native_html_source_tier() -> None:
+    # native_html leaks raw TeX/pgf into fullText; the reader refuses it (→ rebuild) even when
+    # the parser version and schema are current.
+    payload = _doc_model(version=2).model_dump(mode="json", exclude_none=True)
+    payload["meta"]["provenance"]["sourceTier"] = "native_html"
+    s3 = _FakeS3({"doc-model/2401.00001/v2.json": json.dumps(payload).encode("utf-8")})
+    reader = S3DocModelReader(bucket="papers", client=s3)
+
+    assert reader.get_doc_model("2401.00001", 2) is None
+
+
+def test_reader_rejects_pre_sanitization_parser_version_1() -> None:
+    # @1 predates formula-LaTeX sanitization; it is below the servable floor (@2), so a miss.
+    payload = _doc_model(version=2).model_dump(mode="json", exclude_none=True)
+    payload["meta"]["provenance"]["parserVersion"] = "docmodel-parser@1"
+    s3 = _FakeS3({"doc-model/2401.00001/v2.json": json.dumps(payload).encode("utf-8")})
+    reader = S3DocModelReader(bucket="papers", client=s3)
+
+    assert reader.get_doc_model("2401.00001", 2) is None
+
+
+def test_reader_serves_older_but_clean_parser_version() -> None:
+    # An older-but-sanitized ar5iv doc (@2) is served immediately (no blank screen); the
+    # orchestrator heals it to the current parser in the background.
+    payload = _doc_model(version=2).model_dump(mode="json", exclude_none=True)
+    payload["meta"]["provenance"]["parserVersion"] = "docmodel-parser@2"
+    s3 = _FakeS3({"doc-model/2401.00001/v2.json": json.dumps(payload).encode("utf-8")})
+    reader = S3DocModelReader(bucket="papers", client=s3)
+
+    assert reader.get_doc_model("2401.00001", 2) is not None
+
+
 def test_reader_strips_version_suffix_from_paper_id() -> None:
     # The app carries versioned paper ids (2304.10557v1) but U1 keys the doc-model store on
     # the bare id (doc-model/{bareId}/v{version}.json). The read key must strip the trailing
@@ -210,3 +242,30 @@ def test_reader_strips_version_suffix_from_paper_id() -> None:
     doc = reader.get_doc_model("2304.10557v1", 1)
     assert doc is not None
     assert s3.calls == ["doc-model/2304.10557/v1.json"]
+
+
+# --- ?version fallback: revised papers must not silently read v1 ------------------------------
+
+
+def test_version_falls_back_to_arxiv_revision_when_query_param_absent() -> None:
+    # FE sends ?version (lib/arxivVersion.ts); a client that omits it must still read the paper's
+    # ACTUAL revision from the path id's suffix, not a hardcoded v1 (else v2+ papers perpetually
+    # miss → "building"/source_unavailable).
+    orch = _FakeOrchestrator(DocModelLookup(doc=_doc_model()))
+    endpoint = _endpoint(orch, en=True)
+    endpoint(_FakeRequest({"user_id": "u1"}, {}), "2309.15039v4")  # no ?version, versioned id
+    assert orch.calls == [("2309.15039v4", 4)]  # v4 recovered from the id, not 1
+
+
+def test_bare_id_without_version_param_defaults_to_v1() -> None:
+    orch = _FakeOrchestrator(DocModelLookup(doc=_doc_model()))
+    endpoint = _endpoint(orch, en=True)
+    endpoint(_FakeRequest({"user_id": "u1"}, {}), "2401.00001")  # bare id, no ?version
+    assert orch.calls == [("2401.00001", 1)]  # no revision info → v1 (unchanged)
+
+
+def test_explicit_version_query_param_still_wins() -> None:
+    orch = _FakeOrchestrator(DocModelLookup(doc=_doc_model()))
+    endpoint = _endpoint(orch, en=True)
+    endpoint(_FakeRequest({"user_id": "u1"}, {"version": "2"}), "2309.15039v4")  # explicit wins
+    assert orch.calls == [("2309.15039v4", 2)]

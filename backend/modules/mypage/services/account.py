@@ -8,7 +8,7 @@ takes the principal's ``user_id`` (SEC-8 single decision point).
 
 from __future__ import annotations
 
-from backend.modules.accounts.models import Principal
+from docsuri_shared.authz import Principal
 
 from ..models import AccountProfile, Consents, OrcidIdentity
 from ..ports import AccountRepository

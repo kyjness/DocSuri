@@ -12,6 +12,7 @@ import styles from './MyPageScreen.module.css';
 import authStyles from '../AuthForm.module.css';
 import type { ConsentSettingsVM } from '@/types/mypage';
 import type { PersonalizationSettings } from '@/types/personalization';
+import type { NotionConnectionStatusVM } from '@/lib/api/apiClient';
 
 // MyPageSettingsScreen (U10) — 동의 철회(야간 푸시만 토글, 필수 동의는 읽기 전용) + 비밀번호 변경
 // + 이메일 변경(FR-28/BR-A10) + 로그아웃 + 회원탈퇴. 비밀번호 변경·탈퇴·이메일 변경은 현재
@@ -23,6 +24,8 @@ type BusyKey =
   | 'personalization'
   | 'deletePersonalizationEvents'
   | 'resetPersonalizationProfile'
+  | 'notionSave'
+  | 'notionDisconnect'
   | 'logout'
   | 'withdraw'
   | 'password'
@@ -35,6 +38,7 @@ export function MyPageSettingsScreen() {
   const router = useRouter();
   const [consents, setConsents] = useState<ConsentSettingsVM | null>(null);
   const [personalization, setPersonalization] = useState<PersonalizationSettings | null>(null);
+  const [notion, setNotion] = useState<NotionConnectionStatusVM | null>(null);
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [busy, setBusy] = useState<BusyKey>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -49,6 +53,10 @@ export function MyPageSettingsScreen() {
   const [newEmail, setNewEmail] = useState('');
   const [emailError, setEmailError] = useState<string | null>(null);
   const [emailNotice, setEmailNotice] = useState<string | null>(null);
+  // Notion 연결 폼
+  const [notionToken, setNotionToken] = useState('');
+  const [notionParentPageId, setNotionParentPageId] = useState('');
+  const [notionError, setNotionError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setStatus('loading');
@@ -60,6 +68,13 @@ export function MyPageSettingsScreen() {
         setPersonalization(await api.getPersonalizationSettings());
       } catch {
         setPersonalization(null);
+      }
+      try {
+        const connection = await api.getNotionConnection();
+        setNotion(connection);
+        setNotionParentPageId(connection.parentPageId ?? '');
+      } catch {
+        setNotion(null);
       }
       setStatus('ready');
     } catch {
@@ -201,6 +216,67 @@ export function MyPageSettingsScreen() {
     })();
   };
 
+  const onSaveNotionConnection = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (busy) return;
+    const token = notionToken.trim();
+    const parentPageId = notionParentPageId.trim();
+    setNotionError(null);
+    if (token.length < 16) {
+      setNotionError('Notion 연동 토큰을 입력해 주세요.');
+      return;
+    }
+    if (!/^[0-9a-fA-F-]{32,36}$/.test(parentPageId)) {
+      setNotionError('상위 페이지 ID를 등록해야 Notion에 페이지를 만들 수 있습니다.');
+      return;
+    }
+    setBusy('notionSave');
+    setActionError(null);
+    setActionNotice(null);
+    void (async () => {
+      try {
+        const saved = await getApiClient().saveNotionConnection(token, parentPageId);
+        setNotion(saved);
+        setNotionToken('');
+        setNotionParentPageId(saved.parentPageId ?? parentPageId);
+        setActionNotice('Notion 연결을 저장했습니다.');
+      } catch (err) {
+        setNotionError(
+          err instanceof UserFacingError
+            ? err.message
+            : 'Notion 연결을 저장하지 못했습니다. 다시 시도해 주세요.',
+        );
+      } finally {
+        setBusy(null);
+      }
+    })();
+  };
+
+  const onDisconnectNotion = () => {
+    if (!window.confirm('Notion 연결을 해제할까요? 저장된 토큰이 삭제됩니다.')) return;
+    setNotionError(null);
+    setBusy('notionDisconnect');
+    setActionError(null);
+    setActionNotice(null);
+    void (async () => {
+      try {
+        await getApiClient().deleteNotionConnection();
+        setNotion({ connected: false });
+        setNotionToken('');
+        setNotionParentPageId('');
+        setActionNotice('Notion 연결을 해제했습니다.');
+      } catch (err) {
+        setNotionError(
+          err instanceof UserFacingError
+            ? err.message
+            : 'Notion 연결을 해제하지 못했습니다. 다시 시도해 주세요.',
+        );
+      } finally {
+        setBusy(null);
+      }
+    })();
+  };
+
   if (status === 'loading') return <StateView kind="loading" title="설정을 불러오는 중…" />;
   if (status === 'error' || !consents)
     return <StateView kind="error" onRetry={() => void load()} />;
@@ -290,6 +366,61 @@ export function MyPageSettingsScreen() {
           data-testid="mypage-personalization-reset-profile"
         >
           개인맞춤 프로필 초기화
+        </button>
+      </section>
+
+      <section className={styles.card} data-testid="mypage-notion-connection">
+        <h2 className={styles.cardTitle}>Notion 연결</h2>
+        <p className={styles.muted} data-testid="mypage-notion-status">
+          {notion?.connected
+            ? `연결됨 · 상위 페이지 ${notion.parentPageId}`
+            : '연결된 Notion이 없습니다.'}
+        </p>
+        <form
+          className={authStyles.form}
+          onSubmit={onSaveNotionConnection}
+          data-testid="mypage-notion-form"
+        >
+          {notionError ? (
+            <p className={authStyles.formError} role="alert" data-testid="mypage-notion-error">
+              {notionError}
+            </p>
+          ) : null}
+          <AuthField
+            id="mypage-notion-token"
+            label={notion?.connected ? '새 Notion 연동 토큰' : 'Notion 연동 토큰'}
+            type="password"
+            autoComplete="off"
+            value={notionToken}
+            onChange={setNotionToken}
+            testId="mypage-notion-token"
+          />
+          <AuthField
+            id="mypage-notion-parent-page-id"
+            label="상위 페이지 ID"
+            type="text"
+            autoComplete="off"
+            value={notionParentPageId}
+            onChange={setNotionParentPageId}
+            testId="mypage-notion-parent-page-id"
+          />
+          <button
+            type="submit"
+            className={authStyles.submit}
+            disabled={busy === 'notionSave'}
+            data-testid="mypage-notion-save"
+          >
+            {notion?.connected ? 'Notion 연결 갱신' : 'Notion 연결 저장'}
+          </button>
+        </form>
+        <button
+          type="button"
+          className={styles.danger}
+          disabled={!notion?.connected || busy === 'notionDisconnect'}
+          onClick={() => void onDisconnectNotion()}
+          data-testid="mypage-notion-disconnect"
+        >
+          Notion 연결 해제
         </button>
       </section>
 

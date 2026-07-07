@@ -26,6 +26,38 @@ class IngestionSettings(BaseModel):
         default="docsuri-corpus-v2", alias="DOCSURI_OPENSEARCH_INDEX_V2"
     )
     opensearch_alias: str = Field(default="docsuri-corpus", alias="DOCSURI_OPENSEARCH_ALIAS")
+    # Fast re-embed rebuild knobs (see reembed.py / runbook): reindex the existing corpus into a
+    # fresh bulk-tuned target, then alias-swap. reembed_shard_* slice the source across a fan-out
+    # of one-off ECS tasks so the wall-clock re-index window is as short as possible.
+    opensearch_index_reembed: str = Field(
+        default="docsuri-corpus-v3", alias="DOCSURI_OPENSEARCH_INDEX_REEMBED"
+    )
+    reembed_source: str | None = Field(default=None, alias="DOCSURI_REEMBED_SOURCE")
+    reembed_shards: int = Field(default=6, alias="DOCSURI_REEMBED_SHARDS")
+    reembed_shard_index: int = Field(default=0, alias="DOCSURI_REEMBED_SHARD")
+    reembed_shard_count: int = Field(default=1, alias="DOCSURI_REEMBED_SHARD_COUNT")
+    reembed_batch_size: int = Field(default=96, alias="DOCSURI_REEMBED_BATCH_SIZE")  # <=96
+    reembed_min_documents: int = Field(default=1, alias="DOCSURI_REEMBED_MIN_DOCUMENTS")
+    reembed_copy_rps: int = Field(default=-1, alias="DOCSURI_REEMBED_COPY_RPS")  # -1 = unlimited
+    # None → frozen spec width (1024). Set to Cohere v4's 1536 default for a dimension-changing
+    # re-embed; the target index + embed both use it. Cutover then needs a coordinated vector-spec
+    # bump + reader redeploy (same-space invariant) or search breaks — see the runbook.
+    reembed_dimension: int | None = Field(default=None, alias="DOCSURI_REEMBED_DIMENSION")
+    # >0 → client-side embed pacing: cap aggregate Bedrock throughput to this many tokens/min so a
+    # binding, non-adjustable on-demand quota (Cohere v4 = 300k/min = 432M/day) never throttle-
+    # storms the run — one paced task grinds continuously under both caps. Also turns on mget-skip
+    # resumability (skip docs already in the target) so a killed multi-day task can be relaunched
+    # without re-embedding. 0 = off → unpaced (needs quota headroom); live path byte-identical.
+    reembed_target_tpm: int = Field(default=0, alias="DOCSURI_REEMBED_TARGET_TPM")
+    # B3 fast full-re-parse (raw cache + bulk PDF prime + offline re-parse; see reparse.py /
+    # raw_backfill.py / runbook). Default OFF → the live fetch path stays byte-identical.
+    raw_cache_mode: Literal["off", "prefer", "only"] = Field(
+        default="off", alias="DOCSURI_RAW_CACHE_MODE"
+    )
+    raw_cache_prefix: str = Field(default="raw", alias="DOCSURI_RAW_CACHE_PREFIX")
+    # arXiv requester-pays bulk PDF bucket + optional YYMM month shards (csv, e.g. "2501,2502").
+    arxiv_bulk_bucket: str = Field(default="arxiv", alias="DOCSURI_ARXIV_BULK_BUCKET")
+    raw_backfill_months: str | None = Field(default=None, alias="DOCSURI_RAW_BACKFILL_MONTHS")
     control_plane_dsn: str | None = Field(default=None, alias="DOCSURI_CONTROL_PLANE_DSN")
     sqs_queue_url: str | None = Field(default=None, alias="DOCSURI_SQS_QUEUE_URL")
     sqs_dlq_url: str | None = Field(default=None, alias="DOCSURI_SQS_DLQ_URL")
@@ -79,6 +111,9 @@ class IngestionSettings(BaseModel):
     asset_kms_key_id: str | None = Field(default=None, alias="DOCSURI_ASSET_KMS_KEY_ID")
     asset_fetch_timeout_seconds: float = Field(
         default=20.0, alias="DOCSURI_ASSET_FETCH_TIMEOUT_SECONDS"
+    )
+    user_document_max_bytes: int = Field(
+        default=10 * 1024 * 1024, alias="DOCSURI_USER_DOCUMENT_MAX_BYTES"
     )
 
     @classmethod

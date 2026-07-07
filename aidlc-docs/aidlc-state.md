@@ -47,6 +47,12 @@
 - **🧭 DocModel 기반 전환 — 결정 게이트 수립 (2026-06-23, 미착수·브랜치 예정 `feat/docmodel-foundation`)**: "요약/번역 입력을 평문→구조화 문서모델(doc-model)로 전환 + 자체 리치뷰 + 에이전트 준비" 피벗의 단일 진실원천 게이트 작성 → `construction/plans/docmodel-foundation-pivot-plan.md`. **확정 결정 D1~D8**: doc-model=arXiv HTML 결정적 파싱 JSON(표=데이터·수식=LaTeX·그림=webp 참조)·U7 입력 평문→doc-model 교체(로직 불변)·PDF 원문 미저장(다운로드 버튼 없음)·자체 리치뷰=doc-model 콘텐츠 재렌더(PDF.js 아님)·비전=batch 아닌 에이전트 on-demand 툴·생성 lazy+`(paperId,ver)` 캐시·소스 무관 설계·TD-12(표=PDF크롭) 재검토. **저장**: `doc-model/{id}/v{ver}.json`(구조화 통합) + 기존 `assets/*.webp`(이미지 분리·참조) + 기존 `paper_asset` RDS. **열린 Q1~Q8**(코드 전 확정): ⚠️Q1 arXiv HTML 커버리지 스파이크(배포 확정 선결)·Q3 doc-model 스키마·Q7 요구사항 재진입 여부·Q8 P3(맵리듀스)=doc-model 후속. `:159-162` 비전 항목은 본 doc-model 기반으로 흡수. **blast-radius=기존 U1/U7/U5 FD·TD-12·requirements *편집*(신규 문서는 게이트뿐)**.
 - **🧭 DocModel 전환 — blast-radius 기존 문서 편집 (2026-06-23, 브랜치 예정 `feat/docmodel-foundation`)**: 게이트 D1~D8·Q권장안 기준으로 §3 기존 유닛 문서 *편집* 진행(신규=게이트뿐). **U1**: BLM `business-logic-model`(스코프 피벗 노트·§7 doc-model lazy 생성·캐시 단계 신설·§6.3 철회 무효화 연동) · `business-rules`(BR-29 carve-out 뒤집기 — 리치 렌더 범위 안 + ar5iv 필수 / **BR-30 신설** doc-model 구조·생성) · `tech-stack-decisions`(**TD-12 재작성** 표=PDF크롭→HTML 데이터 · **TD-16 신설** HTML 파서 lxml/BeautifulSoup·MathML→LaTeX·입력 보안 · TD-11 최후폴백 강등) · `infrastructure-design`(§1.1b `doc-model/` prefix·SSE-KMS·lazy 캐시 라이프사이클 + IAM 빌더/읽기 역할). **U7**: `domain-entities`(SourceText=doc-model·RefinedSource **+tables[]**·docModelRef) · `business-logic-model`(SourceSelector·InputRefiner doc-model 직접 취득·프롬프트 표=데이터·수식 LaTeX) · `business-rules`(BR-S2/S3) — **로직 불변, 입력만 업그레이드(D2)**. **U5 리치뷰**: 실제 컴포넌트가 사는 `u7-summarization-frontend` `FullTextViewer`→**`DocModelViewer`** 본문화(목차·KaTeX·표 컴포넌트·webp 그림·앵커; `getFullText`→`getDocModel` lazy) + U5 `frontend-components §6`(AssetGallery=그림 전용 축소·**표 크롭 폐기→표 컴포넌트** D8·앵커 매처 재사용). **미편집(잔여)**: requirements.md(FR-12/리치뷰 1급화/§12 — Q7 재진입 결과 대기) · `shared/dtos/`(Q3 doc-model 스키마 SSOT) · U7 NFR/Infra 어댑터 경량 정합. **다음=코드**(`feat/docmodel-foundation`). _커밋·push 보류(사용자 승인 후)._
 - **🧭 DocModel 전환 — Q3 스키마 + Q7 요구사항 재진입 완료 (2026-06-23, `fix/summarization-pipeline`, 미푸시)**: **Q3(커밋 `ff258f7`)** — doc-model 계약 확정: **중첩 섹션 트리 + 결정적 블록 id 앵커**. `shared/dtos/docmodel.schema.json`(JSON Schema 2020-12·20 defs·양성/음성 검증) + 스펙 SSOT `construction/shared/docmodel.md` + overview/README 등재(계약 5번째). 루트=getDocModel 응답 union, 아티팩트=DocModel(meta+sections[]); 블록 6종(paragraph·table·formula·figure·list·code); 표=rows/cols·수식=latex·그림=AssetRef(assetId 참조, url 없음 SEC-9); provenance(sourceTier 사다리). **Q7(미커밋)** — 요구사항 재진입: 질문지 `inception/requirements/requirement-verification-questions-docmodel.md` Q1~Q7(전부 게이트 권장안 + 리치뷰=신규 FR-18) → `requirements.md` 등재: **FR-12 개정**(입력=doc-model·앵커=doc-model id)·**FR-17 개정**(그림=이미지·표=데이터 D8)·**FR-18 신설**(자체 리치뷰 1급 D4)·§12 doc-model 카브아웃(PDF 미저장 D3·비전 제외 유지 D5·외부소스 일괄캐시 제외 D7)·QT-5 앵커 보강·§13 추적성. **다음=코드**(`feat/docmodel-foundation`): U1 DocModelBuilder(ar5iv 사다리·lxml)·getDocModel API·U7 입력 어댑터·DocModelViewer + summarization.schema Anchor.target 의미 명확화. _push·PR 보류(승인 후)._
+- **사용자 업로드 PDF → DocModel 계약/PR1 진행 (2026-07-05, stacked on PR #388)**: PR0 `feat/pr0-userdoc-docmodel-contract`에서 `paperId=userdoc:{uuid}`, `recordRef=upload:{ownerId}:{jobId}:{attachmentId}`, `SourceTier=pdf`, arXiv URL 합성 금지, `BUILD_USER_DOC_MODEL` S3-source payload를 동결. PR1 `feature/pr1-userdoc-docmodel-ingestion` / **PR #390**에서 U1 ingestion consumer 구현 완료: `JobKind.BUILD_USER_DOC_MODEL`, S3 user-document source, pdfplumber-only `build_user_doc_model`, 기존 worker DLQ 격리 경로, PBT payload round-trip. PR #390 계약 리뷰 후 payload validation을 동결 계약에 맞게 강화(`jobId=userdoc-{uuid}`, `paperId=userdoc:{uuid}`, `version=1`, `recordRef=upload:{ownerId}:{jobId}:{attachmentId}` exact match). 검증: focused ingestion 35 passed, full ingestion 281 passed/1 skipped, ruff clean, compileall clean, diff check clean, Branch name check passed. 참고: #389는 `feat/` prefix 실패 후 원격 branch rename 과정에서 GitHub가 close 처리.
+- **사용자 업로드 PDF → DocModel PR2 backend producer (2026-07-05, branch `feature/pr2-userdoc-docmodel-backend`)**: U11 evidence/research와 U12 novelty backend에 user PDF upload → S3 → `BUILD_USER_DOC_MODEL` enqueue → bounded doc-model polling 경로 구현. 공유 coordinator `backend.modules.user_docmodel`가 `paperId=userdoc:{uuid}`·`recordRef=upload:{ownerId}:{jobId}:{attachmentId}`를 생성/검증하고, evidence/research upload endpoint가 `objectKey`/`paperId`/`recordRef`를 반환한다. Evidence/research는 준비된 doc-model을 attachment extraction source로 전달하고, 미준비 PDF는 계약 문구(`[첨부 안내] PDF 본문을 해석하지 못해 첨부 근거는 제외했습니다.`)로 저하한다. Novelty는 raw PDF manuscript upload를 허용하고 `manuscript_pdf_parse_unavailable`로 fail-soft 저하하며, `userdoc:` sourceRef에는 arXiv URL을 합성하지 않는다. 검증: focused backend PR2 suite 103 passed, broad backend suite 453 passed/4 skipped, backend ruff clean, compileall clean, diff check clean. 다음: PR3 frontend binary upload wiring.
+- **PR2 hardening before PR3 branch (2026-07-05, branch `feature/pr2-userdoc-docmodel-backend`)**: PR3 착수 전 PR2 워크트리의 backend hardening 변경을 PR2에 먼저 반영. Evidence/research의 readiness polling을 request loop 밖 threadpool로 이동, S3 user-doc metadata filename을 ASCII-safe percent-encoding으로 저장, doc-model reader exception은 계약대로 fail-soft `None`으로 저하. 검증: `pytest backend/tests/test_user_docmodel.py backend/tests/test_evidence.py backend/tests/test_research.py` 37 passed, touched ruff clean, diff check clean.
+- **AI-DLC 워크스페이스 미추적 파일 정리 (2026-07-05, branch `feature/pr2-userdoc-docmodel-backend`)**: untracked 파일을 AI-DLC 위치 규칙으로 분류. `.agents/`(tracked `.claude/skills`의 Codex-local mirror), `.claude/worktrees/`, `.pnpm-store/`는 로컬 도구/캐시로 `.gitignore`에 추가. `aidlc-docs/inception/plans/`의 hackathon proposal, architecture D2/PNG, 팀 프로젝트 계획서 `.docx`는 문서 산출물로 추적 대상으로 정리. 검증: Markdown box-drawing diagram 제거 후 텍스트 대안으로 대체, D2 compile 2건 성공, `.docx` zip integrity OK, `git diff --check` clean.
+- **사용자 업로드 PDF → DocModel PR3 frontend binary upload (2026-07-05, branch `feature/pr3-userdoc-docmodel-frontend`)**: Agent Chat frontend가 PR2 backend upload 계약을 호출하도록 구현. BFF/transport가 `application/pdf` raw body를 JSON 변환 없이 전달하고, PDF attachment는 browser-local `sourceFile`을 임시 보관하되 job/message JSON에서는 제거한다. Evidence/research는 `/api/research/attachments` 선업로드 후 `objectKey`/`paperId`/`recordRef`만 job payload에 포함하고, novelty는 manuscript job 생성 후 `/api/novelty/jobs/{jobId}/manuscript?fileName=...`로 raw PDF를 업로드한다. md/txt `contentText` 경로는 유지. 검증: frontend `tsc --noEmit` clean, targeted Vitest 34 passed, full frontend Vitest 248 passed, `next build` passed.
+- **PR #391 review fixes (2026-07-05, branch `feature/pr0-userdoc-docmodel-contract`)**: evidence/research PDF attachment reuse now validates client-returned `objectKey` against the authenticated owner, evidence upload prefix, and attachment scope before doc-model enqueue/poll. Malformed `paperId`/`recordRef` metadata is translated to 422 at evidence and research API boundaries instead of surfacing as 500. 검증: focused review-fix suite 101 passed, broad backend tests 215 passed/1 skipped, touched backend ruff clean, compileall clean, diff check clean.
 
 ## 워크스페이스 상태
 - **기존 코드**: 없음(워킹 트리 블랭크 슬레이트; 이전 데모 사이클 폐기, git `ba3b6a9`로 복구 가능)
@@ -744,6 +750,84 @@ _Resiliency 옵트인은 `requirements.md` 확정 전에 필수 요구사항 명
   - `python -m compileall backend/modules/novelty backend/wiring.py backend/app.py ops/cdk/stacks/novelty_stack.py ops/cdk/stacks/compute_stack.py ops/cdk/app.py` -> passed
   - `cd ops/cdk; cdk synth` -> passed with existing CDK warnings
 - Current gate: Build and Test review/approval. Next stage per AI-DLC is Operations placeholder.
+
+## Evidence Formation Agent (U11) — Code Generation Complete
+
+- Date: 2026-07-01
+- Stage: CONSTRUCTION / Code Generation
+- Branch: `feature/u11-evidence-agent-construction`
+- Created application code:
+  - `backend/modules/evidence/tools.py`
+  - `backend/modules/evidence/prompts.py`
+  - `backend/modules/evidence/extractor.py`
+  - `backend/modules/evidence/assembler.py`
+  - `backend/modules/evidence/orchestrator.py`
+  - `backend/modules/evidence/repository.py`
+  - `backend/modules/evidence/service.py`
+  - `backend/modules/evidence/controller.py`
+  - `backend/modules/evidence/settings.py`
+  - `backend/modules/evidence/real_wiring.py`
+  - `backend/modules/evidence/migrations/001_create_evidence_tables.sql`
+  - `backend/tests/test_evidence.py`
+- Modified application code:
+  - `backend/wiring.py` (`_mount_evidence` 추가, `_INTEGRATIONS` 등재)
+  - `backend/migrations/__main__.py` (evidence migration 경로 등재)
+- Verification:
+  - `./backend/.venv/bin/ruff check backend/modules/evidence/ backend/tests/test_evidence.py` -> passed (0 errors)
+  - `PYTHONPATH='shared/python/src:ops/src:backend/modules/discovery/src:backend/modules/summarization/src' ./backend/.venv/bin/pytest backend/tests/test_evidence.py -v` -> 12 passed
+- Key invariants enforced:
+  - INV-EV-1: session ownership (wrong owner → KeyError → 404, SEC-9)
+  - INV-EV-2: empty claims → TurnAbstainResult (not TurnSuccessResult)
+  - INV-EV-3: no hallucination — quote must appear in paper fullText
+  - INV-EV-5: internal fields (score, chunk_id, vector, llm_meta) excluded from all API responses
+  - BR-EV-2/7/8/9/10/12 모두 구현
+  - D5: EvidenceFormationPort — asyncio.to_thread으로 sync Orchestrator 연결
+- Current gate: Code Generation review/approval. Next recommended stage: Build and Test after approval.
+
+## Evidence Formation Agent (U11) — Build and Test Complete
+
+- Date: 2026-07-01
+- Stage: CONSTRUCTION / Build and Test
+- Code Generation approval: 사용자 "Build & Test 단계 진행해" 요청으로 진행
+- Branch: `feature/u11-evidence-agent-construction`
+- Build/test documents updated:
+  - `aidlc-docs/construction/build-and-test/build-instructions.md` (U11 Evidence 섹션 추가)
+  - `aidlc-docs/construction/build-and-test/unit-test-instructions.md` (U11 Evidence 섹션 추가)
+  - `aidlc-docs/construction/build-and-test/integration-test-instructions.md` (U11 Evidence 섹션 추가)
+  - `aidlc-docs/construction/build-and-test/performance-test-instructions.md` (U11 Evidence 섹션 추가)
+  - `aidlc-docs/construction/build-and-test/contract-test-instructions.md` (U11 Evidence 섹션 추가)
+  - `aidlc-docs/construction/build-and-test/security-test-instructions.md` (U11 Evidence 섹션 추가)
+  - `aidlc-docs/construction/build-and-test/build-and-test-summary.md` (U11 Evidence 섹션 추가)
+- Application code fix:
+  - `backend/wiring.py`: 미사용 `EvidenceAgentOrchestrator` import 제거 (ruff F401)
+  - `backend/tests/test_app_shell.py`: expected module set에 `"evidence"` 추가
+- Verification:
+  - `./backend/.venv/bin/python -m compileall backend/modules/evidence/ backend/wiring.py backend/migrations/__main__.py` → PASS
+  - `./backend/.venv/bin/ruff check backend/modules/evidence/ backend/wiring.py backend/migrations/__main__.py backend/tests/test_evidence.py backend/tests/test_app_shell.py` → PASS (0 errors)
+  - `PYTHONPATH='...' ./backend/.venv/bin/pytest backend/tests/test_evidence.py -v` → **12 passed**
+  - `PYTHONPATH='...' ./backend/.venv/bin/pytest backend/tests/ --ignore=backend/tests/test_mypage.py` → **93 passed**, 1 failed (pre-existing: `cryptography` absent on macOS), 1 skipped
+- Environment note: `test_discovery_and_accounts_actually_mount` 1건 실패는 macOS 환경에 `cryptography` 패키지 미설치로 accounts/mypage가 스킵되는 기존 환경 제약 — U11 변경과 무관
+- Current gate: Build and Test review/approval. Next stage per AI-DLC is Operations placeholder.
+
+## Evidence Formation Agent (U11) — AgentWorker + CDK Stack 추가
+
+- Date: 2026-07-01
+- Stage: CONSTRUCTION / Code Generation (보완)
+- Branch: `feature/u11-evidence-agent-construction`
+- Created:
+  - `backend/modules/evidence/worker.py` — SQS polling AgentWorker (BR-EV-6)
+  - `ops/cdk/stacks/evidence_stack.py` — SQS + ECS Fargate CDK stack
+- Modified:
+  - `backend/modules/evidence/repository.py` — `update_turn_result` 추가 (Protocol + InMemory + SQL)
+  - `backend/modules/evidence/service.py` — `sqs_enqueue` 콜백 주입 + async path(BR-EV-6)
+  - `backend/modules/evidence/controller.py` — `get_sqs_enqueue` 의존성 + POST /turns 주입
+  - `backend/wiring.py` — `_mount_evidence`에 sqs_enqueue boto3 콜백 연결
+  - `ops/cdk/app.py` — EvidenceStack 등록
+- Verification:
+  - `./backend/.venv/bin/ruff check backend/modules/evidence/ backend/wiring.py ops/cdk/stacks/evidence_stack.py ops/cdk/app.py` → PASS
+  - `./backend/.venv/bin/python -m compileall backend/modules/evidence/ backend/wiring.py ops/cdk/stacks/evidence_stack.py ops/cdk/app.py` → PASS
+  - `PYTHONPATH='...' ./backend/.venv/bin/pytest backend/tests/test_evidence.py backend/tests/test_app_shell.py -v` → 26 passed, 1 failed (pre-existing cryptography 환경 제약)
+- Construction 완료: Code Generation 전 범위(코어 모듈 + AgentWorker + CDK IaC) 모두 작성됨
 
 ## U9 Personalization — Search-Boost Application (Shadow) Increment
 

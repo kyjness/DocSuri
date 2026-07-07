@@ -64,6 +64,25 @@ describe('agent chat reducer/helpers', () => {
     expect(merged[1].label).toBe('B done');
   });
 
+  it('merges SSE progress events into the active timeline', () => {
+    const running = agentReducer(initialAgentChatState, {
+      type: 'startSession',
+      session: { ...noveltySession, state: 'running' },
+    });
+    const withEvent = agentReducer(running, {
+      type: 'eventsReceived',
+      events: [{ id: 'evt-1', stage: 'retrieving', label: '검색 중', state: 'running' }],
+    });
+    const updated = agentReducer(withEvent, {
+      type: 'eventsReceived',
+      events: [{ id: 'evt-1', stage: 'completed', label: '검색 완료', state: 'completed' }],
+    });
+
+    expect(updated.events).toEqual([
+      { id: 'evt-1', stage: 'completed', label: '검색 완료', state: 'completed' },
+    ]);
+  });
+
   it('keeps unsequenced timeline events in received order', () => {
     fc.assert(
       fc.property(fc.uniqueArray(fc.string({ minLength: 1 }), { minLength: 1 }), (ids) => {
@@ -139,5 +158,32 @@ describe('agent chat reducer/helpers', () => {
       attachment: createAttachmentFromFile({ name: 'bad.exe', size: 1 }),
     });
     expect(canSend(rejected)).toBe(false);
+  });
+
+  it('preserves richer detail/sequence when a lean SSE snapshot re-sends the same event (#349)', () => {
+    const polled: AgentTimelineEvent = {
+      id: 'evt-1',
+      stage: 'searching',
+      label: '유사 연구 탐색',
+      detail: '소스 arXiv · 쿼리 "diffusion" · 결과 12건',
+      state: 'running',
+      sequence: 3,
+    };
+    // AgentChatScreen.mapSseProgressEvent emits only these four fields — no detail/sequence.
+    const sseSnapshot: AgentTimelineEvent = {
+      id: 'evt-1',
+      stage: 'completed',
+      label: '완료',
+      state: 'completed',
+    };
+
+    const [merged] = mergeTimelineEvents([polled], [sseSnapshot]);
+
+    // incoming stage/label/state win…
+    expect(merged.state).toBe('completed');
+    expect(merged.stage).toBe('completed');
+    // …but the richer detail/sequence survive the snapshot.
+    expect(merged.detail).toBe('소스 arXiv · 쿼리 "diffusion" · 결과 12건');
+    expect(merged.sequence).toBe(3);
   });
 });

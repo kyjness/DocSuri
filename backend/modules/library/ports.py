@@ -12,7 +12,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 
-from backend.modules.accounts.models import Principal
+from docsuri_shared.authz import Principal
 
 from .audit import AuditEvent
 from .models import HistoryEntry, LibraryItem, SavedSearch

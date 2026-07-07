@@ -7,6 +7,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from backend.middleware.agent_attachments import ATTACHMENT_MAX_COUNT, validated_attachment_dicts
+
 
 def utc_now() -> datetime:
     return datetime.now(UTC)
@@ -29,7 +31,15 @@ class ResearchChatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     content: str = Field(min_length=1, max_length=12000)
-    attachments: list[dict[str, Any]] = Field(default_factory=list, max_length=8)
+    attachments: list[dict[str, Any]] = Field(
+        default_factory=list, max_length=ATTACHMENT_MAX_COUNT
+    )
+
+    # US-AG5(#297)/US-EV4(#268) — 형식·크기를 처리 전 검증(422). 저장 형상(dict)은 유지.
+    @field_validator("attachments")
+    @classmethod
+    def _validate_attachments(cls, value: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return validated_attachment_dicts(value)
 
     @field_validator("content")
     @classmethod

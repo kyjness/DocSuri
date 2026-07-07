@@ -6,11 +6,11 @@ from unittest.mock import patch
 import pytest
 from docsuri_ops.domain.enums import IncidentClass, Severity, SignalKind
 from docsuri_ops.domain.models import ClassifiedIncidentRecord, TelemetryEvent
+from docsuri_shared.authz import Principal, UserRole
 from fastapi.testclient import TestClient
 
 from backend.app import create_app
 from backend.config import Settings
-from backend.modules.accounts.models import Principal, UserRole
 
 _TEST_SETTINGS = Settings(env="test", database_url="sqlite://")
 

@@ -20,11 +20,27 @@ from .vector_spec import DIMENSIONS
 __all__ = ["papers_index_body"]
 
 
-def papers_index_body(*, on_disk: bool = False) -> dict[str, Any]:
+def papers_index_body(
+    *,
+    on_disk: bool = False,
+    number_of_shards: int | None = None,
+    number_of_replicas: int | None = None,
+    refresh_interval: str | None = None,
+    dimension: int | None = None,
+) -> dict[str, Any]:
+    """Corpus index body. The ``number_of_*`` / ``refresh_interval`` knobs default to ``None``
+    (omitted → OpenSearch cluster defaults, so the live provisioning path is unchanged). A fast
+    bulk-load rebuild passes ``number_of_replicas=0`` + ``refresh_interval="-1"`` to cut write
+    amplification, then restores them before cutover (see the re-embed runbook).
+
+    ``dimension`` defaults to the frozen ``DIMENSIONS`` (1024); a re-embed to a different embedding
+    space (e.g. Cohere v4's 1536 default) passes it explicitly so the target k-NN mapping matches
+    the new vectors — without bumping the frozen vector-spec until reader cutover (see runbook)."""
+    dim = dimension or DIMENSIONS
     if on_disk:
         vector: dict[str, Any] = {
             "type": "knn_vector",
-            "dimension": DIMENSIONS,
+            "dimension": dim,
             "space_type": "cosinesimil",
             "mode": "on_disk",
             "compression_level": "4x",
@@ -32,11 +48,18 @@ def papers_index_body(*, on_disk: bool = False) -> dict[str, Any]:
     else:
         vector = {
             "type": "knn_vector",
-            "dimension": DIMENSIONS,
+            "dimension": dim,
             "method": {"name": "hnsw", "space_type": "cosinesimil", "engine": "lucene"},
         }
+    index_settings: dict[str, Any] = {"knn": True}
+    if number_of_shards is not None:
+        index_settings["number_of_shards"] = number_of_shards
+    if number_of_replicas is not None:
+        index_settings["number_of_replicas"] = number_of_replicas
+    if refresh_interval is not None:
+        index_settings["refresh_interval"] = refresh_interval
     return {
-        "settings": {"index": {"knn": True}},
+        "settings": {"index": index_settings},
         "mappings": {
             "properties": {
                 "chunkId": {"type": "keyword"},

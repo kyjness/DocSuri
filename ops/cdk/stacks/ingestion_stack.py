@@ -169,6 +169,44 @@ class IngestionStack(Stack):
         )
         docmodel_age_alarm.add_alarm_action(cw_actions.SnsAction(ops_alerts))
 
+        # --- SQS: user-uploaded PDF doc-model build queue (U11 / GROBID Option B) ---
+        # BUILD_USER_DOC_MODEL jobs need the GROBID sidecar for structured TEI, but the
+        # reader-triggered docsuri-docmodel-queue worker is deliberately GROBID-free so arXiv
+        # viewer/citation-tree cache misses never inherit the ~20GB GROBID cold-pull. Splitting
+        # user-PDF builds onto their own queue + worker keeps that lean path lean while still
+        # giving user PDFs GROBID structure. Producers (API / novelty / evidence tasks) target
+        # this queue via DOCSURI_USERDOC_BUILD_QUEUE_URL (referenced by name in those stacks).
+        userdoc_dlq = sqs.Queue(
+            self, "UserDocDlq",
+            queue_name="docsuri-userdoc-dlq",
+            retention_period=Duration.days(14),
+            encryption=sqs.QueueEncryption.SQS_MANAGED,
+        )
+        self.userdoc_queue = sqs.Queue(
+            self, "UserDocQueue",
+            queue_name="docsuri-userdoc-queue",
+            # A GROBID build (S3 fetch + TEI extraction + pdfplumber on a big PDF) can run minutes;
+            # 15-min visibility matches the novelty/evidence worker queues so an in-flight build is
+            # not redelivered mid-parse.
+            visibility_timeout=Duration.seconds(900),
+            retention_period=Duration.days(14),
+            encryption=sqs.QueueEncryption.SQS_MANAGED,
+            dead_letter_queue=sqs.DeadLetterQueue(max_receive_count=3, queue=userdoc_dlq),
+        )
+        userdoc_age_alarm = self.userdoc_queue.metric_approximate_age_of_oldest_message(
+            period=Duration.minutes(5),
+            statistic="Maximum",
+        ).create_alarm(
+            self,
+            "UserDocQueueAgeAlarm",
+            threshold=900,
+            evaluation_periods=1,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+            alarm_description="User-PDF doc-model builds are waiting more than 15 minutes",
+        )
+        userdoc_age_alarm.add_alarm_action(cw_actions.SnsAction(ops_alerts))
+
         # --- S3: full-text storage (infra-design §4) ---
         self.bucket = s3.Bucket(
             self, "FulltextBucket",
@@ -245,10 +283,9 @@ class IngestionStack(Stack):
                 "DOCSURI_S3_BUCKET": self.bucket.bucket_name,
                 "DOCSURI_BEDROCK_MODEL_ID": _BEDROCK_MODEL_ID,
                 "DOCSURI_OPENSEARCH_ENDPOINT": f"https://{opensearch_domain.domain_endpoint}",
-                # Post-v4-cutover: live search reads alias docsuri-corpus -> v2, so the worker
-                # must write to v2. v1 is the retired pre-migration index; dual-write scaffolding
-                # (bedrock_model_id_v2) stays unset now the migration is done.
-                "DOCSURI_OPENSEARCH_INDEX": "docsuri-corpus-v2",
+                # Write through the stable alias so future alias swaps (for fast re-embed rebuilds)
+                # do not leave new papers landing in the retired backing index.
+                "DOCSURI_OPENSEARCH_INDEX": "docsuri-corpus",
                 "DOCSURI_OPENSEARCH_ALIAS": "docsuri-corpus",
                 # SS/OpenAlex re-enabled after fixing the SS bulk-search 400 (commit c7bd065d)
                 # and adding per-source isolation to on_schedule_tick — a bad source now logs +
@@ -316,7 +353,7 @@ class IngestionStack(Stack):
                 "DOCSURI_S3_BUCKET": self.bucket.bucket_name,
                 "DOCSURI_BEDROCK_MODEL_ID": _BEDROCK_MODEL_ID,
                 "DOCSURI_OPENSEARCH_ENDPOINT": f"https://{opensearch_domain.domain_endpoint}",
-                "DOCSURI_OPENSEARCH_INDEX": "docsuri-corpus-v2",
+                "DOCSURI_OPENSEARCH_INDEX": "docsuri-corpus",
                 "DOCSURI_OPENSEARCH_ALIAS": "docsuri-corpus",
                 "DOCSURI_CORPUS_SOURCES": "ARXIV",
                 "DOCSURI_CONTROL_PLANE_DSN": control_plane_dsn,
@@ -369,12 +406,111 @@ class IngestionStack(Stack):
             ],
             adjustment_type=appscaling.AdjustmentType.CHANGE_IN_CAPACITY,
         )
+        # One docmodel-builder task is the safe ceiling for arXiv-backed rebuild drains: the
+        # arXiv politeness limiter is process-local, so two tasks double the caller rate and have
+        # already pushed retryable metadata fetches into docsuri-docmodel-dlq during backlog drains.
         docmodel_scaling = self.docmodel_service.auto_scale_task_count(
-            min_capacity=0, max_capacity=2
+            min_capacity=0, max_capacity=1
         )
         docmodel_scaling.scale_on_metric(
             "DocModelDepth",
             metric=self.docmodel_queue.metric_approximate_number_of_messages_visible(),
+            scaling_steps=[
+                appscaling.ScalingInterval(upper=0, change=0),
+                appscaling.ScalingInterval(lower=1, change=1),
+            ],
+            adjustment_type=appscaling.AdjustmentType.CHANGE_IN_CAPACITY,
+        )
+
+        # --- ECS Fargate: user-PDF doc-model worker (GROBID Option B) ---
+        # Dedicated to BUILD_USER_DOC_MODEL. Bundles the GROBID sidecar the lean docmodel-builder
+        # omits, so it inherits the bulk worker's heavy shape (cpu2048 / mem8192 / 80GB disk) for
+        # the ~20GB grobid/grobid:0.8.0 image. It reuses the docmodel worker MODE — a single
+        # priority queue drained via DOCSURI_DOCMODEL_QUEUE_URL — but points that slot at
+        # docsuri-userdoc-queue, so the same loop dispatches BUILD_USER_DOC_MODEL →
+        # build_user_doc_model with GROBID wired (DOCSURI_GROBID_URL set). It never polls the bulk
+        # queue (mode=docmodel → poll_bulk=False) and needs no OpenSearch/RDS/Bedrock access — the
+        # doc-model build path only reads the PDF from S3 and writes doc-model/ back.
+        userdoc_task_def = ecs.FargateTaskDefinition(
+            self, "UserDocWorkerTaskDef",
+            cpu=2048,
+            memory_limit_mib=8192,
+            ephemeral_storage_gib=80,
+        )
+        userdoc_grobid = userdoc_task_def.add_container(
+            "grobid",
+            image=ecs.ContainerImage.from_registry("grobid/grobid:0.8.0"),
+            logging=ecs.LogDrivers.aws_logs(stream_prefix="userdoc-grobid"),
+            essential=False,
+            health_check=ecs.HealthCheck(
+                command=[
+                    "CMD-SHELL",
+                    (
+                        "curl -fsS http://127.0.0.1:8070/api/isalive >/dev/null "
+                        "|| wget -q -O - http://127.0.0.1:8070/api/isalive >/dev/null "
+                        "|| exit 1"
+                    ),
+                ],
+                interval=Duration.seconds(30),
+                timeout=Duration.seconds(5),
+                retries=5,
+                start_period=Duration.seconds(90),
+            ),
+            port_mappings=[ecs.PortMapping(container_port=8070)],
+        )
+        userdoc_worker = userdoc_task_def.add_container(
+            "worker",
+            image=ecs.ContainerImage.from_ecr_repository(self.repo, tag="latest"),
+            logging=ecs.LogDrivers.aws_logs(stream_prefix="userdoc"),
+            environment={
+                "DOCSURI_ENV": "production",
+                "DOCSURI_AWS_REGION": self.region,
+                "DOCSURI_S3_BUCKET": self.bucket.bucket_name,
+                "DOCSURI_BEDROCK_MODEL_ID": _BEDROCK_MODEL_ID,
+                "DOCSURI_OPENSEARCH_ENDPOINT": f"https://{opensearch_domain.domain_endpoint}",
+                "DOCSURI_OPENSEARCH_INDEX": "docsuri-corpus",
+                "DOCSURI_OPENSEARCH_ALIAS": "docsuri-corpus",
+                # ARXIV only. The user-PDF build never harvests SS/OpenAlex, so no SS API key is
+                # needed even though GROBID is present — with grobid_url set, an SS/OPENALEX in the
+                # source list would make the runtime construct those corpus adapters.
+                "DOCSURI_CORPUS_SOURCES": "ARXIV",
+                "DOCSURI_GROBID_URL": "http://127.0.0.1:8070",
+                "DOCSURI_CONTROL_PLANE_DSN": control_plane_dsn,
+                # require_production needs the main queue URLs set even though this worker never
+                # polls them (mode=docmodel → poll_bulk=False); mirrors the docmodel-builder.
+                "DOCSURI_SQS_QUEUE_URL": self.queue.queue_url,
+                "DOCSURI_SQS_DLQ_URL": dlq.queue_url,
+                # The worker's single priority-queue slot IS the user-PDF build queue here.
+                "DOCSURI_DOCMODEL_QUEUE_URL": self.userdoc_queue.queue_url,
+                "DOCSURI_DOCMODEL_DLQ_URL": userdoc_dlq.queue_url,
+                "DOCSURI_MULTIMODAL_ASSETS_ENABLED": "true",
+                "DOCSURI_WORKER_QUEUE_MODE": "docmodel",
+                "DOCSURI_WORKER_MAX_MESSAGES": "1",
+                "DOCSURI_WORKER_LOOP_DELAY_SECONDS": "1",
+            },
+        )
+        userdoc_worker.add_container_dependencies(
+            ecs.ContainerDependency(
+                container=userdoc_grobid,
+                condition=ecs.ContainerDependencyCondition.HEALTHY,
+            )
+        )
+        self.userdoc_service = ecs.FargateService(
+            self, "UserDocWorkerService",
+            service_name="docsuri-userdoc-builder",
+            cluster=cluster,
+            task_definition=userdoc_task_def,
+            desired_count=0,
+            assign_public_ip=True,
+            circuit_breaker=ecs.DeploymentCircuitBreaker(rollback=True),
+            vpc_subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PUBLIC),
+        )
+        userdoc_scaling = self.userdoc_service.auto_scale_task_count(
+            min_capacity=0, max_capacity=2
+        )
+        userdoc_scaling.scale_on_metric(
+            "UserDocDepth",
+            metric=self.userdoc_queue.metric_approximate_number_of_messages_visible(),
             scaling_steps=[
                 appscaling.ScalingInterval(upper=0, change=0),
                 appscaling.ScalingInterval(lower=1, change=1),
@@ -404,6 +540,11 @@ class IngestionStack(Stack):
         self.docmodel_queue.grant_consume_messages(docmodel_task_def.task_role)
         docmodel_dlq.grant_send_messages(docmodel_task_def.task_role)
         self.bucket.grant_read_write(docmodel_task_def.task_role)
+        # User-PDF worker: consume its own queue + DLQ, read the uploaded PDF and write doc-model/
+        # back. No OpenSearch/RDS/Bedrock — the build path is S3-only (same as the docmodel worker).
+        self.userdoc_queue.grant_consume_messages(userdoc_task_def.task_role)
+        userdoc_dlq.grant_send_messages(userdoc_task_def.task_role)
+        self.bucket.grant_read_write(userdoc_task_def.task_role)
         task_def.add_to_task_role_policy(
             iam.PolicyStatement(
                 actions=["bedrock:InvokeModel"],

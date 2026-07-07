@@ -3,13 +3,13 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+from docsuri_shared.authz import Principal, UserRole
 from fastapi.testclient import TestClient
 from hypothesis import example, given
 from hypothesis import strategies as st
 
 from backend.app import create_app
 from backend.config import Settings
-from backend.modules.accounts.models import Principal, UserRole
 from backend.modules.personalization import controller
 from backend.modules.personalization.models import (
     BehaviorEvent,
@@ -101,6 +101,42 @@ def test_record_event_dedupes_per_owner() -> None:
     assert first.recorded is True
     assert second.duplicate is True
     assert len(repo.list_events(user_id)) == 1
+
+
+class _CapturingObs:
+    def __init__(self) -> None:
+        self.metrics: list[str] = []
+
+    def emit_metric(self, name: str, value: float = 1.0, tags: dict | None = None) -> None:
+        self.metrics.append(name)
+
+
+def test_funnel_metric_emitted_once_and_only_for_funnel_events() -> None:
+    # #346 KPI funnel: read_completed emits its dimensionless counter exactly once (the emit sits
+    # AFTER the dedupe guard, so a re-fired event does not double-count), a non-funnel event emits
+    # nothing, and the metric name matches what the dashboard graphs.
+    repo = InMemoryPersonalizationRepository()
+    obs = _CapturingObs()
+    recorder = BehaviorEventRecorder(repo, obs)
+    user_id = str(uuid4())
+    read = BehaviorEventCreate(
+        eventType="read_completed",
+        subject={"kind": "paper", "paperId": "p1"},
+        metadata={"entrySurface": "detail"},
+        dedupeKey="read:p1:1",
+    )
+    lib = BehaviorEventCreate(
+        eventType="library_added",
+        subject={"kind": "paper", "paperId": "p2", "category": "cs.AI"},
+        metadata={"paperCategory": "cs.AI", "savedSource": "library"},
+        dedupeKey="lib:p2:1",
+    )
+
+    recorder.record(user_id, read)
+    recorder.record(user_id, read)  # dedupe → must NOT re-emit
+    recorder.record(user_id, lib)  # not a funnel event → no funnel metric
+
+    assert obs.metrics == ["personalization.funnel.read_completed"]
 
 
 def test_recent_papers_falls_back_to_paper_id_without_title() -> None:

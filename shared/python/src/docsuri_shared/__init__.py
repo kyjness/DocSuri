@@ -16,7 +16,7 @@ The most load-bearing names are re-exported at the top level for convenience.
 
 from __future__ import annotations
 
-from . import docmodel_contract, dtos, events, ids, ports, vector_spec
+from . import authz, docmodel_contract, dtos, events, ids, ports, vector_spec
 from .docmodel_contract import DOCMODEL_PARSER_VERSION, DOCMODEL_SCHEMA_VERSION
 from .ids import chunk_id, paper_id_prefix
 from .vector_spec import (
@@ -31,6 +31,7 @@ from .vector_spec import (
 
 __all__ = [
     # submodules
+    "authz",
     "dtos",
     "events",
     "ports",

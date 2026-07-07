@@ -18,6 +18,22 @@ from .ports import ObservabilityPort, QueuePort
 
 T = TypeVar("T")
 
+# botocore error codes for transient AWS conditions (Bedrock/OpenSearch throttling + overload)
+# that must back off + retry, not go straight to the DLQ.
+_BOTOCORE_RETRIABLE_CODES = frozenset(
+    {
+        "ThrottlingException",
+        "Throttling",
+        "TooManyRequestsException",
+        "ProvisionedThroughputExceededException",
+        "RequestLimitExceeded",
+        "SlowDown",
+        "ServiceUnavailable",
+        "ModelTimeoutException",
+        "ModelNotReadyException",
+    }
+)
+
 
 @dataclass(frozen=True, slots=True)
 class RetryPolicy:
@@ -119,15 +135,19 @@ class TokenBucket:
         self._last_refill = time.monotonic()
         self._lock = threading.Lock()
 
-    def acquire(self) -> None:
-        while True:
-            with self._lock:
-                self._refill()
-                if self._tokens >= 1.0:
-                    self._tokens -= 1.0
-                    return
-                wait_seconds = (1.0 - self._tokens) / self._rate
-            time.sleep(wait_seconds)
+    def acquire(self, amount: float = 1.0) -> None:
+        remaining = max(amount, 0.0)
+        while remaining > 0.0:
+            chunk = min(remaining, self._capacity)
+            while True:
+                with self._lock:
+                    self._refill()
+                    if self._tokens >= chunk:
+                        self._tokens -= chunk
+                        remaining -= chunk
+                        break
+                    wait_seconds = (chunk - self._tokens) / self._rate
+                time.sleep(wait_seconds)
 
     def _refill(self) -> None:
         now = time.monotonic()
@@ -225,4 +245,15 @@ class IngestionResilienceService:
 def is_retriable(exc: Exception) -> bool:
     if isinstance(exc, IngestionError):
         return exc.failure_class is FailureClass.RETRIABLE
-    return isinstance(exc, ConnectionError | TimeoutError)
+    if isinstance(exc, ConnectionError | TimeoutError):
+        return True
+    # Duck-type botocore ClientError (avoid importing botocore here): throttling codes and any
+    # 5xx are transient AWS overload — back off + retry instead of failing straight to the DLQ.
+    response = getattr(exc, "response", None)
+    if isinstance(response, dict):
+        if response.get("Error", {}).get("Code") in _BOTOCORE_RETRIABLE_CODES:
+            return True
+        status = response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+        if isinstance(status, int) and status >= 500:
+            return True
+    return False

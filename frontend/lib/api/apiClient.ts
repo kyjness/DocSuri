@@ -3,7 +3,13 @@
 // All backend access goes through here -> U6 gateway (no direct module calls,
 // BR-U5-17). Applies differential retry (idempotent GET only), timeout, and
 // in-flight dedup (P-R1, P-P4, BR-U5-18); normalizes failures to UserFacingError.
-import type { Transport, TransportRequest, TransportResponse } from './transport';
+import {
+  binaryBody,
+  isBinaryTransportBody,
+  type Transport,
+  type TransportRequest,
+  type TransportResponse,
+} from './transport';
 import { UserFacingError, normalizeHttpError } from './errors';
 import { classifySearchResponse, type SearchOutcome } from './classify';
 import {
@@ -81,6 +87,10 @@ export interface PageQuery {
 
 const DEFAULT_PAGE_LIMIT = 20;
 const AGENT_ID_SEP = ':';
+// evidence 턴은 OpenSearch 검색 + 다건 S3 DocModel 로드 + Bedrock 추출을 동기로 거쳐
+// 8초 기본 타임아웃(withTimeout)을 항상 초과한다 — 백엔드는 계속 처리해 응답이 저장되지만
+// 클라이언트만 network 에러로 끊겨 사용자에게 실패로 보이는 문제(PR #338 후속 발견).
+const EVIDENCE_TURN_TIMEOUT_MS = 90_000;
 
 type BackendResearchJob = {
   jobId: string;
@@ -198,6 +208,10 @@ function mapAgentAttachments(attachments?: unknown[]): AgentAttachment[] | undef
       sizeBytes: numberValue(record.sizeBytes) ?? numberValue(record.size) ?? 0,
       status: attachmentStatus(record.status),
       error: stringValue(record.error),
+      contentText: stringValue(record.contentText),
+      objectKey: stringValue(record.objectKey),
+      paperId: stringValue(record.paperId),
+      recordRef: stringValue(record.recordRef),
     };
   });
 }
@@ -222,41 +236,33 @@ function mapNoveltyResultMessage(
   return {
     id: `novelty-result-${artifacts.map((artifact) => artifact.artifactId).join('-')}`,
     role: 'agent',
-    content: [
-      'Novelty 분석 결과',
-      ...artifacts.map((artifact) => `- ${artifact.title}: ${artifactSummary(artifact)}`),
-    ].join('\n'),
+    // 구조화 아티팩트를 JSON-in-content로 전달 — evidence 결과와 동일한 seam이라 세션
+    // 영속/재열람에서도 구조가 유지된다. 렌더링은 NoveltyResultView(#253~#256).
+    content: JSON.stringify({
+      kind: 'novelty',
+      artifacts: artifacts.map((artifact) => ({
+        artifactId: artifact.artifactId,
+        kind: artifact.kind,
+        title: artifact.title,
+        payload: artifact.payload ?? {},
+        createdAt: artifact.createdAt,
+      })),
+    }),
     createdAt: artifacts.at(-1)?.createdAt ?? fallbackCreatedAt,
     status: 'sent',
   };
 }
 
-function artifactSummary(artifact: BackendNoveltyArtifact): string {
-  const payload = artifact.payload ?? {};
-  const count = countFromPayload(payload);
-  if (artifact.kind === 'experiment_plan') {
-    return [
-      stringValue(payload.researchQuestion),
-      listValue(payload.hypotheses),
-      listValue(payload.datasets),
-      listValue(payload.metrics),
-      listValue(payload.risks),
-    ]
-      .filter(Boolean)
-      .join(' / ');
-  }
-  const firstItem = firstItemTitle(payload);
-  if (firstItem) return count ? `${firstItem} 외 ${count}건` : firstItem;
-  return count ? `${count}건` : '결과 생성됨';
-}
-
-function timelineDetail(payload?: Record<string, unknown>): string | undefined {
+// N-001(#257) — SSE 경로(AgentChatScreen)도 동일 payload→detail 매핑을 쓰도록 export.
+export function timelineDetail(payload?: Record<string, unknown>): string | undefined {
   if (!payload) return undefined;
+  const count = countFromPayload(payload);
   const parts = [
     labeled('소스', payload.source ?? payload.sourceType ?? payload.type),
     labeled('쿼리', payload.query),
     labeled('요약', payload.outputSummary),
-    countFromPayload(payload) ? `결과 ${countFromPayload(payload)}건` : undefined,
+    // 0건도 '발견한 출처 수'다(US-NV7 #257) — falsy 체크로 삼키지 않는다.
+    count !== undefined ? `결과 ${count}건` : undefined,
     safeReason(payload),
   ];
   return parts.filter(Boolean).join(' · ') || undefined;
@@ -289,11 +295,6 @@ function hasValue(value: unknown): boolean {
   return value !== null && value !== undefined;
 }
 
-function listValue(value: unknown): string | undefined {
-  if (!Array.isArray(value)) return undefined;
-  return value.map(stringValue).filter(Boolean).slice(0, 2).join(', ') || undefined;
-}
-
 function attachmentStatus(value: unknown): AgentAttachmentStatus {
   return value === 'rejected' ? 'rejected' : 'ready';
 }
@@ -314,15 +315,6 @@ function countFromPayload(payload: Record<string, unknown>): number | undefined 
   return Array.isArray(payload.items) ? payload.items.length : undefined;
 }
 
-function firstItemTitle(payload: Record<string, unknown>): string | undefined {
-  const items = payload.items;
-  if (!Array.isArray(items)) return undefined;
-  const first = items[0];
-  if (!first || typeof first !== 'object') return undefined;
-  const item = first as Record<string, unknown>;
-  return stringValue(item.title) ?? stringValue(item.summary);
-}
-
 function toResearchBody(req: AgentSendMessageRequest) {
   if (
     process.env.NEXT_PUBLIC_DOCSURI_REAL_API &&
@@ -334,7 +326,7 @@ function toResearchBody(req: AgentSendMessageRequest) {
 }
 
 function toChatBody(req: AgentSendMessageRequest) {
-  return { content: req.content, attachments: req.attachments ?? [] };
+  return { content: req.content, attachments: attachmentsForJson(req.attachments) };
 }
 
 function toNoveltyBody(req: AgentSendMessageRequest, created: boolean) {
@@ -348,11 +340,10 @@ function toNoveltyBody(req: AgentSendMessageRequest, created: boolean) {
     return toChatBody(req);
   }
   const manuscript = req.attachments?.[0];
-  if (manuscript && process.env.NEXT_PUBLIC_DOCSURI_REAL_API) {
-    throw new UserFacingError(
-      'unknown',
-      '파일 업로드 연동 전에는 Novelty 첨부 분석을 사용할 수 없습니다.',
-    );
+  // US-NV2(#252)/PR3 — 원고 본문은 잡 생성 직후 별도 업로드로 전달된다(sendAgentMessage).
+  // md/txt는 JSON contentText, PDF는 PR2 raw upload + BUILD_USER_DOC_MODEL 경로를 쓴다.
+  if (manuscript?.kind === 'pdf' && !hasPdfSourceFile(manuscript)) {
+    throw new UserFacingError('unknown', 'PDF 파일을 다시 첨부해 주세요.');
   }
   return {
     inputType: manuscript ? 'manuscript' : 'natural_language',
@@ -375,6 +366,54 @@ function contentTypeFor(attachment: AgentAttachment): string {
   return 'text/plain';
 }
 
+function attachmentForJson(attachment: AgentAttachment): AgentAttachment {
+  const jsonAttachment = { ...attachment };
+  delete jsonAttachment.sourceFile;
+  return jsonAttachment;
+}
+
+function attachmentsForJson(attachments?: AgentAttachment[]): AgentAttachment[] {
+  return (attachments ?? []).map(attachmentForJson);
+}
+
+function hasPdfSourceFile(
+  attachment: AgentAttachment | undefined,
+): attachment is AgentAttachment & { sourceFile: Blob } {
+  return attachment?.kind === 'pdf' && !!attachment.sourceFile;
+}
+
+// Client-side guard mirroring the backend USER_DOCMODEL_MAX_BYTES (10 MiB): fail fast instead
+// of streaming a too-large PDF to the backend only to get a 422 back.
+const MAX_PDF_UPLOAD_BYTES = 10 * 1024 * 1024;
+
+function assertPdfUploadSize(file: Blob): void {
+  if (file.size > MAX_PDF_UPLOAD_BYTES) {
+    throw new UserFacingError('unknown', 'PDF 파일은 10MB 이하만 업로드할 수 있습니다.');
+  }
+}
+
+function requestBodyKey(body: unknown): string {
+  if (isBinaryTransportBody(body)) return `[binary:${body.contentType}]`;
+  return JSON.stringify(body ?? null);
+}
+
+export interface NotionConnectionStatusVM {
+  connected: boolean;
+  parentPageId?: string | null;
+  updatedAt?: string | null;
+}
+
+export interface NotionExportVM {
+  status: string;
+  notionPageId?: string | null;
+  errorMessage?: string | null;
+}
+
+export interface NotionExportPreviewVM {
+  export: NotionExportVM;
+  preview: { title: string; artifacts: { kind: string; title: string }[] };
+}
+
 function pageQuery(params?: PageQuery): string {
   const sp = new URLSearchParams({ limit: String(params?.limit ?? DEFAULT_PAGE_LIMIT) });
   if (params?.cursor) sp.set('cursor', params.cursor);
@@ -391,7 +430,7 @@ export class ApiClient {
     private readonly transport: Transport,
     options: ApiClientOptions = {},
   ) {
-    this.timeoutMs = options.timeoutMs ?? 8000;
+    this.timeoutMs = options.timeoutMs ?? 10000;
     this.retryBackoffMs = options.retryBackoffMs ?? 200;
   }
 
@@ -683,12 +722,67 @@ export class ApiClient {
     };
   }
 
+  private async withUploadedResearchAttachments(
+    req: AgentSendMessageRequest,
+  ): Promise<AgentSendMessageRequest> {
+    const attachments = req.attachments ?? [];
+    if (!attachments.some(hasPdfSourceFile)) return req;
+    return {
+      ...req,
+      attachments: await Promise.all(
+        attachments.map((attachment) =>
+          hasPdfSourceFile(attachment) ? this.uploadResearchPdfAttachment(attachment) : attachment,
+        ),
+      ),
+    };
+  }
+
+  private async uploadResearchPdfAttachment(
+    attachment: AgentAttachment & { sourceFile: Blob },
+  ): Promise<AgentAttachment> {
+    assertPdfUploadSize(attachment.sourceFile);
+    const query = new URLSearchParams({ fileName: attachment.name, id: attachment.id });
+    const uploaded = await this.request({
+      method: 'POST',
+      path: `/api/research/attachments?${query.toString()}`,
+      body: binaryBody(attachment.sourceFile, 'application/pdf'),
+      idempotent: false,
+    });
+    if (uploaded.status !== 200) {
+      throw normalizeHttpError(uploaded.status, serverMessage(uploaded.body));
+    }
+    const mapped = mapAgentAttachments([uploaded.body])?.[0];
+    if (!mapped?.objectKey || !mapped.paperId || !mapped.recordRef) {
+      throw new UserFacingError('unknown', 'PDF 업로드 응답을 확인할 수 없습니다.');
+    }
+    return { ...attachmentForJson(attachment), ...mapped };
+  }
+
+  private async uploadNoveltyPdfManuscript(
+    jobId: string,
+    manuscript: AgentAttachment & { sourceFile: Blob },
+  ): Promise<void> {
+    assertPdfUploadSize(manuscript.sourceFile);
+    const query = new URLSearchParams({ fileName: manuscript.name });
+    const uploaded = await this.request({
+      method: 'POST',
+      path: `/api/novelty/jobs/${encodeURIComponent(jobId)}/manuscript?${query.toString()}`,
+      body: binaryBody(manuscript.sourceFile, 'application/pdf'),
+      idempotent: false,
+    });
+    if (uploaded.status !== 200) {
+      throw normalizeHttpError(uploaded.status, serverMessage(uploaded.body));
+    }
+  }
+
   async sendAgentMessage(
     sessionId: string,
     req: AgentSendMessageRequest,
   ): Promise<AgentSendMessageResult> {
     const target = parseAgentSessionId(sessionId, req.mode);
     const created = sessionId.startsWith(`agent-${req.mode}-`);
+    const sendReq =
+      target.mode === 'evidence' ? await this.withUploadedResearchAttachments(req) : req;
     const path =
       target.mode === 'evidence'
         ? created
@@ -700,11 +794,31 @@ export class ApiClient {
     const res = await this.request({
       method: 'POST',
       path,
-      body: target.mode === 'evidence' ? toResearchBody(req) : toNoveltyBody(req, created),
+      body: target.mode === 'evidence' ? toResearchBody(sendReq) : toNoveltyBody(sendReq, created),
       idempotent: false,
+      timeoutMs: target.mode === 'evidence' ? EVIDENCE_TURN_TIMEOUT_MS : undefined,
     });
     if (res.status !== 200 && res.status !== 201) {
       throw normalizeHttpError(res.status, serverMessage(res.body));
+    }
+    // US-NV2(#252) — 원고 잡은 생성 시 디스패치가 보류된다. 읽어둔 본문(contentText)을
+    // 업로드해 objectKey를 바인딩해야 분석이 시작된다.
+    if (created && target.mode === 'novelty') {
+      const manuscript = sendReq.attachments?.[0];
+      const jobId = (res.body as { jobId: string }).jobId;
+      if (hasPdfSourceFile(manuscript)) {
+        await this.uploadNoveltyPdfManuscript(jobId, manuscript);
+      } else if (manuscript?.contentText) {
+        const uploaded = await this.request({
+          method: 'POST',
+          path: `/api/novelty/jobs/${encodeURIComponent(jobId)}/manuscript`,
+          body: { contentText: manuscript.contentText },
+          idempotent: false,
+        });
+        if (uploaded.status !== 200) {
+          throw normalizeHttpError(uploaded.status, serverMessage(uploaded.body));
+        }
+      }
     }
     const nextId =
       created && target.mode === 'evidence'
@@ -733,6 +847,18 @@ export class ApiClient {
     });
     if (res.status === 200 || res.status === 204) return;
     throw normalizeHttpError(res.status, serverMessage(res.body));
+  }
+
+  /** 전체 세션 초기화 — US-EV8(#272). 두 에이전트 모듈의 소유 세션을 모두 비운다(멱등). */
+  async resetAgentSessions(): Promise<void> {
+    await Promise.all(
+      ['/api/research/jobs', '/api/novelty/jobs'].map(async (path) => {
+        const res = await this.request({ method: 'DELETE', path, idempotent: false });
+        if (res.status !== 200 && res.status !== 204) {
+          throw normalizeHttpError(res.status, serverMessage(res.body));
+        }
+      }),
+    );
   }
 
   async signup(req: SignupRequest): Promise<SignupResult> {
@@ -1076,6 +1202,66 @@ export class ApiClient {
   // ---- internals ------------------------------------------------------
 
   /** Shared rerun path: POST -> SearchResultSetDTO, classified like a live search. */
+  // US-NV8(#258) — Notion 연결(토큰은 서버에서 암호화 저장, 응답에 미포함)과
+  // 미리보기 → 명시 승인 → 내보내기. 자동 export 없음.
+  async getNotionConnection(): Promise<NotionConnectionStatusVM> {
+    const res = await this.request({
+      method: 'GET',
+      path: '/api/novelty/notion/connection',
+      idempotent: true,
+    });
+    if (res.status === 200) return res.body as NotionConnectionStatusVM;
+    throw normalizeHttpError(res.status, serverMessage(res.body));
+  }
+
+  async saveNotionConnection(
+    token: string,
+    parentPageId: string,
+  ): Promise<NotionConnectionStatusVM> {
+    const res = await this.request({
+      method: 'PUT',
+      path: '/api/novelty/notion/connection',
+      body: { token, parentPageId },
+      idempotent: false,
+    });
+    if (res.status === 200) return res.body as NotionConnectionStatusVM;
+    throw normalizeHttpError(res.status, serverMessage(res.body));
+  }
+
+  async deleteNotionConnection(): Promise<void> {
+    const res = await this.request({
+      method: 'DELETE',
+      path: '/api/novelty/notion/connection',
+      idempotent: false,
+    });
+    if (res.status === 204) return;
+    throw normalizeHttpError(res.status, serverMessage(res.body));
+  }
+
+  async previewNotionExport(sessionId: string): Promise<NotionExportPreviewVM> {
+    // 세션 id는 'novelty:{jobId}' 형태 — BE는 raw jobId로 잡을 찾는다.
+    const jobId = parseAgentSessionId(sessionId).rawId;
+    const res = await this.request({
+      method: 'POST',
+      path: `/api/novelty/jobs/${encodeURIComponent(jobId)}/notion/preview`,
+      idempotent: false,
+    });
+    if (res.status === 200) return res.body as NotionExportPreviewVM;
+    throw normalizeHttpError(res.status, serverMessage(res.body));
+  }
+
+  async approveNotionExport(sessionId: string, approved: boolean): Promise<NotionExportVM> {
+    const jobId = parseAgentSessionId(sessionId).rawId;
+    const res = await this.request({
+      method: 'POST',
+      path: `/api/novelty/jobs/${encodeURIComponent(jobId)}/notion/approve`,
+      body: { approved },
+      idempotent: false,
+    });
+    if (res.status === 200) return res.body as NotionExportVM;
+    throw normalizeHttpError(res.status, serverMessage(res.body));
+  }
+
   private async rerun(path: string): Promise<SearchOutcome> {
     const res = await this.request({ method: 'POST', path, idempotent: false });
     if (res.status === 200 || res.status === 400) {
@@ -1085,7 +1271,7 @@ export class ApiClient {
   }
 
   private async request(req: TransportRequest): Promise<TransportResponse> {
-    const key = `${req.method} ${req.path} ${JSON.stringify(req.body ?? null)}`;
+    const key = req.idempotent ? `${req.method} ${req.path} ${requestBodyKey(req.body)}` : '';
     if (req.idempotent) {
       const existing = this.inflight.get(key);
       if (existing) return existing;
@@ -1103,7 +1289,10 @@ export class ApiClient {
     for (let i = 0; i < attempts; i++) {
       const lastAttempt = i === attempts - 1;
       try {
-        const res = await this.withTimeout((signal) => this.transport.send({ ...req, signal }));
+        const res = await this.withTimeout(
+          (signal) => this.transport.send({ ...req, signal }),
+          req.timeoutMs ?? this.timeoutMs,
+        );
         if (res.status >= 500 && !lastAttempt) {
           await delay(this.retryBackoffMs * (i + 1));
           continue;
@@ -1126,13 +1315,14 @@ export class ApiClient {
 
   private withTimeout(
     send: (signal: AbortSignal) => Promise<TransportResponse>,
+    timeoutMs: number,
   ): Promise<TransportResponse> {
     const controller = new AbortController();
     return new Promise((resolve, reject) => {
       const t = setTimeout(() => {
         controller.abort();
         reject(new Error('timeout'));
-      }, this.timeoutMs);
+      }, timeoutMs);
       send(controller.signal).then(
         (v) => {
           clearTimeout(t);

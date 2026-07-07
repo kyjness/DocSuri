@@ -15,8 +15,8 @@
       "title": "DocModelRequest",
       "description": "Request to fetch (and lazily build+cache on miss) the doc-model for a paper version. Trace: BR-30 (lazy on-demand + (paperId, version) cache), D6.",
       "properties": {
-        "paperId": { "type": "string", "description": "arXiv ID. Trace: FR-12." },
-        "version": { "type": "integer", "description": "Paper version; doc-model cache key is (paperId, version). Trace: D6, BR-30." }
+        "paperId": { "type": "string", "description": "Source document id — the doc-model cache key together with version. arXiv papers: bare arXiv id (e.g. \"2304.10557\"). User uploads: \"userdoc:{uuid}\" namespace — no arXiv id exists, so consumers MUST NOT synthesize an arxiv.org URL from it. Trace: FR-12." },
+        "version": { "type": "integer", "description": "Paper version; doc-model cache key is (paperId, version). User uploads are single-version (1). Trace: D6, BR-30." }
       },
       "required": ["paperId", "version"],
       "additionalProperties": false
@@ -94,8 +94,8 @@
       "title": "DocModelMeta",
       "description": "doc-model identity, title/abstract, and provenance.",
       "properties": {
-        "paperId": { "type": "string", "description": "arXiv ID. Trace: FR-12." },
-        "version": { "type": "integer", "description": "Paper version; doc-model is keyed (paperId, version). Trace: D6." },
+        "paperId": { "type": "string", "description": "Source document id — the doc-model cache key together with version. arXiv papers: bare arXiv id (e.g. \"2304.10557\"). User uploads: \"userdoc:{uuid}\" namespace — no arXiv id exists, so consumers MUST NOT synthesize an arxiv.org URL from it. Trace: FR-12." },
+        "version": { "type": "integer", "description": "Paper version; doc-model is keyed (paperId, version). User uploads are single-version (1). Trace: D6." },
         "title": { "type": "string", "description": "Paper title (rendered as document title in the rich view)." },
         "abstract": { "type": "string", "description": "Optional abstract plain text (translate task uses the abstract directly; rich view shows it). Trace: BR-S2." },
         "macros": {
@@ -124,7 +124,7 @@
     "SourceTier": {
       "type": "string",
       "enum": ["native_html", "ar5iv", "eprint_latex", "pdf"],
-      "description": "Which rung of the fallback ladder produced this doc-model: native arXiv HTML -> ar5iv -> e-print LaTeX -> (last resort) PDF parse. Trace: Q6, BR-29, TD-11."
+      "description": "Which rung of the fallback ladder produced this doc-model: native arXiv HTML -> ar5iv -> e-print LaTeX -> (last resort) PDF parse. User-uploaded PDFs also use the \"pdf\" tier — the user-vs-arXiv origin is carried by the paperId \"userdoc:\" namespace, not a separate tier. Trace: Q6, BR-29, TD-11."
     },
 
     "Section": {

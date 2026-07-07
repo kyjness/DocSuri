@@ -23,8 +23,10 @@
   margin-bottom: 0.75rem;
 }
 
-/* One glossary group (표준 용어 / 원어 유지 용어). */
+/* One glossary group (표준 용어 / 원어 유지 용어). Positioned so the chip editor overlay
+   (GlossaryTermEditor) anchors to it — floated below the tapped chip, outside the collapse clip. */
 .group {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 0.375rem;
@@ -42,14 +44,6 @@
   font-size: 0.8125rem;
   line-height: 1.5;
   color: var(--color-text-muted);
-}
-
-.terms {
-  position: relative; /* containing block for a badge's editor popover — spans this row, no overflow */
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  margin-top: 0.125rem;
 }
 
 /* Per-group apply bar — shown under a group once it has a pending (staged) edit; pressing it

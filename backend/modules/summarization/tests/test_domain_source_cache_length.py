@@ -75,6 +75,32 @@ def test_cache_key_scope_dimension() -> None:
     assert abs_tr.object_path() != full_tr.object_path()
 
 
+def test_cache_key_carries_docmodel_parser_generation() -> None:
+    from docsuri_shared.docmodel_contract import DOCMODEL_PARSER_VERSION
+
+    key = build_cache_key(_req(Task.SUMMARY), glossary_ver=0, model_ver="m1", user_id="u1")
+    # The current parser generation rides in the path (e.g. docmodel-parser@4 → "_d4").
+    gen = DOCMODEL_PARSER_VERSION.rpartition("@")[2]
+    assert key.docmodel_ver == gen
+    assert f"_d{gen}.json" in key.object_path()
+
+
+def test_cache_key_parser_bump_invalidates_path() -> None:
+    # A doc-model parser bump changes the fullText a summary was derived from, so the artifact must
+    # miss → regenerate. Two keys differing only by parser generation must not share an object path,
+    # so objects built at the older generation self-heal after the doc-model rebuild.
+    at2 = build_cache_key(
+        _req(Task.SUMMARY), glossary_ver=0, model_ver="m1", user_id="u1",
+        docmodel_parser="docmodel-parser@2",
+    )
+    at4 = build_cache_key(
+        _req(Task.SUMMARY), glossary_ver=0, model_ver="m1", user_id="u1",
+        docmodel_parser="docmodel-parser@4",
+    )
+    assert at2.object_path() != at4.object_path()
+    assert at2.redis_key() != at4.redis_key()
+
+
 def test_length_router_branches() -> None:
     router = LengthRouter(context_budget=100, input_cap=1000)
     assert router.route(50) == LengthRoute.SINGLE

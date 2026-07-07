@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from typing import Protocol
 
-from backend.middleware.rate_limit import InProcessWindowLimiter, RedisRateLimiter
+from backend.middleware.rate_limit import get_shared_limiter
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
@@ -436,17 +436,9 @@ _RL_IP_LIMIT = int(os.getenv("EMAIL_RATELIMIT_PER_IP") or "20")
 _RL_IP_WINDOW = int(os.getenv("EMAIL_RATELIMIT_IP_WINDOW_SECONDS") or "3600")  # 1시간
 
 
-@lru_cache(maxsize=1)
 def _get_email_rate_limiter():
-    """REDIS_HOST 설정 시 워커 간 공유 RedisRateLimiter, 아니면 프로세스 내 폴백(로컬/테스트)."""
-    host = os.getenv("REDIS_HOST", "").strip()
-    if host:
-        return RedisRateLimiter(
-            redis_host=host,
-            redis_port=int(os.getenv("REDIS_PORT") or "6379"),
-            use_tls=os.getenv("REDIS_TLS", "").strip().lower() in {"1", "true", "yes", "on"},
-        )
-    return InProcessWindowLimiter()
+    """공유 limiter에 위임 — REDIS_HOST 시 Redis, 아니면 프로세스 내 폴백(rate_limit.get_shared_limiter)."""
+    return get_shared_limiter()
 
 
 async def _enforce_email_rate_limit(request: Request, scope: str, email: str | None) -> None:

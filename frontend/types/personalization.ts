@@ -5,7 +5,8 @@ export type BehaviorEventType =
   | 'library_removed'
   | 'summary_translation_requested'
   | 'source_anchor_clicked'
-  | 'glossary_updated';
+  | 'glossary_updated'
+  | 'read_completed';
 
 export interface BehaviorSubject {
   kind: 'paper' | 'search' | 'summary' | 'translation' | 'source_anchor' | 'glossary';

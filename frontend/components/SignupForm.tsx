@@ -86,12 +86,18 @@ export function SignupForm() {
       <a
         className={styles.socialButton}
         href="/auth/social/google/start"
+        target="_top"
         data-testid="signup-google"
       >
         Google로 계속하기
       </a>
       {ORCID_LOGIN_ENABLED ? (
-        <a className={styles.socialButton} href="/auth/social/orcid/start" data-testid="signup-orcid">
+        <a
+          className={styles.socialButton}
+          href="/auth/social/orcid/start"
+          target="_top"
+          data-testid="signup-orcid"
+        >
           ORCID로 계속하기
         </a>
       ) : null}

@@ -100,6 +100,11 @@ class SummaryCacheKey:
     # baseline (path unchanged → existing objects stay valid); a seed edit makes it non-empty so
     # the path changes and exactly the affected objects invalidate (see seed_cache_segment).
     seed_ver: str = ""
+    # Doc-model parser generation the summary/translation input was produced under (e.g. "4" for
+    # docmodel-parser@4). Part of the path so a parser bump — which changes the fullText the
+    # artifact was derived from — forces a miss → regenerate, healing summaries built from an
+    # older, since-superseded doc-model (BR-30). Empty (no segment) only for keys built without it.
+    docmodel_ver: str = ""
 
     def object_path(self) -> str:
         """S3 object path (infrastructure-design §2.1). Immutable → permanent (INV-5).
@@ -114,10 +119,11 @@ class SummaryCacheKey:
         """
         owner = f"_u{self.owner_id}" if self.owner_id else ""
         seed = f"_s{self.seed_ver}" if self.seed_ver else ""
+        docmodel = f"_d{self.docmodel_ver}" if self.docmodel_ver else ""
         return (
             f"summaries/{self.paper_id}/v{self.version}/"
             f"{self.task}_{self.target_lang}_{self.scope}_{self.persona}"
-            f"_g{self.glossary_ver}{owner}{seed}_{self.model_ver}_{self.prompt_ver}.json"
+            f"_g{self.glossary_ver}{owner}{seed}_{self.model_ver}_{self.prompt_ver}{docmodel}.json"
         )
 
     def redis_key(self) -> str:
@@ -202,6 +208,11 @@ class Anchor:
     target: AnchorTarget
     span: str
     label: str = ""  # "" when section derivation failed → span-only (Q6)
+    # Raw location string the LLM emits in its ``target`` field (e.g. "Section: Method",
+    # "Figure 1", "Table 1, Table 2 / Appendix B"). The grounding gate resolves THIS against
+    # the doc-model's real sections/tables/figures (BR-S7); ``label`` is then rewritten to the
+    # matched canonical label. Preserved separately because ``target`` alone is a 3-value enum.
+    target_hint: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -329,7 +340,13 @@ class SummaryResultDTO:
             #  · mapping seed — present iff its effective rendering (override, else the seed Korean)
             #    is in the text. Without this, attention→주목 drops 어텐션 and the chip would
             #    vanish, breaking the 표준 용어 edit path. Lazy import avoids a cycle.
-            from .glossary import SEED_KEEP_AS_IS, SEED_MAPPINGS, is_glossary_worthy
+            from .glossary import (
+                SEED_KEEP_AS_IS,
+                SEED_KEEP_AS_IS_LOWER,
+                SEED_MAPPINGS,
+                is_glossary_worthy,
+                term_in_text,
+            )
 
             doc = self.translation.doc_model.model_dump(mode="json", exclude_none=True)
             translated_text = doc.get("fullText") or ""
@@ -337,8 +354,16 @@ class SummaryResultDTO:
             std_glossary: list[dict] = []
             seen: set[str] = set()
             # Drop math notation the model reported as "kept" (Greek vars, W_q, L(w+delta)…) so the
-            # 원어 유지 용어 list shows keywords/names, not symbols (BR-S4). Seeds pass the filter.
-            display_kept = [t for t in self.translation.kept_terms if is_glossary_worthy(t)]
+            # 원어 유지 용어 list shows keywords/names, not symbols (BR-S4). Also drop a SEED term
+            # the model echoed from the keep-as-is prompt line but that this paper never uses
+            # (absent from the text) — the whole seed list rides into every prompt, so kept_terms
+            # over-reports it. Free-form (non-seed) kept terms are trusted (model met them here).
+            def _keep_display(t: str) -> bool:
+                if not is_glossary_worthy(t):
+                    return False
+                return t.lower() not in SEED_KEEP_AS_IS_LOWER or term_in_text(t, translated_text)
+
+            display_kept = [t for t in self.translation.kept_terms if _keep_display(t)]
             kept_by_lower: dict[str, str] = {}
             for t in display_kept:  # first-seen casing wins (case-insensitive dedup)
                 kept_by_lower.setdefault(t.lower(), t)
@@ -351,7 +376,7 @@ class SummaryResultDTO:
                     if eff in translated_text:
                         std_glossary.append({"term": s, "translated": eff})
                         seen.add(key)
-                elif key in kept_by_lower:
+                elif key in kept_by_lower:  # display_kept already gated seeds by text presence
                     std_glossary.append({"term": kept_by_lower[key]})
                     seen.add(key)
             for m in SEED_MAPPINGS:  # mapping standard (en→ko), by effective rendering

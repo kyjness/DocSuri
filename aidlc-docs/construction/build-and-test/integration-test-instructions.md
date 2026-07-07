@@ -3,6 +3,49 @@
 **단계**: CONSTRUCTION → Build and Test · **일자**: 2026-06-16
 **문서 언어**: 영문(공통 골격) + 한국어(U3 내용)
 
+---
+
+# U11 Evidence Formation Agent Integration Test Instructions — 2026-07-01
+
+## Local integration (InMemory repo + StubOrchestrator)
+
+The test suite in `backend/tests/test_evidence.py` wires the real FastAPI router against
+`InMemoryEvidenceRepository` and a `_StubOrchestrator`, exercising the full HTTP → service →
+repository → response chain without external dependencies.
+
+```bash
+PYTHONPATH='shared/python/src:ops/src:backend/modules/discovery/src:backend/modules/summarization/src' \
+  ./backend/.venv/bin/pytest backend/tests/test_evidence.py -v
+```
+
+## Staging integration (real adapters)
+
+Full end-to-end integration requires:
+
+1. RDS PostgreSQL with migration applied (`python -m backend.migrations --apply`)
+2. `DOCSURI_DOCMODEL_BUCKET` pointing to a bucket with at least one `doc-model/{paperId}/v1.json`
+3. OpenSearch index with paper records (U2 corpus)
+4. Bedrock access to `global.anthropic.claude-sonnet-4-6`
+
+Manual smoke test:
+
+```bash
+curl -X POST https://<staging-host>/api/evidence/turns \
+  -H 'Authorization: Bearer <token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"topic": "transformer attention mechanism", "scope": "auto"}'
+```
+
+Expected response shape:
+```json
+{
+  "sessionId": "<uuid>",
+  "turnId": "<uuid>",
+  "result": { "state": "ok" | "abstain", "claims": [...], "coverage": {...} },
+  "createdAt": "<iso8601>"
+}
+```
+
 ## Purpose
 
 Validate interactions across generated module boundaries and, when infrastructure is

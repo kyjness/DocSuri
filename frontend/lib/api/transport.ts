@@ -4,7 +4,25 @@
 // (DTO-derived fixtures). When the U6 gateway + U2 real infra land, swap in
 // HttpTransport (server-only) via configuration — no component/ApiClient rewrite.
 
-export type TransportMethod = 'GET' | 'POST' | 'DELETE' | 'PATCH';
+export type TransportMethod = 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
+
+export type BinaryTransportData = Blob | ArrayBuffer | Uint8Array;
+
+export interface BinaryTransportBody {
+  kind: 'binary';
+  data: BinaryTransportData;
+  contentType: string;
+}
+
+export function binaryBody(data: BinaryTransportData, contentType: string): BinaryTransportBody {
+  return { kind: 'binary', data, contentType };
+}
+
+export function isBinaryTransportBody(body: unknown): body is BinaryTransportBody {
+  if (!body || typeof body !== 'object') return false;
+  const record = body as Record<string, unknown>;
+  return record.kind === 'binary' && typeof record.contentType === 'string' && 'data' in record;
+}
 
 export interface TransportRequest {
   method: TransportMethod;
@@ -19,6 +37,9 @@ export interface TransportRequest {
   /** Abort signal for the in-flight request; ApiClient wires it to the per-attempt timeout so a
    * timed-out request is actually cancelled, not just abandoned (BR-U5-10). */
   signal?: AbortSignal;
+  /** Per-request override for ApiClient's default timeout — long-running LLM pipelines
+   * (research/evidence turns) need more than the 8s default (PR #338 후속 발견). */
+  timeoutMs?: number;
 }
 
 export interface TransportResponse {

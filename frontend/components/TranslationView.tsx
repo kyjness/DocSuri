@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import type { AssetRef, TranslationVM } from '@/types/generated';
 import { getApiClient } from '@/lib/api';
 import { UserFacingError } from '@/lib/api/errors';
@@ -8,6 +8,8 @@ import { recordGlossaryUpdated } from '@/lib/personalization';
 import { useGlossaryTerms } from '@/lib/useGlossaryTerms';
 import { useGlossaryDraft } from '@/lib/useGlossaryDraft';
 import { GlossaryTermBadge } from './GlossaryTermBadge';
+import { GlossaryTermEditor } from './GlossaryTermEditor';
+import { CollapsibleTerms } from './CollapsibleTerms';
 import { DocModelBody } from './DocModelViewer';
 import styles from './TranslationView.module.css';
 
@@ -16,7 +18,9 @@ import styles from './TranslationView.module.css';
 // text is Korean. Below it, the glossary is split into two INDEPENDENT groups (BR-S4):
 //   · 원어 유지 용어 — the other terms the model kept in English → weak (read-time overlay).
 //   · 표준 용어 — DocSuri standard seed terms present in this paper (keep-as-is + mapping chips, the
-//     latter pre-filled) → strong (prompt-enforced, needs a re-generate).
+//     latter pre-filled) → strong (prompt-enforced, needs a re-generate). A strong term rides into the
+//     prompt for BOTH tasks, so it also invalidates the summary cache (reflected lazily on next open);
+//     the hint tells the reader so the summary re-generating later isn't a surprise.
 // Editing a chip does NOT hit the server; it stages the rendering into a per-paper draft
 // (`useGlossaryDraft`, sessionStorage) so a pending edit — and its group's "반영" button — survive
 // leaving and re-entering this page, and nothing reflects until applied. Each group has its OWN apply
@@ -49,28 +53,45 @@ export function TranslationView({
   assetsById,
   onRegenerate,
 }: TranslationViewProps) {
+  // The open chip's term and its DOM node — the editor floats below that node (chips don't reflow).
   const [openTerm, setOpenTerm] = useState<string | null>(null);
+  const [openAnchor, setOpenAnchor] = useState<HTMLButtonElement | null>(null);
   const [applying, setApplying] = useState<ApplyGroup | null>(null);
   const [applyError, setApplyError] = useState<{ group: ApplyGroup; message: string } | null>(null);
   const termsRef = useRef<HTMLDivElement | null>(null);
+  const weakGroupRef = useRef<HTMLDivElement | null>(null);
+  const strongGroupRef = useRef<HTMLDivElement | null>(null);
+  const weakEditorId = useId();
+  const strongEditorId = useId();
 
   const { paperId, version } = translation.docModel.meta;
   const { terms: savedTerms } = useGlossaryTerms(); // previously applied (server) renderings
   const { draft, stage, remove } = useGlossaryDraft(paperId, version); // pending edits (this paper)
 
-  // Close the open editor on any pointer-down outside the glossary section. `pointerdown` covers
-  // both mouse and touch (a plain `mousedown` may not fire on a real phone), and fires before click
-  // so a tap elsewhere dismisses before it activates anything.
+  // Stable so the editor's auto-dismiss timer isn't reset by unrelated parent re-renders.
+  const closeEditor = useCallback(() => {
+    setOpenTerm(null);
+    setOpenAnchor(null);
+  }, []);
+  const openEditor = useCallback((term: string, anchor: HTMLButtonElement) => {
+    setOpenTerm(term);
+    setOpenAnchor(anchor);
+  }, []);
+
+  // Close the open editor on any pointer-down outside the glossary section (the editor lives inside
+  // it, so taps on the editor don't dismiss it). `pointerdown` covers both mouse and touch (a plain
+  // `mousedown` may not fire on a real phone), and fires before click so a tap elsewhere dismisses
+  // before it activates anything.
   useEffect(() => {
     if (openTerm === null) return;
     const onPointerDown = (e: PointerEvent) => {
       if (termsRef.current && !termsRef.current.contains(e.target as Node)) {
-        setOpenTerm(null);
+        closeEditor();
       }
     };
     document.addEventListener('pointerdown', onPointerDown);
     return () => document.removeEventListener('pointerdown', onPointerDown);
-  }, [openTerm]);
+  }, [openTerm, closeEditor]);
 
   // Split the glossary: standard keep-as-is (→ strong) and standard mappings (→ strong, pre-filled)
   // both go under 표준 용어; the remaining kept terms (→ weak) go under 원어 유지 용어. `nonStandardKept`
@@ -84,13 +105,16 @@ export function TranslationView({
   const hasStandard = standardKeepAsIs.length > 0 || standardMappings.length > 0;
   const hasGlossary = showGlossary && (hasStandard || nonStandardKept.length > 0);
 
+  // Which group the open chip belongs to → which group floats the editor. The open term's standard
+  // entry (if any) carries the mapping's pre-fill value (e.g. attention → 어텐션).
+  const weakOpen = openTerm !== null && nonStandardKept.includes(openTerm);
+  const openStandard = openTerm === null ? undefined : standardGlossary.find((g) => g.term === openTerm);
+  const strongOpen = openStandard !== undefined;
+
   // The rendering to show/pre-fill for a term: a pending draft edit wins over a previously applied one.
   const effective = (term: string) => draft[term]?.termTo ?? savedTerms[term];
   const pendingKeys = (strong: boolean) =>
     Object.keys(draft).filter((k) => draft[k].strong === strong);
-
-  // Stable so the badge's auto-dismiss timer isn't reset by unrelated parent re-renders.
-  const closeEditor = useCallback(() => setOpenTerm(null), []);
 
   // Stage an edit and clear any stale apply error for that group (a new edit supersedes it).
   const stageTerm = (term: string, termTo: string, strong: boolean) => {
@@ -101,7 +125,7 @@ export function TranslationView({
   // Un-stage a pending edit (지우기) and close its editor.
   const clearTerm = (term: string) => {
     remove([term]);
-    setOpenTerm(null);
+    closeEditor();
   };
 
   // Apply ONE group: persist its staged edits (POST), drop them from the draft, then re-run so they
@@ -146,7 +170,7 @@ export function TranslationView({
       <div className={styles.apply}>
         <span className={styles.applyNote}>
           {isStrong
-            ? `바꾼 표준 용어 ${keys.length}개 · 누르면 번역을 다시 만들어 반영해요`
+            ? `바꾼 표준 용어 ${keys.length}개 · 누르면 번역을 다시 만들어 반영하고 요약에도 적용돼요`
             : `바꾼 용어 ${keys.length}개 · 누르면 번역에 반영해요`}
         </span>
         <button
@@ -178,68 +202,86 @@ export function TranslationView({
       {hasGlossary ? (
         <section className={styles.glossary} ref={termsRef} aria-label="용어집">
           {nonStandardKept.length > 0 ? (
-            <div className={styles.group}>
+            <div className={styles.group} ref={weakGroupRef}>
               <h3 className={styles.glossaryTitle}>원어 유지 용어</h3>
               <p className={styles.glossaryHint}>
                 번역에서 원어로 남은 용어예요. 내 번역어를 지정하고 아래 버튼으로 반영해요.
               </p>
-              <div className={styles.terms}>
+              <CollapsibleTerms label="원어 유지 용어">
                 {nonStandardKept.map((t) => (
                   <GlossaryTermBadge
                     key={`kept-${t}`}
                     term={t}
                     open={openTerm === t}
-                    onOpen={() => setOpenTerm(t)}
+                    controlsId={weakEditorId}
+                    onOpen={(el) => openEditor(t, el)}
                     onClose={closeEditor}
                     saved={effective(t)}
-                    pending={Boolean(draft[t])}
-                    onSave={(termTo) => stageTerm(t, termTo, false)}
-                    onClear={() => clearTerm(t)}
                   />
                 ))}
-              </div>
+              </CollapsibleTerms>
+              {weakOpen ? (
+                <GlossaryTermEditor
+                  id={weakEditorId}
+                  term={openTerm!}
+                  saved={effective(openTerm!)}
+                  pending={Boolean(draft[openTerm!])}
+                  anchor={openAnchor}
+                  container={weakGroupRef.current}
+                  onSave={(termTo) => stageTerm(openTerm!, termTo, false)}
+                  onClear={() => clearTerm(openTerm!)}
+                  onClose={closeEditor}
+                />
+              ) : null}
               {renderApplyBar(false)}
             </div>
           ) : null}
 
           {hasStandard ? (
-            <div className={styles.group}>
+            <div className={styles.group} ref={strongGroupRef}>
               <h3 className={styles.glossaryTitle}>표준 용어</h3>
               <p className={styles.glossaryHint}>
                 DocSuri가 표준으로 정한 용어예요. 바꾼 뒤 아래 버튼을 누르면 번역을 다시 만들어
-                반영해요.
+                반영하고, 이 용어는 요약에도 함께 적용돼요(다음에 요약을 열 때 갱신).
               </p>
-              <div className={styles.terms}>
+              <CollapsibleTerms label="표준 용어">
                 {standardKeepAsIs.map((g) => (
                   <GlossaryTermBadge
                     key={`std-${g.term}`}
                     term={g.term}
-                    strong
                     open={openTerm === g.term}
-                    onOpen={() => setOpenTerm(g.term)}
+                    controlsId={strongEditorId}
+                    onOpen={(el) => openEditor(g.term, el)}
                     onClose={closeEditor}
                     saved={effective(g.term)}
-                    pending={Boolean(draft[g.term])}
-                    onSave={(termTo) => stageTerm(g.term, termTo, true)}
-                    onClear={() => clearTerm(g.term)}
                   />
                 ))}
                 {standardMappings.map((g) => (
                   <GlossaryTermBadge
                     key={`map-${g.term}`}
                     term={g.term}
-                    strong
-                    defaultValue={g.translated}
                     open={openTerm === g.term}
-                    onOpen={() => setOpenTerm(g.term)}
+                    controlsId={strongEditorId}
+                    onOpen={(el) => openEditor(g.term, el)}
                     onClose={closeEditor}
                     saved={effective(g.term)}
-                    pending={Boolean(draft[g.term])}
-                    onSave={(termTo) => stageTerm(g.term, termTo, true)}
-                    onClear={() => clearTerm(g.term)}
                   />
                 ))}
-              </div>
+              </CollapsibleTerms>
+              {strongOpen ? (
+                <GlossaryTermEditor
+                  id={strongEditorId}
+                  term={openTerm!}
+                  defaultValue={openStandard?.translated}
+                  saved={effective(openTerm!)}
+                  pending={Boolean(draft[openTerm!])}
+                  anchor={openAnchor}
+                  container={strongGroupRef.current}
+                  onSave={(termTo) => stageTerm(openTerm!, termTo, true)}
+                  onClear={() => clearTerm(openTerm!)}
+                  onClose={closeEditor}
+                />
+              ) : null}
               {renderApplyBar(true)}
             </div>
           ) : null}

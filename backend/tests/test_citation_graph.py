@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 from uuid import uuid4
 
 import httpx
 import pytest
+from docsuri_shared.authz import Principal, UserRole
 from fastapi.testclient import TestClient
 
 from backend.app import create_app
 from backend.config import Settings
-from backend.modules.accounts.models import Principal, UserRole
 from backend.modules.citation_graph import controller
 
 
@@ -194,6 +195,72 @@ def test_citation_tree_rate_limited_and_unavailable(monkeypatch) -> None:
     )
 
 
+def _raises_json_decode() -> None:
+    raise json.JSONDecodeError("no json", "", 0)
+
+
+@pytest.mark.parametrize(
+    "json_body",
+    [
+        _raises_json_decode,  # 200 body is not JSON at all (HTML error page)
+        lambda: None,  # 200 body is JSON null
+        lambda: [1, 2, 3],  # 200 body is a bare array, not {"data": [...]}
+        lambda: {"data": None},  # data key present but null -> `for row in None`
+        lambda: {"data": [7]},  # data item is not a dict -> row.get(...)
+    ],
+)
+def test_provider_degrades_on_bad_success_body(monkeypatch, json_body) -> None:
+    # Regression for #342: a DOI leaf is always a live, cache-missing S2 call, and S2 often
+    # answers /references with a 200 whose body is not {"data": [...]}. The real references()
+    # parse must degrade to ("unavailable", []), not raise into the app catch-all (HTTP 500).
+    class _Resp:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return json_body()
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc) -> bool:
+            return False
+
+        async def get(self, *args, **kwargs):
+            return _Resp()
+
+    monkeypatch.setenv("CITATION_GRAPH_PROVIDER_RETRIES", "0")
+    monkeypatch.setattr(controller.httpx, "AsyncClient", lambda *a, **k: _Client())
+
+    status, items = asyncio.run(
+        controller.SemanticScholarProvider().references("DOI:10.1/x", 30)
+    )
+
+    assert status == "unavailable"
+    assert items == []
+
+
+def test_citation_tree_degrades_on_malformed_provider_item(monkeypatch) -> None:
+    # Regression for #342 (H2): a 200 with valid JSON but a misshapen item (S2 has returned
+    # `year` as a string) must not 500 — the sort/model build inside _build_tree degrades to
+    # Unavailable per BR-CG12.
+    class BadItemProvider:
+        async def references(self, paper_id: str, limit: int):
+            return "ok", [
+                {"paperId": "x", "title": "T", "year": "not-a-year", "externalIds": {}}
+            ]
+
+    resp = _client(monkeypatch, provider=BadItemProvider()).get(
+        "/api/papers/root/citation-tree", params={"expandNodeId": "10.1/x"}
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "Unavailable"
+
+
 def test_citation_tree_expand_returns_depth_two(monkeypatch) -> None:
     body = _client(monkeypatch).get(
         "/api/papers/root/citation-tree", params={"expandNodeId": "2101.00001"}
@@ -286,7 +353,7 @@ async def test_semantic_scholar_provider_uses_longer_retry_timeout(monkeypatch) 
 
     status, items = await controller.SemanticScholarProvider().references("1706.03762", 1)
 
-    assert captured_timeouts == [3.0, 5.0]
+    assert captured_timeouts == [5.0, 10.0]
     assert status == "unavailable"
     assert items == []
 

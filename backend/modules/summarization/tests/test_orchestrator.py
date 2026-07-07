@@ -280,3 +280,181 @@ def test_orchestrator_abstract_translate_stays_inline() -> None:
     out = orch.run(_req(Task.TRANSLATE, abstract="An abstract about BERT."), _ctx()).to_dict()
     assert out["status"] == "ok"
     assert queue.calls == []
+
+
+# --- summary/translation input path: stale doc-model heal + generation-keyed cache (BR-30) ----
+# The rich-view doc_model() path self-heals a servable-but-stale doc-model; the summary/translation
+# input path (SourceSelector) must do the same (enqueue the heal for a user who only summarizes).
+# The derived result IS cached — but under the ACTUAL doc generation's key, so it is async-safe (the
+# cache write is the worker→poll handoff) yet a healed request keys elsewhere and never serves stale
+# output. (Earlier the write was skipped for stale docs, which silently broke async job delivery.)
+
+from docsuri_shared.docmodel_contract import DOCMODEL_PARSER_VERSION  # noqa: E402
+from docsuri_shared.dtos import DocModel  # noqa: E402
+
+from summarization.domain.models import Scope  # noqa: E402
+
+
+def _grounding_doc(parser_version: str) -> DocModel:
+    # Body carries the valid_draft() anchor span so a summary grounds and reaches the cache write.
+    return DocModel.model_validate(
+        {
+            "meta": {
+                "paperId": "2401.1",
+                "version": 1,
+                "title": "Sample",
+                "provenance": {
+                    "sourceTier": "ar5iv",
+                    "parserVersion": parser_version,
+                    "schemaVersion": "1.1.0",
+                    "generatedAt": "1970-01-01T00:00:00Z",
+                },
+            },
+            "fullText": "5.2 Results\n\nOur model achieves 95.3% accuracy on ImageNet.",
+            "sections": [
+                {
+                    "id": "s1",
+                    "title": "5.2 Results",
+                    "blocks": [
+                        {
+                            "id": "s1.p1",
+                            "type": "paragraph",
+                            "text": "Our model achieves 95.3% accuracy on ImageNet.",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+
+class _DocReader:
+    def __init__(self, doc: DocModel) -> None:
+        self._doc = doc
+
+    def get_doc_model(self, paper_id: str, version: int) -> DocModel | None:
+        return self._doc
+
+
+class _SpyBuildQueue:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, int]] = []
+
+    def enqueue_build(self, paper_id: str, version: int) -> None:
+        self.calls.append((paper_id, version))
+
+
+def test_summary_from_fresh_docmodel_caches_and_no_heal() -> None:
+    store = StubStore()
+    queue = _SpyBuildQueue()
+    orch = make_orchestrator(
+        store=store,
+        source_doc_model_reader=_DocReader(_grounding_doc(DOCMODEL_PARSER_VERSION)),
+        doc_model_build_queue=queue,
+    )
+    result = orch.run(_req(), _ctx())
+    assert result.to_dict()["status"] == "ok"
+    assert store.puts == 1  # current-parser doc → result cached
+    assert queue.calls == []  # already current → no heal enqueue
+
+
+def test_summary_from_stale_docmodel_heals_and_caches_under_own_generation() -> None:
+    store = StubStore()
+    queue = _SpyBuildQueue()
+    orch = make_orchestrator(
+        store=store,
+        source_doc_model_reader=_DocReader(_grounding_doc("docmodel-parser@2")),
+        doc_model_build_queue=queue,
+    )
+    result = orch.run(_req(), _ctx())
+    assert result.to_dict()["status"] == "ok"  # stale doc served for this response
+    assert store.puts == 1  # cached under the stale doc's OWN generation key (async-safe)
+    (path,) = list(store.data)
+    assert "_d2." in path  # keyed on the ACTUAL (@2) generation, not the current one
+    assert queue.calls == [("2401.1", 1)]  # background rebuild still enqueued to heal
+
+
+def test_translate_from_stale_docmodel_heals_and_caches_under_own_generation() -> None:
+    store = StubStore()
+    queue = _SpyBuildQueue()
+    orch = make_orchestrator(
+        store=store,
+        source_doc_model_reader=_DocReader(_grounding_doc("docmodel-parser@2")),
+        doc_model_build_queue=queue,
+    )
+    # Translate must be scope=full to consume the structured doc-model (abstract scope never does).
+    request = SummaryRequest(paper_id="2401.1", version=1, task=Task.TRANSLATE, scope=Scope.FULL)
+    result = orch.run(request, _ctx(), allow_enqueue=False)
+    assert result.to_dict()["status"] == "ok"
+    assert store.puts == 1  # translate base cached under the @2 key
+    (path,) = list(store.data)
+    assert "_d2." in path
+    assert queue.calls == [("2401.1", 1)]
+
+
+def test_stale_docmodel_result_deliverable_via_cache_no_reenqueue_loop() -> None:
+    # Regression for the 2308.08469 async pending loop: a stale doc's worker-written result must be
+    # found on a later request via the actual-generation key (the poll re-check), so async delivery
+    # completes instead of re-enqueuing forever. Skipping the write (the old behavior) broke this.
+    store = StubStore()
+    orch = make_orchestrator(
+        store=store,
+        source_doc_model_reader=_DocReader(_grounding_doc("docmodel-parser@2")),
+    )
+    orch.run(_req(), _ctx(), allow_enqueue=False)  # worker writes under the @2 key
+    assert store.puts == 1
+    second = orch.run(_req(), _ctx()).to_dict()  # poll finds it via the actual-generation re-check
+    assert second["cached"] is True
+    assert store.puts == 1  # no regeneration → loop broken
+
+
+def test_healed_docmodel_does_not_serve_stale_generation_cache() -> None:
+    # Correctness (the original #337 concern preserved): output cached from a stale (@2) doc must
+    # NOT be served once the doc heals to the current parser — the keys differ by generation.
+    store = StubStore()
+    make_orchestrator(
+        store=store, source_doc_model_reader=_DocReader(_grounding_doc("docmodel-parser@2"))
+    ).run(_req(), _ctx(), allow_enqueue=False)  # cache the @2-derived result
+    assert store.puts == 1
+    healed = make_orchestrator(
+        store=store, source_doc_model_reader=_DocReader(_grounding_doc(DOCMODEL_PARSER_VERSION))
+    ).run(_req(), _ctx()).to_dict()
+    assert healed["cached"] is False  # healed key misses the @2 entry → regenerated, not stale
+
+
+def test_stale_heal_enqueue_is_best_effort_when_no_queue() -> None:
+    # No build queue wired → no heal enqueue; the stale-derived result is still cached (async-safe)
+    # under its own generation key.
+    store = StubStore()
+    orch = make_orchestrator(
+        store=store,
+        source_doc_model_reader=_DocReader(_grounding_doc("docmodel-parser@2")),
+    )
+    result = orch.run(_req(), _ctx())
+    assert result.to_dict()["status"] == "ok"
+    assert store.puts == 1
+
+
+def test_legacy_cached_object_without_docmodel_segment_is_not_served() -> None:
+    # Reviewer's backlog scenario: a summary cached BEFORE the parser dimension existed lives at a
+    # path with no ``_dN`` segment. Once the key carries the current parser generation, that legacy
+    # object is never looked up → miss → regenerate. This heals results derived from a
+    # since-superseded doc-model even though they were already stored (blocking new writes alone
+    # cannot). Belt-and-suspenders with the write-skip: existing objects self-invalidate by path.
+    store = StubStore()
+    orch = make_orchestrator(
+        store=store,
+        source_doc_model_reader=_DocReader(_grounding_doc(DOCMODEL_PARSER_VERSION)),
+    )
+    # Cache the object the normal way, then relocate it to its pre-migration (no-segment) path.
+    orch.run(_req(), _ctx())
+    (current_path,) = list(store.data)
+    gen = DOCMODEL_PARSER_VERSION.rpartition("@")[2]
+    legacy_path = current_path.replace(f"_d{gen}.json", ".json")
+    assert legacy_path != current_path  # sanity: the segment is actually present
+    store.data.clear()
+    store.data[legacy_path] = {"status": "ok", "marker": "STALE_LEGACY"}
+
+    result = orch.run(_req(), _ctx()).to_dict()
+    assert result.get("marker") != "STALE_LEGACY"  # legacy object was not served
+    assert result["cached"] is False  # miss → regenerated under the segmented path

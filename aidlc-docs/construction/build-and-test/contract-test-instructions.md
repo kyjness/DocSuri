@@ -1,5 +1,49 @@
 # Contract Test Instructions
 
+---
+
+# U11 Evidence Formation Agent Contract Test Instructions — 2026-07-01
+
+## D5 Contract (EvidenceFormationPort)
+
+The D5 shared contract is frozen at `shared/dtos/evidence.schema.json` →
+`shared/python/src/docsuri_shared/_generated/dtos/evidence_schema.py`.
+
+Verify the generated schema module is importable and types are stable:
+
+```bash
+PYTHONPATH='shared/python/src' ./backend/.venv/bin/python -c "
+from docsuri_shared._generated.dtos.evidence_schema import (
+    EvidenceRequest, EvidenceResult, EvidenceAbstainResult,
+    EvidenceItem, EvidenceCoverage, SourceRef, EvidenceScope
+)
+print('D5 contract: OK')
+"
+```
+
+The `EvidenceFormationService` in `backend/modules/evidence/service.py` implements
+`EvidenceFormationPort` from `shared/python/src/docsuri_shared/ports.py` — U12 Novelty
+consumes this port. Verify alignment:
+
+```bash
+PYTHONPATH='shared/python/src:backend/modules/discovery/src:backend/modules/summarization/src' \
+  ./backend/.venv/bin/python -c "
+from docsuri_shared.ports import EvidenceFormationPort
+from backend.modules.evidence.service import EvidenceFormationService
+import inspect
+# Both must have async form_evidence(request, ctx)
+assert 'form_evidence' in dir(EvidenceFormationService)
+print('EvidenceFormationPort: OK')
+"
+```
+
+## API contract (response shape)
+
+`backend/tests/test_evidence.py` PBT-EV-3 validates that `_serialize_result` never leaks
+internal fields (`score`, `chunk_id`, `vector`, `llm_meta`) — INV-EV-5.
+
+---
+
 ## Purpose
 
 Validate that U1 writes and consumes shared contracts without drift.

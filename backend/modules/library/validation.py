@@ -18,7 +18,7 @@ from datetime import datetime
 from typing import TypeVar
 from uuid import uuid4
 
-from backend.modules.accounts.models import Principal
+from docsuri_shared.authz import Principal
 
 from .models import HistoryEntry, LibraryItem, SavedSearch, ValidationException
 from .schemas import (

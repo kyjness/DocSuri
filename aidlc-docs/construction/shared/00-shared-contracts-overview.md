@@ -13,13 +13,14 @@
 - **설계 위치**: 본 디렉터리 `aidlc-docs/construction/shared/`(계약 **명세**). 런타임 패키지(repo-root `shared/`) 코드 생성은 Code Generation 단계.
 - **코드 위치(예정)**: `shared/{vector-spec, dtos, events, ports}` (모노레포 UQ2=A).
 
-## 2. 계약 구성 (6)
+## 2. 계약 구성 (7)
 | 계약 | 파일 | 상태 | 1차 생산자 | 1차 소비자 |
 |---|---|---|---|---|
 | **VectorSpec + IndexRecord** | `vector-spec.md` | 🔒 FROZEN | U1(writer) | U2(reader) |
 | **DTOs**(API↔클라이언트) | `dtos.md` | 🟡 PROVISIONAL | U2/U3/U4 | U5 |
 | **Events**(이벤트 백본) | `events.md` | 🟡 일부 FROZEN | U1/U2/U3/U6 | U4/U6 |
 | **Ports**(횡단 후크 IF) | `ports.md` | 🟡 일부 FROZEN | U6(구현) | U2/U1(의존) |
+| **Authz**(인가 계약, #167) | `docsuri_shared/authz.py`(코드 직접; 별도 `.md` 스펙 없음 — U3에서 이전) | 🔒 FROZEN | U3(정의 소유) | U4/U6/U8 |
 | **doc-model**(구조화 문서모델) | `docmodel.md` | 🔒 FROZEN | U1(builder) | U7·U5·에이전트 |
 | **EvidenceFormationPort**(Agent 근거형성 포트) | `evidence-formation-port.md` | 🟡 PROVISIONAL | 문헌탐색·근거형성 Agent | 연구아이디어 Agent |
 

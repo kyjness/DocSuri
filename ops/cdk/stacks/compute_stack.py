@@ -225,10 +225,14 @@ class ComputeStack(Stack):
             "DOCSURI_GATEWAY_RATE_LIMIT_MAX_REQUESTS": "3000",
             "DOCSURI_GATEWAY_RATE_LIMIT_WINDOW_SECONDS": "60",
             "SES_SENDER_EMAIL": "no-reply@docsuri.org",  # via the SES domain identity below
-            # Email provider toggle. "resend" → ResendEmailClient (no SES sandbox review gate;
-            # delivers to any recipient once docsuri.org is DNS-verified in Resend). Requires the
-            # RESEND_API_KEY secret below. If the key is missing the app falls back to SES.
-            "EMAIL_PROVIDER": "resend",
+            # Email provider toggle (#348 decision, 2026-07-07): SES is production-primary now that
+            # AWS granted production access. SES authenticates via the task IAM role (ses:SendEmail
+            # below) — no API key to expire/rotate, which retires the 2026-06-25 incident class
+            # (invalid RESEND_API_KEY → all signup mail failed). Resend stays wired as a dormant
+            # manual fallback: flip this back to "resend" (key still in the secret below) for a
+            # deploy-free failover if SES ever degrades. get_email_client() falls back to SES if
+            # "resend" is set without a key.
+            "EMAIL_PROVIDER": "ses",
             # Public apex used to build clickable verification links in emails. Behind
             # CloudFront/BFF/ALB the request host is internal, so the link must use this
             # public URL pointing at the frontend verify page (controller._verification_link_base
@@ -260,14 +264,35 @@ class ComputeStack(Stack):
                 # tree) are not starved behind a large backfill. Worker drains this queue first.
                 f"https://sqs.{self.region}.amazonaws.com/{self.account}/docsuri-docmodel-queue"
             ),
+            # User-uploaded PDF doc-model build (GROBID Option B) → its own queue, drained by the
+            # docsuri-userdoc-builder worker (GROBID sidecar). The coordinator factory prefers this
+            # over DOCSURI_DOCMODEL_BUILD_QUEUE_URL, so evidence/research/novelty user PDFs get
+            # structured TEI while the arXiv lazy-build queue above stays GROBID-free. Referenced by
+            # name (Ingestion owns the queue); SendMessage granted below.
+            "DOCSURI_USERDOC_BUILD_QUEUE_URL": (
+                f"https://sqs.{self.region}.amazonaws.com/{self.account}/docsuri-userdoc-queue"
+            ),
             "DOCSURI_SUMMARY_JOB_QUEUE_URL": (  # long-summary async job (BR-S12)
                 f"https://sqs.{self.region}.amazonaws.com/{self.account}/docsuri-summary-job-queue"
             ),
             "DOCSURI_NOVELTY_JOB_QUEUE_URL": self.novelty_queue.queue_url,
+            # U11 evidence async worker (NFR-P6/RES-10): the API only enqueues when BOTH of these
+            # are set (wiring.py gate). Without them the long evidence job runs synchronously in the
+            # API task and the EvidenceStack worker queue is never used (PR #338 리뷰 Blocking #4).
+            # Queue is owned by EvidenceStack; referenced by name here (repo pattern, no cross-stack
+            # export) — SendMessage granted below.
+            "DOCSURI_EVIDENCE_ASYNC_ENABLED": "true",
+            "DOCSURI_EVIDENCE_JOB_QUEUE_URL": (
+                f"https://sqs.{self.region}.amazonaws.com/{self.account}/docsuri-evidence-agent-job-queue"
+            ),
             # Activation: mounting the U7 read path (summarization_enabled = bool(bucket)). The
             # papers bucket is Ingestion-owned (same name the summary worker carries); the IAM for
             # S3 read/write + Bedrock invoke is already granted to this task role below.
             "DOCSURI_SUMMARY_BUCKET": f"docsuri-papers-fulltext-{self.account}",
+            # U11 evidence formation — same papers bucket, doc-model/ prefix (IAM below already
+            # grants s3:GetObject on doc-model/*). evidence_enabled = bool(docmodel_bucket); this
+            # is the sole gate that wires the real orchestrator into research/jobs.
+            "DOCSURI_DOCMODEL_BUCKET": f"docsuri-papers-fulltext-{self.account}",
             "DOCSURI_NOVELTY_ARTIFACT_BUCKET": f"docsuri-papers-fulltext-{self.account}",
             "DOCSURI_NOVELTY_ARTIFACT_PREFIX": "novelty/",
             # doc-model rich view (본문): on a read miss the API enqueues a BUILD_DOC_MODEL job to
@@ -284,6 +309,8 @@ class ComputeStack(Stack):
             # and returns `pending`; without this the MAP_REDUCE band abstains (input_too_long).
             "DOCSURI_MAP_REDUCE_ENABLED": "true",
             "CITATION_GRAPH_ENABLED": "true",
+            "CITATION_GRAPH_PROVIDER_TIMEOUT_SECONDS": "5",
+            "CITATION_GRAPH_PROVIDER_RETRY_TIMEOUT_SECONDS": "10",
             "PERSONALIZATION_ENABLED": "true",
             # Research is intentionally enabled in prod; keep this aligned with the live flag.
             "RESEARCH_AGENT_ENABLED": "true",
@@ -353,6 +380,18 @@ class ComputeStack(Stack):
             container_secrets["ORCID_OIDC_CLIENT_SECRET"] = ecs.Secret.from_secrets_manager(
                 orcid_oidc_secret
             )
+        # Notion export token-encryption key (US-NV8/SEC-8): Fernet key encrypting stored Notion
+        # connection tokens at rest — backend/modules/novelty/security.py reads it from env.
+        # Complete ARN (not name) for the grant/valueFrom reason documented for the Google secret
+        # above; the secret must already exist in Secrets Manager or the API task fails to start.
+        notion_token_key_secret = secretsmanager.Secret.from_secret_complete_arn(
+            self,
+            "NotionTokenKeySecret",
+            "arn:aws:secretsmanager:ap-northeast-2:028317349537:secret:docsuri/notion-token-key-8HoGdS",  # noqa: E501
+        )
+        container_secrets["DOCSURI_NOTION_TOKEN_KEY"] = ecs.Secret.from_secrets_manager(
+            notion_token_key_secret
+        )
 
         # --- TLS for the origin: Route53 zone + ACM cert for origin.docsuri.org ---
         zone = route53.HostedZone.from_hosted_zone_attributes(
@@ -366,9 +405,9 @@ class ComputeStack(Stack):
 
         # --- SES: verify the docsuri.org domain so the app can send no-reply@docsuri.org ---
         # public_hosted_zone(zone) auto-writes the DKIM CNAMEs into Route53 → no mailbox needed.
-        # NOTE: the account is still in the SES sandbox (delivers only to verified recipients);
-        # arbitrary signup delivery needs production access (separate AWS request — strengthened by
-        # the bounce/complaint handling below).
+        # SES production access GRANTED (2026-07-07) → arbitrary signup delivery works; the account
+        # is out of the sandbox. EMAIL_PROVIDER="ses" above makes SES production-primary (#348). The
+        # bounce/complaint config set below is the automated handling the prod-access review needs.
 
         # Bounce/complaint handling. The config set (1) auto-adds hard-bounced + complained
         # addresses to the account suppression list so we never re-send to them, and (2) publishes
@@ -583,6 +622,11 @@ class ComputeStack(Stack):
                     f"arn:aws:sqs:{self.region}:{self.account}:docsuri-docmodel-queue",
                     f"arn:aws:sqs:{self.region}:{self.account}:docsuri-ingestion-queue",
                     f"arn:aws:sqs:{self.region}:{self.account}:docsuri-summary-job-queue",
+                    # U11 evidence async job enqueue (PR #338 리뷰 Blocking #4/NFR-P6)
+                    f"arn:aws:sqs:{self.region}:{self.account}:docsuri-evidence-agent-job-queue",
+                    # User-PDF build (GROBID Option B) — enqueued by evidence/research/novelty
+                    # controllers via DOCSURI_USERDOC_BUILD_QUEUE_URL above.
+                    f"arn:aws:sqs:{self.region}:{self.account}:docsuri-userdoc-queue",
                 ],
             )
         )
@@ -611,6 +655,23 @@ class ComputeStack(Stack):
                     # invokable); the profile can route the FM to any region — grant both.
                     f"arn:aws:bedrock:{self.region}:{self.account}:inference-profile/global.cohere.embed-v4:0",
                     "arn:aws:bedrock:*::foundation-model/cohere.embed-v4:0",
+                ],
+            )
+        )
+        # U2 reader cross-encoder rerank (FR-3): the Bedrock Rerank API on the Cohere/Amazon rerank
+        # model. The rerank model is NOT in this region (Seoul) and has no global inference profile,
+        # so it is called CROSS-REGION (nearest = ap-northeast-1 Tokyo) — grant the FM across
+        # regions (region wildcard, mirroring the Cohere embed grant). Provisioned ahead of
+        # activation: without it the rerank call AccessDenies → RerankUnavailable → fail-soft to the
+        # baseline RRF order (a safe no-op). ACTIVATION is a deploy-time step the team owns: set
+        # DOCSURI_RERANK_MODEL_ARN (Tokyo ARN) [+ DOCSURI_RERANK_REGION] and enable model access in
+        # that region.
+        self.service.task_definition.task_role.add_to_principal_policy(
+            iam.PolicyStatement(
+                actions=["bedrock:Rerank"],
+                resources=[
+                    "arn:aws:bedrock:*::foundation-model/cohere.rerank-v3-5:0",
+                    "arn:aws:bedrock:*::foundation-model/amazon.rerank-v1:0",
                 ],
             )
         )
@@ -726,12 +787,17 @@ class ComputeStack(Stack):
             self, "ApiCdn",
             comment="docsuri-api - trusted HTTPS edge + encrypted, authenticated origin",
             default_behavior=cloudfront.BehaviorOptions(
+                # read_timeout 60s(기본 30s에서 상향, 계정 기본 할당량 최대치) — evidence 턴은
+                # OpenSearch 검색 + 다건 S3 DocModel 로드 + Bedrock 추출을 동기로 거쳐 30초를
+                # 쉽게 넘긴다(로컬 재현: 37초 완료, 30초 CloudFront가 먼저 끊음). frontend_stack.py
+                # WebCdn에 적용한 것과 동일 완화(근본 해결은 비동기 job+폴링 전환 필요).
                 origin=origins.HttpOrigin(
                     _ORIGIN_DOMAIN,
                     protocol_policy=cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
                     https_port=443,
                     origin_ssl_protocols=[cloudfront.OriginSslPolicy.TLS_V1_2],
                     custom_headers={"X-Origin-Verify": origin_verify},
+                    read_timeout=Duration.seconds(60),
                 ),
                 # HTTPS_ONLY (not REDIRECT): refuse plaintext outright rather than 301 it —
                 # a redirected POST would still have sent its body over HTTP first.
@@ -1017,6 +1083,69 @@ class ComputeStack(Stack):
                 left=[email_failure_metric, personalization_purge_metric],
                 left_annotations=[cloudwatch.HorizontalAnnotation(value=0, label="alarm: >0")],
                 width=12,
+                height=6,
+            ),
+        )
+        # KPI funnel (#346): the initial-plan success-metric hierarchy — AI 호출 > 검색 > 완독 —
+        # graphed from U9 behavior events, emitted as dimensionless DocSuri/Production counters by
+        # the personalization recorder (backend .../personalization/service.py _FUNNEL_METRIC).
+        # 완독률 = read_completed / paper_opened. novelty-agent calls are not U9 events, so
+        # "AI 호출" here counts summary/translation requests only.
+        funnel_ai_metric = cloudwatch.Metric(
+            namespace="DocSuri/Production",
+            metric_name="personalization.funnel.ai_invocation",
+            period=Duration.hours(1),
+            statistic="Sum",
+        )
+        funnel_search_metric = cloudwatch.Metric(
+            namespace="DocSuri/Production",
+            metric_name="personalization.funnel.search",
+            period=Duration.hours(1),
+            statistic="Sum",
+        )
+        funnel_opened_metric = cloudwatch.Metric(
+            namespace="DocSuri/Production",
+            metric_name="personalization.funnel.paper_opened",
+            period=Duration.hours(1),
+            statistic="Sum",
+        )
+        funnel_read_metric = cloudwatch.Metric(
+            namespace="DocSuri/Production",
+            metric_name="personalization.funnel.read_completed",
+            period=Duration.hours(1),
+            statistic="Sum",
+        )
+        # opened=0 in a window → CloudWatch yields no point (no error), so the rate just gaps.
+        funnel_completion_rate = cloudwatch.MathExpression(
+            expression="100 * completed / opened",
+            using_metrics={"completed": funnel_read_metric, "opened": funnel_opened_metric},
+            label="완독률 (%)",
+            period=Duration.hours(1),
+        )
+        dashboard.add_widgets(
+            cloudwatch.TextWidget(
+                markdown=(
+                    "## KPI 퍼널 — 성공지표 위계 (AI 호출 > 검색 > 완독)\n"
+                    "U9 사용자 행동 이벤트 집계. AI 호출 = 요약·번역 요청, 검색 = 검색 실행, "
+                    "완독률 = 완독(본문 끝까지 스크롤) ÷ 논문 열람. "
+                    "novelty 에이전트 호출은 U9 미포함."
+                ),
+                width=24,
+                height=2,
+            )
+        )
+        dashboard.add_widgets(
+            cloudwatch.GraphWidget(
+                title="AI 호출 빈도 (요약·번역)", left=[funnel_ai_metric], width=8, height=6
+            ),
+            cloudwatch.GraphWidget(
+                title="검색 빈도", left=[funnel_search_metric], width=8, height=6
+            ),
+            cloudwatch.GraphWidget(
+                title="완독률",
+                left=[funnel_completion_rate],
+                right=[funnel_opened_metric, funnel_read_metric],
+                width=8,
                 height=6,
             ),
         )

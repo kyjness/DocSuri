@@ -142,62 +142,56 @@ def test_pbt_response_to_dict_sec9_all_states(
     # SEC-9 internal field — the whitelisted forbidden set above is the real non-exposure check.
 
 
-# PBT-S5 — 앵커 검증 건전성 (Step 34).
+# PBT-S5 — 앵커 해석 건전성 (BR-S7): an anchor is KEPT iff its target resolves to a real
+# doc-model location; a resolved anchor's label is rewritten to the canonical section label.
 @given(
-    span=st.text(min_size=1, max_size=50),
-    ref_body=st.text(min_size=10, max_size=500),
-    is_present=st.booleans()
+    name=st.text(alphabet="abcdefghijklmnopqrstuvwxyz ", min_size=4, max_size=40),
+    distractor=st.text(alphabet="abcdefghijklmnopqrstuvwxyz ", min_size=4, max_size=40),
+    is_present=st.booleans(),
 )
-def test_pbt_anchor_validation_soundness(span: str, ref_body: str, is_present: bool) -> None:
-    from summarization.domain.grounding import GroundingValidator
+def test_pbt_anchor_resolution_soundness(name: str, distractor: str, is_present: bool) -> None:
+    from summarization.domain.grounding import GroundingValidator, _contiguous, _label_tokens
     from summarization.domain.models import (
         Anchor,
         AnchorTarget,
         GroundingInput,
         RefinedSource,
+        Section,
         SummaryDraft,
     )
 
-    # whitespace-only spans strip to "" → the validator treats them as no-span (auto-pass);
-    # the present/absent soundness property only holds once the span is non-empty after strip.
-    assume(span.strip())
-    
-    # If is_present is True, ensure the span exists in the ref_body
+    name_toks = _label_tokens(name)
+    assume(name_toks)  # the section label must have resolvable tokens
+
     if is_present:
-        ref_body = ref_body + span
+        target_hint = f"Section: {name}"
     else:
-        # The validator matches the STRIPPED span (grounding uses ``a.span.strip()``), so ensure the
-        # STRIPPED span is absent — a raw span with trailing whitespace (e.g. '0\r') strips to '0'
-        # and would still be found even though the raw form isn't a substring.
-        stripped = span.strip()
-        ref_body = ref_body.replace(stripped, "")
-        if stripped in ref_body:
-            return
-            
+        # guarantee the distractor's tokens cannot contain the section's tokens as a run
+        assume(not _contiguous(name_toks, _label_tokens(f"Section: {distractor}")))
+        target_hint = f"Section: {distractor}"
+
     draft = SummaryDraft(
         tldr="tldr text",
         contributions=("C",),
         method="method text",
-        results="results text",  # No numbers to avoid numeric mismatch
+        results="results text",  # no numbers → no numeric mismatch
         limitations="limitations text",
         reproducibility={"code": "", "data": ""},
-        anchors=(Anchor("results", AnchorTarget.SECTION, span=span, label=""),),
+        anchors=(
+            Anchor("results", AnchorTarget.SECTION, span="", label="", target_hint=target_hint),
+        ),
         truncated=False,
     )
-    refined = RefinedSource(body=ref_body, captions=())
-    gi = GroundingInput(draft=draft, refined=refined)
-    
-    from summarization.domain.grounding import _is_formula_span
+    refined = RefinedSource(
+        body="body", sections=(Section(label=name, start=0, end=0),), captions=()
+    )
+    verdict = GroundingValidator().validate(GroundingInput(draft=draft, refined=refined))
 
-    verdict = GroundingValidator().validate(gi)
-    kept_spans = {a.span for a in verdict.kept_anchors}
+    assert verdict.ok  # no hard violation in this draft
     if is_present:
+        assert len(verdict.kept_anchors) == 1
+        assert verdict.kept_anchors[0].label == name  # rewritten to canonical doc-model label
         assert not any(v.kind == "anchor_missing" for v in verdict.violations)
-        assert span in kept_spans  # a verifiable anchor is kept
     else:
-        # Option D: an unverifiable anchor is DROPPED (soft violation), not whole-summary abstain.
-        # Formula spans are intentionally exempt from existence checking, so exclude them here.
-        assume(not _is_formula_span(span))
-        assert verdict.ok  # no hard violation in this draft
-        assert span not in kept_spans
+        assert verdict.kept_anchors == ()
         assert any(v.kind == "anchor_missing" for v in verdict.violations)

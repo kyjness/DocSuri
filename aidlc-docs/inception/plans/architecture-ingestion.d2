@@ -1,0 +1,43 @@
+direction: down
+
+title: {
+  label: 그림 2. U1 Ingestion 파이프라인 (Corpus 자동 구축 · 별도 Fargate 워커)
+  near: top-center
+  shape: text
+  style.font-size: 34
+  style.bold: true
+}
+
+pipe: {
+  label: ""
+  style.fill: "#ECFDF5"
+  style.stroke: "#059669"
+
+  s1: { label: "1) arXiv · corpus sources\n멀티소스 수집"; style.font-size: 28; style.fill: "#D1FAE5" }
+  s2: { label: "2) Cross-source 중복제거"; style.font-size: 28; style.fill: "#D1FAE5" }
+  s3: { label: "3) FullText 추출\n(GROBID / HTML 파서)"; style.font-size: 28; style.fill: "#D1FAE5" }
+  s4: { label: "4) DocModel 생성\n섹션·표·수식(MathML)·그림"; style.font-size: 28; style.fill: "#D1FAE5" }
+  s5: { label: "5) Block 청킹 → 임베딩\nCohere Embed v4 (Bedrock)"; style.font-size: 28; style.fill: "#D1FAE5" }
+  s6: { label: "6) OpenSearch 인덱싱 + S3 저장"; style.font-size: 28; style.fill: "#D1FAE5" }
+
+  s1 -> s2 -> s3 -> s4 -> s5 -> s6: { style.font-size: 22 }
+}
+
+resilience: {
+  label: "Resilience\nWatermark 증분 · Retry · DLQ"
+  shape: hexagon
+  style.fill: "#FEF3C7"
+  style.stroke: "#F59E0B"
+  style.font-size: 26
+}
+
+bedrock: { label: "Amazon Bedrock\nCohere Embed v4"; shape: cloud; style.fill: "#FBCFE8"; style.font-size: 26 }
+opensearch: { label: "OpenSearch\nBM25 + kNN 1024d"; shape: cylinder; style.fill: "#FECACA"; style.font-size: 26 }
+s3store: { label: "S3\nDocModel · 자산"; shape: cylinder; style.fill: "#FED7AA"; style.font-size: 26 }
+events: { label: "EventBridge\ningestion 신호"; shape: queue; style.fill: "#E9D5FF"; style.font-size: 26 }
+
+pipe.s5 -> bedrock: { label: "임베딩 호출"; style.font-size: 22 }
+pipe.s6 -> opensearch: { label: "색인"; style.font-size: 22 }
+pipe.s6 -> s3store: { label: "저장"; style.font-size: 22 }
+pipe.s6 -> events: { label: "발행"; style.font-size: 22 }
+resilience -> pipe: { label: "전 단계 보호"; style.font-size: 22; style.stroke-dash: 4 }

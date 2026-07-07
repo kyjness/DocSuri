@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from backend.modules.accounts.models import Principal
+from docsuri_shared.authz import Principal
 
 from ..models import BILLING_PERIOD, Subscription
 from ..ports import SubscriptionRepository

@@ -34,6 +34,10 @@ _ECS_SERVICES = [
     (_ECS_CLUSTER, "docsuri-api"),
     (_ECS_CLUSTER, "docsuri-ingestion"),
     (_ECS_CLUSTER, "docsuri-novelty-agent-worker"),
+    # Writer for async long-summary + full-translation results (summarization_stack). CD must
+    # force-deploy it each release so it stays image-aligned with the API reader; without this
+    # grant the new cd.yml deploy step is denied ecs:UpdateService on the service.
+    (_ECS_CLUSTER, "docsuri-summary-worker"),
     ("docsuri-frontend", "docsuri-frontend"),
 ]
 
@@ -72,7 +76,10 @@ class CicdStack(Stack):
             assumed_by=principal,
             # IAM description must be ASCII (regex [\t\n\r\x20-\x7E\xA1-\xFF]*): Korean/em-dash
             # are rejected. Keep plain ASCII; the Korean rationale lives in the docstring.
-            description="GitHub Actions (cd.yml) OIDC deploy role - v* tags, ECR + ECS.",
+            description=(
+                "GitHub Actions (cd.yml) OIDC deploy role - v* tags, ECR + ECS + "
+                "cdk deploy (app-tier stacks via bootstrap-role assume)."
+            ),
         )
 
         # ECR 로그인 토큰은 계정 전역이라 리소스 스코프 불가.
@@ -107,6 +114,30 @@ class CicdStack(Stack):
                 resources=[
                     f"arn:aws:ecs:{self.region}:{self.account}:service/{cluster}/{svc}"
                     for cluster, svc in _ECS_SERVICES
+                ],
+            )
+        )
+        # cdk deploy(인프라 변경 — IAM/env/오토스케일 등 — 을 릴리즈마다 반영, cd.yml의 cdk-deploy
+        # 잡)를 위해 CDK v2 부트스트랩 역할 4종(deploy/file-publishing/image-publishing/lookup)을
+        # assume 허용한다. CloudFormation/IAM 실권한은 부트스트랩 역할이 보유 — CD 역할엔 직접 주지
+        # 않고 "부트스트랩 역할 assume"만 부여해 blast radius를 최소화(표준 CI cdk-deploy 패턴).
+        # qualifier는 기본값(hnb659fds); 커스텀 부트스트랩이면 아래 패턴을 맞춰 수정.
+        role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["sts:AssumeRole"],
+                resources=[
+                    f"arn:aws:iam::{self.account}:role/cdk-hnb659fds-*-{self.account}-{self.region}"
+                ],
+            )
+        )
+        # 최신 CDK CLI는 assume 전에 부트스트랩 버전 SSM 파라미터를 현재 자격증명으로 읽는 경로가
+        # 있어 read를 함께 부여(없으면 일부 버전에서 version-check 실패).
+        role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["ssm:GetParameter"],
+                resources=[
+                    f"arn:aws:ssm:{self.region}:{self.account}"
+                    ":parameter/cdk-bootstrap/hnb659fds/version"
                 ],
             )
         )

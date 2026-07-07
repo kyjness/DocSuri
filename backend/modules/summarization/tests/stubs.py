@@ -6,6 +6,7 @@ core and orchestrator be exercised deterministically without Bedrock/S3/Redis/RD
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 
 from summarization.domain.assembler import ResultAssembler
@@ -85,6 +86,53 @@ def valid_draft() -> SummaryDraft:
                    span="95.3% accuracy on ImageNet", label="5.2 Results"),
         ),
     )
+
+
+# --- Bedrock streaming double (adapter tool-use tests) -----------------------
+# Both adapter test files (test_bedrock_json_parse, test_bedrock_max_tokens) drive the real
+# ``BedrockLlmGateway`` against a fake ``bedrock-runtime`` client that records the request body and
+# replays a fixed forced-tool-use event stream. Kept here (single home) so the wire envelope is
+# defined once — if Bedrock's streaming shape changes, only this file changes.
+
+
+def bedrock_tool_use_events(
+    name: str, fragments: list[str], *, stop_reason: str = "tool_use"
+) -> list[dict]:
+    """A forced-tool-use stream: one ``tool_use`` block whose arguments arrive as
+    ``input_json_delta`` fragments, terminated by ``stop_reason``. ``max_tokens`` = an output-cap
+    truncation, so the accumulated ``partial_json`` is a cut-off (often unparseable) prefix."""
+    events: list[dict] = [
+        {"type": "content_block_start", "index": 0,
+         "content_block": {"type": "tool_use", "id": "toolu_1", "name": name, "input": {}}},
+    ]
+    events += [
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "input_json_delta", "partial_json": f}}
+        for f in fragments
+    ]
+    events += [
+        {"type": "content_block_stop", "index": 0},
+        {"type": "message_delta", "delta": {"stop_reason": stop_reason}},
+        {"type": "message_stop"},
+    ]
+    return events
+
+
+class FakeBedrockStream:
+    """Records each request body and replays a fixed Bedrock streaming event list.
+
+    Real-first (test-only double): no Production Mock adapter ships — this exercises the real
+    gateway's stream buffering / tool-use parse without hitting Bedrock."""
+
+    def __init__(self, events: list[dict]) -> None:
+        self._events = list(events)
+        self.bodies: list[dict] = []
+
+    def invoke_model_with_response_stream(self, *, modelId, body, accept, contentType):  # noqa: N803
+        self.bodies.append(json.loads(body))
+        return {
+            "body": [{"chunk": {"bytes": json.dumps(e).encode("utf-8")}} for e in self._events]
+        }
 
 
 @dataclass
@@ -175,6 +223,7 @@ def make_orchestrator(
     observability: StubObservability | None = None,
     doc_model_reader=None,
     doc_model_build_queue=None,
+    source_doc_model_reader=None,
     map_reduce_summarizer=None,
     summary_job_queue=None,
     glossary_resolver: GlossaryResolver | None = None,
@@ -182,7 +231,12 @@ def make_orchestrator(
     llm = llm or StubLlm()
     return SummarizationOrchestrationService(
         store=store or StubStore(),
-        source_selector=SourceSelector(full_text or StubFullText()),
+        # ``source_doc_model_reader`` wires the doc-model reader into the SUMMARY/TRANSLATE input
+        # path (SourceSelector), mirroring production; ``doc_model_reader`` (below) feeds only the
+        # rich-view doc_model() lookup. They are separate params so each path is testable alone.
+        source_selector=SourceSelector(
+            full_text or StubFullText(), doc_model_reader=source_doc_model_reader
+        ),
         refiner=InputRefiner(),
         glossary_resolver=glossary_resolver or GlossaryResolver(None),
         length_router=LengthRouter(),

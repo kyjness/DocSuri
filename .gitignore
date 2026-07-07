@@ -2,6 +2,9 @@
 .serena/
 .DS_Store
 node_modules/
+.agents/
+.claude/worktrees/
+.pnpm-store/
 
 # IDE
 .idea/

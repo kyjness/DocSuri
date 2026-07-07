@@ -3,6 +3,43 @@
 **단계**: CONSTRUCTION → Build and Test · **유닛**: U1 Ingestion · U3 Accounts · **일자**: 2026-06-16
 **문서 언어**: 한국어 (영문 명령어/식별자 병기)
 
+---
+
+# U11 Evidence Formation Agent Unit Test Instructions — 2026-07-01
+
+## Run U11 evidence unit tests (isolated)
+
+```bash
+PYTHONPATH='shared/python/src:ops/src:backend/modules/discovery/src:backend/modules/summarization/src' \
+  ./backend/.venv/bin/pytest backend/tests/test_evidence.py -v
+```
+
+Observed result: **12 passed** (1.15 s)
+
+## Run evidence + app-shell combined
+
+```bash
+PYTHONPATH='shared/python/src:ops/src:backend/modules/discovery/src:backend/modules/summarization/src' \
+  ./backend/.venv/bin/pytest backend/tests/test_evidence.py backend/tests/test_app_shell.py -v
+```
+
+Observed result: **24 passed**, 1 failed (pre-existing: `test_discovery_and_accounts_actually_mount` — `cryptography` package absent in this macOS environment; U11-unrelated), 1 warning
+
+## Coverage focus
+
+- PBT-EV-1: INV-EV-2 — `claims=[]` → assembler returns `ok`, orchestrator enforces abstain
+- PBT-EV-2: INV-EV-1 / SEC-9 — cross-owner session read → `KeyError` (hypothesis)
+- PBT-EV-3: INV-EV-5 — serialized `TurnResult` never contains `score`, `chunk_id`, `vector`, `llm_meta`
+- BR-EV-8: soft delete hides session from list + `get_session` (KeyError)
+- BR-EV-9: `reset_all` only affects requesting owner
+- BR-EV-10: `list_sessions` returns `updated_at` DESC
+- API: POST `/api/evidence/turns` → 200, `state=abstain` (stub orchestrator)
+- API: GET `/api/evidence/sessions` → 200, empty initially
+- API: DELETE cross-owner session → 404 (SEC-9)
+- API: POST `/api/evidence/sessions/reset` → 204
+- API: GET nonexistent session → 404 (SEC-9)
+- API: no principal override → 401
+
 본 문서는 Code Generation 단계에서 구현된 단위 테스트의 실행 방법과 품질 관리 요건을 수립합니다.
 유닛별로 다음 두 모듈을 다룹니다.
 

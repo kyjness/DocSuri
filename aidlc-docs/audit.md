@@ -17,6 +17,41 @@
 **Context**: PR 문서 작성 — U6 Reliability/Ops 구현 변경사항 설명 및 커밋 메시지 상세화.
 
 ---
+## Code Generation
+**Timestamp**: 2026-07-06T01:43:51Z
+**User Input**: "좋아요. `권장 구현 방식: 유저별 개인 Notion internal integration token 등록 + parent page ID 입력 방식`으로 구현해 주세요. 프론트도 동시에 구현합시다. 토큰이 등록되어 있지 않을 경우, 바로 토큰 입력 창이 뜨도록 하고, 이후에는 설정 페이지에서 Notion 토큰을 관리할 수 있도록 설정에 만들어 주세요. 데모와 배포 모두 구현해 주세요. 이후, Blocking 요소가 있는지 deep하게 검토해 주세요."
+**AI Response**: "Implemented owner-scoped Notion connection management with encrypted token storage, local disconnect, automatic token-entry prompt for unconnected Novelty exports, My Page settings management UI, mock/demo transport support, and regression tests. Verified backend, frontend type checks, focused tests, lint, production build, and deployment-readiness paths."
+**Context**: Novelty-Agent per-user Notion internal integration export implementation and blocking review.
+
+---
+## Implementation Guidance
+**Timestamp**: 2026-07-06T01:31:00Z
+**User Input**: "근데 모든 유저가 하나의 Notion 계정으로 내보내는게 아니라, 유저별로 각각 유저의 Notion으로 내보낼 수 있어야 해요."
+**AI Response**: "Verified that the existing Novelty Notion connection model is owner-scoped via owner_id, not a shared server Notion account, and explained the user-specific token/OAuth implementation options."
+**Context**: Clarification of per-user Notion export requirement.
+
+---
+## Implementation Guidance
+**Timestamp**: 2026-07-06T01:23:48Z
+**User Input**: "notion으로 내보내기 기능을 구현하려고 합니다. 어떻게 구현해야 할까요?"
+**AI Response**: "Inspected the existing Novelty Notion export backend, frontend panel, API client, mock transport, security helper, and wiring. Prepared implementation guidance based on the current preview/approval/export flow."
+**Context**: Notion export implementation guidance for Novelty-Agent.
+
+---
+## PR #373 Review Fix
+**Timestamp**: 2026-07-04T23:12:57Z
+**User Input**: "Review PR #373 from a clean context and fix all findings."
+**AI Response**: "Reviewed PR #373 with no GitHub review threads present, identified and fixed two clean-context findings: evidence async SQS jobs dropped validated attachment handles, and invalid evidence scope could still reach shared EvidenceRequest validation inside the handler instead of returning 422 at the request boundary. Added tests for invalid scope rejection, async enqueue attachment preservation, SQS payload attachment parsing, and worker EvidenceRequest attachment propagation. Verification passed: 38 focused backend tests, ruff on touched files, and git diff --check. Extension compliance: SECURITY-05/15 compliant for applicable request validation and fail-safe handling; SECURITY-08 unchanged and compliant via existing principal/owner-scoped routes; PBT Partial mode N/A for this example-based regression slice; resiliency rules N/A because no infrastructure/deployment topology changed."
+**Context**: Code Generation and Build/Test, PR #373 review findings remediation.
+
+---
+## PR #373 Review Fix
+**Timestamp**: 2026-07-04T22:51:25Z
+**User Input**: "Review PR #373 from a clean context and fix all findings."
+**AI Response**: "Loaded AI-DLC common workflow rules, displayed the welcome message, scanned extensions, and began Workspace Detection plus PR #373 review from current repository context."
+**Context**: Workspace Detection, audit initialization, PR review and remediation request.
+
+---
 
 ## Code Generation — U6 Reliability/Ops Approval
 **Timestamp**: 2026-06-16T13:27:58Z
@@ -3352,6 +3387,27 @@ aidlc 개발 과정을 적용하여 개발하려고 합니다. 질문지를 형�
 **Context**: Production CDK/API image deployment and load-test verification for PR #323.
 
 ---
+## Production Novelty Job Investigation
+**Timestamp**: 2026-07-02T08:18:35Z
+**User Input**: "방금 또 시도했는데 또 degraded래요. 이번에도 LLM이 timeout인가요? timeout이 발생한 이유는 뭘까요?"
+**AI Response**: "Queried the latest production Novelty job, SQS queue, worker logs, and code paths. The newest job completed as degraded with reasons `U2 full search unavailable` and `LLM input has no grounded sourceRefs`. Worker logs show OpenSearch `docsuri-corpus/_search` read timeouts at the 5s adapter timeout; external GitHub/HuggingFace/Zenodo calls succeeded. This run did not show an LLM timeout; LLM generation was skipped because no grounded sourceRefs were available after U2 corpus retrieval degraded."
+**Context**: Production Novelty degraded-state root-cause check.
+
+---
+## Frontend UI Fix
+**Timestamp**: 2026-07-02T07:59:38Z
+**User Input**: "<image name=[Image #1] path=\"화면 캡처2026-07-02165533.png\">[Image #1] 이 출력 결과인데, 이게 종료된 건가요? `진행 중`이라고 쓰여 있는데요."
+**AI Response**: "Novelty job itself is terminal degraded, but historical running timeline events were rendered as still running. AgentChatScreen now normalizes timeline display so running events before a terminal event render as completed, while the terminal degraded event remains degraded. Added a focused test and ran frontend AgentChatScreen tests plus TypeScript noEmit."
+**Context**: Frontend Novelty agent timeline terminal-state display correction.
+
+---
+## Production Novelty Job Investigation
+**Timestamp**: 2026-07-02T07:52:24Z
+**User Input**: "Novelty 에이전트에 채팅을 입력했더니 `Novelty analysis job queued`라고만 뜨고 변화가 없네요. 상황을 조회해 줄래요?"
+**AI Response**: "DocSuri production SQS, ECS worker logs, and RDS novelty tables were queried with the DocSuri-Deploy profile. The latest Novelty job completed as degraded with progress 100; corpus and external searches succeeded, but the LLM generation adapter timed out with ReadTimeoutError. The UI remaining on the queued message appears to be a frontend/status polling or event rendering issue rather than an unprocessed queue message."
+**Context**: Production Novelty agent runtime status investigation.
+
+---
 ## Frontend UI Fix
 **Timestamp**: 2026-07-02T05:33:45Z
 **User Input**: "1. `마이페이지 -> 관심 논문 · 최근 본`에서, `관심 논문 · 최근 본`을 `관심 논문 · 최근 본 논문 · 검색` 으로, `최근 본`을 `최근 본 논문`으로 변경해 주세요.
@@ -3390,6 +3446,20 @@ aidlc 개발 과정을 적용하여 개발하려고 합니다. 질문지를 형�
 **Context**: PR document creation for frontend UI polish changes.
 
 ---
+## Frontend Agent Chat Fix
+**Timestamp**: 2026-07-03T12:19:17Z
+**User Input**: "문제 사항을 정리했습니다. ```PlainText 1. 상태 실시간 동기화가 제대로 안돼 상태 파악을 하려면  새로고침을 하던지 해야 함. 자동 새로고침이 진행되도록 수정
+2. 스트리밍으로 출력이 안됨. 스트리밍으로 한 글자씩 출력되도록 수정
+3. 진행중에는 로딩 원이 돌아가도록 설정.``` 이 문제들을 해결하기 위해 코드를 수정해 주세요."
+**AI Response**: "AgentChatScreen polling now refreshes persisted queued/running sessions immediately and every second. Agent messages render with a character-by-character typewriter effect. Running/queued job and timeline states now show a spinning loading indicator. Existing timeline terminal display normalization was preserved and expanded for terminal jobs without a terminal event row. AgentChatScreen test expectations were updated for streamed output, and frontend tests plus TypeScript noEmit passed."
+**Context**: Frontend agent chat realtime status sync, typewriter output, and loading indicator update.
+
+---
+## Frontend Agent Chat SSE Revision
+**Timestamp**: 2026-07-03T12:39:30Z
+**User Input**: "`새 응답만 스트리밍`으로, `프론트가 SSE을 사용`으로 수정해 주세요."
+**AI Response**: "Changed AgentChatScreen so typewriter streaming is only armed after the user submits a message and a new agent message arrives; loaded historical sessions render immediately without replay. Added Novelty SSE progress loading through `/bff/api/novelty/jobs/{jobId}/events?after=...`, parsing `event: progress` frames into timeline events and merging them into the active session. Added BFF passthrough for the Novelty SSE endpoint so same-origin frontend requests forward the httpOnly cookie to the gateway and preserve `text/event-stream` responses. Added reducer, SSE parser, BFF passthrough, and previous-session non-streaming regression tests. Verification: focused frontend tests passed, TypeScript `tsc --noEmit` passed, full frontend Vitest passed, `next build` passed with the pre-existing `devIndicators` warning, and `git diff --check` passed with line-ending warnings only."
+**Context**: Frontend agent chat response streaming scope and SSE-based Novelty progress synchronization.
 ## Monitoring Dashboard Increment
 **Timestamp**: 2026-07-02T09:03:23Z
 **User Input**: "Add one CloudWatch dashboard that puts those alarms/SLO metrics in one place."
@@ -3409,5 +3479,471 @@ aidlc 개발 과정을 적용하여 개발하려고 합니다. 질문지를 형�
 **User Input**: "commit and merge it to develop"
 **AI Response**: "Current branch is already `develop`; staging the CloudWatch dashboard, AI-DLC state, and audit changes for a direct commit on `develop`."
 **Context**: Commit request for monitoring dashboard increment.
+
+---
+## PR #364 Review Fix
+**Timestamp**: 2026-07-04T11:20:41Z
+**User Input**: "fix PR #364 according to the review"
+**AI Response**: "Loaded required AI-DLC common rules and extension opt-in prompts, displayed the workflow welcome message, and started Workspace Detection for the existing DocSuri codebase before inspecting PR #364 review feedback."
+**Context**: Workspace Detection, audit initialization, PR review fix request.
+
+---
+## PR #364 Review Fix
+**Timestamp**: 2026-07-04T11:24:59Z
+**User Input**: "fix PR #364 according to the review"
+**AI Response**: "Implemented the review decision to move the agent global hard cost gate from warning-level degradation to critical-level budget state. Added an explicit `is_cost_critical` helper, switched evidence and novelty agent LLM gates to it, wired the app novelty LLM adapter with `app.state.cost_guard`, and updated tests to prove warning remains non-blocking while critical blocks before tool/Bedrock calls. Verification passed: backend agent tests 52 passed, ops cost guard tests 9 passed, backend/ops ruff checks clean, and git diff --check clean."
+**Context**: Code Generation, review feedback implementation, build and test verification for PR #364.
+
+---
+## Novelty Bedrock Streaming Timeout Fix
+**Timestamp**: 2026-07-04T17:28:52Z
+**User Input**: "좋아요. 그러면, ```PlainText
+1. Bedrock → 백엔드 streaming 호출 형식으로 변경
+2. read_timeout을 300초로 변경
+``` 을 진행해 주세요. 이후, Blocking 사항이 있는지 검토해 주세요."
+**AI Response**: "Changed the Novelty Bedrock adapter from `invoke_model` to `invoke_model_with_response_stream`, buffering `text_delta` chunks server-side before JSON parsing. Increased the Bedrock runtime read timeout from 45 seconds to 300 seconds. Updated Novelty tests to exercise streaming chunks and verify the configured read timeout. Blocking review found existing Novelty IAM already allows `bedrock:InvokeModelWithResponseStream`; SQS visibility timeout is 900 seconds, which remains above the 300-second Bedrock read timeout; frontend Novelty status refresh and SSE fallback continue polling during long-running jobs. Verification passed: focused Novelty pytest, Novelty ruff, compileall, full backend pytest, full backend ruff, and git diff check."
+**Context**: Production Novelty-Agent Bedrock LLM timeout mitigation and blocking review.
+
+---
+## PR #373 Review Fix — Append-Only Completion Entry
+**Timestamp**: 2026-07-04T23:14:13Z
+**User Input**: "Review PR #373 from a clean context and fix all findings."
+**AI Response**: "Append-only correction: the PR #373 audit entries above were inserted near an earlier separator by patch context, so this completion record is appended at EOF without deleting prior audit content. Final state: no GitHub review threads were present; fixed evidence async SQS attachment handle propagation and evidence scope request-boundary validation; added regression tests; verification passed with 38 focused backend tests, ruff on touched files, and git diff --check."
+**Context**: Final audit append for PR #373 review findings remediation.
+
+---
+## PR #373 Commit and Push
+**Timestamp**: 2026-07-04T23:24:05Z
+**User Input**: "commit and push to the PR"
+**AI Response**: "Preparing a scoped commit of the PR #373 remediation files and pushing the current branch to the PR remote branch."
+**Context**: Commit and push request for PR #373.
+
+---
+## PDF Doc-Model Design Review
+**Timestamp**: 2026-07-05T11:27:49Z
+**User Input**: "PDF 본문 처리 설계 인계 (Phase 1 마지막 항목, Q6=A: 공통 doc-model 파이프라인 경유)
+
+현재 상태: 검증 단계는 이미 PDF를 허용(PR #373 — pdf/md/txt · 10MB · 최대 8개)하지만, 본문 E2E는 md/txt만 관통(PR #376). PDF는 업로드돼도 본문이 근거 추출(evidence)·원고 분석(novelty)에 들어가지 않습니다. 원인은 빌드 계약이 arXiv 전용이라서입니다 — JobKind.BUILD_DOC_MODEL 잡은 arXiv id로 스스로 fetch(html→ar5iv→pdf 폴백)하고, backend 쪽 enqueue 포트도 enqueue_build(paper_id, version)(summarization/ports.py)이라 "이미 S3에 있는 사용자 파일"을 표현할 수 없습니다.
+
+제안: 3-서비스 변경
+
+① ingestion — 신규 JobKind (예: BUILD_USER_DOC_MODEL)
+
+payload: S3 objectKey + 요청 모듈(evidence/novelty) + synthetic paperId (+ owner)
+처리: arXiv fetch 대신 S3 GetObject → pdfplumber 파싱, DOCSURI_GROBID_URL 설정 시 GROBID 구조 추출(미설정이면 pdfplumber-only로 저하) → 통상 빌드와 동일 포맷의 doc-model을 DOCSURI_DOCMODEL_BUCKET에 적재
+신원: synthetic paperId 네임스페이스(예: user:{uuid}) + provenance tier "사용자 업로드"
+② backend — enqueue/poll 소비
+
+evidence 첨부·novelty 원고가 PDF면: S3 적재(원고는 PR #376의 POST /jobs/{id}/manuscript 경로 재사용, evidence 첨부은 동일 패턴 신설) → 기존 DOCSURI_DOCMODEL_BUILD_QUEUE_URL로 신규 kind enqueue → readiness 폴링 → 완성된 doc-model 본문을 md/txt와 같은 추출/분석 경로에 투입
+실패/타임아웃은 기존 fail-soft 재사용: evidence는 '[첨부 안내]' 메시지, novelty는 잡 저하 사유
+③ frontend — PDF 바이너리 업로드
+
+현행은 텍스트 본문 동봉(≤256KiB)이라 PDF 바이너리 경로 신설 필요. API 태스크 롤 s3:PutObject는 live 검증 완료(US-NV2 — 업로드 원고에서 novelty job 시작 #252 코멘트) — 인프라 선행 조건 없음
+리뷰 요청 — 계약 결정 4가지
+
+synthetic paperId ↔ SourceRef 규약: 사용자 문서에는 arXiv URL을 부여하지 않음(무날조 원칙) — recordRef로만 참조. 네임스페이스 표기 확정 필요
+readiness 신호: 폴링(단순, 제안) vs 완료 콜백 큐
+빌드 실패 UX: md/txt와 동일하게 부분 저하로 진행(전체 실패 아님)
+GROBID 프로비저닝: env-gated라 없이도 배포 가능(표·구조 fidelity만 저하) — 프로비저닝 여부/시점 결정
+미착수 인계 사유
+
+3-서비스 관통 + GROBID 로컬 테스트 불가 조합이라, 반쪽 구현으로 배포되는 위험이 설계 리뷰 선행 비용보다 크다고 판단했습니다. 위 4가지에 대한 결정이 서면 확정되면 구현은 스택 순서(① → ② → ③)로 PR 분할 진행이 가능합니다.
+
+cc #252 — novelty 원고 PDF도 동일 경로를 탑니다.
+
+여기에 대해서 어떻게 생각해?"
+**AI Response**: "Loaded AI-DLC common rules, extension opt-in prompts, and current state for a design-review response; no code changes requested or made. Reviewed the proposed 3-service PDF doc-model path. Recommendation: approve the direction, add a shared contract step before implementation, use a typed user-document identity rather than arXiv URL fabrication, choose bounded polling for readiness, keep fail-soft degradation, and make GROBID optional for the first user-upload PDF slice while accounting for the current light doc-model worker lacking a GROBID sidecar."
+**Context**: Design review for PDF body processing through shared user-upload doc-model pipeline.
+
+---
+## Ingestion Queue Operational Check
+**Timestamp**: 2026-07-05T12:04:32Z
+**User Input**: "check how the ingestion queue is going on"
+**AI Response**: "Checked live AWS account 028317349537 in ap-northeast-2 using profile AdministratorAccess-028317349537. Current SQS snapshot: docsuri-ingestion-queue visible=155520, in-flight=1, delayed=0; docsuri-ingestion-dlq visible=1395; docsuri-docmodel-queue visible=0; docsuri-docmodel-dlq visible=11. ECS services are active: docsuri-ingestion running 1/1 and docsuri-docmodel-builder running 2/2. Last-hour CloudWatch/Logs Insights: ingestion queue visible depth decreased slowly from about 155690 to about 155546, oldest-message age increased from about 256924s to 260230s, worker indexed 148 papers, and 18 failures were recorded, all NON_OA."
+**Context**: Production ingestion/docmodel queue status check.
+
+---
+## User PDF DocModel PR1 Start
+**Timestamp**: 2026-07-05T12:31:59Z
+**User Input**: "Now start PR①"
+**AI Response**: "Resumed the existing AI-DLC workflow, loaded common rules plus enabled security/resiliency/PBT extension rules, confirmed PR0 #388 is open and mergeable, and began the stacked ingestion PR① from the PR0 contract branch."
+**Context**: Code Generation start for ingestion BUILD_USER_DOC_MODEL consumer branch.
+
+---
+## User PDF DocModel PR1 Completion
+**Timestamp**: 2026-07-05T12:41:19Z
+**User Input**: "Now start PR①"
+**AI Response**: "Implemented PR① ingestion support for BUILD_USER_DOC_MODEL: new job kind and payload fields, strict userdoc/upload payload validation, S3 user-document source with size cap, pdfplumber-only build_user_doc_model path, production runtime wiring, worker dispatch through the existing permanent-failure DLQ path, focused tests, PBT payload round-trip, state update, and code summary. Verification passed: focused ingestion tests 29 passed; full ingestion tests 275 passed/1 skipped; ingestion ruff clean; compileall clean; git diff --check clean."
+**Context**: Code Generation completion and verification for ingestion BUILD_USER_DOC_MODEL consumer branch.
+
+---
+## PR1 Branch Name Fix
+**Timestamp**: 2026-07-05T12:48:52Z
+**User Input**: "fix the branch name. Our PR didn't pass the CI"
+**AI Response**: "Checked PR #389 and confirmed the Branch name check failed because the source branch used disallowed prefix `feat/`. Renamed the remote and local branch to `feature/pr1-userdoc-docmodel-ingestion`; GitHub closed the original PR on rename, so a replacement PR will be opened from the compliant branch."
+**Context**: Branch naming CI repair for PR1 user PDF doc-model ingestion branch.
+
+---
+## PR1 Branch Name Fix Completion
+**Timestamp**: 2026-07-05T12:55:03Z
+**User Input**: "Treat aidlc-state.md, audit.md with the AIDLC way."
+**AI Response**: "Applied the AI-DLC tracking correction: kept audit.md append-only with a completion entry, updated aidlc-state.md to reference the live replacement PR #390 and the CI-compliant `feature/pr1-userdoc-docmodel-ingestion` branch, and recorded that #389 was closed by GitHub during the remote branch rename. Confirmed PR #390 Branch name check is passing."
+**Context**: AI-DLC state/audit correction for PR1 branch-name CI repair.
+
+---
+## PR390 Contract Compliance Review
+**Timestamp**: 2026-07-05T12:58:28Z
+**User Input**: "PR #390 is connected with PR #388. check if the BUILD_USER_DOC_MODEL is implemented according to the contract."
+**AI Response**: "Started an AI-DLC unit review for U1 ingestion, comparing PR #390 against the frozen user-uploaded PDF doc-model contract from PR #388."
+**Context**: Contract compliance review for BUILD_USER_DOC_MODEL implementation.
+
+---
+## PR390 Contract Compliance Review Completion
+**Timestamp**: 2026-07-05T13:02:18Z
+**User Input**: "PR #390 is connected with PR #388. check if the BUILD_USER_DOC_MODEL is implemented according to the contract."
+**AI Response**: "Completed the contract review. PR #390 implements the main BUILD_USER_DOC_MODEL flow from PR #388: accepts the S3-sourced job without arxivRef, dispatches the new worker path, fetches the uploaded PDF from S3, parses with pdfplumber only, writes the existing doc-model format with SourceTier.pdf, and DLQs malformed or unparseable jobs. One blocking contract gap remains: job_from_payload accepts userdoc paperIds that are not UUID-backed, accepts versions greater than 1, and only prefix-checks recordRef instead of enforcing upload:{ownerId}:{jobId}:{attachmentId}. Verdict: CHANGES REQUESTED until those frozen identity invariants are rejected and tested."
+**Context**: Contract compliance verdict for BUILD_USER_DOC_MODEL implementation in PR #390.
+
+---
+## PR390 Contract Fix Start
+**Timestamp**: 2026-07-05T13:07:54Z
+**User Input**: "apply all fixes"
+**AI Response**: "Started the PR #390 contract-fix pass: extend the PR1 code-generation plan with a review-fix step, tighten BUILD_USER_DOC_MODEL frozen identity validation, add regression tests for drift rejection, rerun ingestion gates, then update AI-DLC state/audit and push the branch."
+**Context**: Code Generation follow-up for BUILD_USER_DOC_MODEL contract compliance.
+
+---
+## PR390 Contract Fix Completion
+**Timestamp**: 2026-07-05T13:10:28Z
+**User Input**: "apply all fixes"
+**AI Response**: "Applied all PR #390 contract fixes: BUILD_USER_DOC_MODEL validation now requires jobId=userdoc-{uuid}, paperId=userdoc:{uuid}, version exactly 1, and recordRef exactly upload:{ownerId}:{jobId}:{attachmentId}; added regression coverage for non-UUID ids, version drift, owner mismatch, job mismatch, malformed recordRef, and empty attachment ids; updated the property-based payload generator to emit the frozen shape; updated AI-DLC plan/state/summary. Verification passed: focused ingestion tests 35 passed, full ingestion tests 281 passed/1 skipped, ruff clean, compileall clean, git diff --check clean."
+**Context**: Code Generation follow-up completion for BUILD_USER_DOC_MODEL contract compliance.
+
+---
+## User PDF DocModel PR2 Start
+**Timestamp**: 2026-07-05T13:37:26Z
+**User Input**: "Implement PR2 in the same way,"
+**AI Response**: "Started the PR2 backend producer slice on branch feature/pr2-userdoc-docmodel-backend, stacked from the updated PR0/PR1 contract branch. Scope: S3 upload plus BUILD_USER_DOC_MODEL enqueue plus bounded doc-model polling for evidence and novelty PDF inputs, with fail-soft degradation per the frozen contract."
+**Context**: Code Generation start for backend user-uploaded PDF doc-model producer.
+
+---
+## User PDF DocModel PR2 Completion
+**Timestamp**: 2026-07-05T14:01:15Z
+**User Input**: "Implement PR2 in the same way,"
+**AI Response**: "Implemented PR2 backend support for user-uploaded PDF doc-model production: shared user-docmodel coordinator, evidence/research PDF upload endpoints, novelty PDF manuscript upload, best-effort BUILD_USER_DOC_MODEL enqueue, bounded polling into evidence extraction and novelty similarity, frozen failure UX, and no arXiv URL fabrication for userdoc sources. Verification passed: focused backend PR2 suite 103 passed, broad backend suite 453 passed/4 skipped, backend ruff clean, compileall clean, git diff --check clean."
+**Context**: Code Generation completion and verification for backend user-uploaded PDF doc-model producer.
+
+---
+## AI-DLC Untracked Workspace File Treatment
+**Timestamp**: 2026-07-05T14:17:16Z
+**User Input**: "Treat untracked workspace files by the AIDLC rules."
+**AI Response**: "Classified untracked workspace files under AI-DLC rules: local tool/cache paths `.agents/`, `.claude/worktrees/`, and `.pnpm-store/` are ignored; documentation artifacts under `aidlc-docs/inception/plans/` are tracked. Replaced non-compliant Unicode box-drawing diagrams in `hackathon-proposal.md` with text alternatives. Validation passed: D2 diagrams compile, docx integrity OK, no box-drawing characters remain in the proposal, and diff whitespace check is clean."
+**Context**: Workspace hygiene and documentation artifact treatment under AI-DLC file-placement/content-validation rules.
+
+---
+## PR2 Hardening Before PR3
+**Timestamp**: 2026-07-05T14:29:28Z
+**User Input**: "Implement PR3 in the same way."
+**AI Response**: "Before branching PR3, preserved and completed existing PR2 hardening changes: moved evidence/research user-docmodel polling into threadpool execution, percent-encoded Unicode upload filenames for S3 metadata safety, degraded doc-model reader exceptions to `None`, and added coordinator regression tests. Verification passed: focused backend tests 37 passed, touched ruff clean, git diff --check clean."
+**Context**: PR2 backend hardening cleanup discovered at PR3 start, committed before creating the frontend PR3 stack.
+
+---
+## User PDF DocModel PR3 Start
+**Timestamp**: 2026-07-05T14:31:06Z
+**User Input**: "Implement PR3 in the same way."
+**AI Response**: "Started the PR3 frontend binary-upload slice on branch feature/pr3-userdoc-docmodel-frontend, stacked from the updated PR2 backend branch. Scope: upload PDF binaries through the new backend endpoints before evidence/research send and novelty manuscript dispatch, preserve md/txt contentText behavior, add frontend regressions, update AI-DLC docs, then push/open a stacked PR."
+**Context**: Code Generation start for frontend user-uploaded PDF doc-model producer wiring.
+
+---
+## User PDF DocModel PR3 Completion
+**Timestamp**: 2026-07-05T14:39:38Z
+**User Input**: "Implement PR3 in the same way."
+**AI Response**: "Implemented PR3 frontend binary-upload wiring: added binary body support across the frontend transport seam and BFF proxy, preserved local PDF blobs only for live upload, stripped blobs from JSON payloads, uploaded evidence/research PDFs before job creation, uploaded novelty PDF manuscripts after manuscript job creation, kept md/txt contentText behavior unchanged, added regression coverage, and updated AI-DLC plan/state/summary. Verification passed: frontend tsc --noEmit clean; targeted Vitest 34 passed; full frontend Vitest 248 passed; next build passed. The default pnpm command was blocked by a local Corepack pnpm 11 vs packageManager pnpm 9.15.9 mismatch, so verification used the checked-in frontend node_modules/.bin binaries without package metadata changes."
+**Context**: Code Generation completion and verification for frontend user-uploaded PDF doc-model binary upload wiring.
+
+---
+## PR391 Review Fix Start
+**Timestamp**: 2026-07-05T15:04:04Z
+**User Input**: "apply all fixes to the PR"
+**AI Response**: "Started the PR #391 review-fix pass on `feature/pr0-userdoc-docmodel-contract`: bind evidence/research PDF attachment object keys to the authenticated owner/module/attachment scope, translate malformed attachment identity metadata to client validation errors, add regressions, and rerun focused backend gates."
+**Context**: Code Generation follow-up for PR #391 review findings.
+
+---
+## PR391 Review Fix Completion
+**Timestamp**: 2026-07-05T15:08:02Z
+**User Input**: "apply all fixes to the PR"
+**AI Response**: "Applied all PR #391 review fixes: evidence/research attachment doc-model reuse now rejects forged `objectKey` values before enqueue or polling, malformed `paperId`/`recordRef` metadata returns 422 at the API boundary, and regressions cover coordinator validation plus evidence/research endpoint behavior. Verification passed: focused review-fix suite 101 passed, broad backend tests 215 passed/1 skipped, touched backend ruff clean, compileall clean, diff check clean."
+**Context**: Code Generation follow-up completion for PR #391 review findings.
+
+---
+## PR394 Review Fix Start
+**Timestamp**: 2026-07-05T16:04:10Z
+**User Input**: "apply all changes."
+**AI Response**: "Started applying PR #394 review fixes: wire the novelty worker stack for delayed self-retry, doc-model build queue dispatch, and doc-model S3 read access; add focused regression coverage; rerun backend, ops, and CDK verification."
+**Context**: Code Generation follow-up for PR #394 review findings.
+
+---
+## PR394 Review Fix Completion
+**Timestamp**: 2026-07-05T16:04:32Z
+**User Input**: "apply all changes."
+**AI Response**: "Applied all PR #394 review fixes: the novelty worker stack now has doc-model bucket/build-queue environment, self-send permission for delayed retry, scoped doc-model queue SendMessage, and scoped doc-model S3 read access. Added an ops regression test for the stack contract. Verification passed: touched ruff clean, PR backend tests 54 passed, ops tests 49 passed, git diff --check clean, and CDK app synth succeeded with the existing Node version warning."
+**Context**: Code Generation follow-up completion for PR #394 review findings.
+
+---
+## PR396 Review Start
+**Timestamp**: 2026-07-05T16:45:35Z
+**User Input**: "Review PR #396 from a clean context and apply all findings if possible. Approve PR if it's approvable/"
+**AI Response**: "Started clean-context review of PR #396. Loaded AI-DLC common rules, enabled security/resiliency/PBT extension rules, and the DocSuri unit-review skill; checked out feature/userdoc-grobid and refreshed develop before inspecting the diff and U1 ingestion context."
+**Context**: PR review and possible code-generation follow-up for ingestion user-PDF GROBID doc-model changes.
+
+---
+## PR396 Review Fix Completion
+**Timestamp**: 2026-07-05T16:49:03Z
+**User Input**: "Review PR #396 from a clean context and apply all findings if possible. Approve PR if it's approvable/"
+**AI Response**: "Reviewed PR #396 against U1 ingestion/user-docmodel DocModel rules and applied the only code finding found: syntactically valid but body-empty GROBID TEI now falls back to pdfplumber flat text instead of caching an empty DocModel. Strengthened regressions for structured user-PDF TEI success and empty-body fallback. Verification passed: focused builder/user-docmodel tests 50 passed, full ingestion suite 285 passed/1 skipped, ingestion ruff clean, compileall clean, git diff --check clean."
+**Context**: PR review fix completion for ingestion user-PDF GROBID doc-model changes.
+
+---
+## PR396 Approval Attempt
+**Timestamp**: 2026-07-05T16:50:22Z
+**User Input**: "Review PR #396 from a clean context and apply all findings if possible. Approve PR if it's approvable/"
+**AI Response**: "Attempted to approve PR #396 after pushing fixes, but GitHub rejected the review because the authenticated account is the PR author. Left the clean-context review verdict and verification as PR comment https://github.com/80-hours-a-week/DocSuri/pull/396#issuecomment-4886798546."
+**Context**: PR review approval attempt and fallback comment for PR #396.
+
+---
+## PR397 Review Start
+**Timestamp**: 2026-07-05T17:15:36Z
+**User Input**: "Review PR #397 from a clean context. Apply all findings. Approve the PR if approvable."
+**AI Response**: "Started clean-context review of PR #397. Loaded AI-DLC common rules, workspace detection guidance, enabled unit-review skill instructions, and refreshed develop/feature refs before reviewing the dedicated user-PDF GROBID doc-model worker and queue changes."
+**Context**: PR review and possible code-generation follow-up for ops user-PDF GROBID doc-model infrastructure.
+
+---
+## PR397 Review Fix Completion
+**Timestamp**: 2026-07-05T17:20:06Z
+**User Input**: "Review PR #397 from a clean context. Apply all findings. Approve the PR if approvable."
+**AI Response**: "Applied the PR #397 review finding: the dedicated user-PDF worker now waits for a healthy GROBID sidecar before consuming the userdoc queue, preventing first-message cold-start fallback from permanently caching a flat pdfplumber doc-model. Added an ops contract regression for the health dependency. Verification passed: focused ops contract tests, full ops suite, backend user_docmodel tests, touched ruff checks, py_compile for touched CDK stacks, git diff --check, and CDK app synth through the Python requirements path with the existing Node-version warning."
+**Context**: PR review fix completion for ops user-PDF GROBID doc-model infrastructure.
+
+---
+## PR397 Approval Attempt
+**Timestamp**: 2026-07-05T17:27:07Z
+**User Input**: "Review PR #397 from a clean context. Apply all findings. Approve the PR if approvable."
+**AI Response**: "Attempted to approve PR #397 after applying fixes and all GitHub checks passed, but GitHub rejected the formal review because the authenticated account is the PR author. Left the clean-context APPROVE verdict and verification as PR comment https://github.com/80-hours-a-week/DocSuri/pull/397#issuecomment-4886960539."
+**Context**: PR review approval attempt and fallback comment for PR #397.
+
+---
+## Frontend Warning Fix
+**Timestamp**: 2026-07-06T02:02:46Z
+**User Input**: "사용자가 parent page를 등록하지 않았을 경우, 관련 경고가 뜨도록 수정해 주세요."
+**AI Response**: "Added parent page ID missing warnings to the Novelty Notion export connection form and My Page Notion settings form, and updated focused frontend tests."
+**Context**: Notion parent page registration warning for per-user Notion export.
+
+## Novelty Evidence Optional and Bedrock Tool-Use Output Fix
+**Timestamp**: 2026-07-06T00:55:54Z
+**User Input**: "코드를 수정하겠습니다. 1. evidence formation adapter 연결이 되어있지 않거나, 응답이 없어도 degraded하지 말고 무시하고 넘어가도록 수정해 주세요.
+2. Bedrock tool use 방식으로 JSON schema-shaped output을 강제하고, 최소한 JSON 파싱 실패 시 raw 응답 일부를 안전하게 로깅해서 원인을 볼 수 있도록 수정해 주세요."
+**AI Response**: "Updated Novelty evidence formation to behave as optional enrichment: the Noop adapter, evidence abstain, no-claim responses, and evidence adapter exceptions now return empty bundles without adding job degraded reasons; the worker no longer records evidence-formation degradation. Updated the Bedrock Novelty LLM adapter to force Anthropic tool use with `emit_novelty_analysis`, read `input_json_delta` stream fragments, preserve usage accounting, and log a sanitized truncated raw preview in the warning message on JSON parse failures. Updated focused tests and quality gates. Verification passed: focused Novelty tests, touched ruff checks, git diff check, full backend pytest, and full backend ruff."
+**Context**: Novelty-Agent degradation semantics and Bedrock structured-output reliability fix.
+
+---
+## Frontend Dark Mode Color Tuning
+**Timestamp**: 2026-07-06T03:01:29Z
+**User Input**: "프론트엔드를 조금만 수정합시다. 다크모드에서는 1. Novelty의 입력출력 텍스트 박스가 갈색이 되도록 설정 2. `Notion으로 내보내기` 박스의 텍스트가 흰색으로 되도록 설정 으로 수정해 주세요."
+**AI Response**: "Adjusted Agent Chat dark-mode Novelty message/input surfaces to a brown background and made the Notion export panel inherit theme text colors so dark-mode text renders white."
+**Context**: Frontend dark-mode visual polish for Novelty agent and Notion export panel.
+
+---
+## Frontend Prompt Input Color Revert
+**Timestamp**: 2026-07-06T03:08:22Z
+**User Input**: "프롬프트 입력 박스는 전 색으로 돌려 주세요."
+**AI Response**: "Removed the dark-mode Novelty-specific `.input` color override from `AgentChatScreen.module.css`, keeping the brown styling on Novelty message boxes while returning the prompt input box to its default theme colors."
+**Context**: Frontend dark-mode visual adjustment for Novelty agent prompt input.
+
+---
+## Notion Connect Cancel Button
+**Timestamp**: 2026-07-06T03:44:36Z
+**User Input**: "`Notion으로 내보내기`를 누르면 `Notion Token 등록` 이 나오잖아요? `연결 저장` 밑에 `취소`버튼을 만들어 주세요."
+**AI Response**: "Added a cancel button below the Notion connection save button that clears local input state and returns the export panel to its initial closed state. Updated the existing Agent Chat Notion export regression to cover cancel and use an explicit non-secret dummy token."
+**Context**: Frontend Novelty Notion export connection form polish.
+
+---
+## Develop Deployment Complete
+**Timestamp**: 2026-07-06T03:44:54Z
+**User Input**: "현재 develop 브랜치를 AWS CLI의 `DocSuri-Deploy` Profile을 이용해 배포를 진행해 주세요."
+**AI Response**: "Completed AWS deployment from `develop` commit `d187ee4a139e0e2f9ac02bf9d64a76d3c82fe2f1` using AWS CLI profile `DocSuri-Deploy`. Built and pushed `docsuri-api`, `docsuri-ingestion`, and `docsuri-frontend` images to ECR with both immutable commit tags and `latest`; forced ECS deployments for `docsuri-api`, `docsuri-ingestion`, `docsuri-novelty-agent-worker`, `docsuri-summary-worker`, and `docsuri-frontend`; waited for all services to stabilize; verified every service reached desired running counts with no pending tasks and completed rollout state; verified `https://docsuri.org/` returned HTTP 200 and API `/healthz` returned HTTP 200."
+**Context**: Production deployment completion and post-deploy verification.
+
+---
+## PR Document
+**Timestamp**: 2026-07-06T03:57:00Z
+**User Input**: "PR 문서를 작성해 주세요."
+**AI Response**: "Created `202607061257_PR.md` from the repository PR template, summarizing the Novelty dark-mode UI polish, Notion export panel text color fix, Notion connection cancel button, and verification results."
+**Context**: PR documentation for `fix/novelty-agent-fe-20260706`.
+
+---
+## Frontend CI Fix
+**Timestamp**: 2026-07-06T04:04:27Z
+**User Input**: "CI의 `frontend (U5 · tsc + vitest + type drift + build)` 에서 ` Test Files  1 failed | 44 passed (45)
+      Tests  1 failed | 261 passed (262)
+   Start at  04:02:17
+   Duration  27.11s (transform 1.90s, setup 11.99s, collect 5.34s, tests 24.45s, environment 26.31s, prepare 4.48s)
+
+
+Error: TestingLibraryElementError: Unable to find an element by: [data-testid=\"notion-export-open\"]`라고 오류가 발생했어요."
+**AI Response**: "Fixed AgentChatScreen Notion export test isolation by adding a mock Notion connection reset helper and resetting it before each AgentChatScreen test, preventing full Vitest order-dependent failures when another test leaves the mock connection state populated."
+**Context**: Frontend CI Vitest failure remediation for Notion export panel test.
+
+---
+## Code Generation
+**Timestamp**: 2026-07-06T14:31:12+09:00
+**User Input**: "```1. max token 수를 8192로 확장
+2. 프롬프트에 길이 제한 추가
+3. tool schema도 maxItems 같은 제한 추가
+4. 파싱 실패 시 stop_reason, 응답 길이, JSONDecodeError 위치를 로깅``` 으로 코드를 수정해 주세요."
+**AI Response**: "Updated Novelty Bedrock LLM token budget, prompt/schema output limits, parse-failure diagnostics, and focused regression tests."
+**Context**: Novelty Bedrock structured output parse hardening
+
+---
+## Review
+**Timestamp**: 2026-07-06T14:36:36+09:00
+**User Input**: "blocking 사항이 있는지 검토해 주세요."
+**AI Response**: "Reviewed current Novelty Bedrock structured-output changes for blocking production risks, including model token support, schema compatibility, logging sensitivity, and regression coverage."
+**Context**: Blocking review for Novelty Bedrock structured-output hardening
+
+---
+## Cross Review Remediation
+**Timestamp**: 2026-07-06T14:47:53+09:00
+**User Input**: "Cross-Review.md 를 검토하여 코드를 수정해 주세요. 제가 원하는 flow는 초기에는 Notion 토큰&ID 입력 상자가 닫혀있고, 버튼을 누를 경우 상자가 열리고, 취소를 누를 경우 다시 돌아가도록 되어야 합니다."
+**AI Response**: "Reviewed Cross-Review.md and changed the Notion export panel to start closed, open the token/parent page form only after clicking the export button, and return to the closed button state on cancel. Updated the AgentChatScreen regression test for the opener-first flow."
+**Context**: Frontend Notion export opener-first UX review remediation.
+
+---
+## Workspace Detection / Ingestion Bottleneck Architecture
+**Timestamp**: 2026-07-06T06:48:56Z
+**User Input**: "코퍼스에 논문을 수집하고 빌드(Ingestion)하는 과정에서 병목이 발생할 때, 시간을 효과적으로 단축할 수 있는 아키텍처적 해결 방안과 최적화 패턴은 다음과 같습니다.
+  1. 비동기 분산 배치 처리 (Batch Ingestion)
+  논문을 한 건씩 순차적으로 처리하는 방식은 I/O 및 네트워크 병목을 유발합니다. 이를 비동기 분산 파이프라인으로 전환해야 합니다.
+  Celery / 메시지 큐 도입: 논문 수집 요청을 메시지 큐(예: RabbitMQ, AWS SQS)에 적재하고, 여러 개의 워커(Worker) 프로세스가 비동기적으로 나누어 처리하도록 구성합니다.
+  대량 삽입(Bulk Insert): 데이터베이스나 벡터 DB(OpenSearch, 데이터베이스 등)에 데이터를 저장할 때 건별로 요청하지 않고, 일정 크기(예: 100~500건 단위)로 묶어 Bulk API를 호출합니다.
+  2. 병렬 청킹 및 맵리듀스 패턴 (Parallel Chunking & Map-Reduce)
+  논문 한 편의 텍스트 양이 많고 요약이나 분석(Evidence Formation) 프로세스가 포함되어 있다면, 단일 스레드 처리는 비효율적입니다.
+  Map-Reduce 패턴 활용: 논문 서론, 본론, 결론 또는 섹션 단위로 텍스트를 쪼갠(Chunking) 후, 각 청크의 임베딩 및 분석을 병렬(Map)로 처리하고 최종적으로 결과를 취합(Reduce)하는 방식을 적용합니다.
+  멀티프로세싱 인코딩: CPU 바운드 작업인 텍스트 파싱 및 토큰화 단계를 파이썬의 multiprocessing 등을 활용해 멀티코어를 최대한 활용하도록 최적화합니다.
+  3. 비용 및 시간 절감을 위한 캐싱 (Caching)
+  동일하거나 유사한 논문, 혹은 중복되는 텍스트 세그먼트에 대한 재처리를 방지합니다.
+  임베딩 벡터 캐싱 (Embedding Cache): 이미 계산된 텍스트 청크의 임베딩 벡터 값은 Redis 같은 고속 인메모리 캐시에 저장하여, 재처리 시 LLM API 호출이나 로컬 GPU 연산 시간을 생략합니다.
+  중복 체크 가드(Guard): Ingestion 파이프라인 진입 직후 DOI(디지털 객체 식별자)나 파일 해시값을 비교하여 이미 코퍼스에 존재하는 논문은 즉시 스킵(Skip)하도록 구현합니다.
+  4. 조절 기능 기반의 문서 모델 재빌드 (Throttled Rebuild)
+  논문이 추가될 때마다 전체 코퍼스 인덱스나 문서 모델(DocModel)을 실시간으로 재빌드하면 시스템 전반의 성능이 저하됩니다.
+  Throttled Rebuild: 논문 유입 시 즉시 인덱싱을 수행하는 대신, 변경 사항을 큐에 모아두었다가 시스템 부하가 적은 시간대에 주기적으로 배치 갱신하거나 속도를 제어(Throttling)하여 동시성 병목을 제어합니다.
+  현재 파이프라인에서 가장 많은 시간이 소요되는 구간이 PDF 파일 파싱(Multimodal Asset parsing) 단계인지, LLM 임베딩/요약 연산 단계인지, 혹은 DB 저장 단계인지 말씀해 주시면 더 구체적인 최적화 코드를 제안해 드릴 수 있습니다. 어느 부분에서 가장 정체가 심한가요?"
+**AI Response**: "Loaded AI-DLC common rules, extension opt-in prompts, state context, and current/memory ingestion context to answer with a minimal repo-grounded bottleneck diagnosis rather than starting speculative implementation."
+**Context**: Existing DocSuri ingestion/corpus pipeline architecture diagnosis.
+
+---
+## Live Ingestion Bottleneck Diagnosis
+**Timestamp**: 2026-07-06T06:51:22Z
+**User Input**: "(same interaction — live verification of current ingestion bottleneck)"
+**AI Response**: "Verified live SQS/ECS state with AWS profile AdministratorAccess-028317349537. Bulk queue docsuri-ingestion-queue had 152682 visible messages and docsuri-ingestion ECS service was desired=0/running=0. Application Auto Scaling scalable target for service/docsuri/docsuri-ingestion had MaxCapacity=0, while the code config expects max_capacity=1. DocModel and userdoc queues were empty; docmodel DLQ had 24 and ingestion DLQ had 1746. Diagnosis: current dominant bottleneck is disabled bulk drain/autoscaling drift, not PDF parsing, embedding, or DB writes."
+**Context**: Live production ingestion bottleneck check.
+
+---
+## Cross-Agent Ingestion Bottleneck Comparison
+**Timestamp**: 2026-07-06T06:52:16Z
+**User Input**: "그리고 다른 에이전트로부터 이런 대답이 나왔어:
+
+코드 근거로 확인했습니다. 결론부터: 질문하신 세 후보(PDF 파싱 / 임베딩 / DB 저장) 중 어느 것도 지금 병목이 아닙니다. 그리고 보내주신 일반론 패턴 대부분은 DocSuri에 이미 구현돼 있습니다.
+
+보내주신 처방 → 이미 있음 대조표
+
+┌───────────────────────┬─────────────────────────────────────────────────────────────────────────────────┬───────────────────────────────────────┐
+│         제안          │                                  DocSuri 현황                                   │                 근거                  │
+├───────────────────────┼─────────────────────────────────────────────────────────────────────────────────┼───────────────────────────────────────┤
+│ Celery/메시지 큐      │ 이미 SQS (우선순위 doc-model 큐 + 벌크 큐 분리)                                 │ worker.py:50-70                       │
+├───────────────────────┼─────────────────────────────────────────────────────────────────────────────────┼───────────────────────────────────────┤
+│ Bulk Insert           │ 이미 bulk — 논문당 OpenSearch bulk() NDJSON 1콜, chunkId 멱등                   │ adapters/aws.py:364-370               │
+├───────────────────────┼─────────────────────────────────────────────────────────────────────────────────┼───────────────────────────────────────┤
+│ 병렬 임베딩(맵리듀스) │ 이미 96개 배치 — 논문당 Bedrock 호출 ≤2회 (청크 128 cap)                        │ aws.py:26,279-281                     │
+├───────────────────────┼─────────────────────────────────────────────────────────────────────────────────┼───────────────────────────────────────┤
+│ 임베딩 캐시(Redis)    │ 벡터 캐시는 없지만 논문 단위 dedup으로 재임베딩 자체를 스킵 → Redis 불필요      │ application.py:419-428                │
+├───────────────────────┼─────────────────────────────────────────────────────────────────────────────────┼───────────────────────────────────────┤
+│ 중복 가드(DOI/해시)   │ 다중 가드: 지문 dedup + canonical 키(DOI/arXiv-id/title) + parserVersion 게이트 │ application.py:572-652, aws.py:98-100 │
+├───────────────────────┼─────────────────────────────────────────────────────────────────────────────────┼───────────────────────────────────────┤
+│ Throttled rebuild     │ 이미 doc-model 별도 큐 + 별도 서비스 + REBUILD_LOCK                             │ ingestion_stack.py:340-379            │
+└───────────────────────┴─────────────────────────────────────────────────────────────────────────────────┴───────────────────────────────────────┘
+
+즉 per-item 최적화는 사실상 다 돼 있어서, 저 패턴들을 더 붙여도 시간이 안 줄어듭니다.
+
+실제 병목: 의도된 직렬화 스로틀 (2026-07-01 503 인시던트 대응)
+
+논문 1편 wall-clock ≈ (arXiv 예의 대기) + (단일코어 pdfminer 파싱) + (Bedrock ≤2콜) + (OpenSearch bulk 1콜) — 전부 1개 태스크에서 순차 실행. 스루풋을 잡는 건:
+
+1. max_capacity=1 — 라이브 코퍼스 전체가 Fargate 태스크 1개로 드레인 (ingestion_stack.py:389)
+2. worker_max_messages=1 + 싱글스레드 루프 — 한 번에 1편, in-process 동시성 없음 (worker.py:66-69)
+3. arXiv 0.33 req/s 리미터 — fetch마다 ~3s 대기, full-text는 HTML+PDF라 편당 수초 (arxiv.py:82,361)"
+**AI Response**: "Re-checked code and live AWS state. The other agent's code-level assessment is mostly correct, but live state currently differs: CDK code sets max_capacity=1, while Application Auto Scaling has MaxCapacity=0 for service/docsuri/docsuri-ingestion. The bulk queue still has 152682 visible messages and the ECS service remains desired=0/running=0. Therefore the immediate live bottleneck is autoscaling drift/disabled bulk drain; after fixing that, the intended single-worker throttle becomes the next bottleneck."
+**Context**: Cross-agent diagnosis reconciliation.
+
+---
+## Isolated Worktree Ingestion Autoscaling Test
+**Timestamp**: 2026-07-06T06:57:21Z
+**User Input**: "그러면 브랜치나 워크트리를 따로 만들어서 거기서 테스트해봐."
+**AI Response**: "Creating a separate git worktree from origin/develop on branch codex/ingestion-autoscaling-test and testing the ingestion autoscaling/CDK state there, leaving the main checkout untouched except for this required audit entry."
+**Context**: Isolated infrastructure test for ingestion autoscaling drift.
+
+---
+## Isolated Worktree Ingestion Autoscaling Test Result
+**Timestamp**: 2026-07-06T07:00:24Z
+**User Input**: "(same interaction — isolated worktree test result)"
+**AI Response**: "Created /private/tmp/docsuri-ingestion-autoscaling-test on branch codex/ingestion-autoscaling-test from origin/develop. In that clean worktree, CDK synth succeeded and produced WorkerServiceTaskCountTarget94398C8F with MaxCapacity=1 and MinCapacity=0. CloudFormation deployed template also has MaxCapacity=1 for the same logical resource. Live Application Auto Scaling describes the physical target service/docsuri/docsuri-ingestion|ecs:service:DesiredCount|ecs as MaxCapacity=0. CDK diff did not show a scalable-target template diff, but did show unrelated task-definition drift for DOCSURI_OPENSEARCH_INDEX from live docsuri-corpus-v2 to local docsuri-corpus. Conclusion: bulk worker MaxCapacity=0 is live resource drift, not current code intent."
+**Context**: Isolated test completed without code changes or production mutation.
+
+---
+## ORCID Framed OAuth CSP Fix Start
+**Timestamp**: 2026-07-06T07:07:39Z
+**User Input**: "Continue this session. The worktree is at ~/Projects/DocSuri/.claude/worktrees/feature+kpi-funnel-346, and the branch is feature/u10-orcid-real-347."
+**AI Response**: "Resumed the named worktree and branch after the session-limit handoff. Diagnosed the pasted CSP errors as social OAuth links navigating inside the phone-mockup iframe, so the fix is to make the login/signup social links navigate the top window and add a frontend regression."
+**Context**: Code Generation follow-up for ORCID social login CSP frame-src failure.
+
+---
+## ORCID Framed OAuth CSP Fix Completion
+**Timestamp**: 2026-07-06T07:10:00Z
+**User Input**: "Continue this session. The worktree is at ~/Projects/DocSuri/.claude/worktrees/feature+kpi-funnel-346, and the branch is feature/u10-orcid-real-347."
+**AI Response**: "Applied the ORCID/Google social OAuth iframe escape fix by adding `target=\"_top\"` to login and signup social links, and added a focused frontend regression. Verification passed: `./node_modules/.bin/vitest run test/orcidLoginGate.test.tsx`, `./node_modules/.bin/tsc --noEmit`, and `git diff --check`."
+**Context**: Code Generation follow-up completion for ORCID social login CSP frame-src failure.
+
+---
+## ORCID Framed OAuth CSP Fix Push
+**Timestamp**: 2026-07-06T07:23:15Z
+**User Input**: "push to PR"
+**AI Response**: "Preparing to commit and push the ORCID framed OAuth CSP fix to `feature/u10-orcid-real-347`."
+**Context**: Git publish request for ORCID social login CSP fix.
+
+---
+## Code Generation
+**Timestamp**: 2026-07-06T16:24:04+09:00
+**User Input**: "내보내기 제목은 `날짜:시간_Novelty_분석_결과`로 내보내지도록 수정해 주세요."
+**AI Response**: "Changed Novelty Notion export titles to the KST timestamped format `YYYYMMDD:HHMM_Novelty_분석_결과`, kept the user prompt in the Notion body as `입력 프롬프트: ...`, and updated regression tests. Verified targeted Novelty tests, Ruff, and diff check."
+**Context**: Novelty Notion export timestamped title formatting
+
+---
+## PR414 Merge Conflict Resolution Start
+**Timestamp**: 2026-07-06T07:25:35Z
+**User Input**: "resolve the merge conflict"
+**AI Response**: "Detected PR #414 is DIRTY against `develop`; fetched `origin/develop` and started resolving the branch merge conflict in `feature/u10-orcid-real-347`."
+**Context**: Git merge conflict resolution for PR #414.
+
+---
+## PR414 Merge Conflict Resolution Completion
+**Timestamp**: 2026-07-06T07:28:54Z
+**User Input**: "resolve the merge conflict"
+**AI Response**: "Merged `origin/develop` into `feature/u10-orcid-real-347` and resolved the only conflict, `aidlc-docs/audit.md`, by unioning both append-log sides. Verification passed: no unmerged paths, `git diff --check`, `git diff --cached --check`, `./node_modules/.bin/vitest run test/orcidLoginGate.test.tsx`, and `./node_modules/.bin/tsc --noEmit`."
+**Context**: Git merge conflict resolution completion for PR #414.
+
+---
+## PR415 Merge Conflict Resolution
+**Timestamp**: 2026-07-06T07:42:03Z
+**User Input**: "Resolve merge conflicts."
+**AI Response**: "Detected PR #415 is DIRTY against `develop`; merged `origin/develop` into `fix/novelty-agent-20260706` in an isolated worktree and resolved the only conflict, `aidlc-docs/audit.md`, by unioning both append-log sides."
+**Context**: Git merge conflict resolution for PR #415.
 
 ---

@@ -4,18 +4,18 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from docsuri_shared.authz import AuthorizationGuard, Decision, Principal
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
-
-from backend.modules.accounts.guard import AuthorizationGuard, Decision
-from backend.modules.accounts.models import Principal
 
 log = logging.getLogger("docsuri.ops.controller")
 router = APIRouter(prefix="/ops", tags=["Operations/Dashboard"])
 
+
 class WindowDTO(BaseModel):
     start: datetime
     end: datetime
+
 
 class BudgetStateDTO(BaseModel):
     tier: str
@@ -25,11 +25,13 @@ class BudgetStateDTO(BaseModel):
     cap_usd: float
     threshold_ratio: float
 
+
 class HealthStatusDTO(BaseModel):
     status: str
     dependencies: dict[str, str]
     stale: bool
     details: dict[str, Any]
+
 
 class DashboardViewDTO(BaseModel):
     window: WindowDTO
@@ -41,6 +43,7 @@ class DashboardViewDTO(BaseModel):
     error_rate: float | None = None
     throughput: float | None = None
     grounding_health: dict[str, int] | None = None
+
 
 class IncidentRecordDTO(BaseModel):
     incident_class: str

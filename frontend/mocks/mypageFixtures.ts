@@ -67,7 +67,8 @@ export function mockGetOrcidProfile(): OrcidProfileVM | null {
   return accountProfile.loginProvider === 'ORCID' ? orcidProfile : null;
 }
 
-// 최근 본 논문 — U9 paper_opened 이벤트 구현 전까지 mock.
+// 최근 본 논문 — dev MockTransport fixture only. The real path is live: U9 paper_opened events →
+// GET /mypage/recently-viewed (backend list_recent_papers). This backs mock-first dev/test.
 const recentlyViewed: RecentlyViewedItemVM[] = [
   {
     arxivId: '1706.03762',

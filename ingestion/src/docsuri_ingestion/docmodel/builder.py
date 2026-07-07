@@ -33,6 +33,14 @@ _SOURCE_UNAVAILABLE_REASON = (
     "We could not find a rich-renderable source (arXiv HTML) for this paper version."
 )
 
+# Source tiers that must never satisfy a cache hit, regardless of parser/schema version. The U7
+# reader refuses a native_html doc-model outright (its raw TeX/pgf leaks into fullText), so treating
+# such a cached object as "fresh" here would let a rebuild short-circuit on the cache hit and never
+# replace it — the reader keeps rejecting it and re-enqueues the paper forever. Mirror the reader's
+# rejection so a rebuild always re-fetches and overwrites these. Kept in lockstep with the reader's
+# refused tiers (summarization s3_docmodel adapter).
+_REBUILD_SOURCE_TIERS = frozenset({SourceTier.native_html})
+
 # Some arXiv papers have a broken ar5iv (LaTeXML) conversion — the HTML returns 200 but the body
 # is truncated to the abstract + a sentence or two (the rest of the LaTeX failed to convert). The
 # parser faithfully extracts the little that is there, so a truncated conversion would otherwise be
@@ -295,6 +303,9 @@ class DocModelBuilder:
                     generated_at=self._clock.now(),
                     crops=crops,
                 )
+                if _non_abstract_body_len(doc) <= 0:
+                    self._emit("ingestion.docmodel.tei_fallback", 1.0)
+                    doc = None
             except Exception:  # noqa: BLE001 - any TEI parse fault degrades to flat text
                 self._emit("ingestion.docmodel.tei_fallback", 1.0)
                 doc = None
@@ -317,6 +328,11 @@ class DocModelBuilder:
         if cached is None:
             return None
         provenance = cached.meta.provenance
+        # A refused source tier (native_html) is never fresh even at the current parser/schema — the
+        # reader rejects it, so a cache hit here would trap the rebuild in a no-op and the object
+        # would never be replaced. Force a rebuild (re-fetch → ar5iv/PDF) instead.
+        if provenance.sourceTier in _REBUILD_SOURCE_TIERS:
+            return None
         if (
             provenance.parserVersion == self._parser_version
             and provenance.schemaVersion == self._schema_version

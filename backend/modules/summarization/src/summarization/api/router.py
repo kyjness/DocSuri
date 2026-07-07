@@ -13,6 +13,7 @@ from typing import Any
 from fastapi import APIRouter, Body, Request
 from fastapi.responses import JSONResponse
 
+from ..adapters._paper_ref import paper_version
 from ..api.gateway_seam import run_summarization
 from ..domain.models import (
     AuthSession,
@@ -106,10 +107,14 @@ def build_router(
             return JSONResponse({"status": "unauthorized"}, status_code=401)
         if not docmodel_enabled:
             return JSONResponse({"status": "license_unavailable"})
+        # FE sends ?version=<arXiv revision> (lib/arxivVersion.ts); if a client omits it, fall
+        # back to the revision embedded in the path id rather than a hardcoded v1 — else a revised
+        # paper (v2+) reads a non-existent v1 doc-model → perpetual "building"/source_unavailable.
+        raw_version = request.query_params.get("version")
         try:
-            version = int(request.query_params.get("version", "1"))
+            version = int(raw_version) if raw_version is not None else paper_version(paper_id)
         except (TypeError, ValueError):
-            version = 1
+            version = paper_version(paper_id)
         try:
             result = orchestrator.doc_model(paper_id, version)
         except Exception:  # noqa: BLE001 — fail-closed: a store/queue fault must not surface as a
@@ -142,10 +147,12 @@ def build_router(
             return JSONResponse({"status": "unauthorized"}, status_code=401)
         if not assets_enabled:
             return JSONResponse({"status": "license_unavailable"})
+        # ?version fallback mirrors the doc-model handler: the path id's arXiv revision, not v1.
+        raw_version = request.query_params.get("version")
         try:
-            version = int(request.query_params.get("version", "1"))
+            version = int(raw_version) if raw_version is not None else paper_version(paper_id)
         except (TypeError, ValueError):
-            version = 1
+            version = paper_version(paper_id)
         try:
             refs = orchestrator.list_assets(paper_id, version)
         except Exception:  # noqa: BLE001 — fail-closed (INV-4/SEC-15): an RDS/S3 fault returns a

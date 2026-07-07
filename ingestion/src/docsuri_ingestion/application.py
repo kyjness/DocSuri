@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import replace
 from datetime import UTC, datetime
+from typing import Protocol
 from uuid import uuid4
 
 from docsuri_shared.dtos import DocModel, DocModelResultDTO, SourceTier, SourceUnavailableDTO
@@ -24,6 +25,7 @@ from .domain.models import (
     ParsedPaper,
     Tombstone,
 )
+from .full_text_extraction import FullTextExtractionError, pdf_to_text
 from .ports import (
     ArxivSourcePort,
     AssetSourcePort,
@@ -34,6 +36,7 @@ from .ports import (
     FullTextStorePort,
     ObservabilityPort,
     QueuePort,
+    UserDocumentSourcePort,
     VectorIndexPort,
     dedup_decision_applies_to_index,
 )
@@ -51,6 +54,10 @@ from .resilience import IngestFailureHandler, IngestionResilienceService
 class SystemClock:
     def now(self) -> datetime:
         return datetime.now(UTC)
+
+
+class _GrobidTeiClient(Protocol):
+    def extract_tei(self, pdf: bytes) -> str: ...
 
 
 class IngestionPipelineService:
@@ -72,6 +79,8 @@ class IngestionPipelineService:
         asset_extractor: AssetExtractor | None = None,
         asset_store: AssetStorePort | None = None,
         asset_source: AssetSourcePort | None = None,
+        user_document_source: UserDocumentSourcePort | None = None,
+        grobid: _GrobidTeiClient | None = None,
         doc_model_builder: DocModelBuilder | None = None,
         embedding_v2: EmbeddingPort | None = None,
         vector_index_v2: VectorIndexPort | None = None,
@@ -94,6 +103,8 @@ class IngestionPipelineService:
         self._asset_extractor = asset_extractor
         self._asset_store = asset_store
         self._asset_source = asset_source
+        self._user_document_source = user_document_source
+        self._grobid = grobid
         # Doc-model builder (BR-30/D6): eager in the phase-1 Corpus ingest path, lazy for
         # BUILD_DOC_MODEL compatibility/backfill jobs.
         self._doc_model_builder = doc_model_builder
@@ -143,15 +154,122 @@ class IngestionPipelineService:
                 "fetch_full_text",
                 lambda: self._arxiv.fetch_full_text(metadata),
             )
-            result = self._doc_model_builder.build_from_text(
-                metadata, raw_document.text, source_tier=SourceTier.pdf
-            )
-            status = "pdf_fallback"
-            cached = str(result.cached).lower()
+            if raw_document.source_tier is SourceTier.native_html:
+                # Native arXiv HTML text must never become a servable doc-model: its raw TeX/pgf
+                # leaks past the parser sanitizer, and storing it as pdf-labeled text would slip
+                # past the reader's native_html guard. ar5iv missed AND no usable PDF text → keep
+                # the source_unavailable result (viewer links out to arXiv) rather than shipping
+                # native-derived text as a clean doc-model. (Real PDF/GROBID recovery is follow-up.)
+                status = "native_html_refused"
+            else:
+                result = self._doc_model_builder.build_from_text(
+                    metadata, raw_document.text, source_tier=SourceTier.pdf
+                )
+                status = "pdf_fallback"
+                cached = str(result.cached).lower()
         self._observability.emit_metric(
             "ingestion.docmodel.build",
             1.0,
             {"status": status, "cached": cached},
+        )
+        return result
+
+    def build_user_doc_model(self, job: IngestionJob) -> DocModelResultDTO:
+        """Produce/cache a doc-model from a user-uploaded PDF already stored in S3.
+
+        Consumer for the frozen ``BUILD_USER_DOC_MODEL`` contract. Uses GROBID for structure
+        (sections/tables/figures) when a sidecar is wired via ``DOCSURI_GROBID_URL`` (#13,
+        dedicated user-PDF worker); degrades to the pdfplumber flat-text doc-model otherwise, or
+        on any GROBID fault.
+        """
+        if self._doc_model_builder is None:
+            raise PermanentIngestionError(
+                "doc-model builder not configured",
+                reason=FailureReason.VALIDATION_VIOLATION,
+                stage="docmodel",
+            )
+        if self._user_document_source is None:
+            raise PermanentIngestionError(
+                "user document source not configured",
+                reason=FailureReason.DEPENDENCY_UNAVAILABLE,
+                stage="docmodel",
+            )
+        if not job.paper_id or not job.paper_id.startswith("userdoc:"):
+            raise PermanentIngestionError(
+                "build_user_doc_model requires a userdoc paper_id",
+                reason=FailureReason.VALIDATION_VIOLATION,
+                stage="docmodel",
+            )
+        if job.version is None:
+            raise PermanentIngestionError(
+                "build_user_doc_model requires version",
+                reason=FailureReason.VALIDATION_VIOLATION,
+                stage="docmodel",
+            )
+        if not job.object_key:
+            raise PermanentIngestionError(
+                "build_user_doc_model requires object_key",
+                reason=FailureReason.VALIDATION_VIOLATION,
+                stage="docmodel",
+            )
+
+        pdf = self._resilience.dependency_call(
+            "s3",
+            "get_user_document",
+            lambda: self._user_document_source.fetch_pdf(job.object_key or ""),
+        )
+        try:
+            text = normalize_text(pdf_to_text(pdf))
+        except FullTextExtractionError as exc:
+            raise PermanentIngestionError(
+                "user PDF could not be parsed",
+                reason=FailureReason.PARSE_FAILURE,
+                stage="parse",
+            ) from exc
+        if not text:
+            raise PermanentIngestionError(
+                "user PDF extracted no text",
+                reason=FailureReason.PARSE_FAILURE,
+                stage="parse",
+            )
+
+        # GROBID structure extraction when a sidecar is wired (DOCSURI_GROBID_URL); otherwise the
+        # TEI is empty and build_from_tei degrades to the pdfplumber flat-text doc-model. A GROBID
+        # timeout/HTTP fault also degrades to flat text — GROBID must never block the user's build.
+        tei = ""
+        grobid = self._grobid
+        if grobid is not None:
+            try:
+                tei = self._resilience.dependency_call(
+                    "grobid",
+                    "extract_tei",
+                    lambda: grobid.extract_tei(pdf),
+                )
+            except Exception:  # noqa: BLE001 - GROBID is best-effort; degrade to pdfplumber.
+                self._observability.emit_metric(
+                    "ingestion.docmodel.user_grobid_unavailable",
+                    1.0,
+                    {"module": job.module or "unknown"},
+                )
+                tei = ""
+
+        result = self._doc_model_builder.build_from_tei(
+            job.paper_id,
+            job.version,
+            "User uploaded PDF",
+            "",
+            tei,
+            text,
+            source_tier=SourceTier.pdf,
+        )
+        self._observability.emit_metric(
+            "ingestion.docmodel.user_build",
+            1.0,
+            {
+                "status": "grobid" if tei else "pdf_fallback",
+                "cached": str(result.cached).lower(),
+                "module": job.module or "unknown",
+            },
         )
         return result
 

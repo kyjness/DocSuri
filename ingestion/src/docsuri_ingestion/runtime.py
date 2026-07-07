@@ -7,6 +7,7 @@ from .adapters.aws import (
     BedrockCohereEmbeddingPort,
     OpenSearchVectorIndex,
     S3FullTextStore,
+    S3RawContentStore,
     SqsQueue,
 )
 from .adapters.local import (
@@ -76,9 +77,22 @@ def build_local_runtime() -> RuntimeServices:
 def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
     settings.require_production()
     observability = LoggingObservabilityHub()
+    # B3 raw-content cache wiring: only when explicitly enabled AND a bucket exists. Otherwise the
+    # source keeps its default off mode → the live fetch path is byte-identical (raw_store=None).
+    raw_cache_on = settings.raw_cache_mode != "off" and bool(settings.s3_bucket)
     arxiv = ArxivHttpSource(
         timeout_seconds=settings.request_timeout_seconds,
         rate_limiter=None,
+        raw_store=(
+            S3RawContentStore(
+                bucket=settings.s3_bucket or "",
+                prefix=settings.raw_cache_prefix,
+                kms_key_id=settings.asset_kms_key_id,
+            )
+            if raw_cache_on
+            else None
+        ),
+        raw_cache_mode=settings.raw_cache_mode if raw_cache_on else "off",
     )
     grobid = None
     if settings.grobid_url:
@@ -158,7 +172,7 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
     # Doc-model builder (BR-30/D6): reuses the arXiv source (HTML→ar5iv tier) and the
     # single bucket's doc-model/ prefix. Phase-1 Corpus builds eagerly during ingest; the
     # BUILD_DOC_MODEL job remains for misses/backfills.
-    from .adapters.aws import S3DocModelStore
+    from .adapters.aws import S3DocModelStore, S3UserDocumentSource
     from .docmodel import DocModelBuilder
 
     doc_model_builder = DocModelBuilder(
@@ -192,6 +206,11 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
         asset_extractor=asset_extractor,
         asset_store=asset_store,
         asset_source=asset_source,
+        user_document_source=S3UserDocumentSource(
+            bucket=settings.s3_bucket or "",
+            max_bytes=settings.user_document_max_bytes,
+        ),
+        grobid=grobid,
         doc_model_builder=doc_model_builder,
         corpus_sources=corpus_sources,
         embedding_v2=BedrockCohereEmbeddingPort(

@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import os
 
+from docsuri_shared.authz import Principal
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import ValidationError
-
-from backend.modules.accounts.models import Principal
 
 from .models import (
     BehaviorEventCreate,

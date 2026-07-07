@@ -81,6 +81,7 @@ class ExportStatus(StrEnum):
 
 SUPPORTED_MANUSCRIPT_CONTENT_TYPES = frozenset(
     {
+        "application/pdf",
         "text/markdown",
         "text/plain",
     }
@@ -93,11 +94,22 @@ class ManuscriptRef(BaseModel):
     fileName: str = Field(min_length=1, max_length=240)
     contentType: str = Field(min_length=1, max_length=120)
     objectKey: str | None = Field(default=None, max_length=512)
+    paperId: str | None = Field(default=None, max_length=128)
+    recordRef: str | None = Field(default=None, max_length=512)
 
     @field_validator("contentType")
     @classmethod
     def _normalize_content_type(cls, value: str) -> str:
         return value.strip().lower()
+
+
+class ManuscriptContentRequest(BaseModel):
+    """US-NV2(#252) — FE가 읽어 보낸 원고 본문. 상한은 첨부 본문 계약(256KiB 계열,
+    middleware.agent_attachments.ATTACHMENT_TEXT_MAX_CHARS)과 동일."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    contentText: str = Field(min_length=1, max_length=262_144)
 
 
 class NoveltyJobRequest(BaseModel):
@@ -184,6 +196,29 @@ class NotionExport(BaseModel):
     errorMessage: str | None = None
     createdAt: datetime = Field(default_factory=utc_now)
     updatedAt: datetime = Field(default_factory=utc_now)
+
+
+class NotionConnection(BaseModel):
+    """US-NV8(#258) — 사용자별 Notion 명시 연결. 토큰은 암호화 저장(SEC-8), 응답 미포함(SEC-12)."""
+
+    ownerId: str
+    tokenEncrypted: str
+    parentPageId: str
+    createdAt: datetime = Field(default_factory=utc_now)
+    updatedAt: datetime = Field(default_factory=utc_now)
+
+
+class NotionConnectionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    token: str = Field(min_length=16, max_length=256)
+    parentPageId: str = Field(min_length=32, max_length=36, pattern=r"^[0-9a-fA-F-]{32,36}$")
+
+
+class NotionConnectionStatusResponse(BaseModel):
+    connected: bool
+    parentPageId: str | None = None
+    updatedAt: datetime | None = None
 
 
 class CreateJobResponse(BaseModel):

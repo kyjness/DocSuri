@@ -35,7 +35,7 @@
 
 ## 비순환 검증 (코드 의존 그래프)
 - `shared`는 leaf(무의존). U1/U2/U3/U4/U5는 `shared`에만 lib 의존.
-- U4 → U3: 인가 결정 위임(sync, 단방향).
+- U4 → U3: 인가 결정 위임(sync, 단방향). **(#167, 2026-07-07 back-sync)** 인가 *계약*(`Principal`·`Action`·`Decision`·`AccountId`·`UserRole` + stateless `AuthorizationGuard`)은 `docsuri_shared.authz`로 이전됨 — U4/U6/U8은 이제 accounts 내부가 아니라 `shared`에만 코드 의존(위 leaf 불변식 충족). U3는 정의 소유자로 남아 `accounts.{models,guard}`에서 재노출(re-export). 가드가 stateless라 계약을 shared에 두어도 위임 의미(단일 권위 U3) 유지.
 - U6 → U2/U3/U4: 게이트웨이가 핸들러 호출(런타임 호출, 단방향). U2 → U6는 **코드 의존이 아님**(U2는 `shared/ports` 인터페이스에 의존; U6가 구현) → U2↔U6 코드 순환 없음.
 - U2 ↔ U4: `SearchExecuted`는 **event**(비동기) — 코드 순환 아님.
 - U2 → U1: Corpus/OpenSearch 인덱스는 **공유 capability**(런타임 데이터 의존), 코드 의존 아님(U1 단일 writer, U2 단일 reader).

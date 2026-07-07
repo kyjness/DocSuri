@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 import re
 from urllib.parse import urlparse
 
@@ -22,6 +23,24 @@ ALLOWED_EXTERNAL_HOSTS = frozenset(
 def sanitize_external_query(text: str, *, max_len: int = 180) -> str:
     cleaned = re.sub(r"\s+", " ", text).strip()
     return cleaned[:max_len]
+
+
+def encrypt_secret(plaintext: str) -> str:
+    """US-NV8(#258)/SEC-8 — Notion 연결 토큰 대칭 암호화(Fernet). 키 미구성은 ValueError."""
+    return _fernet().encrypt(plaintext.encode("utf-8")).decode("utf-8")
+
+
+def decrypt_secret(ciphertext: str) -> str:
+    return _fernet().decrypt(ciphertext.encode("utf-8")).decode("utf-8")
+
+
+def _fernet():
+    from cryptography.fernet import Fernet
+
+    key = os.getenv("DOCSURI_NOTION_TOKEN_KEY")
+    if not key:
+        raise ValueError("Notion 연결 저장소가 구성되지 않았습니다.")
+    return Fernet(key.encode("utf-8"))
 
 
 def is_safe_external_url(url: str, allowed_hosts: set[str] | frozenset[str] | None = None) -> bool:

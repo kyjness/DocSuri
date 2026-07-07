@@ -1,0 +1,111 @@
+direction: down
+
+title: {
+  label: 그림 1. DocSuri 시스템 아키텍처
+  near: top-center
+  shape: text
+  style.font-size: 36
+  style.bold: true
+}
+
+user: {
+  label: "사용자 (모바일 웹)"
+  shape: person
+  style.fill: "#E8F4FD"
+  style.font-size: 26
+}
+
+frontend: {
+  label: "Frontend — Next.js 14 (App Router · SSR · BFF)\nCloudFront + S3 · 검색 / 논문뷰어 / 라이브러리 / 계정 / 마이페이지"
+  style.fill: "#DBEAFE"
+  style.stroke: "#3B82F6"
+  style.font-size: 28
+}
+
+backend: {
+  label: "FastAPI App-Shell — 모듈러 모놀리스 (ECS Fargate + ALB)"
+  style.fill: "#FEF3C7"
+  style.stroke: "#F59E0B"
+  style.font-size: 30
+
+  gateway: {
+    label: "Middleware: Gateway · Auth · Rate-Limit · Request-Context · Security-Headers"
+    style.fill: "#FDE68A"
+    style.font-size: 24
+  }
+
+  modules: {
+    label: "기능 모듈"
+    style.fill: "#FFF7ED"
+    style.font-size: 28
+    grid-columns: 3
+    u2: { label: "U2 Discovery\n하이브리드 검색"; style.font-size: 26 }
+    u7: { label: "U7 Summarization\n요약·번역(비동기)"; style.font-size: 26 }
+    u3: { label: "U3 Accounts\n인증·세션"; style.font-size: 26 }
+    u4: { label: "U4 Library\n라이브러리·이력"; style.font-size: 26 }
+    u8: { label: "U8 Citation Graph\n인용 그래프"; style.font-size: 26 }
+    u9: { label: "U9 Personalization\n개인화 rerank"; style.font-size: 26 }
+    mypage: { label: "Mypage\n마이페이지·구독"; style.font-size: 26 }
+    u11: { label: "U11 Research Agent\n연구 아이디어·문헌탐색"; style.font-size: 26 }
+  }
+
+  ops: {
+    label: "U6 docsuri-ops (교차 관심사)\nGrounding · Cost Circuit Breaker · Observability"
+    shape: hexagon
+    style.fill: "#DCFCE7"
+    style.stroke: "#16A34A"
+    style.font-size: 26
+  }
+
+  gateway -> modules: { style.font-size: 22 }
+  modules -> ops: { label: "검증·계측 (근거 없으면 기권)"; style.font-size: 22 }
+}
+
+ingestion: {
+  label: "U1 Ingestion — Corpus 자동 구축\n(별도 Fargate 워커 · 상세: 그림 2)"
+  style.fill: "#ECFDF5"
+  style.stroke: "#059669"
+  style.font-size: 26
+}
+
+shared: {
+  label: "shared 계약 (SSOT)\nDTOs · Ports · Events 스키마 · vector-spec (임베딩 v2 · 1024d cosine)"
+  shape: page
+  style.fill: "#EDE9FE"
+  style.stroke: "#8B5CF6"
+  style.font-size: 24
+}
+
+events: {
+  label: "Amazon EventBridge\nsearch-executed · account-signals · ingestion · incidents"
+  shape: queue
+  style.fill: "#E9D5FF"
+  style.stroke: "#8B5CF6"
+  style.font-size: 24
+}
+
+infra: {
+  label: "AWS 데이터 · AI 인프라"
+  style.fill: "#F1F5F9"
+  style.stroke: "#64748B"
+  style.font-size: 30
+  grid-columns: 3
+
+  opensearch: { label: "OpenSearch\nBM25 + kNN 1024d"; shape: cylinder; style.fill: "#FECACA"; style.font-size: 24 }
+  rds: { label: "RDS PostgreSQL\n메타·계정·구독"; shape: cylinder; style.fill: "#BFDBFE"; style.font-size: 24 }
+  redis: { label: "ElastiCache Redis\n세션"; shape: cylinder; style.fill: "#FBCFE8"; style.font-size: 24 }
+  s3: { label: "S3\nDocModel·자산"; shape: cylinder; style.fill: "#FED7AA"; style.font-size: 24 }
+  sqs: { label: "SQS\n비동기 잡"; shape: queue; style.fill: "#E9D5FF"; style.font-size: 24 }
+  bedrock: { label: "Amazon Bedrock\nClaude · Cohere Embed v4"; shape: cloud; style.fill: "#FBCFE8"; style.font-size: 24 }
+  notify: { label: "SNS · SES\n인시던트·메일"; shape: cloud; style.fill: "#FDE68A"; style.font-size: 24 }
+  monitor: { label: "CloudWatch · Budgets\n메트릭·비용"; shape: cloud; style.fill: "#E2E8F0"; style.font-size: 24 }
+}
+
+user -> frontend: { label: "HTTPS"; style.font-size: 22 }
+frontend -> backend: { label: "BFF (same-origin /api)"; style.font-size: 22 }
+backend -> infra: { label: "조회·저장"; style.font-size: 22 }
+backend -> events: { label: "publish"; style.font-size: 22 }
+events -> backend: { label: "개인화 신호"; style.font-size: 22 }
+ingestion -> infra: { label: "인덱싱·저장"; style.font-size: 22 }
+shared -> backend: { label: "계약"; style.font-size: 22 }
+shared -> ingestion: { label: "계약"; style.font-size: 22 }

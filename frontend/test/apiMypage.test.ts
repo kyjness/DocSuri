@@ -149,6 +149,16 @@ describe('ApiClient mypage (U10) methods', () => {
     });
   });
 
+  it('deletes the owner-scoped Notion connection', async () => {
+    const r = recorder(() => ({ status: 204, body: null }));
+    await expect(new ApiClient(r.transport, fast).deleteNotionConnection()).resolves.toBeUndefined();
+    expect(r.calls[0]).toMatchObject({
+      method: 'DELETE',
+      path: '/api/novelty/notion/connection',
+      idempotent: false,
+    });
+  });
+
   it('withdraws the account via the REAL U3 soft-delete (POST /auth/account/delete, 204)', async () => {
     const r = recorder(() => ({ status: 204, body: null }));
     await expect(new ApiClient(r.transport, fast).withdrawAccount()).resolves.toBeUndefined();

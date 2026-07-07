@@ -37,6 +37,7 @@ OWNER_SCOPED_TABLES: tuple[OwnerScopedTable, ...] = (
     OwnerScopedTable("novelty_progress_events"),
     OwnerScopedTable("novelty_artifacts"),
     OwnerScopedTable("novelty_notion_exports"),
+    OwnerScopedTable("novelty_notion_connections"),
     OwnerScopedTable("novelty_jobs"),
     OwnerScopedTable("saved_searches"),
     OwnerScopedTable("library_items"),

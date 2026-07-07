@@ -183,7 +183,7 @@ class _FakeSessionManager:
 
 
 def test_auth_injection_sets_principal_on_request_state() -> None:
-    from backend.modules.accounts.models import Principal, UserRole
+    from docsuri_shared.authz import Principal, UserRole
 
     principal = Principal(
         user_id="00000000-0000-4000-8000-000000000042", role=UserRole.USER, mfa_verified=False
@@ -295,7 +295,7 @@ def test_gateway_emits_telemetry_for_production_exception() -> None:
     """Production auth path (session_manager set): an unhandled route exception must STILL emit
     the error log + latency/throughput tagged status=500. Previously this path propagated past
     the emit block and recorded nothing. (US-R4)"""
-    from backend.modules.accounts.models import Principal, UserRole
+    from docsuri_shared.authz import Principal, UserRole
 
     principal = Principal(
         user_id="00000000-0000-4000-8000-000000000099", role=UserRole.USER, mfa_verified=False

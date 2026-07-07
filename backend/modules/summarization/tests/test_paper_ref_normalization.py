@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import io
 
-from summarization.adapters._paper_ref import bare_paper_id
+from summarization.adapters._paper_ref import bare_paper_id, paper_version
 from summarization.adapters.rds_assets import RdsS3AssetReader
 from summarization.adapters.s3_full_text import S3FullTextSource
 
@@ -20,6 +20,14 @@ def test_bare_paper_id_strips_only_trailing_version() -> None:
     assert bare_paper_id("2304.10557v1") == "2304.10557"  # new-style versioned
     assert bare_paper_id("2304.10557") == "2304.10557"  # already bare → unchanged
     assert bare_paper_id("hep-th/9901001v2") == "hep-th/9901001"  # old-style versioned
+
+
+def test_paper_version_recovers_arxiv_version() -> None:
+    assert paper_version("2304.10557v1") == 1  # new-style
+    assert paper_version("2304.10557v3") == 3  # revised → not v1
+    assert paper_version("hep-th/9901001v2") == 2  # old-style versioned
+    assert paper_version("2304.10557") == 1  # bare → default
+    assert paper_version("2304.10557", default=7) == 7  # bare honours default
 
 
 # --- full-text reader -----------------------------------------------------

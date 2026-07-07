@@ -4,11 +4,11 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
+from docsuri_shared.authz import Principal, UserRole
 from fastapi.testclient import TestClient
 
 from backend.app import create_app
 from backend.config import Settings
-from backend.modules.accounts.models import Principal, UserRole
 from backend.modules.mypage import controller
 from backend.modules.mypage.repository.memory import (
     InMemoryAccountRepository,

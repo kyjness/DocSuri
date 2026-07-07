@@ -215,9 +215,16 @@
   min-height: 100%;
 }
 
-.graphCanvas {
+.graphFrame {
   position: relative;
   flex: 0 0 auto;
+}
+
+.graphCanvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: top left;
 }
 
 .graphSvg {
@@ -232,6 +239,7 @@
 .edge {
   stroke: var(--color-border);
   stroke-width: 2;
+  vector-effect: non-scaling-stroke;
 }
 
 .rootNode {
@@ -320,9 +328,6 @@
     min-height: 24rem;
   }
 
-  .graphSvg {
-    height: 28rem;
-  }
 }
 
 @media (min-width: 640px) {

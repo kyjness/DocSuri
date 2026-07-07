@@ -4,8 +4,9 @@ Code/synth only; deploy remains a team-controlled operation. The unit is activat
 deployment configuration, not by a later manual toggle: NOVELTY_AGENT_ENABLED is always true.
 """
 
-from aws_cdk import Stack
+from aws_cdk import Duration, RemovalPolicy, Stack
 from aws_cdk import aws_applicationautoscaling as appscaling
+from aws_cdk import aws_cloudwatch as cloudwatch
 from aws_cdk import aws_ec2 as ec2
 from aws_cdk import aws_ecr as ecr
 from aws_cdk import aws_ecs as ecs
@@ -32,7 +33,36 @@ class NoveltyStack(Stack):
 
         account = Stack.of(self).account
         artifact_bucket_arn = f"arn:aws:s3:::docsuri-papers-fulltext-{account}"
-        self.queue = queue
+        # ponytail: keep ownership in this stack until a real CDK import migration moves it.
+        # Removing these resources from the template makes CloudFormation delete the live queue.
+        dlq = sqs.Queue(
+            self,
+            "NoveltyJobDlq",
+            queue_name="docsuri-novelty-agent-job-dlq",
+            retention_period=Duration.days(14),
+            encryption=sqs.QueueEncryption.SQS_MANAGED,
+        )
+        dlq.apply_removal_policy(RemovalPolicy.RETAIN)
+        self.queue = sqs.Queue(
+            self,
+            "NoveltyJobQueue",
+            queue_name="docsuri-novelty-agent-job-queue",
+            visibility_timeout=Duration.seconds(900),
+            retention_period=Duration.days(14),
+            encryption=sqs.QueueEncryption.SQS_MANAGED,
+            dead_letter_queue=sqs.DeadLetterQueue(max_receive_count=3, queue=dlq),
+        )
+        self.queue.apply_removal_policy(RemovalPolicy.RETAIN)
+        dlq.metric_approximate_number_of_messages_visible().create_alarm(
+            self,
+            "NoveltyDlqAlarm",
+            threshold=0,
+            evaluation_periods=1,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+            alarm_description="Novelty agent worker messages are landing in the DLQ",
+        )
+        queue = self.queue
 
         repo = ecr.Repository.from_repository_name(self, "ApiRepo", "docsuri-api")
         cluster = ecs.Cluster.from_cluster_attributes(
@@ -62,6 +92,16 @@ class NoveltyStack(Stack):
                 "DOCSURI_NOVELTY_JOB_QUEUE_URL": queue.queue_url,
                 "DOCSURI_NOVELTY_ARTIFACT_BUCKET": f"docsuri-papers-fulltext-{account}",
                 "DOCSURI_NOVELTY_ARTIFACT_PREFIX": "novelty/",
+                "DOCSURI_DOCMODEL_BUCKET": f"docsuri-papers-fulltext-{account}",
+                "DOCSURI_DOCMODEL_BUILD_QUEUE_URL": (
+                    f"https://sqs.{self.region}.amazonaws.com/{account}/docsuri-docmodel-queue"
+                ),
+                # User-PDF (manuscript) doc-model build → GROBID Option B queue, preferred by the
+                # coordinator factory over the shared queue above so novelty manuscripts get
+                # structured TEI. Referenced by name (Ingestion owns it); SendMessage granted below.
+                "DOCSURI_USERDOC_BUILD_QUEUE_URL": (
+                    f"https://sqs.{self.region}.amazonaws.com/{account}/docsuri-userdoc-queue"
+                ),
                 "DOCSURI_OPENSEARCH_ENDPOINT": f"https://{opensearch_domain.domain_endpoint}",
                 "DOCSURI_BEDROCK_MODEL_ID": "global.cohere.embed-v4:0",
                 "DOCSURI_NOVELTY_LLM_MODEL_ID": "global.anthropic.claude-sonnet-4-6",
@@ -106,10 +146,38 @@ class NoveltyStack(Stack):
         self.service.connections.allow_to(opensearch_domain.connections, ec2.Port.tcp(443))
 
         queue.grant_consume_messages(task_def.task_role)
+        queue.grant_send_messages(task_def.task_role)
         task_def.add_to_task_role_policy(
             iam.PolicyStatement(
                 actions=["s3:GetObject", "s3:PutObject"],
                 resources=[f"{artifact_bucket_arn}/novelty/*"],
+            )
+        )
+        task_def.add_to_task_role_policy(
+            iam.PolicyStatement(
+                actions=["s3:GetObject"],
+                resources=[f"{artifact_bucket_arn}/doc-model/*"],
+            )
+        )
+        # ListBucket 없이 GetObject만 있으면 아직 안 만들어진 doc-model 키가 404가 아니라
+        # 403(AccessDenied)으로 반환되어 S3DocModelReader의 _MISS_CODES(404/NoSuchKey)에 안 걸리고
+        # re-raise → evidence 파이프라인이 트레이스백 폭풍(프로덕션 novelty 워커 152건/10분 관측).
+        # evidence_stack / compute_stack는 이미 동일 이유로 이 권한을 부여 중.
+        task_def.add_to_task_role_policy(
+            iam.PolicyStatement(
+                actions=["s3:ListBucket"],
+                resources=[artifact_bucket_arn],
+            )
+        )
+        task_def.add_to_task_role_policy(
+            iam.PolicyStatement(
+                actions=["sqs:SendMessage"],
+                resources=[
+                    f"arn:aws:sqs:{self.region}:{account}:docsuri-docmodel-queue",
+                    # User-PDF (manuscript) build queue (GROBID Option B), enqueued via
+                    # DOCSURI_USERDOC_BUILD_QUEUE_URL above.
+                    f"arn:aws:sqs:{self.region}:{account}:docsuri-userdoc-queue",
+                ],
             )
         )
         task_def.add_to_task_role_policy(

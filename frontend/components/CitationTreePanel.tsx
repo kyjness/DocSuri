@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { getApiClient } from '@/lib/api';
 import type { CitationNode, CitationTreeResponse } from '@/types/citationGraph';
 import styles from './CitationTreePanel.module.css';
@@ -36,7 +36,7 @@ const GRAPH_PADDING_X = 160;
 const ROOT_Y = 90;
 const DEPTH_1_Y = 300;
 const DEPTH_2_Y = 620;
-const GRAPH_HEIGHT = 940;
+const GRAPH_PADDING_BOTTOM = 160;
 const COLUMN_GAP = 260;
 
 export function CitationTreePanel({ paperId, onClose }: CitationTreePanelProps) {
@@ -217,6 +217,14 @@ function CitationGraph({
   const graph = layoutGraph(tree, expandedById);
   const byId = new Map(graph.nodes.map((item) => [item.node.nodeId, item]));
 
+  const centerOffset = useCallback(
+    (viewport: HTMLDivElement, value: number) => ({
+      x: Math.max(0, (viewport.clientWidth - graph.width * value) / 2),
+      y: Math.max(0, (viewport.clientHeight - graph.height * value) / 2),
+    }),
+    [graph.height, graph.width],
+  );
+
   const syncHorizontalScroll = useCallback(() => {
     const viewport = viewportRef.current;
     if (!viewport) return;
@@ -226,15 +234,16 @@ function CitationGraph({
     });
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const target = pendingScrollCenterRef.current;
     const viewport = viewportRef.current;
     if (!target || !viewport) return;
     pendingScrollCenterRef.current = null;
-    viewport.scrollLeft = target.x * zoom - viewport.clientWidth / 2;
-    viewport.scrollTop = target.y * zoom - viewport.clientHeight / 2;
+    const offset = centerOffset(viewport, zoom);
+    viewport.scrollLeft = target.x * zoom + offset.x - viewport.clientWidth / 2;
+    viewport.scrollTop = target.y * zoom + offset.y - viewport.clientHeight / 2;
     syncHorizontalScroll();
-  }, [syncHorizontalScroll, zoom]);
+  }, [centerOffset, syncHorizontalScroll, zoom]);
 
   useEffect(() => {
     if (didFitInitialGraphRef.current) return;
@@ -261,9 +270,14 @@ function CitationGraph({
     const viewport = viewportRef.current;
     if (nextZoom === zoom) return;
     const currentZoom = zoom;
+    const offset = viewport ? centerOffset(viewport, currentZoom) : { x: 0, y: 0 };
     pendingScrollCenterRef.current = {
-      x: viewport ? (viewport.scrollLeft + viewport.clientWidth / 2) / currentZoom : graph.rootX,
-      y: viewport ? (viewport.scrollTop + viewport.clientHeight / 2) / currentZoom : graph.rootY,
+      x: viewport
+        ? (viewport.scrollLeft + viewport.clientWidth / 2 - offset.x) / currentZoom
+        : graph.rootX,
+      y: viewport
+        ? (viewport.scrollTop + viewport.clientHeight / 2 - offset.y) / currentZoom
+        : graph.rootY,
     };
     setZoom(nextZoom);
   }
@@ -304,62 +318,66 @@ function CitationGraph({
           className={styles.graphWorld}
           style={{ width: graph.width * zoom, height: graph.height * zoom }}
         >
-          <div
-            className={styles.graphCanvas}
-            style={{
-              width: graph.width * zoom,
-              height: graph.height * zoom,
-            }}
-          >
-            <svg
-              className={styles.graphSvg}
-              viewBox={`0 0 ${graph.width} ${graph.height}`}
-              aria-hidden="true"
-            >
-              {graph.nodes.map((item) => {
-                const parent = item.parentId === tree.rootPaperId ? null : byId.get(item.parentId);
-                const x1 = parent?.x ?? graph.rootX;
-                const y1 = parent?.y ?? graph.rootY;
-                const midY = y1 + (item.y - y1) * 0.55;
-                return (
-                  <path
-                    key={`${item.parentId}-${item.node.nodeId}`}
-                    d={`M ${x1} ${y1} C ${x1} ${midY}, ${item.x} ${midY}, ${item.x} ${item.y}`}
-                    className={styles.edge}
-                  />
-                );
-              })}
-            </svg>
-
+          <div className={styles.graphFrame} style={{ width: graph.width * zoom, height: graph.height * zoom }}>
             <div
-              className={styles.rootNode}
+              className={styles.graphCanvas}
               style={{
-                left: graph.rootX * zoom,
-                top: graph.rootY * zoom,
-                transform: `translate(-50%, -50%) scale(${zoom})`,
+                width: graph.width,
+                height: graph.height,
+                transform: `scale(${zoom})`,
               }}
-              aria-label={`현재 논문 ${tree.rootPaperId}`}
             >
-              <span className={styles.rootBadge}>현재 논문</span>
-              <strong>{tree.rootPaperId}</strong>
-            </div>
+              <svg
+                className={styles.graphSvg}
+                viewBox={`0 0 ${graph.width} ${graph.height}`}
+                aria-hidden="true"
+              >
+                {graph.nodes.map((item) => {
+                  const parent = item.parentId === tree.rootPaperId ? null : byId.get(item.parentId);
+                  const x1 = parent?.x ?? graph.rootX;
+                  const y1 = parent?.y ?? graph.rootY;
+                  return (
+                    <line
+                      key={`${item.parentId}-${item.node.nodeId}`}
+                      x1={x1}
+                      y1={y1}
+                      x2={item.x}
+                      y2={item.y}
+                      className={styles.edge}
+                    />
+                  );
+                })}
+              </svg>
 
-            {graph.nodes.map((item) => (
-              <GraphNodeCard
-                key={item.node.nodeId}
-                node={item.node}
-                x={item.x}
-                y={item.y}
-                depth={item.depth}
-                zoom={zoom}
-                expanded={Boolean(expandedById[item.node.nodeId])}
-                expanding={expandingId === item.node.nodeId}
-                saved={savedIds.has(item.node.nodeId)}
-                saving={savingId === item.node.nodeId}
-                onExpand={onExpand}
-                onSave={onSave}
-              />
-            ))}
+              <div
+                className={styles.rootNode}
+                style={{
+                  left: graph.rootX,
+                  top: graph.rootY,
+                  transform: 'translate(-50%, -50%)',
+                }}
+                aria-label={`현재 논문 ${tree.rootPaperId}`}
+              >
+                <span className={styles.rootBadge}>현재 논문</span>
+                <strong>{tree.rootPaperId}</strong>
+              </div>
+
+              {graph.nodes.map((item) => (
+                <GraphNodeCard
+                  key={item.node.nodeId}
+                  node={item.node}
+                  x={item.x}
+                  y={item.y}
+                  depth={item.depth}
+                  expanded={Boolean(expandedById[item.node.nodeId])}
+                  expanding={expandingId === item.node.nodeId}
+                  saved={savedIds.has(item.node.nodeId)}
+                  saving={savingId === item.node.nodeId}
+                  onExpand={onExpand}
+                  onSave={onSave}
+                />
+              ))}
+            </div>
           </div>
         </div>
       </div>
@@ -402,7 +420,7 @@ function layoutGraph(
 
   return {
     width,
-    height: GRAPH_HEIGHT,
+    height: (depth2.length > 0 ? DEPTH_2_Y : depth1.length > 0 ? DEPTH_1_Y : ROOT_Y) + GRAPH_PADDING_BOTTOM,
     rootX,
     rootY: ROOT_Y,
     nodes: [
@@ -417,7 +435,6 @@ function GraphNodeCard({
   x,
   y,
   depth,
-  zoom,
   expanded,
   expanding,
   saved,
@@ -429,7 +446,6 @@ function GraphNodeCard({
   x: number;
   y: number;
   depth: number;
-  zoom: number;
   expanded: boolean;
   expanding: boolean;
   saved: boolean;
@@ -447,9 +463,9 @@ function GraphNodeCard({
       className={styles.graphNode}
       aria-label={node.title}
       style={{
-        left: x * zoom,
-        top: y * zoom,
-        transform: `translate(-50%, -50%) scale(${zoom})`,
+        left: x,
+        top: y,
+        transform: 'translate(-50%, -50%)',
       }}
     >
       <p className={styles.nodeTitle}>{node.title}</p>

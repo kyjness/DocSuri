@@ -168,7 +168,7 @@ def test_translation_standard_glossary_lists_present_seed_terms() -> None:
     # standardGlossary = shared-seed standard terms present in THIS paper (BR-S4): keep-as-is terms
     # the model kept in English (no 'translated'), plus mapping terms whose Korean is in the text.
     draft = TranslationDraft(
-        doc_model=tiny_doc(paragraph="이 모델은 어텐션을 쓴다."),
+        doc_model=tiny_doc(paragraph="이 모델은 어텐션을 쓰는 Transformer 이며 BLEU 로 평가한다."),
         kept_terms=("Transformer", "transformer", "WMT", "BLEU"),
     )
     out = ResultAssembler().assemble_translation(draft, _src()).to_dict()["translation"]
@@ -182,13 +182,28 @@ def test_translation_standard_glossary_lists_present_seed_terms() -> None:
     assert {"term": "attention", "translated": "어텐션"} in glossary
 
 
+def test_standard_glossary_drops_seed_absent_from_this_paper() -> None:
+    # The keep-as-is seed list rides into EVERY prompt, so the model echoes seeds the paper never
+    # uses back in keptTerms. Those must NOT appear as 표준 용어 chips nor in 원어 유지 용어 —
+    # standardGlossary/keptTerms show ONLY seeds actually present in THIS paper (BR-S4). Free-form
+    # (non-seed) kept terms are trusted even if surface-form differs from the text.
+    draft = TranslationDraft(
+        doc_model=tiny_doc(paragraph="이 모델은 VAE 와 GNN 을 쓴다."),
+        kept_terms=("VAE", "GNN", "Transformer", "BERT", "GPT", "CrysBFN"),
+    )
+    out = ResultAssembler().assemble_translation(draft, _src()).to_dict()["translation"]
+    std_terms = {g["term"] for g in out["standardGlossary"]}
+    assert std_terms == {"VAE", "GNN"}  # present seeds only; Transformer/BERT/GPT dropped
+    assert out["keptTerms"] == ["VAE", "GNN", "CrysBFN"]  # absent seeds gone; free-form kept
+
+
 def test_translation_dto_filters_math_notation_from_kept_terms() -> None:
     # End-to-end (client-facing) path: the assembled TranslationDraft → to_dict() must expose only
     # keyword-like keptTerms, dropping the math notation the model reports alongside (BR-S4).
     draft = TranslationDraft(
-        doc_model=tiny_doc(paragraph="이 모델은 어텐션을 쓴다."),
+        doc_model=tiny_doc(paragraph="이 모델은 어텐션을 쓰는 Transformer 이다."),
         kept_terms=(
-            "Transformer", "SAM", "MSE", "CIFAR-100",  # keep
+            "Transformer", "SAM", "MSE", "CIFAR-100",  # keep (Transformer present; others non-seed)
             "theta", "W_q", "L(w+delta)", "mathbb{E}", "H=96", "F", "He et al., 2023",  # drop
         ),
     )
@@ -201,7 +216,7 @@ def test_filter_kept_terms_drops_math_notation_on_read() -> None:
     # survive; Greek vars / expressions / LaTeX fragments are removed.
     payload = {
         "translation": {
-            "docModel": {},
+            "docModel": {"fullText": "uses Transformer here"},
             "keptTerms": ["Transformer", "theta", "W_q", "MSE", "L(w+delta)", "mathbb{E}", "SAM"],
             "standardGlossary": [],
         }
@@ -211,8 +226,39 @@ def test_filter_kept_terms_drops_math_notation_on_read() -> None:
     assert payload["translation"]["keptTerms"] != out["translation"]["keptTerms"]  # input untouched
 
 
+def test_filter_kept_terms_drops_absent_seed_from_both_lists_on_read() -> None:
+    # Cache-heal path (BR-S4): a seed the model echoed but that the paper never uses (absent from
+    # docModel.fullText) is stripped from BOTH keptTerms and the standardGlossary keep-as-is chips,
+    # so it cannot leak into either the 표준 용어 or 원어 유지 용어 group. Present seeds, mapping
+    # chips (with 'translated'), and free-form kept terms are preserved.
+    payload = {
+        "translation": {
+            "docModel": {"fullText": "이 논문은 VAE 와 GNN 을 쓴다."},
+            "keptTerms": ["VAE", "GNN", "Transformer", "BERT", "CrysBFN"],
+            "standardGlossary": [
+                {"term": "VAE"},
+                {"term": "Transformer"},  # absent → drop
+                {"term": "embedding", "translated": "임베딩"},  # mapping chip → keep
+            ],
+        }
+    }
+    out = ResultAssembler.filter_kept_terms(payload)["translation"]
+    assert out["keptTerms"] == ["VAE", "GNN", "CrysBFN"]  # BERT/Transformer dropped; free-form kept
+    assert out["standardGlossary"] == [
+        {"term": "VAE"},
+        {"term": "embedding", "translated": "임베딩"},
+    ]
+    # Input object untouched (never mutates the shared cached object).
+    assert len(payload["translation"]["standardGlossary"]) == 3
+
+
 def test_filter_kept_terms_is_noop_when_all_clean() -> None:
-    payload = {"translation": {"docModel": {}, "keptTerms": ["Transformer", "SAM"]}}
+    payload = {
+        "translation": {
+            "docModel": {"fullText": "uses Transformer"},
+            "keptTerms": ["Transformer", "SAM"],
+        }
+    }
     assert ResultAssembler.filter_kept_terms(payload) is payload  # same object, no copy
 
 
@@ -222,7 +268,7 @@ def test_standard_glossary_keeps_chip_after_strong_override() -> None:
     # Transformer→트랜스포머 removes the English keep-as-is, yet both chips must persist with the
     # user's rendering pre-filled.
     draft = TranslationDraft(
-        doc_model=tiny_doc(paragraph="이 모델은 주목을 쓰는 트랜스포머 이다."),
+        doc_model=tiny_doc(paragraph="이 모델은 주목을 쓰는 트랜스포머 이며 BLEU 로 평가한다."),
         kept_terms=("BLEU",),  # Transformer no longer kept in English (overridden)
     )
     overrides = {"attention": "주목", "transformer": "트랜스포머"}

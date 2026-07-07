@@ -124,6 +124,10 @@ function InterestTab() {
 
 function RecentTab() {
   const [items, setItems] = useState<RecentlyViewedItemVM[] | null>(null);
+  // Display titles resolved from the paper-metadata endpoint, keyed by arXiv id. Recently-viewed
+  // rows carry only the id — paper_opened stays a pure funnel signal (no title) — so the title is
+  // looked up here at render time. Best-effort: an item keeps its arXiv id if the lookup fails.
+  const [titles, setTitles] = useState<Record<string, string>>({});
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
 
   const load = useCallback(async () => {
@@ -132,6 +136,23 @@ function RecentTab() {
       const recentlyViewed = await getApiClient().getRecentlyViewed();
       setItems(recentlyViewed);
       setStatus('ready');
+      // ponytail: one metadata GET per recent paper (cold profile screen; ids are deduped and
+      // capped at 50 by the backend). Swap for a batch metadata endpoint if this ever gets hot.
+      const entries = await Promise.all(
+        recentlyViewed.map(async (item): Promise<[string, string | null]> => {
+          try {
+            const meta = await getApiClient().getPaperMeta(item.arxivId);
+            return [item.arxivId, meta?.title ?? null];
+          } catch {
+            return [item.arxivId, null];
+          }
+        }),
+      );
+      const resolved: Record<string, string> = {};
+      for (const [id, title] of entries) {
+        if (title) resolved[id] = title;
+      }
+      setTitles(resolved);
     } catch {
       setStatus('error');
     }
@@ -151,7 +172,9 @@ function RecentTab() {
     <ul className={styles.plainList} data-testid="mypage-recent-list">
       {items.map((item) => (
         <li key={item.arxivId} data-testid="mypage-recent-item">
-          <Link href={`/paper/${encodeURIComponent(item.arxivId)}`}>{item.title}</Link>
+          <Link href={`/paper/${encodeURIComponent(item.arxivId)}`}>
+            {titles[item.arxivId] ?? item.title}
+          </Link>
           <p className={styles.muted}>{new Date(item.viewedAt).toLocaleDateString('ko-KR')}</p>
         </li>
       ))}

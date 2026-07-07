@@ -28,6 +28,7 @@ class BehaviorEventType(StrEnum):
     SUMMARY_TRANSLATION_REQUESTED = "summary_translation_requested"
     SOURCE_ANCHOR_CLICKED = "source_anchor_clicked"
     GLOSSARY_UPDATED = "glossary_updated"
+    READ_COMPLETED = "read_completed"
 
 
 class BehaviorSubject(BaseModel):
@@ -117,6 +118,7 @@ _ALLOWED_METADATA: dict[BehaviorEventType, set[str]] = {
     },
     BehaviorEventType.SOURCE_ANCHOR_CLICKED: {"anchorId", "sectionKind"},
     BehaviorEventType.GLOSSARY_UPDATED: {"glossaryVersion", "termCountDelta"},
+    BehaviorEventType.READ_COMPLETED: {"entrySurface"},
 }
 _FORBIDDEN_KEY_PARTS = (
     "password",

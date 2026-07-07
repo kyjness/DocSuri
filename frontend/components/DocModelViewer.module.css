@@ -116,6 +116,22 @@
   -webkit-overflow-scrolling: touch;
 }
 
+/* Kill the spurious horizontal scrollbar that showed under SHORT display formulas. The scroll
+   container (.formulaInner) sat inside a shrink-wrapped .zoomable, so it was sized to the formula's
+   exact width; KaTeX's sub-pixel width then rounded past the (floored) container width and tripped
+   overflow-x:auto even though the formula fit. Letting .zoomable fill the row gives a short formula
+   horizontal slack (container far wider than content → no overflow → no bar), while a genuinely
+   wide equation still overflows and scrolls. Keep the equation left-aligned (its prior look) now
+   that the box is full-width rather than shrink-wrapped. */
+.formula .zoomable {
+  flex: 1 1 auto;
+}
+
+.formulaInner :global(mjx-container[display='true']) {
+  text-align: left;
+  margin: 0;
+}
+
 .eqno {
   flex: 0 0 auto;
   margin-inline-start: auto;

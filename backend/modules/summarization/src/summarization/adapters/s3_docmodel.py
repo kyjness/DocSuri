@@ -11,7 +11,7 @@ import json
 import logging
 from typing import Any
 
-from docsuri_shared.docmodel_contract import DOCMODEL_PARSER_VERSION, DOCMODEL_SCHEMA_VERSION
+from docsuri_shared.docmodel_contract import DOCMODEL_SCHEMA_VERSION
 from docsuri_shared.dtos import DocModel
 
 from ._paper_ref import bare_paper_id
@@ -48,8 +48,8 @@ class S3DocModelReader:
         try:
             obj = self._s3.get_object(Bucket=self._bucket, Key=key)
             payload = json.loads(obj["Body"].read())
-            if not _is_current_doc_model(payload):
-                logger.info("stale doc-model cache ignored for %s", key)
+            if not _is_servable_doc_model(payload):
+                logger.info("unservable doc-model ignored (rebuild will heal) for %s", key)
                 return None
             return DocModel.model_validate(payload)
         except ClientError as exc:
@@ -66,14 +66,39 @@ class S3DocModelReader:
             raise
 
 
-def _is_current_doc_model(payload: object) -> bool:
+# Doc-models built by parser generation >= this floor are SERVED (clean-enough text). @2 first
+# sanitized formula LaTeX, so @0/@1 are rejected (a miss → rebuild). Using a floor rather than an
+# explicit {@2,@3,@4} set keeps a future DOCMODEL_PARSER_VERSION bump from silently dropping the
+# prior generation out of the servable set (which would force-blank every not-yet-healed doc).
+# The floor is age-agnostic on the upper end: an older-but-clean doc is served immediately (no
+# blank screen) and SummaryOrchestrator.doc_model enqueues a background rebuild to heal it.
+_MIN_SERVABLE_PARSER_GENERATION = 2
+# Source tiers refused regardless of parser generation: native arXiv HTML leaks raw TeX/pgf into
+# fullText (the parser sanitizer targets ar5iv/LaTeXML), so a native_html doc reads as a miss →
+# None → U7 re-triggers a build, which is now ar5iv/PDF-sourced (never native_html again).
+_REJECTED_SOURCE_TIERS = frozenset({"native_html"})
+
+
+def _parser_generation(parser_version: object) -> int | None:
+    """Integer generation N from a ``docmodel-parser@N`` string, or None if unparseable."""
+    if not isinstance(parser_version, str):
+        return None
+    _, sep, gen = parser_version.rpartition("@")
+    return int(gen) if sep and gen.isdigit() else None
+
+
+def _is_servable_doc_model(payload: object) -> bool:
     if not isinstance(payload, dict):
         return True
     meta = payload.get("meta")
     provenance = meta.get("provenance") if isinstance(meta, dict) else None
     if not isinstance(provenance, dict):
         return False
+    if provenance.get("sourceTier") in _REJECTED_SOURCE_TIERS:
+        return False
+    generation = _parser_generation(provenance.get("parserVersion"))
     return (
-        provenance.get("parserVersion") == DOCMODEL_PARSER_VERSION
+        generation is not None
+        and generation >= _MIN_SERVABLE_PARSER_GENERATION
         and provenance.get("schemaVersion") == DOCMODEL_SCHEMA_VERSION
     )

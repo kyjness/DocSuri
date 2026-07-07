@@ -69,6 +69,27 @@
   font-weight: 600;
 }
 
+.stateBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 999px;
+  animation: agentSpin 0.7s linear infinite;
+}
+
+@keyframes agentSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .modePicker {
   --agent-picker-bg: linear-gradient(135deg, rgba(245, 250, 255, 0.96), rgba(255, 248, 244, 0.94));
   --agent-picker-border: color-mix(in srgb, var(--color-border) 70%, white);
@@ -133,6 +154,11 @@
   font-size: 13px;
 }
 
+.modeHint {
+  font-size: 11px;
+  opacity: 0.85;
+}
+
 @media (prefers-color-scheme: dark) {
   .shell {
     --agent-chat-research-bg: linear-gradient(135deg, #10181c, #11161a);
@@ -150,6 +176,12 @@
     --agent-research-border: rgba(116, 197, 222, 0.28);
     --agent-novelty-bg: linear-gradient(135deg, #3a2a22, #30231f);
     --agent-novelty-border: rgba(224, 171, 123, 0.28);
+  }
+
+  :global(:root:not([data-theme='light'])) .shell[data-mode='novelty'] .message {
+    border-color: rgba(224, 171, 123, 0.36);
+    background: #3a2a22;
+    color: #fff7ed;
   }
 }
 
@@ -189,6 +221,12 @@
   --agent-novelty-border: rgba(224, 171, 123, 0.28);
 }
 
+:global(:root[data-theme='dark']) .shell[data-mode='novelty'] .message {
+  border-color: rgba(224, 171, 123, 0.36);
+  background: #3a2a22;
+  color: #fff7ed;
+}
+
 .messages {
   flex: 1 1 auto;
   min-height: 0;
@@ -223,8 +261,282 @@
 .error {
   margin: 0;
   line-height: 1.5;
+  white-space: pre-wrap;
   word-break: keep-all;
   overflow-wrap: anywhere;
+}
+
+.evidenceClaims {
+  display: grid;
+  gap: 10px;
+}
+
+.evidenceIntro {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--agent-radius);
+  background: var(--color-accent-soft-bg);
+  color: var(--color-text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.evidenceClaim {
+  display: grid;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg);
+  border-radius: var(--agent-radius);
+}
+
+.evidenceLabel {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+}
+
+.evidenceStatement {
+  margin: 0 0 4px;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.evidenceRefs {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.evidenceRef {
+  display: grid;
+  gap: 2px;
+}
+
+.evidenceSourceLabel,
+.evidenceQuoteLabel {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+
+.evidencePaperId {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--color-accent);
+}
+
+.evidenceSource {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.evidenceAnchor {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.noveltyArtifacts {
+  display: grid;
+  gap: 14px;
+}
+
+.noveltyArtifact {
+  display: grid;
+  gap: 8px;
+}
+
+.noveltyArtifactTitle {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.noveltyArtifactHint {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.noveltyTableScrollHint {
+  margin: 0;
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+.noveltyTableWrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.noveltyTable {
+  /* 좁은 화면에서 8개 칼럼을 100%에 욱여넣으면 글자가 세로로 깨진다 — 자연스러운
+     칸 너비를 유지하고 wrapper의 overflow-x로 가로 스크롤시킨다. */
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.noveltyTable th,
+.noveltyTable td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--color-border);
+  text-align: left;
+  vertical-align: top;
+  min-width: 120px;
+  max-width: 220px;
+}
+
+.noveltyItems {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.noveltyItem {
+  display: grid;
+  gap: 4px;
+}
+
+.noveltyItem p {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 13px;
+}
+
+.noveltyItemHead {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.noveltyBadgeSupported,
+.noveltyBadgeInsufficient {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+
+.noveltyBadgeSupported {
+  color: var(--color-accent);
+  border: 1px solid var(--color-accent);
+}
+
+.noveltyBadgeInsufficient {
+  color: var(--color-text-muted);
+  border: 1px solid var(--color-border);
+}
+
+/* US-NV3(#253) — 유사 연구 표에서 근거 없는 칸(기권) 표시 */
+.noveltyCellAbstain {
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.noveltyRisks {
+  display: grid;
+  gap: 8px;
+}
+
+.noveltyRiskCaveat {
+  margin: 0;
+  padding: 6px 8px;
+  border-left: 2px solid var(--color-border);
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.noveltyRiskType {
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+.noveltyPlan {
+  display: grid;
+  gap: 8px;
+}
+
+.noveltyPlanQuestion {
+  margin: 0;
+  font-weight: 700;
+}
+
+.noveltyPlanAngle {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 13px;
+}
+
+.noveltyPlanField {
+  display: grid;
+  gap: 2px;
+  font-size: 13px;
+}
+
+.noveltyPlanField ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.noveltyRefs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+}
+
+.evidenceRef blockquote {
+  margin: 0;
+  padding: 4px 8px;
+  border-left: 2px solid var(--color-border);
+  color: var(--color-text-muted);
+  font-size: 13px;
+  font-style: italic;
+}
+
+.evidenceConflict {
+  display: grid;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--color-border);
+}
+
+.evidenceConflict strong {
+  font-size: 12px;
+  color: var(--color-danger);
+}
+
+.evidenceConflictHint {
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+.evidenceCoverage {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.abstainNotice {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--color-warn-text);
+  background: var(--color-warn-bg);
+  border-radius: var(--agent-radius);
+  color: var(--color-warn-text);
+  font-size: 13px;
 }
 
 .messageFiles {
@@ -478,6 +790,44 @@
 .empty {
   color: var(--color-text-muted);
   padding: 8px 0;
+}
+
+.drawerFooter {
+  margin-top: auto;
+  border-top: 1px solid var(--color-border);
+  padding-top: 10px;
+}
+
+.resetButton {
+  min-height: 36px;
+  width: 100%;
+  border: 1px dashed var(--color-border);
+  border-radius: var(--agent-radius);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.resetButton:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.resetConfirm {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--color-text);
+}
+
+.resetConfirm button {
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--agent-radius);
+  background: var(--color-surface);
+  cursor: pointer;
 }
 
 @media (min-width: 768px) {

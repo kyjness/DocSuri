@@ -258,9 +258,38 @@ export const fullTranslationResponse: TranslationOkDTO = {
         ..._fillerSections('ko'),
       ],
     },
-    keptTerms: ['Transformer', 'encoder', 'decoder', 'self-attention'],
-    // Transformer = keep-as-is standard (English); attention→어텐션 mapping appears in the text
-    standardGlossary: [{ term: 'Transformer' }, { term: 'attention', translated: '어텐션' }],
+    // Long lists on purpose (dev preview): enough kept / standard terms that each glossary group
+    // wraps past ~2 lines, so the 더 보기 / 접기 collapse is visible under the mock transport too.
+    keptTerms: [
+      'Transformer',
+      'encoder',
+      'decoder',
+      'self-attention',
+      'multi-head attention',
+      'positional encoding',
+      'feed-forward network',
+      'residual connection',
+      'layer normalization',
+      'softmax',
+      'dropout',
+      'beam search',
+      'byte-pair encoding',
+      'label smoothing',
+      'embedding',
+    ],
+    // Transformer = keep-as-is standard (English); attention→어텐션 mapping appears in the text.
+    // The rest are seed standard terms present in this paper (keep-as-is + a couple of mappings).
+    standardGlossary: [
+      { term: 'Transformer' },
+      { term: 'attention', translated: '어텐션' },
+      { term: 'RNN' },
+      { term: 'CNN' },
+      { term: 'LSTM' },
+      { term: 'GRU' },
+      { term: 'BLEU' },
+      { term: 'gradient', translated: '기울기' },
+      { term: 'perplexity', translated: '펄플렉서티' },
+    ],
   },
 };
 

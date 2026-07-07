@@ -64,3 +64,39 @@ class CostGuardCircuitBreaker:
         if ratio >= self.warning_ratio:
             return "warning"
         return "normal"
+
+
+# --- NFR-C1 공용 헬퍼: 게이트 술어 + Bedrock 토큰→USD 추정 ---
+
+# Bedrock Claude Sonnet 4.x 단가(USD / 1M tokens). env로 조정 가능.
+_USD_PER_1M_INPUT_DEFAULT = 3.0
+_USD_PER_1M_OUTPUT_DEFAULT = 15.0
+
+
+def is_cost_degraded(budget: object) -> bool:
+    """U7-style soft degradation predicate: warning(80%)부터 비-normal로 본다."""
+    mode = str(getattr(budget, "degrade_mode", "normal") or "normal").lower().replace("_", "-")
+    circuit = str(getattr(budget, "circuit_state", "closed") or "closed").lower()
+    return mode not in ("normal", "none") or circuit == "open"
+
+
+def is_cost_critical(budget: object) -> bool:
+    """Agent Bedrock 하드 게이트: critical(95%) 이상 또는 open circuit에서만 차단한다."""
+    tier = str(getattr(budget, "tier", "normal") or "normal").lower().replace("_", "-")
+    mode = str(getattr(budget, "degrade_mode", "normal") or "normal").lower().replace("_", "-")
+    circuit = str(getattr(budget, "circuit_state", "closed") or "closed").lower()
+    return tier in {"critical", "hard-cap"} or mode == "lexical-only" or circuit == "open"
+
+
+def estimate_bedrock_usd(*, input_tokens: int, output_tokens: int) -> float:
+    """Bedrock 사용 토큰 → USD 추정 (DOCSURI_BEDROCK_USD_PER_1M_INPUT/OUTPUT로 단가 조정)."""
+    import os
+
+    input_rate = float(os.getenv("DOCSURI_BEDROCK_USD_PER_1M_INPUT") or _USD_PER_1M_INPUT_DEFAULT)
+    output_rate = float(
+        os.getenv("DOCSURI_BEDROCK_USD_PER_1M_OUTPUT") or _USD_PER_1M_OUTPUT_DEFAULT
+    )
+    return (
+        max(input_tokens, 0) / 1_000_000 * input_rate
+        + max(output_tokens, 0) / 1_000_000 * output_rate
+    )

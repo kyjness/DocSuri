@@ -480,12 +480,15 @@ def _list_block(el: Tag, sec_ctx: _SectionCtx) -> dict | None:
 
 
 def _code_block(el: Tag, sec_ctx: _SectionCtx) -> dict | None:
-    # A <math> inside a listing/algorithm line carries BOTH its presentation MathML (rendered as
-    # unicode glyphs) AND a <annotation encoding="application/x-tex"> LaTeX source. A raw
-    # get_text() emits both, duplicating every symbol — e.g. the algorithm line renders as
-    # "𝐱←𝗓𝖾𝗋𝗈𝖾𝗌(n)\bm{\mathrm{x}}\leftarrow\mathsf{zeroes}(n)". Code blocks are shown verbatim (no
-    # KaTeX), so drop the TeX annotation and keep only the readable unicode presentation.
-    for annotation in el.find_all("annotation"):
+    # A <math> inside a listing/algorithm line carries its presentation MathML (rendered as unicode
+    # glyphs) PLUS two annotations LaTeXML attaches: <annotation encoding="application/x-tex"> (the
+    # LaTeX source) and <annotation-xml encoding="MathML-Content"> (content MathML). A raw
+    # get_text() emits ALL of them, so each symbol triples — e.g. ``η_m`` renders as
+    # "ηm" + "subscript" + "𝜂𝑚" (presentation glyphs, the content <csymbol>subscript</csymbol>
+    # name, and the italic-unicode content <ci>s). Code blocks are shown verbatim (no KaTeX), so
+    # drop BOTH annotation kinds and keep only the readable unicode presentation. ``annotation-xml``
+    # is a distinct tag name from ``annotation``, so it must be listed explicitly.
+    for annotation in el.find_all(["annotation", "annotation-xml"]):
         annotation.decompose()
     lines = el.find_all(class_="ltx_listingline")
     if lines:

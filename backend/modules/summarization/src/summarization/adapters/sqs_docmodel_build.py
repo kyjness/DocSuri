@@ -76,6 +76,44 @@ class SqsDocModelBuildQueue:
             return
         self._inflight[key] = now + self._ttl
 
+    def enqueue_user_build(
+        self,
+        *,
+        job_id: str,
+        paper_id: str,
+        version: int,
+        object_key: str,
+        module: str,
+        owner_id: str,
+        record_ref: str,
+    ) -> None:
+        now = time.monotonic()
+        self._prune(now)
+        key = (paper_id, version)
+        expiry = self._inflight.get(key)
+        if expiry is not None and expiry > now:
+            return
+        body = json.dumps(
+            {
+                "jobId": job_id,
+                "kind": "BUILD_USER_DOC_MODEL",
+                "paperId": paper_id,
+                "version": version,
+                "objectKey": object_key,
+                "module": module,
+                "ownerId": owner_id,
+                "recordRef": record_ref,
+                "eventId": None,
+                "correlationId": None,
+            }
+        )
+        try:
+            self._sqs.send_message(QueueUrl=self._queue_url, MessageBody=body)
+        except Exception:  # noqa: BLE001 — user PDF build enqueue is best-effort too.
+            logger.warning("user doc-model build enqueue failed for %s v%s", paper_id, version)
+            return
+        self._inflight[key] = now + self._ttl
+
     def _prune(self, now: float) -> None:
         if len(self._inflight) < 256:
             return

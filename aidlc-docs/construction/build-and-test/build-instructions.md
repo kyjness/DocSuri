@@ -2,6 +2,55 @@
 
 **단계**: CONSTRUCTION → Build and Test · **문서 언어**: 한국어/영어 혼용
 
+---
+
+# U11 Evidence Formation Agent Build Instructions — 2026-07-01
+
+## Prerequisites
+
+- Python runtime at `./backend/.venv/bin/python` (backend venv).
+- Local source packages on `PYTHONPATH` for app-shell checks:
+
+```bash
+export PYTHONPATH='shared/python/src:ops/src:backend/modules/discovery/src:backend/modules/summarization/src'
+```
+
+## Build Steps (syntax check)
+
+```bash
+./backend/.venv/bin/python -m compileall \
+  backend/modules/evidence/ \
+  backend/wiring.py \
+  backend/migrations/__main__.py
+```
+
+Observed result: compileall completes without syntax errors.
+
+## Lint
+
+```bash
+./backend/.venv/bin/ruff check \
+  backend/modules/evidence/ \
+  backend/wiring.py \
+  backend/migrations/__main__.py \
+  backend/tests/test_evidence.py \
+  backend/tests/test_app_shell.py
+```
+
+Observed result: **All checks passed**
+
+## Environment variables (production runtime)
+
+The following env vars gate real adapter assembly. Without them, `evidence_enabled=False` and
+the feature is mounted in stub mode (turns return `RuntimeError` → 503):
+
+- `DOCSURI_DOCMODEL_BUCKET` — S3 bucket for DocModel JSON (required for real path)
+- `DOCSURI_EVIDENCE_MODEL_ID` — Bedrock model inference profile (default: `global.anthropic.claude-sonnet-4-6`)
+- `AWS_REGION` / `AWS_DEFAULT_REGION` — AWS region
+- `DOCSURI_EVIDENCE_ASYNC_ENABLED` — `true` to enable SQS async job path (BR-EV-6)
+- `DOCSURI_EVIDENCE_JOB_QUEUE_URL` — SQS queue URL for async agent jobs
+- `EVIDENCE_AGENT_ENABLED` — app-shell feature gate (`true` to mount)
+
 ## Scope
 
 본 문서는 현재 생성된 백엔드 코드의 개발 및 통합 빌드 절차를 규정합니다.

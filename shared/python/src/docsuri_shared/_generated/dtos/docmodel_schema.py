@@ -16,10 +16,13 @@ class DocModelRequest(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
-    paperId: str = Field(..., description='arXiv ID. Trace: FR-12.')
+    paperId: str = Field(
+        ...,
+        description='Source document id — the doc-model cache key together with version. arXiv papers: bare arXiv id (e.g. "2304.10557"). User uploads: "userdoc:{uuid}" namespace — no arXiv id exists, so consumers MUST NOT synthesize an arxiv.org URL from it. Trace: FR-12.',
+    )
     version: int = Field(
         ...,
-        description='Paper version; doc-model cache key is (paperId, version). Trace: D6, BR-30.',
+        description='Paper version; doc-model cache key is (paperId, version). User uploads are single-version (1). Trace: D6, BR-30.',
     )
 
 
@@ -69,7 +72,7 @@ class SourceUnavailableDTO(BaseModel):
 
 class SourceTier(StrEnum):
     """
-    Which rung of the fallback ladder produced this doc-model: native arXiv HTML -> ar5iv -> e-print LaTeX -> (last resort) PDF parse. Trace: Q6, BR-29, TD-11.
+    Which rung of the fallback ladder produced this doc-model: native arXiv HTML -> ar5iv -> e-print LaTeX -> (last resort) PDF parse. User-uploaded PDFs also use the "pdf" tier — the user-vs-arXiv origin is carried by the paperId "userdoc:" namespace, not a separate tier. Trace: Q6, BR-29, TD-11.
     """
 
     native_html = 'native_html'
@@ -292,10 +295,13 @@ class DocModelMeta(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
-    paperId: str = Field(..., description='arXiv ID. Trace: FR-12.')
+    paperId: str = Field(
+        ...,
+        description='Source document id — the doc-model cache key together with version. arXiv papers: bare arXiv id (e.g. "2304.10557"). User uploads: "userdoc:{uuid}" namespace — no arXiv id exists, so consumers MUST NOT synthesize an arxiv.org URL from it. Trace: FR-12.',
+    )
     version: int = Field(
         ...,
-        description='Paper version; doc-model is keyed (paperId, version). Trace: D6.',
+        description='Paper version; doc-model is keyed (paperId, version). User uploads are single-version (1). Trace: D6.',
     )
     title: str = Field(
         ..., description='Paper title (rendered as document title in the rich view).'

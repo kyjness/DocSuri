@@ -1,5 +1,47 @@
 # Security Test Instructions
 
+---
+
+# U11 Evidence Formation Agent Security Test Instructions — 2026-07-01
+
+## SEC-9: Existence non-disclosure (ownership checks)
+
+`test_api_delete_session_cross_owner_returns_404` and `test_api_get_nonexistent_session_returns_404`
+in `backend/tests/test_evidence.py` verify that:
+- Wrong-owner requests return `404` (not `403`) — no session existence disclosure.
+- Deleted sessions also return `404` on subsequent `GET`.
+
+```bash
+./backend/.venv/bin/pytest backend/tests/test_evidence.py \
+  -k "cross_owner or nonexistent" -v
+```
+
+## INV-EV-5: Internal field non-disclosure
+
+`test_turn_result_serialization_excludes_internal_fields` verifies that `_serialize_result`
+never includes `score`, `chunk_id`, `chunkId`, `vector`, or `llm_meta` in the serialized
+JSON sent to clients.
+
+## INV-EV-2: Empty claims gate
+
+`test_empty_claims_yields_abstain` (PBT via hypothesis) verifies that the Orchestrator
+enforces the abstain path whenever `items=[]` — no empty `EvidenceResult` with `claims=[]`
+reaches the API layer as `state=ok`.
+
+## Authentication gate
+
+`test_api_requires_authentication` verifies that all `/api/evidence/*` routes return `401`
+when no principal is present.
+
+## Dependency scanning (SCA)
+
+```bash
+./backend/.venv/bin/pip-audit --desc on 2>/dev/null || \
+  ./backend/.venv/bin/python -m pip_audit --desc on
+```
+
+---
+
 ## Purpose
 
 Validate U1 security controls required by the enabled Security Baseline.

@@ -1,9 +1,12 @@
 """RelevanceRanker — FR-3 / Q3=A, Q10=A (BR-5; PBT-03).
 
-Baseline ranking only: sort by merge (RRF) score descending, truncate to top-N=20. NO LLM
-rerank (Q3=A) — so the cost-degrade RERANK_OFF tier is a no-op for U2 (handled as a banner
-in the assembler). Deterministic stable order with a PaperId tie-break (PBT-03). If fewer
-than N candidates, return all (no padding, US-D3).
+Single-responsibility sort stage: order by ``ranking_score`` descending, truncate to top-N=20.
+The ranker reads ONLY ``ranking_score`` — it does not know or care which stage supplied it
+(retrieval seeds ``ranking_score = retrieval_score``; a cross-encoder reranker overwrites it
+upstream in the orchestrator). With no reranker (or the cost-degrade RERANK_OFF tier, surfaced
+as a banner in the assembler), ``ranking_score`` still equals the RRF score → identical baseline
+order. Deterministic stable order with a PaperId tie-break (PBT-03). If fewer than N candidates,
+return all (no padding, US-D3).
 """
 
 from __future__ import annotations
@@ -52,14 +55,16 @@ def shadow_rerank_diff(
     if n < 2 or not boosts:
         return ShadowDiff(0, 0, 0)
     band = min(n, max(2, math.ceil(n * top_fraction)))
-    head = items[:band]  # already baseline (-score, paperId) order from the ranker
+    head = items[:band]  # already (-ranking_score, paperId) order from the ranker
     boosted_count = sum(1 for c in head if _record_boost(c.record, boosts) != 0.0)
     if boosted_count == 0:
         return ShadowDiff(0, 0, 0)
+    # Nudge the CURRENT sort key (ranking_score) — post-rerank this is the rerank score, so
+    # personalization correctly nudges the reranked order, not the raw retrieval order.
     reordered = sorted(
         head,
         key=lambda c: (
-            -(c.retrieval_score * (1.0 + _record_boost(c.record, boosts))),
+            -(c.ranking_score * (1.0 + _record_boost(c.record, boosts))),
             c.record.paperId,
         ),
     )
@@ -80,6 +85,6 @@ class RelevanceRanker:
     ) -> RankedResults:
         ranked = sorted(
             candidate_set.candidates,
-            key=lambda c: (-c.retrieval_score, c.record.paperId),
+            key=lambda c: (-c.ranking_score, c.record.paperId),
         )[:top_n]
         return RankedResults(ranked=tuple(ranked), ranking_mode="baseline")

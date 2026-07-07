@@ -3,6 +3,41 @@
 **단계**: CONSTRUCTION → Build and Test · **유닛**: U1 Ingestion + U3 Accounts · **일자**: 2026-06-16
 **문서 언어**: 영어/한국어 혼용 (유닛별 작성 언어 유지)
 
+---
+
+# U11 Evidence Formation Agent Performance Test Instructions — 2026-07-01
+
+## NFR-P6: Streaming first + async job offload
+
+The synchronous `EvidenceAgentOrchestrator.run()` is expected to complete within
+**30 seconds** for a 5-paper corpus (Bedrock p50 target). For larger corpora, the
+async SQS job path (BR-EV-6) is activated when `DOCSURI_EVIDENCE_ASYNC_ENABLED=true`.
+
+Local performance validation (staging only — requires real Bedrock + OpenSearch):
+
+```bash
+time curl -X POST https://<staging-host>/api/evidence/turns \
+  -H 'Authorization: Bearer <token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"topic": "transformer attention mechanism", "scope": "auto"}'
+```
+
+Target: `state=ok` response under 30 s for a 5-paper auto-scope query.
+
+## BR-EV-7: Cost gate (CostGuardCircuitBreaker)
+
+If `CostGuardCircuitBreaker.check()` returns `False`, the orchestrator returns
+`TurnAbstainResult(llm_unavailable)` without invoking Bedrock. No local load test
+required; behavior is covered by the unit test stub path.
+
+## Local overhead measurement
+
+```bash
+./backend/.venv/bin/pytest backend/tests/test_evidence.py -v --durations=5
+```
+
+Observed: all 12 tests complete in under 1.2 s (no I/O — InMemory + StubOrchestrator).
+
 본 문서는 두 트랙의 성능 테스트 지침을 통합합니다.
 
 - **U1 Ingestion**: 대규모 arXiv 슬라이스 처리 시 비용·쿼터·복원력 제약 준수 검증.

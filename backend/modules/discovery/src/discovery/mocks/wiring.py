@@ -46,8 +46,12 @@ def build_mock_orchestrator(
     ttl_seconds: float = 300.0,
     observability=None,
     cost_guard=None,
+    reranker=None,
 ) -> MockBundle:
-    """Wire the U2 pipeline with mocks. Override any adapter (e.g. a Failing* one) for tests."""
+    """Wire the U2 pipeline with mocks. Override any adapter (e.g. a Failing* one) for tests.
+
+    ``reranker`` is optional (None = baseline RRF order, the default). Pass a ``MockRerankAdapter``
+    (or ``FailingRerankAdapter``) to exercise the cross-encoder rerank path."""
     embedding = embedding_adapter or MockEmbeddingAdapter()
     cache = EmbeddingCache(embedding, ttl_seconds=ttl_seconds)
     publisher = InMemoryEventPublisher()
@@ -64,6 +68,7 @@ def build_mock_orchestrator(
         cost_guard=cost_guard or StubCostGuard(degrade_mode=degrade_mode),
         observability=observability or NoopObservabilityHub(),
         event_publisher=publisher,
+        reranker=reranker,
     )
     return MockBundle(
         orchestrator=orchestrator,

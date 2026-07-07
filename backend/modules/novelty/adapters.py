@@ -1,15 +1,25 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any, Protocol
 from urllib.parse import urlparse
 from uuid import uuid4
 
+from backend.modules.user_docmodel import (
+    NOVELTY_PDF_DEGRADED_REASON,
+    USER_DOCMODEL_PDF_CONTENT_TYPE,
+    ref_from_attachment,
+)
+
 from .models import EvidenceStatus
 from .security import sanitize_external_query
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -50,7 +60,15 @@ class NoveltyLlmPort(Protocol):
 
 
 class NotionExportPort(Protocol):
-    def export(self, owner_id: str, preview: dict[str, Any]) -> str: ...
+    """US-NV8(#258) — connection={"token","parentPageId"}(복호화된 값), content=제목+아티팩트."""
+
+    def export(self, connection: dict[str, str], content: dict[str, Any]) -> str: ...
+
+
+class EvidenceFormationAdapterPort(Protocol):
+    """US-NV1(#251) — 자연어 잡의 근거형성 선행 호출. D5 포트를 RetrievalBundle로 매핑."""
+
+    def form(self, owner_id: str, topic: str) -> RetrievalBundle: ...
 
 
 class NoopCorpusRetrievalClient:
@@ -138,6 +156,108 @@ def _card_item(card: Any) -> dict[str, Any]:
         "evidenceStatus": EvidenceStatus.SUPPORTED.value,
         "sourceRefs": [source_ref],
     }
+
+
+class NoopEvidenceFormationClient:
+    def form(self, owner_id: str, topic: str) -> RetrievalBundle:
+        return RetrievalBundle(items=[])
+
+
+class EvidenceFormationClient:
+    """US-NV1(#251) — U12는 shared/ports EvidenceFormationPort(D5) 추상으로만 근거형성을 소비.
+
+    포트는 async — 동기 워커와 inline 디스패치(이벤트 루프 위) 양쪽에서 안전하도록
+    전용 스레드에서 asyncio.run으로 실행한다. abstain·장애는 저하로만 수렴(날조 금지).
+    """
+
+    def __init__(self, port: Any) -> None:
+        self._port = port
+
+    def form(self, owner_id: str, topic: str) -> RetrievalBundle:
+        from docsuri_shared._generated.dtos.evidence_schema import EvidenceRequest
+
+        request = EvidenceRequest(topic=topic[:2000])
+        ctx = SimpleNamespace(
+            owner_id=owner_id,
+            request_id=f"novelty-evidence-{uuid4().hex}",
+            budget_signal={},
+        )
+        try:
+            result = _run_coro_in_thread(self._port.form_evidence(request, ctx))
+        except Exception:  # noqa: BLE001 - optional enrichment; corpus search is the main path.
+            log.warning("novelty evidence formation unavailable", exc_info=True)
+            return RetrievalBundle(items=[])
+        return _bundle_from_evidence_result(result)
+
+
+def _run_coro_in_thread(coro: Any) -> Any:
+    """이벤트 루프 유무와 무관하게 코루틴을 동기 완주 — inline 디스패치는 루프 위에서 돈다."""
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
+def _bundle_from_evidence_result(result: Any) -> RetrievalBundle:
+    """D5 EvidenceResult|EvidenceAbstainResult → RetrievalBundle. abstain은 선택 보강 없음."""
+    if str(getattr(result, "state", "") or "") == "abstain":
+        return RetrievalBundle(items=[])
+    items = [
+        item
+        for claim in (getattr(result, "claims", None) or [])
+        if (item := _evidence_claim_item(claim))
+    ]
+    if not items:
+        return RetrievalBundle(items=[])
+    return RetrievalBundle(items=items, evidenceStatus=EvidenceStatus.SUPPORTED)
+
+
+def _evidence_claim_item(claim: Any) -> dict[str, Any]:
+    """EvidenceItem → 번들 item. userdoc 출처에는 arXiv URL을 만들지 않는다."""
+    statement = str(getattr(claim, "statement", "") or "").strip()
+    if not statement:
+        return {}
+    refs: list[dict[str, Any]] = []
+    quote = ""
+    for ref in getattr(claim, "supporting", None) or []:
+        paper_id = str(getattr(ref, "paperId", "") or "").strip()
+        if not paper_id:
+            continue
+        quote = quote or str(getattr(ref, "quote", "") or "")
+        if paper_id.startswith("userdoc:"):
+            refs.append(
+                {
+                    "type": "upload",
+                    "identifier": paper_id,
+                    "title": "User uploaded PDF",
+                    "sourceName": "User upload",
+                }
+            )
+            continue
+        refs.append(
+            {
+                "type": "paper",
+                "identifier": paper_id,
+                "title": f"arXiv:{paper_id}",
+                "url": f"https://arxiv.org/abs/{paper_id}",
+                "sourceName": "arXiv",
+            }
+        )
+    item: dict[str, Any] = {
+        "title": statement[:240],
+        "summary": (quote or statement)[:1000],
+        "sourceType": "evidence_claim",
+        "sourceName": "U11 evidence",
+        "evidenceStatus": (
+            EvidenceStatus.SUPPORTED.value if refs else EvidenceStatus.ABSTAINED.value
+        ),
+        "sourceRefs": refs,
+    }
+    conflicting = len(getattr(claim, "conflicting", None) or [])
+    if conflicting:
+        item["conflictingCount"] = conflicting  # D5 — 상충 출처 존재 신호(novelty 판단 입력)
+    return item
 
 
 class NoopExternalSearchClient:
@@ -365,11 +485,54 @@ class NoopNoveltyLlmClient:
         )
 
 
+def _cost_gated(cost_guard: Any) -> bool:
+    """NFR-C1 — agent LLM hard gate는 critical 이상에서만 발화(None이면 게이트 없음)."""
+    if cost_guard is None:
+        return False
+    from docsuri_ops.cost_guard import is_cost_critical
+
+    return is_cost_critical(cost_guard.get_budget_state())
+
+
+def _record_bedrock_spend(cost_guard: Any, usage: dict[str, Any]) -> None:
+    """NFR-C1 — Bedrock usage 토큰을 cost guard 지출로 기록. 계측은 best-effort."""
+    if cost_guard is None or not usage:
+        return
+    try:
+        from docsuri_ops.cost_guard import estimate_bedrock_usd
+        from docsuri_ops.domain.models import UsageEvent
+
+        amount = estimate_bedrock_usd(
+            input_tokens=int(usage.get("input_tokens") or 0),
+            output_tokens=int(usage.get("output_tokens") or 0),
+        )
+        if amount > 0:
+            cost_guard.record_spend(
+                UsageEvent(
+                    event_id=f"novelty-llm-{uuid4()}",
+                    amount_usd=amount,
+                    source="novelty.llm",
+                )
+            )
+    except Exception:  # noqa: BLE001 — 지출 계측 실패가 draft를 막으면 안 된다
+        import logging
+
+        logging.getLogger(__name__).warning("failed to record novelty Bedrock spend")
+
+
 class BedrockNoveltyLlmClient:
-    def __init__(self, *, model_id: str, client: Any, max_tokens: int = 4096) -> None:
+    def __init__(
+        self,
+        *,
+        model_id: str,
+        client: Any,
+        max_tokens: int = 8192,
+        cost_guard: Any = None,
+    ) -> None:
         self._model_id = model_id
         self._client = client
         self._max_tokens = max_tokens
+        self._cost_guard = cost_guard
 
     def draft(
         self,
@@ -378,6 +541,14 @@ class BedrockNoveltyLlmClient:
         corpus: RetrievalBundle,
         external: RetrievalBundle,
     ) -> NoveltyLlmDraft:
+        # NFR-C1 비용 게이트 — LLM 호출 전에 차단, 기존 저하(not-fail) 패턴으로 강등.
+        if _cost_gated(self._cost_guard):
+            return NoveltyLlmDraft(
+                similarWorks=_fallback_similar_works(),
+                noveltyCandidates=_fallback_novelty_candidates(),
+                experimentPlan=_fallback_experiment_plan(topic),
+                degradedReason="cost_degraded",
+            )
         refs = _source_ref_catalog(corpus.items + external.items)
         if not refs:
             return NoveltyLlmDraft(
@@ -403,6 +574,7 @@ class BedrockNoveltyLlmClient:
                 payload.get("similarWorks"),
                 refs,
                 fallback=_fallback_similar_works(),
+                detail_fields=SIMILAR_WORK_DETAIL_FIELDS,
             ),
             noveltyCandidates=_llm_items_payload(
                 payload.get("noveltyCandidates"),
@@ -418,21 +590,38 @@ class BedrockNoveltyLlmClient:
             "max_tokens": self._max_tokens,
             "system": system,
             "messages": [{"role": "user", "content": [{"type": "text", "text": user}]}],
+            "tools": [_novelty_tool()],
+            "tool_choice": {"type": "tool", "name": "emit_novelty_analysis"},
         }
-        response = self._client.invoke_model(
+        response = self._client.invoke_model_with_response_stream(
             modelId=self._model_id,
             body=json.dumps(body).encode("utf-8"),
             accept="application/json",
             contentType="application/json",
         )
-        raw_body = response["body"].read()
-        model_payload = json.loads(raw_body.decode("utf-8"))
-        text = "".join(
-            part.get("text", "")
-            for part in model_payload.get("content", [])
-            if isinstance(part, dict)
-        )
-        return _parse_json_object(text)
+        text, usage = _bedrock_stream_read(response)
+        _record_bedrock_spend(self._cost_guard, usage)
+        try:
+            return _parse_json_object(text)
+        except json.JSONDecodeError as exc:
+            log.warning(
+                "novelty Bedrock JSON parse failed; stopReason=%s outputLength=%d "
+                "jsonPos=%d rawPreview=%r",
+                usage.get("stop_reason"),
+                len(text),
+                exc.pos,
+                _safe_log_preview(text),
+            )
+            raise
+        except ValueError:
+            log.warning(
+                "novelty Bedrock JSON parse failed; stopReason=%s outputLength=%d "
+                "jsonPos=n/a rawPreview=%r",
+                usage.get("stop_reason"),
+                len(text),
+                _safe_log_preview(text),
+            )
+            raise
 
 
 def _source_ref_catalog(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -440,18 +629,38 @@ def _source_ref_catalog(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     seen: set[str] = set()
     for item in items:
         for ref in item.get("sourceRefs") or item.get("source_refs") or []:
-            url = ref.get("url") if isinstance(ref, dict) else None
-            if not url or url in seen:
+            if not isinstance(ref, dict):
                 continue
-            seen.add(str(url))
+            key = str(ref.get("url") or ref.get("identifier") or "")
+            if not key or key in seen:
+                continue
+            seen.add(key)
             refs.append(ref)
     return refs[:12]
+
+
+# US-NV3(#253) — 유사 연구 표 상세 칼럼. 근거 없는 칸은 null(기권)로 남기고 FE가
+# '근거 부족'으로 표시한다. 추측 금지는 시스템 프롬프트와 정규화가 함께 강제한다.
+SIMILAR_WORK_DETAIL_FIELDS = (
+    "problem",
+    "method",
+    "dataset",
+    "results",
+    "limitations",
+    "overlap",
+)
 
 
 def _novelty_system_prompt() -> str:
     return (
         "You are DocSuri's novelty-analysis assistant. Return only valid JSON. "
-        "Use only the supplied sourceRefIndexes; never invent URLs, titles, datasets, or papers."
+        "Fit the response within the available output budget: at most 3 similarWorks, "
+        "3 noveltyCandidates, 5 items per experimentPlan list, and concise strings. "
+        "Use only the supplied sourceRefIndexes; never invent URLs, titles, datasets, or papers. "
+        "For each similarWorks detail field (problem, method, dataset, results, limitations, "
+        'overlap — how it overlaps the user\'s topic), return {"value": string, '
+        '"sourceRefIndexes": [int]} citing the specific sources that support that value; '
+        "if no supplied source supports it, set the field to null. Never guess."
     )
 
 
@@ -477,7 +686,17 @@ def _novelty_user_prompt(
     }
     contract = {
         "similarWorks": [
-            {"title": "string", "summary": "string", "sourceRefIndexes": [0]}
+            {
+                "title": "string",
+                "summary": "string",
+                "problem": {"value": "string", "sourceRefIndexes": [0]},
+                "method": {"value": "string", "sourceRefIndexes": [0]},
+                "dataset": {"value": "string", "sourceRefIndexes": [0]},
+                "results": {"value": "string", "sourceRefIndexes": [0]},
+                "limitations": {"value": "string", "sourceRefIndexes": [0]},
+                "overlap": {"value": "string", "sourceRefIndexes": [0]},
+                "sourceRefIndexes": [0],
+            }
         ],
         "noveltyCandidates": [
             {"title": "string", "rationale": "string", "sourceRefIndexes": [0]}
@@ -501,6 +720,91 @@ def _novelty_user_prompt(
     )
 
 
+def _novelty_tool() -> dict[str, Any]:
+    text_field = {"type": "string", "maxLength": 600}
+    short_list = {"type": "array", "items": text_field, "maxItems": 5}
+    ref_indexes = {"type": "array", "items": {"type": "integer"}, "maxItems": 3}
+    detail = {
+        "anyOf": [
+            {
+                "type": "object",
+                "properties": {"value": text_field, "sourceRefIndexes": ref_indexes},
+                "required": ["value", "sourceRefIndexes"],
+            },
+            {"type": "null"},
+        ]
+    }
+    return {
+        "name": "emit_novelty_analysis",
+        "description": "Emit grounded novelty analysis using only supplied sourceRefIndexes.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "similarWorks": {
+                    "type": "array",
+                    "maxItems": 3,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title": text_field,
+                            "summary": text_field,
+                            "problem": detail,
+                            "method": detail,
+                            "dataset": detail,
+                            "results": detail,
+                            "limitations": detail,
+                            "overlap": detail,
+                            "sourceRefIndexes": ref_indexes,
+                        },
+                        "required": ["title", "summary", "sourceRefIndexes"],
+                    },
+                },
+                "noveltyCandidates": {
+                    "type": "array",
+                    "maxItems": 3,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title": text_field,
+                            "rationale": text_field,
+                            "sourceRefIndexes": ref_indexes,
+                        },
+                        "required": ["title", "rationale", "sourceRefIndexes"],
+                    },
+                },
+                "experimentPlan": {
+                    "type": "object",
+                    "properties": {
+                        "researchQuestion": text_field,
+                        "noveltyAngle": text_field,
+                        "hypotheses": short_list,
+                        "baselines": short_list,
+                        "procedure": short_list,
+                        "datasets": short_list,
+                        "metrics": short_list,
+                        "resources": short_list,
+                        "risks": short_list,
+                        "sourceRefIndexes": ref_indexes,
+                    },
+                    "required": [
+                        "researchQuestion",
+                        "noveltyAngle",
+                        "hypotheses",
+                        "baselines",
+                        "procedure",
+                        "datasets",
+                        "metrics",
+                        "resources",
+                        "risks",
+                        "sourceRefIndexes",
+                    ],
+                },
+            },
+            "required": ["similarWorks", "noveltyCandidates", "experimentPlan"],
+        },
+    }
+
+
 def _compact_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     compact: list[dict[str, Any]] = []
     for item in items[:8]:
@@ -520,6 +824,7 @@ def _llm_items_payload(
     refs: list[dict[str, Any]],
     *,
     fallback: dict[str, Any],
+    detail_fields: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     if not isinstance(raw, list):
         return fallback
@@ -531,18 +836,22 @@ def _llm_items_payload(
         if not title:
             continue
         item_refs = _refs_by_indexes(item.get("sourceRefIndexes"), refs)
-        items.append(
-            {
-                "title": title[:240],
-                "summary": str(item.get("summary") or item.get("rationale") or "")[:1000],
-                "evidenceStatus": (
-                    EvidenceStatus.SUPPORTED.value
-                    if item_refs
-                    else EvidenceStatus.ABSTAINED.value
-                ),
-                "sourceRefs": item_refs,
-            }
-        )
+        entry: dict[str, Any] = {
+            "title": title[:240],
+            "summary": str(item.get("summary") or item.get("rationale") or "")[:1000],
+            "evidenceStatus": (
+                EvidenceStatus.SUPPORTED.value
+                if item_refs
+                else EvidenceStatus.ABSTAINED.value
+            ),
+            "sourceRefs": item_refs,
+        }
+        for column in detail_fields:
+            # B-001 — 상세 칸은 칸 자신의 sourceRefIndexes로 근거를 증명해야 값이 남는다.
+            # row 단위 출처를 포괄 근거로 쓰지 않으며, 검증 불가(bare string 포함)는 기권.
+            # 키는 항상 실어 null=기권을 명시한다 — FE가 '근거 부족' 칸으로 구분(#253).
+            entry[column] = _grounded_detail(item.get(column), refs)
+        items.append(entry)
     if not items:
         return fallback
     return _items_payload(items)
@@ -556,6 +865,17 @@ def _refs_by_indexes(raw: Any, refs: list[dict[str, Any]]) -> list[dict[str, Any
         if isinstance(value, int) and 0 <= value < len(refs):
             selected.append(refs[value])
     return selected
+
+
+def _grounded_detail(raw: Any, refs: list[dict[str, Any]]) -> str | None:
+    """유사 연구 표 상세 칸(#253 B-001) — {value, sourceRefIndexes} 필드별 근거 필수."""
+    if not isinstance(raw, dict):
+        return None
+    value = raw.get("value")
+    text = value.strip() if isinstance(value, str) else ""
+    if not text or not _refs_by_indexes(raw.get("sourceRefIndexes"), refs):
+        return None
+    return text[:500]
 
 
 def _llm_experiment_plan(raw: Any, topic: str, refs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -669,6 +989,37 @@ def _parse_json_object(text: str) -> dict[str, Any]:
     return parsed
 
 
+def _bedrock_stream_read(response: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """스트림에서 tool input JSON과 usage 수집."""
+    tool_chunks: list[str] = []
+    text_chunks: list[str] = []
+    usage: dict[str, Any] = {}
+    for event in response.get("body", []):
+        raw = event.get("chunk", {}).get("bytes")
+        if not raw:
+            continue
+        data = json.loads(raw.decode("utf-8"))
+        kind = data.get("type")
+        if kind == "message_start":
+            usage.update(data.get("message", {}).get("usage") or {})
+        elif kind == "message_delta":
+            usage.update(data.get("usage") or {})
+            stop_reason = data.get("delta", {}).get("stop_reason")
+            if stop_reason:
+                usage["stop_reason"] = stop_reason
+        elif kind == "content_block_delta":
+            delta = data.get("delta", {})
+            if delta.get("type") == "input_json_delta":
+                tool_chunks.append(str(delta.get("partial_json") or ""))
+            elif delta.get("type") == "text_delta":
+                text_chunks.append(str(delta.get("text") or ""))
+    return "".join(tool_chunks or text_chunks), usage
+
+
+def _safe_log_preview(text: str, limit: int = 500) -> str:
+    return re.sub(r"[\x00-\x1f\x7f]+", " ", text)[:limit]
+
+
 class S3ManuscriptSimilarityClient:
     def __init__(
         self,
@@ -677,11 +1028,13 @@ class S3ManuscriptSimilarityClient:
         corpus: CorpusRetrievalPort,
         client: Any,
         prefix: str = "novelty/",
+        user_docmodel: Any = None,
     ) -> None:
         self._bucket = bucket
         self._corpus = corpus
         self._client = client
         self._prefix = prefix
+        self._user_docmodel = user_docmodel
 
     def check(self, owner_id: str, manuscript_ref: dict[str, Any]) -> RetrievalBundle:
         object_key = str(manuscript_ref.get("objectKey") or "")
@@ -695,12 +1048,17 @@ class S3ManuscriptSimilarityClient:
         job_id = str(manuscript_ref.get("jobId") or "")
         if job_id and not object_key.startswith(f"{self._prefix}{owner_id}/{job_id}/"):
             return RetrievalBundle(degradedReason="manuscript objectKey is outside job prefix")
-        if content_type not in {"text/plain", "text/markdown"}:
+        if content_type == USER_DOCMODEL_PDF_CONTENT_TYPE:
+            text = self._read_pdf_doc_model(owner_id, manuscript_ref)
+            if not text:
+                return RetrievalBundle(degradedReason=NOVELTY_PDF_DEGRADED_REASON)
+        elif content_type in {"text/plain", "text/markdown"}:
+            text = self._read_text(object_key)
+        else:
             return RetrievalBundle(
                 degradedReason=f"similarity text extraction not configured for {content_type}"
             )
 
-        text = self._read_text(object_key)
         sentences = _candidate_sentences(text)
         items = _ai_style_items(text)
         for sentence in sentences[:3]:
@@ -725,6 +1083,45 @@ class S3ManuscriptSimilarityClient:
             Range="bytes=0-262143",
         )
         return response["Body"].read().decode("utf-8", errors="replace")
+
+    def _manuscript_docmodel_ref(self, owner_id: str, manuscript_ref: dict[str, Any]):
+        object_key = str(manuscript_ref.get("objectKey") or "")
+        job_id = str(manuscript_ref.get("jobId") or "manuscript")
+        try:
+            return ref_from_attachment(
+                owner_id=owner_id,
+                scope_id=job_id,
+                attachment_id="manuscript",
+                object_key=object_key,
+                module="novelty",
+                paper_id=manuscript_ref.get("paperId"),
+                record_ref=manuscript_ref.get("recordRef"),
+            )
+        except ValueError:
+            return None
+
+    def manuscript_doc_model_ready(self, owner_id: str, manuscript_ref: dict[str, Any]) -> bool:
+        """Non-blocking readiness probe for the worker's early retry gate. True when the user PDF's
+        doc-model is already built — or when no reader is configured / the ref is unbuildable, so
+        the caller proceeds to the normal (degrade) path instead of looping forever."""
+        if self._user_docmodel is None:
+            return True
+        ref = self._manuscript_docmodel_ref(owner_id, manuscript_ref)
+        if ref is None:
+            return True
+        # Re-trigger the build (idempotent) so a lost/expired build message still lands.
+        self._user_docmodel.enqueue_build(ref)
+        return self._user_docmodel.peek_doc_model(ref) is not None
+
+    def _read_pdf_doc_model(self, owner_id: str, manuscript_ref: dict[str, Any]) -> str:
+        if self._user_docmodel is None:
+            return ""
+        ref = self._manuscript_docmodel_ref(owner_id, manuscript_ref)
+        if ref is None:
+            return ""
+        doc_model = self._user_docmodel.enqueue_and_poll(ref)
+        text = str(getattr(doc_model, "fullText", "") or "") if doc_model is not None else ""
+        return text.strip()
 
 
 def _candidate_sentences(text: str) -> list[str]:
@@ -786,8 +1183,104 @@ def _ai_style_items(text: str) -> list[dict[str, Any]]:
 
 
 class NoopNotionExportClient:
-    def export(self, owner_id: str, preview: dict[str, Any]) -> str:
+    def export(self, connection: dict[str, str], content: dict[str, Any]) -> str:
         raise RuntimeError("Notion export adapter is not configured")
+
+
+class NotionApiExportClient:
+    """US-NV8(#258) — 명시 연결 토큰으로 Notion 페이지 생성. api.notion.com만 호출(allowlist)."""
+
+    _API_URL = "https://api.notion.com/v1/pages"
+    _VERSION = "2022-06-28"
+    _MAX_BLOCKS = 90  # Notion 페이지 생성 children 한도(100) 밑
+
+    def __init__(self, client: Any) -> None:
+        self._client = client
+
+    def export(self, connection: dict[str, str], content: dict[str, Any]) -> str:
+        response = self._client.post(
+            self._API_URL,
+            headers={
+                "Authorization": f"Bearer {connection['token']}",
+                "Notion-Version": self._VERSION,
+                "Content-Type": "application/json",
+            },
+            json={
+                "parent": {"page_id": connection["parentPageId"]},
+                "properties": {
+                    "title": {
+                        "title": [
+                            {
+                                "text": {
+                                    "content": str(
+                                        content.get("title") or "Novelty analysis"
+                                    )[:200]
+                                }
+                            }
+                        ]
+                    }
+                },
+                "children": _notion_blocks(content)[: self._MAX_BLOCKS],
+            },
+        )
+        if getattr(response, "status_code", 500) >= 400:
+            raise RuntimeError(
+                f"notion api returned {getattr(response, 'status_code', 'error')}"
+            )
+        page_id = str((response.json() or {}).get("id") or "")
+        if not page_id:
+            raise RuntimeError("notion api returned no page id")
+        return page_id
+
+
+def _notion_blocks(content: dict[str, Any]) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    prompt = str(content.get("inputPrompt") or "").strip()
+    if prompt:
+        blocks.append(_notion_bullet(f"입력 프롬프트: {prompt}"))
+    for artifact in content.get("artifacts") or []:
+        title = str(artifact.get("title") or artifact.get("kind") or "").strip()
+        if title:
+            blocks.append(_notion_heading(title))
+        payload = artifact.get("payload") or {}
+        for item in (payload.get("items") or [])[:5]:
+            if not isinstance(item, dict):
+                continue
+            item_title = str(item.get("title") or "").strip()
+            summary = str(item.get("summary") or "").strip()
+            text = f"{item_title} — {summary}" if item_title and summary else item_title or summary
+            if text:
+                blocks.append(_notion_bullet(text))
+        question = str(payload.get("researchQuestion") or "").strip()
+        if question:
+            blocks.append(_notion_bullet(f"Research question: {question}"))
+    return blocks
+
+
+def _notion_heading(text: str) -> dict[str, Any]:
+    return {
+        "object": "block",
+        "type": "heading_2",
+        "heading_2": {"rich_text": [{"type": "text", "text": {"content": text[:200]}}]},
+    }
+
+
+def _notion_bullet(text: str) -> dict[str, Any]:
+    return {
+        "object": "block",
+        "type": "bulleted_list_item",
+        "bulleted_list_item": {
+            "rich_text": [{"type": "text", "text": {"content": text[:500]}}]
+        },
+    }
+
+
+def build_notion_adapter() -> NotionExportPort:
+    import httpx
+
+    return NotionApiExportClient(
+        httpx.Client(timeout=10.0, headers={"User-Agent": "DocSuri-Novelty/1.0"})
+    )
 
 
 @dataclass(frozen=True)
@@ -797,9 +1290,16 @@ class NoveltyAdapters:
     similarity: SimilarityPort = field(default_factory=NoopSimilarityClient)
     llm: NoveltyLlmPort = field(default_factory=NoopNoveltyLlmClient)
     notion: NotionExportPort = field(default_factory=NoopNotionExportClient)
+    evidence: EvidenceFormationAdapterPort = field(
+        default_factory=NoopEvidenceFormationClient
+    )
 
 
-def build_default_novelty_adapters(observability=None, cost_guard=None) -> NoveltyAdapters:
+def build_default_novelty_adapters(
+    observability=None,
+    cost_guard=None,
+    user_docmodel: Any = None,
+) -> NoveltyAdapters:
     corpus = build_u2_full_search_corpus_adapter(
         observability=observability,
         cost_guard=cost_guard,
@@ -807,8 +1307,34 @@ def build_default_novelty_adapters(observability=None, cost_guard=None) -> Novel
     return NoveltyAdapters(
         corpus=corpus,
         external=build_external_adapter(),
-        similarity=build_similarity_adapter(corpus),
-        llm=build_llm_adapter(),
+        similarity=build_similarity_adapter(corpus, user_docmodel=user_docmodel),
+        llm=build_llm_adapter(cost_guard=cost_guard),
+        evidence=build_evidence_formation_adapter(cost_guard=cost_guard),
+        notion=build_notion_adapter(),
+    )
+
+
+def build_evidence_formation_adapter(cost_guard: Any = None) -> EvidenceFormationAdapterPort:
+    """U11 실 오케스트레이터 → D5 포트 조립 — corpus(U2 재사용) 어댑터와 같은 조립 루트 관례.
+
+    U12 도메인 코드는 포트 추상만 호출하고, 구체 조립은 이 build 함수에만 둔다.
+    DocModel 버킷 미구성이면 Noop(저하)로 동작한다.
+    """
+    try:
+        from backend.modules.evidence.settings import EvidenceSettings
+    except ModuleNotFoundError:
+        return NoopEvidenceFormationClient()
+
+    settings = EvidenceSettings.from_env()
+    if not settings.evidence_enabled:
+        return NoopEvidenceFormationClient()
+
+    from backend.modules.evidence.real_wiring import build_evidence_orchestrator
+    from backend.modules.evidence.service import EvidenceFormationService
+
+    bundle = build_evidence_orchestrator(settings, cost_guard=cost_guard)
+    return EvidenceFormationClient(
+        EvidenceFormationService(orchestrator=bundle.orchestrator)
     )
 
 
@@ -833,7 +1359,41 @@ def build_u2_full_search_corpus_adapter(observability=None, cost_guard=None) -> 
     return U2FullSearchCorpusRetrievalClient(bundle.orchestrator, GroundingEnforcementHook())
 
 
-def build_similarity_adapter(corpus: CorpusRetrievalPort) -> SimilarityPort:
+def store_manuscript_text(owner_id: str, job_id: str, content_type: str, text: str) -> str:
+    """US-NV2(#252) — 원고 본문을 novelty/{owner}/{job}/ 프리픽스에 적재하고 key 반환.
+
+    유사도 어댑터(S3ManuscriptSimilarityClient)가 같은 프리픽스 규약으로 읽는다.
+    버킷 미구성 시 ValueError — 컨트롤러가 422 비기술 안내로 변환(SEC-5).
+    """
+    bucket = os.getenv("DOCSURI_NOVELTY_ARTIFACT_BUCKET")
+    if not bucket:
+        raise ValueError("원고 저장소가 구성되지 않아 파일 분석을 시작할 수 없습니다.")
+
+    import boto3
+    from botocore.exceptions import BotoCoreError, ClientError
+
+    region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION", "ap-northeast-2")
+    prefix = os.getenv("DOCSURI_NOVELTY_ARTIFACT_PREFIX", "novelty/")
+    ext = ".md" if content_type == "text/markdown" else ".txt"
+    object_key = f"{prefix}{owner_id}/{job_id}/manuscript{ext}"
+    try:
+        boto3.client("s3", region_name=region).put_object(
+            Bucket=bucket,
+            Key=object_key,
+            Body=text.encode("utf-8"),
+            ContentType=content_type,
+        )
+    except (BotoCoreError, ClientError) as exc:
+        # IAM 권한 부재(PutObject) 포함 — 내부 오류 상세 없이 비기술 문구만(SEC-5/9).
+        raise ValueError("원고 저장에 실패했습니다. 잠시 후 다시 시도해 주세요.") from exc
+    return object_key
+
+
+def build_similarity_adapter(
+    corpus: CorpusRetrievalPort,
+    *,
+    user_docmodel: Any = None,
+) -> SimilarityPort:
     bucket = os.getenv("DOCSURI_NOVELTY_ARTIFACT_BUCKET")
     if not bucket:
         return NoopSimilarityClient()
@@ -846,6 +1406,7 @@ def build_similarity_adapter(corpus: CorpusRetrievalPort) -> SimilarityPort:
         corpus=corpus,
         client=boto3.client("s3", region_name=region),
         prefix=os.getenv("DOCSURI_NOVELTY_ARTIFACT_PREFIX", "novelty/"),
+        user_docmodel=user_docmodel,
     )
 
 
@@ -861,7 +1422,7 @@ def build_external_adapter() -> ExternalSearchPort:
     )
 
 
-def build_llm_adapter() -> NoveltyLlmPort:
+def build_llm_adapter(cost_guard: Any = None) -> NoveltyLlmPort:
     import boto3
     from botocore.config import Config
 
@@ -876,8 +1437,9 @@ def build_llm_adapter() -> NoveltyLlmPort:
             region_name=region,
             config=Config(
                 connect_timeout=5.0,
-                read_timeout=45.0,
+                read_timeout=300.0,
                 retries={"max_attempts": 1},
             ),
         ),
+        cost_guard=cost_guard,
     )

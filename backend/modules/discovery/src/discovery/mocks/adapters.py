@@ -9,7 +9,12 @@ from collections.abc import Sequence
 
 from docsuri_shared.vector_spec import IndexRecord
 
-from ..ports.search_ports import EmbeddingUnavailable, IndexUnavailable, ScoredRecord
+from ..ports.search_ports import (
+    EmbeddingUnavailable,
+    IndexUnavailable,
+    RerankUnavailable,
+    ScoredRecord,
+)
 from . import fixtures
 
 
@@ -76,6 +81,17 @@ class MockLexicalIndexAdapter:
         return scored[:top_k]
 
 
+class MockRerankAdapter:
+    """Deterministic cross-encoder stand-in (MR-1): score = query-term overlap with each document
+    (case-insensitive). Higher overlap → higher relevance, so it reorders the fused pool by
+    lexical match — a proxy for the real joint (query, document) encoder. Scores are returned in
+    the SAME order as ``documents`` (the port contract)."""
+
+    def rerank(self, query: str, documents: Sequence[str]) -> list[float]:
+        wanted = {t for t in query.lower().split() if t}
+        return [float(len(wanted & set(doc.lower().split()))) for doc in documents]
+
+
 class MockPaperLookupAdapter:
     """Fixture-backed single-paper lookup — returns the first record matching ``paper_id`` on
     either paperId or display arxivId (the detail route id is the arxivId)."""
@@ -114,3 +130,10 @@ class FailingLexicalIndexAdapter:
         fields: Sequence[str] = ("title", "abstract", "lexicalTerms"),
     ) -> list[ScoredRecord]:
         raise IndexUnavailable("mock index outage")
+
+
+class FailingRerankAdapter:
+    """RES-12: rerank outage → orchestrator keeps the baseline order (fail-soft, search OK)."""
+
+    def rerank(self, query: str, documents: Sequence[str]) -> list[float]:
+        raise RerankUnavailable("mock rerank outage")

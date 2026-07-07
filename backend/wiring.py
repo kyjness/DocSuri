@@ -545,16 +545,20 @@ def _mount_personalization(app: FastAPI, settings: Settings, result: MountResult
 def _mount_novelty(app: FastAPI, settings: Settings, result: MountResult) -> None:
     from backend.modules.novelty import controller as novelty
     from backend.modules.novelty.adapters import (
+        EvidenceFormationClient,
         NoveltyAdapters,
         U2FullSearchCorpusRetrievalClient,
+        build_evidence_formation_adapter,
         build_external_adapter,
         build_llm_adapter,
+        build_notion_adapter,
         build_similarity_adapter,
     )
     from backend.modules.novelty.repository import (
         InMemoryNoveltyRepository,
         SqlNoveltyRepository,
     )
+    from backend.modules.user_docmodel import build_default_user_docmodel_coordinator
 
     if _is_postgres(settings.database_url):
         from .db import make_engine, make_session_factory
@@ -581,6 +585,10 @@ def _mount_novelty(app: FastAPI, settings: Settings, result: MountResult) -> Non
             return repo
 
     app.dependency_overrides[novelty.get_repo] = get_novelty_repo
+    user_docmodel = getattr(app.state, "user_docmodel", None)
+    if user_docmodel is None:
+        user_docmodel = build_default_user_docmodel_coordinator()
+        app.state.user_docmodel = user_docmodel
     discovery_bundle = getattr(app.state, "discovery_bundle", None)
     grounding_hook = getattr(app.state, "grounding_hook", None)
     if discovery_bundle is not None and grounding_hook is not None:
@@ -588,11 +596,25 @@ def _mount_novelty(app: FastAPI, settings: Settings, result: MountResult) -> Non
             discovery_bundle.orchestrator,
             grounding_hook,
         )
+        # US-NV1(#251) — 앱쉘이 이미 U11 오케스트레이터를 세웠으면 재사용, 아니면 env 조립.
+        evidence_bundle = getattr(app.state, "evidence_bundle", None)
+        if evidence_bundle is not None:
+            from backend.modules.evidence.service import EvidenceFormationService
+
+            evidence_adapter = EvidenceFormationClient(
+                EvidenceFormationService(orchestrator=evidence_bundle.orchestrator)
+            )
+        else:
+            evidence_adapter = build_evidence_formation_adapter(
+                cost_guard=getattr(app.state, "cost_guard", None)
+            )
         app.state.novelty_adapters = NoveltyAdapters(
             corpus=corpus,
             external=build_external_adapter(),
-            similarity=build_similarity_adapter(corpus),
-            llm=build_llm_adapter(),
+            similarity=build_similarity_adapter(corpus, user_docmodel=user_docmodel),
+            llm=build_llm_adapter(cost_guard=getattr(app.state, "cost_guard", None)),
+            evidence=evidence_adapter,
+            notion=build_notion_adapter(),
         )
         log.info("app-shell: novelty wired U2 full-search corpus adapter")
     for router in novelty.routers:
@@ -637,6 +659,83 @@ def _mount_research(app: FastAPI, settings: Settings, result: MountResult) -> No
     result.mounted.append("research")
 
 
+def _mount_evidence(app: FastAPI, settings: Settings, result: MountResult) -> None:
+    from backend.modules.evidence import controller as evidence
+    from backend.modules.evidence.repository import (
+        InMemoryEvidenceRepository,
+        SqlEvidenceRepository,
+    )
+    from backend.modules.evidence.settings import EvidenceSettings
+
+    ev_settings = EvidenceSettings.from_env()
+
+    if _is_postgres(settings.database_url):
+        from .db import make_engine, make_session_factory
+
+        engine = getattr(app.state, "db_engine", None) or make_engine(settings.database_url)
+        app.state.db_engine = engine
+        session_factory = make_session_factory(engine)
+
+        def get_evidence_repo():
+            session = session_factory()
+            try:
+                yield SqlEvidenceRepository(session)
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
+            finally:
+                session.close()
+    else:
+        repo = InMemoryEvidenceRepository()
+        app.state.evidence_repo = repo
+
+        def get_evidence_repo():
+            return repo
+
+    if ev_settings.evidence_enabled:
+        from backend.modules.evidence.real_wiring import build_evidence_orchestrator
+
+        bundle = build_evidence_orchestrator(
+            ev_settings, cost_guard=getattr(app.state, "cost_guard", None)
+        )
+        app.state.evidence_bundle = bundle
+
+        def get_evidence_orchestrator():
+            return bundle.orchestrator
+    else:
+        def get_evidence_orchestrator():
+            raise RuntimeError("evidence real path not configured (no S3 DocModel bucket)")
+
+        log.info("app-shell: evidence real path not configured — running in repo-only mode")
+
+    # 비동기 잡 경로(BR-EV-6): sqs_enqueue 콜백을 chat service에 주입
+    sqs_enqueue = None
+    if ev_settings.async_enabled and ev_settings.job_queue_url:
+        import json as _json
+
+        import boto3 as _boto3
+
+        _sqs = _boto3.client('sqs', region_name=ev_settings.region_name or 'ap-northeast-2')
+        _queue_url = ev_settings.job_queue_url
+
+        def sqs_enqueue(payload: dict) -> None:
+            _sqs.send_message(QueueUrl=_queue_url, MessageBody=_json.dumps(payload))
+
+    app.state.evidence_sqs_enqueue = sqs_enqueue
+
+    app.dependency_overrides[evidence.get_repo] = get_evidence_repo
+    app.dependency_overrides[evidence.get_orchestrator] = get_evidence_orchestrator
+    for router in evidence.routers:
+        app.include_router(router)
+    result.mounted.append("evidence")
+    log.info(
+        "app-shell: evidence mounted (real_agent=%s, async=%s)",
+        ev_settings.evidence_enabled,
+        ev_settings.async_enabled,
+    )
+
+
 # The real registry. Each entry is a `(app, settings, result) -> None` mounter whose name
 # (minus the `_mount_` prefix) labels it in MountResult / `/readyz`.
 _INTEGRATIONS = (
@@ -650,4 +749,5 @@ _INTEGRATIONS = (
     _mount_research,
     _mount_novelty,
     _mount_summarization,
+    _mount_evidence,
 )

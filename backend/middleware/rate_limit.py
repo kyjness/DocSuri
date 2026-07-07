@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from collections import OrderedDict, deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import lru_cache
 
 logger = logging.getLogger(__name__)
 
@@ -131,3 +133,19 @@ class RedisRateLimiter:
         except Exception as e:  # noqa: BLE001 — fail-open for availability (non-auth endpoints)
             logger.warning("RedisRateLimiter unavailable; failing open for key=%s (%s)", key, e)
             return True
+
+
+@lru_cache(maxsize=1)
+def get_shared_limiter():
+    """REDIS_HOST 설정 시 워커 간 공유 RedisRateLimiter, 아니면 프로세스 내 폴백(로컬/테스트).
+
+    이메일 레이트리밋(accounts)과 에이전트 쿼터(agent_quota)가 같은 인스턴스를 공유한다.
+    """
+    host = os.getenv("REDIS_HOST", "").strip()
+    if host:
+        return RedisRateLimiter(
+            redis_host=host,
+            redis_port=int(os.getenv("REDIS_PORT") or "6379"),
+            use_tls=os.getenv("REDIS_TLS", "").strip().lower() in {"1", "true", "yes", "on"},
+        )
+    return InProcessWindowLimiter()

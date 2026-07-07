@@ -9,10 +9,12 @@ import threading
 from collections.abc import Callable, Iterable
 from typing import Any
 
+from backend.modules.user_docmodel import USER_DOCMODEL_PDF_CONTENT_TYPE
+
 from .adapters import NoveltyAdapters, RetrievalBundle, build_default_novelty_adapters
 from .models import TERMINAL_STATES, ArtifactKind, EvidenceStatus, InputType, JobState
 from .repository import NoveltyRepository
-from .service import NoveltyService
+from .service import NoveltyService, _emit_metric
 
 log = logging.getLogger("docsuri.novelty.worker")
 
@@ -23,6 +25,14 @@ class InvalidWorkerPayload(ValueError):
 
 class JobProcessingFailed(RuntimeError):
     pass
+
+
+# US-EV4/#268 consume-on-retry: a user-uploaded manuscript PDF's doc-model builds asynchronously
+# (slower than one poll). Rather than terminally DEGRADE, re-drive the job with a bounded backoff.
+_MANUSCRIPT_DOCMODEL_MAX_ATTEMPTS = int(os.getenv("DOCSURI_NOVELTY_MANUSCRIPT_MAX_ATTEMPTS", "8"))
+_MANUSCRIPT_DOCMODEL_RETRY_DELAY_SECONDS = min(
+    900, max(0, int(os.getenv("DOCSURI_NOVELTY_MANUSCRIPT_RETRY_DELAY_SECONDS", "30")))
+)
 
 
 class _Message:
@@ -42,15 +52,32 @@ def parse_sqs_payload(body: str | bytes | dict[str, Any]) -> tuple[str, str]:
     return str(owner_id), str(job_id)
 
 
+def _payload_attempt(body: str | bytes | dict[str, Any]) -> int:
+    if isinstance(body, bytes):
+        body = body.decode("utf-8")
+    payload = json.loads(body) if isinstance(body, str) else body
+    value = payload.get("attempt", 0)
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
 def process_sqs_payload(
     repo: NoveltyRepository,
     body: str | bytes | dict[str, Any],
     *,
     adapters: NoveltyAdapters | None = None,
     observability=None,
+    reenqueue: Callable[[str, str, int], None] | None = None,
 ) -> None:
     owner_id, job_id = parse_sqs_payload(body)
-    process_job(repo, owner_id, job_id, adapters=adapters, observability=observability)
+    process_job(
+        repo,
+        owner_id,
+        job_id,
+        adapters=adapters,
+        observability=observability,
+        attempt=_payload_attempt(body),
+        reenqueue=reenqueue,
+    )
 
 
 def run_worker(
@@ -61,6 +88,7 @@ def run_worker(
     should_stop: Callable[[], bool],
     adapters: NoveltyAdapters | None = None,
     observability=None,
+    reenqueue: Callable[[str, str, int], None] | None = None,
 ) -> None:
     while not should_stop():
         for message in receive():
@@ -71,6 +99,7 @@ def run_worker(
                     message.body,
                     adapters=adapters,
                     observability=observability,
+                    reenqueue=reenqueue,
                 )
                 commit = getattr(repo, "commit", None)
                 if commit is not None:
@@ -95,6 +124,42 @@ def run_worker(
                 break
 
 
+def _await_manuscript_doc_model(
+    service: NoveltyService,
+    adapters: NoveltyAdapters,
+    job: Any,
+    owner_id: str,
+    job_id: str,
+    attempt: int,
+    reenqueue: Callable[[str, str, int], None] | None,
+) -> bool:
+    """Early retry gate for user-uploaded manuscript PDFs (#268 consume-on-retry). The doc-model
+    builds asynchronously and is usually not ready within one poll; rather than run the LLM
+    pipeline and terminally DEGRADE, re-enqueue the same job with a bounded backoff until the
+    doc-model lands. Returns True when re-enqueued (caller returns without running the pipeline)."""
+    if reenqueue is None or job.manuscript is None:
+        return False
+    if job.inputType is not InputType.MANUSCRIPT:
+        return False
+    if job.manuscript.contentType != USER_DOCMODEL_PDF_CONTENT_TYPE:
+        return False
+    probe = getattr(adapters.similarity, "manuscript_doc_model_ready", None)
+    if probe is None:
+        return False
+    manuscript_ref = {**job.manuscript.model_dump(), "jobId": job_id}
+    if probe(owner_id, manuscript_ref):
+        return False
+    if attempt >= _MANUSCRIPT_DOCMODEL_MAX_ATTEMPTS:
+        return False  # exhausted → run the pipeline; it degrades as before.
+    service.record_event(
+        job,
+        "Waiting for the uploaded PDF to be processed",
+        {"source": _SIMILARITY_SOURCE, "attempt": attempt + 1},
+    )
+    reenqueue(owner_id, job_id, attempt + 1)
+    return True
+
+
 def process_job(
     repo: NoveltyRepository,
     owner_id: str,
@@ -102,6 +167,8 @@ def process_job(
     *,
     adapters: NoveltyAdapters | None = None,
     observability=None,
+    attempt: int = 0,
+    reenqueue: Callable[[str, str, int], None] | None = None,
 ) -> None:
     adapters = adapters or NoveltyAdapters()
     service = NoveltyService(repo, observability)
@@ -112,14 +179,56 @@ def process_job(
         return
     if job.cancelled or job.state in TERMINAL_STATES:
         return
+    if _await_manuscript_doc_model(service, adapters, job, owner_id, job_id, attempt, reenqueue):
+        return
     try:
         degraded_reasons: list[str] = []
+        topic_preview = job.topic[:_PREVIEW_LEN]
 
-        service.advance_state(owner_id, job_id, JobState.RETRIEVING_CORPUS, "Searching U2 corpus")
+        # US-NV1(#251) — 자연어 잡은 D5 EvidenceFormationPort로 근거 묶음을 먼저 만들고(AC1),
+        # 아래 U2 full 검색이 결과를 보강한다(AC2). abstain·장애는 저하로 계속(날조 금지, D5).
+        evidence_bundle: RetrievalBundle | None = None
+        if job.inputType is InputType.NATURAL_LANGUAGE:
+            job = service.advance_state(
+                owner_id,
+                job_id,
+                JobState.RETRIEVING_CORPUS,
+                "Forming evidence bundle",
+                {"source": _EVIDENCE_SOURCE, "query": topic_preview},
+            )
+            evidence_bundle = adapters.evidence.form(owner_id, job.topic)
+            service.record_event(
+                job,
+                "Evidence bundle formed",
+                _step_result_payload(
+                    _EVIDENCE_SOURCE, len(evidence_bundle.items), None
+                ),
+            )
+
+        # US-NV7(#257) — 단계 이벤트가 도구/쿼리/발견 수/저하 사유를 싣는다. 검색 단계는
+        # 시작 이벤트(도구+쿼리) 뒤 완료 이벤트(count)를 덧붙이고, LLM 단계는 draft가 이미
+        # 끝난 뒤 전이되므로 시작 이벤트 하나가 결과 수까지 나른다.
+        job = service.advance_state(
+            owner_id,
+            job_id,
+            JobState.RETRIEVING_CORPUS,
+            "Searching U2 corpus",
+            {"source": _CORPUS_SOURCE, "query": topic_preview},
+        )
         corpus = adapters.corpus.full_search(owner_id, job.topic)
         corpus_payload, degraded_reason = _payload_from_bundle(corpus)
         if degraded_reason:
             degraded_reasons.append(degraded_reason)
+            _note_degraded(observability, _CORPUS_SOURCE)
+        service.record_event(
+            job,
+            "U2 corpus search finished",
+            _step_result_payload(_CORPUS_SOURCE, len(corpus.items), degraded_reason),
+        )
+        if evidence_bundle is not None and evidence_bundle.items:
+            # 근거 묶음이 앞서고 corpus가 보강 — 병합 번들이 artifact와 LLM draft에 흐른다.
+            corpus = _merge_bundles(evidence_bundle, corpus)
+            corpus_payload, _ = _payload_from_bundle(corpus)
         service.save_artifact(
             owner_id,
             job_id,
@@ -128,16 +237,23 @@ def process_job(
             corpus_payload,
         )
 
-        service.advance_state(
+        job = service.advance_state(
             owner_id,
             job_id,
             JobState.SEARCHING_EXTERNAL,
             "Searching external sources",
+            {"source": _EXTERNAL_SOURCE, "query": topic_preview},
         )
         external = adapters.external.search(job.topic)
         external_payload, degraded_reason = _payload_from_bundle(external)
         if degraded_reason:
             degraded_reasons.append(degraded_reason)
+            _note_degraded(observability, _EXTERNAL_SOURCE)
+        service.record_event(
+            job,
+            "External source search finished",
+            _step_result_payload(_EXTERNAL_SOURCE, len(external.items), degraded_reason),
+        )
         service.save_artifact(
             owner_id,
             job_id,
@@ -149,12 +265,18 @@ def process_job(
         draft = adapters.llm.draft(topic=job.topic, corpus=corpus, external=external)
         if draft.degradedReason:
             degraded_reasons.append(draft.degradedReason)
+            _note_degraded(observability, _LLM_SOURCE)
 
-        service.advance_state(
+        job = service.advance_state(
             owner_id,
             job_id,
             JobState.SUMMARIZING_PRIOR_WORK,
             "Summarizing similar completed work",
+            _step_result_payload(
+                _LLM_SOURCE,
+                len(draft.similarWorks.get("items") or []),
+                draft.degradedReason,
+            ),
         )
         service.save_artifact(
             owner_id,
@@ -165,17 +287,24 @@ def process_job(
         )
 
         if job.inputType is InputType.MANUSCRIPT and job.manuscript is not None:
-            service.advance_state(
+            job = service.advance_state(
                 owner_id,
                 job_id,
                 JobState.CHECKING_SIMILARITY,
                 "Checking sentence similarity and AI-style risks",
+                {"source": _SIMILARITY_SOURCE, "query": job.manuscript.fileName},
             )
             similarity_ref = {**job.manuscript.model_dump(), "jobId": job_id}
             similarity = adapters.similarity.check(owner_id, similarity_ref)
             similarity_payload, degraded_reason = _payload_from_bundle(similarity)
             if degraded_reason:
                 degraded_reasons.append(degraded_reason)
+                _note_degraded(observability, _SIMILARITY_SOURCE)
+            service.record_event(
+                job,
+                "Similarity check finished",
+                _step_result_payload(_SIMILARITY_SOURCE, len(similarity.items), degraded_reason),
+            )
             service.save_artifact(
                 owner_id,
                 job_id,
@@ -184,11 +313,16 @@ def process_job(
                 similarity_payload,
             )
 
-        service.advance_state(
+        job = service.advance_state(
             owner_id,
             job_id,
             JobState.FORMING_IDEAS,
             "Forming novelty candidates",
+            _step_result_payload(
+                _LLM_SOURCE,
+                len(draft.noveltyCandidates.get("items") or []),
+                draft.degradedReason,
+            ),
         )
         service.save_artifact(
             owner_id,
@@ -198,11 +332,16 @@ def process_job(
             draft.noveltyCandidates,
         )
 
-        service.advance_state(
+        plan_summary = str(draft.experimentPlan.get("researchQuestion") or "")[:_PREVIEW_LEN]
+        planning_payload: dict[str, Any] = {"source": _LLM_SOURCE}
+        if plan_summary:
+            planning_payload["outputSummary"] = plan_summary
+        job = service.advance_state(
             owner_id,
             job_id,
             JobState.PLANNING_EXPERIMENT,
             "Drafting experiment plan",
+            planning_payload,
         )
         service.save_artifact(
             owner_id,
@@ -230,6 +369,38 @@ def process_job(
             {"error": str(exc)},
         )
         raise JobProcessingFailed(str(exc)) from exc
+
+
+# US-NV7(#257) — 이벤트 payload 키는 FE timelineDetail 계약(source/query/count/outputSummary/
+# reason)을 따른다. 값은 표시용 프리뷰라 _PREVIEW_LEN에서 자른다.
+_PREVIEW_LEN = 160
+_EVIDENCE_SOURCE = "U11 evidence formation"
+_CORPUS_SOURCE = "U2 full search"
+_EXTERNAL_SOURCE = "GitHub · Hugging Face · Zenodo"
+_SIMILARITY_SOURCE = "manuscript similarity"
+_LLM_SOURCE = "Bedrock LLM"
+
+
+def _note_degraded(observability, source: str) -> None:
+    """US-NV9(#259) — 대시보드용 소스별 저하 카운트."""
+    _emit_metric(observability, "novelty.step_degraded", tags={"source": source})
+
+
+def _step_result_payload(source: str, count: int, reason: str | None) -> dict[str, Any]:
+    payload: dict[str, Any] = {"source": source, "count": count}
+    if reason:
+        payload["reason"] = reason
+    return payload
+
+
+def _merge_bundles(first: RetrievalBundle, second: RetrievalBundle) -> RetrievalBundle:
+    """US-NV1(#251) — 근거 묶음 + corpus 보강 병합. 개별 저하 사유는 각 단계에서 이미 기록됨."""
+    items = [*first.items, *second.items]
+    return RetrievalBundle(
+        items=items,
+        evidenceStatus=EvidenceStatus.SUPPORTED if items else EvidenceStatus.ABSTAINED,
+        degradedReason=second.degradedReason,
+    )
 
 
 def _payload_from_bundle(bundle: RetrievalBundle) -> tuple[dict[str, Any], str | None]:
@@ -313,6 +484,13 @@ def main(argv: list[str] | None = None) -> int:
         if message.receipt_handle:
             sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=message.receipt_handle)
 
+    def reenqueue(o_id: str, j_id: str, attempt: int) -> None:
+        sqs.send_message(
+            QueueUrl=queue_url,
+            MessageBody=json.dumps({"ownerId": o_id, "jobId": j_id, "attempt": attempt}),
+            DelaySeconds=_MANUSCRIPT_DOCMODEL_RETRY_DELAY_SECONDS,
+        )
+
     log.info("novelty worker started; polling queue")
     try:
         run_worker(
@@ -323,8 +501,10 @@ def main(argv: list[str] | None = None) -> int:
             adapters=build_default_novelty_adapters(
                 observability=observability,
                 cost_guard=cost_guard,
+                user_docmodel=_build_user_docmodel(),
             ),
             observability=observability,
+            reenqueue=reenqueue,
         )
     finally:
         close = getattr(telemetry_store, "close", None)
@@ -343,6 +523,12 @@ def _build_worker_ops() -> tuple[Any, Any, Any]:
     observability, telemetry_store = _build_observability()
     _, cost_guard, _, _ = _build_ops_dashboard_service(telemetry_store)
     return observability, cost_guard, telemetry_store
+
+
+def _build_user_docmodel():
+    from backend.modules.user_docmodel import build_default_user_docmodel_coordinator
+
+    return build_default_user_docmodel_coordinator()
 
 
 if __name__ == "__main__":

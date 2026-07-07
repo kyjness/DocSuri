@@ -9,8 +9,7 @@ or a malformed owner id — is generalized to ``NotFoundError`` so existence is 
 
 from __future__ import annotations
 
-from backend.modules.accounts.guard import AuthorizationGuard, Decision
-from backend.modules.accounts.models import AccountId, Action, Principal
+from docsuri_shared.authz import AccountId, Action, AuthorizationGuard, Decision, Principal
 
 from .models import NotFoundError
 

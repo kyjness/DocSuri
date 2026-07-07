@@ -13,6 +13,7 @@ from .models import (
     ExportStatus,
     InputType,
     JobState,
+    NotionConnection,
     NotionExport,
     NoveltyChatMessage,
     NoveltyJob,
@@ -27,6 +28,7 @@ class NoveltyRepository(Protocol):
     def list_jobs(self, owner_id: str, limit: int = 50) -> list[NoveltyJob]: ...
     def update_job(self, owner_id: str, job_id: str, **changes: Any) -> NoveltyJob: ...
     def delete_job(self, owner_id: str, job_id: str) -> None: ...
+    def delete_all_jobs(self, owner_id: str) -> None: ...
     def add_event(self, event: ProgressEvent) -> ProgressEvent: ...
     def list_events(
         self, owner_id: str, job_id: str, after_event_id: str | None = None
@@ -37,6 +39,9 @@ class NoveltyRepository(Protocol):
     def list_messages(self, owner_id: str, job_id: str) -> list[NoveltyChatMessage]: ...
     def get_export(self, owner_id: str, job_id: str) -> NotionExport | None: ...
     def save_export(self, export: NotionExport) -> NotionExport: ...
+    def get_notion_connection(self, owner_id: str) -> NotionConnection | None: ...
+    def save_notion_connection(self, connection: NotionConnection) -> NotionConnection: ...
+    def delete_notion_connection(self, owner_id: str) -> None: ...
     def commit(self) -> None: ...
     def rollback(self) -> None: ...
     def close(self) -> None: ...
@@ -71,6 +76,7 @@ class InMemoryNoveltyRepository:
         self._artifacts: dict[str, list[ArtifactRef]] = {}
         self._messages: dict[str, list[NoveltyChatMessage]] = {}
         self._exports: dict[str, NotionExport] = {}
+        self._notion_connections: dict[str, NotionConnection] = {}
 
     def create_job(self, job: NoveltyJob) -> NoveltyJob:
         with self._lock:
@@ -108,6 +114,12 @@ class InMemoryNoveltyRepository:
             self._artifacts.pop(job_id, None)
             self._messages.pop(job_id, None)
             self._exports.pop(job_id, None)
+
+    def delete_all_jobs(self, owner_id: str) -> None:
+        with self._lock:
+            owned = [job_id for job_id, job in self._jobs.items() if job.ownerId == owner_id]
+            for job_id in owned:
+                self.delete_job(owner_id, job_id)
 
     def add_event(self, event: ProgressEvent) -> ProgressEvent:
         with self._lock:
@@ -160,6 +172,19 @@ class InMemoryNoveltyRepository:
             self.get_job(export.ownerId, export.jobId)
             self._exports[export.jobId] = export
             return export
+
+    def get_notion_connection(self, owner_id: str) -> NotionConnection | None:
+        with self._lock:
+            return self._notion_connections.get(owner_id)
+
+    def save_notion_connection(self, connection: NotionConnection) -> NotionConnection:
+        with self._lock:
+            self._notion_connections[connection.ownerId] = connection
+            return connection
+
+    def delete_notion_connection(self, owner_id: str) -> None:
+        with self._lock:
+            self._notion_connections.pop(owner_id, None)
 
     def commit(self) -> None:
         return None
@@ -238,6 +263,18 @@ class ArtifactTable(Base):
     object_key: Mapped[str] = mapped_column(String(512), nullable=False)
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
     created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class NotionConnectionTable(Base):
+    """US-NV8(#258) — 사용자별 Notion 연결. 토큰은 Fernet 암호문만 저장(SEC-8)."""
+
+    __tablename__ = "novelty_notion_connections"
+
+    owner_id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True)
+    token_encrypted: Mapped[str] = mapped_column(String(1024), nullable=False)
+    parent_page_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[Any] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class NotionExportTable(Base):
@@ -380,11 +417,15 @@ class SqlNoveltyRepository:
             "errorMessage": "error_message",
             "cancelled": "cancelled",
             "completedAt": "completed_at",
+            # US-NV2(#252) — 업로드 완료 시 objectKey 바인딩(JSON 컬럼).
+            "manuscript": "manuscript",
         }
         for key, value in changes.items():
             column = mapping.get(key)
             if column is None:
                 continue
+            if hasattr(value, "model_dump"):
+                value = value.model_dump(mode="json")
             if hasattr(value, "value"):
                 value = value.value
             setattr(row, column, value)
@@ -392,11 +433,28 @@ class SqlNoveltyRepository:
         self._s.flush()
         return _job_from_row(row)
 
+    _CHILD_TABLES = (ProgressEventTable, NoveltyMessageTable, ArtifactTable, NotionExportTable)
+
     def delete_job(self, owner_id: str, job_id: str) -> None:
         row = self._s.get(NoveltyJobTable, job_id)
         if row is None or row.owner_id != owner_id:
             raise KeyError(job_id)
+        # US-EV8(#272)/SEC-14 — FK cascade가 없어 job 행만 지우면 이벤트·메시지·
+        # 아티팩트·export 행이 고아로 남았다(개인 데이터 잔존). 자식 테이블부터 삭제.
+        for table in self._CHILD_TABLES:
+            self._s.query(table).filter(table.job_id == job_id).delete(synchronize_session=False)
         self._s.delete(row)
+        self._s.flush()
+
+    def delete_all_jobs(self, owner_id: str) -> None:
+        # US-EV8(#272) 전체 초기화 — 소유자 단위 벌크 삭제(멱등, 0건이어도 통과).
+        for table in self._CHILD_TABLES:
+            self._s.query(table).filter(table.owner_id == owner_id).delete(
+                synchronize_session=False
+            )
+        self._s.query(NoveltyJobTable).filter(NoveltyJobTable.owner_id == owner_id).delete(
+            synchronize_session=False
+        )
         self._s.flush()
 
     def add_event(self, event: ProgressEvent) -> ProgressEvent:
@@ -495,6 +553,44 @@ class SqlNoveltyRepository:
             .one_or_none()
         )
         return _export_from_row(row) if row else None
+
+    def get_notion_connection(self, owner_id: str) -> NotionConnection | None:
+        row = self._s.get(NotionConnectionTable, owner_id)
+        if row is None:
+            return None
+        return NotionConnection(
+            ownerId=row.owner_id,
+            tokenEncrypted=row.token_encrypted,
+            parentPageId=row.parent_page_id,
+            createdAt=row.created_at,
+            updatedAt=row.updated_at,
+        )
+
+    def save_notion_connection(self, connection: NotionConnection) -> NotionConnection:
+        row = self._s.get(NotionConnectionTable, connection.ownerId)
+        now = utc_now()
+        if row is None:
+            self._s.add(
+                NotionConnectionTable(
+                    owner_id=connection.ownerId,
+                    token_encrypted=connection.tokenEncrypted,
+                    parent_page_id=connection.parentPageId,
+                    created_at=connection.createdAt,
+                    updated_at=now,
+                )
+            )
+        else:
+            row.token_encrypted = connection.tokenEncrypted
+            row.parent_page_id = connection.parentPageId
+            row.updated_at = now
+        self._s.flush()
+        return connection.model_copy(update={"updatedAt": now})
+
+    def delete_notion_connection(self, owner_id: str) -> None:
+        row = self._s.get(NotionConnectionTable, owner_id)
+        if row is not None:
+            self._s.delete(row)
+            self._s.flush()
 
     def save_export(self, export: NotionExport) -> NotionExport:
         self.get_job(export.ownerId, export.jobId)

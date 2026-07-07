@@ -9,6 +9,8 @@ Dependency-isolation exceptions (RES-9 / NFR-R2 / Q1=A fail-fast):
   lexical-only (degraded), embedding is a separable dependency.
 - ``IndexUnavailable`` — the OpenSearch index (k-NN + BM25, one store) failed → no fallback
   path → orchestrator raises ``SearchUnavailable`` (fail-closed, INV-3/SEC-15).
+- ``RerankUnavailable`` — the cross-encoder rerank model failed → orchestrator keeps the
+  baseline (RRF) order (fail-soft, a separable ranking-quality enhancement, never blocks search).
 """
 
 from __future__ import annotations
@@ -23,10 +25,12 @@ __all__ = [
     "EmbeddingUnavailable",
     "IndexUnavailable",
     "SearchUnavailable",
+    "RerankUnavailable",
     "ScoredRecord",
     "EmbeddingAdapter",
     "VectorStoreAdapter",
     "LexicalIndexAdapter",
+    "RerankAdapter",
     "PaperLookupAdapter",
     "EventPublisher",
 ]
@@ -42,6 +46,14 @@ class IndexUnavailable(Exception):
 
 class SearchUnavailable(Exception):
     """Fail-closed search outcome surfaced to the edge as a generic error (SEC-15/NFR-R1)."""
+
+
+class RerankUnavailable(Exception):
+    """Cross-encoder rerank dependency failed — fail-soft to the baseline RRF order (BR-5).
+
+    Distinct from ``EmbeddingUnavailable``/``IndexUnavailable``: rerank is a ranking-QUALITY
+    enhancement, not a retrieval dependency, so its failure NEVER degrades the response mode —
+    the orchestrator simply keeps the un-reranked order and search proceeds normally."""
 
 
 # A store result: a real record plus its (internal) store relevance score, in rank order.
@@ -81,6 +93,19 @@ class LexicalIndexAdapter(Protocol):
     ) -> list[ScoredRecord]:
         """Return up to ``top_k`` records in BM25 order over ``fields`` (lite vs full scope:
         title+abstract vs +body). Raises ``IndexUnavailable``."""
+        ...
+
+
+@runtime_checkable
+class RerankAdapter(Protocol):
+    """Cross-encoder reranker (FR-3 quality; NFR-C1 cost-gated). A SUPPLY stage: it scores, it
+    does not sort — the orchestrator applies the scores onto ``Candidate.ranking_score`` and the
+    ranker sorts. Priced per-search (not per-token) and off the retrieval path."""
+
+    def rerank(self, query: str, documents: Sequence[str]) -> list[float]:
+        """Return one relevance score per document, in the SAME order as ``documents`` (higher =
+        more relevant). Cross-encoder jointly encodes (query, document). Raises
+        ``RerankUnavailable`` on any failure → orchestrator keeps the baseline order (fail-soft)."""
         ...
 
 

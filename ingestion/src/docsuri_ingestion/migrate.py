@@ -22,6 +22,15 @@ from datetime import UTC, datetime
 from docsuri_shared.index_spec import papers_index_body
 
 from .observability import configure_logging
+from .raw_backfill import raw_backfill
+from .reembed import (
+    reembed,
+    reembed_copy,
+    reembed_cutover,
+    reembed_finalize,
+    reembed_provision,
+)
+from .reparse import reparse
 from .settings import IngestionSettings
 
 log = logging.getLogger("docsuri.ingestion.migrate")
@@ -182,6 +191,16 @@ _STEPS = {
     "backfill": backfill,
     "backfill_external": backfill_external,
     "cutover": cutover,
+    # Fast re-embed rebuild (reembed.py): provision -> (copy | reembed) -> finalize -> cutover.
+    "reembed_provision": reembed_provision,
+    "reembed_copy": reembed_copy,
+    "reembed": reembed,
+    "reembed_finalize": reembed_finalize,
+    "reembed_cutover": reembed_cutover,
+    # B3 full re-parse: raw_backfill (prime cache from bulk PDF) -> reembed_provision -> reparse
+    # (cache-only -> offline index) -> reembed_finalize -> reembed_cutover.
+    "raw_backfill": raw_backfill,
+    "reparse": reparse,
 }
 
 

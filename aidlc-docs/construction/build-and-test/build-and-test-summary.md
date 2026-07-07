@@ -5,6 +5,54 @@
 
 ---
 
+# U11 Evidence Formation Agent Build and Test Summary — 2026-07-01
+
+## Build Status
+
+- **Build tool**: Python `compileall`, pytest, ruff.
+- **Build status**: PASS for all U11 evidence module files (syntax, lint, tests).
+
+## Test Execution Summary
+
+| Category | Command | Result |
+| --- | --- | --- |
+| U11 unit tests | `PYTHONPATH='shared/python/src:ops/src:...' ./backend/.venv/bin/pytest backend/tests/test_evidence.py -v` | **12 passed** |
+| U11 + app-shell | `PYTHONPATH='...' ./backend/.venv/bin/pytest backend/tests/test_evidence.py backend/tests/test_app_shell.py -v` | **24 passed**, 1 failed (pre-existing env issue), 1 warning |
+| Backend suite | `PYTHONPATH='...' ./backend/.venv/bin/pytest backend/tests/ --ignore=test_mypage.py` | **93 passed**, 1 failed (pre-existing), 1 skipped |
+| Lint | `./backend/.venv/bin/ruff check backend/modules/evidence/ backend/wiring.py backend/migrations/__main__.py backend/tests/test_evidence.py backend/tests/test_app_shell.py` | **PASS** |
+| Compile | `./backend/.venv/bin/python -m compileall backend/modules/evidence/ backend/wiring.py backend/migrations/__main__.py` | **PASS** |
+
+## U11 Coverage
+
+- INV-EV-1 (SEC-9): Cross-owner session read → KeyError → 404
+- INV-EV-2: Empty claims → TurnAbstainResult (orchestrator enforces)
+- INV-EV-5: Serialized TurnResult never leaks score/chunk_id/vector/llm_meta
+- BR-EV-8: Soft delete hides session from list + KeyError on GET
+- BR-EV-9: `reset_all` only affects requesting owner
+- BR-EV-10: `list_sessions` returns updated_at DESC
+- API POST `/api/evidence/turns` → 200, state=abstain (stub orchestrator)
+- API GET `/api/evidence/sessions` → 200, empty list initially
+- API DELETE cross-owner → 404
+- API POST `/api/evidence/sessions/reset` → 204
+- API GET nonexistent session → 404 (SEC-9)
+- API: no principal → 401
+
+## Known Environment Notes
+
+- `test_discovery_and_accounts_actually_mount` fails on macOS because the `cryptography`
+  package is not installed, causing `accounts` and `mypage` to skip at mount time.
+  This is a **pre-existing environment constraint** unrelated to U11.
+- `test_mypage.py` collection fails for the same reason — excluded from the backend suite run.
+
+## Overall Status
+
+- **Build**: PASS (compileall + ruff clean)
+- **Tests**: PASS for all 12 U11 evidence tests; backend suite at 93/94 (1 pre-existing env failure)
+- **Contract/security tests**: Covered by `backend/tests/test_evidence.py` (SEC-9, INV-EV-5, 401 gate)
+- **Ready for Operations**: Yes — pending PR review.
+
+---
+
 # U11 Novelty Agent Build and Test Summary — 2026-06-30
 
 ## Build Status

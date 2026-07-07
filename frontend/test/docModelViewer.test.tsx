@@ -1,9 +1,17 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { DocModelViewer } from '@/components/DocModelViewer';
+import { DocModelViewer, DocModelBody } from '@/components/DocModelViewer';
+import { preloadMathEngine } from '@/lib/renderMath';
+import { docModelResponse } from '@/mocks/summarizeFixtures';
 
 // Uses the mock transport (NEXT_PUBLIC_DOCSURI_REAL_API unset) → docModelResponse +
 // assetsResponse (figure assetId 2401.00001:v1:figure:0 joins across both fixtures).
+
+// Math is rendered lazily by MathJax — warm the engine so formulas emit their SVG (mjx-container)
+// synchronously within each render.
+beforeAll(async () => {
+  await preloadMathEngine();
+});
 
 describe('DocModelViewer', () => {
   it('renders the section tree, TOC, structured table data, and a joined figure', async () => {
@@ -29,20 +37,49 @@ describe('DocModelViewer', () => {
 
     // Figure joins the /assets signed url by assetId. Scoped to actual <img> tags: the
     // formula-fallback placeholder also carries role="img" (D5), so a plain findByRole('img')
-    // is ambiguous once that fix landed.
-    const imgs = await screen.findAllByRole('img');
-    const img = imgs.find((el) => el.tagName === 'IMG');
-    expect(img).toBeTruthy();
+    // is ambiguous once that fix landed. The placeholder renders synchronously while the figure
+    // <img> only appears after the async assets fetch resolves — so poll for the real <img>
+    // rather than `findAllByRole` (which returns as soon as the placeholder shows → flaky).
+    const img = await waitFor(() => {
+      const el = screen.getAllByRole('img').find((e) => e.tagName === 'IMG');
+      expect(el).toBeTruthy();
+      return el!;
+    });
     expect(img!.getAttribute('src')).toContain('data:image/svg');
     expect(img!.getAttribute('loading')).toBe('lazy');
     expect(img!.closest('[role="button"]')).toBeNull();
 
-    // Display formula rendered by KaTeX (emits .katex markup).
-    expect(document.querySelector('.katex')).toBeTruthy();
+    // Display formula rendered by MathJax (emits mjx-container markup).
+    expect(document.querySelector('mjx-container')).toBeTruthy();
 
     // Each table/figure/formula gets its OWN adjacent zoom button (D1, BR-U5-22) rather than
     // the content itself being the trigger.
     expect(screen.getAllByTestId('docmodel-zoom-trigger').length).toBeGreaterThan(0);
+  });
+
+  it('renders inline math in section titles and the TOC, not raw \\(…\\) source', () => {
+    // Section titles (heading + TOC) carry inline math the same way body text does — the
+    // ar5iv/arXiv title strings keep literal `\(…\)` / `$…$`, so the viewer must run them
+    // through MathJax instead of printing the delimiters verbatim.
+    const base = docModelResponse.docModel;
+    const docModel = {
+      ...base,
+      sections: base.sections.map((s) =>
+        s.id === 's3' ? { ...s, title: 'Bayesian Update \\(h(\\bm{\\theta})\\)' } : s,
+      ),
+    };
+    render(<DocModelBody docModel={docModel} assetsById={new Map()} />);
+
+    // TOC has no formula blocks, so any MathJax markup there comes from the title math — and the
+    // raw delimiters must not leak into the visible text.
+    const toc = screen.getByTestId('docmodel-toc');
+    expect(toc.querySelector('mjx-container')).toBeTruthy();
+    expect(toc.textContent).not.toContain('\\(');
+
+    // The section heading itself renders the math too (no verbatim `\(`).
+    const mathHeading = screen.getAllByRole('heading').find((h) => h.querySelector('mjx-container'));
+    expect(mathHeading).toBeTruthy();
+    expect(mathHeading!.textContent).not.toContain('\\(');
   });
 
   it('keeps a numbered formula as a placeholder when it has neither LaTeX nor a crop image', async () => {

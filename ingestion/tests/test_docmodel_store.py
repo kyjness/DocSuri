@@ -46,7 +46,11 @@ class _FakeS3:
             from botocore.exceptions import ClientError
 
             raise ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
-        return {"Body": io.BytesIO(self.objects[Key]["Body"])}
+        body = self.objects[Key]["Body"]
+        return {
+            "Body": io.BytesIO(body),
+            "ContentLength": self.objects[Key].get("ContentLength", len(body)),
+        }
 
     def get_paginator(self, name: str):
         objects = self.objects
@@ -129,3 +133,25 @@ def test_remove_drops_all_cached_versions(store) -> None:
     assert fake.objects
     s3_store.remove("2401.00001")
     assert fake.objects == {}
+
+
+def test_user_document_source_fetches_pdf_bytes(store) -> None:
+    from docsuri_ingestion.adapters.aws import S3UserDocumentSource
+
+    _, fake = store
+    fake.objects["uploads/acct-1/job-1/attachment.pdf"] = {"Body": b"%PDF body"}
+    source = S3UserDocumentSource(bucket="papers", max_bytes=32)
+
+    assert source.fetch_pdf("uploads/acct-1/job-1/attachment.pdf") == b"%PDF body"
+
+
+def test_user_document_source_rejects_oversize_pdf(store) -> None:
+    from docsuri_ingestion.adapters.aws import S3UserDocumentSource
+    from docsuri_ingestion.domain.errors import PermanentIngestionError
+
+    _, fake = store
+    fake.objects["uploads/acct-1/job-1/large.pdf"] = {"Body": b"x" * 33, "ContentLength": 33}
+    source = S3UserDocumentSource(bucket="papers", max_bytes=32)
+
+    with pytest.raises(PermanentIngestionError):
+        source.fetch_pdf("uploads/acct-1/job-1/large.pdf")

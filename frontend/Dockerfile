@@ -19,9 +19,15 @@ COPY . .
 # mock-only preview image.
 ARG NEXT_PUBLIC_DOCSURI_REAL_API=1
 ENV NEXT_PUBLIC_DOCSURI_REAL_API=$NEXT_PUBLIC_DOCSURI_REAL_API
-ARG NEXT_PUBLIC_DOCSURI_RESEARCH_AGENT_ENABLED=
+# Research(U11 evidence) 백엔드는 compute_stack.py에서 이미 프로덕션에 항상 켜져
+# 있는데(RESEARCH_AGENT_ENABLED=true), 이 클라이언트 번들 가드가 비어있으면
+# apiClient.ts가 real API 모드에서 Research 전송 자체를 차단한다(PR #338 리뷰
+# Blocking #4). 백엔드와 동일하게 기본 활성화.
+ARG NEXT_PUBLIC_DOCSURI_RESEARCH_AGENT_ENABLED=1
 ENV NEXT_PUBLIC_DOCSURI_RESEARCH_AGENT_ENABLED=$NEXT_PUBLIC_DOCSURI_RESEARCH_AGENT_ENABLED
-ARG NEXT_PUBLIC_ORCID_LOGIN_ENABLED=
+# ORCID OIDC login is live in prod (backend enabled 2026-07-06). Default the client-bundle flag ON
+# so the "ORCID로 계속하기" button ships on every build; override to "" only for a mock preview.
+ARG NEXT_PUBLIC_ORCID_LOGIN_ENABLED=1
 ENV NEXT_PUBLIC_ORCID_LOGIN_ENABLED=$NEXT_PUBLIC_ORCID_LOGIN_ENABLED
 RUN pnpm build
 

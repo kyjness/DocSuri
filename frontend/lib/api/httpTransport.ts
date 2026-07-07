@@ -1,5 +1,10 @@
 import 'server-only';
-import type { Transport, TransportRequest, TransportResponse } from './transport';
+import {
+  isBinaryTransportBody,
+  type Transport,
+  type TransportRequest,
+  type TransportResponse,
+} from './transport';
 
 // HttpTransport (LC-2, P-S1) — SERVER-ONLY.
 //
@@ -23,8 +28,12 @@ export class HttpTransport implements Transport {
   constructor(private readonly config: HttpTransportConfig) {}
 
   async send(req: TransportRequest): Promise<TransportResponse> {
+    const requestBody = req.body;
+    const binary = isBinaryTransportBody(requestBody);
     const headers: Record<string, string> = {
-      ...(req.body !== undefined ? { 'content-type': 'application/json' } : {}),
+      ...(requestBody !== undefined
+        ? { 'content-type': binary ? requestBody.contentType : 'application/json' }
+        : {}),
       ...(req.headers ?? {}),
     };
     if (this.config.cookieHeader) headers['cookie'] = this.config.cookieHeader;
@@ -32,7 +41,12 @@ export class HttpTransport implements Transport {
     const res = await fetch(`${this.config.baseUrl}${req.path}`, {
       method: req.method,
       headers,
-      body: req.body !== undefined ? JSON.stringify(req.body) : undefined,
+      body:
+        requestBody !== undefined
+          ? binary
+            ? requestBody.data
+            : JSON.stringify(requestBody)
+          : undefined,
       // Never cache personalized/authenticated responses (P-P3).
       cache: 'no-store',
       // The BFF (app/bff/[...path]/route.ts) is the sole caller and never sets req.signal, so

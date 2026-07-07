@@ -4,7 +4,7 @@ export type AgentMode = (typeof AGENT_MODES)[number];
 export type AgentJobState = 'idle' | 'queued' | 'running' | 'completed' | 'failed' | 'degraded';
 export type AgentMessageRole = 'user' | 'agent';
 export type AgentAttachmentKind = 'pdf' | 'markdown' | 'text' | 'unknown';
-export type AgentAttachmentStatus = 'ready' | 'rejected';
+export type AgentAttachmentStatus = 'ready' | 'reading' | 'rejected';
 export type AgentTimelineState = 'running' | 'completed' | 'failed' | 'degraded';
 
 export interface AgentAttachment {
@@ -14,6 +14,14 @@ export interface AgentAttachment {
   sizeBytes: number;
   status: AgentAttachmentStatus;
   error?: string;
+  /** PR3 — backend upload metadata for user PDFs; origin is encoded by paperId=userdoc:{uuid}. */
+  objectKey?: string;
+  paperId?: string;
+  recordRef?: string;
+  /** Browser-local source used only for the raw PDF upload. Never sent in JSON payloads. */
+  sourceFile?: Blob;
+  /** US-EV4(#268)/US-NV2(#252) — md/txt 본문(≤256KiB). PDF는 raw upload로 전달된다. */
+  contentText?: string;
 }
 
 export interface AgentTimelineEvent {

@@ -8,13 +8,19 @@ vi.mock('@/lib/api', () => ({
   getApiClient: () => ({ recordBehaviorEvent }),
 }));
 
-import { recordGlossaryUpdated, recordSearchExecuted } from '@/lib/personalization';
+import {
+  recordGlossaryUpdated,
+  recordPaperOpened,
+  recordReadCompleted,
+  recordSearchExecuted,
+} from '@/lib/personalization';
 
 const fast = { timeoutMs: 1000, retryBackoffMs: 1 };
 
-function recorder(
-  impl: (req: TransportRequest) => TransportResponse,
-): { transport: Transport; calls: TransportRequest[] } {
+function recorder(impl: (req: TransportRequest) => TransportResponse): {
+  transport: Transport;
+  calls: TransportRequest[];
+} {
   const calls: TransportRequest[] = [];
   return {
     calls,
@@ -90,6 +96,29 @@ describe('ApiClient personalization methods', () => {
       source: 'frontend_anchor',
       metadata: { glossaryVersion: 7 },
       dedupeKey: 'glossary:7:59411520',
+    });
+  });
+
+  it('records version-scoped KPI funnel events', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-25T00:00:00Z'));
+
+    recordPaperOpened('2401.1', 2);
+    recordReadCompleted('2401.1', 2);
+
+    expect(recordBehaviorEvent).toHaveBeenNthCalledWith(1, {
+      eventType: 'paper_opened',
+      subject: { kind: 'paper', paperId: '2401.1' },
+      source: 'frontend_anchor',
+      metadata: { entrySurface: 'detail' },
+      dedupeKey: 'paper:2401.1:v2:59411520',
+    });
+    expect(recordBehaviorEvent).toHaveBeenNthCalledWith(2, {
+      eventType: 'read_completed',
+      subject: { kind: 'paper', paperId: '2401.1' },
+      source: 'frontend_anchor',
+      metadata: { entrySurface: 'detail' },
+      dedupeKey: 'read:2401.1:v2:59411520',
     });
   });
 });

@@ -7,6 +7,7 @@ import { ThemeProvider } from '@/components/theme/ThemeContext';
 import { mockLogin } from '@/mocks/accountFixtures';
 import { resetMypageFixtures } from '@/mocks/mypageFixtures';
 import { ApiClient } from '@/lib/api/apiClient';
+import { resetMockNotionConnection } from '@/lib/api/mockTransport';
 
 const push = vi.fn();
 vi.mock('next/navigation', () => ({
@@ -26,6 +27,7 @@ function renderScreen() {
 beforeEach(() => {
   mockLogin('mypage-settings-test@example.com');
   resetMypageFixtures();
+  resetMockNotionConnection();
   push.mockClear();
   window.localStorage.clear();
   document.documentElement.removeAttribute('data-theme');
@@ -98,6 +100,46 @@ describe('MyPageSettingsScreen (U10)', () => {
     await userEvent.click(checkbox);
 
     await waitFor(() => expect(checkbox).not.toBeChecked());
+  });
+
+  it('saves and disconnects a personal Notion connection from settings', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    renderScreen();
+
+    expect(await screen.findByTestId('mypage-notion-connection')).toBeInTheDocument();
+    expect(screen.getByTestId('mypage-notion-status')).toHaveTextContent(
+      '연결된 Notion이 없습니다.',
+    );
+    expect(screen.queryByTestId('mypage-notion-error')).not.toBeInTheDocument();
+
+    await userEvent.type(
+      screen.getByTestId('mypage-notion-token'),
+      'not a real notion integration value',
+    );
+    await userEvent.click(screen.getByTestId('mypage-notion-save'));
+    expect(screen.getByTestId('mypage-notion-error')).toHaveTextContent(
+      '상위 페이지 ID',
+    );
+
+    await userEvent.type(screen.getByTestId('mypage-notion-parent-page-id'), '1'.repeat(32));
+    await userEvent.click(screen.getByTestId('mypage-notion-save'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('mypage-action-notice')).toHaveTextContent(
+        'Notion 연결을 저장했습니다.',
+      ),
+    );
+    expect(screen.getByTestId('mypage-notion-status')).toHaveTextContent('연결됨');
+
+    await userEvent.click(screen.getByTestId('mypage-notion-disconnect'));
+    await waitFor(() =>
+      expect(screen.getByTestId('mypage-action-notice')).toHaveTextContent(
+        'Notion 연결을 해제했습니다.',
+      ),
+    );
+    expect(screen.getByTestId('mypage-notion-status')).toHaveTextContent(
+      '연결된 Notion이 없습니다.',
+    );
   });
 
   it('toggles dark mode, applies the data-theme attribute, and persists it (per-device, no API call)', async () => {

@@ -13,6 +13,8 @@ import type {
 export const MAX_AGENT_MESSAGE_CHARS = 4000;
 export const MAX_AGENT_ATTACHMENTS = 5;
 export const MAX_AGENT_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+// US-EV4(#268)/US-NV2(#252) — 동봉 본문 상한. BE 계약(ATTACHMENT_TEXT_MAX_CHARS)과 동일.
+export const MAX_AGENT_ATTACHMENT_TEXT_CHARS = 262_144;
 
 export interface AgentChatState {
   session: AgentSessionSummary | null;
@@ -45,14 +47,17 @@ export type AgentChatAction =
   | { type: 'startSession'; session: AgentSessionSummary }
   | { type: 'loadSession'; snapshot: AgentSessionSnapshot }
   | { type: 'refreshSession'; snapshot: AgentSessionSnapshot }
+  | { type: 'eventsReceived'; events: AgentTimelineEvent[] }
   | { type: 'newChat' }
   | { type: 'setDraft'; draft: string }
   | { type: 'addAttachment'; attachment: AgentAttachment }
+  | { type: 'attachmentContentReady'; id: string; contentText: string }
   | { type: 'removeAttachment'; id: string }
   | { type: 'sendStart'; message: AgentMessage }
   | { type: 'sendSuccess'; result: AgentSendMessageResult }
   | { type: 'sendFailure'; message: string }
-  | { type: 'deleteSession'; id: string };
+  | { type: 'deleteSession'; id: string }
+  | { type: 'resetSessions' };
 
 export function agentReducer(state: AgentChatState, action: AgentChatAction): AgentChatState {
   switch (action.type) {
@@ -94,8 +99,15 @@ export function agentReducer(state: AgentChatState, action: AgentChatAction): Ag
         jobState: action.snapshot.session.state,
         error: jobStateMessage(action.snapshot.session.state),
       };
+    case 'eventsReceived':
+      return action.events.length
+        ? { ...state, events: mergeTimelineEvents(state.events, action.events) }
+        : state;
     case 'newChat':
       return { ...initialAgentChatState, sessions: state.sessions };
+    case 'resetSessions':
+      // US-EV8(#272) 전체 초기화 — 세션 목록과 현재 대화 모두 기본 상태로.
+      return { ...initialAgentChatState };
     case 'setDraft':
       return { ...state, draft: action.draft.slice(0, MAX_AGENT_MESSAGE_CHARS), error: null };
     case 'addAttachment':
@@ -103,6 +115,17 @@ export function agentReducer(state: AgentChatState, action: AgentChatAction): Ag
         return { ...state, error: `첨부는 최대 ${MAX_AGENT_ATTACHMENTS}개까지 가능합니다.` };
       }
       return { ...state, attachments: [...state.attachments, action.attachment], error: null };
+    case 'attachmentContentReady':
+      // US-EV4(#268)/US-NV2(#252) — 본문 읽기 완료 → 전송 가능(ready). 읽기 실패는
+      // 빈 본문으로 ready 처리하고 BE가 '[첨부 안내]'로 미포함을 알린다.
+      return {
+        ...state,
+        attachments: state.attachments.map((item) =>
+          item.id === action.id
+            ? { ...item, status: 'ready' as const, contentText: action.contentText }
+            : item,
+        ),
+      };
     case 'removeAttachment':
       return {
         ...state,
@@ -202,8 +225,27 @@ export function mergeTimelineEvents(
   incoming: AgentTimelineEvent[],
 ): AgentTimelineEvent[] {
   const byId = new Map(current.map((event) => [event.id, event]));
-  for (const event of incoming) byId.set(event.id, event);
+  for (const event of incoming) {
+    const existing = byId.get(event.id);
+    byId.set(event.id, existing ? mergeTimelineEvent(existing, event) : event);
+  }
   return sortTimelineEvents([...byId.values()]);
+}
+
+// A lean SSE snapshot (id/stage/label/state only) must not erase the richer detail that the
+// polling path already resolved for the same event id. Incoming stage/label/state win, but
+// detail/sequence fall back to the prior event when the snapshot omits them (#349).
+// `??` (not `||`) so a valid sequence of 0 is not discarded as falsy.
+function mergeTimelineEvent(
+  prev: AgentTimelineEvent,
+  next: AgentTimelineEvent,
+): AgentTimelineEvent {
+  return {
+    ...prev,
+    ...next,
+    detail: next.detail ?? prev.detail,
+    sequence: next.sequence ?? prev.sequence,
+  };
 }
 
 export function sortTimelineEvents(events: AgentTimelineEvent[]): AgentTimelineEvent[] {
@@ -221,7 +263,10 @@ export function sortTimelineEvents(events: AgentTimelineEvent[]): AgentTimelineE
     .map(({ event }) => event);
 }
 
-export function createAttachmentFromFile(file: { name: string; size?: number }, index = 0) {
+export function createAttachmentFromFile(
+  file: { name: string; size?: number; arrayBuffer?: Blob['arrayBuffer'] },
+  index = 0,
+) {
   const name = file.name.trim() || 'untitled';
   const kind = classifyAttachmentKind(name);
   const sizeBytes = file.size ?? 0;
@@ -231,6 +276,9 @@ export function createAttachmentFromFile(file: { name: string; size?: number }, 
     kind,
     sizeBytes,
     status: 'ready',
+    ...(kind === 'pdf' && typeof file.arrayBuffer === 'function'
+      ? { sourceFile: file as unknown as Blob }
+      : {}),
   };
 
   if (kind === 'unknown') {
@@ -295,5 +343,9 @@ function jobStateMessage(state: AgentJobState, errorMessage?: string): string | 
 }
 
 function slug(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 32);
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 32);
 }

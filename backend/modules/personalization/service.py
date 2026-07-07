@@ -26,6 +26,18 @@ def _emit_metric(observability, name: str, value: float = 1.0, tags: dict | None
         pass
 
 
+# KPI funnel counters (#346): the success-metric hierarchy — AI 호출 > 검색 > 완독 — is measured
+# from these U9 events, emitted as dimensionless CloudWatch counters (namespace DocSuri/Production)
+# so the ops dashboard graphs them with a plain Sum metric. The events themselves stay in Postgres.
+# Only funnel-relevant types emit; the insert dedupe means a re-fired event is not double-counted.
+_FUNNEL_METRIC: dict[BehaviorEventType, str] = {
+    BehaviorEventType.SEARCH_EXECUTED: "personalization.funnel.search",
+    BehaviorEventType.SUMMARY_TRANSLATION_REQUESTED: "personalization.funnel.ai_invocation",
+    BehaviorEventType.PAPER_OPENED: "personalization.funnel.paper_opened",
+    BehaviorEventType.READ_COMPLETED: "personalization.funnel.read_completed",
+}
+
+
 class BehaviorEventRecorder:
     def __init__(self, repo: PersonalizationRepository, observability=None) -> None:
         self._repo = repo
@@ -40,6 +52,9 @@ class BehaviorEventRecorder:
             )
             if not inserted:
                 return EventRecordResult(recorded=False, duplicate=True, reason="duplicate")
+            funnel_metric = _FUNNEL_METRIC.get(dto.eventType)
+            if funnel_metric is not None:
+                _emit_metric(self._observability, funnel_metric)
             return EventRecordResult(recorded=True, reason="recorded")
         except Exception:
             _emit_metric(self._observability, "personalization.record_failure")

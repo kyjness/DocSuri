@@ -12,10 +12,19 @@ shipped baseline, so a seed edit self-invalidates. Same key ⇒ same artifact, f
 
 from __future__ import annotations
 
+from docsuri_shared.docmodel_contract import DOCMODEL_PARSER_VERSION
+
 from .models import Persona, Scope, SummaryCacheKey, SummaryRequest, Task
 
 # Prompt template version — bump to invalidate all derived objects (key changes).
 PROMPT_VER = "p1"
+
+
+def _docmodel_generation(parser_version: str) -> str:
+    """Compact, path-safe segment for a doc-model parser version: the generation integer after
+    ``@`` (``docmodel-parser@4`` → ``"4"``). Falls back to the raw string if it has no ``@``."""
+    _, sep, gen = parser_version.rpartition("@")
+    return gen if sep else parser_version
 
 
 def build_cache_key(
@@ -25,6 +34,7 @@ def build_cache_key(
     model_ver: str,
     user_id: str | None,
     seed_ver: str = "",
+    docmodel_parser: str = DOCMODEL_PARSER_VERSION,
 ) -> SummaryCacheKey:
     # Identity dimensions (§11): summary varies by persona (2 variants), scope fixed to
     # full; translate varies by scope (abstract|full), persona-agnostic (single).
@@ -50,4 +60,5 @@ def build_cache_key(
         model_ver=model_ver,
         prompt_ver=PROMPT_VER,
         seed_ver=seed_ver,
+        docmodel_ver=_docmodel_generation(docmodel_parser),
     )

@@ -32,6 +32,31 @@ const baseSessions: AgentSessionSnapshot[] = [
         createdAt: '2026-07-01T00:10:00Z',
         status: 'sent',
       },
+      {
+        id: 'msg-demo-2b',
+        role: 'agent',
+        // U11 evidence orchestrator 결과(JSON) — 화면 테스트가 근거 카드+인용 앵커 렌더링을 검증한다(#339).
+        content: JSON.stringify({
+          state: 'ok',
+          claims: [
+            {
+              statement: '벤치마크 재사용은 데이터 누수 위험을 높인다.',
+              supporting: [
+                {
+                  paperId: '2401.01234',
+                  recordRef: 'rec-2401-01234-07',
+                  anchor: '4.2절',
+                  quote: 'benchmark reuse inflates scores across successive releases',
+                },
+              ],
+              conflicting: [],
+            },
+          ],
+          coverage: { paperCount: 3, queryUsed: 'LLM 평가 데이터 누수' },
+        }),
+        createdAt: '2026-07-01T00:10:30Z',
+        status: 'sent',
+      },
     ],
     events: [
       {
@@ -116,6 +141,10 @@ export function mockDeleteAgentSession(id: string): boolean {
   const before = sessions.length;
   sessions = sessions.filter((item) => item.session.id !== id);
   return sessions.length !== before;
+}
+
+export function mockResetAgentSessions(mode: AgentMode): void {
+  sessions = sessions.filter((item) => item.session.mode !== mode);
 }
 
 export function mockSendAgentMessage(
@@ -245,6 +274,8 @@ function responseFor(mode: AgentMode, degraded: boolean, attachmentCount: number
   if (mode === 'evidence') {
     return `${prefix}관련 논문을 주제, 방법, 데이터셋 기준으로 묶고 서로 확인되는 근거를 우선 제시했습니다.${attachmentNote}`;
   }
+  // 채팅 assistant 메시지는 텍스트 ack — 구조화 아티팩트는 /result seam(mockTransport
+  // noveltyArtifacts → 실제 apiClient 매퍼)으로만 흐른다. 실 백엔드와 동일한 분리.
   return `${prefix}유사 연구는 이미 완료된 축과 아직 약한 축으로 나뉩니다. 차별점은 데이터셋 조건, 실패 유형 분해, 재현 가능한 비교 실험으로 잡는 것이 좋습니다.${attachmentNote}`;
 }
 

@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
+from docsuri_shared.authz import Action, Principal
 from docsuri_shared.events import PaperRetractedEvent
-
-from backend.modules.accounts.models import Action, Principal
 
 from ..audit import make_event
 from ..authz import authorize_owned

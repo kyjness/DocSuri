@@ -38,6 +38,11 @@ def _resolve_database_url(default: str) -> str:
 # CORS spec forbids wildcard origin together with allow_credentials.
 _DEFAULT_CORS_ORIGINS = ("http://localhost:3000", "http://localhost:5173")
 
+# Kept at module scope (NOT referenced via ``cls.<field>``): with ``slots=True`` on the
+# dataclass, ``cls.database_url`` yields the slot descriptor, not this string, which crashes
+# ``_resolve_database_url`` whenever neither DATABASE_URL nor DB_HOST is set (bare local run).
+_DEFAULT_DATABASE_URL = "sqlite:///./docsuri-dev.db"
+
 
 @dataclass(frozen=True, slots=True)
 class Settings:
@@ -46,7 +51,7 @@ class Settings:
     env: str = "local"
     # SQLite default keeps the shell bootable with no DB server. accounts (U3) runs against
     # Postgres in prod — set DATABASE_URL to the Postgres DSN there.
-    database_url: str = "sqlite:///./docsuri-dev.db"
+    database_url: str = _DEFAULT_DATABASE_URL
     cors_origins: tuple[str, ...] = _DEFAULT_CORS_ORIGINS
     # U6 gateway rate-limit keying: trust X-Forwarded-For only behind a controlled proxy.
     # Default off → key on the direct client (request.client.host). See
@@ -74,7 +79,7 @@ class Settings:
         )
         return cls(
             env=os.getenv("ENV", "local"),
-            database_url=_resolve_database_url(cls.database_url),
+            database_url=_resolve_database_url(_DEFAULT_DATABASE_URL),
             cors_origins=origins,
             trust_proxy_headers=os.getenv("TRUST_PROXY_HEADERS", "").strip().lower()
             in {"1", "true", "yes", "on"},

@@ -97,6 +97,19 @@ def is_glossary_worthy(term: str) -> bool:
     return not any(sub.lower() in _MATH_WORDS for sub in _SUBTOKEN_RE.split(t) if sub)
 
 
+def term_in_text(term: str, text: str) -> bool:
+    """True when a seed keep-as-is term (kept in English) actually occurs in the translated text.
+
+    The keep-as-is seed list rides into EVERY translate prompt, so the model echoes the whole list
+    back in ``keptTerms`` even for terms absent from the paper. Presence must therefore be verified
+    against the text — mirroring the mapping branch's ``eff in translated_text`` check — so 표준/
+    원어 유지 용어 shows only terms this paper really uses (BR-S4). Case-insensitive, alphanumeric
+    word boundaries (so "F1"/"T5" don't match inside "F12", and "U-Net"/"fine-tuning" match)."""
+    if not term or not text:
+        return False
+    return re.search(rf"(?<![A-Za-z0-9]){re.escape(term)}(?![A-Za-z0-9])", text, re.I) is not None
+
+
 def _seed_signature() -> str:
     """Short content hash of the shared seed glossary (keep-as-is + prompt-enforced mappings).
 

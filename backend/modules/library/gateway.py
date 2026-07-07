@@ -14,6 +14,7 @@ import uuid
 from functools import partial
 from typing import TYPE_CHECKING
 
+from docsuri_shared.authz import Principal
 from docsuri_shared.dtos import (
     DegradedResultDTO,
     ResultMeta,
@@ -21,8 +22,6 @@ from docsuri_shared.dtos import (
     SearchResultPageDTO,
     SearchResultSetDTO,
 )
-
-from backend.modules.accounts.models import Principal
 
 from .models import GatewayUnavailableError
 

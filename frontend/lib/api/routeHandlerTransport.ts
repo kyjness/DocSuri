@@ -1,4 +1,9 @@
-import type { Transport, TransportRequest, TransportResponse } from './transport';
+import {
+  isBinaryTransportBody,
+  type Transport,
+  type TransportRequest,
+  type TransportResponse,
+} from './transport';
 
 // RouteHandlerTransport (LC-2, P-S1) — CLIENT-SAFE.
 //
@@ -13,14 +18,18 @@ export class RouteHandlerTransport implements Transport {
   constructor(private readonly basePath: string = '/bff') {}
 
   async send(req: TransportRequest): Promise<TransportResponse> {
-    const hasBody = req.body !== undefined;
+    const requestBody = req.body;
+    const hasBody = requestBody !== undefined;
+    const binary = isBinaryTransportBody(requestBody);
     const res = await fetch(`${this.basePath}${req.path}`, {
       method: req.method,
       headers: {
-        ...(hasBody ? { 'content-type': 'application/json' } : {}),
+        ...(hasBody
+          ? { 'content-type': binary ? requestBody.contentType : 'application/json' }
+          : {}),
         ...(req.headers ?? {}),
       },
-      body: hasBody ? JSON.stringify(req.body) : undefined,
+      body: hasBody ? (binary ? requestBody.data : JSON.stringify(requestBody)) : undefined,
       // Same-origin so the httpOnly session cookie rides along; never cache
       // authenticated/personalized responses (P-P3).
       credentials: 'same-origin',

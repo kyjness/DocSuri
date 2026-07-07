@@ -423,6 +423,33 @@ def test_code_block_drops_duplicate_math_annotation() -> None:
     assert "\\leftarrow" not in code.text
 
 
+def test_code_block_drops_content_mathml_annotation() -> None:
+    # Besides the TeX <annotation>, LaTeXML attaches <annotation-xml encoding="MathML-Content">
+    # (content MathML). A raw get_text() also emits ITS text, so "η_m" tripled into
+    # "ηm" + "subscript" + "𝜂𝑚" (presentation glyphs, the <csymbol>subscript</csymbol> name, and
+    # the italic-unicode <ci>s). Both annotation kinds must be dropped — content included.
+    html = (
+        '<article class="ltx_document">'
+        '<section class="ltx_section" id="S1">'
+        '<h2 class="ltx_title ltx_title_section">Algorithm</h2>'
+        '<div class="ltx_listing"><div class="ltx_listingline">1: rate '
+        '<math alttext="\\eta_m"><semantics>'
+        '<msub><mi>η</mi><mi>m</mi></msub>'
+        '<annotation-xml encoding="MathML-Content">'
+        '<apply><csymbol>subscript</csymbol><ci>italic-η</ci><ci>m</ci></apply>'
+        '</annotation-xml>'
+        '<annotation encoding="application/x-tex">\\eta_m</annotation>'
+        '</semantics></math></div></div>'
+        '</section></article>'
+    )
+    doc = _parse(html)
+    code = next(b for b in _blocks(_body_sections(doc)[0]) if isinstance(b, CodeBlock))
+    assert "subscript" not in code.text  # content-MathML csymbol name dropped
+    assert "italic-" not in code.text
+    assert "\\eta_m" not in code.text  # TeX annotation dropped
+    assert "ηm" in code.text  # readable presentation kept
+
+
 def test_table_ignores_nested_header_table_rows() -> None:
     # A stacked column header "Relevance Rank / ↑" is a NESTED <table> inside the header cell.
     # The parser must NOT pull the nested rows up as phantom single-cell main rows (which made the

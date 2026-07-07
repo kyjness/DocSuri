@@ -46,6 +46,7 @@ def _doc(
     *,
     parser_version: str = DOCMODEL_PARSER_VERSION,
     schema_version: str = DOCMODEL_SCHEMA_VERSION,
+    source_tier: SourceTier = SourceTier.ar5iv,
 ) -> DocModel:
     return parse_html_to_docmodel(
         _HTML,
@@ -53,7 +54,7 @@ def _doc(
         version=version,
         title="t",
         abstract=None,
-        source_tier=SourceTier.native_html,
+        source_tier=source_tier,
         parser_version=parser_version,
         schema_version=schema_version,
         generated_at=datetime(2026, 6, 23, tzinfo=UTC),
@@ -113,6 +114,7 @@ _TEI = (
     "<div><head>Method</head><p>Body text.</p></div>"
     "</body></text></TEI>"
 )
+_EMPTY_BODY_TEI = '<TEI xmlns="http://www.tei-c.org/ns/1.0"><text><body /></text></TEI>'
 
 
 def test_build_from_tei_produces_structured_sections() -> None:
@@ -131,6 +133,17 @@ def test_build_from_tei_falls_back_to_flat_text_on_bad_tei() -> None:
     result = builder.build_from_tei("src-2", 1, "Title", "Abs", "<TEI", "flat fallback body")
     # malformed TEI -> flat-text doc-model carrying the fallback text as a single paragraph
     assert "flat fallback body" in result.docModel.fullText
+
+
+def test_build_from_tei_falls_back_to_flat_text_on_empty_body_tei() -> None:
+    store = _FakeStore()
+    builder = _builder(_FakeSource(None), store)
+    result = builder.build_from_tei(
+        "src-3", 1, "Title", "Abs", _EMPTY_BODY_TEI, "flat fallback body"
+    )
+
+    assert "flat fallback body" in result.docModel.fullText
+    assert store.put_calls[-1].fullText == result.docModel.fullText
 
 
 _TEI_FORMULA = (
@@ -193,6 +206,26 @@ def test_stale_parser_cache_hit_rebuilds_and_overwrites() -> None:
     assert source.calls == ["2401.00001v1"]
     assert len(store.put_calls) == 1
     assert store.put_calls[0].meta.provenance.parserVersion == DOCMODEL_PARSER_VERSION
+
+
+def test_native_html_cache_is_never_fresh_and_rebuilds() -> None:
+    # A native_html doc-model at the CURRENT parser/schema is still refused by the U7 reader, so it
+    # must NOT count as a cache hit here — otherwise the reader-triggered rebuild short-circuits on
+    # the cache and never replaces it, and the paper is re-enqueued forever. The build must re-fetch
+    # (now ar5iv) and overwrite the native_html object.
+    store = _FakeStore(cached=_doc(source_tier=SourceTier.native_html))
+    source = _FakeSource((_HTML, SourceTier.ar5iv))
+    result = _builder(source, store).build(sample_metadata("2401.00001v1"))
+    assert isinstance(result, DocModelResultDTO)
+    assert result.cached is False
+    assert source.calls == ["2401.00001v1"]  # re-fetched, not served from the native_html cache
+    assert len(store.put_calls) == 1
+    assert store.put_calls[0].meta.provenance.sourceTier is SourceTier.ar5iv  # replaced
+
+
+def test_get_cached_rejects_native_html_even_at_current_version() -> None:
+    store = _FakeStore(cached=_doc(source_tier=SourceTier.native_html))
+    assert _builder(_FakeSource(None), store).get_cached("2401.00001", 1) is None
 
 
 def test_stale_schema_cache_hit_rebuilds_text_doc_model() -> None:

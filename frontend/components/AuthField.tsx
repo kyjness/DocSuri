@@ -12,7 +12,7 @@ import styles from './AuthForm.module.css';
 type Props = {
   id: string;
   label: string;
-  type: 'email' | 'password';
+  type: 'email' | 'password' | 'text';
   value: string;
   onChange: (value: string) => void;
   autoComplete: string;
@@ -25,7 +25,7 @@ export function AuthField({ id, label, type, value, onChange, autoComplete, erro
   const [reveal, setReveal] = useState(false);
   const isPassword = type === 'password';
   const errorId = `${id}-error`;
-  const inputType = isPassword ? (reveal ? 'text' : 'password') : 'email';
+  const inputType = isPassword ? (reveal ? 'text' : 'password') : type;
 
   return (
     <div className={styles.field}>

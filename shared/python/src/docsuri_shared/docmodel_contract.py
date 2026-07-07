@@ -8,7 +8,20 @@ from __future__ import annotations
 # algorithm-listing rendering) that shipped without one — cached pre-fix doc-models
 # never self-heal otherwise (builder cache hit and reader freshness check both key
 # on this constant, and the content-blind dedup gate skips re-embedding regardless).
-DOCMODEL_PARSER_VERSION = "docmodel-parser@3"
+# @4: doc-model HTML source is ar5iv-only + MathML <semantics> renders presentation only
+# (drops the annotation-xml double-output). Both change fullText for the same paper, so old
+# @2/@3 caches (incl. LaTeX-garbled algorithm blocks on ar5iv) must rebuild.
+# @5: formula LaTeX is sanitized of a broader set of never-math markup that leaks into alttext and
+# (under KaTeX throwOnError=false) collapses the WHOLE formula to raw source text: pgf/xcolor
+# colour selection (\definecolor, \color[model]{spec}), \eqref/\ref/\cite-family cross-references
+# and citations, \mathversion font switches, \leafmode, and \mbox/\hbox (rewritten to \text).
+# Changes stored LaTeX, so affected caches must rebuild.
+# @6: two more formula/listing fidelity fixes. Formula: ``\big{(}``/``\Big{]}`` sizing commands
+# whose delimiter LaTeXML brace-wrapped are unwrapped (KaTeX rejects the braced form and collapses
+# the whole formula). Code/algorithm listings: the content-MathML ``<annotation-xml>`` is dropped
+# alongside the TeX ``<annotation>`` so an inline symbol no longer triples into
+# "ηm"+"subscript"+"𝜂𝑚". Both change stored output, so affected caches must rebuild.
+DOCMODEL_PARSER_VERSION = "docmodel-parser@6"
 # 1.1.0: additive optional meta.macros (consumers ignore if unset).
 DOCMODEL_SCHEMA_VERSION = "1.1.0"
 

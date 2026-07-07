@@ -113,6 +113,8 @@ export interface DocProvenance {
 }
 
 export interface DocModelMeta {
+  /** Source document id. arXiv: bare arXiv id. User uploads: `userdoc:{uuid}` — no arXiv id
+   *  exists, so never synthesize an arxiv.org URL from it. */
   paperId: string;
   version: number;
   title: string;

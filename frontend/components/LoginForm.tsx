@@ -198,6 +198,7 @@ export function LoginForm() {
       <a
         className={styles.socialButton}
         href="/auth/social/google/start"
+        target="_top"
         data-testid="login-google"
       >
         Google로 계속하기
@@ -206,6 +207,7 @@ export function LoginForm() {
         <a
           className={styles.socialButton}
           href="/auth/social/orcid/start"
+          target="_top"
           data-testid="login-orcid"
         >
           ORCID로 계속하기

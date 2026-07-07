@@ -7,10 +7,10 @@ from typing import Any
 from urllib.parse import quote
 
 import httpx
+from docsuri_shared.authz import Principal
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from backend.modules.accounts.models import Principal
 from backend.modules.library.controller import get_library_service
 from backend.modules.library.schemas import LibraryItemCreateDTO
 from backend.modules.library.services.library import LibraryService
@@ -125,8 +125,8 @@ class SemanticScholarProvider:
 
     async def references(self, paper_id: str, limit: int) -> tuple[str, list[dict[str, Any]]]:
         headers = {"x-api-key": self._api_key} if self._api_key else {}
-        timeout = float(os.getenv("CITATION_GRAPH_PROVIDER_TIMEOUT_SECONDS", "3"))
-        retry_timeout = float(os.getenv("CITATION_GRAPH_PROVIDER_RETRY_TIMEOUT_SECONDS", "5"))
+        timeout = float(os.getenv("CITATION_GRAPH_PROVIDER_TIMEOUT_SECONDS", "5"))
+        retry_timeout = float(os.getenv("CITATION_GRAPH_PROVIDER_RETRY_TIMEOUT_SECONDS", "10"))
         retries = int(os.getenv("CITATION_GRAPH_PROVIDER_RETRIES", "1"))
         encoded_paper_id = quote(_semantic_scholar_paper_id(paper_id), safe="")
         url = f"https://api.semanticscholar.org/graph/v1/paper/{encoded_paper_id}/references"
@@ -146,6 +146,11 @@ class SemanticScholarProvider:
             except (httpx.TimeoutException, httpx.HTTPError):
                 if attempt == len(timeouts) - 1:
                     return "unavailable", []
+            except Exception:  # noqa: BLE001 - non-JSON/misshapen 200 body degrades, never 500 (BR-CG12)
+                # S2 often answers /references 200 with a body that isn't {"data": [...]} (HTML
+                # error, JSON null, bare list). resp.json()/.get() then raises Value/Attribute/
+                # TypeError — not httpx.*, so it would 500. Retry won't fix a bad body.
+                return "unavailable", []
         return "unavailable", []
 
 
@@ -361,9 +366,19 @@ async def get_citation_tree(
         "paper_service",
         None,
     )
-    response = _build_tree(paper_id, parent, items, paper_service).model_copy(
-        update={"providerStatus": provider_status}
-    )
+    try:
+        response = _build_tree(paper_id, parent, items, paper_service).model_copy(
+            update={"providerStatus": provider_status}
+        )
+    except Exception:  # noqa: BLE001 - a misshapen provider item (e.g. string year) degrades, never 500 (BR-CG12)
+        return CitationTreeResponse(
+            status="Unavailable",
+            rootPaperId=paper_id,
+            nodes=[],
+            edges=[],
+            depthReturned=0,
+            providerStatus="unavailable",
+        )
     await store.set(key, response)
     _emit(request, response, int((time.perf_counter() - started) * 1000), depth_requested)
     return response

@@ -12,10 +12,10 @@ from __future__ import annotations
 import os
 from functools import lru_cache
 
+from docsuri_shared.authz import Principal
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from backend.modules.accounts.integrations.oidc import ORCID_BASES, fetch_orcid_public_record
-from backend.modules.accounts.models import Principal
 
 from .ports import AccountRepository, SubscriptionRepository
 from .repository.memory import InMemoryAccountRepository, InMemorySubscriptionRepository

@@ -8,6 +8,10 @@ function dedupeBucket(): number {
   return Math.floor(Date.now() / DEDUPE_BUCKET_MS);
 }
 
+function paperVersionKey(paperId: string, version: number): string {
+  return `${paperId}:v${version}`;
+}
+
 export function hashQuery(query: string): string {
   let hash = 0x811c9dc5;
   for (const ch of query.trim().toLowerCase()) {
@@ -18,7 +22,9 @@ export function hashQuery(query: string): string {
 }
 
 function sendBehaviorEvent(event: BehaviorEventCreate): void {
-  void getApiClient().recordBehaviorEvent(event).catch(() => undefined);
+  void getApiClient()
+    .recordBehaviorEvent(event)
+    .catch(() => undefined);
 }
 
 export function recordSearchExecuted(query: string, resultCount: number): void {
@@ -32,13 +38,25 @@ export function recordSearchExecuted(query: string, resultCount: number): void {
   });
 }
 
-export function recordPaperOpened(paperId: string): void {
+export function recordPaperOpened(paperId: string, version: number): void {
   sendBehaviorEvent({
     eventType: 'paper_opened',
     subject: { kind: 'paper', paperId },
     source: 'frontend_anchor',
     metadata: { entrySurface: 'detail' },
-    dedupeKey: `paper:${paperId}:${dedupeBucket()}`,
+    dedupeKey: `paper:${paperVersionKey(paperId, version)}:${dedupeBucket()}`,
+  });
+}
+
+// 완독 (read-completion, #346): fired once per open when the reader scrolls to the end of the
+// doc-model body. Pairs with recordPaperOpened so the dashboard's 완독률 = read_completed / paper_opened.
+export function recordReadCompleted(paperId: string, version: number): void {
+  sendBehaviorEvent({
+    eventType: 'read_completed',
+    subject: { kind: 'paper', paperId },
+    source: 'frontend_anchor',
+    metadata: { entrySurface: 'detail' },
+    dedupeKey: `read:${paperVersionKey(paperId, version)}:${dedupeBucket()}`,
   });
 }
 

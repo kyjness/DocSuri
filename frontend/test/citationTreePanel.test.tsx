@@ -6,7 +6,7 @@ import { CitationTreePanel } from '@/components/CitationTreePanel';
 describe('CitationTreePanel', () => {
   it('loads the citation tree, expands a node, and saves a saveable citation', async () => {
     const user = userEvent.setup();
-    render(<CitationTreePanel paperId="2101.00001" />);
+    const { container } = render(<CitationTreePanel paperId="2101.00001" />);
 
     expect(await screen.findByTestId('citation-tree-panel')).toBeInTheDocument();
     expect(screen.getByRole('dialog', { name: '각주 트리' })).toBeInTheDocument();
@@ -16,6 +16,8 @@ describe('CitationTreePanel', () => {
     expect(screen.getByRole('button', { name: '축소' })).toBeInTheDocument();
     expect(screen.getByLabelText('그래프 좌우 이동')).toBeInTheDocument();
     expect(screen.queryByText('해결되지 않은 인용')).not.toBeInTheDocument();
+    expect(container.querySelector('svg line')).not.toBeNull();
+    expect(container.querySelector('svg path')).toBeNull();
 
     const links = screen.getAllByRole('link', { name: '열기' });
     expect(links[0]).toHaveAttribute('href', 'https://arxiv.org/abs/1706.03762');
