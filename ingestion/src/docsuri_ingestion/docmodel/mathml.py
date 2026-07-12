@@ -51,6 +51,13 @@ _DELIMITER_PAIRS = (("$$", "$$"), ("\\[", "\\]"), ("\\(", "\\)"), ("$", "$"))
 #   - ``\big{(}`` / ``\Big{]}`` sizing commands whose delimiter LaTeXML wrapped in a brace group;
 #     the braces are unwrapped to ``\big(`` (KaTeX rejects the braced form as an "ordgroup"
 #     delimiter and collapses the whole formula).
+#   - listings noise that rides into inline-math alttext when a paper embeds ``\lstinline`` inside
+#     math via a custom box macro (arXiv:2410.14706 ``\cybertron`` → ``\Colorbox{c}{\lstinline …}``)
+#     LaTeXML cannot expand it, so the alttext carries the ``\Colorbox`` box + its throwaway colour
+#     argument, ``\leavevmode``, ``\lstinline``, the internal ``\lst@…set`` state macros, and
+#     ``\@listingGroup{ltx_lst_*}{token}`` wrappers that reduce to bare ``{ltx_lst_*}`` class tags.
+#     None of it is math; dropping the box/colour, the listings machinery, and the class tags leaves
+#     the surviving identifier tokens so the formula renders instead of collapsing to source text.
 _INTERNAL_MACRO_RE = re.compile(r"\\@[A-Za-z@]+")
 _LAYOUT_MACRO_RE = re.compile(
     r"\\(?:centering|raggedright|raggedleft|centerline|noindent|par|"
@@ -81,6 +88,21 @@ _DEFINECOLOR_RE = re.compile(
     r"\\definecolor(?![A-Za-z])\s*(?:\[[^\]]*\])?\s*\{[^{}]*\}\s*\{[^{}]*\}\s*\{[^{}]*\}"
 )
 _COLOR_SELECT_RE = re.compile(r"\\color(?![A-Za-z])\s*(?:\[[^\]]*\])?\s*\{[^{}]*\}")
+# ``\Colorbox[model]{colour}{content}`` — the box command plus its leading throwaway colour
+# argument are dropped (mirroring \color); the ``{content}`` group is left so its math survives.
+# ``\fcolorbox[model]{frame}{bg}{content}`` leaks TWO colour args, so it is stripped first (its own
+# pattern) — otherwise ``_COLORBOX_RE`` (which never matches the ``\f`` prefix) would leave both.
+_FCOLORBOX_RE = re.compile(
+    r"\\f[Cc]olorbox(?![A-Za-z])\s*(?:\[[^\]]*\])?\s*\{[^{}]*\}\s*\{[^{}]*\}"
+)
+_COLORBOX_RE = re.compile(r"\\[Cc]olorbox(?![A-Za-z])\s*(?:\[[^\]]*\])?\s*\{[^{}]*\}")
+# Listings machinery that leaks into inline-math alttext (see the rationale block above): the
+# ``\lstinline`` command (its braced body stays), the ``\leavevmode`` guard emitted before it, the
+# internal ``\lst@…`` state macros, and residual ``{ltx_lst_*}`` class tags from ``\@listingGroup``
+# (the ``\@…`` macro itself is already stripped by ``_INTERNAL_MACRO_RE``).
+_LISTINGS_RE = re.compile(
+    r"\\lst@[A-Za-z@]+|\\lstinline(?![A-Za-z])|\\leavevmode(?![A-Za-z])|\{ltx_lst_[A-Za-z_]*\}"
+)
 # ``\big{(}`` / ``\Big{]}`` — LaTeXML wraps the delimiter after a \big-family sizing command in a
 # brace group, which KaTeX rejects ("Invalid delimiter type 'ordgroup'") → whole-formula collapse.
 # Unwrap so the delimiter follows the command directly (``\big(``). Inner is a single delimiter:
@@ -117,7 +139,10 @@ def _sanitize(latex: str) -> str:
     latex = _LABEL_RE.sub("", latex)
     latex = _IMAGE_PLACEHOLDER_RE.sub("", latex)
     latex = _DEFINECOLOR_RE.sub(" ", latex)  # colour definition (no math), drop whole
+    latex = _FCOLORBOX_RE.sub(" ", latex)  # \fcolorbox{frame}{bg} box, keep the boxed content
+    latex = _COLORBOX_RE.sub(" ", latex)  # \Colorbox{colour} box, keep the boxed content
     latex = _COLOR_SELECT_RE.sub(" ", latex)  # colour selector, keep the coloured operand
+    latex = _LISTINGS_RE.sub(" ", latex)  # \lstinline/\lst@… listings machinery + class tags
     latex = _REF_RE.sub(" ", latex)  # \eqref/\ref/… cross-reference (no math)
     latex = _CITE_RE.sub(" ", latex)  # \cite-family citation (no math)
     latex = _MATHVERSION_RE.sub(" ", latex)  # \mathversion font switch (no math)

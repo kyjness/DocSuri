@@ -7,7 +7,9 @@ ungrounded) is left as ``confident=False`` probes — whether "half the numbers 
 counts as fabricated is a REVIEWER/policy call, not derivable from data.
 
 ⚠️ SYNTHETIC — hand-built, not held-out real papers. A sweep here encodes the label policy, so
-the 'best' threshold is illustrative; committing a production change needs a real corpus (OP/팀).
+the 'best' threshold is illustrative on its own. The US-S6 recalibration (0.5 → 0.4) was
+committed from this spectrum TOGETHER with the real-figure corpus (``real_corpus.py``), which
+settled the 0.50 boundary: exactly-half-unsupported now counts as fabricated (caught at 0.4).
 """
 
 from __future__ import annotations

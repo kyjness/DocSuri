@@ -1,10 +1,12 @@
-"""Personal-glossary redesign — shared base translation + read-time weak-term overlay + seed
-cache-invalidation (BR-S1/BR-S4/NFR-C1).
+"""Personal-glossary — shared base translation (masked standard-term tokens) + serve-time render +
+seed cache-invalidation (BR-S1/BR-S4/NFR-C1).
 
-Translate caches ONE shared base per paper (keyed on the prompt-enforced signature); the user's
-weak (post-substitution) terms are applied on read. So a weak-only edit — or two users with
-different weak sets — must NOT fork the cache into an identical re-generation, and a seed edit
-must self-invalidate the path.
+Translate caches ONE shared base per paper: standard terms are masked into ``⟦N⟧`` tokens and the
+user's weak (post-substitution) terms are NOT baked in. On read, ``render_translation`` restores the
+tokens to their effective rendering (seed default or the user's strong override) with josa
+normalization, applies weak terms, and builds ``standardGlossary`` from the tokens that occur. So a
+term edit — weak OR strong-of-a-seed — reflects by re-rendering the SAME base (no fork/regenerate),
+and a seed edit self-invalidates the path.
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ from summarization.domain import glossary as glossary_mod
 from summarization.domain.assembler import ResultAssembler
 from summarization.domain.cache_key import build_cache_key
 from summarization.domain.glossary import GlossaryResolver
+from summarization.domain.masking import build_mask_table
 from summarization.domain.models import (
     AuthSession,
     Glossary,
@@ -64,6 +67,17 @@ def _orch(store: StubStore, terms_by_user: dict[str, tuple[TermMapping, ...]]):
     return make_orchestrator(store=store, glossary_resolver=resolver)
 
 
+# Seed-derived mask table, to embed the right token for a term in synthetic bases.
+_TABLE = build_mask_table()
+
+
+def _tok(term: str) -> str:
+    for e in _TABLE.entries:
+        if e.term_from.lower() == term.lower():
+            return e.token
+    raise KeyError(term)
+
+
 # --- orchestrator: shared base, weak overlay on read ------------------------------------
 
 
@@ -87,7 +101,7 @@ def test_weak_terms_share_one_base_across_users() -> None:
 
 def test_weak_edit_reflected_on_read_without_retranslation() -> None:
     # Editing a weak term does not change the cache key → HIT → the new term is applied by the
-    # read-time overlay (no re-translation, no per-user fork). This is the core cost win.
+    # read-time render (no re-translation, no per-user fork). This is the core cost win.
     store = StubStore()
     terms: dict[str, tuple[TermMapping, ...]] = {"u1": (_weak("BERT", "버트"),)}
     orch = _orch(store, terms)
@@ -102,6 +116,26 @@ def test_weak_edit_reflected_on_read_without_retranslation() -> None:
     assert "베르트" in _text(r2) and "버트" not in _text(r2)  # edit reflected on read
 
 
+def test_strong_seed_edit_reflected_without_fork_or_retranslation() -> None:
+    # A STRONG override of a SEED term (attention→주목) is now a read-time re-render of the masked
+    # token — same shared base, NO cache fork and NO re-translation (the Q2 win). The base carries
+    # the ⟦attention⟧ token; editing only changes the rendering the render step inserts.
+    para = f"모델은 {_tok('attention')}를 쓴다."
+    # Build a token-carrying base directly (bypasses the stub's abstract text).
+    base = ResultAssembler().assemble_translation(
+        TranslationDraft(doc_model=tiny_doc(paragraph=para), kept_terms=()),
+        SourceText(kind=SourceKind.ABSTRACT),
+    ).to_dict()
+    g1 = Glossary(user_overrides=(TermMapping("attention", "주목", prompt_enforced=True),))
+    v1 = ResultAssembler.render_translation(base, g1)
+    assert "주목" in json.dumps(v1, ensure_ascii=False)
+    # A different override renders differently from the SAME base object (no regeneration).
+    g2 = Glossary(user_overrides=(TermMapping("attention", "어텐선", prompt_enforced=True),))
+    v2 = ResultAssembler.render_translation(base, g2)
+    blob2 = json.dumps(v2, ensure_ascii=False)
+    assert "어텐선" in blob2 and "주목" not in blob2
+
+
 def test_hit_and_miss_views_match_for_same_user() -> None:
     # The fresh (write-through) view and the cache-hit view are identical except for ``cached``.
     store = StubStore()
@@ -114,174 +148,200 @@ def test_hit_and_miss_views_match_for_same_user() -> None:
     }
 
 
-def test_stored_base_is_shared_and_weak_free() -> None:
-    # What lands in the store is the BASE (no weak substitution baked in), so it is reusable across
-    # users. The overlay happens only on the returned view, not on the cached object.
+def test_stored_base_carries_tokens_and_is_render_free() -> None:
+    # What lands in the store is the BASE: standard-term tokens un-rendered, no weak substitution
+    # and no standardGlossary (all serve-time). So it is reusable across users.
     store = StubStore()
     orch = _orch(store, {"u1": (_weak("BERT", "버트"),)})
     orch.run(_translate_req(), _ctx())
     (stored,) = store.data.values()
-    assert "BERT" in json.dumps(stored, ensure_ascii=False)  # base keeps the un-substituted term
-    assert "버트" not in json.dumps(stored, ensure_ascii=False)
+    blob = json.dumps(stored, ensure_ascii=False)
+    assert _tok("BERT") in blob  # standard term masked in the base text
+    assert "버트" not in blob  # weak overlay not baked in
+    assert "standardGlossary" not in stored["translation"]  # built on read
 
 
-# --- assembler: base assembly (no post-sub) + read-time overlay -------------------------
+# --- assembler: base carries tokens, render restores on read ----------------------------
 
 
 def _src() -> SourceText:
     return SourceText(kind=SourceKind.ABSTRACT)
 
 
-def test_assemble_translation_does_not_post_substitute() -> None:
-    # Regression: post-substitution used to be baked into assemble_translation; it is now a
-    # read-time overlay, so the assembled base must keep weak term_from text verbatim.
-    draft = TranslationDraft(doc_model=tiny_doc(paragraph="This uses BERT."), kept_terms=())
+def _rendered(paragraph: str, glossary: Glossary, *, kept=()) -> dict:
+    draft = TranslationDraft(doc_model=tiny_doc(title="", paragraph=paragraph), kept_terms=kept)
     base = ResultAssembler().assemble_translation(draft, _src()).to_dict()
-    assert base["translation"]["docModel"]["sections"][0]["blocks"][0]["text"] == "This uses BERT."
+    return ResultAssembler.render_translation(base, glossary)["translation"]
 
 
-def test_overlay_applies_weak_terms_and_reprojects_fulltext() -> None:
-    doc = tiny_doc(title="BERT 소개", paragraph="이것은 BERT 이다.")
-    draft = TranslationDraft(doc, kept_terms=())
-    base = ResultAssembler().assemble_translation(draft, _src()).to_dict()
-    glossary = Glossary(user_overrides=(_weak("BERT", "버트"),))
-
-    view = ResultAssembler.overlay_translation(base, glossary)
-    section = view["translation"]["docModel"]["sections"][0]
-    assert section["title"] == "버트 소개"
-    assert section["blocks"][0]["text"] == "이것은 버트 이다."
-    # fullText re-projected from the substituted sections (stays aligned).
-    assert "버트" in view["translation"]["docModel"]["fullText"]
-    assert "BERT" not in view["translation"]["docModel"]["fullText"]
-    # Base object left untouched (overlay works on a copy).
-    assert "BERT" in base["translation"]["docModel"]["sections"][0]["title"]
+def test_assemble_translation_keeps_tokens_and_defers_glossary() -> None:
+    # The assembled base carries masked tokens + raw keptTerms; rendering + standardGlossary are
+    # serve-time (kept out of the shared base so it stays user-agnostic).
+    para = f"모델은 {_tok('attention')} 을 쓴다."
+    base = ResultAssembler().assemble_translation(
+        TranslationDraft(doc_model=tiny_doc(paragraph=para), kept_terms=("SAM",)), _src()
+    ).to_dict()["translation"]
+    assert _tok("attention") in base["docModel"]["sections"][0]["blocks"][0]["text"]
+    assert "standardGlossary" not in base  # built on read
+    assert base["keptTerms"] == ["SAM"]
 
 
-def test_overlay_is_noop_without_weak_terms() -> None:
-    draft = TranslationDraft(doc_model=tiny_doc(paragraph="This uses BERT."), kept_terms=())
-    base = ResultAssembler().assemble_translation(draft, _src()).to_dict()
-    # No weak terms (seed-only) → returns the SAME object, no copy/work.
-    assert ResultAssembler.overlay_translation(base, Glossary()) is base
+def test_render_restores_tokens_and_builds_standard_glossary() -> None:
+    para = f"{_tok('attention')}를 쓰는 {_tok('Transformer')}, {_tok('BLEU')} 평가."
+    tr = _rendered(para, Glossary(), kept=("SAM",))
+    text = tr["docModel"]["sections"][0]["blocks"][0]["text"]
+    # mapping token → Korean (josa fixed: 를→을 after ㄴ받침); keep-as-is tokens → English.
+    assert "어텐션을" in text and "Transformer" in text and "BLEU" in text
+    assert "⟦" not in text and "⟧" not in text
+    std = tr["standardGlossary"]
+    assert {"term": "attention", "translated": "어텐션"} in std
+    assert {"term": "Transformer"} in std and {"term": "BLEU"} in std
+    assert tr["docModel"]["fullText"].count("어텐션") == 1  # reprojected, aligned
 
 
-def test_translation_standard_glossary_lists_present_seed_terms() -> None:
-    # standardGlossary = shared-seed standard terms present in THIS paper (BR-S4): keep-as-is terms
-    # the model kept in English (no 'translated'), plus mapping terms whose Korean is in the text.
-    draft = TranslationDraft(
-        doc_model=tiny_doc(paragraph="이 모델은 어텐션을 쓰는 Transformer 이며 BLEU 로 평가한다."),
-        kept_terms=("Transformer", "transformer", "WMT", "BLEU"),
+def test_render_recovers_keepasis_present_without_token() -> None:
+    # A keep-as-is term present in text but NOT as a token (verbatim field like a table cell, or a
+    # mask-missed variant) is still recovered into standardGlossary by exact text presence (BR-S4),
+    # not dropped or mis-grouped under 원어 유지.
+    tr = _rendered("이 논문은 BERT 를 쓴다.", Glossary())  # literal BERT, no token
+    assert {"term": "BERT"} in tr["standardGlossary"]
+
+
+def test_render_standard_glossary_only_lists_present_tokens() -> None:
+    # A seed term whose token is absent from THIS paper never becomes a chip (exact by token, no
+    # string-match heuristic). Free-form (non-seed) kept terms are preserved.
+    para = f"모델은 {_tok('VAE')} 와 {_tok('GNN')} 을 쓴다."
+    tr = _rendered(para, Glossary(), kept=("VAE", "GNN", "CrysBFN"))
+    assert {g["term"] for g in tr["standardGlossary"]} == {"VAE", "GNN"}
+    # VAE/GNN are standard keep-as-is → 표준 only, so stripped from keptTerms; only the genuinely
+    # non-standard term survives in 원어 유지.
+    assert tr["keptTerms"] == ["CrysBFN"]
+
+
+def test_render_applies_weak_terms_and_reprojects_fulltext() -> None:
+    # Weak (post-substitution) simple-noun terms are applied on the rendered Korean; fullText is
+    # re-projected so it stays aligned. (A non-seed term, so it isn't masked.)
+    tr = _rendered("이것은 모델 이다.", Glossary(user_overrides=(_weak("모델", "신경망"),)))
+    assert tr["docModel"]["sections"][0]["blocks"][0]["text"] == "이것은 신경망 이다."
+    assert "신경망" in tr["docModel"]["fullText"]
+
+
+def test_render_strong_override_changes_text_and_chip() -> None:
+    # A strong override of a seed term re-renders its token at serve — the chip stays (editable,
+    # pre-filled) and the TEXT shows the override, no stale seed-rendering chip.
+    para = f"모델은 {_tok('attention')}를 쓰는 {_tok('Transformer')} 이다."
+    glossary = Glossary(user_overrides=(
+        TermMapping("attention", "주목", prompt_enforced=True),
+        TermMapping("Transformer", "트랜스포머", prompt_enforced=True),
+    ))
+    tr = _rendered(para, glossary)
+    text = tr["docModel"]["sections"][0]["blocks"][0]["text"]
+    assert "주목" in text and "트랜스포머" in text and "어텐션" not in text
+    std = tr["standardGlossary"]
+    assert {"term": "attention", "translated": "주목"} in std
+    assert {"term": "Transformer", "translated": "트랜스포머"} in std
+    assert {"term": "attention", "translated": "어텐션"} not in std
+
+
+def test_render_filters_math_notation_from_kept_terms() -> None:
+    # keptTerms exposes only keyword-like terms; Greek vars / expressions / LaTeX fragments drop.
+    para = f"모델은 {_tok('attention')}를 쓴다."
+    kept = ("SAM", "MSE", "CIFAR-100", "theta", "W_q", "L(w+delta)", "mathbb{E}", "F")
+    tr = _rendered(para, Glossary(), kept=kept)
+    assert tr["keptTerms"] == ["SAM", "MSE", "CIFAR-100"]
+
+
+def test_render_strips_echoed_tokens_from_kept_terms() -> None:
+    # Real models sometimes echo the masked tokens back in keptTerms ("I kept ⟦G0⟧ verbatim").
+    # Those internal artifacts must never surface as 원어 유지 chips (observed in a real smoke).
+    para = f"모델은 {_tok('attention')}를 쓴다."
+    tr = _rendered(para, Glossary(), kept=(_tok("attention"), _tok("Transformer"), "SAM"))
+    assert tr["keptTerms"] == ["SAM"]  # tokens dropped, real term kept
+    assert not any("⟦" in t for t in tr["keptTerms"])
+
+
+def test_render_strips_standard_renderings_from_kept_terms() -> None:
+    # The seed glossary rides into the translate prompt as variant guidance, so the model echoes
+    # seed renderings into keptTerms — mapping Korean (어텐션·임베딩·잠재 공간), keep-as-is English
+    # (Transformer), or a user override (주목). None of these may surface as 원어 유지 chips; only
+    # genuinely non-standard kept terms survive (BR-S4). attention + Transformer are both present.
+    para = f"모델은 {_tok('attention')}와 {_tok('Transformer')}를 쓴다."
+    glossary = Glossary(user_overrides=(TermMapping("attention", "주목", prompt_enforced=True),))
+    kept = ("어텐션", "임베딩", "잠재 공간", "Transformer", "주목", "SAM")
+    tr = _rendered(para, glossary, kept=kept)
+    assert tr["keptTerms"] == ["SAM"]  # every standard rendering dropped, real term kept
+
+
+def test_render_keeps_kept_term_colliding_with_absent_seed() -> None:
+    # A non-standard kept term coinciding with an ABSENT seed rendering ("Adam" the person vs the
+    # Adam optimizer, which is not in this paper) must NOT be stripped — keep-as-is stripping is
+    # scoped to terms present in the paper. Mapping Korean is still stripped globally.
+    para = f"모델은 {_tok('attention')}를 쓴다."  # attention present; Adam absent
+    tr = _rendered(para, Glossary(), kept=("Adam", "SAM", "어텐션"))
+    assert tr["keptTerms"] == ["Adam", "SAM"]  # collision preserved; mapping Korean stripped
+
+
+def test_render_strips_decomposed_hangul_rendering() -> None:
+    # NFC guard: the model may emit decomposed (NFD) Hangul; the standard-rendering strip must still
+    # match it (else the seed Korean leaks back into 원어 유지 — the exact fixed bug).
+    import unicodedata
+
+    para = f"모델은 {_tok('attention')}를 쓴다."
+    nfd = unicodedata.normalize("NFD", "어텐션")
+    assert nfd != "어텐션"  # sanity: actually decomposed
+    tr = _rendered(para, Glossary(), kept=(nfd, "SAM"))
+    assert tr["keptTerms"] == ["SAM"]
+
+
+def test_render_does_not_mutate_base() -> None:
+    # render works on a copy — the cached base keeps its token, and gains no standardGlossary.
+    para = f"모델은 {_tok('attention')}를 쓴다."
+    base = ResultAssembler().assemble_translation(
+        TranslationDraft(doc_model=tiny_doc(paragraph=para), kept_terms=()), _src()
+    ).to_dict()
+    ResultAssembler.render_translation(base, Glossary())
+    assert _tok("attention") in base["translation"]["docModel"]["sections"][0]["blocks"][0]["text"]
+    assert "standardGlossary" not in base["translation"]
+
+
+# --- task-aware glossary signature (translate vs summary fork) --------------------------
+
+
+def _seed_glossary(*overrides: TermMapping) -> Glossary:
+    base = GlossaryResolver(None).resolve(None)
+    return Glossary(
+        seed_mappings=base.seed_mappings, keep_as_is=base.keep_as_is, user_overrides=overrides
     )
-    out = ResultAssembler().assemble_translation(draft, _src()).to_dict()["translation"]
-    glossary = out["standardGlossary"]
-    # keep-as-is present (Transformer, BLEU) → English, no 'translated'; dedup case-insensitively.
-    assert {"term": "Transformer"} in glossary
-    assert {"term": "BLEU"} in glossary
-    assert sum(1 for g in glossary if g["term"].lower() == "transformer") == 1  # deduped
-    assert all(g["term"] != "WMT" for g in glossary)  # WMT is not a seed term
-    # mapping present (translated text contains 어텐션) → attention→어텐션 with 'translated'.
-    assert {"term": "attention", "translated": "어텐션"} in glossary
 
 
-def test_standard_glossary_drops_seed_absent_from_this_paper() -> None:
-    # The keep-as-is seed list rides into EVERY prompt, so the model echoes seeds the paper never
-    # uses back in keptTerms. Those must NOT appear as 표준 용어 chips nor in 원어 유지 용어 —
-    # standardGlossary/keptTerms show ONLY seeds actually present in THIS paper (BR-S4). Free-form
-    # (non-seed) kept terms are trusted even if surface-form differs from the text.
-    draft = TranslationDraft(
-        doc_model=tiny_doc(paragraph="이 모델은 VAE 와 GNN 을 쓴다."),
-        kept_terms=("VAE", "GNN", "Transformer", "BERT", "GPT", "CrysBFN"),
+def test_translate_signature_zero_for_seed_strong_override() -> None:
+    # A strong override of a SEED term does NOT fork translate (rendered on read from shared base),
+    # but summary still forks (no masking there) — the two tasks diverge by design.
+    g = _seed_glossary(TermMapping("attention", "주목", prompt_enforced=True))
+    assert GlossaryResolver.signature_of_translate(g) == 0
+    assert GlossaryResolver.signature_of(g) != 0
+
+
+def test_translate_signature_forks_for_non_seed_strong_override() -> None:
+    # A strong override of a term NOT in the seed is not masked → still forks (owner-scoped), as
+    # before (that path stays soft-prompt enforced).
+    g = _seed_glossary(TermMapping("GPIO", "지피아이오", prompt_enforced=True))
+    assert GlossaryResolver.signature_of_translate(g) != 0
+
+
+def test_translate_signature_zero_for_weak_only() -> None:
+    g = _seed_glossary(TermMapping("모델", "신경망", prompt_enforced=False))
+    assert GlossaryResolver.signature_of_translate(g) == 0
+
+
+def test_translate_key_carries_format_version_summary_does_not() -> None:
+    kt = build_cache_key(_translate_req(), glossary_ver=0, model_ver="m", user_id=None, seed_ver="")
+    assert "-m1" in kt.object_path()
+    ks = build_cache_key(
+        SummaryRequest(paper_id="p", version=1, task=Task.SUMMARY),
+        glossary_ver=0, model_ver="m", user_id=None, seed_ver="",
     )
-    out = ResultAssembler().assemble_translation(draft, _src()).to_dict()["translation"]
-    std_terms = {g["term"] for g in out["standardGlossary"]}
-    assert std_terms == {"VAE", "GNN"}  # present seeds only; Transformer/BERT/GPT dropped
-    assert out["keptTerms"] == ["VAE", "GNN", "CrysBFN"]  # absent seeds gone; free-form kept
-
-
-def test_translation_dto_filters_math_notation_from_kept_terms() -> None:
-    # End-to-end (client-facing) path: the assembled TranslationDraft → to_dict() must expose only
-    # keyword-like keptTerms, dropping the math notation the model reports alongside (BR-S4).
-    draft = TranslationDraft(
-        doc_model=tiny_doc(paragraph="이 모델은 어텐션을 쓰는 Transformer 이다."),
-        kept_terms=(
-            "Transformer", "SAM", "MSE", "CIFAR-100",  # keep (Transformer present; others non-seed)
-            "theta", "W_q", "L(w+delta)", "mathbb{E}", "H=96", "F", "He et al., 2023",  # drop
-        ),
-    )
-    out = ResultAssembler().assemble_translation(draft, _src()).to_dict()
-    assert out["translation"]["keptTerms"] == ["Transformer", "SAM", "MSE", "CIFAR-100"]
-
-
-def test_filter_kept_terms_drops_math_notation_on_read() -> None:
-    # Read-path cleanup (BR-S4) — also fixes results cached before the filter shipped. Keywords
-    # survive; Greek vars / expressions / LaTeX fragments are removed.
-    payload = {
-        "translation": {
-            "docModel": {"fullText": "uses Transformer here"},
-            "keptTerms": ["Transformer", "theta", "W_q", "MSE", "L(w+delta)", "mathbb{E}", "SAM"],
-            "standardGlossary": [],
-        }
-    }
-    out = ResultAssembler.filter_kept_terms(payload)
-    assert out["translation"]["keptTerms"] == ["Transformer", "MSE", "SAM"]
-    assert payload["translation"]["keptTerms"] != out["translation"]["keptTerms"]  # input untouched
-
-
-def test_filter_kept_terms_drops_absent_seed_from_both_lists_on_read() -> None:
-    # Cache-heal path (BR-S4): a seed the model echoed but that the paper never uses (absent from
-    # docModel.fullText) is stripped from BOTH keptTerms and the standardGlossary keep-as-is chips,
-    # so it cannot leak into either the 표준 용어 or 원어 유지 용어 group. Present seeds, mapping
-    # chips (with 'translated'), and free-form kept terms are preserved.
-    payload = {
-        "translation": {
-            "docModel": {"fullText": "이 논문은 VAE 와 GNN 을 쓴다."},
-            "keptTerms": ["VAE", "GNN", "Transformer", "BERT", "CrysBFN"],
-            "standardGlossary": [
-                {"term": "VAE"},
-                {"term": "Transformer"},  # absent → drop
-                {"term": "embedding", "translated": "임베딩"},  # mapping chip → keep
-            ],
-        }
-    }
-    out = ResultAssembler.filter_kept_terms(payload)["translation"]
-    assert out["keptTerms"] == ["VAE", "GNN", "CrysBFN"]  # BERT/Transformer dropped; free-form kept
-    assert out["standardGlossary"] == [
-        {"term": "VAE"},
-        {"term": "embedding", "translated": "임베딩"},
-    ]
-    # Input object untouched (never mutates the shared cached object).
-    assert len(payload["translation"]["standardGlossary"]) == 3
-
-
-def test_filter_kept_terms_is_noop_when_all_clean() -> None:
-    payload = {
-        "translation": {
-            "docModel": {"fullText": "uses Transformer"},
-            "keptTerms": ["Transformer", "SAM"],
-        }
-    }
-    assert ResultAssembler.filter_kept_terms(payload) is payload  # same object, no copy
-
-
-def test_standard_glossary_keeps_chip_after_strong_override() -> None:
-    # A strong personal override replaces the seed rendering in the text; the 표준 용어 chip must
-    # stay (editable) rather than vanish (BR-S4). attention→주목 removes 어텐션 from the text, and
-    # Transformer→트랜스포머 removes the English keep-as-is, yet both chips must persist with the
-    # user's rendering pre-filled.
-    draft = TranslationDraft(
-        doc_model=tiny_doc(paragraph="이 모델은 주목을 쓰는 트랜스포머 이며 BLEU 로 평가한다."),
-        kept_terms=("BLEU",),  # Transformer no longer kept in English (overridden)
-    )
-    overrides = {"attention": "주목", "transformer": "트랜스포머"}
-    glossary = ResultAssembler().assemble_translation(draft, _src()).to_dict(
-        strong_overrides=overrides
-    )["translation"]["standardGlossary"]
-    # Overridden seeds keep their chips, pre-filled with the effective rendering.
-    assert {"term": "attention", "translated": "주목"} in glossary
-    assert {"term": "Transformer", "translated": "트랜스포머"} in glossary
-    # A non-overridden keep-as-is still present in English shows without 'translated'.
-    assert {"term": "BLEU"} in glossary
-    # No stale seed-rendering chip once overridden.
-    assert {"term": "attention", "translated": "어텐션"} not in glossary
+    assert "-m1" not in ks.object_path()
 
 
 # --- seed change → cache self-invalidation ----------------------------------------------

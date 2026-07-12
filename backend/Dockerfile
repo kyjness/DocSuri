@@ -27,7 +27,8 @@ COPY backend /app/backend
 RUN python -m pip install --upgrade pip==24.2 \
     && python -m pip install /app/shared/python /app/ops "/app/discovery[real]" \
         "/app/summarization[real]" \
-    && python -m pip install -r /app/backend/requirements-deploy.txt
+    && python -m pip install -r /app/backend/requirements-deploy.txt \
+    && python -m pip install --upgrade boto3 botocore  # AWS changed cohere.embed-multilingual-v3 on-demand request handling ~2026-07; pinned boto3 built a now-rejected request ("invalid model identifier") — force latest SDK
 
 USER docsuri
 

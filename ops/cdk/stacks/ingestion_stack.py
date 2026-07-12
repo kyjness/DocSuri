@@ -56,8 +56,10 @@ from constructs import Construct
 # go through the global cross-region inference profile. The adapter pins output_dimension to the
 # 1024-dim spec (embed-v4 defaults to 1536). v2 dual-write targets the same profile so the
 # backfilled docsuri-corpus-v2 is a clean, uniform v4 rebuild.
-_BEDROCK_FOUNDATION_MODEL = "cohere.embed-v4:0"
-_BEDROCK_MODEL_ID = "global.cohere.embed-v4:0"  # inference profile id (used for InvokeModel)
+# v3 cutover (2026-07): harvester embeds new papers with Cohere Embed Multilingual v3 (on-demand
+# foundation-model, NOT an inference profile) into docsuri-corpus-c3ml, matching the reader.
+_BEDROCK_FOUNDATION_MODEL = "cohere.embed-multilingual-v3"
+_BEDROCK_MODEL_ID = "cohere.embed-multilingual-v3"  # on-demand FM id (used for InvokeModel)
 
 # Existing control-plane RDS (created by Docsuri-Compute) referenced by concrete id rather than
 # a CFN cross-stack import. Importing compute's L2 construct would force a compute redeploy, which
@@ -280,6 +282,8 @@ class IngestionStack(Stack):
             environment={
                 "DOCSURI_ENV": "production",
                 "DOCSURI_AWS_REGION": self.region,
+                # v3 not in apne2 → harvester embeds cross-region (OpenSearch region unchanged).
+                "DOCSURI_EMBED_REGION": "ap-northeast-1",
                 "DOCSURI_S3_BUCKET": self.bucket.bucket_name,
                 "DOCSURI_BEDROCK_MODEL_ID": _BEDROCK_MODEL_ID,
                 "DOCSURI_OPENSEARCH_ENDPOINT": f"https://{opensearch_domain.domain_endpoint}",
@@ -350,6 +354,8 @@ class IngestionStack(Stack):
             environment={
                 "DOCSURI_ENV": "production",
                 "DOCSURI_AWS_REGION": self.region,
+                # v3 not in apne2 → harvester embeds cross-region (OpenSearch region unchanged).
+                "DOCSURI_EMBED_REGION": "ap-northeast-1",
                 "DOCSURI_S3_BUCKET": self.bucket.bucket_name,
                 "DOCSURI_BEDROCK_MODEL_ID": _BEDROCK_MODEL_ID,
                 "DOCSURI_OPENSEARCH_ENDPOINT": f"https://{opensearch_domain.domain_endpoint}",
@@ -465,6 +471,8 @@ class IngestionStack(Stack):
             environment={
                 "DOCSURI_ENV": "production",
                 "DOCSURI_AWS_REGION": self.region,
+                # v3 not in apne2 → harvester embeds cross-region (OpenSearch region unchanged).
+                "DOCSURI_EMBED_REGION": "ap-northeast-1",
                 "DOCSURI_S3_BUCKET": self.bucket.bucket_name,
                 "DOCSURI_BEDROCK_MODEL_ID": _BEDROCK_MODEL_ID,
                 "DOCSURI_OPENSEARCH_ENDPOINT": f"https://{opensearch_domain.domain_endpoint}",

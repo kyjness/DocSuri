@@ -259,6 +259,10 @@ class BedrockCohereEmbeddingPort:
 
         self._client = boto3.client("bedrock-runtime", region_name=region_name)
         self._model_id = model_id
+        # Cohere Embed v3 (multilingual/english) is a DIFFERENT request shape than v4: fixed
+        # 1024-dim (no output_dimension param — sending it 400s) and a 512-token input cap (needs
+        # truncate). v4 keeps the output_dimension pin. Detect by the model id suffix.
+        self._is_v3 = "-v3" in model_id
         # Defaults to the frozen spec width (1024). A re-embed to a different space (e.g. Cohere
         # v4's 1536 default) overrides it so the request pin + length check match the new vectors.
         self._output_dimension = output_dimension or EMBEDDING_SPEC.dimensions
@@ -281,14 +285,21 @@ class BedrockCohereEmbeddingPort:
         return vectors
 
     def _embed_batch(self, texts: Sequence[str]) -> list[list[float]]:
+        # Cohere v3 hard-rejects any text > 2048 CHARS (Bedrock input validation, applied BEFORE the
+        # token-level truncate), so cap client-side; else one long chunk 400s the whole batch.
+        payload_texts = [t[:2048] for t in texts] if self._is_v3 else list(texts)
         body = {
-            "texts": list(texts),
+            "texts": payload_texts,
             "input_type": EMBEDDING_SPEC.input_type_writer,
             "embedding_types": ["float"],
+        }
+        if self._is_v3:
+            # v3 is fixed 1024-dim (no output_dimension); truncate=END also caps tokens (<=512).
+            body["truncate"] = "END"
+        else:
             # Cohere Embed v4 defaults to 1536-dim; pin to the configured width (the frozen 1024 for
             # the live path, or a re-embed override e.g. 1536) so vectors match the target mapping.
-            "output_dimension": self._output_dimension,
-        }
+            body["output_dimension"] = self._output_dimension
         response = self._client.invoke_model(
             modelId=self._model_id,
             body=json.dumps(body).encode("utf-8"),

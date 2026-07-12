@@ -7,7 +7,8 @@ reviewer's call. Do NOT recalibrate ``_NUMERIC_MISMATCH_THRESHOLD`` from this se
 
 Each case is hand-built to trip exactly one validator path so the label is unambiguous:
 empty/truncated/schema are HARD (abstain); anchor-existence is SOFT (drop, summary still passes);
-numeric match is HARD but fraction-based (abstain only when >50% of result figures are absent).
+numeric match is HARD but fraction-based (abstain only when >40% of result figures are absent —
+recalibrated from the pre-Phase-3 0.5 estimate, US-S6; see ``domain/grounding.py``).
 """
 
 from __future__ import annotations
@@ -137,9 +138,10 @@ _fabricated_empty_method = GroundingEvalCase(
     confident=True,
 )
 
-# 5. PROBE (label = reviewer's call): exactly half the result figures are unverifiable. The
-# current threshold (>50%) lets this PASS, so under a 'fabricated' reading it is a false-pass —
-# this is precisely the case a held-out set must resolve before recalibrating the threshold.
+# 5. PROBE (recalibration settled it, US-S6): exactly half the result figures are unverifiable.
+# Under the pre-Phase-3 threshold 0.5 this PASSED (0.5 is not > 0.5) — the known false-pass that
+# drove the recalibration. At the strict 0.4 the gate ABSTAINS (caught); pinned in
+# ``tests/test_grounding_eval.py::test_half_ungrounded_probe_now_caught``.
 _probe_half_ungrounded = GroundingEvalCase(
     name="probe_half_ungrounded_numbers",
     gi=GroundingInput(
@@ -150,8 +152,8 @@ _probe_half_ungrounded = GroundingEvalCase(
     ),
     expected="fabricated",
     rationale=(
-        "50.0 grounded, 99.9 not → 1/2 = 0.5, not > 0.5, so the gate PASSES. "
-        "Threshold-recalibration probe; label unsettled."
+        "50.0 grounded, 99.9 not → 1/2 = 0.5 ungrounded. Former false-pass at the 0.5 "
+        "threshold; caught (> 0.4) since the US-S6 recalibration."
     ),
     confident=False,
 )

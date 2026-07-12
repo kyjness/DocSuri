@@ -71,8 +71,12 @@ describe('AgentChatScreen', () => {
     expect(screen.getByText('문제정의')).toBeInTheDocument();
     expect(screen.getByText('공개 RAG 벤치마크 3종')).toBeInTheDocument();
     expect(screen.getAllByText('근거 부족').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText(/Prior RAG benchmark에서 RAG 평가 자동화/)).toBeInTheDocument();
+    expect(screen.getByText('관련도/근거 강도 86%')).toBeInTheDocument();
+    expect(screen.getByText('query: RAG evaluation automation benchmark')).toBeInTheDocument();
     expect(screen.getByText(/차별점은 데이터셋 조건/)).toBeInTheDocument();
     expect(screen.getByText('도메인 지식 기반 실패 유형 분해')).toBeInTheDocument();
+    expect(screen.getByText(/RAG 평가 자동화 프로토콜.*유사합니다/)).toBeInTheDocument();
     expect(screen.getByText(/판정이 아닙니다/)).toBeInTheDocument();
     expect(
       screen.getByText('유사 연구 대비 실패 유형을 더 세밀하게 분해한다.'),

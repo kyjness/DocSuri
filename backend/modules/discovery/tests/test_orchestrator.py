@@ -77,6 +77,26 @@ def test_validation_error_does_not_publish() -> None:
     assert bundle.event_publisher.events == []
 
 
+def test_personalized_flag_set_when_live_boost_applied_and_absent_otherwise() -> None:
+    # US-P4 (#155): meta.personalized=True ONLY when the LIVE re-rank actually boosted the
+    # page (U5 shows '내 관심 주제 반영' + 끄기 진입점). Shadow mode (gate off) computes the
+    # same boosts but must keep the flag absent (None) — fail-soft baseline shape.
+    request = SearchRequest(query="diffusion models for protein structure")
+
+    live = build_mock_orchestrator()
+    live.orchestrator._search_boosts = lambda _uid: {"cs.LG": 0.1}  # top card is cs.LG
+    live.orchestrator._rerank_live = True
+    resp = run_search(live.orchestrator, live.grounding_hook, request, _ctx())
+    assert isinstance(resp.root, SearchResultPageDTO)
+    assert resp.root.meta.personalized is True
+
+    shadow = build_mock_orchestrator()  # same boosts, go-live gate off (default)
+    shadow.orchestrator._search_boosts = lambda _uid: {"cs.LG": 0.1}
+    resp = run_search(shadow.orchestrator, shadow.grounding_hook, request, _ctx())
+    assert isinstance(resp.root, SearchResultPageDTO)
+    assert resp.root.meta.personalized is None
+
+
 def test_korean_query_matches_english_paper_cross_lingual() -> None:
     bundle = build_mock_orchestrator()
     resp = run_search(

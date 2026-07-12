@@ -351,16 +351,22 @@ class AssetExtractor:
             pdfium_doc = pdfium.PdfDocument(pdf)
             with pdfplumber.open(io.BytesIO(pdf)) as plumber:
                 for page_no, page in enumerate(plumber.pages):
-                    for line in page.extract_text_lines() or []:
-                        parsed = caption_kind_and_number(line.get("text", ""))
-                        if parsed is None:
-                            continue
-                        kind, number = parsed
+                    captions = _page_captions(page.extract_text_lines() or [])
+                    if not captions:
+                        continue
+                    # Assign the page's graphic primitives to captions ONCE, then extract words ONCE
+                    # (both are O(page) — recomputing per caption was pure overhead on dense pages).
+                    buckets = _assign_graphics(page, captions)
+                    words = page.extract_words() or []
+                    for cap, prims in zip(captions, buckets, strict=True):
+                        kind = cap["kind"]
                         if (kind is AssetType.FIGURE and not figures) or (
                             kind is AssetType.TABLE and not tables
                         ):
                             continue
-                        bbox = _caption_region(page, line, kind)
+                        bbox = _caption_bbox(page, prims, words)
+                        if bbox is None:
+                            continue  # no graphic assigned → caption was a body cross-reference
                         image = _render_bbox_to_png(pdfium_doc, page_no, bbox, plumber_page=page)
                         image = self._normalizer.normalize(image) if image else None
                         if image is None:
@@ -368,13 +374,13 @@ class AssetExtractor:
                         hits.append(
                             _CropHit(
                                 kind=kind,
-                                number=number,
+                                number=cap["number"],
                                 image=image,
                                 page=page_no,
-                                y=float(line.get("top", 0.0)),
-                                x=float(line.get("x0", 0.0)),
+                                y=cap["top"],
+                                x=cap["x0"],
                                 bbox=bbox,
-                                caption=line.get("text", "").strip(),
+                                caption=cap["text"],
                             )
                         )
         except Exception:  # noqa: BLE001 - best-effort; skip assets for this paper
@@ -399,14 +405,123 @@ class AssetExtractor:
         ]
 
 
-def _caption_region(page, line, kind) -> tuple[float, float, float, float]:
-    """Heuristic region for a captioned figure/table: the band above the caption for a
-    figure, below it for a table (tables typically sit under their caption)."""
-    top = float(line.get("top", 0.0))
-    page_h = float(page.height)
-    if kind is AssetType.TABLE:
-        return (0.0, top, float(page.width), min(page_h, top + page_h * 0.4))
-    return (0.0, max(0.0, top - page_h * 0.4), float(page.width), top)
+# Region-detection tunables. A real figure/table is a cluster of vector/raster primitives; a lone
+# stray line (a rule, an underline) is not, so require a minimum before accepting a crop — unless
+# the single primitive is large enough to be a one-path diagram/plot. Padding gives breathing room.
+_MIN_GRAPHIC_OBJS = 2
+_REGION_PAD = 4.0
+_SINGLE_PRIM_MIN_W_FRAC = 0.3  # a lone primitive counts only if it spans ≥30% width AND ≥10% height
+_SINGLE_PRIM_MIN_H_FRAC = 0.1
+
+
+def _page_captions(lines: Sequence[dict]) -> list[dict]:
+    """Every "Figure N"/"Table N" caption line on the page, as ``{kind, number, top, bottom, x0, x1,
+    text}``. The x-span lets a two-column page keep each column's figure with its caption. Pure."""
+    caps: list[dict] = []
+    for ln in lines:
+        parsed = caption_kind_and_number(ln.get("text", ""))
+        if parsed is None:
+            continue
+        kind, number = parsed
+        top = float(ln.get("top", 0.0))
+        caps.append(
+            {
+                "kind": kind,
+                "number": number,
+                "top": top,
+                "bottom": float(ln.get("bottom", top)),
+                "x0": float(ln.get("x0", 0.0)),
+                "x1": float(ln.get("x1", 0.0)),
+                "text": (ln.get("text", "") or "").strip(),
+            }
+        )
+    return caps
+
+
+def _assign_graphics(page, captions: Sequence[dict]) -> list[dict[str, list]]:
+    """Assign each graphic primitive to the caption whose content-side edge is NEAREST — a figure's
+    content sits ABOVE its caption, a table's BELOW — restricted to captions its x-span overlaps.
+
+    Nearest-edge assignment (not a vertical window) is what keeps a table's rules with the table
+    even when a figure caption sits just after it. Among captions on the primitive's content side an
+    x-overlapping caption is preferred (so a two-column page's left/right figures stay apart), but a
+    primitive that overlaps no caption — a figure wider than its short caption — still falls back to
+    the nearest same-side caption rather than being dropped. Returns a list parallel to
+    ``captions`` of ``{"img": [...], "vec": [...]}`` boxes. Pure given the page."""
+    buckets: list[dict[str, list]] = [{"img": [], "vec": []} for _ in captions]
+    for name in ("curves", "lines", "rects", "images"):
+        key = "img" if name == "images" else "vec"
+        for o in getattr(page, name, None) or []:
+            px0, ptop, px1, pbot = (
+                float(o["x0"]),
+                float(o["top"]),
+                float(o["x1"]),
+                float(o["bottom"]),
+            )
+            cy = (ptop + pbot) / 2.0
+            overlap_i = overlap_d = any_i = any_d = None
+            for i, cap in enumerate(captions):
+                # Signed distance from the primitive to this caption's content side; <0 means the
+                # primitive is on the WRONG side (below a figure caption / above a table caption).
+                dist = cap["top"] - cy if cap["kind"] is AssetType.FIGURE else cy - cap["bottom"]
+                if dist < 0:
+                    continue
+                if any_d is None or dist < any_d:
+                    any_d, any_i = dist, i
+                overlaps_x = px1 >= cap["x0"] and px0 <= cap["x1"]
+                if overlaps_x and (overlap_d is None or dist < overlap_d):
+                    overlap_d, overlap_i = dist, i
+            chosen = overlap_i if overlap_i is not None else any_i
+            if chosen is not None:
+                buckets[chosen][key].append((px0, ptop, px1, pbot))
+    return buckets
+
+
+def _accept_graphics(img_boxes: list, vec_boxes: list, page) -> bool:
+    """Whether the assigned primitives are a real figure/table (not a body cross-reference that
+    merely opens with a caption-looking phrase). Any raster counts; so does a cluster of vector
+    primitives, or a single LARGE one (a one-path diagram) — but not a lone thin rule/underline."""
+    if img_boxes:
+        return True
+    if len(vec_boxes) >= _MIN_GRAPHIC_OBJS:
+        return True
+    if len(vec_boxes) == 1:
+        x0, t0, x1, t1 = vec_boxes[0]
+        return (x1 - x0) >= _SINGLE_PRIM_MIN_W_FRAC * float(page.width) and (
+            t1 - t0
+        ) >= _SINGLE_PRIM_MIN_H_FRAC * float(page.height)
+    return False
+
+
+def _caption_bbox(page, prims: dict[str, list], words: Sequence[dict]):
+    """Tight crop bbox for one caption's assigned primitives, or None to skip.
+
+    The bbox is the union of the assigned primitives grown to include the words that sit within the
+    (FIXED) primitive span — axis labels, legends, table cells. Membership is tested against the
+    frozen graphic span, never the growing bbox, so a word cannot chain the crop outward into
+    neighbouring prose or the running header. Pure given the page."""
+    img_boxes, vec_boxes = prims["img"], prims["vec"]
+    if not _accept_graphics(img_boxes, vec_boxes, page):
+        return None
+    boxes = img_boxes + vec_boxes
+    gx0 = min(b[0] for b in boxes)
+    gt0 = min(b[1] for b in boxes)
+    gx1 = max(b[2] for b in boxes)
+    gt1 = max(b[3] for b in boxes)
+    x0, t0, x1, t1 = gx0, gt0, gx1, gt1
+    for w in words:
+        cy = (float(w["top"]) + float(w["bottom"])) / 2.0
+        if gt0 - 2.0 <= cy <= gt1 + 2.0 and float(w["x1"]) >= gx0 and float(w["x0"]) <= gx1:
+            x0 = min(x0, float(w["x0"]))
+            x1 = max(x1, float(w["x1"]))
+            t0 = min(t0, float(w["top"]))
+            t1 = max(t1, float(w["bottom"]))
+    return (
+        max(0.0, x0 - _REGION_PAD),
+        max(0.0, t0 - _REGION_PAD),
+        min(float(page.width), x1 + _REGION_PAD),
+        min(float(page.height), t1 + _REGION_PAD),
+    )
 
 
 def _render_bbox_to_png(

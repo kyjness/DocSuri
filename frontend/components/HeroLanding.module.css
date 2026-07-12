@@ -111,3 +111,28 @@
   font-size: 15px;
   text-decoration: none;
 }
+
+/* Legal links pinned to the bottom of the landing (margin-top:auto overrides the
+   column's justify-content:center so the footer sits under, not beside, the CTAs). */
+.legalFooter {
+  margin-top: auto;
+  padding-top: 24px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.legalLink {
+  color: var(--color-text-muted);
+  text-decoration: none;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.legalLink:hover {
+  text-decoration: underline;
+}

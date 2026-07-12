@@ -104,6 +104,49 @@ def test_refine_doc_model_collects_sections_formulas_captions() -> None:
     assert "Sub finding." in refined.body  # nested subsection content included
 
 
+def test_refine_doc_model_excludes_abstract_from_anchor_index() -> None:
+    """The abstract (doc-model id 's0') is summarizable content but not a citable anchor target:
+    the reader hides it from the full-text body (its own 초록 surface), so an anchor resolving
+    there could never scroll. It stays out of refined.sections (→ the grounding gate resolves no
+    anchor to it) while its title + text still reach the LLM prompt body."""
+    doc = DocModel.model_validate(
+        {
+            "meta": {
+                "paperId": "2401.00003",
+                "version": 1,
+                "title": "T",
+                "provenance": {
+                    "sourceTier": "ar5iv",
+                    "parserVersion": "p@1",
+                    "schemaVersion": "1.0.0",
+                    "generatedAt": "2026-06-23T00:00:00Z",
+                },
+            },
+            "fullText": "Abstract\n\nWe study X.\n\nResults\n\nWe report accuracy.",
+            "sections": [
+                {
+                    "id": "s0",
+                    "title": "Abstract",
+                    "blocks": [{"id": "s0.p1", "type": "paragraph", "text": "We study X."}],
+                },
+                {
+                    "id": "s1",
+                    "title": "Results",
+                    "blocks": [{"id": "s1.p1", "type": "paragraph", "text": "We report accuracy."}],
+                },
+            ],
+        }
+    )
+
+    refined = InputRefiner().refine_doc_model(doc)
+
+    # The abstract is NOT a citable section (no anchor can resolve to it), but real content is.
+    assert [s.label for s in refined.sections] == ["Results"]
+    # Its title + text still reach the prompt body (summarizable content, just not an anchor).
+    assert "Abstract" in refined.body
+    assert "We study X." in refined.body
+
+
 def test_refine_doc_model_body_stays_aligned_with_root_full_text() -> None:
     doc = _doc()
     refined = InputRefiner().refine_doc_model(doc)

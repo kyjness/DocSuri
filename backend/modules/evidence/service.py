@@ -83,11 +83,13 @@ class EvidenceChatService:
         budget_signal: dict[str, Any] | None = None,
         request_id: str = '',
         attachment_docs: tuple[AttachmentInput, ...] = (),
+        on_progress: Any = None,
     ) -> TurnResponse:
         """채팅 턴 1회 실행.
 
         sqs_enqueue 주입 시 비동기 경로(BR-EV-6): TurnPendingResult 즉시 반환 + SQS enqueue.
-        미주입 시 동기 경로: orchestrator 직접 실행.
+        미주입 시 동기 경로: orchestrator 직접 실행. on_progress(US-EV2/NFR-P6)는 동기
+        경로에서만 의미가 있다 — 비동기 잡은 폴링으로 진행을 본다.
         """
         session = self._load_or_create_session(owner_id, request, session_id)
         turn = EvidenceTurn(session_id=session.session_id, request=request)
@@ -122,7 +124,11 @@ class EvidenceChatService:
             # 동기 경로: async 분기와 달리 add_turn을 빠뜨려 저장된 턴이 0건이었다 —
             # 응답의 turnId를 이후 세션 이력(list_turns)에서 되찾을 수 없었다
             # (PR #338 리뷰 Blocking #1/FR-38).
-            result = self._orchestrator.run(ctx, request)
+            # on_progress 미지정 시 2-인자 호출 유지 — 기존 테스트 스텁 호환.
+            if on_progress is None:
+                result = self._orchestrator.run(ctx, request)
+            else:
+                result = self._orchestrator.run(ctx, request, on_progress=on_progress)
             turn.result = result
             self._repo.add_turn(turn)
 

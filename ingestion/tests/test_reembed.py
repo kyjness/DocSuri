@@ -101,3 +101,48 @@ def test_token_bucket_acquire_amount_and_oversized_batch(monkeypatch):
     tb.acquire(25)  # > capacity → spends multiple refill windows, never deadlocks
 
     assert [round(s, 1) for s in sleeps if s > 1e-9] == [0.4, 1.0, 0.5]
+
+
+def _embed_port_with_fake_client(model_id, output_dimension):
+    import json as _json
+
+    from docsuri_ingestion.adapters.aws import BedrockCohereEmbeddingPort
+
+    port = BedrockCohereEmbeddingPort(
+        model_id=model_id, region_name="us-east-1", output_dimension=output_dimension
+    )
+    captured = {}
+
+    class _Body:
+        def __init__(self, n, dim):
+            self._payload = _json.dumps(
+                {"embeddings": {"float": [[0.0] * dim for _ in range(n)]}}
+            ).encode()
+
+        def read(self):
+            return self._payload
+
+    class _Client:
+        def invoke_model(self, **kw):
+            body = _json.loads(kw["body"])
+            captured["body"] = body
+            dim = body.get("output_dimension", 1024)
+            return {"body": _Body(len(body["texts"]), dim)}
+
+    port._client = _Client()
+    return port, captured
+
+
+def test_embed_body_v3_omits_output_dimension_and_truncates():
+    port, captured = _embed_port_with_fake_client("cohere.embed-multilingual-v3", 1024)
+    port.embed_documents(["a" * 5000, "short"])
+    assert "output_dimension" not in captured["body"]  # v3 rejects it (400)
+    assert captured["body"]["truncate"] == "END"  # v3 512-token cap → truncate
+    assert all(len(t) <= 2048 for t in captured["body"]["texts"])  # v3 2048-CHAR hard limit
+
+
+def test_embed_body_v4_pins_output_dimension_no_truncate():
+    port, captured = _embed_port_with_fake_client("global.cohere.embed-v4:0", 1536)
+    port.embed_documents(["a"])
+    assert captured["body"]["output_dimension"] == 1536  # v4 path unchanged
+    assert "truncate" not in captured["body"]

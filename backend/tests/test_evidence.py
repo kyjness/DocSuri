@@ -827,6 +827,134 @@ def test_extractor_records_bedrock_spend_into_cost_guard() -> None:
     assert abs(guard.get_budget_state().spend_usd - 6.0) < 1e-9
 
 
+# ---------------------------------------------------------------------------
+# US-EV2(#266) AC3 — 쟁점 오버레이: 지지/상충 출처가 API 응답 한 항목에 함께 실린다
+# ---------------------------------------------------------------------------
+
+def _success_result_with_conflict() -> TurnSuccessResult:
+    from docsuri_shared._generated.dtos.evidence_schema import (
+        EvidenceCoverage,
+        EvidenceItem,
+        EvidenceResult,
+        SourceRef,
+    )
+
+    return TurnSuccessResult(
+        outcome=EvidenceResult(
+            state='ok',
+            claims=[
+                EvidenceItem(
+                    statement='self-attention reduces sequential operations',
+                    supporting=[
+                        SourceRef(
+                            paperId='2401.00001',
+                            recordRef='rec-1',
+                            quote='a constant number of sequential operations',
+                        )
+                    ],
+                    conflicting=[
+                        SourceRef(
+                            paperId='2401.00002',
+                            recordRef='rec-2',
+                            quote='recurrence remains faster for short sequences',
+                        )
+                    ],
+                )
+            ],
+            coverage=EvidenceCoverage(paperCount=2, queryUsed='self-attention'),
+        ),
+        resolved_paper_ids=('2401.00001', '2401.00002'),
+    )
+
+
+def test_api_turn_serializes_conflict_overlay_with_both_source_kinds(monkeypatch) -> None:
+    """상충 출처가 있는 근거 명제는 지지/상충 출처가 함께 표시된다(쟁점 오버레이)."""
+    client = _client(monkeypatch, _principal(), InMemoryEvidenceRepository())
+
+    class _ConflictOrchestrator:
+        def run(self, ctx, request):
+            return _success_result_with_conflict()
+
+    client.app.dependency_overrides[controller.get_orchestrator] = (
+        lambda: _ConflictOrchestrator()
+    )
+
+    resp = client.post('/api/evidence/turns', json={'topic': 'self-attention', 'scope': 'auto'})
+
+    assert resp.status_code == 200
+    claim = resp.json()['result']['claims'][0]
+    assert [ref['paperId'] for ref in claim['supporting']] == ['2401.00001']
+    assert [ref['paperId'] for ref in claim['conflicting']] == ['2401.00002']
+    assert claim['conflicting'][0]['quote']  # 상충 출처도 원문 인용을 유지한다
+
+
+# ---------------------------------------------------------------------------
+# US-EV2(#266) AC1 / NFR-P6 — 점진 표시의 현존 구현(비동기 잡 경로) 수명주기
+# 토큰 스트리밍(SSE)은 미구현 — "스트리밍으로 점진 표시" AC 문구 대비 편차로 QA 리포트에
+# 기록(스토리 오너 승인 필요). 여기서는 실제로 존재하는 점진 경로를 고정한다:
+# pending 즉시 응답(결과 확정 전) → GET /jobs/{id} 폴링 → 동일 표면에서 terminal 결과.
+# ---------------------------------------------------------------------------
+
+def test_api_async_turn_progressive_lifecycle_pending_then_polled_terminal(monkeypatch) -> None:
+    principal = _principal()
+    repo = InMemoryEvidenceRepository()
+    client = _client(monkeypatch, principal, repo)
+
+    class _MustNotRunInline:
+        """비동기 경로에서는 요청 스레드가 orchestrator를 실행하지 않는다(BR-EV-6) —
+        pending 응답은 LLM/검색 작업 시작 전에 즉시 나가야 한다."""
+
+        def run(self, ctx, request):
+            raise AssertionError('async path must not run the orchestrator inline')
+
+    client.app.dependency_overrides[controller.get_orchestrator] = lambda: _MustNotRunInline()
+    enqueued: list[dict] = []
+    client.app.state.evidence_sqs_enqueue = enqueued.append
+
+    # 1단계 — 결과 확정 전 즉시 pending + jobId 반환
+    resp = client.post(
+        '/api/evidence/turns', json={'topic': 'transformer attention', 'scope': 'auto'}
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body['result']['state'] == 'pending'
+    job_id = body['result']['jobId']
+    assert job_id
+    assert enqueued[0]['jobId'] == job_id
+    assert enqueued[0]['topic'] == 'transformer attention'
+
+    # 2단계 — 실행 중 폴링은 같은 jobId로 pending을 반환
+    polled = client.get(f'/api/evidence/jobs/{job_id}')
+    assert polled.status_code == 200
+    assert polled.json()['result']['state'] == 'pending'
+
+    # 3단계 — 워커가 잡을 terminal로 전이(BR-EV-6)
+    from backend.modules.evidence.worker import process_job
+
+    class _ResolvingOrchestrator:
+        def run(self, ctx, request):
+            return _success_result_with_conflict()
+
+    msg = enqueued[0]
+    process_job(
+        repo,
+        orchestrator=_ResolvingOrchestrator(),
+        owner_id=msg['ownerId'],
+        session_id=msg['sessionId'],
+        turn_id=msg['turnId'],
+        job_id=msg['jobId'],
+        topic=msg['topic'],
+    )
+
+    # 4단계 — 동일 폴링 표면에서 terminal 결과(쟁점 오버레이 포함)가 나온다
+    done = client.get(f'/api/evidence/jobs/{job_id}')
+    assert done.status_code == 200
+    result = done.json()['result']
+    assert result['state'] == 'ok'
+    assert result['claims'][0]['supporting'][0]['paperId'] == '2401.00001'
+    assert result['claims'][0]['conflicting'][0]['paperId'] == '2401.00002'
+
+
 def test_orchestrator_includes_attachment_content_as_extraction_target() -> None:
     """US-EV4(#268) 2차 — md/txt 본문 첨부는 corpus가 비어도 추출 대상 문서가 되고,
     본문 없는 첨부(PDF)는 추출 대상에 포함되지 않는다."""

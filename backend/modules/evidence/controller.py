@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import datetime
 from typing import Any, Literal
@@ -8,6 +9,7 @@ from uuid import uuid4
 from docsuri_shared.authz import Principal
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.middleware.agent_attachments import ATTACHMENT_MAX_COUNT, AgentAttachmentIn
@@ -27,6 +29,7 @@ from .models import (
 )
 from .repository import EvidenceRepository
 from .service import EvidenceChatService, TurnResponse
+from .streaming import progress_event, turn_sse_stream, wants_event_stream
 
 
 def _feature_enabled() -> None:
@@ -170,8 +173,11 @@ async def create_turn(
     orchestrator: Any = ORCHESTRATOR_DEP,
     sqs_enqueue: Any = SQS_ENQUEUE_DEP,
     user_docmodel: Any = USER_DOCMODEL_DEP,
-) -> TurnOut:
-    """채팅 턴 실행 — FR-36, FR-37, NFR-P6."""
+) -> Any:
+    """채팅 턴 실행 — FR-36, FR-37, NFR-P6.
+
+    Accept: text/event-stream + 동기 경로 → SSE 스트리밍(US-EV2). 그 외 JSON(TurnOut).
+    """
     from docsuri_shared._generated.dtos.evidence_schema import EvidenceRequest, EvidenceScope
 
     request_id = request.headers.get('x-request-id', '')
@@ -193,16 +199,65 @@ async def create_turn(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail='첨부 PDF 정보가 올바르지 않습니다.') from exc
 
+    service = EvidenceChatService(
+        repo=repo,
+        orchestrator=orchestrator,
+        sqs_enqueue=sqs_enqueue,
+    )
+    budget_signal = getattr(request.state, 'budget_signal', {})
+
+    # US-EV2/NFR-P6 — 동기 경로는 Accept: text/event-stream 협상 시 SSE 스트리밍으로
+    # 완료한다(nfr-design §2.1/§2.2). 비동기 적격(sqs_enqueue 주입) 턴은 SSE 표면에서도
+    # 기존 pending/jobId JSON 동작을 그대로 유지한다(BR-EV-6 분기 불변).
+    if sqs_enqueue is None and wants_event_stream(request.headers.get('accept')):
+        if body.session_id:
+            # INV-EV-1: 스트림 시작 전에 소유권을 검증해 404가 HTTP 에러로 남게 한다.
+            try:
+                repo.get_session(principal.user_id, body.session_id)
+            except KeyError as exc:
+                raise HTTPException(status_code=404, detail='session not found') from exc
+
+        async def _run_turn(emit):
+            return await asyncio.to_thread(
+                lambda: service.run_turn(
+                    owner_id=principal.user_id,
+                    request=ev_request,
+                    session_id=body.session_id,
+                    budget_signal=budget_signal,
+                    request_id=request_id,
+                    attachment_docs=attachment_docs,
+                    on_progress=emit,
+                )
+            )
+
+        def _terminal(turn_resp: TurnResponse) -> dict:
+            return TurnOut(
+                sessionId=turn_resp.session_id,
+                turnId=turn_resp.turn_id,
+                result=_serialize_result(turn_resp.result),
+                createdAt=turn_resp.created_at,
+            ).model_dump(mode='json', by_alias=True)
+
+        started_payload = {'sessionId': body.session_id} if body.session_id else {}
+        initial = [progress_event('started', started_payload)]
+        return StreamingResponse(
+            turn_sse_stream(
+                _run_turn,
+                _terminal,
+                initial_events=initial,
+                observability=getattr(request.app.state, 'observability', None),
+                surface='evidence_turns',
+            ),
+            media_type='text/event-stream',
+            headers={'cache-control': 'no-store'},
+        )
+
     try:
-        turn_resp: TurnResponse = EvidenceChatService(
-            repo=repo,
-            orchestrator=orchestrator,
-            sqs_enqueue=sqs_enqueue,
-        ).run_turn(
+        turn_resp: TurnResponse = service.run_turn(
             owner_id=principal.user_id,
             request=ev_request,
             session_id=body.session_id,
-            budget_signal=getattr(request.state, 'budget_signal', {}),
+            budget_signal=budget_signal,
             request_id=request_id,
             attachment_docs=attachment_docs,
         )

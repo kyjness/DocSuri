@@ -22,10 +22,34 @@ from .security import sanitize_external_query
 log = logging.getLogger(__name__)
 
 
+def _env_float(name: str, default: float) -> float:
+    try:
+        return max(1.0, float(os.getenv(name, str(default))))
+    except ValueError:
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.getenv(name, str(default))))
+    except ValueError:
+        return default
+
+
 @dataclass(frozen=True)
 class RetrievalBundle:
     items: list[dict[str, Any]] = field(default_factory=list)
     evidenceStatus: EvidenceStatus = EvidenceStatus.ABSTAINED
+    degradedReason: str | None = None
+
+
+@dataclass(frozen=True)
+class NoveltySearchPlan:
+    englishQuery: str
+    keywords: list[str] = field(default_factory=list)
+    subqueries: list[str] = field(default_factory=list)
+    intent: dict[str, Any] = field(default_factory=dict)
+    rankingSignals: list[str] = field(default_factory=list)
     degradedReason: str | None = None
 
 
@@ -50,6 +74,8 @@ class NoveltyLlmDraft:
 
 
 class NoveltyLlmPort(Protocol):
+    def plan_search(self, topic: str) -> NoveltySearchPlan: ...
+
     def draft(
         self,
         *,
@@ -470,6 +496,9 @@ class NoopSimilarityClient:
 
 
 class NoopNoveltyLlmClient:
+    def plan_search(self, topic: str) -> NoveltySearchPlan:
+        return _fallback_search_plan(topic, degradedReason="LLM query planner not configured")
+
     def draft(
         self,
         *,
@@ -527,12 +556,31 @@ class BedrockNoveltyLlmClient:
         model_id: str,
         client: Any,
         max_tokens: int = 8192,
+        search_plan_max_tokens: int = 4096,
         cost_guard: Any = None,
     ) -> None:
         self._model_id = model_id
         self._client = client
         self._max_tokens = max_tokens
+        self._search_plan_max_tokens = search_plan_max_tokens
         self._cost_guard = cost_guard
+
+    def plan_search(self, topic: str) -> NoveltySearchPlan:
+        if _cost_gated(self._cost_guard):
+            return _fallback_search_plan(topic, degradedReason="cost_degraded")
+        try:
+            payload = self._invoke_json(
+                _search_plan_system_prompt(),
+                _search_plan_user_prompt(topic),
+                _search_plan_tool(),
+                max_tokens=self._search_plan_max_tokens,
+            )
+        except Exception as exc:  # noqa: BLE001 - query planning falls back to the raw topic.
+            return _fallback_search_plan(
+                topic,
+                degradedReason=f"LLM query planning unavailable: {type(exc).__name__}",
+            )
+        return _llm_search_plan(topic, payload)
 
     def draft(
         self,
@@ -561,6 +609,8 @@ class BedrockNoveltyLlmClient:
             payload = self._invoke_json(
                 _novelty_system_prompt(),
                 _novelty_user_prompt(topic, corpus.items, external.items, refs),
+                _novelty_tool(),
+                max_tokens=self._max_tokens,
             )
         except Exception as exc:  # noqa: BLE001 - LLM outage degrades, not fails, the job.
             return NoveltyLlmDraft(
@@ -584,14 +634,16 @@ class BedrockNoveltyLlmClient:
             experimentPlan=_llm_experiment_plan(payload.get("experimentPlan"), topic, refs),
         )
 
-    def _invoke_json(self, system: str, user: str) -> dict[str, Any]:
+    def _invoke_json(
+        self, system: str, user: str, tool: dict[str, Any], *, max_tokens: int
+    ) -> dict[str, Any]:
         body = {
             "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": self._max_tokens,
+            "max_tokens": max_tokens,
             "system": system,
             "messages": [{"role": "user", "content": [{"type": "text", "text": user}]}],
-            "tools": [_novelty_tool()],
-            "tool_choice": {"type": "tool", "name": "emit_novelty_analysis"},
+            "tools": [tool],
+            "tool_choice": {"type": "tool", "name": tool["name"]},
         }
         response = self._client.invoke_model_with_response_stream(
             modelId=self._model_id,
@@ -664,6 +716,34 @@ def _novelty_system_prompt() -> str:
     )
 
 
+def _search_plan_system_prompt() -> str:
+    return (
+        "You rewrite research-idea questions into search plans. Return only valid JSON. "
+        "Translate the user topic into English, extract concise keywords, generate focused "
+        "subqueries, and state ranking signals that indicate papers matching the user's intent. "
+        "Do not answer the research question."
+    )
+
+
+def _search_plan_user_prompt(topic: str) -> str:
+    contract = {
+        "englishQuery": "string",
+        "keywords": ["string"],
+        "subqueries": ["string"],
+        "intent": {
+            "goal": "string",
+            "domain": "string",
+            "method": "string",
+            "constraints": ["string"],
+        },
+        "rankingSignals": ["string"],
+    }
+    return (
+        f"<topic>{topic[:2000]}</topic>\n"
+        f"<json_contract>{json.dumps(contract, ensure_ascii=False)}</json_contract>"
+    )
+
+
 def _novelty_user_prompt(
     topic: str,
     corpus_items: list[dict[str, Any]],
@@ -718,6 +798,34 @@ def _novelty_user_prompt(
         f"<context>{json.dumps(context, ensure_ascii=False)}</context>\n"
         f"<json_contract>{json.dumps(contract, ensure_ascii=False)}</json_contract>"
     )
+
+
+def _search_plan_tool() -> dict[str, Any]:
+    text_field = {"type": "string", "maxLength": 240}
+    short_list = {"type": "array", "items": text_field, "maxItems": 6}
+    return {
+        "name": "emit_novelty_search_plan",
+        "description": "Emit query rewrite, translation, expansion, and intent ranking signals.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "englishQuery": text_field,
+                "keywords": short_list,
+                "subqueries": short_list,
+                "intent": {
+                    "type": "object",
+                    "properties": {
+                        "goal": text_field,
+                        "domain": text_field,
+                        "method": text_field,
+                        "constraints": short_list,
+                    },
+                },
+                "rankingSignals": short_list,
+            },
+            "required": ["englishQuery", "keywords", "subqueries", "intent", "rankingSignals"],
+        },
+    }
 
 
 def _novelty_tool() -> dict[str, Any]:
@@ -817,6 +925,72 @@ def _compact_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
             }
         )
     return compact
+
+
+def _llm_search_plan(topic: str, raw: dict[str, Any]) -> NoveltySearchPlan:
+    fallback = _fallback_search_plan(topic)
+    english = _clean_query(raw.get("englishQuery")) or fallback.englishQuery
+    keywords = _bounded_strings(raw.get("keywords"), limit=8)
+    subqueries = _bounded_strings(raw.get("subqueries"), limit=6)
+    ranking = _bounded_strings(raw.get("rankingSignals"), limit=8)
+    intent = raw.get("intent") if isinstance(raw.get("intent"), dict) else {}
+    clean_intent = {
+        key: value[:240] if isinstance(value, str) else value
+        for key, value in intent.items()
+        if key in {"goal", "domain", "method", "constraints"}
+    }
+    queries = _dedupe_texts([english, *subqueries, topic])
+    return NoveltySearchPlan(
+        englishQuery=english,
+        keywords=keywords or fallback.keywords,
+        subqueries=queries[:6],
+        intent=clean_intent,
+        rankingSignals=ranking or keywords,
+    )
+
+
+def _fallback_search_plan(topic: str, *, degradedReason: str | None = None) -> NoveltySearchPlan:
+    query = _clean_query(topic) or "research novelty"
+    return NoveltySearchPlan(
+        englishQuery=query,
+        keywords=_fallback_keywords(query),
+        subqueries=[query],
+        intent={"goal": query},
+        rankingSignals=_fallback_keywords(query),
+        degradedReason=degradedReason,
+    )
+
+
+def _fallback_keywords(text: str) -> list[str]:
+    return _dedupe_texts(
+        token.strip(".,;:()[]{}\"'")
+        for token in re.split(r"\s+", text)
+        if len(token.strip(".,;:()[]{}\"'")) >= 2
+    )[:8]
+
+
+def _clean_query(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    return sanitize_external_query(value, max_len=240)
+
+
+def _bounded_strings(raw: Any, *, limit: int) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    return _dedupe_texts(str(item).strip()[:240] for item in raw if str(item).strip())[:limit]
+
+
+def _dedupe_texts(values) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        text = re.sub(r"\s+", " ", str(value)).strip()
+        key = text.lower()
+        if text and key not in seen:
+            seen.add(key)
+            result.append(text)
+    return result
 
 
 def _llm_items_payload(
@@ -1146,11 +1320,13 @@ def _best_supported_match(items: list[dict[str, Any]]) -> dict[str, Any] | None:
 
 def _similarity_item(sentence: str, match: dict[str, Any]) -> dict[str, Any]:
     refs = match.get("sourceRefs") or match.get("source_refs") or []
+    matched_title = str(match.get("title") or "검색된 논문").strip()
     return {
-        "title": f"Potential overlap with {match.get('title') or 'corpus result'}",
+        "title": f"문장 유사성: {matched_title}",
         "riskType": "sentence_similarity",
+        "summary": f"작성 문장 '{sentence[:180]}'가 '{matched_title}'와 유사합니다.",
         "sentence": sentence[:500],
-        "matchedTitle": match.get("title"),
+        "matchedTitle": matched_title,
         "evidenceStatus": EvidenceStatus.SUPPORTED.value,
         "sourceRefs": refs,
     }
@@ -1415,7 +1591,7 @@ def build_external_adapter() -> ExternalSearchPort:
 
     return ExternalApiSearchClient(
         httpx.Client(
-            timeout=5.0,
+            timeout=_env_float("DOCSURI_NOVELTY_EXTERNAL_TIMEOUT_SECONDS", 10.0),
             headers={"User-Agent": "DocSuri-Novelty/1.0"},
         ),
         github_token=os.getenv("DOCSURI_GITHUB_TOKEN") or os.getenv("GITHUB_TOKEN"),
@@ -1437,9 +1613,14 @@ def build_llm_adapter(cost_guard: Any = None) -> NoveltyLlmPort:
             region_name=region,
             config=Config(
                 connect_timeout=5.0,
-                read_timeout=300.0,
+                read_timeout=_env_float(
+                    "DOCSURI_NOVELTY_BEDROCK_READ_TIMEOUT_SECONDS",
+                    600.0,
+                ),
                 retries={"max_attempts": 1},
             ),
         ),
+        max_tokens=_env_int("DOCSURI_NOVELTY_LLM_MAX_TOKENS", 8192),
+        search_plan_max_tokens=_env_int("DOCSURI_NOVELTY_QUERY_PLAN_MAX_TOKENS", 4096),
         cost_guard=cost_guard,
     )

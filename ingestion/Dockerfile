@@ -13,7 +13,8 @@ COPY shared/python /app/shared/python
 COPY ingestion /app/ingestion
 
 RUN python -m pip install --upgrade pip==24.2 \
-    && python -m pip install /app/shared/python "/app/ingestion[assets]"
+    && python -m pip install /app/shared/python "/app/ingestion[assets]" \
+    && python -m pip install --upgrade boto3 botocore  # AWS changed cohere.embed-multilingual-v3 on-demand request handling ~2026-07; pinned boto3 built a now-rejected request ("invalid model identifier") — force latest SDK
 
 USER docsuri
 

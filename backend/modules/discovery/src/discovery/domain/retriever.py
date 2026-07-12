@@ -38,12 +38,15 @@ class HybridRetriever:
         # Both scopes run k-NN (cross-lingual); scope changes only its breadth. LITE restricts the
         # vector search to abstract chunks (one per paper — fast, paper-level semantic match);
         # FULL searches every chunk (body included) for deep recall.
+        best_knn_score: float | None = None
         if plan.mode is RetrievalMode.HYBRID and plan.embedding_vector is not None:
-            result_lists.append(
-                self._vector_store.knn_search(
-                    plan.embedding_vector, RETRIEVAL_TOP_K, abstract_only=not full
-                )
+            knn_results = self._vector_store.knn_search(
+                plan.embedding_vector, RETRIEVAL_TOP_K, abstract_only=not full
             )
+            result_lists.append(knn_results)
+            # Best RAW store score, captured before rank fusion discards it — the orchestrator's
+            # US-D6 no-match floor needs an absolute (query-comparable) relevance signal.
+            best_knn_score = max((score for _, score in knn_results), default=None)
         fields = _FULL_FIELDS if full else _LITE_FIELDS
         result_lists.append(
             self._lexical_index.bm25_search(plan.lexical_terms, RETRIEVAL_TOP_K, fields=fields)
@@ -51,7 +54,7 @@ class HybridRetriever:
 
         fused = _reciprocal_rank_fusion(result_lists)
         mode = RetrievalMode.HYBRID if len(result_lists) > 1 else RetrievalMode.LEXICAL_ONLY
-        return CandidateSet(candidates=fused, retrieval_mode=mode)
+        return CandidateSet(candidates=fused, retrieval_mode=mode, best_knn_score=best_knn_score)
 
 
 def _reciprocal_rank_fusion(result_lists) -> tuple[Candidate, ...]:

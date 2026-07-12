@@ -63,3 +63,20 @@ class PaperMetadataService:
             sourceName=source_name,
             sourceUrl=source_url,
         )
+
+    def primary_category(self, paper_id: str) -> str | None:
+        """The paper's primary arXiv category (e.g. ``cs.LG``), or None when not indexed.
+
+        Internal, cross-module lookup for U9 personalization event enrichment (US-P4 search
+        boost). Unlike ``PaperMetaDTO`` — which deliberately whitelists ``categories`` OUT of the
+        external contract — this returns ONLY the single primary-category string, server-side.
+        Best-effort: a store outage returns None, never raises, so the U9 caller stays fail-open
+        (BR-P13). ``categories[0]`` is the primary (ingestion orders it first)."""
+        try:
+            record = self._lookup.fetch_paper(paper_id)
+        except Exception:  # noqa: BLE001 — enrichment is best-effort; index outage → no category
+            return None
+        if record is None or not record.categories:
+            return None
+        primary = record.categories[0]
+        return str(getattr(primary, "root", primary))  # ArxivCategory is RootModel[str]

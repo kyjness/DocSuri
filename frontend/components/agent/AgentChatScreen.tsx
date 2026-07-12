@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { UserFacingError, getApiClient } from '@/lib/api';
-import { timelineDetail } from '@/lib/api/apiClient';
+import { parseNoveltySseEvents } from '@/lib/agentChat/sse';
 import { NotionExportPanel } from './NotionExportPanel';
 import {
   MAX_AGENT_ATTACHMENT_TEXT_CHARS,
@@ -31,6 +31,7 @@ import {
 } from '@/lib/agentChat/evidenceResult';
 import {
   SIMILAR_WORK_COLUMNS,
+  confidenceLabel,
   detailCell,
   itemsOf,
   listField,
@@ -224,11 +225,17 @@ export function AgentChatScreen() {
     dispatch({ type: 'sendStart', message: userMessage });
 
     try {
-      const result = await api.sendAgentMessage(state.session.id, {
-        content,
-        mode: state.mode,
-        attachments,
-      });
+      const result = await api.sendAgentMessage(
+        state.session.id,
+        {
+          content,
+          mode: state.mode,
+          attachments,
+        },
+        // US-EV2/NFR-P6 — 동기 evidence 턴 SSE 진행 이벤트를 timeline에 점진 반영.
+        // 최종 claims는 터미널 result(sendSuccess 스냅샷)에서만 렌더링된다(C-2).
+        (events) => dispatch({ type: 'eventsReceived', events }),
+      );
       dispatch({ type: 'sendSuccess', result });
     } catch (error) {
       awaitingAgentResponseRef.current = false;
@@ -625,8 +632,12 @@ function EvidenceResultView({ result }: { result: EvidenceResultPayload }) {
   return (
     <div className={styles.evidenceClaims}>
       <p className={styles.evidenceIntro}>
-        아래 카드는 실제 논문 원문에서 확인된 내용만 정리한 근거입니다. 논문마다 다른 이야기를 하는
-        부분은 카드 안에 <strong>상충하는 근거</strong>로 따로 표시됩니다.
+        {result.answer ?? (
+          <>
+            아래 카드는 실제 논문 원문에서 확인된 내용만 정리한 근거입니다. 논문마다 다른 이야기를
+            하는 부분은 카드 안에 <strong>상충하는 근거</strong>로 따로 표시됩니다.
+          </>
+        )}
       </p>
       {result.claims.map((claim, idx) => (
         <article key={idx} className={styles.evidenceClaim}>
@@ -679,8 +690,8 @@ function EvidenceRefList({ refs }: { refs: EvidenceSourceRef[] }) {
 }
 
 // 첫 사용자가 각 섹션이 "무엇을·왜" 보여주는지 바로 알 수 있도록 kind별 한 줄 설명.
-// evidence(U11 근거형성 결과 병합본)는 별도 UI 섹션으로 노출하지 않아 이 맵에는 없다.
 const NOVELTY_ARTIFACT_HINT: Record<string, string> = {
+  evidence: '검색된 논문을 질의 의도에 맞춰 정렬하고 관련도/근거 강도 점수를 붙였어요',
   similar_works: '이미 나와 있는 비슷한 연구들을 찾아 정리했어요',
   external_findings: 'GitHub·데이터셋에서 관련 구현체·자료를 찾았어요',
   novelty_candidates: '위 근거를 바탕으로 제안하는 차별화 실험 아이디어예요',
@@ -765,6 +776,7 @@ function SimilarWorksTable({ items }: { items: NoveltyPayloadItem[] }) {
                 <td>
                   <EvidenceStatusBadge status={item.evidenceStatus} />
                   <NoveltySourceRefLinks refs={sourceRefsOf(item.sourceRefs)} />
+                  <NoveltyEvidenceMeta item={item} />
                 </td>
               </tr>
             ))}
@@ -789,6 +801,7 @@ function NoveltyItemList({ items }: { items: NoveltyPayloadItem[] }) {
           </div>
           {item.summary || item.rationale ? <p>{item.summary ?? item.rationale}</p> : null}
           <NoveltySourceRefLinks refs={sourceRefsOf(item.sourceRefs)} />
+          <NoveltyEvidenceMeta item={item} />
         </li>
       ))}
     </ul>
@@ -823,6 +836,7 @@ function RiskSignalList({ items }: { items: NoveltyPayloadItem[] }) {
               ) : null}
             </div>
             {item.summary ? <p>{item.summary}</p> : null}
+            <NoveltyEvidenceMeta item={item} />
           </li>
         ))}
       </ul>
@@ -877,6 +891,18 @@ function EvidenceStatusBadge({ status }: { status?: string }) {
     <span className={supported ? styles.noveltyBadgeSupported : styles.noveltyBadgeInsufficient}>
       {supported ? '근거 있음' : '근거 부족'}
     </span>
+  );
+}
+
+function NoveltyEvidenceMeta({ item }: { item: NoveltyPayloadItem }) {
+  const confidence = confidenceLabel(item.confidence);
+  if (!item.evidenceNote && !confidence && !item.queryUsed) return null;
+  return (
+    <div className={styles.noveltyEvidenceMeta}>
+      {item.evidenceNote ? <span>{item.evidenceNote}</span> : null}
+      {confidence ? <strong>관련도/근거 강도 {confidence}</strong> : null}
+      {item.queryUsed ? <small>query: {item.queryUsed}</small> : null}
+    </div>
   );
 }
 
@@ -982,59 +1008,8 @@ function noveltySseUrl(sessionId: string, afterEventId: string | null): string |
   return `/bff/api/novelty/jobs/${encodeURIComponent(rawId)}/events${query ? `?${query}` : ''}`;
 }
 
-export function parseNoveltySseEvents(text: string): AgentTimelineEvent[] {
-  return text
-    .split(/\r?\n\r?\n/)
-    .map(parseSseBlock)
-    .filter((event): event is AgentTimelineEvent => Boolean(event));
-}
-
-function parseSseBlock(block: string): AgentTimelineEvent | null {
-  let eventName = 'message';
-  const data: string[] = [];
-  for (const line of block.split(/\r?\n/)) {
-    if (line.startsWith('event:')) eventName = line.slice('event:'.length).trim();
-    if (line.startsWith('data:')) data.push(line.slice('data:'.length).trimStart());
-  }
-  if (eventName !== 'progress' || data.length === 0) return null;
-  try {
-    const raw = JSON.parse(data.join('\n'));
-    return mapSseProgressEvent(raw);
-  } catch {
-    return null;
-  }
-}
-
-function mapSseProgressEvent(raw: unknown): AgentTimelineEvent | null {
-  if (!raw || typeof raw !== 'object') return null;
-  const record = raw as Record<string, unknown>;
-  const id = stringValue(record.eventId);
-  const stage = stringValue(record.state) ?? 'running';
-  if (!id) return null;
-  const payload =
-    record.payload && typeof record.payload === 'object'
-      ? (record.payload as Record<string, unknown>)
-      : undefined;
-  return {
-    id,
-    stage,
-    label: stringValue(record.message) ?? stage,
-    // N-001 — REST polling과 동일한 payload→detail 매핑(#257): source/query/count/사유.
-    detail: timelineDetail(payload),
-    state: mapSseTimelineState(stage),
-  };
-}
-
-function mapSseTimelineState(stage: string): AgentTimelineState {
-  if (stage === 'failed' || stage === 'cancelled') return 'failed';
-  if (stage === 'degraded') return 'degraded';
-  if (stage === 'completed') return 'completed';
-  return 'running';
-}
-
-function stringValue(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
-}
+// SSE 파서는 evidence 동기 턴 스트리밍(US-EV2)과 공유하도록 lib로 이동 — 테스트 호환 재노출.
+export { parseNoveltySseEvents } from '@/lib/agentChat/sse';
 
 function AgentTimelineItem({ event }: { event: AgentTimelineEvent }) {
   const [open, setOpen] = useState(event.state === 'running' || event.state === 'degraded');

@@ -12,6 +12,7 @@ _PDF_SUFFIX_RE = re.compile(r"\.pdf$", re.IGNORECASE)
 _VERSION_RE = re.compile(r"^(?P<paper_id>.+?)v(?P<version>[1-9][0-9]*)$", re.IGNORECASE)
 _NEW_STYLE_RE = re.compile(r"^[0-9]{4}\.[0-9]{4,5}$")
 _OLD_STYLE_RE = re.compile(r"^[a-z-]+(?:\.[A-Z]{2})?/[0-9]{7}$", re.IGNORECASE)
+_NEW_STYLE_YEAR_RE = re.compile(r"^(?P<yy>[0-9]{2})[0-9]{2}\.[0-9]{4,5}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +57,19 @@ def normalize_arxiv_ref(raw_ref: str, *, default_version: int = 1) -> ArxivIdent
     if version < 1:
         raise ValueError(f"invalid arXiv version: {version}")
     return ArxivIdentifier(paper_id=paper_id, version=version)
+
+
+def year_from_paper_id(paper_id: str) -> int | None:
+    """Submission year from a new-style arXiv id (YYMM.NNNNN → 20YY), or None.
+
+    The id's YYMM prefix is the true submission month/year, so it is authoritative for the
+    search year facet — unlike the metadata date, which can fall back to a re-touched
+    ``updated_at`` and mis-bucket ~12% of papers (issue #436). Returns None for old-style and
+    non-arXiv (``src-…``) ids, where the caller keeps the date-derived year. New-style ids began
+    2007-04, so the 20YY expansion is unambiguous for every id this matches.
+    """
+    m = _NEW_STYLE_YEAR_RE.match(paper_id)
+    return 2000 + int(m.group("yy")) if m else None
 
 
 def content_fingerprint(paper_id: str, version: int) -> str:

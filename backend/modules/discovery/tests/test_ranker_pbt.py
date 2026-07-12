@@ -15,7 +15,13 @@ from discovery.domain.models import (
     RankedResults,
     RetrievalMode,
 )
-from discovery.domain.ranker import TOP_N, RelevanceRanker, ShadowDiff, shadow_rerank_diff
+from discovery.domain.ranker import (
+    TOP_N,
+    RelevanceRanker,
+    ShadowDiff,
+    apply_boosts,
+    shadow_rerank_diff,
+)
 from discovery.mocks.fixtures import RECORDS
 
 _ranker = RelevanceRanker()
@@ -85,3 +91,31 @@ def test_shadow_rerank_diff_is_noop_without_matching_category() -> None:
         ranked=(_shadow_c("A", 0.30, ["cs.LG"]), _shadow_c("B", 0.20, ["cs.LG"]))
     )
     assert shadow_rerank_diff(ranked, {"cs.AI": 0.1}) == ShadowDiff(0, 0, 0)
+
+
+def test_apply_boosts_reorders_head_and_matches_diff() -> None:
+    # US-P4 go-live: the boost is now APPLIED. Baseline A .30 / B .29 / C .10 / D .05;
+    # cs.AI boost lifts B*1.1=.319 above A → live order leads with B, and the returned diff
+    # agrees with the diff-only wrapper (same computation, applied vs measured).
+    ranked = RankedResults(
+        ranked=(
+            _shadow_c("A", 0.30, ["cs.LG"]),
+            _shadow_c("B", 0.29, ["cs.AI"]),
+            _shadow_c("C", 0.10, ["cs.AI"]),
+            _shadow_c("D", 0.05, ["cs.LG"]),
+        )
+    )
+    boosted, diff = apply_boosts(ranked, {"cs.AI": 0.1}, top_fraction=1.0)
+    assert [c.record.paperId for c in boosted.ranked] == ["B", "A", "C", "D"]
+    assert diff == shadow_rerank_diff(ranked, {"cs.AI": 0.1}, top_fraction=1.0)
+    assert ranked.ranked[0].record.paperId == "A"  # input is not mutated
+
+
+def test_apply_boosts_noop_returns_input_order() -> None:
+    # No matching category → identity: same order, zero diff (the fail-open baseline path).
+    ranked = RankedResults(
+        ranked=(_shadow_c("A", 0.30, ["cs.LG"]), _shadow_c("B", 0.20, ["cs.LG"]))
+    )
+    boosted, diff = apply_boosts(ranked, {"cs.AI": 0.1})
+    assert [c.record.paperId for c in boosted.ranked] == ["A", "B"]
+    assert diff == ShadowDiff(0, 0, 0)

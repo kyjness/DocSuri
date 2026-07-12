@@ -162,11 +162,20 @@ class SummarizationOrchestrationService:
         # when a prompt-enforced term is added/edited/demoted (BR-S1). Resolve once here and reuse
         # for generation below (one repo fetch); the seed segment self-invalidates on a seed edit.
         glossary = self._glossary.resolve(user_id)
+        # Task-aware glossary signature (BR-S4): SUMMARY hashes ALL strong terms (prompt-enforced,
+        # no masking there); TRANSLATE hashes only NON-SEED strong terms — seed standard terms are
+        # masked + rendered on read, so a seed-term edit re-renders the SHARED base instead of
+        # forking the cache (the Q2 win). Weak terms never fork either task (read-time overlay).
+        glossary_ver = (
+            GlossaryResolver.signature_of(glossary)
+            if request.task == Task.SUMMARY
+            else GlossaryResolver.signature_of_translate(glossary)
+        )
 
         def _cache_key(docmodel_parser: str) -> object:
             return build_cache_key(
                 request,
-                glossary_ver=GlossaryResolver.signature_of(glossary),
+                glossary_ver=glossary_ver,
                 model_ver=self._model_ver,
                 user_id=user_id,
                 seed_ver=seed_cache_segment(),
@@ -277,8 +286,9 @@ class SummarizationOrchestrationService:
         # (no-op when the user has no weak terms). Summary has no post-substitution — served as-is.
         self._emit("u7.cache.hit", 1.0, request)
         if request.task == Task.TRANSLATE:
-            cached = self._assembler.overlay_translation(cached, glossary)
-            cached = self._assembler.filter_kept_terms(cached)
+            # Render the shared base for this viewer: restore masked standard-term tokens to their
+            # effective rendering (+josa), apply weak terms, rebuild standardGlossary/keptTerms.
+            cached = self._assembler.render_translation(cached, glossary)
         return _PayloadResult(cached, cached=True)
 
     # --- summary path --------------------------------------------------------
@@ -348,25 +358,17 @@ class SummarizationOrchestrationService:
                     self._emit("u7.translate.empty", 1.0, request)
                     return AbstainDTO(reason="empty_translation")
                 continue
-            # Assemble + cache the SHARED base (strong-term translation, no weak post-substitution);
-            # apply this user's weak-term overlay on the returned view so the first requester also
-            # sees their preferences (the cache stays the base, shared across users — NFR-C1).
-            # Pass the user's effective strong overrides so ``standardGlossary`` keeps a 표준 용어
-            # chip whose seed rendering the override replaced (BR-S4). They are part of this fork's
-            # cache signature, so the stored base is correct for every user who shares it.
-            base = self._assembler.assemble_translation(draft, source).to_dict(
-                strong_overrides={
-                    m.term_from.lower(): m.term_to
-                    for m in glossary.user_overrides
-                    if m.prompt_enforced
-                }
-            )
+            # Assemble + cache the SHARED base. The base carries masked standard-term tokens; it is
+            # user-agnostic (no override baked in), so every user shares it and a term edit reflects
+            # by re-rendering — not by forking the cache (NFR-C1/BR-S4).
+            base = self._assembler.assemble_translation(draft, source).to_dict()
             # Write-through (base) under the actual-generation ``key`` — async-safe (the write is
             # the worker→poll handoff) and never pins stale output past the heal (key rotation).
             self._store.put(key, base)
             self._emit("u7.translate.ok", 1.0, request)
-            view = self._assembler.overlay_translation(base, glossary)
-            return _PayloadResult(self._assembler.filter_kept_terms(view))
+            # Render for this requester (restore tokens → effective rendering, weak overlay,
+            # standardGlossary/keptTerms) so the first requester also sees their own overrides.
+            return _PayloadResult(self._assembler.render_translation(base, glossary))
         return AbstainDTO(reason="empty_translation")
 
     # --- personal glossary (Q8 / §9.1) ---------------------------------------

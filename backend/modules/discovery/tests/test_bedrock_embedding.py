@@ -76,3 +76,22 @@ def test_dimension_mismatch_fails_loud() -> None:
     emb = BedrockCohereQueryEmbedder(model_id="m", client=fake)
     with pytest.raises(ValueError):
         emb.embed_query("x")
+
+
+def test_v4_model_pins_output_dimension_no_truncate() -> None:
+    # v4 (model id without "-v3"): pin output_dimension, no truncate — byte-identical to before.
+    fake = FakeBedrock(payload={"embeddings": {"float": [_vec()]}})
+    emb = BedrockCohereQueryEmbedder(model_id="global.cohere.embed-v4:0", client=fake)
+    emb.embed_query("x")
+    assert fake.last_request["output_dimension"] == DIMENSIONS
+    assert "truncate" not in fake.last_request
+
+
+def test_v3_model_omits_output_dimension_truncates_and_caps_chars() -> None:
+    # v3 (cohere.embed-multilingual-v3): no output_dimension, truncate=END, text capped at 2048.
+    fake = FakeBedrock(payload={"embeddings": {"float": [_vec()]}})
+    emb = BedrockCohereQueryEmbedder(model_id="cohere.embed-multilingual-v3", client=fake)
+    emb.embed_query("q" * 5000)
+    assert "output_dimension" not in fake.last_request
+    assert fake.last_request["truncate"] == "END"
+    assert len(fake.last_request["texts"][0]) == 2048

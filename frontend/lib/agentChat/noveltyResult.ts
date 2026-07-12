@@ -14,6 +14,9 @@ export interface NoveltyPayloadItem {
   rationale?: string;
   riskType?: string;
   evidenceStatus?: string;
+  evidenceNote?: string;
+  confidence?: number;
+  queryUsed?: string;
   sourceRefs?: NoveltySourceRef[];
   // US-NV3(#253) 유사 연구 표 상세 칼럼 — 백엔드가 근거 없는 칸을 null(기권)로 보낸다.
   problem?: string | null;
@@ -77,4 +80,9 @@ export function listField(payload: Record<string, unknown>, key: string): string
   const value = payload[key];
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === 'string');
+}
+
+export function confidenceLabel(value: unknown): string | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  return `${Math.round(Math.max(0, Math.min(1, value)) * 100)}%`;
 }

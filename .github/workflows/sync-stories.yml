@@ -1,6 +1,8 @@
 name: Sync stories to issues
 
-# Keeps GitHub issues in sync with the AI-DLC source of truth (aidlc-docs).
+# Keeps GitHub issues in sync with aidlc-docs, the source of truth for
+# requirements / design intent / stories (NOT for runtime/config state — that
+# lives in code/CDK/live AWS; see reports/aidlc-ssot-audit-2026-07.md).
 # Runs the idempotent stories -> issues upsert whenever stories.md changes on
 # develop, or on manual dispatch. Create/update only -- never closes an issue
 # (closing a shipped story stays a human decision).

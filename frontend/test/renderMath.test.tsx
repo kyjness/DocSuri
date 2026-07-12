@@ -226,6 +226,34 @@ describe('physics package (KaTeX had no default → whole-formula collapse; Math
     rendersCleanly(String.raw`\rank(C)=\rank(CC^{\top})`);
   });
 
+  it('does not collapse a function whose author left a paren unbalanced', () => {
+    // physics redefines \cos/\exp/… to capture and auto-size a following paren group; an unbalanced
+    // paren (author typo, or an align line split so `(` and `)` fall on different lines) is a fatal
+    // parse error that nuked the WHOLE formula. arXiv:2502.02016v1 eq(29): three `(` vs two `)`.
+    rendersCleanly(String.raw`\frac{\exp(c\cos((x-m))}{2\pi I_0(c)}`);
+    // A bare function with a dangling open paren must still render, not become the 수식 chip.
+    rendersCleanly(String.raw`\sin(x`);
+  });
+
+  it('still renders balanced function-of-parens normally', () => {
+    // The common (balanced) case keeps rendering — the rewrite only defuses paren capture.
+    const c = rendersCleanly(String.raw`\cos(x) + \sin(2x) + \log(n) + \exp(-t)`);
+    expect(c.textContent).not.toContain('\\cos');
+  });
+
+  it('covers \\trace/\\Trace (also paren-capturing) without collapsing on an unbalanced paren', () => {
+    // \trace/\Trace are physics 'Expression' aliases (rendered tr/Tr) that also capture parens, so an
+    // unbalanced one must render, not nuke the formula. (SVG output has no text layer to assert the
+    // glyph, but a collapse would swap mjx-container for the 수식 chip — rendersCleanly rules it out.)
+    rendersCleanly(String.raw`\trace(A(B) + \Trace(C`);
+  });
+
+  it('keeps the physics trig power form \\sin[2](x) renderable (no collapse)', () => {
+    // physics reads a trig function's optional [n] as a power: \sin[2](x) = sin²(x). The rewrite
+    // preserves it as ^{2}; either way it must render rather than collapse.
+    rendersCleanly(String.raw`\sin[2](x) + \cos[3](y)`);
+  });
+
   it('renders \\matrixquantity[...] with nested brackets intact', () => {
     rendersCleanly(String.raw`\matrixquantity[a&b\\ c&[C]^{-1}]`);
   });

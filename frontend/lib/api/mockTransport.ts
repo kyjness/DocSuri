@@ -6,10 +6,12 @@
 //                  저하/degraded   -> degraded
 //                  오류/error      -> 500 (server error)
 //                  네트워크/fail   -> thrown (network failure)
+//                  맞춤/personal   -> personalized page (meta.personalized=true, US-P4)
 //   otherwise                      -> result page
 import type { Transport, TransportRequest, TransportResponse } from './transport';
 import {
   pageResponse,
+  personalizedPageResponse,
   emptyResponse,
   abstainResponse,
   degradedResponse,
@@ -144,6 +146,8 @@ export class MockTransport implements Transport {
       if (matches(query, '기권', 'abstain')) return { status: 200, body: abstainResponse };
       if (matches(query, '저하', 'degraded')) return { status: 200, body: degradedResponse };
       if (matches(query, '유효', 'invalid')) return { status: 400, body: validationErrorResponse };
+      if (matches(query, '맞춤', 'personal'))
+        return { status: 200, body: personalizedPageResponse };
       return { status: 200, body: pageResponse };
     }
 
@@ -638,6 +642,10 @@ function noveltyArtifacts(snapshot: AgentSessionSnapshot) {
             limitations: '실패 유형 구분이 거칠다',
             overlap: '평가 자동화 축이 주제와 겹친다',
             evidenceStatus: 'supported',
+            evidenceNote:
+              'Prior RAG benchmark에서 RAG 평가 자동화 관련 내용이 확인됩니다: 기존 축은 평가셋 자동 생성과 검색 품질 진단에 집중되어 있습니다.',
+            confidence: 0.86,
+            queryUsed: 'RAG evaluation automation benchmark',
             sourceRefs: [
               {
                 type: 'url',
@@ -673,7 +681,10 @@ function noveltyArtifacts(snapshot: AgentSessionSnapshot) {
         items: [
           {
             title: '도메인 지식 기반 실패 유형 분해',
+            rationale: '유사 연구의 한계가 실패 유형 구분에 집중되어 있어 차별화 여지가 있습니다.',
             evidenceStatus: 'supported',
+            evidenceNote: '유사 연구의 한계와 데이터셋 조건을 근거로 후보 아이디어를 구성했습니다.',
+            confidence: 0.78,
             sourceRefs: ['mock:corpus'],
           },
         ],
@@ -691,7 +702,7 @@ function noveltyArtifacts(snapshot: AgentSessionSnapshot) {
           {
             title: '문장 유사도 신호',
             riskType: 'sentence_similarity',
-            summary: '기존 논문과 유사한 문장 패턴이 감지되었습니다.',
+            summary: "작성 문장 'RAG 평가 자동화 프로토콜'가 'Prior RAG benchmark'와 유사합니다.",
             sourceRefs: [],
           },
         ],

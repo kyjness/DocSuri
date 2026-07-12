@@ -40,8 +40,8 @@ __all__ = [
 ]
 
 # Mirror of shared/vector-spec/vector-spec.yaml (guarded by tests/test_vector_spec.py).
-SPEC_VERSION = "v2"
-MODEL = "Cohere Embed v4 (Bedrock)"
+SPEC_VERSION = "v3"
+MODEL = "Cohere Embed Multilingual v3 (Bedrock)"
 DIMENSIONS = 1024
 DISTANCE_METRIC = "cosine"
 NORMALIZE = True

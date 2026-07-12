@@ -366,6 +366,51 @@ def test_footnote_excluded_from_paragraph_body() -> None:
     assert "example.org" not in para.text
 
 
+def test_colorbox_error_and_leaked_colour_arg_excluded_from_body() -> None:
+    """An unexpanded \\Colorbox box macro (arXiv:2410.14706 \\cybertron) surfaces as an ltx_ERROR
+    node holding the command token, with its {colour} argument leaking as loose text right after.
+    Neither may leak into the sentence; the boxed identifier (a separate span) must survive."""
+    html = (
+        '<article class="ltx_document">'
+        '<section class="ltx_section" id="S1">'
+        '<h2 class="ltx_title ltx_title_section">'
+        '<span class="ltx_tag ltx_tag_section">1 </span>Method</h2>'
+        '<div class="ltx_para"><p class="ltx_p">For variables with the same identifier '
+        '<span class="ltx_ERROR undefined">\\Colorbox</span>mygrayInline'
+        '<span class="ltx_text ltx_lst_identifier ltx_lstlisting">a</span>, done.</p></div>'
+        "</section></article>"
+    )
+    doc = _parse(html)
+    para = _blocks(_body_sections(doc)[0])[0]
+    assert isinstance(para, ParagraphBlock)
+    assert para.text == "For variables with the same identifier a, done."
+    assert "Colorbox" not in para.text and "mygrayInline" not in para.text
+
+
+def test_colorbox_leaked_colour_dropped_even_with_whitespace_and_never_eats_prose() -> None:
+    """The colour drop tolerates whitespace between the error node and the loose colour token, and a
+    box error with NO following colour token must not swallow the next sentence (single-token)."""
+    html = (
+        '<article class="ltx_document"><section class="ltx_section" id="S1">'
+        '<h2 class="ltx_title ltx_title_section"><span class="ltx_tag">1 </span>M</h2>'
+        # (a) whitespace between the error node and the loose colour token (its own text node, the
+        # boxed content following in a span) — the colour is still dropped.
+        '<div class="ltx_para"><p class="ltx_p">alpha '
+        '<span class="ltx_ERROR undefined">\\Colorbox</span>\n  mygrayInline'
+        '<span class="ltx_text ltx_lst_identifier">beta</span>.</p></div>'
+        # (b) a box error whose following text is a full sentence (no lone colour token) must keep
+        # that prose intact — the single-token gate prevents eating body text.
+        '<div class="ltx_para"><p class="ltx_p">gamma '
+        '<span class="ltx_ERROR undefined">\\Colorbox</span> the rest of this sentence.</p></div>'
+        "</section></article>"
+    )
+    doc = _parse(html)
+    paras = [b for b in _blocks(_body_sections(doc)[0]) if isinstance(b, ParagraphBlock)]
+    assert paras[0].text == "alpha beta."  # colour name gone despite the whitespace
+    assert "mygrayInline" not in paras[0].text
+    assert paras[1].text == "gamma the rest of this sentence."  # prose not eaten
+
+
 def test_span_only_fallback_when_no_sections() -> None:
     html = '<html><body><div class="ltx_para"><p class="ltx_p">Just a note.</p></div></body></html>'
     doc = _parse(html)

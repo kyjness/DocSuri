@@ -31,6 +31,9 @@ class SessionStatus(StrEnum):
 @dataclass(frozen=True)
 class TurnSuccessResult:
     outcome: EvidenceResult
+    # 후속 좁히기(꼬리질문)용 — 이번 턴이 실제로 근거로 쓴 논문 id 집합. 다음 턴의
+    # ctx.prior_paper_ids로 이어져 "그 중에서" 같은 질문을 explicit scope로 재검색하게 한다.
+    resolved_paper_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -104,6 +107,10 @@ class AgentRunContext:
     prior_topics: tuple[str, ...] = ()
     # US-EV4(#268) 2차 — 이 턴에 동봉된 첨부 문서들(연구 경로가 채운다).
     attachment_docs: tuple[AttachmentInput, ...] = ()
+    # 꼬리질문 좁히기용 — 직전 턴이 실제로 근거로 쓴 논문 id 집합(TurnSuccessResult.
+    # resolved_paper_ids가 그대로 이어진다). "그 중에서" 류 후속 질문 감지 시에만
+    # explicit scope로 전환해 이 집합으로 검색을 제한한다. 단발 경로·새 세션은 비어 있다.
+    prior_paper_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -111,6 +118,24 @@ class PaperSearchResult:
     records: tuple[Any, ...]  # IndexRecord[]
     query_used: str | None
     scope: str  # EvidenceScope value
+
+
+@dataclass(frozen=True)
+class LiteralMatch:
+    """정확 문구가 발견된 위치 하나 — LLM을 거치지 않으므로 그 자체로 grounded."""
+
+    paper_id: str
+    # DocModel Section/Block id(문단 단위) — 실제 "줄 번호"는 DocModel 계약상 존재하지
+    # 않는다(docmodel_schema.py: "page numbers are intentionally out of scope"). 문단
+    # 단위가 이 시스템에서 낼 수 있는 최선의 위치 표현이다.
+    anchor: str | None
+    quote: str
+
+
+@dataclass(frozen=True)
+class LiteralSearchResult:
+    phrase: str
+    matches: tuple[LiteralMatch, ...]
 
 
 @dataclass(frozen=True)

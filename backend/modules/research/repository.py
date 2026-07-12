@@ -125,6 +125,7 @@ class ResearchMessageTable(Base):
     role: Mapped[str] = mapped_column(String(32), nullable=False)
     content: Mapped[str] = mapped_column(String(12000), nullable=False)
     attachments: Mapped[list] = mapped_column(JSON, nullable=False)
+    resolved_paper_ids: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -147,6 +148,7 @@ def _message_from_row(row: ResearchMessageTable) -> ResearchChatMessage:
         role=ChatRole(row.role),
         content=row.content,
         attachments=row.attachments,
+        resolvedPaperIds=row.resolved_paper_ids or [],
         createdAt=row.created_at,
     )
 
@@ -226,6 +228,7 @@ class SqlResearchRepository:
                 role=message.role.value,
                 content=message.content,
                 attachments=message.attachments,
+                resolved_paper_ids=message.resolvedPaperIds,
                 created_at=message.createdAt,
             )
         )

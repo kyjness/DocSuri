@@ -51,6 +51,16 @@ def _observability(request: Request):
     return getattr(request.app.state, "observability", None)
 
 
+def _category_resolver(request: Request):
+    """paperId → primary arXiv category via the mounted U2 discovery bundle, for US-P4 boost
+    enrichment. None when discovery isn't mounted (mount order / standalone) → events record
+    uncategorized, exactly as before. Resolved per request so mount order is irrelevant."""
+    bundle = getattr(request.app.state, "discovery_bundle", None)
+    paper_service = getattr(bundle, "paper_service", None)
+    resolve = getattr(paper_service, "primary_category", None)
+    return resolve if callable(resolve) else None
+
+
 PRINCIPAL_DEP = Depends(get_principal)
 REPO_DEP = Depends(get_repo)
 
@@ -66,7 +76,10 @@ async def record_event(
         valid = ValidatedBehaviorEventCreate.model_validate(dto.model_dump())
     except (ValidationError, MetadataValidationError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return BehaviorEventRecorder(repo, _observability(request)).record(principal.user_id, valid)
+    recorder = BehaviorEventRecorder(
+        repo, _observability(request), category_resolver=_category_resolver(request)
+    )
+    return recorder.record(principal.user_id, valid)
 
 
 @router.get("/decision/search", response_model=PersonalizationDecision)

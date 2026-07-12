@@ -18,6 +18,24 @@ def _service() -> PaperMetadataService:
     return PaperMetadataService(MockPaperLookupAdapter())
 
 
+def test_primary_category_returns_first_indexed_category() -> None:
+    # US-P4 enrichment source: the internal (non-DTO) lookup returns the paper's primary arXiv
+    # category (categories[0]); the mock record for this id is cs.LG.
+    assert _service().primary_category("2401.00001") == "cs.LG"
+
+
+def test_primary_category_is_none_when_unknown_or_store_down() -> None:
+    assert _service().primary_category("does-not-exist") is None
+
+    class _Down:
+        def fetch_paper(self, paper_id: str):  # noqa: ARG002
+            raise IndexUnavailable("boom")
+
+    # Best-effort: a store outage returns None (never raises) — unlike get_paper_meta, which
+    # fail-closes to SearchUnavailable. Enrichment must not sink U9 event recording (BR-P13).
+    assert PaperMetadataService(_Down()).primary_category("2401.00001") is None
+
+
 def test_known_paper_by_paper_id_projects_full_metadata() -> None:
     meta = _service().get_paper_meta("2401.00001")
     assert isinstance(meta, PaperMetaDTO)

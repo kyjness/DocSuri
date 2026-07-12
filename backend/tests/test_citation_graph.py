@@ -399,3 +399,182 @@ def test_emit_ignores_observability_without_emit_log() -> None:
 )
 def test_semantic_scholar_contract_test_is_opt_in() -> None:
     assert os.getenv("SEMANTIC_SCHOLAR_API_KEY")
+
+
+# --- US-CG3 criteria-level tests (QA 2026-07-10 gap A) -------------------------------------
+
+
+def test_unresolved_reference_never_promoted_to_node() -> None:
+    # US-CG3: 제목만 있는/식별자가 모호한 인용은 unresolved로 분리 — 확정 노드로 승격 금지.
+    tree = controller._build_tree(
+        "root",
+        "root",
+        [
+            {"title": "Title-only reference", "year": 2019},  # no identifier at all
+            {"paperId": "s2-x", "externalIds": {}},  # identifier but no title
+            {"title": "   ", "paperId": "s2-y", "externalIds": {}},  # whitespace title
+            {"paperId": "s2-a", "title": "Confirmed", "externalIds": {"ArXiv": "2101.00001"}},
+        ],
+    )
+
+    assert [node.title for node in tree.nodes] == ["Confirmed"]
+    assert {edge.target for edge in tree.edges} == {"2101.00001"}  # unresolved never edges in
+    assert [u.title for u in sorted(tree.unresolved, key=lambda u: u.title)] == [
+        "(untitled)",
+        "(untitled)",
+        "Title-only reference",
+    ]
+    assert all(u.reason == "unresolved" for u in tree.unresolved)
+    assert tree.status == "Partial"
+
+
+def test_duplicate_reference_folds_to_already_shown() -> None:
+    # US-CG3: 중복 노드는 '이미 표시됨'(alreadyShown)으로 접힘 — 두 번째 등장은 확정 신규
+    # 노드가 아니고 저장도 불가.
+    first = {
+        "paperId": "s2-a",
+        "title": "Same paper",
+        "citationCount": 10,
+        "externalIds": {"ArXiv": "2101.00001"},
+    }
+    second = dict(first, paperId="s2-b", citationCount=5)  # same ArXiv id, new provider row
+    tree = controller._build_tree("root", "root", [first, second])
+
+    assert [node.alreadyShown for node in tree.nodes] == [False, True]
+    assert tree.nodes[1].saveable is False
+    confirmed = [node.nodeId for node in tree.nodes if not node.alreadyShown]
+    assert confirmed == ["2101.00001"]  # exactly one confirmed instance
+
+
+def test_root_cycle_folds_to_already_shown() -> None:
+    # US-CG3: 순환은 무한 확장되지 않는다 — 루트가 참조로 되돌아오면 접힌다.
+    tree = controller._build_tree(
+        "2101.00001",
+        "2101.00001",
+        [{"paperId": "s2-r", "title": "Root again", "externalIds": {"ArXiv": "2101.00001"}}],
+    )
+
+    assert tree.nodes[0].alreadyShown is True
+    assert tree.nodes[0].saveable is False
+
+
+def test_expand_self_citation_folds_to_already_shown() -> None:
+    # US-CG3: 확장 대상(parent)이 자기 자신을 인용하는 사이클(A→A)도 접힌다 — 접히지 않으면
+    # 클라이언트가 A→A→…를 무한 확장할 수 있다.
+    tree = controller._build_tree(
+        "root",
+        "2102.00002",
+        [{"paperId": "s2-s", "title": "Self citation", "externalIds": {"ArXiv": "2102.00002"}}],
+    )
+
+    assert tree.nodes[0].alreadyShown is True
+    assert tree.nodes[0].saveable is False
+
+
+def test_cyclic_expansion_terminates_at_depth_cap(monkeypatch) -> None:
+    # US-CG3: A↔root 상호 인용을 끝까지 따라가도 응답 depth는 MAX_DEPTH(2)에서 멈추고,
+    # 재등장 노드는 alreadyShown으로 접힌다.
+    class CyclicProvider:
+        async def references(self, paper_id: str, limit: int):
+            target = "2202.00001" if "root" in paper_id else "root-arxiv"
+            return "ok", [
+                {
+                    "paperId": f"s2-{target}",
+                    "title": f"Paper {target}",
+                    "externalIds": {"ArXiv": target},
+                }
+            ]
+
+    client = _client(monkeypatch, provider=CyclicProvider())
+    first = client.get("/api/papers/root-arxiv/citation-tree").json()
+    assert first["depthReturned"] == 1
+    assert first["nodes"][0]["nodeId"] == "2202.00001"
+
+    expanded = client.get(
+        "/api/papers/root-arxiv/citation-tree", params={"expandNodeId": "2202.00001"}
+    ).json()
+
+    assert expanded["depthReturned"] == 2 <= controller.MAX_DEPTH
+    assert all(node["depth"] <= controller.MAX_DEPTH for node in expanded["nodes"])
+    # the cycle back to the root folds instead of spawning a fresh expandable node
+    assert expanded["nodes"][0]["nodeId"] == "root-arxiv"
+    assert expanded["nodes"][0]["alreadyShown"] is True
+
+
+# --- US-CG6 metrics via the U6 ObservabilityHub (QA 2026-07-10 gap B) -----------------------
+
+
+class RecordingHub:
+    def __init__(self) -> None:
+        self.metrics: list[tuple[str, float, dict]] = []
+        self.logs: list[dict] = []
+
+    def emit_metric(self, name, value, tags) -> None:
+        self.metrics.append((name, float(value), dict(tags)))
+
+    def emit_log(self, entry) -> None:
+        self.logs.append(dict(entry))
+
+    def by_name(self, name: str) -> list[tuple[float, dict]]:
+        return [(value, tags) for n, value, tags in self.metrics if n == name]
+
+
+def test_lookup_emits_citation_graph_metrics(monkeypatch) -> None:
+    hub = RecordingHub()
+    client = _client(monkeypatch)
+    client.app.state.observability = hub
+
+    assert client.get("/api/papers/root/citation-tree").status_code == 200
+
+    assert hub.by_name("citation.graph.lookup") == [(1.0, {"cache": "miss"})]
+    assert hub.by_name("citation.graph.node_count") == [(2.0, {})]
+    ((ratio, _),) = hub.by_name("citation.graph.unresolved_ratio")
+    assert ratio == pytest.approx(1 / 3)  # fixture: 2 resolved + 1 unresolved
+    ((latency, _),) = hub.by_name("citation.graph.latency_ms")
+    assert latency >= 0.0
+    assert hub.by_name("citation.graph.provider_error") == []
+    assert hub.logs and hub.logs[0]["event"] == "citation_graph.lookup"
+
+
+def test_cache_hit_emits_hit_tagged_lookup_metric(monkeypatch) -> None:
+    hub = RecordingHub()
+    client = _client(monkeypatch, store=controller.InMemorySnapshotStore())
+    client.app.state.observability = hub
+
+    client.get("/api/papers/root/citation-tree")
+    client.get("/api/papers/root/citation-tree")
+
+    assert [tags["cache"] for _, tags in hub.by_name("citation.graph.lookup")] == ["miss", "hit"]
+
+
+@pytest.mark.parametrize("provider_status", ["rate_limited", "unavailable"])
+def test_provider_failure_emits_error_metric(monkeypatch, provider_status) -> None:
+    # US-CG6: 외부 API 오류·429가 카운트로 남는다 — 실패 경로도 lookup/latency를 남긴다.
+    hub = RecordingHub()
+    client = _client(monkeypatch, provider=FixtureProvider(provider_status))
+    client.app.state.observability = hub
+
+    assert client.get("/api/papers/root/citation-tree").status_code == 200
+
+    assert hub.by_name("citation.graph.provider_error") == [(1.0, {"status": provider_status})]
+    assert hub.by_name("citation.graph.lookup") == [(1.0, {"cache": "miss"})]
+    assert hub.by_name("citation.graph.node_count") == [(0.0, {})]
+    assert len(hub.by_name("citation.graph.latency_ms")) == 1
+
+
+def test_observability_failure_never_breaks_lookup(monkeypatch) -> None:
+    # US-CG6: 허브 장애는 조회 경로로 전파되지 않는다 (discovery _emit_guarded와 동일 계약).
+    class RaisingHub:
+        def emit_metric(self, name, value, tags) -> None:
+            raise RuntimeError("cloudwatch down")
+
+        def emit_log(self, entry) -> None:
+            raise RuntimeError("log sink down")
+
+    client = _client(monkeypatch)
+    client.app.state.observability = RaisingHub()
+
+    resp = client.get("/api/papers/root/citation-tree")
+
+    assert resp.status_code == 200
+    assert len(resp.json()["nodes"]) == 2

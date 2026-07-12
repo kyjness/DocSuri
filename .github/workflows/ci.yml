@@ -76,6 +76,26 @@ jobs:
       - name: Tests (incl. the api router extra)
         run: uv run --extra api pytest
 
+  summarization:
+    name: summarization (U7)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: backend/modules/summarization
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+      - name: Lint
+        run: uv run ruff check .
+      # --all-extras, not `--extra api` like discovery: test_docmodel_endpoint.py imports the S3
+      # adapter (botocore, from the `real` extra) at collection time and does NOT self-skip when
+      # it's absent. The live-service integration tests still self-skip without credentials.
+      - name: Tests (needs the `real` extra — s3_docmodel imports botocore)
+        run: uv run --all-extras pytest
+
   ops:
     name: ops (U6 reliability/detection)
     runs-on: ubuntu-latest

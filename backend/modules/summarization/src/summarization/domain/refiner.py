@@ -40,6 +40,12 @@ _PRESERVED_RE = re.compile(
 )
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
+# The abstract is emitted by U1 as a dedicated doc-model section with this id (real content
+# sections start at "s1"). It is summarizable content but not a citable anchor target — the reader
+# hides it from the full-text body (it has its own 초록 surface), so an anchor resolving there
+# could never scroll to anything. Kept out of the section index to mirror that reader-side filter.
+_ABSTRACT_SECTION_ID = "s0"
+
 
 def _strip_noise_lines(text: str) -> str:
     kept: list[str] = []
@@ -108,7 +114,10 @@ class InputRefiner:
             if title:
                 start = pos
                 emit(title)
-                sections.append(Section(label=title, start=start, end=pos))
+                # Emit the abstract's text for the prompt, but keep it out of the anchor index so
+                # the grounding gate resolves no citation to a section the reader can't scroll to.
+                if getattr(dsec, "id", "") != _ABSTRACT_SECTION_ID:
+                    sections.append(Section(label=title, start=start, end=pos))
                 emit("\n\n")
             for block in getattr(dsec, "blocks", []):
                 _emit_block(block.root)

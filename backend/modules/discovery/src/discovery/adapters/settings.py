@@ -54,6 +54,10 @@ class DiscoverySettings:
     opensearch_verify_certs: bool = _DEFAULT_VERIFY_CERTS
     bedrock_model_id: str | None = None
     aws_region: str | None = None
+    # Bedrock embedding region, decoupled from aws_region (used for OpenSearch SigV4). Needed
+    # because Cohere Embed Multilingual v3 is NOT available in ap-northeast-2 (the domain region),
+    # so the reader must embed queries cross-region. None → falls back to aws_region.
+    bedrock_region: str | None = None
     # SearchExecuted event bus (→ U4 history). Absent → events stay in-memory (bus not yet
     # provisioned). When set, the real EventBridge publisher is wired.
     search_event_bus: str | None = None
@@ -90,6 +94,7 @@ class DiscoverySettings:
             opensearch_verify_certs=_flag("DOCSURI_OPENSEARCH_VERIFY_CERTS", _DEFAULT_VERIFY_CERTS),
             bedrock_model_id=os.getenv("DOCSURI_BEDROCK_MODEL_ID") or None,
             aws_region=os.getenv("DOCSURI_AWS_REGION") or None,
+            bedrock_region=os.getenv("DOCSURI_BEDROCK_REGION") or None,
             search_event_bus=os.getenv("DOCSURI_SEARCH_EVENT_BUS") or None,
             embedding_cache_ttl_seconds=float(ttl) if ttl else _DEFAULT_CACHE_TTL_SECONDS,
             rerank_model_arn=os.getenv("DOCSURI_RERANK_MODEL_ARN") or None,

@@ -91,10 +91,14 @@ export const summaryResponse: SummaryOkDTO = {
       code: '공개 — tensor2tensor 저장소에 구현 제공',
       data: '공개 — WMT 2014 표준 벤치마크 사용',
     },
+    // Labels match the body doc-model (`docModelResponse`) canonical text — an asset anchor
+    // (block anchorLabel "Table 1") and section anchors (section titles "Model Architecture",
+    // "Training") — mirroring how the backend grounding gate rewrites each label to the
+    // doc-model's own canonical text, so a source-chip click actually jumps in the dev preview.
     anchors: [
-      { field: 'results', target: 'table', span: 'EN-DE 28.4 BLEU', label: '표 2' },
-      { field: 'method', target: 'section', span: 'Multi-Head Attention', label: '§3.2' },
-      { field: 'reproducibility', target: 'section', span: 'tensor2tensor', label: '§6.1' },
+      { field: 'results', target: 'table', span: 'EN-DE 28.4 BLEU', label: 'Table 1' },
+      { field: 'method', target: 'section', span: 'Multi-Head Attention', label: 'Model Architecture' },
+      { field: 'reproducibility', target: 'section', span: 'tensor2tensor', label: 'Training' },
     ],
   },
 };

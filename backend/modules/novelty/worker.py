@@ -11,9 +11,15 @@ from typing import Any
 
 from backend.modules.user_docmodel import USER_DOCMODEL_PDF_CONTENT_TYPE
 
-from .adapters import NoveltyAdapters, RetrievalBundle, build_default_novelty_adapters
+from .adapters import (
+    NoveltyAdapters,
+    NoveltySearchPlan,
+    RetrievalBundle,
+    build_default_novelty_adapters,
+)
 from .models import TERMINAL_STATES, ArtifactKind, EvidenceStatus, InputType, JobState
 from .repository import NoveltyRepository
+from .security import sanitize_external_query
 from .service import NoveltyService, _emit_metric
 
 log = logging.getLogger("docsuri.novelty.worker")
@@ -184,6 +190,30 @@ def process_job(
     try:
         degraded_reasons: list[str] = []
         topic_preview = job.topic[:_PREVIEW_LEN]
+        job = service.advance_state(
+            owner_id,
+            job_id,
+            JobState.RETRIEVING_CORPUS,
+            "Planning expanded search queries",
+            {"source": _LLM_SOURCE, "query": topic_preview},
+        )
+        search_plan = _search_plan(adapters.llm, job.topic)
+        search_queries = _search_queries(search_plan, job.topic)
+        if search_plan.degradedReason:
+            degraded_reasons.append(search_plan.degradedReason)
+            _note_degraded(observability, _LLM_SOURCE)
+        service.record_event(
+            job,
+            "Expanded search queries",
+            {
+                "source": _LLM_SOURCE,
+                "query": topic_preview,
+                "queries": search_queries,
+                "keywords": search_plan.keywords,
+                "intent": search_plan.intent,
+            },
+        )
+        primary_query = search_queries[0]
 
         # US-NV1(#251) — 자연어 잡은 D5 EvidenceFormationPort로 근거 묶음을 먼저 만들고(AC1),
         # 아래 U2 full 검색이 결과를 보강한다(AC2). abstain·장애는 저하로 계속(날조 금지, D5).
@@ -213,9 +243,9 @@ def process_job(
             job_id,
             JobState.RETRIEVING_CORPUS,
             "Searching U2 corpus",
-            {"source": _CORPUS_SOURCE, "query": topic_preview},
+            {"source": _CORPUS_SOURCE, "query": primary_query[:_PREVIEW_LEN]},
         )
-        corpus = adapters.corpus.full_search(owner_id, job.topic)
+        corpus = _search_corpus(adapters, owner_id, search_queries)
         corpus_payload, degraded_reason = _payload_from_bundle(corpus)
         if degraded_reason:
             degraded_reasons.append(degraded_reason)
@@ -228,12 +258,13 @@ def process_job(
         if evidence_bundle is not None and evidence_bundle.items:
             # 근거 묶음이 앞서고 corpus가 보강 — 병합 번들이 artifact와 LLM draft에 흐른다.
             corpus = _merge_bundles(evidence_bundle, corpus)
-            corpus_payload, _ = _payload_from_bundle(corpus)
+        corpus = _rerank_bundle(corpus, search_plan, job.topic)
+        corpus_payload, _ = _payload_from_bundle(corpus)
         service.save_artifact(
             owner_id,
             job_id,
             ArtifactKind.EVIDENCE,
-            "Corpus evidence",
+            "검색된 논문 근거",
             corpus_payload,
         )
 
@@ -242,9 +273,13 @@ def process_job(
             job_id,
             JobState.SEARCHING_EXTERNAL,
             "Searching external sources",
-            {"source": _EXTERNAL_SOURCE, "query": topic_preview},
+            {"source": _EXTERNAL_SOURCE, "query": primary_query[:_PREVIEW_LEN]},
         )
-        external = adapters.external.search(job.topic)
+        external = _rerank_bundle(
+            _search_external(adapters, search_queries),
+            search_plan,
+            job.topic,
+        )
         external_payload, degraded_reason = _payload_from_bundle(external)
         if degraded_reason:
             degraded_reasons.append(degraded_reason)
@@ -386,6 +421,189 @@ def _note_degraded(observability, source: str) -> None:
     _emit_metric(observability, "novelty.step_degraded", tags={"source": source})
 
 
+def _search_plan(llm: Any, topic: str) -> NoveltySearchPlan:
+    planner = getattr(llm, "plan_search", None)
+    if planner is None:
+        terms = _terms(topic)
+        return NoveltySearchPlan(
+            englishQuery=sanitize_external_query(topic),
+            keywords=terms,
+            subqueries=[sanitize_external_query(topic)],
+            intent={"goal": topic[:240]},
+            rankingSignals=terms,
+        )
+    try:
+        return planner(topic)
+    except Exception as exc:  # noqa: BLE001 - query rewrite failure degrades, not fails, jobs.
+        terms = _terms(topic)
+        query = sanitize_external_query(topic)
+        return NoveltySearchPlan(
+            englishQuery=query,
+            keywords=terms,
+            subqueries=[query],
+            intent={"goal": topic[:240]},
+            rankingSignals=terms,
+            degradedReason=f"LLM query planning unavailable: {type(exc).__name__}",
+        )
+
+
+def _search_queries(plan: NoveltySearchPlan, topic: str) -> list[str]:
+    return _dedupe_texts(
+        sanitize_external_query(query)
+        for query in [plan.englishQuery, *plan.subqueries, topic]
+        if sanitize_external_query(query)
+    )[:4] or [sanitize_external_query(topic)]
+
+
+def _search_corpus(adapters: NoveltyAdapters, owner_id: str, queries: list[str]) -> RetrievalBundle:
+    bundles: list[RetrievalBundle] = []
+    degraded: list[str] = []
+    for query in queries:
+        try:
+            bundles.append(_with_query_used(adapters.corpus.full_search(owner_id, query), query))
+        except Exception as exc:  # noqa: BLE001 - one expanded query must not fail the job.
+            if len(queries) == 1:
+                raise
+            degraded.append(f"U2 full search failed for expanded query: {type(exc).__name__}")
+    return _join_bundles(bundles, degraded)
+
+
+def _search_external(adapters: NoveltyAdapters, queries: list[str]) -> RetrievalBundle:
+    bundles: list[RetrievalBundle] = []
+    degraded: list[str] = []
+    for query in queries:
+        try:
+            bundles.append(_with_query_used(adapters.external.search(query), query))
+        except Exception as exc:  # noqa: BLE001 - one expanded query must not fail the job.
+            degraded.append(f"external search failed for expanded query: {type(exc).__name__}")
+    return _join_bundles(bundles, degraded)
+
+
+def _with_query_used(bundle: RetrievalBundle, query: str) -> RetrievalBundle:
+    return RetrievalBundle(
+        items=[{**item, "queryUsed": item.get("queryUsed") or query} for item in bundle.items],
+        evidenceStatus=bundle.evidenceStatus,
+        degradedReason=bundle.degradedReason,
+    )
+
+
+def _join_bundles(
+    bundles: list[RetrievalBundle], degraded: list[str] | None = None
+) -> RetrievalBundle:
+    items: list[dict[str, Any]] = []
+    reasons = list(degraded or [])
+    for bundle in bundles:
+        items.extend(bundle.items)
+        if bundle.degradedReason:
+            reasons.append(bundle.degradedReason)
+    items = _dedupe_items(items)
+    return RetrievalBundle(
+        items=items,
+        evidenceStatus=EvidenceStatus.SUPPORTED if items else EvidenceStatus.ABSTAINED,
+        degradedReason="; ".join(_dedupe_texts(reasons)) or None,
+    )
+
+
+def _rerank_bundle(bundle: RetrievalBundle, plan: NoveltySearchPlan, topic: str) -> RetrievalBundle:
+    terms = _rank_terms(plan, topic)
+    items = [_with_evidence_note(item, terms) for item in bundle.items]
+    return RetrievalBundle(
+        items=sorted(items, key=lambda item: float(item.get("confidence") or 0), reverse=True),
+        evidenceStatus=bundle.evidenceStatus,
+        degradedReason=bundle.degradedReason,
+    )
+
+
+def _with_evidence_note(item: dict[str, Any], terms: list[str]) -> dict[str, Any]:
+    text = _item_text(item)
+    matches = [term for term in terms if term.lower() in text.lower()][:4]
+    refs = item.get("sourceRefs") or item.get("source_refs") or []
+    return {
+        **item,
+        "confidence": _confidence(matches, bool(refs), text),
+        "evidenceNote": _evidence_note(item, matches),
+    }
+
+
+def _confidence(matches: list[str], has_refs: bool, text: str) -> float:
+    base = 0.55 if has_refs else 0.25
+    match_bonus = min(0.35, len(matches) * 0.08)
+    text_bonus = 0.05 if len(text) > 120 else 0
+    return round(min(0.95, base + match_bonus + text_bonus), 2)
+
+
+def _evidence_note(item: dict[str, Any], matches: list[str]) -> str:
+    title = str(item.get("title") or "이 논문").strip()
+    snippet = str(item.get("summary") or item.get("abstractSnippet") or "").strip()
+    if matches and snippet:
+        return f"{title}에서 {', '.join(matches)} 관련 내용이 확인됩니다: {snippet[:180]}"
+    if matches:
+        return f"{title}에서 {', '.join(matches)} 관련 표현이 제목 또는 메타데이터에 확인됩니다."
+    if snippet:
+        return f"{title}의 요약 내용을 근거로 질의와의 관련성을 판단했습니다: {snippet[:180]}"
+    return f"{title}는 출처가 제공된 검색 결과라 후보 근거로 포함했습니다."
+
+
+def _rank_terms(plan: NoveltySearchPlan, topic: str) -> list[str]:
+    intent_values: list[str] = []
+    for value in plan.intent.values():
+        if isinstance(value, list):
+            intent_values.extend(str(item) for item in value)
+        else:
+            intent_values.append(str(value))
+    return _dedupe_texts(
+        [*plan.keywords, *plan.rankingSignals, *intent_values, *_terms(topic)]
+    )[:16]
+
+
+def _item_text(item: dict[str, Any]) -> str:
+    return " ".join(
+        str(item.get(key) or "")
+        for key in ("title", "summary", "abstractSnippet", "sourceName")
+    )
+
+
+def _terms(text: str) -> list[str]:
+    return _dedupe_texts(
+        token.strip(".,;:()[]{}\"'")
+        for token in str(text).split()
+        if len(token.strip(".,;:()[]{}\"'")) >= 2
+    )[:8]
+
+
+def _dedupe_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    result: list[dict[str, Any]] = []
+    for item in items:
+        key = _item_key(item)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result
+
+
+def _item_key(item: dict[str, Any]) -> str:
+    refs = item.get("sourceRefs") or item.get("source_refs") or []
+    if refs and isinstance(refs[0], dict):
+        ref = refs[0]
+        source = ref.get("sourceKey") or ref.get("url") or ref.get("identifier") or item
+        return f"{item.get('title') or ''}|{source}"
+    return str(item.get("sourceUrl") or item.get("url") or item.get("title") or item)
+
+
+def _dedupe_texts(values) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        text = str(value).strip()
+        key = text.lower()
+        if text and key not in seen:
+            seen.add(key)
+            result.append(text)
+    return result
+
+
 def _step_result_payload(source: str, count: int, reason: str | None) -> dict[str, Any]:
     payload: dict[str, Any] = {"source": source, "count": count}
     if reason:
@@ -472,7 +690,7 @@ def main(argv: list[str] | None = None) -> int:
     def receive() -> list[_Message]:
         resp = sqs.receive_message(
             QueueUrl=queue_url,
-            MaxNumberOfMessages=10,
+            MaxNumberOfMessages=1,
             WaitTimeSeconds=20,
         )
         return [

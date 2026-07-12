@@ -278,7 +278,9 @@ def _build_tree(
     paper_service: Any = None,
 ) -> CitationTreeResponse:
     target_depth = 2 if parent != root else 1
-    seen = {root}
+    # Root AND expanded parent seed the dedup set: a self-citation (parent in its own
+    # references) must fold to alreadyShown, or the client can chase A→A→… forever (US-CG3).
+    seen = {root, parent}
     nodes: list[CitationNode] = []
     edges: list[CitationEdge] = []
     unresolved: list[UnresolvedCitation] = []
@@ -311,26 +313,60 @@ def _build_tree(
     )
 
 
+def _metric(hub: Any, name: str, value: float, tags: dict[str, str]) -> None:
+    """Advisory metric emit (US-CG6) — same fail-soft contract as discovery's _emit_guarded:
+    observability MUST NOT raise into the citation path."""
+    emit_metric = getattr(hub, "emit_metric", None)
+    if not emit_metric:
+        return
+    try:
+        emit_metric(name, value, tags)
+    except Exception:  # noqa: BLE001 - observability is advisory
+        pass
+
+
 def _emit(
     request: Request, response: CitationTreeResponse, latency_ms: int, depth_requested: int
 ) -> None:
     hub = getattr(request.app.state, "observability", None)
+    if hub is None:
+        return
     emit_log = getattr(hub, "emit_log", None)
     if emit_log:
-        emit_log(
-            {
-                "event": "citation_graph.lookup",
-                "paperId": response.rootPaperId,
-                "cacheHit": response.cacheHit,
-                "providerStatus": response.providerStatus,
-                "nodeCount": len(response.nodes),
-                "unresolvedCount": len(response.unresolved),
-                "depthRequested": depth_requested,
-                "depthReturned": response.depthReturned,
-                "truncated": response.truncated,
-                "latencyMs": latency_ms,
-            }
+        try:
+            emit_log(
+                {
+                    "event": "citation_graph.lookup",
+                    "paperId": response.rootPaperId,
+                    "cacheHit": response.cacheHit,
+                    "providerStatus": response.providerStatus,
+                    "nodeCount": len(response.nodes),
+                    "unresolvedCount": len(response.unresolved),
+                    "depthRequested": depth_requested,
+                    "depthReturned": response.depthReturned,
+                    "truncated": response.truncated,
+                    "latencyMs": latency_ms,
+                }
+            )
+        except Exception:  # noqa: BLE001 - observability is advisory
+            pass
+    # US-CG6 metrics via the U6 hub (CloudWatch when CLOUDWATCH_NAMESPACE is set). Tags stay
+    # low-cardinality — paperId lives in the log line only, never in a metric dimension.
+    cache = "hit" if response.cacheHit else "miss"
+    _metric(hub, "citation.graph.lookup", 1.0, {"cache": cache})
+    if response.providerStatus in {"rate_limited", "unavailable"}:
+        # rate_limited = upstream 429; unavailable = timeout/HTTP error/misshapen body.
+        _metric(hub, "citation.graph.provider_error", 1.0, {"status": response.providerStatus})
+    resolved_total = len(response.nodes) + len(response.unresolved)
+    if resolved_total:
+        _metric(
+            hub,
+            "citation.graph.unresolved_ratio",
+            len(response.unresolved) / resolved_total,
+            {},
         )
+    _metric(hub, "citation.graph.node_count", float(len(response.nodes)), {})
+    _metric(hub, "citation.graph.latency_ms", float(latency_ms), {})
 
 
 @router.get("", response_model=CitationTreeResponse)
@@ -353,7 +389,7 @@ async def get_citation_tree(
 
     provider_status, items = await provider.references(parent, _max_visible_nodes() + 1)
     if provider_status in {"rate_limited", "unavailable"} and not items:
-        return CitationTreeResponse(
+        degraded = CitationTreeResponse(
             status="RateLimited" if provider_status == "rate_limited" else "Unavailable",
             rootPaperId=paper_id,
             nodes=[],
@@ -361,6 +397,8 @@ async def get_citation_tree(
             depthReturned=0,
             providerStatus=provider_status,
         )
+        _emit(request, degraded, int((time.perf_counter() - started) * 1000), depth_requested)
+        return degraded
     paper_service = getattr(
         getattr(request.app.state, "discovery_bundle", None),
         "paper_service",
@@ -371,7 +409,7 @@ async def get_citation_tree(
             update={"providerStatus": provider_status}
         )
     except Exception:  # noqa: BLE001 - a misshapen provider item (e.g. string year) degrades, never 500 (BR-CG12)
-        return CitationTreeResponse(
+        degraded = CitationTreeResponse(
             status="Unavailable",
             rootPaperId=paper_id,
             nodes=[],
@@ -379,6 +417,8 @@ async def get_citation_tree(
             depthReturned=0,
             providerStatus="unavailable",
         )
+        _emit(request, degraded, int((time.perf_counter() - started) * 1000), depth_requested)
+        return degraded
     await store.set(key, response)
     _emit(request, response, int((time.perf_counter() - started) * 1000), depth_requested)
     return response

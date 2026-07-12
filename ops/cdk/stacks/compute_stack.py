@@ -233,6 +233,13 @@ class ComputeStack(Stack):
             # deploy-free failover if SES ever degrades. get_email_client() falls back to SES if
             # "resend" is set without a key.
             "EMAIL_PROVIDER": "ses",
+            # US-P4 go-live (#345, shipped 2026-07-08): personalization search boost is LIVE.
+            # Read once at app startup (wiring._mount_discovery → orchestrator._rerank_live).
+            # Default "true" so every pipeline deploy keeps it live (durable — avoids the shadow
+            # revert-on-release trap). Rollback (no code change): `-c search_rerank_live=false`.
+            # BR-P8 bounds the effect (≤3-position nudge in the top band, tail untouched); fail-open
+            # on any boost error (BR-P13). Shadow review (synthetic + algorithm) cleared the flip.
+            "SEARCH_RERANK_LIVE": str(self.node.try_get_context("search_rerank_live") or "true"),
             # Public apex used to build clickable verification links in emails. Behind
             # CloudFront/BFF/ALB the request host is internal, so the link must use this
             # public URL pointing at the frontend verify page (controller._verification_link_base
@@ -250,7 +257,11 @@ class ComputeStack(Stack):
             "DOCSURI_OPENSEARCH_ENDPOINT": Fn.join("", [
                 "https://", opensearch_domain.domain_endpoint,
             ]),
-            "DOCSURI_BEDROCK_MODEL_ID": "global.cohere.embed-v4:0",
+            # Cohere Embed Multilingual v3 cutover (2026-07): reader queries c3ml (v3 space).
+            "DOCSURI_BEDROCK_MODEL_ID": "cohere.embed-multilingual-v3",
+            "DOCSURI_OPENSEARCH_INDEX": "docsuri-corpus-c3ml",
+            # v3 isn't in ap-northeast-2 (OpenSearch/aws_region), so embed queries cross-region.
+            "DOCSURI_BEDROCK_REGION": "ap-northeast-1",
             "DOCSURI_AWS_REGION": self.region,
             # --- U7 summarization + doc-model (피벗) — queue URLs (deploy-ready config) ---
             # The IAM below is provisioned ahead of activation. ACTIVATION is a deploy-time step the
@@ -651,6 +662,10 @@ class ComputeStack(Stack):
             iam.PolicyStatement(
                 actions=["bedrock:InvokeModel"],
                 resources=[
+                    # v3 cutover (2026-07): reader embeds queries with Cohere Embed
+                    # Multilingual v3 (on-demand FM, cross-region — v3 not in apne2).
+                    "arn:aws:bedrock:*::foundation-model/cohere.embed-multilingual-v3",
+                    # v4 kept for rollback safety (revert DOCSURI_BEDROCK_MODEL_ID → v4).
                     # Invoked via the global inference profile (bare model id isn't on-demand
                     # invokable); the profile can route the FM to any region — grant both.
                     f"arn:aws:bedrock:{self.region}:{self.account}:inference-profile/global.cohere.embed-v4:0",

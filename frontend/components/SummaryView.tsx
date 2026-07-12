@@ -28,7 +28,17 @@ function AnchorChips({
   anchors: AnchorVM[];
   onAnchor?: (a: AnchorVM) => void;
 }) {
-  const forField = anchors.filter((a) => a.field === field);
+  // Collapse duplicate chips: several claims in one field routinely cite the SAME source, which the
+  // backend canonicalizes to one label (e.g. "Introduction") — rendering identical repeated "출처:"
+  // chips. Keep one chip per label (same label = same text + same jump target). Also heals summaries
+  // cached before the backend de-dup shipped (stored anchors are immutable in S3).
+  const seen = new Set<string>();
+  const forField: AnchorVM[] = [];
+  for (const a of anchors) {
+    if (a.field !== field || seen.has(a.label)) continue;
+    seen.add(a.label);
+    forField.push(a);
+  }
   if (forField.length === 0) return null;
   return (
     <div className={styles.anchors}>
@@ -56,7 +66,9 @@ export function SummaryView({ summary, onAnchor }: SummaryViewProps) {
       <section className={styles.field}>
         <h4 className={styles.label}>한 줄 요약</h4>
         <p className={styles.body}>{renderInlineRich(summary.tldr)}</p>
-        <AnchorChips field="tldr" anchors={anchors} onAnchor={onAnchor} />
+        {/* No source chip: the one-line summary is a whole-paper gist, so its grounding is the
+            abstract — which the reader deliberately hides from the full-text body (s0 filter, its
+            own 초록 surface), leaving the chip with nowhere to jump. */}
       </section>
 
       <section className={styles.field}>

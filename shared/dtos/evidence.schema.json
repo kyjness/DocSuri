@@ -82,7 +82,7 @@
     "EvidenceResult": {
       "type"        : "object",
       "title"       : "EvidenceResult",
-      "description" : "근거형성 성공 산출(state=ok). claims = 추출된 근거 명제 목록(Q2=A 논문 비교형 + 쟁점 오버레이의 데이터 기반). coverage = 사용 논문·쿼리 요약. Trace: Q2, FR-5, D5.",
+      "description" : "근거형성 성공 산출(state=ok). claims = 추출된 근거 명제 목록(Q2=A 논문 비교형 + 쟁점 오버레이의 데이터 기반). coverage = 사용 논문·쿼리 요약. answer = claims를 대화체로 풀어 쓴 요약(전적으로 claims/quote에서만 구성 — 새 사실 도입 금지, C-2 동일 적용). Trace: Q2, FR-5, D5.",
       "properties"  : {
         "state"   : {
           "const"      : "ok",
@@ -96,6 +96,10 @@
         "coverage": {
           "$ref"       : "#/$defs/EvidenceCoverage",
           "description": "사용 논문 수·쿼리 요약. Trace: SEC-9."
+        },
+        "answer"  : {
+          "type"       : ["string", "null"],
+          "description": "claims를 대화체 한국어 문단으로 풀어 쓴 요약. 오직 claims[].statement/supporting/conflicting에서만 조립되며 새 사실을 도입하지 않는다(C-2 동일 적용 — 생성 산문 금지 원칙은 '새 사실 금지'이지 '요약 표현 금지'가 아니다). 하위호환을 위해 선택 필드."
         }
       },
       "required"    : ["state", "claims", "coverage"],

@@ -77,6 +77,13 @@ export const pageResponse: SearchResultPageDTO = {
   meta: { resultCount: CARDS.length, degraded: false },
 };
 
+// US-P4 (#155): a page whose order the LIVE personalization re-rank actually boosted —
+// meta.personalized=true drives the '내 관심 주제 반영' indicator + settings off entry point.
+export const personalizedPageResponse: SearchResultPageDTO = {
+  cards: CARDS,
+  meta: { resultCount: CARDS.length, degraded: false, personalized: true },
+};
+
 export const emptyResponse: SearchResultPageDTO = {
   cards: [],
   meta: { resultCount: 0, degraded: false },

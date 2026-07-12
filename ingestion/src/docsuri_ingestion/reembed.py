@@ -182,7 +182,9 @@ def reembed(settings: IngestionSettings | None = None) -> int:
     client = _client(settings)
     embedding = BedrockCohereEmbeddingPort(
         model_id=settings.bedrock_model_id,
-        region_name=settings.aws_region,
+        # Embed region can differ from the OpenSearch region for multi-region fan-out (each region
+        # is a separate on-demand bucket). Falls back to the OpenSearch/signing region.
+        region_name=settings.reembed_embed_region or settings.aws_region,
         output_dimension=settings.reembed_dimension,
     )
     src, dst = _source_index(settings), settings.opensearch_index_reembed
@@ -270,6 +272,28 @@ def reembed_finalize(settings: IngestionSettings | None = None) -> int:
     if count < settings.reembed_min_documents:
         raise SystemExit(f"re-embed target {dst} has too few docs: {count}")
     log.info("re-embed target %s finalized: %d docs", dst, count)
+    return 0
+
+
+def reembed_verify(settings: IngestionSettings | None = None) -> int:
+    """Read-only completeness gate: compare source vs re-embed-target doc counts. The source is
+    FROZEN (harvester stopped) before cutover, so a fully caught-up target must match it exactly.
+    Exits non-zero if the target is short (a coverage gap remains). Unlike reembed_finalize, this
+    mutates NOTHING — safe to run against the live source index."""
+    settings = settings or IngestionSettings.from_env()
+    client = _client(settings)
+    src, dst = _source_index(settings), settings.opensearch_index_reembed
+    src_count = int(client.count(index=src)["count"])
+    dst_count = int(client.count(index=dst)["count"])
+    missing = src_count - dst_count
+    log.info(
+        "re-embed verify: source %s=%d, target %s=%d, missing=%d",
+        src, src_count, dst, dst_count, missing,
+    )
+    if missing > 0:
+        raise SystemExit(
+            f"re-embed target {dst} short {missing} docs vs source {src} — gap remains"
+        )
     return 0
 
 

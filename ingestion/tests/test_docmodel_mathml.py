@@ -113,6 +113,31 @@ def test_cross_references_and_citations_are_stripped() -> None:
     assert mathml_to_latex(_math(r'<math alttext="a \citep[see][]{k} b">z</math>')) == "a b"
 
 
+def test_listings_box_macro_noise_is_stripped() -> None:
+    # A paper embeds \lstinline inside inline math via a custom box macro (arXiv:2410.14706
+    # \cybertron -> \Colorbox{colour}{\lstinline{…}}). LaTeXML cannot expand it, so the alttext
+    # carries the \Colorbox box + its throwaway colour arg, \leavevmode, \lstinline, the internal
+    # \lst@… state macros, and a residual {ltx_lst_*} class tag (from \@listingGroup). All are
+    # stripped so the boxed identifier survives and the formula renders instead of collapsing.
+    alt = (
+        r"V=\{\Colorbox{mygrayInline}{\leavevmode\lstinline{{\lst@@@set@language"
+        r"\lst@@@set@frame{ltx_lst_identifier}{num}}}}\}"
+    )
+    out = mathml_to_latex(_math(f'<math alttext="{alt}">z</math>'))
+    for marker in ("Colorbox", "mygrayInline", "lstinline", "lst@", "ltx_lst", "leavevmode"):
+        assert marker not in out, f"{marker!r} leaked into {out!r}"
+    assert "num" in out
+
+
+def test_fcolorbox_two_colour_args_are_stripped_content_kept() -> None:
+    # \fcolorbox{frame}{bg}{content} leaks TWO colour args; both the command and its two colour
+    # groups must go, leaving only the boxed content so the formula renders.
+    alt = r"a + \fcolorbox{black}{mygray}{x^2} + b"
+    out = mathml_to_latex(_math(f'<math alttext="{alt}">z</math>'))
+    assert "fcolorbox" not in out and "black" not in out and "mygray" not in out
+    assert "x^2" in out
+
+
 def test_mathversion_and_leafmode_are_stripped() -> None:
     assert mathml_to_latex(_math(r'<math alttext="\mathversion{bold}x + 1">z</math>')) == "x + 1"
     assert mathml_to_latex(_math(r'<math alttext="\leafmode x">z</math>')) == "x"

@@ -227,6 +227,27 @@ def _mount_discovery(app: FastAPI, settings: Settings, result: MountResult) -> N
 
     bundle.orchestrator._search_boosts = _personalization_boosts
 
+    # US-P4 go-live gate (#345): apply the boost to the user-facing order only when
+    # SEARCH_RERANK_LIVE is on. Default off = SHADOW (metrics emit, order unchanged), so ops can
+    # review real rerank_shadow data first, then flip live by setting the env — no redeploy.
+    bundle.orchestrator._rerank_live = os.getenv("SEARCH_RERANK_LIVE", "false").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+    # US-D6 no-match floor on the best raw k-NN score (QA 2026-07-10 F2). Default 0.0 = off;
+    # ops flips it by env after calibrating against discovery.search.best_knn_score — same
+    # no-redeploy pattern as SEARCH_RERANK_LIVE. A malformed value must not sink the mount.
+    try:
+        bundle.orchestrator._no_match_knn_floor = float(
+            os.getenv("DISCOVERY_NO_MATCH_KNN_FLOOR", "0") or "0"
+        )
+    except ValueError:
+        log.warning("app-shell: invalid DISCOVERY_NO_MATCH_KNN_FLOOR ignored (floor off)")
+        bundle.orchestrator._no_match_knn_floor = 0.0
+
     # Map a store outage to a fail-closed, no-leak 503 (INV-3/SEC-15). The standalone build_app
     # registers this itself; mounted via build_router here, the app-shell must do it too —
     # otherwise SearchUnavailable falls through to the generic Exception→500 handler and a

@@ -18,6 +18,11 @@ from .models import Persona, Scope, SummaryCacheKey, SummaryRequest, Task
 
 # Prompt template version — bump to invalidate all derived objects (key changes).
 PROMPT_VER = "p1"
+# Translate base FORMAT version — appended to the translate key only, so it invalidates translate
+# artifacts WITHOUT needlessly regenerating summaries. Bump when the cached translate base changes
+# shape. ``m1`` = masked standard-term tokens rendered at serve (BR-S4): older token-free bases
+# render as a no-op, so this rotation past them makes new deterministic bases regenerate cleanly.
+TRANSLATE_FORMAT_VER = "m1"
 
 
 def _docmodel_generation(parser_version: str) -> str:
@@ -44,6 +49,9 @@ def build_cache_key(
     # (the FE only toggles it for summary) can't mint redundant per-persona translate entries
     # for identical output — wasted LLM spend (NFR-C1). Mirrors the scope special-case above.
     persona = request.persona if is_summary else Persona.EXPERT
+    # Translate keys carry the base-format version so a format change invalidates only translate
+    # artifacts (summaries keep the bare PROMPT_VER, untouched).
+    prompt_ver = PROMPT_VER if is_summary else f"{PROMPT_VER}-{TRANSLATE_FORMAT_VER}"
     # Personalized artifacts (the user has terms ⇒ glossary_ver > 0) are owner-scoped so a
     # per-user version integer shared across users does not collapse to one key. The baseline
     # (ver 0) stays owner-agnostic so identical un-personalized results de-dup across users.
@@ -58,7 +66,7 @@ def build_cache_key(
         glossary_ver=glossary_ver,
         owner_id=owner_id,
         model_ver=model_ver,
-        prompt_ver=PROMPT_VER,
+        prompt_ver=prompt_ver,
         seed_ver=seed_ver,
         docmodel_ver=_docmodel_generation(docmodel_parser),
     )

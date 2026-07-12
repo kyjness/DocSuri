@@ -15,6 +15,9 @@ import {
 // this transport is identical in both modes.
 
 export class RouteHandlerTransport implements Transport {
+  // US-EV2 — 동기 evidence 턴 SSE는 이 same-origin BFF 홉에서만 시도한다.
+  readonly streamsAgentTurns = true;
+
   constructor(private readonly basePath: string = '/bff') {}
 
   async send(req: TransportRequest): Promise<TransportResponse> {

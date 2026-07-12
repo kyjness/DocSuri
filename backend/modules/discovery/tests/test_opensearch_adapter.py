@@ -72,6 +72,38 @@ def test_bm25_search_builds_multi_match_query_over_split_lexical_fields() -> Non
     assert multi_match["fields"] == ["title", "abstract", "lexicalTerms"]
 
 
+def test_phrase_search_matches_both_abstract_and_lexical_fields() -> None:
+    # Regression: lexicalTerms is empty for abstract chunks (index_record contract), so a
+    # phrase-only-in-the-abstract must still match via the `abstract` field — match_phrase over
+    # lexicalTerms alone would silently miss it.
+    rec = fixtures.RECORDS[0]
+    fake = FakeSearchClient(hits=[_hit(rec, 2.5)])
+    adapter = OpenSearchLexicalIndexAdapter(fake, "docsuri-corpus-v1")
+
+    out = adapter.phrase_search("self-attention reduces computation", top_k=200)
+
+    assert out[0][0].paperId == rec.paperId
+    _, body = fake.last
+    should = body["query"]["bool"]["should"]
+    assert {"match_phrase": {"abstract": "self-attention reduces computation"}} in should
+    assert {"match_phrase": {"lexicalTerms": "self-attention reduces computation"}} in should
+    assert body["query"]["bool"]["minimum_should_match"] == 1
+    assert "filter" not in body["query"]["bool"]
+
+
+def test_phrase_search_restricts_to_paper_ids_via_bare_paperid_filter() -> None:
+    rec = fixtures.RECORDS[0]
+    fake = FakeSearchClient(hits=[_hit(rec, 2.5)])
+    adapter = OpenSearchLexicalIndexAdapter(fake, "docsuri-corpus-v1")
+
+    adapter.phrase_search("x y z", top_k=200, paper_ids=["2001.00001", "2001.00002"])
+
+    _, body = fake.last
+    assert body["query"]["bool"]["filter"] == [
+        {"terms": {"paperId": ["2001.00001", "2001.00002"]}}
+    ]
+
+
 def test_knn_failure_raises_index_unavailable() -> None:
     # OpenSearch is one store; any failure → fail-closed (INV-3), never a silent empty result.
     adapter = OpenSearchVectorStoreAdapter(

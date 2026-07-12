@@ -72,6 +72,7 @@ import type {
   AgentSessionSummary,
   AgentTimelineEvent,
 } from '@/lib/agentChat/types';
+import { streamAgentTurn, timelineDetail } from '@/lib/agentChat/sse';
 
 export interface ApiClientOptions {
   timeoutMs?: number;
@@ -91,6 +92,11 @@ const AGENT_ID_SEP = ':';
 // 8초 기본 타임아웃(withTimeout)을 항상 초과한다 — 백엔드는 계속 처리해 응답이 저장되지만
 // 클라이언트만 network 에러로 끊겨 사용자에게 실패로 보이는 문제(PR #338 후속 발견).
 const EVIDENCE_TURN_TIMEOUT_MS = 90_000;
+// 검색 콜드 패스(첫 질의: embed + k-NN 그래프 첫 로드 + rerank)는 정상 완료가 9~12초 —
+// 기본 10초에서 브라우저가 완료 직전에 끊어 BFF의 30초 검색 홉(SEARCH_GATEWAY_TIMEOUT_MS)을
+// 무의미하게 만든다. 두 레이어를 함께 올린다(QA 2026-07-10 F1). 워밍된 검색은 <1초라 P50
+// 체감은 그대로.
+const SEARCH_TIMEOUT_MS = 30_000;
 
 type BackendResearchJob = {
   jobId: string;
@@ -253,46 +259,12 @@ function mapNoveltyResultMessage(
   };
 }
 
-// N-001(#257) — SSE 경로(AgentChatScreen)도 동일 payload→detail 매핑을 쓰도록 export.
-export function timelineDetail(payload?: Record<string, unknown>): string | undefined {
-  if (!payload) return undefined;
-  const count = countFromPayload(payload);
-  const parts = [
-    labeled('소스', payload.source ?? payload.sourceType ?? payload.type),
-    labeled('쿼리', payload.query),
-    labeled('요약', payload.outputSummary),
-    // 0건도 '발견한 출처 수'다(US-NV7 #257) — falsy 체크로 삼키지 않는다.
-    count !== undefined ? `결과 ${count}건` : undefined,
-    safeReason(payload),
-  ];
-  return parts.filter(Boolean).join(' · ') || undefined;
-}
-
-function labeled(label: string, value: unknown): string | undefined {
-  const text = stringValue(value);
-  return text ? `${label}: ${text}` : undefined;
-}
-
-function safeReason(payload: Record<string, unknown>): string | undefined {
-  if (hasValue(payload.error)) return '사유: 처리 중 오류가 발생했습니다.';
-  if (hasValue(payload.degradedReasons) || hasValue(payload.reason)) {
-    return '사유: 일부 연동이 저하되어 가능한 결과만 표시합니다.';
-  }
-  return undefined;
-}
-
 function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
 function numberValue(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
-}
-
-function hasValue(value: unknown): boolean {
-  if (Array.isArray(value)) return value.length > 0;
-  if (typeof value === 'string') return value.trim().length > 0;
-  return value !== null && value !== undefined;
 }
 
 function attachmentStatus(value: unknown): AgentAttachmentStatus {
@@ -307,12 +279,6 @@ function attachmentKind(value: unknown, contentType?: string, name?: string): Ag
   if (lowerType.includes('markdown') || lowerName.endsWith('.md')) return 'markdown';
   if (lowerType.includes('text') || lowerName.endsWith('.txt')) return 'text';
   return 'unknown';
-}
-
-function countFromPayload(payload: Record<string, unknown>): number | undefined {
-  const explicit = payload.count ?? payload.foundCount ?? payload.resultCount;
-  if (typeof explicit === 'number') return explicit;
-  return Array.isArray(payload.items) ? payload.items.length : undefined;
 }
 
 function toResearchBody(req: AgentSendMessageRequest) {
@@ -446,6 +412,7 @@ export class ApiClient {
       path: '/api/search',
       body,
       idempotent: false,
+      timeoutMs: SEARCH_TIMEOUT_MS,
     });
     if (res.status === 200 || res.status === 400) {
       return classifySearchResponse(res.body);
@@ -778,6 +745,7 @@ export class ApiClient {
   async sendAgentMessage(
     sessionId: string,
     req: AgentSendMessageRequest,
+    onTimelineEvents?: (events: AgentTimelineEvent[]) => void,
   ): Promise<AgentSendMessageResult> {
     const target = parseAgentSessionId(sessionId, req.mode);
     const created = sessionId.startsWith(`agent-${req.mode}-`);
@@ -791,13 +759,23 @@ export class ApiClient {
         : created
           ? '/api/novelty/jobs'
           : `/api/novelty/jobs/${encodeURIComponent(target.rawId)}/messages`;
-    const res = await this.request({
-      method: 'POST',
-      path,
-      body: target.mode === 'evidence' ? toResearchBody(sendReq) : toNoveltyBody(sendReq, created),
-      idempotent: false,
-      timeoutMs: target.mode === 'evidence' ? EVIDENCE_TURN_TIMEOUT_MS : undefined,
-    });
+    const body =
+      target.mode === 'evidence' ? toResearchBody(sendReq) : toNoveltyBody(sendReq, created);
+    // US-EV2/NFR-P6 — 동기 evidence 턴은 SSE 스트리밍 우선(진행 단계 점진 렌더링).
+    // 실패하면 기존 JSON 경로로 폴백한다(fail-soft — 턴을 깨지 않는다).
+    const streamed =
+      target.mode === 'evidence' && this.agentTurnStreamingEnabled()
+        ? await this.trySendEvidenceTurnStream(path, body, onTimelineEvents)
+        : null;
+    const res =
+      streamed ??
+      (await this.request({
+        method: 'POST',
+        path,
+        body,
+        idempotent: false,
+        timeoutMs: target.mode === 'evidence' ? EVIDENCE_TURN_TIMEOUT_MS : undefined,
+      }));
     if (res.status !== 200 && res.status !== 201) {
       throw normalizeHttpError(res.status, serverMessage(res.body));
     }
@@ -833,6 +811,36 @@ export class ApiClient {
       events: snapshot.events,
       outcome: snapshot.session.state === 'failed' ? 'failed' : snapshot.session.state,
     };
+  }
+
+  /** SSE 스트리밍은 실 BFF 홉에서만 시도한다 — mock/테스트 transport는 JSON 경로 그대로. */
+  private agentTurnStreamingEnabled(): boolean {
+    return Boolean((this.transport as { streamsAgentTurns?: boolean }).streamsAgentTurns);
+  }
+
+  /**
+   * 동기 evidence 턴 SSE 시도(US-EV2). 반환 규약:
+   * - terminal → JSON 경로와 동일한 응답 본문(검증 후 최종 결과만).
+   * - json → 서버가 JSON으로 응답(비동기 pending 등) — 재전송 없이 그대로 사용.
+   * - failed + jobId → 백엔드는 턴을 계속 완결하므로(PR #338) 재전송 대신 스냅샷 복구.
+   * - null → JSON 경로 폴백(스트림이 시작조차 못 한 경우만 — 이중 실행 없음).
+   */
+  private async trySendEvidenceTurnStream(
+    path: string,
+    body: unknown,
+    onTimelineEvents?: (events: AgentTimelineEvent[]) => void,
+  ): Promise<{ status: number; body: unknown } | null> {
+    try {
+      const outcome = await streamAgentTurn({ path, body, onEvents: onTimelineEvents });
+      if (outcome.kind === 'terminal') return { status: 200, body: outcome.payload };
+      if (outcome.kind === 'json') return { status: outcome.status, body: outcome.body };
+      if (outcome.jobId) {
+        return { status: 200, body: { jobId: outcome.jobId, state: 'completed' } };
+      }
+      return null;
+    } catch {
+      return null;
+    }
   }
 
   async deleteAgentSession(id: string): Promise<void> {

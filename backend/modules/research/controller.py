@@ -6,9 +6,16 @@ from uuid import uuid4
 
 from docsuri_shared.authz import Principal
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.middleware.agent_quota import enforce_evidence_turn_quota
+# U11 SSE 스트리밍 코어 재사용(US-EV2/NFR-P6) — research는 FE agent chat의 evidence 표면.
+from backend.modules.evidence.streaming import (
+    progress_event,
+    turn_sse_stream,
+    wants_event_stream,
+)
 from backend.modules.user_docmodel import (
     USER_DOCMODEL_PDF_CONTENT_TYPE,
     build_default_user_docmodel_coordinator,
@@ -94,11 +101,15 @@ class AttachmentUploadOut(BaseModel):
 )
 async def create_job(
     dto: ResearchJobCreateRequest,
+    request: Request,
     principal: Principal = PRINCIPAL_DEP,
     repo: ResearchRepository = REPO_DEP,
     orchestrator: Any = EVIDENCE_ORCHESTRATOR_DEP,
     user_docmodel: Any = USER_DOCMODEL_DEP,
-) -> ResearchJobCreateResponse:
+) -> Any:
+    # US-EV2/NFR-P6 — Accept: text/event-stream 협상 시 동기 SSE 스트리밍으로 완료.
+    if wants_event_stream(request.headers.get("accept")):
+        return _stream_create_job(request, dto, principal, repo, orchestrator, user_docmodel)
     try:
         return await ResearchService(repo).create_job(
             principal.user_id,
@@ -220,11 +231,21 @@ async def get_messages(
 async def add_message(
     job_id: str,
     dto: ResearchMessageCreateRequest,
+    request: Request,
     principal: Principal = PRINCIPAL_DEP,
     repo: ResearchRepository = REPO_DEP,
     orchestrator: Any = EVIDENCE_ORCHESTRATOR_DEP,
     user_docmodel: Any = USER_DOCMODEL_DEP,
-) -> ResearchChatMessage:
+) -> Any:
+    # US-EV2/NFR-P6 — Accept: text/event-stream 협상 시 동기 SSE 스트리밍으로 완료.
+    if wants_event_stream(request.headers.get("accept")):
+        try:
+            repo.get_job(principal.user_id, job_id)  # 스트림 전 소유권/존재 검증(404 유지)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="job not found") from exc
+        return _stream_add_message(
+            request, job_id, dto, principal, repo, orchestrator, user_docmodel
+        )
     try:
         return await ResearchService(repo).add_message(
             principal.user_id,
@@ -237,6 +258,73 @@ async def add_message(
         raise HTTPException(status_code=404, detail="job not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="첨부 PDF 정보가 올바르지 않습니다.") from exc
+
+
+# ---------------------------------------------------------------------------
+# US-EV2/NFR-P6 — 동기 SSE 스트리밍 (U11 evidence 스트리밍 코어 재사용)
+# 진행 이벤트는 단계명·건수만(C-2/INV-EV-3) — 최종 claims는 검증 후 터미널 result에만.
+# 터미널 payload는 JSON 경로와 동일한 응답 본문(계약 불변).
+# ---------------------------------------------------------------------------
+
+def _stream_create_job(
+    request: Request,
+    dto: ResearchJobCreateRequest,
+    principal: Principal,
+    repo: ResearchRepository,
+    orchestrator: Any,
+    user_docmodel: Any,
+) -> StreamingResponse:
+    from .models import ResearchJob, ResearchJobState, title_from_content
+
+    service = ResearchService(repo)
+    job = repo.create_job(
+        ResearchJob(ownerId=principal.user_id, title=title_from_content(dto.content))
+    )
+
+    async def _run(emit):
+        await service.add_message(
+            principal.user_id, job.jobId, dto, orchestrator, user_docmodel, on_progress=emit
+        )
+        return ResearchJobCreateResponse(jobId=job.jobId, state=ResearchJobState.COMPLETED)
+
+    return _turn_stream_response(request, _run, initial_payload={"jobId": job.jobId})
+
+
+def _stream_add_message(
+    request: Request,
+    job_id: str,
+    dto: ResearchMessageCreateRequest,
+    principal: Principal,
+    repo: ResearchRepository,
+    orchestrator: Any,
+    user_docmodel: Any,
+) -> StreamingResponse:
+    service = ResearchService(repo)
+
+    async def _run(emit):
+        return await service.add_message(
+            principal.user_id, job_id, dto, orchestrator, user_docmodel, on_progress=emit
+        )
+
+    return _turn_stream_response(request, _run, initial_payload={"jobId": job_id})
+
+
+def _turn_stream_response(
+    request: Request, run: Any, *, initial_payload: dict
+) -> StreamingResponse:
+    return StreamingResponse(
+        turn_sse_stream(
+            run,
+            lambda result: result.model_dump(mode="json"),
+            # 즉시 first-token(NFR-P6 TTFB) + jobId 동봉 — 스트림이 중간에 끊겨도
+            # FE가 스냅샷 폴링으로 복구할 수 있는 앵커.
+            initial_events=[progress_event("started", initial_payload)],
+            observability=getattr(request.app.state, "observability", None),
+            surface="research",
+        ),
+        media_type="text/event-stream",
+        headers={"cache-control": "no-store"},
+    )
 
 
 routers = (router,)

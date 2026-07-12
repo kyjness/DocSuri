@@ -49,6 +49,16 @@ class IngestionSettings(BaseModel):
     # resumability (skip docs already in the target) so a killed multi-day task can be relaunched
     # without re-embedding. 0 = off → unpaced (needs quota headroom); live path byte-identical.
     reembed_target_tpm: int = Field(default=0, alias="DOCSURI_REEMBED_TARGET_TPM")
+    # Decouple the Bedrock embed region from DOCSURI_AWS_REGION (which signs the VPC OpenSearch
+    # client). Lets a re-embed shard scroll/write the in-VPC domain (ap-northeast-2) while invoking
+    # the embed model in ANOTHER region — the basis of a multi-region fan-out across per-region
+    # on-demand buckets (e.g. Cohere Embed Multilingual v3, which has NO daily cap, only 300k TPM
+    # per region). None → embed in DOCSURI_AWS_REGION (unchanged single-region behaviour).
+    reembed_embed_region: str | None = Field(default=None, alias="DOCSURI_REEMBED_EMBED_REGION")
+    # Live harvester embed region, decoupled from DOCSURI_AWS_REGION (which signs VPC OpenSearch).
+    # Cohere Embed Multilingual v3 is NOT in ap-northeast-2, so the worker must embed new papers
+    # cross-region once on v3. None → embed in DOCSURI_AWS_REGION (unchanged single-region path).
+    embed_region: str | None = Field(default=None, alias="DOCSURI_EMBED_REGION")
     # B3 fast full-re-parse (raw cache + bulk PDF prime + offline re-parse; see reparse.py /
     # raw_backfill.py / runbook). Default OFF → the live fetch path stays byte-identical.
     raw_cache_mode: Literal["off", "prefer", "only"] = Field(

@@ -12,6 +12,7 @@ from docsuri_shared.vector_spec import EMBEDDING_SPEC, IndexRecord
 from .config import OPEN_ACCESS_LICENSE_ALLOWLIST, WITHDRAWAL_MARKERS
 from .domain.enums import DedupDecision, SourceName
 from .domain.errors import LicenseRejectedError, ValidationViolationError
+from .domain.ids import year_from_paper_id
 from .domain.models import (
     Chunk,
     ChunkBlockRef,
@@ -44,6 +45,11 @@ class FetchParseProcessor:
         withdrawal_detected = detect_withdrawal(metadata, text)
         published = metadata.published_at or metadata.updated_at
         identifier = metadata.identifier
+        # year drives the search year-filter facet — take it from the arXiv id's YYMM prefix
+        # (authoritative submission year) and fall back to the metadata date only for old-style /
+        # external ids the scheme can't decode (#436). The date fallback used ``updated_at``, which
+        # a bulk OAI metadata re-touch can bump to a later year, mis-bucketing ~12% of papers.
+        year = year_from_paper_id(identifier.paper_id) or published.year
         return ParsedPaper(
             paper_id=identifier.paper_id,
             version=identifier.version,
@@ -52,7 +58,7 @@ class FetchParseProcessor:
             abstract=normalize_text(metadata.abstract),
             categories=metadata.categories,
             updated_at=metadata.updated_at,
-            year=published.year,
+            year=year,
             arxiv_url=identifier.abs_url,
             full_text=text,
             license_url=metadata.license_url or "",

@@ -289,3 +289,34 @@ class OpenSearchLexicalIndexAdapter:
             self._client, self._index, body, message="OpenSearch BM25 query failed"
         )
         return _to_scored(hits)
+
+    def phrase_search(
+        self,
+        phrase: str,
+        top_k: int,
+        paper_ids: Sequence[str] | None = None,
+    ) -> list[ScoredRecord]:
+        """정확 문구 매칭 — 초록(``abstract``)과 청크 원문(``lexicalTerms``)에서 연속된
+        어구가 그대로 있는 청크만 반환한다(``multi_match``의 OR 매칭과 달리 순서·인접성을
+        요구). 두 필드를 모두 훑는 이유: ``lexicalTerms``는 초록 청크에서 비어 있고
+        (index_record 계약: "Empty for abstract chunks") 초록 원문은 ``abstract`` 필드에만
+        있으므로, 한쪽만 매칭하면 초록에 있는 문장을 통째로 놓친다(``bm25_search``가 title/
+        abstract/lexicalTerms를 함께 거는 것과 같은 이유). ``paper_ids``가 주어지면 그 논문
+        들로만 제한한다 — 색인 ``paperId``는 버전 없는(bare) id이므로 호출측에서 버전 접미사를
+        미리 제거해 넘겨야 한다(꼬리질문 좁히기, BR-EV-2 mixed/explicit 재사용과 동일한 목적)."""
+        query: dict = {
+            "bool": {
+                "should": [
+                    {"match_phrase": {"abstract": phrase}},
+                    {"match_phrase": {"lexicalTerms": phrase}},
+                ],
+                "minimum_should_match": 1,
+            }
+        }
+        if paper_ids:
+            query["bool"]["filter"] = [{"terms": {"paperId": list(paper_ids)}}]
+        body = {"size": top_k, "query": query}
+        hits = _search_hits(
+            self._client, self._index, body, message="OpenSearch phrase query failed"
+        )
+        return _to_scored(hits)

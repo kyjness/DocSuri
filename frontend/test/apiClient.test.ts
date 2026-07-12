@@ -108,6 +108,18 @@ describe('ApiClient outcome mapping', () => {
     await expect(new ApiClient(t, fast).search('q')).rejects.toMatchObject({ kind: 'auth' });
   });
 
+  it('sends search with the 30s cold-path timeout override (QA 2026-07-10 F1)', async () => {
+    // 콜드 검색(첫 질의)은 정상 완료가 9~12초 — 기본 10초 타임아웃이 완료 직전에 끊어
+    // 504로 보이던 회귀 가드. BFF의 SEARCH_GATEWAY_TIMEOUT_MS(30s)와 함께 움직인다.
+    let seen: TransportRequest | undefined;
+    const t = transportOf(async (req) => {
+      seen = req;
+      return { status: 200, body: pageResponse };
+    });
+    await new ApiClient(t, fast).search('transformer');
+    expect(seen?.timeoutMs).toBe(30_000);
+  });
+
   it('returns null session on 401', async () => {
     const t = transportOf(async () => ({ status: 401, body: null }));
     expect(await new ApiClient(t, fast).currentSession()).toBeNull();

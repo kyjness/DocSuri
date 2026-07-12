@@ -23,6 +23,7 @@ from backend.modules.novelty.adapters import (
     NotionApiExportClient,
     NoveltyAdapters,
     NoveltyLlmDraft,
+    NoveltySearchPlan,
     RetrievalBundle,
     S3ManuscriptSimilarityClient,
     U2FullSearchCorpusRetrievalClient,
@@ -281,6 +282,7 @@ def test_similarity_adapter_reads_text_manuscript_and_queries_corpus() -> None:
 
     assert result.evidenceStatus is EvidenceStatus.SUPPORTED
     assert any(item["riskType"] == "sentence_similarity" for item in result.items)
+    assert "가 'Privacy Preserving RAG'와 유사합니다" in result.items[-1]["summary"]
     parsed_url = urlparse(result.items[-1]["sourceRefs"][0]["url"])
     assert parsed_url.scheme == "https"
     assert parsed_url.hostname == "arxiv.org"
@@ -394,6 +396,124 @@ def test_similarity_adapter_rejects_cross_job_object_key() -> None:
     )
 
     assert result.degradedReason == "manuscript objectKey is outside job prefix"
+
+
+def test_nv5_similarity_signal_is_review_signal_not_plagiarism_verdict() -> None:
+    """US-NV5(#255) AC1 — 문장 유사도 경고는 법적 표절 판정이 아닌 검토 신호다.
+
+    검토 신호 프레이밍(제목 '문장 유사성:' + '…유사합니다' 요약 + 근거 sourceRefs)을
+    고정하고, 판정형 필드·표절 판정 문구가 응답에 노출되지 않음을 기준 수준에서 검증한다.
+    """
+
+    class FakeS3:
+        def get_object(self, **kwargs):
+            return {
+                "Body": BytesIO(
+                    b"This manuscript presents a privacy preserving retrieval augmented "
+                    b"generation evaluation protocol across domain specific scientific "
+                    b"workflows with repeated evidence checking. "
+                )
+            }
+
+    class FakeCorpus:
+        def full_search(self, owner_id: str, query: str) -> RetrievalBundle:
+            return RetrievalBundle(
+                items=[
+                    {
+                        "title": "Privacy Preserving RAG",
+                        "sourceRefs": [
+                            {
+                                "type": "url",
+                                "identifier": "2401.00001",
+                                "url": "https://arxiv.org/abs/2401.00001",
+                            }
+                        ],
+                    }
+                ],
+                evidenceStatus=EvidenceStatus.SUPPORTED,
+            )
+
+    result = S3ManuscriptSimilarityClient(
+        bucket="papers",
+        prefix="novelty/",
+        client=FakeS3(),
+        corpus=FakeCorpus(),
+    ).check(
+        "u1",
+        {"objectKey": "novelty/u1/job/draft.txt", "contentType": "text/plain", "jobId": "job"},
+    )
+
+    similarity_items = [
+        item for item in result.items if item["riskType"] == "sentence_similarity"
+    ]
+    assert similarity_items
+    verdict_keys = {"verdict", "plagiarism", "isPlagiarism", "plagiarismScore", "legalVerdict"}
+    for item in similarity_items:
+        # 검토 신호 프레이밍: 유사성 서술 + 검토용 근거 출처.
+        assert item["title"].startswith("문장 유사성: ")
+        assert "유사합니다" in item["summary"]
+        assert item["sourceRefs"]
+        # 판정 프레이밍 금지: 판정형 필드도, 표절 판정 문구도 없다.
+        assert not verdict_keys & set(item)
+        text_blob = " ".join(str(value) for value in item.values())
+        assert "표절" not in text_blob
+        assert "plagiar" not in text_blob.lower()
+
+
+def test_nv5_ai_style_signal_has_no_verdict_or_authorship_probability() -> None:
+    """US-NV5(#255) AC2 — AI 어투 신호는 확정 판정·AI 작성 확률 없이 문체 위험 신호로만
+    표시한다. ABSTAINED(기권) 프레이밍과 확률/판정류 필드 부재를 기준 수준에서 고정한다.
+    (false positive 고지문은 FE RiskSignalList가 무조건 렌더 — agentChatScreen.test.tsx.)
+    """
+
+    class FakeS3:
+        def get_object(self, **kwargs):
+            sentence = (
+                "We delve into a robust framework that aims to underscore the pivotal "
+                "role of comprehensive analysis across the evolving landscape of "
+                "retrieval systems. "
+            )
+            return {"Body": BytesIO((sentence * 4).encode("utf-8"))}
+
+    class EmptyCorpus:
+        def full_search(self, owner_id: str, query: str) -> RetrievalBundle:
+            return RetrievalBundle(items=[], evidenceStatus=EvidenceStatus.ABSTAINED)
+
+    result = S3ManuscriptSimilarityClient(
+        bucket="papers",
+        prefix="novelty/",
+        client=FakeS3(),
+        corpus=EmptyCorpus(),
+    ).check(
+        "u1",
+        {"objectKey": "novelty/u1/job/draft.txt", "contentType": "text/plain", "jobId": "job"},
+    )
+
+    ai_style_items = [item for item in result.items if item["riskType"] == "ai_style"]
+    assert len(ai_style_items) == 1
+    item = ai_style_items[0]
+    # 문체 위험 신호: 감지 marker 목록을 싣고, 출처 없는 휴리스틱임을 드러낸다.
+    assert item["title"] == "AI-style phrasing risk"
+    assert item["markers"] and "delve" in item["markers"]
+    assert item["sourceRefs"] == []
+    # 확정 판정 금지: SUPPORTED 판정으로 승격하지 않고 기권으로 남는다.
+    assert item["evidenceStatus"] == EvidenceStatus.ABSTAINED.value
+    # AI 작성 확률·판정 필드 부재 — 확률/점수/판정류 키를 노출하지 않는다.
+    probability_keys = {
+        "probability",
+        "aiProbability",
+        "aiAuthorshipProbability",
+        "authorshipProbability",
+        "confidence",
+        "score",
+        "verdict",
+        "isAiGenerated",
+        "aiGenerated",
+    }
+    assert not probability_keys & set(item)
+    # corpus 매칭이 없으면 유사성 항목을 날조하지 않고, 번들 전체도 기권으로 남는다.
+    assert result.items == ai_style_items
+    assert result.evidenceStatus is EvidenceStatus.ABSTAINED
 
 
 def test_external_adapter_queries_public_api_sources() -> None:
@@ -555,7 +675,42 @@ def test_bedrock_llm_adapter_maps_source_ref_indexes_only() -> None:
     assert "Novelty score" not in draft.experimentPlan["metrics"]
 
 
-def test_build_llm_adapter_uses_long_stream_read_timeout(monkeypatch) -> None:
+def test_bedrock_llm_adapter_builds_query_expansion_plan() -> None:
+    class FakeBedrock:
+        def invoke_model_with_response_stream(self, **kwargs):
+            body = json.loads(kwargs["body"].decode("utf-8"))
+            assert body["tool_choice"] == {"type": "tool", "name": "emit_novelty_search_plan"}
+            assert body["max_tokens"] == 4096
+            assert body["tools"][0]["input_schema"]["properties"]["subqueries"]["maxItems"] == 6
+            payload = {
+                "englishQuery": "BERT-based Korean NLP research ideas",
+                "keywords": ["BERT", "Korean NLP", "KLUE"],
+                "subqueries": ["KoBERT KLUE benchmark novelty", "Korean BERT dataset bias"],
+                "intent": {
+                    "goal": "recommend novel paper ideas",
+                    "domain": "Korean NLP",
+                    "method": "BERT",
+                    "constraints": ["public benchmark datasets"],
+                },
+                "rankingSignals": ["KLUE", "KoBERT", "benchmark dataset"],
+            }
+            return {"body": [_tool_stream_chunk(json.dumps(payload))]}
+
+    plan = BedrockNoveltyLlmClient(model_id="m", client=FakeBedrock()).plan_search(
+        "BERT 알고리즘 아이디어 추천"
+    )
+
+    assert plan.englishQuery == "BERT-based Korean NLP research ideas"
+    assert plan.keywords == ["BERT", "Korean NLP", "KLUE"]
+    assert plan.subqueries[:2] == [
+        "BERT-based Korean NLP research ideas",
+        "KoBERT KLUE benchmark novelty",
+    ]
+    assert plan.intent["domain"] == "Korean NLP"
+    assert "benchmark dataset" in plan.rankingSignals
+
+
+def test_build_llm_adapter_uses_configurable_stream_limits(monkeypatch) -> None:
     import boto3
 
     captured = {}
@@ -569,12 +724,18 @@ def test_build_llm_adapter_uses_long_stream_read_timeout(monkeypatch) -> None:
     monkeypatch.setattr(boto3, "client", fake_client)
     monkeypatch.delenv("AWS_REGION", raising=False)
     monkeypatch.setenv("AWS_DEFAULT_REGION", "ap-northeast-2")
+    monkeypatch.setenv("DOCSURI_NOVELTY_BEDROCK_READ_TIMEOUT_SECONDS", "720")
+    monkeypatch.setenv("DOCSURI_NOVELTY_LLM_MAX_TOKENS", "9000")
+    monkeypatch.setenv("DOCSURI_NOVELTY_QUERY_PLAN_MAX_TOKENS", "3000")
 
-    build_llm_adapter()
+    adapter = build_llm_adapter()
 
     assert captured["service_name"] == "bedrock-runtime"
     assert captured["region_name"] == "ap-northeast-2"
-    assert captured["config"].read_timeout == 300.0
+    assert captured["config"].read_timeout == 720.0
+    assert isinstance(adapter, BedrockNoveltyLlmClient)
+    assert adapter._max_tokens == 9000
+    assert adapter._search_plan_max_tokens == 3000
 
 
 def test_bedrock_llm_adapter_maps_similar_work_detail_columns() -> None:
@@ -829,15 +990,21 @@ def test_worker_emits_step_detail_payloads() -> None:
         payloads.setdefault(event.state, []).append(event.payload)
 
     # US-NV7(#257) — 검색 단계는 시작(도구+쿼리)·완료(count) 이벤트, LLM 단계는 결과 수 동봉
-    # US-NV1(#251) — 자연어 잡은 근거형성(시작+결과) 이벤트가 U2 검색보다 먼저 온다
+    # US-NV1(#251) — query plan 진행 표시 뒤 자연어 근거형성이 U2 검색보다 먼저 온다
     corpus_events = payloads[JobState.RETRIEVING_CORPUS]
     assert corpus_events[0] == {
+        "source": "Bedrock LLM",
+        "query": "privacy preserving RAG",
+    }
+    assert corpus_events[1]["source"] == "Bedrock LLM"
+    assert corpus_events[1]["queries"] == ["privacy preserving RAG"]
+    assert corpus_events[2] == {
         "source": "U11 evidence formation",
         "query": "privacy preserving RAG",
     }
-    assert corpus_events[1]["source"] == "U11 evidence formation"
-    assert "reason" not in corpus_events[1]  # Noop evidence는 optional enrichment라 조용히 비운다
-    assert corpus_events[2] == {"source": "U2 full search", "query": "privacy preserving RAG"}
+    assert corpus_events[3]["source"] == "U11 evidence formation"
+    assert "reason" not in corpus_events[3]  # Noop evidence는 optional enrichment라 조용히 비운다
+    assert corpus_events[4] == {"source": "U2 full search", "query": "privacy preserving RAG"}
     assert corpus_events[-1]["count"] == 2
     external_events = payloads[JobState.SEARCHING_EXTERNAL]
     assert external_events[0]["query"] == "privacy preserving RAG"
@@ -845,6 +1012,211 @@ def test_worker_emits_step_detail_payloads() -> None:
     assert "reason" in external_events[-1]  # Noop external은 저하 사유를 실어 보낸다
     assert payloads[JobState.SUMMARIZING_PRIOR_WORK][0]["count"] == 0
     assert payloads[JobState.PLANNING_EXPERIMENT][0]["outputSummary"] == "privacy preserving RAG"
+
+
+def test_worker_query_planner_failure_degrades_not_fails() -> None:
+    source_ref = {
+        "type": "url",
+        "identifier": "2401.00003",
+        "title": "Grounded retrieval",
+        "url": "https://arxiv.org/abs/2401.00003",
+    }
+    calls: list[str] = []
+
+    class BrokenPlannerLlm:
+        def plan_search(self, topic: str) -> NoveltySearchPlan:
+            del topic
+            raise TimeoutError("planner slow")
+
+        def draft(self, *, topic, corpus, external) -> NoveltyLlmDraft:
+            del external
+            ref = corpus.items[0]["sourceRefs"][0]
+            return NoveltyLlmDraft(
+                similarWorks={
+                    "items": [{"title": "Similar", "sourceRefs": [ref]}],
+                    "evidenceStatus": EvidenceStatus.SUPPORTED.value,
+                    "sourceRefs": [ref],
+                },
+                noveltyCandidates={
+                    "items": [{"title": "Novel", "sourceRefs": [ref]}],
+                    "evidenceStatus": EvidenceStatus.SUPPORTED.value,
+                    "sourceRefs": [ref],
+                },
+                experimentPlan={
+                    "researchQuestion": topic,
+                    "noveltyAngle": "Use fallback query results.",
+                    "hypotheses": ["Fallback search keeps the job useful."],
+                    "baselines": ["Original topic search"],
+                    "procedure": ["Run retrieval with the original topic."],
+                    "datasets": ["Retrieved corpus"],
+                    "metrics": ["evidence coverage"],
+                    "resources": ["Corpus evidence"],
+                    "risks": ["query rewrite timeout"],
+                    "sourceRefs": [ref],
+                    "evidenceStatus": EvidenceStatus.SUPPORTED.value,
+                },
+            )
+
+    class OneItemCorpus:
+        def full_search(self, owner_id: str, query: str) -> RetrievalBundle:
+            del owner_id
+            calls.append(query)
+            return RetrievalBundle(
+                items=[{"title": "Grounded retrieval", "sourceRefs": [source_ref]}],
+                evidenceStatus=EvidenceStatus.SUPPORTED,
+            )
+
+    class CleanExternal:
+        def search(self, query: str) -> RetrievalBundle:
+            del query
+            return RetrievalBundle(items=[])
+
+    repo = InMemoryNoveltyRepository()
+    _, owner_id, job_id = _service_job(repo)
+
+    process_job(
+        repo,
+        owner_id,
+        job_id,
+        adapters=NoveltyAdapters(
+            corpus=OneItemCorpus(),
+            external=CleanExternal(),
+            llm=BrokenPlannerLlm(),
+        ),
+    )
+
+    result = NoveltyService(repo).result(owner_id, job_id)
+    assert result.job.state is JobState.DEGRADED
+    assert calls == ["privacy preserving RAG"]
+    assert "LLM query planning unavailable: TimeoutError" in repo.list_events(
+        owner_id, job_id
+    )[-1].model_dump_json()
+
+
+def test_worker_uses_expanded_queries_and_reranks_evidence_items() -> None:
+    source_ref = {
+        "type": "url",
+        "identifier": "2401.00003",
+        "title": "Korean BERT Benchmark",
+        "url": "https://arxiv.org/abs/2401.00003",
+    }
+    calls: list[str] = []
+
+    class PlanningLlm:
+        def plan_search(self, topic: str) -> NoveltySearchPlan:
+            return NoveltySearchPlan(
+                englishQuery="BERT Korean NLP benchmark ideas",
+                keywords=["BERT", "Korean NLP", "benchmark"],
+                subqueries=["KoBERT KLUE public dataset", "BERT Korean intent ranking"],
+                intent={"domain": "Korean NLP", "method": "BERT"},
+                rankingSignals=["KLUE", "public dataset"],
+            )
+
+        def draft(self, *, topic, corpus, external) -> NoveltyLlmDraft:
+            ref = corpus.items[0]["sourceRefs"][0]
+            return NoveltyLlmDraft(
+                similarWorks={
+                    "items": [
+                        {
+                            "title": corpus.items[0]["title"],
+                            "evidenceStatus": EvidenceStatus.SUPPORTED.value,
+                            "sourceRefs": [ref],
+                        }
+                    ],
+                    "evidenceStatus": EvidenceStatus.SUPPORTED.value,
+                    "sourceRefs": [ref],
+                },
+                noveltyCandidates={
+                    "items": [
+                        {
+                            "title": "KLUE 기반 오류 유형 차별화",
+                            "evidenceStatus": EvidenceStatus.SUPPORTED.value,
+                            "sourceRefs": [ref],
+                        }
+                    ],
+                    "evidenceStatus": EvidenceStatus.SUPPORTED.value,
+                    "sourceRefs": [ref],
+                },
+                experimentPlan={
+                    "researchQuestion": topic,
+                    "noveltyAngle": "Korean benchmark intent differences.",
+                    "hypotheses": ["Intent-aware reranking improves novelty."],
+                    "baselines": ["Korean BERT Benchmark"],
+                    "procedure": ["Compare against BERT baseline."],
+                    "datasets": ["KLUE"],
+                    "metrics": ["baseline delta"],
+                    "resources": ["public benchmark"],
+                    "risks": ["dataset mismatch"],
+                    "evidenceStatus": EvidenceStatus.SUPPORTED.value,
+                    "sourceRefs": [ref],
+                },
+            )
+
+    class RecordingCorpus:
+        def full_search(self, owner_id: str, query: str) -> RetrievalBundle:
+            calls.append(query)
+            if "KLUE" in query:
+                return RetrievalBundle(
+                    items=[
+                        {
+                            "title": "Korean BERT Benchmark",
+                            "summary": "KLUE public dataset benchmark for Korean NLP BERT models.",
+                            "sourceRefs": [source_ref],
+                        }
+                    ],
+                    evidenceStatus=EvidenceStatus.SUPPORTED,
+                )
+            return RetrievalBundle(
+                items=[
+                    {
+                        "title": "Generic transformer study",
+                        "summary": "General transformer analysis.",
+                        "sourceRefs": [
+                            {
+                                **source_ref,
+                                "identifier": "2401.00004",
+                                "title": "Generic transformer study",
+                                "url": "https://arxiv.org/abs/2401.00004",
+                            }
+                        ],
+                    }
+                ],
+                evidenceStatus=EvidenceStatus.SUPPORTED,
+            )
+
+    class CleanExternal:
+        def search(self, query: str) -> RetrievalBundle:
+            return RetrievalBundle(items=[])
+
+    repo = InMemoryNoveltyRepository()
+    _, owner_id, job_id = _service_job(repo)
+
+    process_job(
+        repo,
+        owner_id,
+        job_id,
+        adapters=NoveltyAdapters(
+            corpus=RecordingCorpus(),
+            external=CleanExternal(),
+            llm=PlanningLlm(),
+        ),
+    )
+
+    assert calls[:3] == [
+        "BERT Korean NLP benchmark ideas",
+        "KoBERT KLUE public dataset",
+        "BERT Korean intent ranking",
+    ]
+    evidence = next(
+        artifact
+        for artifact in NoveltyService(repo).result(owner_id, job_id).artifacts
+        if artifact.kind is ArtifactKind.EVIDENCE
+    )
+    top = evidence.payload["items"][0]
+    assert top["title"] == "Korean BERT Benchmark"
+    assert top["confidence"] > evidence.payload["items"][1]["confidence"]
+    assert "관련 내용이 확인됩니다" in top["evidenceNote"]
+    assert top["queryUsed"] == "KoBERT KLUE public dataset"
 
 
 def test_worker_manuscript_path_records_similarity_risk_degradation() -> None:
@@ -865,6 +1237,138 @@ def test_worker_manuscript_path_records_similarity_risk_degradation() -> None:
     result = service.result(owner_id, created.jobId)
     assert result.job.state is JobState.DEGRADED
     assert ArtifactKind.RISK_SIGNALS in {artifact.kind for artifact in result.artifacts}
+
+
+def test_nv5_high_risk_signals_do_not_block_idea_and_plan_generation() -> None:
+    """US-NV5(#255) AC3 — 위험 신호가 높아도 novelty 분석을 차단하지 않는다.
+
+    유사도 SUPPORTED 다건 + AI 어투 신호를 함께 주입해도 실험 아이디어 추천
+    (FORMING_IDEAS → novelty_candidates)과 실험 계획 생성(PLANNING_EXPERIMENT →
+    experiment_plan)이 그대로 진행·산출되고 잡은 완주한다.
+    """
+    source_ref = {
+        "type": "url",
+        "identifier": "2401.00001",
+        "url": "https://arxiv.org/abs/2401.00001",
+    }
+
+    class HighRiskSimilarity:
+        def check(self, owner_id: str, manuscript_ref: dict) -> RetrievalBundle:
+            items: list[dict] = [
+                {
+                    "title": f"문장 유사성: Prior work {idx}",
+                    "riskType": "sentence_similarity",
+                    "summary": f"작성 문장 {idx}가 'Prior work {idx}'와 유사합니다.",
+                    "evidenceStatus": EvidenceStatus.SUPPORTED.value,
+                    "sourceRefs": [source_ref],
+                }
+                for idx in range(5)
+            ]
+            items.append(
+                {
+                    "title": "AI-style phrasing risk",
+                    "riskType": "ai_style",
+                    "markers": ["delve", "robust framework"],
+                    "evidenceStatus": EvidenceStatus.ABSTAINED.value,
+                    "sourceRefs": [],
+                }
+            )
+            return RetrievalBundle(items=items, evidenceStatus=EvidenceStatus.SUPPORTED)
+
+    class CleanCorpus:
+        def full_search(self, owner_id: str, query: str) -> RetrievalBundle:
+            return RetrievalBundle(items=[{"title": query, "sourceRefs": [source_ref]}])
+
+    class CleanExternal:
+        def search(self, query: str) -> RetrievalBundle:
+            return RetrievalBundle(items=[{"title": query, "sourceRefs": [source_ref]}])
+
+    class CleanLlm:
+        def draft(self, *, topic, corpus, external) -> NoveltyLlmDraft:
+            return NoveltyLlmDraft(
+                similarWorks={
+                    "items": [
+                        {
+                            "title": "Prior work",
+                            "evidenceStatus": EvidenceStatus.SUPPORTED.value,
+                            "sourceRefs": [source_ref],
+                        }
+                    ],
+                    "evidenceStatus": EvidenceStatus.SUPPORTED.value,
+                    "sourceRefs": [source_ref],
+                },
+                noveltyCandidates={
+                    "items": [
+                        {
+                            "title": "Novel candidate",
+                            "evidenceStatus": EvidenceStatus.SUPPORTED.value,
+                            "sourceRefs": [source_ref],
+                        }
+                    ],
+                    "evidenceStatus": EvidenceStatus.SUPPORTED.value,
+                    "sourceRefs": [source_ref],
+                },
+                experimentPlan={
+                    "researchQuestion": topic,
+                    "noveltyAngle": "Evaluate against grounded prior work.",
+                    "hypotheses": ["Grounded difference improves novelty."],
+                    "baselines": ["Prior work"],
+                    "procedure": ["Run baseline comparison."],
+                    "datasets": ["RAG Evaluation Dataset"],
+                    "metrics": ["baseline delta"],
+                    "resources": ["Evaluation script"],
+                    "risks": ["dataset mismatch"],
+                    "evidenceStatus": EvidenceStatus.SUPPORTED.value,
+                    "sourceRefs": [source_ref],
+                },
+            )
+
+    repo = InMemoryNoveltyRepository()
+    service = NoveltyService(repo)
+    owner_id = str(uuid4())
+    created = service.create_job(
+        owner_id,
+        NoveltyJobRequest(
+            inputType="manuscript",
+            topic="novelty agent draft",
+            manuscript={"fileName": "draft.md", "contentType": "text/markdown"},
+        ),
+    )
+
+    process_job(
+        repo,
+        owner_id,
+        created.jobId,
+        adapters=NoveltyAdapters(
+            corpus=CleanCorpus(),
+            external=CleanExternal(),
+            llm=CleanLlm(),
+            similarity=HighRiskSimilarity(),
+        ),
+    )
+
+    result = service.result(owner_id, created.jobId)
+    # 위험 신호가 많아도 잡은 차단되지 않고 완주한다(모든 어댑터 정상 → 저하도 아님).
+    assert result.job.state is JobState.COMPLETED
+    artifacts = {artifact.kind: artifact for artifact in result.artifacts}
+    assert {
+        ArtifactKind.RISK_SIGNALS,
+        ArtifactKind.NOVELTY_CANDIDATES,
+        ArtifactKind.EXPERIMENT_PLAN,
+    } <= set(artifacts)
+    # 위험 신호는 신호대로 저장되고,
+    risk_items = artifacts[ArtifactKind.RISK_SIGNALS].payload["items"]
+    assert {item["riskType"] for item in risk_items} == {"sentence_similarity", "ai_style"}
+    # 아이디어 추천·실험 계획은 실제 내용을 담고 산출됐다.
+    assert artifacts[ArtifactKind.NOVELTY_CANDIDATES].payload["items"]
+    assert artifacts[ArtifactKind.EXPERIMENT_PLAN].payload["researchQuestion"]
+    # 유사도 검사 이후 단계(FORMING_IDEAS·PLANNING_EXPERIMENT)를 실제로 통과했다.
+    states = {event.state for event in repo.list_events(owner_id, created.jobId)}
+    assert {
+        JobState.CHECKING_SIMILARITY,
+        JobState.FORMING_IDEAS,
+        JobState.PLANNING_EXPERIMENT,
+    } <= states
 
 
 def _pdf_manuscript_job(service: NoveltyService, owner_id: str):
@@ -979,9 +1483,47 @@ def test_worker_natural_language_forms_evidence_first_and_merges_bundle() -> Non
                 evidenceStatus=EvidenceStatus.SUPPORTED,
             )
 
+    class RewritingLlm:
+        def plan_search(self, topic: str) -> NoveltySearchPlan:
+            return NoveltySearchPlan(
+                englishQuery="rewritten query for corpus search",
+                keywords=["rewritten"],
+                subqueries=["expanded evidence search"],
+                intent={"goal": topic},
+                rankingSignals=["rewritten"],
+            )
+
+        def draft(self, *, topic, corpus, external) -> NoveltyLlmDraft:
+            ref = corpus.items[0]["sourceRefs"][0]
+            return NoveltyLlmDraft(
+                similarWorks={
+                    "items": [{"title": "Similar", "sourceRefs": [ref]}],
+                    "evidenceStatus": EvidenceStatus.SUPPORTED.value,
+                    "sourceRefs": [ref],
+                },
+                noveltyCandidates={
+                    "items": [{"title": "Novel", "sourceRefs": [ref]}],
+                    "evidenceStatus": EvidenceStatus.SUPPORTED.value,
+                    "sourceRefs": [ref],
+                },
+                experimentPlan={
+                    "researchQuestion": topic,
+                    "noveltyAngle": "Compare original and expanded evidence.",
+                    "hypotheses": ["Expanded search preserves evidence ordering."],
+                    "baselines": ["Original query retrieval"],
+                    "procedure": ["Compare merged evidence bundles."],
+                    "datasets": ["Retrieved corpus"],
+                    "metrics": ["evidence coverage"],
+                    "resources": ["Corpus evidence"],
+                    "risks": ["query drift"],
+                    "sourceRefs": [ref],
+                    "evidenceStatus": EvidenceStatus.SUPPORTED.value,
+                },
+            )
+
     class RecordingCorpus:
         def full_search(self, owner_id: str, query: str) -> RetrievalBundle:
-            calls.append("corpus")
+            calls.append(f"corpus:{query}")
             return RetrievalBundle(
                 items=[{"title": "Corpus paper", "sourceRefs": [paper_ref]}],
                 evidenceStatus=EvidenceStatus.SUPPORTED,
@@ -994,11 +1536,18 @@ def test_worker_natural_language_forms_evidence_first_and_merges_bundle() -> Non
         repo,
         owner_id,
         job_id,
-        adapters=NoveltyAdapters(corpus=RecordingCorpus(), evidence=RecordingEvidence()),
+        adapters=NoveltyAdapters(
+            corpus=RecordingCorpus(),
+            evidence=RecordingEvidence(),
+            llm=RewritingLlm(),
+        ),
     )
 
-    # US-NV1(#251) AC1 — form_evidence가 U2 검색보다 먼저 호출된다
-    assert calls == ["evidence:privacy preserving RAG", "corpus"]
+    # US-NV1(#251) AC1 — form_evidence가 원문 질의로 U2 검색보다 먼저 호출된다
+    assert calls[:2] == [
+        "evidence:privacy preserving RAG",
+        "corpus:rewritten query for corpus search",
+    ]
     result = NoveltyService(repo).result(owner_id, job_id)
     evidence_artifact = next(
         artifact for artifact in result.artifacts if artifact.kind is ArtifactKind.EVIDENCE

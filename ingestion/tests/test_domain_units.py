@@ -13,7 +13,11 @@ from hypothesis import strategies as st
 from docsuri_ingestion.adapters.local import InMemoryControlPlaneStore, sample_metadata
 from docsuri_ingestion.domain.enums import DedupDecision, DedupStateKind, SourceName
 from docsuri_ingestion.domain.errors import LicenseRejectedError
-from docsuri_ingestion.domain.ids import content_fingerprint, normalize_arxiv_ref
+from docsuri_ingestion.domain.ids import (
+    content_fingerprint,
+    normalize_arxiv_ref,
+    year_from_paper_id,
+)
 from docsuri_ingestion.domain.models import (
     Chunk,
     ChunkSet,
@@ -46,6 +50,29 @@ def test_arxiv_id_normalization_and_version_parsing() -> None:
 def test_content_fingerprint_is_paper_version_derived() -> None:
     assert content_fingerprint("2401.00001", 1) == content_fingerprint("2401.00001", 1)
     assert content_fingerprint("2401.00001", 1) != content_fingerprint("2401.00001", 2)
+
+
+def test_year_from_paper_id_decodes_yymm_and_falls_back_to_none() -> None:
+    # #436: new-style YYMM.NNNNN → 20YY (authoritative submission year).
+    assert year_from_paper_id("2506.09280") == 2025
+    assert year_from_paper_id("2401.12345") == 2024
+    # Old-style and non-arXiv (external) ids are undecodable → None (caller keeps the date year).
+    assert year_from_paper_id("math/0309136") is None
+    assert year_from_paper_id("src-abc123") is None
+
+
+def test_parse_year_uses_arxiv_id_not_retouched_date() -> None:
+    # #436 facet-leak repro: a 2025 submission (id 2506.*) whose only date is a re-touched 2026
+    # ``updated_at`` (published_at absent). Old code stamped year=2026; the id says 2025.
+    metadata = replace(
+        sample_metadata("2506.09280v1"),
+        published_at=None,
+        updated_at=datetime(2026, 2, 1, tzinfo=UTC),
+    )
+    paper = FetchParseProcessor().parse(
+        RawDocument(metadata=metadata, text="body", source_url="local://paper")
+    )
+    assert paper.year == 2025
 
 
 def test_oa_license_validation_rejects_missing_and_unknown_allows_arxiv_and_cc() -> None:

@@ -55,4 +55,10 @@ export interface TransportResponse {
 
 export interface Transport {
   send(req: TransportRequest): Promise<TransportResponse>;
+  /**
+   * True when agent turn SSE streaming is available on this transport's hop
+   * (same-origin /bff → gateway). ApiClient only attempts the US-EV2 streaming
+   * variant when set; mock/test transports stay on the JSON path.
+   */
+  readonly streamsAgentTurns?: boolean;
 }

@@ -27,6 +27,11 @@ from typing import Any
 
 from ..ports.search_ports import RerankUnavailable
 
+# Module-level so the latency-budget contract test (test_latency_budget.py) can assert the
+# search cold-path sum stays inside the BFF's 30s search hop (QA 2026-07-10 F1).
+_CONNECT_TIMEOUT_S = 2.0
+_READ_TIMEOUT_S = 5.0
+
 
 class BedrockRerankAdapter:
     """Cross-encoder rerank via the Bedrock Rerank API (default: Cohere Rerank v3.5)."""
@@ -45,8 +50,8 @@ class BedrockRerankAdapter:
             # Bounded — rerank sits on the synchronous search path (NFR-P1 P50<3s). A single
             # attempt: on timeout/error we fail-soft to baseline rather than retry-and-stall.
             config = Config(
-                connect_timeout=2.0,
-                read_timeout=5.0,
+                connect_timeout=_CONNECT_TIMEOUT_S,
+                read_timeout=_READ_TIMEOUT_S,
                 retries={"max_attempts": 1},
             )
             client = boto3.client(

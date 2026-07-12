@@ -30,6 +30,9 @@ export interface ResultMeta {
   resultCount: number;
   degraded: boolean;
   degradationMode?: DegradationMode;
+  /** US-P4 (#155). True when the personalization re-rank actually boosted this page
+   * ('내 관심 주제 반영' indicator + settings off entry point). Optional, additive. */
+  personalized?: boolean;
 }
 
 /** Synchronous search entry input. */

@@ -436,6 +436,26 @@
   border: 1px solid var(--color-border);
 }
 
+.noveltyEvidenceMeta {
+  display: grid;
+  gap: 3px;
+  margin-top: 6px;
+  color: var(--color-text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.noveltyEvidenceMeta strong {
+  color: var(--color-text);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.noveltyEvidenceMeta small {
+  color: var(--color-text-muted);
+  font-size: 11px;
+}
+
 /* US-NV3(#253) — 유사 연구 표에서 근거 없는 칸(기권) 표시 */
 .noveltyCellAbstain {
   color: var(--color-text-muted);

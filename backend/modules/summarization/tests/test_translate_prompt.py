@@ -59,6 +59,48 @@ def test_segments_are_isolated_as_json_data() -> None:
     assert "translations" in system
 
 
+def test_translate_prompt_keeps_seed_guidance_for_variants() -> None:
+    # Seed terms are masked for EXACT matches, but they ride into the prompt as GUIDANCE for
+    # un-masked variant/inflected forms (plurals like "embeddings", identifier-adjacent, case).
+    g = Glossary(
+        seed_mappings=(TermMapping("attention", "어텐션", prompt_enforced=True),),
+        keep_as_is=("Transformer", "BERT"),
+    )
+    system, _user = build_translate_segments_prompt(_segs(), _req(Scope.FULL), g)
+    assert "변형형" in system  # guidance explicitly targets variant forms
+    assert "Transformer" in system and "BERT" in system  # keep-as-is guidance present
+    assert "attention→어텐션" in system  # mapping guidance present
+
+
+def test_translate_prompt_instructs_token_preservation() -> None:
+    system, _user = build_translate_segments_prompt(_segs(), _req(Scope.FULL), _GLOSSARY)
+    assert "자리표시자" in system and "⟦" in system  # ⟦N⟧ tokens must be preserved verbatim
+
+
+def test_translate_prompt_keeps_non_seed_strong_override() -> None:
+    # A non-seed strong override is NOT masked, so it still rides into the translate prompt (soft).
+    g = Glossary(
+        seed_mappings=(TermMapping("attention", "어텐션", prompt_enforced=True),),
+        keep_as_is=("Transformer",),
+        user_overrides=(TermMapping("GPIO", "지피아이오", prompt_enforced=True),),
+    )
+    system, _user = build_translate_segments_prompt(_segs(), _req(Scope.FULL), g)
+    assert "사용자 선호 매핑: GPIO→지피아이오" in system
+
+
+def test_translate_prompt_uses_seed_default_not_seed_override() -> None:
+    # The shared base's prompt guides variants with the SEED DEFAULT (어텐션); a per-user strong
+    # override of a seed term is applied at serve by re-rendering the token, so it must NOT enter
+    # the shared-base prompt (else one user's preference would pollute everyone's base).
+    g = Glossary(
+        seed_mappings=(TermMapping("attention", "어텐션", prompt_enforced=True),),
+        user_overrides=(TermMapping("attention", "주목", prompt_enforced=True),),
+    )
+    system, _user = build_translate_segments_prompt(_segs(), _req(Scope.FULL), g)
+    assert "attention→어텐션" in system  # seed default guides variants
+    assert "주목" not in system and "사용자 선호 매핑" not in system  # seed override stays out
+
+
 def test_summary_body_delimiter_breakout_is_neutralized() -> None:
     # Prompt-injection defense-in-depth: a paper body containing a literal </paper> must not be
     # able to close the data region and have following text read as instructions. The data region

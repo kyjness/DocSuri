@@ -6,6 +6,11 @@
 > Construction Phase. Consolidates the per-unit `nfr-requirements/tech-stack-decisions.md`
 > ADRs into the single project-level input the workflow (and `tools/aidlc-designreview`)
 > expects. **Date**: 2026-06-28.
+>
+> **De-drift note (2026-07-08)**: per-deploy runtime/config values (email provider,
+> deployed embedding model + index alias) are stated below as **pointers to the
+> authoritative code**, not copied — a copy drifts, a pointer can't. Rationale:
+> `reports/aidlc-ssot-audit-2026-07.md`.
 
 ## Project Technical Summary
 
@@ -94,12 +99,12 @@ Deploy profile `AdministratorAccess-028317349537`. Cross-account team access via
 | EventBridge | Domain event backbone (e.g. `AccountDeleted`) |
 | CloudWatch (+ SNS, Budgets) | Metrics/alarms (namespace via `CLOUDWATCH_NAMESPACE`), cost alerts |
 | Secrets Manager | Secrets by full ARN (e.g. `RESEND_API_KEY`) |
+| Amazon SES (transactional email) | Verification/reset email. Provider is per-deploy runtime config — authoritative in code: `EMAIL_PROVIDER` in `ops/cdk/stacks/compute_stack.py` (currently `ses`, primary since #348; Resend = dormant fallback) |
 
 ### Service Disallow List
 
 | Service | Reason / Alternative |
 |---------|----------------------|
-| Amazon SES (production send) | SES production access delayed → **Resend** is the live email channel (`EMAIL_PROVIDER=resend`) |
 | Bedrock Knowledge Bases / S3 Vectors | Evaluated in spike; not the production path — self-managed OpenSearch index is authoritative |
 
 ### Service Approval Process
@@ -128,8 +133,13 @@ RETAIN-policy resources (RDS, S3, OpenSearch) need an explicit teardown plan.
 
 - Embeddings: **Cohere Embed Multilingual (Bedrock), 1024-dim, cosine**; writer
   `search_document` / reader `search_query` asymmetry; writer↔reader same-space
-  invariant (`assert_same_space`). v3→v4 migration completed 2026-06-24
-  (alias `docsuri-corpus`). Strict **Open Access (OA)** licensing only.
+  invariant (`assert_same_space`), pinned by the frozen `shared/vector-spec`.
+  **Deployed model + index alias are per-deploy runtime config — authoritative in code,
+  not copied here:** `DOCSURI_BEDROCK_MODEL_ID` / `DOCSURI_OPENSEARCH_INDEX` in
+  `ops/cdk/stacks/*_stack.py`. _Snapshot 2026-07-08: reader (`compute_stack.py`) =
+  `cohere.embed-multilingual-v3` → alias `docsuri-corpus-c3ml`; a re-embed migration is
+  in flight, so the ingestion/novelty stacks may point at a different model/index —
+  read the stacks, don't trust a snapshot._ Strict **Open Access (OA)** licensing only.
 
 ### Messaging and Events
 

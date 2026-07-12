@@ -137,6 +137,45 @@ describe('DocModelViewer', () => {
     expect(document.activeElement).toBe(triggers[0]);
   });
 
+  it('jumps to the section and highlights its heading for a section-type summary anchor', async () => {
+    // Section anchors are the common case: the grounding gate rewrites the label to the section
+    // title ("Model Architecture"). No block carries that as an anchorLabel, so the viewer must
+    // fall back to the section element (dm-{id}) — the regression that made source chips no-op.
+    const anchor = {
+      field: 'method',
+      target: 'section' as const,
+      span: 'scaled dot-product attention',
+      label: 'Model Architecture',
+    };
+    render(<DocModelViewer paperId="2401.00001" version={1} anchor={anchor} />);
+    const heading = await screen.findByRole('heading', { name: 'Model Architecture' });
+
+    // Focus (and the scroll target) moves to the matched <section id="dm-s3">.
+    const section = document.getElementById('dm-s3');
+    expect(section).toBeTruthy();
+    await waitFor(() => expect(document.activeElement).toBe(section));
+
+    // The heading of that section carries the anchor highlight.
+    expect(heading.className).toContain('active');
+  });
+
+  it('jumps to and highlights the matching asset block for an asset-type summary anchor', async () => {
+    // Regression guard: table/figure/formula anchors still resolve by block anchorLabel.
+    const anchor = {
+      field: 'results',
+      target: 'table' as const,
+      span: 'per-layer complexity',
+      label: 'Table 1',
+    };
+    render(<DocModelViewer paperId="2401.00001" version={1} anchor={anchor} />);
+    await screen.findByRole('heading', { name: 'Why Self-Attention' });
+
+    const block = document.querySelector('[data-block="s3.2.tbl1"]');
+    expect(block).toBeTruthy();
+    await waitFor(() => expect(document.activeElement).toBe(block));
+    expect((block as HTMLElement).className).toContain('active');
+  });
+
   it('moves focus to the target section when a TOC link is activated (D3)', async () => {
     render(<DocModelViewer paperId="2401.00001" version={1} anchor={null} />);
     await screen.findByRole('heading', { name: 'Model Architecture' });

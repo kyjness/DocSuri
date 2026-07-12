@@ -36,6 +36,16 @@ from docsuri_ingestion.domain.enums import AssetType
 
 _WS_RE = re.compile(r"\s+")
 
+# A colour box LaTeXML could not expand (e.g. arXiv:2410.14706's ``\cybertron`` →
+# ``\Colorbox{colour}{\lstinline{…}}``). It surfaces as an ``ltx_ERROR`` node holding the bare
+# command token (possibly with a trailing ``[opt]``), and its leading colour argument(s) leak as
+# loose text right after. Group 1 == "f" marks two-argument ``\fcolorbox`` (frame + bg); plain
+# ``\Colorbox``/``\colorbox`` leak one. ``\b`` (not ``\Z``) so ``\Colorbox[rgb]`` still matches.
+_BOXCMD_RE = re.compile(r"\\(f?)[Cc]olorbox\b")
+# A leaked colour-name argument is a single bare token ("mygrayInline", "red", "gray!50") — never a
+# sentence. Requiring that shape means a box command with no following colour never eats body text.
+_COLOUR_ARG_RE = re.compile(r"^[A-Za-z][\w!.]*$")
+
 # LaTeXML section-level wrappers, all rendered as <section>. ``ltx_appendix`` is included
 # (FD Q2=B: appendices are preserved) — without it LaTeXML appendix subsections lose their
 # nearest section ancestor and flatten up into the top level, dropping the "Appendix A"
@@ -528,17 +538,35 @@ def _inline_text(el: Tag) -> str:
     Skips LaTeXML marker tags (``ltx_tag`` — section numbers, list bullets, eq numbers) and
     footnotes/notes (``ltx_note`` — out-of-flow annotations) so neither leaks into body text.
     U1 Corpus freezes footnotes out of DocModel v1; Citation Graph owns reference structure.
+    Also drops ``ltx_ERROR`` nodes (undefined commands LaTeXML could not expand) so raw command
+    tokens do not leak; for a ``\\Colorbox``/``\\fcolorbox`` box the leaked colour argument(s) that
+    follow as loose text are dropped too (see ``_BOXCMD_RE``/``_COLOUR_ARG_RE``).
     """
     parts: list[str] = []
+    drop_boxargs = 0  # leaked colour tokens still to drop after a \Colorbox/\fcolorbox error node
     for node in el.children:
         if isinstance(node, NavigableString):
-            parts.append(str(node))
+            text = str(node)
+            if drop_boxargs > 0:
+                if not text.strip():
+                    continue  # whitespace between the error node and the colour arg — stay armed
+                if _COLOUR_ARG_RE.match(text.strip()):
+                    drop_boxargs -= 1
+                    continue  # drop this leaked colour name
+                drop_boxargs = 0  # not a colour token → real body text; keep it and disarm
+            parts.append(text)
         elif isinstance(node, Tag):
+            drop_boxargs = 0
             if node.name == "math":
                 latex = mathml_to_latex(node)
                 if latex:
                     parts.append(f"\\({latex}\\)")
             elif "ltx_tag" in _classes(node) or "ltx_note" in _classes(node):
+                continue
+            elif "ltx_ERROR" in _classes(node):
+                box = _BOXCMD_RE.match(node.get_text().strip())
+                if box:
+                    drop_boxargs = 2 if box.group(1) == "f" else 1
                 continue
             else:
                 parts.append(_inline_text(node))

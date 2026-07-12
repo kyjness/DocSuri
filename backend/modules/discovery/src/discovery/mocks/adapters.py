@@ -80,6 +80,25 @@ class MockLexicalIndexAdapter:
         scored.sort(key=lambda sr: (-sr[1], sr[0].chunkId))
         return scored[:top_k]
 
+    def phrase_search(
+        self,
+        phrase: str,
+        top_k: int,
+        paper_ids: Sequence[str] | None = None,
+    ) -> list[ScoredRecord]:
+        """정확 문구 포함 여부만 확인(대소문자 무시) — 실제 match_phrase의 순서·인접성
+        요구를 부분 문자열 포함으로 근사한다."""
+        needle = phrase.lower()
+        wanted_papers = set(paper_ids) if paper_ids else None
+        scored: list[ScoredRecord] = []
+        for record in self._records:
+            if wanted_papers is not None and record.paperId not in wanted_papers:
+                continue
+            haystack = f"{record.abstract} {record.lexicalTerms}".lower()
+            if needle in haystack:
+                scored.append((record, 1.0))
+        return scored[:top_k]
+
 
 class MockRerankAdapter:
     """Deterministic cross-encoder stand-in (MR-1): score = query-term overlap with each document
@@ -128,6 +147,14 @@ class FailingLexicalIndexAdapter:
         terms: Sequence[str],
         top_k: int,
         fields: Sequence[str] = ("title", "abstract", "lexicalTerms"),
+    ) -> list[ScoredRecord]:
+        raise IndexUnavailable("mock index outage")
+
+    def phrase_search(
+        self,
+        phrase: str,
+        top_k: int,
+        paper_ids: Sequence[str] | None = None,
     ) -> list[ScoredRecord]:
         raise IndexUnavailable("mock index outage")
 

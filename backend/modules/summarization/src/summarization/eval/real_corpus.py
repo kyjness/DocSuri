@@ -162,32 +162,33 @@ REAL_CORPUS: tuple[GroundingEvalCase, ...] = (
         "bert_probe_1of3", _BERT,
         ("80.5", "86.7"), ("50.3",),
         "faithful",
-        "1/3 = 0.33 ungrounded. Below 0.5 so the gate PASSES; whether one unsupported figure "
-        "among three is 'fabricated' is a policy call.",
+        "1/3 = 0.33 ungrounded. Below the recalibrated 0.4 so the gate PASSES; whether one "
+        "unsupported figure among three is 'fabricated' is a policy call.",
         confident=False,
     ),
     _case(
         "resnet_probe_2of5", _RESNET,
         ("3.57", "4.49", "6.43"), ("11.1", "22.2"),
         "faithful",
-        "2/5 = 0.40 ungrounded. Passes at 0.5; reviewer call whether two absent figures tip it "
-        "to fabricated.",
+        "2/5 = 0.40 ungrounded — the largest faithful share in the corpora, sitting exactly ON "
+        "the recalibrated threshold: passes via strict `>` (0.40 is not > 0.4). This case is "
+        "the evidence the threshold cannot go below 0.4 without over-abstaining.",
         confident=False,
     ),
     _case(
         "roberta_probe_2of4", _ROBERTA,
         ("88.5", "84.3"), ("12.6", "45.1"),
         "fabricated",
-        "2/4 = 0.50 exactly — NOT > 0.5, so the gate PASSES (would be a false-pass under a "
-        "'fabricated' reading). The exact boundary the held-out set exists to settle.",
+        "2/4 = 0.50 exactly — a false-pass under the pre-Phase-3 threshold 0.5 (0.50 is not "
+        "> 0.5). Settled by the US-S6 recalibration to 0.4: the gate now ABSTAINS (caught).",
         confident=False,
     ),
     _case(
         "gpt3_probe_2of3", _GPT3,
         ("81.5",), ("33.4", "47.8"),
         "fabricated",
-        "2/3 = 0.67 ungrounded. Above 0.5 so the gate ABSTAINS; label leans fabricated but the "
-        "exact policy at this density is the reviewer's.",
+        "2/3 = 0.67 ungrounded. Above the threshold so the gate ABSTAINS; label leans "
+        "fabricated but the exact policy at this density is the reviewer's.",
         confident=False,
     ),
     # ---- clear fabricated (majority / all figures invented) ----

@@ -31,6 +31,21 @@ describe('parseAgentContent', () => {
     }
   });
 
+  it('passes through the optional answer narrative field', () => {
+    const content = JSON.stringify({
+      state: 'ok',
+      claims: [],
+      coverage: { paperCount: 0 },
+      answer: "'self-attention reduces computation' 문장이 포함된 논문을 총 1편 찾았습니다.",
+    });
+
+    const parsed = parseAgentContent(content);
+    expect(parsed.kind).toBe('evidence');
+    if (parsed.kind === 'evidence') {
+      expect(parsed.result.answer).toContain('1편');
+    }
+  });
+
   it('parses an abstain response and maps it to a human-readable label', () => {
     const parsed = parseAgentContent('[abstain] insufficient_evidence');
     expect(parsed.kind).toBe('abstain');

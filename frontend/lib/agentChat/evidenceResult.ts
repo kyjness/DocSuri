@@ -23,6 +23,7 @@ export interface EvidenceResultPayload {
   state: 'ok';
   claims: EvidenceClaim[];
   coverage: EvidenceCoverage;
+  answer?: string | null;
 }
 
 export type ParsedAgentContent =

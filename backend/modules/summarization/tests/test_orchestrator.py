@@ -54,6 +54,22 @@ def test_cost_degraded_abstains_before_llm() -> None:
     assert isinstance(result, CostDegradedDTO)
 
 
+def test_cost_degraded_blocks_llm_and_is_single_authority() -> None:
+    """US-S6 AC: when U6 CostGuard flips degrade_mode ≠ normal (its 0.80-spend-ratio policy —
+    'lexical-only' is what it sets at that ratio), U7 must make ZERO LLM calls and abstain with
+    the user-facing 'AI 요약 일시 중단' DTO. U6 is the SINGLE cost authority: U7 consumes only
+    the verdict fields (degrade_mode / circuit_state) — the stub budget carries no spend figures
+    at all, so this passing proves U7 never re-judges the budget itself (BR-S13)."""
+    llm = StubLlm()
+    orch = make_orchestrator(
+        llm=llm, cost_guard=StubCostGuard(_Budget(degrade_mode="lexical-only"))
+    )
+    result = orch.run(_req(), _ctx())
+    assert isinstance(result, CostDegradedDTO)
+    assert result.to_dict() == {"status": "cost_degraded", "message": "AI 요약 일시 중단"}
+    assert llm._calls == 0, "U7 spent LLM tokens while cost-degraded"
+
+
 def test_source_unavailable() -> None:
     orch = make_orchestrator(full_text=StubFullText(text=None))
     result = orch.run(_req(), _ctx())  # no abstract → no source

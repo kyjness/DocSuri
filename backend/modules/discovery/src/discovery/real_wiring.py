@@ -75,7 +75,9 @@ def build_real_orchestrator(
     )
     embedding = BedrockCohereQueryEmbedder(
         model_id=settings.bedrock_model_id,
-        region_name=settings.aws_region,
+        # Bedrock region decoupled from aws_region (OpenSearch SigV4): Cohere v3 isn't in
+        # ap-northeast-2, so the reader embeds queries cross-region. Falls back to aws_region.
+        region_name=settings.bedrock_region or settings.aws_region,
     )
     cache = EmbeddingCache(embedding, ttl_seconds=settings.embedding_cache_ttl_seconds)
 

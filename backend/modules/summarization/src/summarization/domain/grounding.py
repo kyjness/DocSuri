@@ -100,16 +100,31 @@ def _resolve_location(anchor: Anchor, index: list[tuple[str, list[str]]]) -> str
     for canonical, key in index:
         if key == hint or key == lbl:
             return canonical
+    # Contiguous fallback: pick the LONGEST (most specific) matching key, not the first (#352).
+    # A short generic title (e.g. "Method") that happens to be a sub-run of the anchor's label
+    # must not win over a longer, more specific title that also matches. Index order
+    # (most-specific-first) breaks length ties — only a strictly longer key replaces the best.
+    best_canonical: str | None = None
+    best_len = 0
     for canonical, key in index:
-        if _contiguous(key, hint) or _contiguous(key, lbl):
-            return canonical
-    return None
+        if len(key) > best_len and (_contiguous(key, hint) or _contiguous(key, lbl)):
+            best_canonical, best_len = canonical, len(key)
+    return best_canonical
 
 
 # Numeric grounding is fraction-based: abstain only when MORE than this share of a draft's result
 # figures are absent from the source. Tolerates a few mis-transcribed/rounded values while still
 # blocking drafts whose numbers are mostly fabricated (anti-hallucination, INV-4).
-_NUMERIC_MISMATCH_THRESHOLD = 0.5
+#
+# RECALIBRATED 0.5 → 0.4 (US-S6, 2026-07-10) from the QT-1 eval corpora (seed + numeric spectrum
+# + real-figure held-out set, 32 labeled cases): the pre-Phase-3 synthetic estimate 0.5 let every
+# exactly-half-ungrounded draft PASS (0.50 is not > 0.50 — 3 false-passes: probe_half_ungrounded_
+# numbers, num_ungrounded_2of4, roberta_probe_2of4). The zero-error plateau (false_pass = 0 AND
+# false_abstain = 0 across all 32 cases) is [0.40, 0.50); 0.4 is its STRICT edge — the largest
+# faithful ungrounded share in the corpora is 2/5 (resnet_probe_2of5), which still passes via the
+# strict `>`. Changes here must only go stricter (lower), never looser (C-2: no fabricated
+# content); `tests/test_grounding_eval.py` / `tests/test_real_corpus.py` pin both edges.
+_NUMERIC_MISMATCH_THRESHOLD = 0.4
 
 
 def _to_float(token: str) -> float | None:
@@ -195,12 +210,32 @@ class GroundingValidator:
         # against real structure instead of verbatim-matching prose (Step 35 / BR-S7).
         index = _structural_index(refined)
         kept: list[Anchor] = []
-        for a in draft.anchors:
-            canonical = _resolve_location(a, index)
-            if canonical is not None:
-                kept.append(replace(a, label=canonical))
-            else:
-                soft.append(Violation("anchor_missing", a.field_name))
+        if not index:
+            # No doc-model structure to resolve against — pure-abstract fallback or a heading-less
+            # legacy .txt whose refiner produced no sections/captions/tables. Keep the anchor chips
+            # verbatim instead of dropping every one as anchor_missing (#352): the old verbatim
+            # path surfaced abstract-cited anchors, and the numeric HARD gate is independent, so
+            # unresolved pointers still cannot leak a fabricated figure.
+            kept = list(draft.anchors)
+        else:
+            for a in draft.anchors:
+                canonical = _resolve_location(a, index)
+                if canonical is not None:
+                    kept.append(replace(a, label=canonical))
+                else:
+                    soft.append(Violation("anchor_missing", a.field_name))
+
+        # De-duplicate: multiple draft anchors in one field routinely resolve to the SAME
+        # canonical location (several claims all cite "Introduction"), which would render as
+        # identical repeated "출처" chips. Collapse to one per (field, label), first-seen order.
+        seen_chips: set[tuple[str, str]] = set()
+        deduped: list[Anchor] = []
+        for a in kept:
+            key = (a.field_name, a.label)
+            if key not in seen_chips:
+                seen_chips.add(key)
+                deduped.append(a)
+        kept = deduped
 
         # (2) numeric match — result figures must appear in the source — HARD, but FRACTION-based:
         # a few stray numbers (a mis-transcribed table cell, a rounded value) shouldn't abstain an

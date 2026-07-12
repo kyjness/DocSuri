@@ -6,9 +6,10 @@
 // url-free). OA-license-gated: license_unavailable → arXiv link-out. External text is
 // escaped by React (BR-SF-9). Replaces the legacy plain-text full-text viewer.
 //
-// NOTE: anchor highlight matches the summary anchor's label ("Table 1"/"Figure 2") to a
-// block's anchorLabel (the AnchorVM still carries a label, not a doc-model id — the
-// id-based anchor contract is a follow-up). Span-precise inline highlight is a follow-up.
+// NOTE: a summary anchor is matched by its label — asset anchors ("Table 1"/"Figure 2"/"(1)")
+// to a block's anchorLabel, and section anchors to the section title (scrolling to the section
+// element, the way the TOC jump does). The AnchorVM still carries a label, not a doc-model id —
+// the id-based anchor contract is a follow-up. Span-precise inline highlight is a follow-up.
 // (KaTeX stylesheet is pulled in by the renderMath import below.)
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type {
@@ -66,16 +67,20 @@ export function DocModelViewer({
   const docModel =
     state.status === 'done' && state.outcome.kind === 'page' ? state.outcome.docModel : null;
 
-  // Scroll to + highlight the block whose anchorLabel matches the selected anchor.
+  // Scroll to + highlight the target (asset block or section) matching the selected anchor.
   useEffect(() => {
     if (!docModel || !anchor || !containerRef.current) return;
-    const id = findBlockIdByLabel(docModel, anchor.label);
-    if (!id) return;
-    const el = containerRef.current.querySelector<HTMLElement>(`[data-block="${CSS.escape(id)}"]`);
+    const t = resolveAnchorTarget(docModel, anchor.label);
+    if (!t) return;
+    const el =
+      t.kind === 'block'
+        ? containerRef.current.querySelector<HTMLElement>(`[data-block="${CSS.escape(t.id)}"]`)
+        : containerRef.current.querySelector<HTMLElement>(`#dm-${CSS.escape(t.id)}`);
     if (!el) return;
-    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
-    // Move focus (and SR reading position) to the jumped-to block, not just the scroll
-    // position (D3, BR-U5-15) — every block root carries tabIndex={-1} for this.
+    // Sections read best jumped to their top (like the TOC); asset blocks center in view.
+    el.scrollIntoView({ block: t.kind === 'section' ? 'start' : 'center', behavior: 'smooth' });
+    // Move focus (and SR reading position) to the jumped-to element, not just the scroll
+    // position (D3, BR-U5-15) — every block root and section carries tabIndex={-1} for this.
     el.focus({ preventScroll: true });
   }, [docModel, anchor]);
 
@@ -422,12 +427,15 @@ function SectionView({
   macros?: MathMacros;
 }) {
   const Heading = `h${Math.min(depth + 1, 6)}` as keyof React.JSX.IntrinsicElements;
+  const headingCls = isSectionActive(section, anchor)
+    ? `${styles.heading} ${styles.active}`
+    : styles.heading;
   return (
-    // tabIndex=-1 (D3, BR-U5-15): programmatically focusable so a TOC jump moves keyboard/SR
+    // tabIndex=-1 (D3, BR-U5-15): programmatically focusable so a TOC/anchor jump moves keyboard/SR
     // focus here too, not just the viewport scroll position.
     <section id={`dm-${section.id}`} className={styles.section} tabIndex={-1}>
       {section.title ? (
-        <Heading className={styles.heading}>{renderInlineMath(section.title, macros)}</Heading>
+        <Heading className={headingCls}>{renderInlineMath(section.title, macros)}</Heading>
       ) : null}
       {section.blocks.map((b) => (
         <BlockView
@@ -676,18 +684,51 @@ function isActive(block: DocBlock, anchor?: AnchorVM | null): boolean {
   return Boolean(label && anchor.label && label === anchor.label);
 }
 
-function findBlockIdByLabel(doc: DocModel, label: string): string | null {
-  if (!label) return null;
-  const walk = (sections: DocSection[]): string | null => {
+// The single source of truth for the section-anchor match rule (label ⇔ section title). Used both
+// to pick the scroll target (resolveAnchorTarget) and to highlight the heading (isSectionActive),
+// so the two can never drift apart.
+function sectionMatchesLabel(section: DocSection, label: string): boolean {
+  return Boolean(section.title && label && section.title.trim() === label.trim());
+}
+
+// A section anchor's canonical label is the section title (no block anchorLabel matches), so the
+// heading — the thing the anchor points at — carries the highlight, mirroring the per-block one.
+function isSectionActive(section: DocSection, anchor?: AnchorVM | null): boolean {
+  return Boolean(anchor?.label && sectionMatchesLabel(section, anchor.label));
+}
+
+type AnchorTarget = { kind: 'block'; id: string } | { kind: 'section'; id: string };
+
+// Resolve a summary anchor's label to a scroll target. Two anchor kinds survive the backend
+// grounding gate: asset anchors ("Table 1"/"Figure 2"/"(1)") that map to a block's anchorLabel,
+// and section anchors whose canonical label is the section title itself ("Model Architecture").
+// Only tables/figures/formulas carry anchorLabel, so a section anchor has no matching block — it
+// falls back to the section element (dm-{id}), the same target the TOC jump uses. An asset-block
+// match wins over a section match (more specific). Labels are trimmed before compare; the backend
+// rewrites the label to the doc-model's own canonical text, so (trimmed) equality is the contract.
+function resolveAnchorTarget(doc: DocModel, label: string): AnchorTarget | null {
+  const needle = (label ?? '').trim();
+  if (!needle) return null;
+  const walkBlocks = (sections: DocSection[]): AnchorTarget | null => {
     for (const s of sections) {
       for (const b of s.blocks) {
         const l = 'anchorLabel' in b ? b.anchorLabel : undefined;
-        if (l && l === label) return b.id;
+        if (l && l.trim() === needle) return { kind: 'block', id: b.id };
       }
-      const nested = s.sections ? walk(s.sections) : null;
+      const nested = s.sections ? walkBlocks(s.sections) : null;
       if (nested) return nested;
     }
     return null;
   };
-  return walk(doc.sections);
+  const block = walkBlocks(doc.sections);
+  if (block) return block;
+  const walkSections = (sections: DocSection[]): AnchorTarget | null => {
+    for (const s of sections) {
+      if (sectionMatchesLabel(s, needle)) return { kind: 'section', id: s.id };
+      const nested = s.sections ? walkSections(s.sections) : null;
+      if (nested) return nested;
+    }
+    return null;
+  };
+  return walkSections(doc.sections);
 }

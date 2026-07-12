@@ -21,7 +21,14 @@ from __future__ import annotations
 # the whole formula). Code/algorithm listings: the content-MathML ``<annotation-xml>`` is dropped
 # alongside the TeX ``<annotation>`` so an inline symbol no longer triples into
 # "ηm"+"subscript"+"𝜂𝑚". Both change stored output, so affected caches must rebuild.
-DOCMODEL_PARSER_VERSION = "docmodel-parser@6"
+# @7: listings-in-math and box-command leak fixes for papers embedding \lstinline via a custom box
+# macro (arXiv:2410.14706 \cybertron → \Colorbox{colour}{\lstinline{…}}). Body text: an unexpanded
+# ``\Colorbox`` ``ltx_ERROR`` node and its loose ``{colour}`` argument are dropped instead of
+# leaking
+# as literal source. Formula alttext: the ``\Colorbox``/``\lstinline``/``\lst@…`` listings machinery
+# and residual ``{ltx_lst_*}`` class tags are stripped so the boxed identifiers render rather than
+# collapsing the whole formula. Both change stored output, so affected caches must rebuild.
+DOCMODEL_PARSER_VERSION = "docmodel-parser@7"
 # 1.1.0: additive optional meta.macros (consumers ignore if unset).
 DOCMODEL_SCHEMA_VERSION = "1.1.0"
 

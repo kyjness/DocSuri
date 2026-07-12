@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import styles from './SearchScreen.module.css';
 import {
@@ -112,7 +113,8 @@ export function SearchScreen() {
         router.push('/login?redirect=/search');
         return;
       }
-      const message = err instanceof UserFacingError ? err.message : '문제가 발생했습니다. 다시 시도해 주세요.';
+      const message =
+        err instanceof UserFacingError ? err.message : '문제가 발생했습니다. 다시 시도해 주세요.';
       setState({ tag: 'error', message });
     } finally {
       inFlight.current = false;
@@ -128,6 +130,14 @@ export function SearchScreen() {
     state.tag === 'outcome' && (state.outcome.kind === 'page' || state.outcome.kind === 'degraded')
       ? state.outcome.cards
       : null;
+
+  // US-P4 (#155): the backend sets meta.personalized=true only when the live re-rank actually
+  // boosted this page — show the '내 관심 주제 반영' indicator with an off entry point linking
+  // to the existing 맞춤 서비스 kill-switch in settings (no separate toggle here).
+  const personalized =
+    state.tag === 'outcome' &&
+    (state.outcome.kind === 'page' || state.outcome.kind === 'degraded') &&
+    state.outcome.meta.personalized === true;
 
   return (
     <div className={styles.root}>
@@ -173,7 +183,12 @@ export function SearchScreen() {
           </button>
         </div>
         {inlineError ? (
-          <p id={`${inputId}-err`} className={styles.inlineError} role="alert" data-testid="search-inline-error">
+          <p
+            id={`${inputId}-err`}
+            className={styles.inlineError}
+            role="alert"
+            data-testid="search-inline-error"
+          >
             {inlineError}
           </p>
         ) : null}
@@ -183,6 +198,20 @@ export function SearchScreen() {
         <div className={styles.toolbar} data-testid="search-actions">
           <SaveSearchButton key={executedQuery} query={executedQuery} />
           {cards && cards.length > 0 ? <SortControl sort={sort} onChange={setSort} /> : null}
+        </div>
+      ) : null}
+
+      {personalized && cards && cards.length > 0 ? (
+        <div className={styles.personalizedRow} data-testid="personalized-indicator">
+          <span className={styles.personalizedChip}>내 관심 주제 반영</span>
+          <Link
+            href="/mypage/settings"
+            className={styles.personalizedOff}
+            aria-label="맞춤 서비스 끄기 (설정으로 이동)"
+            data-testid="personalized-off-link"
+          >
+            끄기
+          </Link>
         </div>
       ) : null}
 
@@ -227,14 +256,21 @@ function SortControl({ sort, onChange }: { sort: SortKey; onChange: (s: SortKey)
 function renderState(state: ScreenState, sort: SortKey, onRetry: () => void) {
   if (state.tag === 'idle') return null;
   if (state.tag === 'loading') return <StateView kind="loading" />;
-  if (state.tag === 'error') return <StateView kind="error" message={state.message} onRetry={onRetry} />;
+  if (state.tag === 'error')
+    return <StateView kind="error" message={state.message} onRetry={onRetry} />;
 
   const { outcome } = state;
   switch (outcome.kind) {
     case 'page':
       return <ResultList cards={sortCards(outcome.cards, sort)} renderBookmark={renderBookmark} />;
     case 'degraded':
-      return <ResultList cards={sortCards(outcome.cards, sort)} degraded renderBookmark={renderBookmark} />;
+      return (
+        <ResultList
+          cards={sortCards(outcome.cards, sort)}
+          degraded
+          renderBookmark={renderBookmark}
+        />
+      );
     case 'empty':
       return <StateView kind="empty" />;
     case 'abstain':

@@ -60,7 +60,9 @@ def build_evidence_orchestrator(
 
     embedding = BedrockCohereQueryEmbedder(
         model_id=d_settings.bedrock_model_id,
-        region_name=settings.region_name,
+        # Bedrock region decoupled from region_name (OpenSearch SigV4): Cohere v3 isn't in
+        # ap-northeast-2, so query embedding must go cross-region. Mirrors discovery real_wiring.
+        region_name=d_settings.bedrock_region or settings.region_name,
     )
     vector_store = OpenSearchVectorStoreAdapter(os_client, d_settings.opensearch_index)
     lexical_index = OpenSearchLexicalIndexAdapter(os_client, d_settings.opensearch_index)

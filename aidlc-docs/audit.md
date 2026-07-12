@@ -3947,3 +3947,35 @@ Error: TestingLibraryElementError: Unable to find an element by: [data-testid=\"
 **Context**: Git merge conflict resolution for PR #415.
 
 ---
+
+## Code Generation
+**Timestamp**: 2026-07-07T06:06:29Z
+**User Input**: "Novelty-Agent를 대량 개편합시다.
+```PlainText
+1. 유저의 질문에 대한 LLM 기반 쿼리 재작성/키워드 확장/영문 번역/서브쿼리 확장생성
+2. 유저의 질문의 의도를 분석하여 논문 출력 리랭킹
+3. 근거가 있어 가져온 논문의 정확한 근거 (자연어) 와 confidence 확률을 아래에 같이 표시
+4. 논문 유사점 검사 시 자연어로 "~가 유사합니다"라고 출력
+```
+기능을 구현하도록 코드를 수정해 주세요."
+**AI Response**: "Implemented Novelty Agent query expansion, intent-based reranking, evidence/confidence display fields, and natural-language similarity notes."
+**Context**: Novelty Agent backend/frontend implementation
+
+---
+
+## Code Review
+**Timestamp**: 2026-07-07T06:09:17Z
+**User Input**: "작성한 코드에 대해, Blocking 요소가 있는지 deep하게 검토해 주세요."
+**AI Response**: "Reviewing current Novelty Agent changes for blocking risks, regressions, and production issues."
+**Context**: Novelty Agent post-implementation blocking review
+
+---
+
+## Code Generation
+**Timestamp**: 2026-07-07T06:35:29Z
+**User Input**: "좋아요. Blocking 사항들에 대해, 최적의 방안으로 수정해 주세요. timeout과 limit 제한을 늘리고, 별도로 분리하는 등 확장, 여유적으로 수정합시다. 오래 걸려도 괜찮으니까요. `Open Questions`의 경우, 1. confidence는 관련도/근거 강도 점수로 노출해 주세요. 2. query rewrite는 DEGRADED로 출력해 주세요."
+**AI Response**: "Applying blocking-risk fixes for Novelty Agent query planning, SQS handling, evidence input, and confidence wording."
+**Context**: Novelty Agent blocking remediation
+
+
+---

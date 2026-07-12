@@ -10,7 +10,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 export interface GlossaryDraftEntry {
   termTo: string;
-  /** true = 표준 용어(프롬프트 강제, 재생성 필요) · false = 원어 유지(후치환 오버레이). */
+  /** true = 표준 용어(마스킹 토큰 재렌더로 번역 즉시 반영 + 요약 재생성) · false = 원어 유지(후치환 오버레이). */
   strong: boolean;
 }
 export type GlossaryDraft = Record<string, GlossaryDraftEntry>;

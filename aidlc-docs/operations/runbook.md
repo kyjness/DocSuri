@@ -28,6 +28,7 @@ CDK 스택 8개 (`ops/cdk/app.py`, account/region 하드코딩 `app.py:20`):
 2. **ALB 헬스체크 경로 = `/healthz`** (`compute_stack.py:280`), **`/` 아님.** API엔 root 핸들러 없음. `/healthz` 제거하거나 경로 바꾸면 → **deployment circuit breaker(`compute_stack.py:234`, `rollback=True`)가 배포 자동 롤백.** Frontend ALB는 `/`(`frontend_stack.py:117`) 사용 — **두 스택 헬스체크 설정 복붙 금지.**
 3. **CDK 배포 = SSO 자격증명 필요.** `aws configure export-credentials`로 export 후 `cdk deploy`. 안 하면 인증 실패.
 4. **비용가드 강등이 조용함.** 검색 품질이 갑자기 lexical-only로 떨어지면 장애가 아니라 **예산 임박**일 수 있음 → §3 비용가드 표 확인.
+5. **Novelty 워커 수동 재배포 = `cdk deploy Docsuri-Novelty` 먼저, force-new-deployment 나중.** novelty 잡은 Bedrock 호출 2회(query plan + draft, 각 `read_timeout` 기본 600s)라 단일 잡이 큐 `visibility_timeout`을 넘길 수 있음. 큐 timeout 상향(900→3600s, `novelty_stack.py:50`)이 신 워커 이미지보다 **나중**에 적용되면 잡 처리 중 SQS 재배달 → 중복 처리(Bedrock 중복 과금)·`maxReceiveCount`(3) 소진 시 DLQ+알람. 자동 태그 릴리스는 안전(`cd.yml` `needs:` 체인이 cdk-deploy → deploy-ecs 순서 강제). **수동 buildx + `aws ecs update-service --force-new-deployment`로 CDK를 건너뛰는 경로에서만** 이 순서를 지킬 것.
 
 ## 3. 비용가드 (Cost Guard) — `ops/src/docsuri_ops/cost_guard.py`
 

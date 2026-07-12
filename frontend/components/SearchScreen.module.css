@@ -176,6 +176,42 @@
   outline-offset: 1px;
 }
 
+/* US-P4 (#155): '내 관심 주제 반영' indicator above the result list, with an off entry
+   point (link to the 맞춤 서비스 kill-switch in /mypage/settings). */
+.personalizedRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.personalizedChip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.personalizedOff {
+  color: var(--color-text-muted);
+  font-size: 12px;
+  text-decoration: underline;
+}
+
+.personalizedOff:hover {
+  color: var(--color-text);
+}
+
+.personalizedOff:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
 .results {
   min-height: 80px;
 }

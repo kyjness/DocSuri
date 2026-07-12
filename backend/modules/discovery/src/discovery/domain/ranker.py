@@ -20,12 +20,16 @@ TOP_N = 20  # FR-3 (Q10=A)
 
 # BR-P8: personalization may only nudge the top slice, never reshuffle the tail.
 _BR_P8_BOOST_CEILING = 0.1
-_SHADOW_TOP_FRACTION = 0.30
+_BOOST_TOP_FRACTION = 0.30
 
 
 @dataclass(frozen=True, slots=True)
 class ShadowDiff:
-    """What a bounded personalization re-rank WOULD change, WITHOUT changing it (US-P4 shadow)."""
+    """How much a bounded personalization re-rank moves the top band vs the baseline order.
+
+    Named for its US-P4 shadow origin; now (US-P4 go-live) it measures REAL movement that was
+    applied, not hypothetical. Same fields, so existing CloudWatch dashboards are unaffected.
+    """
 
     positions_changed: int
     max_shift: int
@@ -40,25 +44,25 @@ def _record_boost(record, boosts: dict[str, float]) -> float:
     return 0.0
 
 
-def shadow_rerank_diff(
+def apply_boosts(
     ranked: RankedResults,
     boosts: dict[str, float],
-    top_fraction: float = _SHADOW_TOP_FRACTION,
-) -> ShadowDiff:
-    """Bounded category re-rank over the top ``top_fraction`` of results (BR-P8), reported as a
-    diff against the baseline order — the caller keeps the baseline. Multiplicative and relative
-    to each candidate's own score, so a boost NUDGES rank without flipping the overall order.
-    Pure: no I/O, no mutation. Flip to live by returning ``reordered`` instead of the diff.
+    top_fraction: float = _BOOST_TOP_FRACTION,
+) -> tuple[RankedResults, ShadowDiff]:
+    """Bounded category re-rank over the top ``top_fraction`` of results (BR-P8): multiplicative
+    and relative to each candidate's own ``ranking_score``, so a boost NUDGES rank within the top
+    band without flipping the overall order or touching the tail. Returns the reordered results
+    plus a diff against the baseline order. Pure: no I/O, no mutation of the input.
     """
     items = list(ranked.ranked)
     n = len(items)
     if n < 2 or not boosts:
-        return ShadowDiff(0, 0, 0)
+        return ranked, ShadowDiff(0, 0, 0)
     band = min(n, max(2, math.ceil(n * top_fraction)))
     head = items[:band]  # already (-ranking_score, paperId) order from the ranker
     boosted_count = sum(1 for c in head if _record_boost(c.record, boosts) != 0.0)
     if boosted_count == 0:
-        return ShadowDiff(0, 0, 0)
+        return ranked, ShadowDiff(0, 0, 0)
     # Nudge the CURRENT sort key (ranking_score) — post-rerank this is the rerank score, so
     # personalization correctly nudges the reranked order, not the raw retrieval order.
     reordered = sorted(
@@ -72,7 +76,21 @@ def shadow_rerank_diff(
     new_pos = {c.record.paperId: i for i, c in enumerate(reordered)}
     positions_changed = sum(1 for i, pid in enumerate(baseline_ids) if new_pos[pid] != i)
     max_shift = max((abs(new_pos[pid] - i) for i, pid in enumerate(baseline_ids)), default=0)
-    return ShadowDiff(positions_changed, max_shift, boosted_count)
+    boosted = RankedResults(
+        ranked=tuple(reordered) + tuple(items[band:]),  # only the top band moves (BR-P8)
+        ranking_mode=ranked.ranking_mode,
+    )
+    return boosted, ShadowDiff(positions_changed, max_shift, boosted_count)
+
+
+def shadow_rerank_diff(
+    ranked: RankedResults,
+    boosts: dict[str, float],
+    top_fraction: float = _BOOST_TOP_FRACTION,
+) -> ShadowDiff:
+    """Diff-only view of :func:`apply_boosts` — measures the movement WITHOUT applying it. Kept
+    for the shadow PBT and any measure-only caller."""
+    return apply_boosts(ranked, boosts, top_fraction)[1]
 
 
 class RelevanceRanker:

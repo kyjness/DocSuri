@@ -74,18 +74,34 @@ describe('SearchScreen state machine', () => {
     expect(screen.getByTestId('state-view-retry')).toBeInTheDocument();
   });
 
+  it('shows the 내 관심 주제 반영 indicator with an off entry point when meta.personalized=true (US-P4)', async () => {
+    await submit('맞춤 transformer');
+    expect(await screen.findByTestId('result-list')).toBeInTheDocument();
+
+    const indicator = screen.getByTestId('personalized-indicator');
+    expect(indicator).toHaveTextContent('내 관심 주제 반영');
+    // Off entry point reuses the existing 맞춤 서비스 kill-switch in settings — no new toggle.
+    expect(screen.getByTestId('personalized-off-link')).toHaveAttribute('href', '/mypage/settings');
+  });
+
+  it('hides the personalization indicator when meta.personalized is absent', async () => {
+    await submit('transformer attention');
+    expect(await screen.findByTestId('result-list')).toBeInTheDocument();
+    expect(screen.queryByTestId('personalized-indicator')).not.toBeInTheDocument();
+  });
+
   it('surfaces backend validation errors inline and sets aria-invalid', async () => {
     const input = screen.getByTestId('search-input');
     await submit('유효 keyword');
-    
+
     // 1. Should display the validation error message inline
     const inlineError = await screen.findByTestId('search-inline-error');
     expect(inlineError).toBeInTheDocument();
     expect(inlineError).toHaveTextContent('검색어를 확인해 주세요.');
-    
+
     // 2. Input field should have aria-invalid="true"
     expect(input).toHaveAttribute('aria-invalid', 'true');
-    
+
     // 3. StateView for invalid should also be in the document and contain the field name as an attribute
     const stateView = await screen.findByTestId('state-view-invalid');
     expect(stateView).toBeInTheDocument();

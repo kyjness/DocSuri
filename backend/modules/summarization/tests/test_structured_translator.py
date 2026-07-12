@@ -238,3 +238,72 @@ def test_unresolvable_truncation_fails_closed() -> None:
 
     with pytest.raises(LlmUnavailable):
         StructuredTranslator(_AlwaysTruncate()).translate(_rich_doc(), _req(), Glossary())
+
+
+def _one_paragraph_doc(text: str) -> DocModel:
+    return DocModel.model_validate(
+        {
+            "meta": {
+                "paperId": "2401.1",
+                "version": 1,
+                "title": "S",
+                "provenance": {
+                    "sourceTier": "native_html",
+                    "parserVersion": "test",
+                    "schemaVersion": "1",
+                    "generatedAt": "1970-01-01T00:00:00Z",
+                },
+            },
+            "fullText": text,
+            "sections": [
+                {
+                    "id": "s1",
+                    "title": "",
+                    "blocks": [{"id": "s1.p1", "type": "paragraph", "text": text}],
+                }
+            ],
+        }
+    )
+
+
+def _seed_token(term: str) -> str:
+    from summarization.domain.masking import build_mask_table
+
+    return next(e.token for e in build_mask_table().entries if e.term_from.lower() == term.lower())
+
+
+def test_masks_standard_terms_so_they_survive_as_tokens() -> None:
+    # Standard seed terms are masked into ⟦N⟧ tokens before the LLM sees them, so even an echo LLM
+    # cannot translate them away — the base carries the tokens for serve-time rendering (BR-S4).
+    draft = StructuredTranslator(_EchoLlm()).translate(
+        _one_paragraph_doc("The Transformer uses attention."), _req(), Glossary()
+    )
+    text = draft.doc_model.sections[0].blocks[0].root.text
+    assert _seed_token("Transformer") in text and _seed_token("attention") in text
+    assert "Transformer" not in text and "attention" not in text  # masked, not passed through
+
+
+def test_dropped_token_triggers_bounded_resend() -> None:
+    # A DROPPED token (the term vanished — unrecoverable at read) makes the translator re-send the
+    # chunk (bounded) until the token comes back (BR-S4). sweep can't resurrect it; re-send can.
+    import re as _re
+
+    class _DropThenRecover:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def translate_segments(self, segments, request, glossary) -> TranslationSegmentsResult:
+            self.calls += 1
+            drop = self.calls == 1  # first call drops all tokens; the retry returns them
+            out = {}
+            for s in segments:
+                t = f"번역:{s.text}"
+                out[s.id] = _re.sub(r"⟦G\d+⟧", "", t) if drop else t
+            return TranslationSegmentsResult(translations=out, kept_terms=())
+
+    llm = _DropThenRecover()
+    draft = StructuredTranslator(llm).translate(
+        _one_paragraph_doc("It uses attention here."), _req(), Glossary()
+    )
+    assert llm.calls >= 2  # retried after the drop
+    assert _seed_token("attention") in draft.doc_model.sections[0].blocks[0].root.text

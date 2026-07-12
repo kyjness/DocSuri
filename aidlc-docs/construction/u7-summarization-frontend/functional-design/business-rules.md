@@ -26,7 +26,8 @@
 ## 상태 · 안전
 
 - **BR-SF-7 (상태 우선순위)**: `abstain`/`source_unavailable`/`cost_degraded`는 부분 렌더보다 **우선** — 근거 없는/불완전 출력을 사용자에게 노출하지 않는다. 각 상태는 **고유 메시지**(기권 ≠ 소스부재 ≠ 비용저하).
-- **BR-SF-8 (앵커→전문뷰어, Q5=C)**: `AnchorChip` 클릭 → `FullTextViewer` 열고 `target`/`span` 위치 하이라이트·스크롤. 뷰어 텍스트는 백엔드 `getFullText` 반환분.
+- **BR-SF-8 (앵커→전문뷰어, Q5=C)**: `AnchorChip` 클릭 → `DocModelViewer` 열고 앵커 `label`을 doc-model 위치에 매칭해 하이라이트·스크롤. 매칭은 **자산 블록(표/그림/수식 `anchorLabel`) 우선, 없으면 섹션 제목→해당 섹션 요소(`dm-{id}`)** 로 폴백(TOC 점프와 동일 타겟). 백엔드가 `label`을 canonical doc-model 텍스트로 재작성하므로(BR-S7) 트림 후 정확 일치가 계약.
+  - **한 줄 요약은 출처 칩 없음**: 한 줄 요약은 논문 전체 요지라 근거가 초록인데, 리더는 초록을 전문 본문에서 숨긴다(별도 `초록` 면) → 칩이 갈 곳이 없다. 백엔드도 초록(s0)을 앵커 대상에서 제외하므로(BR-S7) 어차피 앵커가 안 온다. 따라서 U5는 `tldr` 필드에 `AnchorChip`을 렌더하지 않는다.
 - **BR-SF-9 (XSS)**: 모든 외부 텍스트(요약 6필드·span·번역 koreanText·전문 텍스트·keptTerms)는 React 기본 이스케이프로 렌더. `dangerouslySetInnerHTML` 금지. 근거: `frontend/CLAUDE.md` Part 2-B.
 - **BR-SF-10 (날조 0 · 표시 무가공)**: 표시 측은 백엔드 근거화(BR-S7) 통과분만 받는다 — 앵커·수치를 클라이언트가 합성/보정하지 않는다. 빠진 필드는 빈 상태로 두되 지어내지 않는다.
 - **BR-SF-11 (라이선스 게이트, 전문뷰어)**: `getFullText`가 `license_unavailable`이면 뷰어를 열지 않고 "원문은 arXiv에서 보세요" 링크아웃 안내(영문 원문 재배포 금지). 근거: SSOT §1·§7(라이선스).

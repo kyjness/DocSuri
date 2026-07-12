@@ -13,12 +13,14 @@ from docsuri_shared._generated.dtos.evidence_schema import (
 
 from .assembler import EvidenceComparisonAssembler
 from .extractor import EvidenceExtractor, LlmUnavailable
+from .intent import QueryIntent, classify_intent, extract_literal_phrase, is_followup_narrowing
 from .models import (
     AgentRunContext,
     TurnAbstainResult,
     TurnResult,
     TurnSuccessResult,
 )
+from .streaming import ProgressFn
 from .tools import EvidenceDocModelTool, EvidencePaperSearchTool, PaperSearchUnavailable
 
 logger = logging.getLogger(__name__)
@@ -55,7 +57,16 @@ class EvidenceAgentOrchestrator:
 
         return is_cost_critical(self._cost_guard.get_budget_state())
 
-    def run(self, ctx: AgentRunContext, request: EvidenceRequest) -> TurnResult:
+    def run(
+        self,
+        ctx: AgentRunContext,
+        request: EvidenceRequest,
+        on_progress: ProgressFn | None = None,
+    ) -> TurnResult:
+        # US-EV2/NFR-P6 — 단계 경계 진행 신호(SSE). 콜백 실패가 턴을 깨지 않는다(fail-soft).
+        # C-2/INV-EV-3: 진행 payload는 단계명·건수만 — claim/quote 텍스트 금지.
+        emit = _progress_emitter(on_progress)
+
         # --- 1. 비용 게이트 확인(BR-EV-7) — 외부 신호 우선, 없으면 U6 cost guard 직접 조회.
         # error가 아닌 abstain(cost_degraded): research 경로가 '[abstain] cost_degraded'로
         # 영속해 FE 라벨('일시적으로 서비스 이용량이 제한…')에 닿는다(US-EV6).
@@ -70,6 +81,21 @@ class EvidenceAgentOrchestrator:
         # --- 2. 논문 검색(BR-EV-2 scope 분기) ---
         scope = EvidenceScope(request.scope) if request.scope else EvidenceScope.auto
         paper_ids: list[str] = list(request.paperIds or [])
+
+        # 꼬리질문 좁히기: "그 중에서" 류 신호 + 직전 턴 결과 논문이 있으면 그 집합으로만
+        # 재검색한다(explicit로 강제 — 새 auto 검색과 섞지 않아 "그 논문들"이라는 사용자
+        # 의도를 그대로 지킨다).
+        if ctx.prior_paper_ids and is_followup_narrowing(request.topic):
+            paper_ids = list(dict.fromkeys([*paper_ids, *ctx.prior_paper_ids]))
+            scope = EvidenceScope.explicit
+
+        emit('scope_resolved', {'scope': scope.value, 'paperCount': len(paper_ids)})
+
+        # --- 2b. 정확 문구 검색 분기 — LLM 추출을 거치지 않는 별도 경로(BR-EV-2와 직교).
+        # "이 문장이 있는 논문을 찾아줘" 류 질의는 OpenSearch match_phrase 결과 자체가
+        # 이미 원문 발췌라 grounding 검증이 필요 없고, DocModel 로드·Bedrock 호출도 생략된다.
+        if classify_intent(request.topic) is QueryIntent.LITERAL_QUOTE:
+            return self._run_literal(request, paper_ids, emit)
 
         try:
             search_result = self._search.search(
@@ -87,6 +113,8 @@ class EvidenceAgentOrchestrator:
                     abstainReason=_ABSTAIN_NO_CORPUS,
                 )
             )
+
+        emit('papers_fetched', {'count': len(search_result.records)})
 
         # US-EV4(#268) 2차 — 본문이 동봉된 첨부(md/txt)는 corpus가 비어도 추출 대상이 된다.
         attachment_docs = [
@@ -141,6 +169,7 @@ class EvidenceAgentOrchestrator:
             )
 
         # --- 4. LLM 추출 (INV-EV-3 날조 금지 extractor 내부 강제) ---
+        emit('extracting', {'paperCount': len(doc_models)})
         try:
             items = self._extractor.extract(topic=request.topic, doc_models=doc_models)
         except LlmUnavailable:
@@ -151,6 +180,9 @@ class EvidenceAgentOrchestrator:
                     abstainReason=_ABSTAIN_LLM_FAILURE,
                 )
             )
+
+        # 추출 완료 — extractor가 C-2 경계(날조 제거)를 이미 강제한 뒤의 건수만 노출.
+        emit('validating', {'claimCount': len(items)})
 
         # INV-EV-2 — 빈 성공 금지
         if not items:
@@ -167,7 +199,48 @@ class EvidenceAgentOrchestrator:
             search_result=search_result,
             paper_count=len(doc_models),
         )
-        return TurnSuccessResult(outcome=result)
+        return TurnSuccessResult(
+            outcome=result,
+            resolved_paper_ids=_referenced_paper_ids(items),
+        )
+
+    def _run_literal(
+        self,
+        request: EvidenceRequest,
+        paper_ids: list[str],
+        emit: ProgressFn = lambda stage, payload: None,
+    ) -> TurnResult:
+        phrase = extract_literal_phrase(request.topic)
+        try:
+            literal_result = self._search.literal_search(phrase, paper_ids=paper_ids or None)
+        except PaperSearchUnavailable:
+            logger.warning('literal phrase search unavailable — abstaining')
+            return TurnAbstainResult(
+                outcome=EvidenceAbstainResult(state='abstain', abstainReason=_ABSTAIN_NO_CORPUS)
+            )
+
+        emit('papers_fetched', {'count': len(literal_result.matches)})
+
+        if not literal_result.matches:
+            return TurnAbstainResult(
+                outcome=EvidenceAbstainResult(state='abstain', abstainReason=_ABSTAIN_NO_CORPUS)
+            )
+
+        result = self._assembler.assemble_literal(literal_result)
+        resolved = tuple(dict.fromkeys(m.paper_id for m in literal_result.matches))
+        return TurnSuccessResult(outcome=result, resolved_paper_ids=resolved)
+
+
+def _progress_emitter(on_progress: ProgressFn | None) -> ProgressFn:
+    """진행 콜백 fail-soft 래퍼 — 관측/스트리밍 실패가 근거형성을 깨지 않는다(NFR-O1)."""
+    def emit(stage: str, payload: dict) -> None:
+        if on_progress is None:
+            return
+        try:
+            on_progress(stage, payload)
+        except Exception:  # noqa: BLE001 — 진행 신호는 advisory
+            logger.warning('evidence progress callback failed (stage=%s)', stage, exc_info=True)
+    return emit
 
 
 # 최근 몇 개 topic만·각 얼마까지 — research content(≤12000자)를 그대로 이어붙이면 검색 질의가
@@ -199,6 +272,16 @@ def _contextualize_topic(topic: str, prior_topics: tuple[str, ...]) -> str:
     if not recent:
         return topic
     return ' '.join([*recent, topic])
+
+
+def _referenced_paper_ids(items: list) -> tuple[str, ...]:
+    """이번 턴이 실제로 근거로 인용한 논문 id 집합 — 다음 턴 꼬리질문 좁히기용
+    (AgentRunContext.prior_paper_ids)."""
+    seen: dict[str, None] = {}
+    for item in items:
+        for ref in (*item.supporting, *item.conflicting):
+            seen.setdefault(ref.paperId, None)
+    return tuple(seen)
 
 
 def _get_paper_id(record: object) -> str | None:

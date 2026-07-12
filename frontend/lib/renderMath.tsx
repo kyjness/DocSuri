@@ -330,13 +330,36 @@ function rewriteScalebox(s: string): string {
   return out + s.slice(last);
 }
 
+// `physics` redefines these plain function operators to CAPTURE and auto-size a following
+// parenthesis group (its `'Expression'` handler). An unbalanced paren — an author typo, or an
+// `align` line we split mid-group so `(` and `)` land on different lines — then throws a fatal parse
+// error that collapses the WHOLE formula to the `수식` chip (arXiv:2502.02016v1 eq(29):
+// `\exp(c\cos((x-m))` has three `(` and two `)`). Routing each to `\operatorname{name}` (identical
+// glyph + spacing, minus physics' paren capture) makes the paren an ordinary character, so a
+// mismatched paren renders literally instead of nuking the line. Two groups because physics reads an
+// optional `[power]` ONLY on the trig family (its `opt=true`), rendering `\sin[2](x)` as sin²(x) — we
+// preserve that as `^{power}`; the non-trig operators take no such bracket. `\trace`/`\Trace` render
+// as `tr`/`Tr` in physics, so they map to those names, not literally. Excluded on purpose: `\div`
+// (handled above) and `\curl`/`\laplacian`/`\Res`/`\Re`/`\Im`, whose output ≠ their name. Longest
+// names first so the `(?![a-zA-Z])` boundary picks e.g. `\arcsin` over `\sin`.
+const PHYSICS_TRIG_RE =
+  /\\(arcsin|arccos|arctan|arccsc|arcsec|arccot|sinh|cosh|tanh|csch|sech|coth|asin|acos|atan|acsc|asec|acot|sin|cos|tan|csc|sec|cot)(?![a-zA-Z])(\[[^\]]*\])?/g;
+const PHYSICS_FN_RE = /\\(exp|log|ln|det|Pr|tr|Tr|erf)(?![a-zA-Z])/g;
+
 function preprocessLatex(latex: string): string {
   // Drop leaked citation/ref commands (a `\cite` inside a `\text{}` would otherwise throw), unwrap
-  // `\scalebox`/`\resizebox` to their content, and restore `\div` to the DIVISION sign. The `physics`
-  // package (loaded for its `\quantity`/`\derivative`/… support) redefines `\div` as the *divergence*
-  // operator (∇·), which would silently mis-render the far more common `a \div b` division; rewriting
-  // `\div` (not `\divergence`/`\divideontimes`) back to `÷` keeps standard LaTeX semantics.
-  return rewriteScalebox(stripLeakedRefs(latex)).replace(/\\div(?![a-zA-Z])/g, '\\mathbin{÷}');
+  // `\scalebox`/`\resizebox` to their content, restore `\div` to the DIVISION sign (the `physics`
+  // package — loaded for `\quantity`/`\derivative`/… — redefines it as the *divergence* operator ∇·,
+  // mis-rendering the far more common `a \div b`), and defuse physics' function paren-capture (see
+  // `PHYSICS_TRIG_RE`/`PHYSICS_FN_RE`) so an unbalanced paren no longer collapses the whole formula.
+  return rewriteScalebox(stripLeakedRefs(latex))
+    .replace(/\\div(?![a-zA-Z])/g, '\\mathbin{÷}')
+    .replace(PHYSICS_TRIG_RE, (_m, name, power) =>
+      power ? `\\operatorname{${name}}^{${power.slice(1, -1)}}` : `\\operatorname{${name}}`,
+    )
+    .replace(PHYSICS_FN_RE, '\\operatorname{$1}')
+    .replace(/\\trace(?![a-zA-Z])/g, '\\operatorname{tr}')
+    .replace(/\\Trace(?![a-zA-Z])/g, '\\operatorname{Tr}');
 }
 
 // ---------------------------------------------------------------------------

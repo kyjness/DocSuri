@@ -29,6 +29,10 @@ class PersonalizationRepository(Protocol):
     def save_profile(self, profile: UserInterestProfile) -> UserInterestProfile: ...
     def reset_profile(self, user_id: str) -> None: ...
     def purge_events_before(self, cutoff: datetime) -> int: ...
+    def list_uncategorized_paper_events(
+        self, event_types: set[str]
+    ) -> list[tuple[str, str]]: ...
+    def set_event_category(self, event_id: str, category: str) -> None: ...
     def list_recent_papers(
         self, user_id: str, limit: int = 50
     ) -> list[tuple[str, str, datetime]]: ...
@@ -92,6 +96,29 @@ class InMemoryPersonalizationRepository:
         with self._lock:
             self._profiles[profile.userId] = profile
             return profile
+
+    def list_uncategorized_paper_events(
+        self, event_types: set[str]
+    ) -> list[tuple[str, str]]:
+        with self._lock:
+            return [
+                (event.eventId, event.subject.paperId)
+                for event in self._events.values()
+                if event.eventType.value in event_types
+                and event.subject.paperId
+                and not event.subject.category
+            ]
+
+    def set_event_category(self, event_id: str, category: str) -> None:
+        with self._lock:
+            for key, event in self._events.items():
+                if event.eventId == event_id:
+                    self._events[key] = event.model_copy(
+                        update={
+                            "subject": event.subject.model_copy(update={"category": category})
+                        }
+                    )
+                    return
 
     def reset_profile(self, user_id: str) -> None:
         with self._lock:
@@ -304,6 +331,31 @@ class SqlPersonalizationRepository:
                 setattr(row, key, value)
         self._s.flush()
         return profile
+
+    def list_uncategorized_paper_events(
+        self, event_types: set[str]
+    ) -> list[tuple[str, str]]:
+        # Filter event_type in SQL; the "no category" check is on the JSON subject, done in Python
+        # (one-time job, modest row count — not worth a JSON operator per dialect).
+        rows = (
+            self._s.query(BehaviorEventTable.id, BehaviorEventTable.subject)
+            .filter(BehaviorEventTable.event_type.in_(event_types))
+            .all()
+        )
+        return [
+            (event_id, subject["paperId"])
+            for event_id, subject in rows
+            if subject and subject.get("paperId") and not subject.get("category")
+        ]
+
+    def set_event_category(self, event_id: str, category: str) -> None:
+        row = self._s.get(BehaviorEventTable, event_id)
+        if row is None:
+            return
+        subject = dict(row.subject)
+        subject["category"] = category
+        row.subject = subject  # reassign so SQLAlchemy tracks the JSON mutation
+        self._s.flush()
 
     def reset_profile(self, user_id: str) -> None:
         self._s.query(InterestProfileTable).filter(

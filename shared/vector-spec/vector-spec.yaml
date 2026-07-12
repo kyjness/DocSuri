@@ -15,9 +15,9 @@
 #   that requires a FULL RE-EMBED of the corpus. Writer and reader specVersion equality
 #   SHOULD be verified in CI / deploy (Infra/NFR Design).
 
-specVersion: v2            # vector-spec.md §1 — change => full re-embed (one-way); v1→v2 = Cohere v3→v4 re-embed
+specVersion: v3            # change => full re-embed (one-way); v1→v2 = Cohere v3→v4; v2→v3 = Cohere v4→Multilingual v3 (hours-scale multi-region re-embed, 2026-07)
 
-model: "Cohere Embed v4 (Bedrock)"
+model: "Cohere Embed Multilingual v3 (Bedrock)"
                            # vector-spec.md §1, TD-3 — cross-lingual
                            # (Korean query <-> English corpus)
 

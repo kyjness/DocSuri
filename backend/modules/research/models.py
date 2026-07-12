@@ -70,6 +70,9 @@ class ResearchChatMessage(BaseModel):
     role: ChatRole
     content: str = Field(min_length=1, max_length=12000)
     attachments: list[dict[str, Any]] = Field(default_factory=list)
+    # 꼬리질문 좁히기용 — 이 메시지(assistant, state=ok)가 실제로 근거로 쓴 논문 id 목록.
+    # user 메시지·성공하지 못한 assistant 메시지는 항상 빈 배열이다.
+    resolvedPaperIds: list[str] = Field(default_factory=list)
     createdAt: datetime = Field(default_factory=utc_now)
 
 

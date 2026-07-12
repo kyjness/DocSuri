@@ -76,6 +76,10 @@
         "degradationMode": {
           "$ref": "#/$defs/DegradationMode",
           "description": "Optional. Present when degraded=true to indicate the fallback mode (e.g. lexical-only). Trace: NFR-C1, US-R2, QT-3."
+        },
+        "personalized": {
+          "type": "boolean",
+          "description": "Optional (additive, backward-compatible). True when the US-P4 personalization re-rank actually boosted this page's order for the requesting user (SEARCH_RERANK_LIVE gate on AND profile boosts matched the top band). Absent/false = baseline order (no profile, 맞춤 서비스 off, shadow mode, or fail-soft). U5 shows the '내 관심 주제 반영' indicator with an off entry point (설정 킬스위치) when true. Trace: US-P4 (#155), BR-P8, BR-P13."
         }
       },
       "required": ["resultCount", "degraded"],

@@ -189,6 +189,29 @@ class GlossaryResolver:
         # Positive content id; 0 is reserved above for "no prompt-enforced terms" (shared baseline).
         return int(digest[:12], 16)
 
+    @staticmethod
+    def signature_of_translate(glossary: Glossary) -> int:
+        """Cache identity of a TRANSLATE artifact (0 = shared baseline). Unlike [[signature_of]]
+        (used for summary), this hashes only the user's NON-SEED strong overrides.
+
+        Seed standard terms are masked into ``⟦N⟧`` tokens and RENDERED at serve time, so a strong
+        override of a seed term (attention→주목) changes only the read-time rendering of a SHARED
+        base — it must NOT fork the translate cache (the Q2 cost win). A strong override of a term
+        NOT in the seed is not masked, so it still rides into the translate prompt and must fork
+        (owner-scoped) as before. Summary keeps the full [[signature_of]] (no masking there), so the
+        two tasks diverge by design."""
+        seed = {t.lower() for t in glossary.keep_as_is}
+        seed |= {m.term_from.lower() for m in glossary.seed_mappings}
+        enforced = sorted(
+            (m.term_from, m.term_to)
+            for m in glossary.user_overrides
+            if m.prompt_enforced and m.term_from.lower() not in seed
+        )
+        if not enforced:
+            return 0
+        digest = hashlib.sha256(repr(enforced).encode("utf-8")).hexdigest()
+        return int(digest[:12], 16)
+
     def prompt_glossary_signature(self, user_id: str | None) -> int:
         """Convenience: resolve the user's glossary and return its prompt-enforced content
         signature (see [[signature_of]]). Degrades to baseline (0) on a repo fault via

@@ -126,18 +126,32 @@ class Candidate:
 
 @dataclass(frozen=True, slots=True)
 class CandidateSet:
-    """HybridRetriever output: PaperId-deduped candidates (BR-4; PBT-07)."""
+    """HybridRetriever output: PaperId-deduped candidates (BR-4; PBT-07).
+
+    ``best_knn_score`` is the query's best RAW k-NN store score (None when k-NN did not run —
+    lexical-only degrade). RRF scores are rank-derived and not comparable across queries, so
+    this is the only absolute relevance signal that survives fusion; the orchestrator's
+    no-match floor (US-D6) gates on it. INTERNAL — never exposed on a card (SEC-9).
+    """
 
     candidates: tuple[Candidate, ...]
     retrieval_mode: RetrievalMode
+    best_knn_score: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class RankedResults:
-    """RelevanceRanker output: baseline score-desc, top-N (BR-5; PBT-03)."""
+    """RelevanceRanker output: baseline score-desc, top-N (BR-5; PBT-03).
+
+    ``personalized`` (US-P4 #155): True only when the LIVE personalization re-rank actually
+    boosted this order (set by the orchestrator's boost stage, never by the ranker/apply_boosts).
+    Surfaces as the optional ``ResultMeta.personalized`` response flag so U5 can show the
+    '내 관심 주제 반영' indicator. Default False = baseline order (fail-soft).
+    """
 
     ranked: tuple[Candidate, ...]
     ranking_mode: str = "baseline"
+    personalized: bool = False
 
 
 @dataclass(frozen=True, slots=True)

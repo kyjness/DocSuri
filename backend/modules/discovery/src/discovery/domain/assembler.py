@@ -50,7 +50,12 @@ class ResultAssembler:
         self,
         result: GroundedResults | AbstainResult | NoMatchResult,
         degrade_mode: DegradeMode,
+        *,
+        personalized: bool = False,
     ) -> SearchResponse:
+        # ``personalized`` (US-P4 #155): the LIVE boost stage actually reordered/boosted this
+        # page. Exposed as the optional meta.personalized flag on non-empty pages only; kept
+        # None (absent) when False so old consumers see an unchanged shape (fail-soft default).
         # A grounding *refusal* (verdict block/abstain) is the only true abstain.
         if isinstance(result, AbstainResult):
             return SearchResponse(AbstainDTO(reason=result.reason))
@@ -70,12 +75,17 @@ class ResultAssembler:
             return self._empty_page()
 
         cards = [_card(c, rank=i + 1) for i, c in enumerate(grounded)]
+        flag = True if personalized else None  # absent (not false) keeps old responses valid
         if degrade_mode is DegradeMode.NORMAL:
-            meta = ResultMeta(resultCount=len(cards), degraded=False, degradationMode=None)
+            meta = ResultMeta(
+                resultCount=len(cards), degraded=False, degradationMode=None, personalized=flag
+            )
             return SearchResponse(SearchResultPageDTO(cards=cards, meta=meta))
 
         mode = DegradationMode(degrade_mode.value)
-        meta = ResultMeta(resultCount=len(cards), degraded=True, degradationMode=mode)
+        meta = ResultMeta(
+            resultCount=len(cards), degraded=True, degradationMode=mode, personalized=flag
+        )
         return SearchResponse(DegradedResultDTO(cards=cards, meta=meta, mode=mode))
 
     @staticmethod

@@ -18,9 +18,11 @@ import styles from './TranslationView.module.css';
 // text is Korean. Below it, the glossary is split into two INDEPENDENT groups (BR-S4):
 //   · 원어 유지 용어 — the other terms the model kept in English → weak (read-time overlay).
 //   · 표준 용어 — DocSuri standard seed terms present in this paper (keep-as-is + mapping chips, the
-//     latter pre-filled) → strong (prompt-enforced, needs a re-generate). A strong term rides into the
-//     prompt for BOTH tasks, so it also invalidates the summary cache (reflected lazily on next open);
-//     the hint tells the reader so the summary re-generating later isn't a surprise.
+//     latter pre-filled) → strong. Standard terms are masked into ⟦N⟧ tokens at generation and
+//     RENDERED on read, so editing one reflects in the TRANSLATION immediately by re-rendering the
+//     shared base (no re-translation, no cache fork); it still rides into the SUMMARY prompt (no
+//     masking there), so the summary cache invalidates and updates lazily on next open — the hint
+//     tells the reader so the summary refreshing later isn't a surprise.
 // Editing a chip does NOT hit the server; it stages the rendering into a per-paper draft
 // (`useGlossaryDraft`, sessionStorage) so a pending edit — and its group's "반영" button — survive
 // leaving and re-entering this page, and nothing reflects until applied. Each group has its OWN apply
@@ -100,8 +102,17 @@ export function TranslationView({
   const standardGlossary = translation.standardGlossary ?? [];
   const standardKeepAsIs = standardGlossary.filter((g) => !g.translated);
   const standardMappings = standardGlossary.filter((g) => g.translated);
-  const standardTerms = new Set(standardGlossary.map((g) => g.term.toLowerCase()));
-  const nonStandardKept = translation.keptTerms.filter((t) => !standardTerms.has(t.toLowerCase()));
+  // Key on BOTH the English term_from and its Korean rendering: the model can echo a mapping's
+  // Korean (어텐션) into keptTerms, which must be absorbed by 표준 (backend already strips these;
+  // this is defense-in-depth so no standard rendering ever renders as a 원어 유지 chip). NFC-
+  // normalize both sides so composed/decomposed Hangul compare equal.
+  const norm = (s: string) => s.normalize('NFC').toLowerCase();
+  const standardTerms = new Set(
+    standardGlossary.flatMap((g) =>
+      [g.term, g.translated].filter(Boolean).map((s) => norm(s as string)),
+    ),
+  );
+  const nonStandardKept = translation.keptTerms.filter((t) => !standardTerms.has(norm(t)));
   const hasStandard = standardKeepAsIs.length > 0 || standardMappings.length > 0;
   const hasGlossary = showGlossary && (hasStandard || nonStandardKept.length > 0);
 
@@ -170,7 +181,7 @@ export function TranslationView({
       <div className={styles.apply}>
         <span className={styles.applyNote}>
           {isStrong
-            ? `바꾼 표준 용어 ${keys.length}개 · 누르면 번역을 다시 만들어 반영하고 요약에도 적용돼요`
+            ? `바꾼 표준 용어 ${keys.length}개 · 누르면 번역에 바로 반영되고 요약에도 적용돼요(요약은 다음에 열 때 갱신)`
             : `바꾼 용어 ${keys.length}개 · 누르면 번역에 반영해요`}
         </span>
         <button
@@ -180,7 +191,7 @@ export function TranslationView({
           disabled={busy}
           data-testid={isStrong ? 'glossary-apply-strong' : 'glossary-apply-weak'}
         >
-          {busy ? '반영 중…' : isStrong ? '번역 다시 만들기' : '번역에 반영하기'}
+          {busy ? '반영 중…' : '번역에 반영하기'}
         </button>
         {err ? (
           <span className={styles.applyError} role="alert">
@@ -241,8 +252,8 @@ export function TranslationView({
             <div className={styles.group} ref={strongGroupRef}>
               <h3 className={styles.glossaryTitle}>표준 용어</h3>
               <p className={styles.glossaryHint}>
-                DocSuri가 표준으로 정한 용어예요. 바꾼 뒤 아래 버튼을 누르면 번역을 다시 만들어
-                반영하고, 이 용어는 요약에도 함께 적용돼요(다음에 요약을 열 때 갱신).
+                DocSuri가 표준으로 정한 용어예요. 바꾼 뒤 아래 버튼을 누르면 번역에 바로 반영되고,
+                이 용어는 요약에도 함께 적용돼요(다음에 요약을 열 때 갱신).
               </p>
               <CollapsibleTerms label="표준 용어">
                 {standardKeepAsIs.map((g) => (

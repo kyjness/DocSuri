@@ -44,6 +44,17 @@ export function HeroLanding() {
           </Link>
         </div>
       ) : null}
+      {/* Legal links — reachable from the homepage so Google/social OAuth review can
+          find the privacy policy; the consent screen also carries these URLs. */}
+      <footer className={styles.legalFooter}>
+        <Link href="/privacy" className={styles.legalLink}>
+          개인정보처리방침
+        </Link>
+        <span aria-hidden="true">·</span>
+        <Link href="/terms" className={styles.legalLink}>
+          이용약관
+        </Link>
+      </footer>
     </section>
   );
 }

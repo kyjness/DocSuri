@@ -12,7 +12,6 @@ import pytest
 
 from backend.modules.accounts.repository.credential import (
     AccountDeletionTable,
-    AccountWithdrawalBackupTable,
     EmailChangeRequestTable,
     PasswordResetTokenTable,
     SocialIdentityTable,
@@ -25,7 +24,6 @@ MIGRATIONS = [
     Path("backend/modules/accounts/migrations/003_create_lifecycle_tables.sql"),
     Path("backend/modules/accounts/migrations/006_add_orcid_columns_to_social_identities.sql"),
     Path("backend/modules/accounts/migrations/007_add_email_change_revoke_token.sql"),
-    Path("backend/modules/accounts/migrations/008_create_account_withdrawal_backups.sql"),
     Path("backend/modules/accounts/migrations/011_add_purge_attempts.sql"),  # S2: account_deletions.purge_attempts
 ]
 
@@ -37,7 +35,6 @@ MIGRATIONS = [
         SocialIdentityTable,
         EmailChangeRequestTable,
         AccountDeletionTable,
-        AccountWithdrawalBackupTable,
     ],
 )
 def test_migration_columns_cover_model(model):

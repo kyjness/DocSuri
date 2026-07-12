@@ -47,7 +47,7 @@ class NoveltyStack(Stack):
             self,
             "NoveltyJobQueue",
             queue_name="docsuri-novelty-agent-job-queue",
-            visibility_timeout=Duration.seconds(900),
+            visibility_timeout=Duration.seconds(3600),
             retention_period=Duration.days(14),
             encryption=sqs.QueueEncryption.SQS_MANAGED,
             dead_letter_queue=sqs.DeadLetterQueue(max_receive_count=3, queue=dlq),

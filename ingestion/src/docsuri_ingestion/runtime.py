@@ -191,7 +191,8 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
         full_text_store=S3FullTextStore(bucket=settings.s3_bucket or ""),
         embedding=BedrockCohereEmbeddingPort(
             model_id=settings.bedrock_model_id or "",
-            region_name=settings.aws_region,
+            # embed region decoupled from aws_region (OpenSearch SigV4): Cohere v3 isn't in apne2.
+            region_name=settings.embed_region or settings.aws_region,
         ),
         vector_index=OpenSearchVectorIndex(
             endpoint=settings.opensearch_endpoint or "",
@@ -215,7 +216,7 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
         corpus_sources=corpus_sources,
         embedding_v2=BedrockCohereEmbeddingPort(
             model_id=settings.bedrock_model_id_v2,
-            region_name=settings.aws_region,
+            region_name=settings.embed_region or settings.aws_region,
         ) if settings.bedrock_model_id_v2 else None,
         vector_index_v2=OpenSearchVectorIndex(
             endpoint=settings.opensearch_endpoint or "",
