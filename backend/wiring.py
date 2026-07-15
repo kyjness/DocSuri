@@ -177,7 +177,7 @@ def _mount_discovery(app: FastAPI, settings: Settings, result: MountResult) -> N
             observability=observability,
             cost_guard=cost_guard,
         )
-        read_path = "real(opensearch+bedrock)"
+        read_path = f"real(opensearch+{discovery_settings.embedding_provider})"
     else:
         from discovery.mocks.wiring import build_mock_orchestrator
 

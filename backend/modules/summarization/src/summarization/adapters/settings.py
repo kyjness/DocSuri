@@ -18,6 +18,11 @@ from dataclasses import dataclass
 DEFAULT_SUMMARY_MODEL = "global.anthropic.claude-sonnet-4-6"
 DEFAULT_TRANSLATE_MODEL = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
 MODEL_VER = "sonnet46-haiku45"
+# Solo-local provider (DOCSURI_LLM_PROVIDER=openai — AWS retired). model_ver MUST differ per
+# provider: it is a cache-key dimension, so OpenAI generations key separately from the mirrored
+# Bedrock-era summaries instead of silently mixing under one version.
+DEFAULT_OPENAI_SUMMARY_MODEL = "gpt-4o-mini"
+DEFAULT_OPENAI_TRANSLATE_MODEL = "gpt-4o-mini"
 
 
 def _env_flag(name: str) -> bool:
@@ -64,6 +69,8 @@ class SummarizationSettings:
     # a background job on the MAP_REDUCE band and returns ``pending`` (the summarization worker
     # produces the result). When unset, map-reduce runs inline on the request (timeout risk).
     summary_job_queue_url: str | None = None
+    # LLM provider: "bedrock" (team AWS deploy) | "openai" (solo-local, personal key).
+    llm_provider: str = "bedrock"
 
     @property
     def summarization_enabled(self) -> bool:
@@ -72,17 +79,34 @@ class SummarizationSettings:
 
     @classmethod
     def from_env(cls) -> SummarizationSettings:
+        provider = (os.environ.get("DOCSURI_LLM_PROVIDER") or "bedrock").strip().lower()
+        default_summary = (
+            DEFAULT_OPENAI_SUMMARY_MODEL if provider == "openai" else DEFAULT_SUMMARY_MODEL
+        )
+        default_translate = (
+            DEFAULT_OPENAI_TRANSLATE_MODEL if provider == "openai" else DEFAULT_TRANSLATE_MODEL
+        )
         return cls(
-            summary_model_id=os.environ.get("DOCSURI_SUMMARY_MODEL_ID", DEFAULT_SUMMARY_MODEL),
+            llm_provider=provider,
+            summary_model_id=os.environ.get("DOCSURI_SUMMARY_MODEL_ID", default_summary),
             translate_model_id=os.environ.get(
-                "DOCSURI_TRANSLATE_MODEL_ID", DEFAULT_TRANSLATE_MODEL
+                "DOCSURI_TRANSLATE_MODEL_ID", default_translate
             ),
             s3_bucket=os.environ.get("DOCSURI_SUMMARY_BUCKET"),
             redis_url=os.environ.get("DOCSURI_REDIS_URL"),
             database_url=os.environ.get("DATABASE_URL"),
             region_name=os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION"),
             redis_ttl_seconds=int(os.environ.get("DOCSURI_SUMMARY_TTL", "86400")),  # 24h (§11)
-            model_ver=MODEL_VER,
+            # OpenAI model_ver derives from the ACTUAL model ids so swapping models rotates
+            # the cache key (a fixed provider tag would silently serve stale-model output).
+            model_ver=(
+                "openai:"
+                + os.environ.get("DOCSURI_SUMMARY_MODEL_ID", default_summary)
+                + ":"
+                + os.environ.get("DOCSURI_TRANSLATE_MODEL_ID", default_translate)
+                if provider == "openai"
+                else MODEL_VER
+            ),
             assets_enabled=_env_flag("DOCSURI_MULTIMODAL_ASSETS_ENABLED"),
             asset_url_ttl_seconds=int(os.environ.get("DOCSURI_ASSET_URL_TTL_SECONDS", "600")),
             docmodel_viewer_enabled=_env_flag("DOCSURI_DOCMODEL_VIEWER_ENABLED"),

@@ -12,8 +12,13 @@
 #   uv run --extra real python -m discovery.scripts.seed_local_opensearch   # from modules/discovery
 #   uv run --extra real --extra dev pytest -m integration
 
+# Project name pins the network/volume prefix (else it defaults to the directory name,
+# "backend"); container_name pins each container (no "-1" replica suffix).
+name: docsuri
+
 services:
   postgres:
+    container_name: docsuri-postgres
     image: postgres:16
     environment:
       POSTGRES_USER: docsuri
@@ -30,6 +35,7 @@ services:
       retries: 10
 
   redis:
+    container_name: docsuri-redis
     image: redis:7
     # accounts/U3 is Fail-Closed on session-store loss (NFR-Design) — multi-AZ in prod;
     # a single node is fine for local dev.
@@ -45,6 +51,7 @@ services:
   # 9200 (set DOCSURI_OPENSEARCH_USE_SSL=0). k-NN (cosine, 1024-dim) is bundled. The U1 writer
   # and U2 reader share ONE index (docsuri-corpus-v1, vector-spec §4).
   opensearch:
+    container_name: docsuri-opensearch
     image: opensearchproject/opensearch:2.13.0
     environment:
       discovery.type: single-node
@@ -64,6 +71,36 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+
+  # S3 substitute (solo-local migration — aidlc-docs/operations/solo-local-migration.md §2).
+  # s3proxy (jclouds filesystem backend) serves the downloaded S3 mirror as plain files:
+  # bucket ``docsuri`` = the mounted directory, keys = its file tree, no import/duplication.
+  # (MinIO was tried first and rejected: it refuses sub-mounts under its export path and
+  # modern releases dropped plain-directory serving entirely.)
+  # boto3 ≥1.28 picks the endpoint up from AWS_ENDPOINT_URL_S3 — no adapter changes:
+  #   export AWS_ENDPOINT_URL_S3=http://localhost:9000
+  #   export AWS_ACCESS_KEY_ID=docsuri AWS_SECRET_ACCESS_KEY=docsuri-local
+  #   export DOCSURI_S3_BUCKET=docsuri DOCSURI_DOCMODEL_BUCKET=docsuri
+  # Served rw: summary-cache writes land as additive JSONs under s3/summaries/ (accepted).
+  # Local dev only — do not reuse for anything internet-facing.
+  s3proxy:
+    container_name: docsuri-s3proxy
+    image: andrewgaul/s3proxy
+    environment:
+      S3PROXY_AUTHORIZATION: aws-v2-or-v4
+      S3PROXY_IDENTITY: docsuri
+      S3PROXY_CREDENTIAL: docsuri-local
+      JCLOUDS_PROVIDER: filesystem
+      JCLOUDS_FILESYSTEM_BASEDIR: /data
+    ports:
+      - "9000:80"
+    volumes:
+      - ${DOCSURI_S3_MIRROR:-~/data/docsuri-data/s3}:/data/docsuri
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/80 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
 volumes:
   docsuri-pgdata:

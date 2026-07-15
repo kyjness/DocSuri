@@ -155,6 +155,9 @@ def _apply_startup_migrations(database_url: str) -> None:
             "backend/modules/mypage/migrations",
             "backend/modules/research/migrations",
             "backend/modules/novelty/migrations",
+            # U7 personal glossary — summarization mounts in this app-shell, so its schema
+            # belongs to this runner too (the AWS deploy applied it from the worker image).
+            "backend/modules/summarization/migrations",
         ],
     )
     log.info("startup migrations: applied=%s", applied or "(none pending)")

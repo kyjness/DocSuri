@@ -24,6 +24,8 @@ _DEFAULT_INDEX = "docsuri-corpus"
 _DEFAULT_USE_SSL = True
 _DEFAULT_VERIFY_CERTS = True
 _DEFAULT_CACHE_TTL_SECONDS = 300.0
+_DEFAULT_EMBEDDING_PROVIDER = "bedrock"
+_DEFAULT_OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
 
 
 def _flag(name: str, default: bool) -> bool:
@@ -53,6 +55,11 @@ class DiscoverySettings:
     opensearch_use_ssl: bool = _DEFAULT_USE_SSL
     opensearch_verify_certs: bool = _DEFAULT_VERIFY_CERTS
     bedrock_model_id: str | None = None
+    # Query-embedding provider: "bedrock" (team AWS deploy) | "openai" (solo-local migration —
+    # AWS retired; personal key via OPENAI_API_KEY). The writer (reindex) must use the SAME
+    # model so reader and index share one space (vector-spec §4).
+    embedding_provider: str = _DEFAULT_EMBEDDING_PROVIDER
+    openai_embedding_model: str = _DEFAULT_OPENAI_EMBEDDING_MODEL
     aws_region: str | None = None
     # Bedrock embedding region, decoupled from aws_region (used for OpenSearch SigV4). Needed
     # because Cohere Embed Multilingual v3 is NOT available in ap-northeast-2 (the domain region),
@@ -79,8 +86,10 @@ class DiscoverySettings:
 
     @property
     def search_enabled(self) -> bool:
-        """True when the real read path can be wired (cluster + model configured)."""
-        return bool(self.opensearch_endpoint and self.bedrock_model_id)
+        """True when the real read path can be wired: cluster + an embedding provider —
+        Bedrock model id (team deploy) or the OpenAI provider switch (solo-local)."""
+        embedder_configured = bool(self.bedrock_model_id) or self.embedding_provider == "openai"
+        return bool(self.opensearch_endpoint and embedder_configured)
 
     @classmethod
     def from_env(cls) -> DiscoverySettings:
@@ -93,6 +102,11 @@ class DiscoverySettings:
             opensearch_use_ssl=_flag("DOCSURI_OPENSEARCH_USE_SSL", _DEFAULT_USE_SSL),
             opensearch_verify_certs=_flag("DOCSURI_OPENSEARCH_VERIFY_CERTS", _DEFAULT_VERIFY_CERTS),
             bedrock_model_id=os.getenv("DOCSURI_BEDROCK_MODEL_ID") or None,
+            embedding_provider=(
+                os.getenv("DOCSURI_EMBEDDING_PROVIDER") or _DEFAULT_EMBEDDING_PROVIDER
+            ).strip().lower(),
+            openai_embedding_model=os.getenv("DOCSURI_OPENAI_EMBEDDING_MODEL")
+            or _DEFAULT_OPENAI_EMBEDDING_MODEL,
             aws_region=os.getenv("DOCSURI_AWS_REGION") or None,
             bedrock_region=os.getenv("DOCSURI_BEDROCK_REGION") or None,
             search_event_bus=os.getenv("DOCSURI_SEARCH_EVENT_BUS") or None,

@@ -361,12 +361,18 @@ class OpenSearchVectorIndex:
         username: str | None = None,
         password: str | None = None,
         stats_ttl_seconds: float = 60.0,
+        use_ssl: bool = True,
+        verify_certs: bool = True,
     ) -> None:
+        # use_ssl/verify_certs forwarded for plain-HTTP local clusters (docker single node)
+        # — the U2 reader factory already supports this; the writer previously pinned TLS on.
         self._client = build_opensearch_client(
             endpoint=endpoint,
             region_name=region_name,
             username=username,
             password=password,
+            use_ssl=use_ssl,
+            verify_certs=verify_certs,
         )
         self._index_name = index_name
         self._stats_cache = IndexStatsTtlCache(ttl_seconds=stats_ttl_seconds)

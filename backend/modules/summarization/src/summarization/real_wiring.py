@@ -67,11 +67,22 @@ def build_real_orchestrator(
 ) -> SummarizationBundle:
     assert settings.s3_bucket is not None  # noqa: S101 — gated by summarization_enabled
 
-    llm = BedrockLlmGateway(
-        summary_model_id=settings.summary_model_id,
-        translate_model_id=settings.translate_model_id,
-        region_name=settings.region_name,
-    )
+    if settings.llm_provider == "openai":
+        # Solo-local migration: personal OpenAI key replaces Bedrock. Same forced-tool
+        # structured-output contract; model_ver in the cache key already reflects the
+        # provider (settings), so OpenAI outputs never collide with cached Bedrock ones.
+        from .adapters.openai_llm import OpenAILlmGateway
+
+        llm: object = OpenAILlmGateway(
+            summary_model_id=settings.summary_model_id,
+            translate_model_id=settings.translate_model_id,
+        )
+    else:
+        llm = BedrockLlmGateway(
+            summary_model_id=settings.summary_model_id,
+            translate_model_id=settings.translate_model_id,
+            region_name=settings.region_name,
+        )
     store = S3RedisSummaryStore(
         bucket=settings.s3_bucket,
         ttl_seconds=settings.redis_ttl_seconds,

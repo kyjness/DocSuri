@@ -9,7 +9,10 @@ dependencies = [
     # Shared contracts (DTOs/events/vector-spec/ports) — single source of truth, never forked.
     "docsuri-shared",
     # U2 search domain — mounted by _mount_discovery (was graceful-skipped while undeclared).
-    "docsuri-discovery",
+    # [real] pulls opensearch-py so the app-shell can wire the real read path locally
+    # (the AWS deploy got it from the deploy image; without it _mount_discovery's real-path
+    # import raises ModuleNotFoundError and the module silently skips).
+    "docsuri-discovery[real]",
     # U7 summarization/translation domain — mounted by _mount_summarization (real-first: mounts
     # only when the S3 store is configured, else skips). Its real-extra deps (boto3/redis/psycopg)
     # are already in this closure below, so no new third-party packages are pulled.
