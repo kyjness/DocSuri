@@ -1,13 +1,26 @@
 # DocSuri Conventions
 
-Team VCS conventions. AIDLC (`AGENTS.md`, `.aidlc-rule-details/`) governs the **document**
+VCS conventions. AIDLC (`AGENTS.md`, `.aidlc-rule-details/`) governs the **document**
 lifecycle; AIDLC is deliberately silent on git, so the git workflow is documented here.
+
+> **Solo-fork mode (2026-07~).** The 4-person team and the upstream
+> `80-hours-a-week/DocSuri` are retired; this fork is maintained solo. The PR-first rule
+> below is relaxed accordingly — the rest (branch naming, commit style, tags) still applies.
 
 ## Branches (git-flow)
 
-- **`main`** — production. What's deployed at https://docsuri.org. Advanced only by promoting `develop`.
-- **`develop`** — integration target. All work merges here first, via GitHub PR.
-- Working branches are short-lived and merge into `develop` through a PR.
+- **`main`** — production/release line. The docsuri.org deployment is retired (redeploy
+  deferred — see `aidlc-docs/operations/solo-local-migration.md` §7); promote `develop`
+  into `main` when cutting a release/portfolio snapshot.
+- **`develop`** — integration target and default branch. **Direct commits and direct
+  pushes to `develop` are allowed** (solo maintenance; a self-approved PR adds ceremony,
+  not review — CI runs on `develop` pushes anyway).
+- Working branches + PR are still preferred for larger or riskier work. Rule of thumb:
+  work that fits one session and reverts cleanly → commit straight to `develop`; multi-day,
+  structural, or experimental work (e.g. the novelty agent redesign) → branch + PR, which
+  keeps unfinished work off `develop`, leaves a reviewable record, and enables PR-based
+  deep review tooling.
+- Working branches, when used, are short-lived and merge into `develop` through a PR.
 
 ### Branch naming
 
