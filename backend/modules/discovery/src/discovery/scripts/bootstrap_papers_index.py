@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import sys
 
+from docsuri_shared.vector_spec import DIMENSIONS
+
 from ..adapters.opensearch_index import OpenSearchClientFactory
 from ..adapters.settings import DiscoverySettings
 from .seed_local_opensearch import create_index, papers_index_body
@@ -37,7 +39,27 @@ def bootstrap(settings: DiscoverySettings | None = None, *, recreate: bool = Fal
     existed = client.indices.exists(index=index)
     if existed and not recreate:
         return f"index {index!r} exists — pass --recreate to rebuild it with the on_disk mapping"
-    create_index(client, index, recreate=recreate, body=papers_index_body(on_disk=True))
+    # Stamp the embedding manifest with the configured provider identity: the harvest that
+    # fills this index MUST use the same model, and the reader-side space guard verifies it
+    # (u2 business-rules §6 / vector-spec §4).
+    if settings.embedding_provider == "openai":
+        embedding_meta = {
+            "provider": "openai",
+            "model": settings.openai_embedding_model,
+            "dimensions": DIMENSIONS,
+        }
+    else:
+        embedding_meta = {
+            "provider": "bedrock",
+            "model": settings.bedrock_model_id or "",
+            "dimensions": DIMENSIONS,
+        }
+    create_index(
+        client,
+        index,
+        recreate=recreate,
+        body=papers_index_body(on_disk=True, embedding_meta=embedding_meta),
+    )
     verb = "recreated" if existed else "created"
     return f"{verb} empty on_disk index {index!r} (run the bulk harvest to populate it)"
 

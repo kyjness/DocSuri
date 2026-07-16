@@ -27,6 +27,7 @@ def papers_index_body(
     number_of_replicas: int | None = None,
     refresh_interval: str | None = None,
     dimension: int | None = None,
+    embedding_meta: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Corpus index body. The ``number_of_*`` / ``refresh_interval`` knobs default to ``None``
     (omitted → OpenSearch cluster defaults, so the live provisioning path is unchanged). A fast
@@ -35,7 +36,14 @@ def papers_index_body(
 
     ``dimension`` defaults to the frozen ``DIMENSIONS`` (1024); a re-embed to a different embedding
     space (e.g. Cohere v4's 1536 default) passes it explicitly so the target k-NN mapping matches
-    the new vectors — without bumping the frozen vector-spec until reader cutover (see runbook)."""
+    the new vectors — without bumping the frozen vector-spec until reader cutover (see runbook).
+
+    ``embedding_meta`` is the embedding-space manifest (e.g. ``{"provider": ..., "model": ...,
+    "dimensions": ...}``) stamped into ``mappings._meta.embedding`` by whoever creates the index —
+    the writer knows which model produced the vectors. The U2 reader validates its own embedding
+    identity against this manifest once at wiring time and degrades the vector leg to lexical-only
+    on a mismatch (vector-spec §4 same-space invariant; u2 business-rules §6 N1 decision). ``None``
+    (legacy callers) omits the stamp — the reader then logs that the space cannot be verified."""
     dim = dimension or DIMENSIONS
     if on_disk:
         vector: dict[str, Any] = {
@@ -58,28 +66,32 @@ def papers_index_body(
         index_settings["number_of_replicas"] = number_of_replicas
     if refresh_interval is not None:
         index_settings["refresh_interval"] = refresh_interval
+    mappings: dict[str, Any] = {
+        "properties": {
+            "chunkId": {"type": "keyword"},
+            "paperId": {"type": "keyword"},
+            "version": {"type": "integer"},
+            "vector": vector,
+            "section": {"type": "keyword"},
+            "lexicalTerms": {"type": "text"},
+            "blockRefs": {"type": "object", "enabled": False},
+            "title": {"type": "text"},
+            "authors": {"type": "keyword"},
+            "year": {"type": "integer"},
+            "arxivId": {"type": "keyword"},
+            "abstract": {"type": "text"},
+            "abstractSnippet": {"type": "text"},
+            "arxivUrl": {"type": "keyword"},
+            "categories": {"type": "keyword"},
+            "doi": {"type": "keyword"},
+            "sourceArxivId": {"type": "keyword"},
+            "sourceProvenance": {"type": "object", "enabled": False},
+        }
+    }
+    if embedding_meta is not None:
+        mappings["_meta"] = {"embedding": dict(embedding_meta)}
     return {
         "settings": {"index": index_settings},
-        "mappings": {
-            "properties": {
-                "chunkId": {"type": "keyword"},
-                "paperId": {"type": "keyword"},
-                "version": {"type": "integer"},
-                "vector": vector,
-                "section": {"type": "keyword"},
-                "lexicalTerms": {"type": "text"},
-                "blockRefs": {"type": "object", "enabled": False},
-                "title": {"type": "text"},
-                "authors": {"type": "keyword"},
-                "year": {"type": "integer"},
-                "arxivId": {"type": "keyword"},
-                "abstract": {"type": "text"},
-                "abstractSnippet": {"type": "text"},
-                "arxivUrl": {"type": "keyword"},
-                "categories": {"type": "keyword"},
-                "doi": {"type": "keyword"},
-                "sourceArxivId": {"type": "keyword"},
-                "sourceProvenance": {"type": "object", "enabled": False},
-            }
-        },
+        "mappings": mappings,
     }
+

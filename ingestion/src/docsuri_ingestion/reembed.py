@@ -99,6 +99,13 @@ def reembed_provision(settings: IngestionSettings | None = None) -> int:
             number_of_replicas=0,
             refresh_interval="-1",
             dimension=settings.reembed_dimension,
+            # Embedding manifest: MODE B re-embeds with this Bedrock model; the U2 reader-side
+            # space guard verifies it after cutover (vector-spec §4 / u2 business-rules §6).
+            embedding_meta={
+                "provider": "bedrock",
+                "model": settings.bedrock_model_id or "",
+                "dimensions": settings.reembed_dimension or EMBEDDING_SPEC.dimensions,
+            },
         ),
     )
     log.info(

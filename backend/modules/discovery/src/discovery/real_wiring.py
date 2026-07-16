@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from docsuri_shared.ports import CostGuardCircuitBreaker, ObservabilityHub
+from docsuri_shared.vector_spec import DIMENSIONS
 
 from .adapters.bedrock_embedding import BedrockCohereQueryEmbedder
 from .adapters.bedrock_rerank import BedrockRerankAdapter
@@ -28,7 +29,9 @@ from .adapters.opensearch_index import (
     OpenSearchPaperLookupAdapter,
     OpenSearchVectorStoreAdapter,
 )
+from .adapters.resilience import CircuitBreaker, CircuitGuardedEmbedder
 from .adapters.settings import DiscoverySettings
+from .adapters.space_guard import MismatchedSpaceEmbedder, guard_embedding_space
 from .cache.embedding_cache import EmbeddingCache
 from .domain.assembler import ResultAssembler
 from .domain.expander import QueryUnderstandingExpander
@@ -79,6 +82,11 @@ def build_real_orchestrator(
         # Solo-local migration: personal OpenAI key replaces Bedrock (see the adapter's
         # docstring for the same-space invariant with the reindex writer).
         embedding: object = OpenAIQueryEmbedder(model=settings.openai_embedding_model)
+        reader_identity = {
+            "provider": "openai",
+            "model": settings.openai_embedding_model,
+            "dimensions": DIMENSIONS,
+        }
     else:
         embedding = BedrockCohereQueryEmbedder(
             model_id=settings.bedrock_model_id or "",
@@ -86,6 +94,25 @@ def build_real_orchestrator(
             # ap-northeast-2, so the reader embeds queries cross-region. Falls back to aws_region.
             region_name=settings.bedrock_region or settings.aws_region,
         )
+        reader_identity = {
+            "provider": "bedrock",
+            "model": settings.bedrock_model_id or "",
+            "dimensions": DIMENSIONS,
+        }
+    # Same-space guard (u2 business-rules §6 / N1): validate the active index's embedding
+    # manifest against the reader identity ONCE here; a mismatch swaps in a sentinel that
+    # degrades every request to lexical-only (vector leg off) instead of serving semantically
+    # contaminated neighbors. Legacy manifest-less indices pass with a warning.
+    embedding = guard_embedding_space(
+        client, settings.opensearch_index, reader_identity, embedding
+    )
+    # Dependency circuits (nfr-design-patterns §1.2): cache → circuit → real adapter, so cache
+    # hits bypass the breaker and a sustained embedding outage fails fast into lexical-only.
+    # The mismatch sentinel is NOT breaker-wrapped: its deliberate per-request raise would open
+    # the circuit and replace the mismatch reason with a phantom "provider outage" message.
+    if not isinstance(embedding, MismatchedSpaceEmbedder):
+        embedding_breaker = CircuitBreaker(f"{reader_identity['provider']}-embedding")
+        embedding = CircuitGuardedEmbedder(embedding, embedding_breaker)
     cache = EmbeddingCache(embedding, ttl_seconds=settings.embedding_cache_ttl_seconds)
 
     # The bus is shared infra (system/U6 EventBridge). Until provisioned, keep events
@@ -111,12 +138,16 @@ def build_real_orchestrator(
         else None
     )
 
+    # ONE circuit for the one OpenSearch store (k-NN, BM25, and lookup share the dependency);
+    # OPEN → immediate IndexUnavailable → the existing fail-closed 503, skipping the doomed
+    # retry+timeout budget on every request of a sustained outage.
+    store_breaker = CircuitBreaker("opensearch")
     orchestrator = SearchOrchestrationService(
         validator=QueryValidator(),
         expander=QueryUnderstandingExpander(cache),
         retriever=HybridRetriever(
-            OpenSearchVectorStoreAdapter(client, settings.opensearch_index),
-            OpenSearchLexicalIndexAdapter(client, settings.opensearch_index),
+            OpenSearchVectorStoreAdapter(client, settings.opensearch_index, store_breaker),
+            OpenSearchLexicalIndexAdapter(client, settings.opensearch_index, store_breaker),
         ),
         ranker=RelevanceRanker(),
         grounding_adapter=GroundingAdapter(),
@@ -127,7 +158,7 @@ def build_real_orchestrator(
         reranker=reranker,
     )
     paper_service = PaperMetadataService(
-        OpenSearchPaperLookupAdapter(client, settings.opensearch_index)
+        OpenSearchPaperLookupAdapter(client, settings.opensearch_index, store_breaker)
     )
     return RealBundle(
         orchestrator=orchestrator, event_publisher=publisher, paper_service=paper_service

@@ -24,6 +24,7 @@ from docsuri_shared.vector_spec import IndexRecord
 from pydantic import ValidationError
 
 from ..ports.search_ports import IndexUnavailable, ScoredRecord
+from .resilience import CircuitBreaker
 
 _log = logging.getLogger(__name__)
 
@@ -66,18 +67,30 @@ def _is_transient(exc: BaseException) -> bool:
 
 
 def _search_hits(
-    client: Any, index: str, body: dict[str, Any], *, message: str
+    client: Any,
+    index: str,
+    body: dict[str, Any],
+    *,
+    message: str,
+    breaker: CircuitBreaker | None = None,
 ) -> list[dict[str, Any]]:
     """Run a search and return its hits, retrying transient store failures before fail-closing to
     ``IndexUnavailable``. Only known-transient failures are retried (``_is_transient``); anything
     else fail-closes on the first attempt. Each attempt carries a bounded ``request_timeout`` so a
     stuck call can't stretch the retry past the search latency budget.
 
+    ``breaker`` is the store's circuit (nfr-design-patterns §1.2, shared by every adapter on the
+    one OpenSearch store): OPEN → fail-closed immediately instead of burning the full
+    retry+timeout budget on every request of a sustained outage. One ``_search_hits`` call —
+    including its internal transient retries — counts as ONE breaker outcome.
+
     The raised ``IndexUnavailable`` chains ``from`` the underlying store error and records which
     query and how many attempts failed in its message, so the request-aware 503 handler logs the
     real cause correlated to the request id in one self-contained line (no timestamp join to a
     separate adapter log). The bare ``raise ... from exc`` previously discarded that cause, making
     a real outage indistinguishable from a transient blip."""
+    if breaker is not None and not breaker.allow():
+        raise IndexUnavailable(f"{message}: {breaker.name} circuit open — failing fast")
     last_exc: Exception | None = None
     attempt = 0
     for attempt in range(_SEARCH_MAX_ATTEMPTS):
@@ -85,12 +98,26 @@ def _search_hits(
             response = client.search(
                 index=index, body=body, request_timeout=_SEARCH_REQUEST_TIMEOUT_S
             )
-            return response["hits"]["hits"]
+            hits = response["hits"]["hits"]
         except Exception as exc:  # noqa: BLE001 — one store; transient-tolerant then fail-closed
             last_exc = exc
             if not _is_transient(exc) or attempt == _SEARCH_MAX_ATTEMPTS - 1:
                 break
             time.sleep(_SEARCH_RETRY_BACKOFF_S[attempt])
+            continue
+        if breaker is not None:
+            breaker.record_success()
+        return hits
+    if breaker is not None:
+        # Only an OUTAGE-shaped final error (transient class: connection/timeout/5xx) counts
+        # toward opening the circuit. A 4xx or unexpected response shape means the store
+        # RESPONDED — same rule as CircuitGuardedEmbedder — so a poisoned query or an index
+        # misconfig fail-closes per-request without turning a healthy store into a fast-fail
+        # 503 wall for every adapter sharing the breaker.
+        if last_exc is not None and _is_transient(last_exc):
+            breaker.record_failure()
+        else:
+            breaker.record_success()
     raise IndexUnavailable(f"{message} after {attempt + 1} attempt(s)") from last_exc
 # arXiv version suffix ("v3"). paperId is stored version-less, so stripping the requested id's
 # version lets the detail lookup resolve a paper indexed at a *different* version than the one
@@ -194,11 +221,17 @@ def _to_scored(hits: list[dict[str, Any]]) -> list[ScoredRecord]:
 
 
 class OpenSearchVectorStoreAdapter:
-    """k-NN (ANN) reader over the shared OpenSearch index (cosine; FR-2)."""
+    """k-NN (ANN) reader over the shared OpenSearch index (cosine; FR-2).
 
-    def __init__(self, client: Any, index_name: str) -> None:
+    ``breaker`` (optional) is the ONE store circuit shared with the lexical/lookup adapters —
+    OpenSearch is a single dependency, so any adapter's failures open it for all."""
+
+    def __init__(
+        self, client: Any, index_name: str, breaker: CircuitBreaker | None = None
+    ) -> None:
         self._client = client
         self._index = index_name
+        self._breaker = breaker
 
     def knn_search(
         self, vector: Sequence[float], top_k: int, abstract_only: bool = False
@@ -212,7 +245,11 @@ class OpenSearchVectorStoreAdapter:
             "query": {"knn": {"vector": knn}},
         }
         hits = _search_hits(
-            self._client, self._index, body, message="OpenSearch k-NN query failed"
+            self._client,
+            self._index,
+            body,
+            message="OpenSearch k-NN query failed",
+            breaker=self._breaker,
         )
         return _to_scored(hits)
 
@@ -221,9 +258,12 @@ class OpenSearchPaperLookupAdapter:
     """Single-document reader over the shared OpenSearch index — one record for a paper id
     (matched on ``paperId`` or display ``arxivId``). Powers the paper-detail metadata endpoint."""
 
-    def __init__(self, client: Any, index_name: str) -> None:
+    def __init__(
+        self, client: Any, index_name: str, breaker: CircuitBreaker | None = None
+    ) -> None:
         self._client = client
         self._index = index_name
+        self._breaker = breaker
 
     def fetch_paper(self, paper_id: str) -> IndexRecord | None:
         # Match the version-less paperId, the exact display arxivId, OR the version-stripped id
@@ -245,7 +285,11 @@ class OpenSearchPaperLookupAdapter:
             },
         }
         hits = _search_hits(
-            self._client, self._index, body, message="OpenSearch paper lookup failed"
+            self._client,
+            self._index,
+            body,
+            message="OpenSearch paper lookup failed",
+            breaker=self._breaker,
         )
         if not hits:
             return None
@@ -266,9 +310,12 @@ class OpenSearchPaperLookupAdapter:
 class OpenSearchLexicalIndexAdapter:
     """BM25 reader over analyzed title, abstract, and chunk-body lexical fields (FR-2)."""
 
-    def __init__(self, client: Any, index_name: str) -> None:
+    def __init__(
+        self, client: Any, index_name: str, breaker: CircuitBreaker | None = None
+    ) -> None:
         self._client = client
         self._index = index_name
+        self._breaker = breaker
 
     def bm25_search(
         self,
@@ -286,7 +333,11 @@ class OpenSearchLexicalIndexAdapter:
             },
         }
         hits = _search_hits(
-            self._client, self._index, body, message="OpenSearch BM25 query failed"
+            self._client,
+            self._index,
+            body,
+            message="OpenSearch BM25 query failed",
+            breaker=self._breaker,
         )
         return _to_scored(hits)
 
@@ -317,6 +368,10 @@ class OpenSearchLexicalIndexAdapter:
             query["bool"]["filter"] = [{"terms": {"paperId": list(paper_ids)}}]
         body = {"size": top_k, "query": query}
         hits = _search_hits(
-            self._client, self._index, body, message="OpenSearch phrase query failed"
+            self._client,
+            self._index,
+            body,
+            message="OpenSearch phrase query failed",
+            breaker=self._breaker,
         )
         return _to_scored(hits)

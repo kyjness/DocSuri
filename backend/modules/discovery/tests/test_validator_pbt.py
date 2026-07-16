@@ -36,6 +36,19 @@ def test_control_chars_rejected() -> None:
     assert _validator.validate("a\x1fb").ok is False
 
 
+def test_c1_control_chars_rejected() -> None:
+    # BR-1 rejects ALL control characters — including the C1 range U+0080–U+009F, not just C0.
+    assert _validator.validate("a\x80b").ok is False
+    assert _validator.validate("a\x9fb").ok is False
+
+
+def test_nel_is_collapsed_not_rejected() -> None:
+    # NEL (U+0085) is the one whitespace-class C1 control: consistent with \t\n\v\f\r, it is
+    # collapsed by normalize rather than rejected.
+    assert _validator.validate("a\x85b").ok is True
+    assert _validator.normalize("a\x85b").text == "a b"
+
+
 def test_whitespace_controls_are_collapsed_not_rejected() -> None:
     # \t\n\v\f\r are whitespace, not control-char rejections (BR-1/BR-2): they pass validation
     # and normalize collapses them to a single space (matching the _CONTROL exclusion comment).

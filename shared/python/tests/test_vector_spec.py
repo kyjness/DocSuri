@@ -133,3 +133,13 @@ def test_assert_same_space_ignores_input_type_roles():
     # input_type_* are asymmetric ROLES, not space identity — flipping one is NOT a mismatch.
     flipped = dataclasses.replace(vs.EMBEDDING_SPEC, input_type_writer="search_query")
     vs.assert_same_space(vs.EMBEDDING_SPEC, flipped)  # no raise
+
+
+def test_papers_index_body_embedding_manifest_stamp():
+    # Writers stamp mappings._meta.embedding so the U2 reader can verify the same-space
+    # invariant at wiring time (vector-spec §4; u2 business-rules §6). Omitted → no _meta
+    # (legacy callers unchanged).
+    meta = {"provider": "openai", "model": "text-embedding-3-small", "dimensions": 1024}
+    body = papers_index_body(embedding_meta=meta)
+    assert body["mappings"]["_meta"] == {"embedding": meta}
+    assert "_meta" not in papers_index_body()["mappings"]

@@ -37,6 +37,7 @@ from docsuri_ingestion.domain.models import EmbeddingBatch, ParsedPaper
 from docsuri_ingestion.processors import Chunker, IndexRecordAssembler
 from docsuri_shared.dtos import DocModel
 from docsuri_shared.index_spec import papers_index_body
+from docsuri_shared.vector_spec import DIMENSIONS
 
 _ARXIV_API = "http://export.arxiv.org/api/query"
 _ARXIV_BATCH = 100
@@ -155,10 +156,24 @@ def _enumerate_papers(docmodel_dir: Path, limit: int | None) -> list[Path]:
     return picked
 
 
-def _ensure_index(client, index: str, alias: str) -> None:
+def _ensure_index(client, index: str, alias: str, *, embedding_model: str) -> None:
+    # Embedding manifest: this rebuild embeds with OpenAI; the discovery reader's space guard
+    # verifies provider/model at wiring time (vector-spec §4 same-space invariant).
+    embedding_meta = {
+        "provider": "openai",
+        "model": embedding_model,
+        "dimensions": DIMENSIONS,
+    }
     if not client.indices.exists(index=index):
-        client.indices.create(index=index, body=papers_index_body())
+        client.indices.create(index=index, body=papers_index_body(embedding_meta=embedding_meta))
         print(f"[index] created {index}")
+    else:
+        # Re-stamp an existing index: a refill embeds with THIS model, so a stale manifest
+        # (e.g. the fixture seeder's offline-test stamp, or a legacy stamp-less index) must not
+        # make the reader-side guard mis-judge the rebuilt corpus. _meta-only put_mapping is a
+        # metadata update — no reindex.
+        client.indices.put_mapping(index=index, body={"_meta": {"embedding": embedding_meta}})
+        print(f"[index] re-stamped embedding manifest on existing {index}")
     if alias and not client.indices.exists_alias(name=alias):
         client.indices.put_alias(index=index, name=alias)
         print(f"[index] alias {alias} → {index}")
@@ -204,7 +219,7 @@ def main() -> int:
     client = build_opensearch_client(
         endpoint=args.endpoint, use_ssl=not plain_http, verify_certs=not plain_http
     )
-    _ensure_index(client, args.index, args.alias)
+    _ensure_index(client, args.index, args.alias, embedding_model=args.model)
     writer = OpenSearchVectorIndex(
         endpoint=args.endpoint, index_name=args.index,
         use_ssl=not plain_http, verify_certs=not plain_http,

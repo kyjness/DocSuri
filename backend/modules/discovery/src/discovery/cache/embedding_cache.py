@@ -11,6 +11,7 @@ can fall back to lexical-only).
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable
 
@@ -35,19 +36,26 @@ class EmbeddingCache:
         self._max_entries = max_entries
         self._clock = clock
         self._store: dict[str, tuple[float, list[float]]] = {}
+        # The sync search route runs on a threadpool: the evict-then-insert sequence must be
+        # atomic, or two threads at cache-full can race next(iter())/pop into a KeyError /
+        # "dict changed size during iteration" that surfaces as a search 500. The adapter call
+        # stays OUTSIDE the lock — only the cheap dict bookkeeping is serialized.
+        self._lock = threading.Lock()
 
     def embed_query(self, text: str) -> list[float]:
         now = self._clock()
-        cached = self._store.get(text)
+        cached = self._store.get(text)  # atomic dict read — no lock needed
         if cached is not None and (now - cached[0]) < self._ttl:
             return cached[1]
         value = self._adapter.embed_query(text)  # EmbeddingUnavailable propagates (not cached)
-        self._evict_if_full()
-        self._store[text] = (now, value)
+        with self._lock:
+            self._evict_if_full()
+            self._store[text] = (now, value)
         return value
 
     def _evict_if_full(self) -> None:
         # Simple bound: drop the oldest entry by insertion order (dict preserves it).
+        # Caller holds the lock.
         if len(self._store) >= self._max_entries:
             oldest_key = next(iter(self._store))
-            del self._store[oldest_key]
+            self._store.pop(oldest_key, None)

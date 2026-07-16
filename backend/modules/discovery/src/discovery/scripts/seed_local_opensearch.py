@@ -21,7 +21,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from docsuri_shared.index_spec import papers_index_body
-from docsuri_shared.vector_spec import IndexRecord
+from docsuri_shared.vector_spec import DIMENSIONS, IndexRecord
 
 from ..adapters.opensearch_index import OpenSearchClientFactory
 from ..adapters.settings import DiscoverySettings
@@ -32,7 +32,16 @@ from ..mocks import fixtures
 # this module.
 
 # Local seed mapping (lucene, in-memory). Production uses papers_index_body(on_disk=True).
-INDEX_BODY: dict[str, Any] = papers_index_body()
+# The embedding manifest names the offline fixtures embedder — the seeded corpus is NOT in a
+# real provider's space, and the reader-side space guard should say so if real wiring is
+# pointed at it (u2 business-rules §6).
+INDEX_BODY: dict[str, Any] = papers_index_body(
+    embedding_meta={
+        "provider": "offline-test",
+        "model": "fixtures-bag-of-keywords",
+        "dimensions": DIMENSIONS,
+    }
+)
 
 
 def create_index(

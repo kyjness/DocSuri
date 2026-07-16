@@ -12,8 +12,9 @@ import unicodedata
 from .models import NormalizedQuery, ValidationResult
 
 MAX_QUERY_LEN = 500  # FR-1/SEC-5 (BR-1)
-# Reject C0 controls + DEL; \t\n\v\f\r are whitespace (collapsed by normalize, not rejected).
-_CONTROL = re.compile(r"[\x00-\x08\x0e-\x1f\x7f]")
+# Reject C0 controls + DEL + C1 controls (BR-1 rejects ALL control characters). Whitespace-class
+# controls are collapsed by normalize instead of rejected: \t\n\v\f\r (C0) and NEL U+0085 (C1).
+_CONTROL = re.compile(r"[\x00-\x08\x0e-\x1f\x7f-\x84\x86-\x9f]")
 _WHITESPACE = re.compile(r"\s+")
 
 
