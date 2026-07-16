@@ -48,15 +48,26 @@ class LocalCircuitBreaker:
         self._state = "CLOSED"  # CLOSED, OPEN, HALF-OPEN
         self._failure_count = 0
         self._last_state_change = time.time()
+        # HALF-OPEN admits exactly ONE probe: concurrent workers share this breaker, and without
+        # the gate every caller arriving during HALF-OPEN would hit the (possibly still-down)
+        # dependency at once — the burst the breaker exists to prevent.
+        self._probe_in_flight = False
         self._lock = threading.Lock()
 
     def allow_request(self) -> bool:
         with self._lock:
             self._check_recovery()
-            return self._state != "OPEN"
+            if self._state == "OPEN":
+                return False
+            if self._state == "HALF-OPEN":
+                if self._probe_in_flight:
+                    return False
+                self._probe_in_flight = True
+            return True
 
     def record_success(self) -> None:
         with self._lock:
+            self._probe_in_flight = False
             if self._state == "HALF-OPEN":
                 self._state = "CLOSED"
                 self._failure_count = 0
@@ -66,6 +77,7 @@ class LocalCircuitBreaker:
 
     def record_failure(self) -> None:
         with self._lock:
+            self._probe_in_flight = False
             self._failure_count += 1
             now = time.time()
             if self._state == "HALF-OPEN" or self._failure_count >= self._failure_threshold:
@@ -77,6 +89,7 @@ class LocalCircuitBreaker:
             now = time.time()
             if now - self._last_state_change > self._recovery_timeout:
                 self._state = "HALF-OPEN"
+                self._probe_in_flight = False
                 self._last_state_change = now
 
 
@@ -233,10 +246,22 @@ class BedrockLlmGateway:
         chunks: list[str] = []
         truncated = False
         for event in response.get("body", []):
-            raw = event.get("chunk", {}).get("bytes")
+            chunk = event.get("chunk")
+            if not chunk:
+                # The ResponseStream union carries only ``chunk`` and error events
+                # (internalServerException / modelStreamErrorException / throttlingException /
+                # validationException / modelTimeoutException / serviceUnavailableException).
+                # Silently skipping one would return the partial buffer as if complete — raise so
+                # the caller's retry→LlmUnavailable→abstain path handles it with the root cause.
+                kind = next(iter(event), "unknown")
+                raise RuntimeError(f"Bedrock stream error event: {kind}: {event.get(kind)}")
+            raw = chunk.get("bytes")
             if not raw:
                 continue
             data = json.loads(raw.decode("utf-8"))
+            if data.get("type") == "error":
+                # In-band error frame (Anthropic stream shape, e.g. overloaded) — same treatment.
+                raise RuntimeError(f"Bedrock stream error frame: {data.get('error')}")
             if data.get("type") == "content_block_delta":
                 delta = data.get("delta", {})
                 if delta.get("type") == "input_json_delta":

@@ -80,16 +80,18 @@ def test_pbt_keep_as_is_invariant(text: str) -> None:
 # Internal identifiers that must never appear in the serialized DTO.
 _SEC9_FORBIDDEN = ("model_ver", "prompt_ver", "token", "redis", "cache_key", "user_id")
 
+# ``tldr``/``korean``/``reason`` are PUBLIC content fields echoed into the DTO; a free-text value
+# that happens to contain an internal field name (e.g. a summary mentioning "token") is not a
+# SEC-9 leak, so exclude those tokens from the generated content to avoid a false positive.
+_public_text = _text.filter(lambda s: not any(f in s for f in _SEC9_FORBIDDEN))
+
 
 @given(
     status=st.sampled_from(
         ["ok_summary", "ok_translate", "abstain", "cost_degraded", "source_unavailable"]
     ),
-    tldr=_text,
-    korean=_text,
-    # ``reason`` is a PUBLIC field echoed into the DTO; a free-text value that happens to
-    # contain an internal field name is not a SEC-9 leak, so exclude those tokens to avoid a
-    # false positive (real reasons are short codes like "insufficient_grounding").
+    tldr=_public_text,
+    korean=_public_text,
     reason=st.text(min_size=1, max_size=100).filter(
         lambda r: not any(f in r for f in _SEC9_FORBIDDEN)
     ),

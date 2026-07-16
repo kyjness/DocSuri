@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from summarization.adapters.bedrock_llm import BedrockLlmGateway
 from summarization.domain.models import (
     AnchorTarget,
@@ -19,6 +21,7 @@ from summarization.domain.models import (
     Task,
     TranslationSegment,
 )
+from summarization.ports.ports import LlmUnavailable
 from tests.stubs import FakeBedrockStream, bedrock_tool_use_events
 
 
@@ -118,6 +121,45 @@ def test_translate_segments_parses_forced_tool_input() -> None:
     assert result.translations == {"0": "첫 번째", "1": "두 번째"}
     assert result.kept_terms == ("Transformer",)
     assert result.truncated is False
+
+
+class _RawEventClient:
+    """Replays a RAW ResponseStream event list (not chunk-wrapped) so error events can appear."""
+
+    def __init__(self, events: list[dict]) -> None:
+        self._events = events
+
+    def invoke_model_with_response_stream(self, *, modelId, body, accept, contentType):  # noqa: N803
+        return {"body": self._events}
+
+
+def _chunk(data: dict) -> dict:
+    return {"chunk": {"bytes": json.dumps(data).encode("utf-8")}}
+
+
+@pytest.mark.parametrize(
+    "tail_event",
+    [
+        # Stream-level error event (ResponseStream union member other than ``chunk``).
+        {"modelStreamErrorException": {"message": "stream broke mid-generation"}},
+        # In-band error frame inside a chunk.
+        _chunk({"type": "error", "error": {"type": "overloaded_error", "message": "overloaded"}}),
+    ],
+)
+def test_stream_error_event_aborts_instead_of_partial_buffer(tail_event: dict) -> None:
+    # A mid-stream error used to fall through the chunk-only loop, silently returning the partial
+    # buffer as if complete. It must abort the call → retry → LlmUnavailable → abstain (RES-9).
+    events = [
+        _chunk({"type": "content_block_delta",
+                "delta": {"type": "input_json_delta", "partial_json": '{"tldr": "요'}}),
+        tail_event,
+    ]
+    gw = BedrockLlmGateway(
+        summary_model_id="m", translate_model_id="t",
+        client=_RawEventClient(events), max_retries=0,
+    )
+    with pytest.raises(LlmUnavailable):
+        gw.summarize(RefinedSource(body="paper text"), _SUMMARY_REQ, Glossary())
 
 
 def test_raw_latex_and_inner_quotes_round_trip_as_valid_json() -> None:

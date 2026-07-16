@@ -21,6 +21,19 @@ def test_preserves_captions_appendix_and_results(sample_paper: str) -> None:
     assert "95.3%" in refined.body  # result number preserved
 
 
+def test_single_line_full_text_survives_copyright_match() -> None:
+    # U1-normalized full text arrives as ONE newline-free line. A copyright pattern anywhere in it
+    # must not drop the "line" (= the whole document, empty body); only short standalone
+    # boilerplate lines are noise (BR-S3/Q2).
+    raw = (
+        "Introduction We study X in depth. Results reach 95.3% on the benchmark. "
+        "(c) 2026 Some Publisher. All rights reserved. Conclusion Y holds. "
+    ) * 5
+    refined = InputRefiner().refine(raw)
+    assert "We study X" in refined.body
+    assert "95.3%" in refined.body
+
+
 def test_derives_sections(sample_paper: str) -> None:
     refined = InputRefiner().refine(sample_paper)
     labels = {s.label for s in refined.sections}

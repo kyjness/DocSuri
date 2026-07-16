@@ -17,7 +17,9 @@ from docsuri_shared.docmodel_contract import DOCMODEL_PARSER_VERSION
 from .models import Persona, Scope, SummaryCacheKey, SummaryRequest, Task
 
 # Prompt template version — bump to invalidate all derived objects (key changes).
-PROMPT_VER = "p1"
+# p2: summary prompt now enforces Korean output for the prose fields (BR-S1 — the prompt is part
+# of the artifact identity, so cached English-language summaries must not keep serving).
+PROMPT_VER = "p2"
 # Translate base FORMAT version — appended to the translate key only, so it invalidates translate
 # artifacts WITHOUT needlessly regenerating summaries. Bump when the cached translate base changes
 # shape. ``m1`` = masked standard-term tokens rendered at serve (BR-S4): older token-free bases

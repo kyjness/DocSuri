@@ -40,6 +40,12 @@ _PRESERVED_RE = re.compile(
 )
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
+# Boilerplate noise (copyright/author/header-footer) appears as SHORT standalone lines. A line
+# longer than this is body prose that merely mentions the pattern — dropping it would over-remove
+# (BR-S3/Q2). Critically, U1-normalized full text arrives as ONE newline-free line, so without
+# this guard a single "(c)" anywhere would delete the entire document (empty body).
+_NOISE_LINE_MAX_CHARS = 200
+
 # The abstract is emitted by U1 as a dedicated doc-model section with this id (real content
 # sections start at "s1"). It is summarizable content but not a citable anchor target — the reader
 # hides it from the full-text body (it has its own 초록 surface), so an anchor resolving there
@@ -52,12 +58,13 @@ def _strip_noise_lines(text: str) -> str:
     for line in text.splitlines():
         if _PAGE_NUM_RE.match(line) and line.strip():
             continue
-        if _COPYRIGHT_RE.search(line):
-            continue
-        if _AUTHOR_AFFIL_RE.match(line):
-            continue
-        if _HEADER_FOOTER_RE.match(line):
-            continue
+        if len(line) <= _NOISE_LINE_MAX_CHARS:
+            if _COPYRIGHT_RE.search(line):
+                continue
+            if _AUTHOR_AFFIL_RE.match(line):
+                continue
+            if _HEADER_FOOTER_RE.match(line):
+                continue
         kept.append(line)
     return "\n".join(kept)
 
