@@ -55,6 +55,30 @@ class _DocModelStore:
         self.removed.append(paper_id)
 
 
+class _CountingBuilder:
+    """Duck-typed DocModelBuilder spy counting every build entry point — BLM §0.2–0.3 order:
+    the eager build must not run for jobs short-circuited by dedup or withdrawal."""
+
+    def __init__(self, inner: DocModelBuilder) -> None:
+        self._inner = inner
+        self.build_calls = 0
+
+    def build(self, metadata, figure_specs=None):
+        self.build_calls += 1
+        return self._inner.build(metadata, figure_specs=figure_specs)
+
+    def build_from_text(self, *args, **kwargs):
+        self.build_calls += 1
+        return self._inner.build_from_text(*args, **kwargs)
+
+    def build_from_tei(self, *args, **kwargs):
+        self.build_calls += 1
+        return self._inner.build_from_tei(*args, **kwargs)
+
+    def invalidate(self, paper_id: str) -> None:
+        self._inner.invalidate(paper_id)
+
+
 class _AssetStore:
     def __init__(self) -> None:
         self.removed: list[str] = []
@@ -1211,3 +1235,42 @@ def test_no_nul_strips_nul_bytes_for_postgres_text() -> None:
     assert _no_nul("Figure 1\x00 caption") == "Figure 1 caption"
     assert _no_nul("") == ""
     assert _no_nul(None) is None
+
+
+def test_duplicate_redelivery_skips_doc_model_build() -> None:
+    # BR-4/BR-22 + BLM §0.2–0.3: a DUPLICATE redelivery short-circuits before the doc-model
+    # build, so an at-least-once event replay pays no build cost (not even a cache round-trip).
+    builder = _CountingBuilder(
+        DocModelBuilder(source=_NoHtmlDocModelSource(), store=_DocModelStore())
+    )
+    pipeline, _, _, _, _ = build_test_pipeline(doc_model_builder=builder)
+    job = IngestionJob(job_id="job-1", kind=JobKind.EVENT, arxiv_ref="2401.00001v1")
+
+    assert pipeline.ingest_one(job) is DedupDecision.NEW
+    first_calls = builder.build_calls
+    assert first_calls > 0  # the eager build ran for the indexed paper
+
+    redelivery = replace(job, job_id="job-2")
+    assert pipeline.ingest_one(redelivery) is DedupDecision.DUPLICATE
+    assert builder.build_calls == first_calls
+
+
+def test_withdrawn_paper_skips_doc_model_build() -> None:
+    # A withdrawal tombstones before the build — no doc-model artifact is ever produced (and
+    # then invalidated) for a withdrawn paper.
+    arxiv = FakeArxivSource(
+        [sample_metadata()],
+        full_text={"2401.00001v1": "This paper has been withdrawn by the authors."},
+    )
+    builder = _CountingBuilder(
+        DocModelBuilder(source=_NoHtmlDocModelSource(), store=_DocModelStore())
+    )
+    pipeline, _, index, _, _ = build_test_pipeline(arxiv=arxiv, doc_model_builder=builder)
+
+    decision = pipeline.ingest_one(
+        IngestionJob(job_id="withdrawn-1", kind=JobKind.EVENT, arxiv_ref="2401.00001v1")
+    )
+
+    assert decision is DedupDecision.CHANGED
+    assert index.tombstones  # the withdrawal was tombstoned as usual
+    assert builder.build_calls == 0

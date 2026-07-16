@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Protocol
@@ -82,8 +83,6 @@ class IngestionPipelineService:
         user_document_source: UserDocumentSourcePort | None = None,
         grobid: _GrobidTeiClient | None = None,
         doc_model_builder: DocModelBuilder | None = None,
-        embedding_v2: EmbeddingPort | None = None,
-        vector_index_v2: VectorIndexPort | None = None,
         corpus_sources: CorpusSourceAdapterSet | None = None,
     ) -> None:
         assert_writer_embedding_role()
@@ -108,8 +107,6 @@ class IngestionPipelineService:
         # Doc-model builder (BR-30/D6): eager in the phase-1 Corpus ingest path, lazy for
         # BUILD_DOC_MODEL compatibility/backfill jobs.
         self._doc_model_builder = doc_model_builder
-        self._embedding_v2 = embedding_v2
-        self._vector_index_v2 = vector_index_v2
         self._corpus_sources = corpus_sources
 
     def is_rebuild_active(self) -> bool:
@@ -330,18 +327,16 @@ class IngestionPipelineService:
         )
         paper = self._parser.parse(raw_document)
 
-        doc_model, figure_specs = self._build_doc_model_before_index(
-            metadata, raw_document.text
-        )
         keys = self._canonical_keys_for_metadata(metadata, paper.year)
         existing = self._canonical_state_for_keys(keys)
         decision = self._index_paper(
             job,
             paper,
-            doc_model=doc_model,
+            build_doc_model=lambda: self._build_doc_model_before_index(
+                metadata, raw_document.text
+            ),
             watermark_name="arxiv",
             asset_metadata=metadata,
-            asset_figure_specs=figure_specs,
         )
         if decision is not DedupDecision.STALE and not paper.withdrawal_detected:
             self._record_canonical_winner(
@@ -380,14 +375,13 @@ class IngestionPipelineService:
         )
         paper = self._paper_from_source_record(record, candidate, job, key)
 
-        doc_model, record_crops = self._build_doc_model_from_record(paper, candidate)
         decision = self._index_paper(
             job,
             paper,
-            doc_model=doc_model,
+            build_doc_model=lambda: self._build_doc_model_from_record(paper, candidate),
             watermark_name=record.source_name.value.lower(),
             asset_metadata=None,
-            record_asset_ctx=(record, candidate, record_crops),
+            record_asset_ctx=(record, candidate),
         )
         if decision is not DedupDecision.STALE and not paper.withdrawal_detected:
             self._record_canonical_winner(
@@ -404,14 +398,13 @@ class IngestionPipelineService:
         job: IngestionJob,
         paper: ParsedPaper,
         *,
-        doc_model: DocModel | None,
+        build_doc_model: Callable[
+            [],
+            tuple[DocModel | None, tuple[FigureSpec, ...] | tuple[AssetCropSpec, ...] | None],
+        ],
         watermark_name: str,
         asset_metadata,
-        asset_figure_specs: tuple[FigureSpec, ...] = (),
-        record_asset_ctx: tuple[
-            SourcePaperRecord, CorpusTextCandidate, tuple[AssetCropSpec, ...] | None
-        ]
-        | None = None,
+        record_asset_ctx: tuple[SourcePaperRecord, CorpusTextCandidate] | None = None,
     ) -> DedupDecision:
         if paper.withdrawal_detected:
             return self._tombstone(job, paper, watermark_name=watermark_name)
@@ -441,6 +434,13 @@ class IngestionPipelineService:
             lambda: self._full_text_store.put_full_text(paper),
         )
         paper = replace(paper, stored_full_text_ref=object_ref)
+        # BLM §0.3 order — the doc-model is built only after the dedup short-circuit and the
+        # begin_upsert claim, so DUPLICATE/STALE redeliveries and withdrawn papers never pay the
+        # build (BR-4/BR-22 zero-cost duplicates); it still lands before index exposure.
+        # ``asset_extra`` is pair-typed with the caller's asset context: FigureSpecs alongside
+        # ``asset_metadata`` (arXiv), crop specs (None = cache hit, re-derive) alongside
+        # ``record_asset_ctx``.
+        doc_model, asset_extra = build_doc_model()
         chunks = (
             self._chunker.chunk_doc_model(doc_model)
             if doc_model is not None
@@ -473,45 +473,13 @@ class IngestionPipelineService:
                 {record.chunkId for record in batch.records},
             ),
         )
-        if self._embedding_v2 and self._vector_index_v2:
-            try:
-                vectors_v2 = self._resilience.dependency_call(
-                    "bedrock_v2",
-                    "embed",
-                    lambda: self._embedding_v2.embed_documents(
-                        [chunk.text for chunk in chunks.chunks],
-                        correlation_id=job.correlation_id,
-                    ),
-                )
-                embeddings_v2 = EmbeddingBatch(
-                    chunk_ids=tuple(chunk.chunk_id for chunk in chunks.chunks),
-                    vectors=tuple(tuple(vector) for vector in vectors_v2),
-                )
-                batch_v2 = self._assembler.assemble(paper, chunks, embeddings_v2)
-                self._resilience.dependency_call(
-                    "opensearch_v2",
-                    "bulk_upsert",
-                    lambda: self._vector_index_v2.bulk_upsert(batch_v2),
-                )
-                self._resilience.dependency_call(
-                    "opensearch_v2",
-                    "delete_stale_chunks",
-                    lambda: self._vector_index_v2.delete_stale_chunks(
-                        paper.paper_id,
-                        {record.chunkId for record in batch_v2.records},
-                    ),
-                )
-            except Exception as e:
-                self._observability.emit_log(
-                    {"type": "dual_write_v2_failed", "jobId": job.job_id, "error": str(e)}
-                )
         dedup.mark_ingested(paper)
         self._control_plane.advance_watermark(watermark_name, paper.updated_at)
         # FR-17 assets: best-effort, AFTER the index commit so it can never block (BR-27).
         if asset_metadata is not None:
-            self._store_assets_best_effort(paper, asset_metadata, asset_figure_specs)
+            self._store_assets_best_effort(paper, asset_metadata, asset_extra or ())
         elif record_asset_ctx is not None:
-            self._store_record_assets_best_effort(paper, *record_asset_ctx)
+            self._store_record_assets_best_effort(paper, *record_asset_ctx, asset_extra)
         self._control_plane.record_job_finished(job.job_id, success=True)
         self._observability.emit_metric(
             "ingestion.paper.indexed",
@@ -695,17 +663,6 @@ class IngestionPipelineService:
             "tombstone_canonical_loser",
             lambda: self._vector_index.tombstone_paper(tombstone),
         )
-        if self._vector_index_v2:
-            try:
-                self._resilience.dependency_call(
-                    "opensearch_v2",
-                    "tombstone_canonical_loser",
-                    lambda: self._vector_index_v2.tombstone_paper(tombstone),
-                )
-            except Exception as e:
-                self._observability.emit_log(
-                    {"type": "dual_write_v2_canonical_loser_failed", "error": str(e)}
-                )
         if self._doc_model_builder is not None:
             self._doc_model_builder.invalidate(existing.paper_id)
         self._remove_assets_best_effort(existing.paper_id)
@@ -725,17 +682,6 @@ class IngestionPipelineService:
             "tombstone",
             lambda: self._vector_index.tombstone_paper(tombstone),
         )
-        if self._vector_index_v2:
-            try:
-                self._resilience.dependency_call(
-                    "opensearch_v2",
-                    "tombstone",
-                    lambda: self._vector_index_v2.tombstone_paper(tombstone),
-                )
-            except Exception as e:
-                self._observability.emit_log(
-                    {"type": "dual_write_v2_tombstone_failed", "error": str(e)}
-                )
         self._control_plane.advance_watermark(watermark_name, paper.updated_at)
         self._control_plane.delete_canonical_dedup_state_for_paper(paper.paper_id)
         if self._doc_model_builder is not None:
