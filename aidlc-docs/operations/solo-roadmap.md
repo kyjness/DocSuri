@@ -8,7 +8,7 @@
 |---|---|---|---|
 | ① | 저장소 정리 | ✅ 완료 | 비프로덕션 문서 제거 (a8003e2) |
 | ② | 로컬 인프라 이관 | ✅ 완료 | AWS 관리형 서비스 → 컨테이너 4종(postgres/redis/opensearch/s3proxy) + OpenAI 프로바이더 어댑터, 1,000편 재색인, E2E 검증. 상세: [solo-local-migration.md](solo-local-migration.md) |
-| ③ | 유닛 정합성 리뷰 | ⬜ 다음 | u1 ingestion / u2 discovery / u7 summarization — 각 유닛의 frozen 설계 문서 기준으로 리뷰하고 확인된 결함만 수리. **타임박스 1–2일.** 착수 시 이관 이슈 목록(아래) 포함 |
+| ③ | 유닛 정합성 리뷰 | ✅ 완료 | u7(0f5d866·dc778bb) → u1(e90634a) → u2(59ee3b7) — 각 유닛의 frozen 설계 문서 기준 리뷰·확정 결함 수리. 이관 이슈(아래) 전건 처리. u2에서 reader 임베딩 공간 가드(`_meta.embedding` manifest)·의존성별 서킷 브레이커 신설. 잔여 후속: evidence 모듈(제2 리더)의 space guard/프로바이더 스위치 미적용 |
 | ④ | research-agent 유닛 설계 | ⬜ | `aidlc-docs/construction/research-agent/`에 기존 유닛과 동일한 형식(functional-design / nfr-design / nfr-requirements)으로 작성. 유닛 명칭은 "Research Ideation Agent" — 코드 모듈 경로는 `novelty` 유지(`research` 경로는 evidence agent의 대화 표면이 사용 중) |
 | ⑤ | novelty 코어 재설계 | ⬜ | 고정 상태머신(QUEUED→…→EXPORTING_NOTION)을 도구 호출 루프 기반 에이전트로 교체. 단계: 에이전트 루프 → MCP 연동(arXiv/GitHub/Notion) → 세션 메모리 → 멀티모달 입력(figure crop을 LLM 컨텍스트에 편입). 기존 API 계약·모듈 경로는 유지 |
 

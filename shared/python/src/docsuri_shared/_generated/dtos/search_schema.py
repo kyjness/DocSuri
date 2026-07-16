@@ -89,7 +89,7 @@ class ResultMeta(BaseModel):
 
 class Scope(StrEnum):
     """
-    Retrieval breadth. "lite" (default): BM25 over title+abstract only, no k-NN — the low-latency human search box (P50<3s). "full": hybrid (title+abstract+full-body chunks + k-NN) for deep recall — the literature/evidence agent and the opt-in "본문까지 검색" toggle. Absent ⇒ lite. Trace: FR-2.
+    Retrieval breadth. "lite" (default): BM25 over title+abstract + abstract-chunk k-NN (one vector per paper, cross-lingual) — the low-latency human search box (P50<3s, NFR-P1 SLA). "full": hybrid over full-body chunks (BM25 incl. lexicalTerms + k-NN over every chunk) for deep recall — the literature/evidence agent and the opt-in "본문까지 검색" toggle (non-SLA). Absent ⇒ lite. Trace: FR-2, BR-4b.
     """
 
     lite = 'lite'
@@ -112,7 +112,7 @@ class SearchRequest(BaseModel):
     )
     scope: Scope | None = Field(
         None,
-        description='Retrieval breadth. "lite" (default): BM25 over title+abstract only, no k-NN — the low-latency human search box (P50<3s). "full": hybrid (title+abstract+full-body chunks + k-NN) for deep recall — the literature/evidence agent and the opt-in "본문까지 검색" toggle. Absent ⇒ lite. Trace: FR-2.',
+        description='Retrieval breadth. "lite" (default): BM25 over title+abstract + abstract-chunk k-NN (one vector per paper, cross-lingual) — the low-latency human search box (P50<3s, NFR-P1 SLA). "full": hybrid over full-body chunks (BM25 incl. lexicalTerms + k-NN over every chunk) for deep recall — the literature/evidence agent and the opt-in "본문까지 검색" toggle (non-SLA). Absent ⇒ lite. Trace: FR-2, BR-4b.',
     )
     options: Any | None = Field(
         None,

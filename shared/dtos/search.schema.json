@@ -99,7 +99,7 @@
         "scope": {
           "type": "string",
           "enum": ["lite", "full"],
-          "description": "Retrieval breadth. \"lite\" (default): BM25 over title+abstract only, no k-NN — the low-latency human search box (P50<3s). \"full\": hybrid (title+abstract+full-body chunks + k-NN) for deep recall — the literature/evidence agent and the opt-in \"본문까지 검색\" toggle. Absent ⇒ lite. Trace: FR-2."
+          "description": "Retrieval breadth. \"lite\" (default): BM25 over title+abstract + abstract-chunk k-NN (one vector per paper, cross-lingual) — the low-latency human search box (P50<3s, NFR-P1 SLA). \"full\": hybrid over full-body chunks (BM25 incl. lexicalTerms + k-NN over every chunk) for deep recall — the literature/evidence agent and the opt-in \"본문까지 검색\" toggle (non-SLA). Absent ⇒ lite. Trace: FR-2, BR-4b."
         },
         "options": {
           "description": "PROVISIONAL — optional search options. Type name is provisional; SSOT (dtos.md §1) records only the field `options?` (shape refined when the type is finalized in U2 FD). Trace: dtos.md §1."

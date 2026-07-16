@@ -93,7 +93,7 @@ U2 동기 읽기 경로의 단일 도메인 오케스트레이터. 요청→응�
 - RRF 파라미터(k·가중)는 NFR/튜닝.
 
 ### 3.5 RelevanceRanker — `rank(CandidateSet, QueryPlan, DegradationSignal, topN, PersonalizationDecision?) -> RankedResults` (Q3=A, Q10=A, PBT-03)
-- 병합 점수 산출 후, 전달된 `PersonalizationDecision`이 존재하고 `enabled=true`인 경우, 각 후보의 카테고리/키워드에 매칭되는 `searchBoosts`를 **기본 적합성 점수에 가산(additive)** 방식으로 적용한다.
+- 병합 점수 산출 후, 전달된 `PersonalizationDecision`이 존재하고 `enabled=true`인 경우, 각 후보의 카테고리/키워드에 매칭되는 `searchBoosts`를 기본 적합성 점수에 적용한다. *(2026-07 정정: 적용 방식은 상위 권위인 U9 BR-P8("상대적 가중치 기준", 개별 boost `[-0.1,+0.1]`·총합 ≤0.2)에 따라 **자기 점수 대비 곱셈(multiplicative-relative)** — 종전 "가산(additive)" 표기는 BR-P8과 어긋난 문서 오기. 상위 밴드 한정·미세 재정렬 제약은 불변.)*
 - **개인화 제약 준수(FR-20)**: U9가 강제하는 boost magnitude bounds(최대 총합 0.2 등)를 신뢰하여, 상위 30% 이내 후보 간의 미세 순위 변동만 발생하도록 가중치를 흡수한다.
 - 병합+부스트 조정 점수 기준 내림차순 정렬 → **상위 N=20 절단**(N 미만이면 가용분만, US-D3). **LLM 리랭킹 없음(baseline)**.
 - **순서 안정성(PBT-03)**: 동률 안정 정렬, 동일 입력→동일 순서. **QT-2 관련도 평가셋 출력 표면**(한국어 질의 포함 — TD-3). raw 점수 비노출(SEC-9).
