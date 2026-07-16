@@ -22,7 +22,7 @@ from summarization.domain.models import (
     TranslationSegment,
 )
 from summarization.ports.ports import LlmUnavailable
-from tests.stubs import FakeBedrockStream, bedrock_tool_use_events
+from tests.stubs import FakeBedrockStream, bedrock_chunk_event, bedrock_tool_use_events
 
 
 def _tool_use_events(payload: dict, *, name: str, fragments: int = 3) -> list[dict]:
@@ -123,43 +123,46 @@ def test_translate_segments_parses_forced_tool_input() -> None:
     assert result.truncated is False
 
 
-class _RawEventClient:
-    """Replays a RAW ResponseStream event list (not chunk-wrapped) so error events can appear."""
-
-    def __init__(self, events: list[dict]) -> None:
-        self._events = events
-
-    def invoke_model_with_response_stream(self, *, modelId, body, accept, contentType):  # noqa: N803
-        return {"body": self._events}
-
-
-def _chunk(data: dict) -> dict:
-    return {"chunk": {"bytes": json.dumps(data).encode("utf-8")}}
-
-
 @pytest.mark.parametrize(
     "tail_event",
     [
         # Stream-level error event (ResponseStream union member other than ``chunk``).
         {"modelStreamErrorException": {"message": "stream broke mid-generation"}},
         # In-band error frame inside a chunk.
-        _chunk({"type": "error", "error": {"type": "overloaded_error", "message": "overloaded"}}),
+        bedrock_chunk_event(
+            {"type": "error", "error": {"type": "overloaded_error", "message": "overloaded"}}
+        ),
     ],
 )
 def test_stream_error_event_aborts_instead_of_partial_buffer(tail_event: dict) -> None:
     # A mid-stream error used to fall through the chunk-only loop, silently returning the partial
     # buffer as if complete. It must abort the call → retry → LlmUnavailable → abstain (RES-9).
+    partial = {"type": "input_json_delta", "partial_json": '{"tldr": "요'}
     events = [
-        _chunk({"type": "content_block_delta",
-                "delta": {"type": "input_json_delta", "partial_json": '{"tldr": "요'}}),
+        bedrock_chunk_event({"type": "content_block_delta", "delta": partial}),
         tail_event,
     ]
     gw = BedrockLlmGateway(
         summary_model_id="m", translate_model_id="t",
-        client=_RawEventClient(events), max_retries=0,
+        client=FakeBedrockStream(events, raw=True), max_retries=0,
     )
     with pytest.raises(LlmUnavailable):
         gw.summarize(RefinedSource(body="paper text"), _SUMMARY_REQ, Glossary())
+
+
+def test_stream_empty_chunk_event_is_benign() -> None:
+    # A present-but-EMPTY chunk event is not an error member — it must be skipped (the pre-guard
+    # behavior), not classified as a fatal stream error.
+    payload = {"tldr": "요약", "contributions": [], "method": "", "results": "",
+               "limitations": "", "reproducibility": {"code": "", "data": ""}, "anchors": []}
+    events = [{"chunk": {}}]
+    events += [bedrock_chunk_event(e) for e in _tool_use_events(payload, name="emit_summary")]
+    gw = BedrockLlmGateway(
+        summary_model_id="m", translate_model_id="t",
+        client=FakeBedrockStream(events, raw=True), max_retries=0,
+    )
+    draft = gw.summarize(RefinedSource(body="paper text"), _SUMMARY_REQ, Glossary())
+    assert draft.tldr == "요약"
 
 
 def test_raw_latex_and_inner_quotes_round_trip_as_valid_json() -> None:

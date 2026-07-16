@@ -80,10 +80,15 @@ def test_pbt_keep_as_is_invariant(text: str) -> None:
 # Internal identifiers that must never appear in the serialized DTO.
 _SEC9_FORBIDDEN = ("model_ver", "prompt_ver", "token", "redis", "cache_key", "user_id")
 
-# ``tldr``/``korean``/``reason`` are PUBLIC content fields echoed into the DTO; a free-text value
-# that happens to contain an internal field name (e.g. a summary mentioning "token") is not a
-# SEC-9 leak, so exclude those tokens from the generated content to avoid a false positive.
-_public_text = _text.filter(lambda s: not any(f in s for f in _SEC9_FORBIDDEN))
+
+def _no_sec9_tokens(s: str) -> bool:
+    # ``tldr``/``korean``/``reason`` are PUBLIC content fields echoed into the DTO; a free-text
+    # value that happens to contain an internal field name (e.g. a summary mentioning "token") is
+    # not a SEC-9 leak, so exclude those tokens from generated content to avoid a false positive.
+    return not any(f in s for f in _SEC9_FORBIDDEN)
+
+
+_public_text = _text.filter(_no_sec9_tokens)
 
 
 @given(
@@ -92,9 +97,7 @@ _public_text = _text.filter(lambda s: not any(f in s for f in _SEC9_FORBIDDEN))
     ),
     tldr=_public_text,
     korean=_public_text,
-    reason=st.text(min_size=1, max_size=100).filter(
-        lambda r: not any(f in r for f in _SEC9_FORBIDDEN)
-    ),
+    reason=st.text(min_size=1, max_size=100).filter(_no_sec9_tokens),
 )
 def test_pbt_response_to_dict_sec9_all_states(
     status: str, tldr: str, korean: str, reason: str

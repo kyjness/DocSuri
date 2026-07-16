@@ -118,21 +118,29 @@ def bedrock_tool_use_events(
     return events
 
 
+def bedrock_chunk_event(data: dict) -> dict:
+    """Wrap one stream frame in the ResponseStream ``chunk`` envelope (the wire shape)."""
+    return {"chunk": {"bytes": json.dumps(data).encode("utf-8")}}
+
+
 class FakeBedrockStream:
     """Records each request body and replays a fixed Bedrock streaming event list.
 
     Real-first (test-only double): no Production Mock adapter ships — this exercises the real
-    gateway's stream buffering / tool-use parse without hitting Bedrock."""
+    gateway's stream buffering / tool-use parse without hitting Bedrock. By default each event
+    is a frame that gets chunk-wrapped; ``raw=True`` replays the events verbatim so a test can
+    inject non-``chunk`` ResponseStream members (stream-level error events)."""
 
-    def __init__(self, events: list[dict]) -> None:
+    def __init__(self, events: list[dict], *, raw: bool = False) -> None:
         self._events = list(events)
+        self._raw = raw
         self.bodies: list[dict] = []
 
     def invoke_model_with_response_stream(self, *, modelId, body, accept, contentType):  # noqa: N803
         self.bodies.append(json.loads(body))
-        return {
-            "body": [{"chunk": {"bytes": json.dumps(e).encode("utf-8")}} for e in self._events]
-        }
+        if self._raw:
+            return {"body": list(self._events)}
+        return {"body": [bedrock_chunk_event(e) for e in self._events]}
 
 
 @dataclass

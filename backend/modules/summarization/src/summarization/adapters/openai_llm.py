@@ -106,8 +106,9 @@ class OpenAILlmGateway:
         max_tokens: int = 2000,
         graceful_truncation: bool = False,
     ) -> dict:
-        if not self._cb.allow_request():
-            raise LlmUnavailable("OpenAI LLM circuit breaker is OPEN")
+        permit = self._cb.acquire()
+        if permit is None:
+            raise LlmUnavailable("OpenAI LLM circuit breaker is open")
 
         body = {
             "model": model_id,
@@ -129,36 +130,40 @@ class OpenAILlmGateway:
             "tool_choice": {"type": "function", "function": {"name": tool["name"]}},
         }
         last_exc: Exception | None = None
-        for attempt in range(self._max_retries + 1):
-            if attempt > 0:
-                time.sleep(2 ** attempt * 0.5)
-            try:
-                text, truncated = self._request_tool_arguments(body)
+        try:
+            for attempt in range(self._max_retries + 1):
+                if attempt > 0:
+                    time.sleep(2 ** attempt * 0.5)
                 try:
-                    payload = json.loads(text)
-                    if not isinstance(payload, dict):
-                        raise ValueError("tool arguments are not a JSON object")
-                except (ValueError, json.JSONDecodeError):
-                    # finish_reason=length cuts the arguments mid-JSON — surface truncation to
-                    # a re-splittable caller (translate) instead of hard-failing the batch;
-                    # a parse failure on a COMPLETE response is genuine bad output → retry.
-                    if not (graceful_truncation and truncated):
-                        raise
-                    self._cb.record_success()
-                    return {"_truncated": True}
-                payload["_truncated"] = truncated
-                self._cb.record_success()
-                return payload
-            except Exception as exc:  # noqa: BLE001 — any transport/parse error → retry/abstain
-                last_exc = exc
-        self._cb.record_failure()
-        log.warning(
-            "OpenAI generation failed after %d attempt(s): %s: %s",
-            self._max_retries + 1,
-            type(last_exc).__name__ if last_exc else "None",
-            last_exc,
-        )
-        raise LlmUnavailable("OpenAI generation failed") from last_exc
+                    text, truncated = self._request_tool_arguments(body)
+                    try:
+                        payload = json.loads(text)
+                        if not isinstance(payload, dict):
+                            raise ValueError("tool arguments are not a JSON object")
+                    except (ValueError, json.JSONDecodeError):
+                        # finish_reason=length cuts the arguments mid-JSON — surface truncation to
+                        # a re-splittable caller (translate) instead of hard-failing the batch;
+                        # a parse failure on a COMPLETE response is genuine bad output → retry.
+                        if not (graceful_truncation and truncated):
+                            raise
+                        permit.success()
+                        return {"_truncated": True}
+                    payload["_truncated"] = truncated
+                    permit.success()
+                    return payload
+                except Exception as exc:  # noqa: BLE001 — any transport/parse error → retry/abstain
+                    last_exc = exc
+            log.warning(
+                "OpenAI generation failed after %d attempt(s): %s: %s",
+                self._max_retries + 1,
+                type(last_exc).__name__ if last_exc else "None",
+                last_exc,
+            )
+            raise LlmUnavailable("OpenAI generation failed") from last_exc
+        finally:
+            # Catch-all release (no-op after success()): records the failure and frees the
+            # HALF-OPEN probe even when a BaseException escapes the retry loop.
+            permit.failure()
 
     def _request_tool_arguments(self, body: dict) -> tuple[str, bool]:
         """One Chat Completions call → (forced tool call's ``arguments`` JSON, truncated?)."""
