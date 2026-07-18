@@ -4059,3 +4059,11 @@ Error: TestingLibraryElementError: Unable to find an element by: [data-testid=\"
 **Context**: CONSTRUCTION / Novelty Agent v2 (U12) — NFR Requirements 질문 게이트, 문서만
 
 ---
+
+## NFR Requirements — Novelty Agent v2 확정·산출물 생성
+**Timestamp**: 2026-07-18T11:25:43Z
+**User Input**: "근데 코드자체는 기존의 aws 실제배포하던걸 기준으로 짜고 로컬에서도 개발할 수 있게 짜야하지 않아?" → (게이트에 포트 기준 환경 원칙 명시) → "전부 권장으로 해줘"
+**AI Response**: "Q1~Q6=A 확정 — 잡 큐 포트+워커(1차 redis, 배포 시 SQS), OpenAI tool-calling 어댑터 1차(프로바이더 스위치 유지), MCP 기존 서버 셀프호스트(⑤ 2단계), 예산 시작값(반복 24/호출 40/$0.50), 폴링 피드, postgres 트레이스. `construction/novelty-agent-v2/nfr-requirements/` 2종 생성(NFR-NV2-1~18, TD-NV2-1~8 — 전 항목에 배포 교체 경로 병기)."
+**Context**: CONSTRUCTION / Novelty Agent v2 (U12) — NFR Requirements, 문서만
+
+---

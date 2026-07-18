@@ -916,3 +916,11 @@ _Resiliency 옵트인은 `requirements.md` 확정 전에 필수 요구사항 명
   - 유닛명 novelty 유지("research*"는 supervisor 명명 후보로 예약), v1 문서는 `construction/novelty-agent/` frozen 기준선.
 - Verification: 신규 문서 경로 함정 grep 0건(`backend/modules/research` 미참조), 추적성 매트릭스 미커버 0(FR-30~33·35·44~47·QT-10).
 - Delivery: branch `docs/novelty-v2-unit-design`(구 research-agent-unit-design). Current gate: Functional Design 사용자 리뷰 → NFR Requirements 질문 게이트. push/PR은 사용자 승인 대기.
+
+## Novelty Agent v2 — NFR Requirements
+
+- Date: 2026-07-18
+- Stage: CONSTRUCTION / NFR Requirements
+- Decisions (`construction/plans/novelty-agent-v2-nfr-requirements-plan.md` Q1~Q6=A): 포트 기준 환경 원칙(로컬 어댑터 1차, real_wiring 계약은 배포 기준선) 하에 — 잡 큐 포트+별도 워커(redis→SQS), LLM 프로바이더 스위치 유지(OpenAI tool-calling 1차), MCP 기존 서버 셀프호스트(⑤ 2단계 구축), 루프 예산 시작값(반복 24 / 도구 호출 40 / per-job $0.50), 폴링 피드(SSE 후속), postgres 잡 귀속 트레이스(cascade 삭제).
+- Outputs: `construction/novelty-agent-v2/nfr-requirements/` — nfr-requirements.md(NFR-NV2-1~18: 실행 표면·멱등·stale 복구·성능 프로파일·예산 수치표·협조적 취소·트레이스 계약·allowlist·U6 연동), tech-stack-decisions.md(TD-NV2-1~8 — 전 항목 배포 교체 경로 병기).
+- Current gate: NFR Requirements 사용자 리뷰 → NFR Design 질문 게이트. push/PR은 사용자 승인 대기.

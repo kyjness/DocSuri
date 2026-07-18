@@ -2,7 +2,7 @@
 
 **단계**: CONSTRUCTION → NFR Requirements
 **일자**: 2026-07-18
-**상태**: 🟡 답변 대기 — `[Answer]:`를 채우면 산출물 생성을 진행한다.
+**상태**: ✅ 확정 (2026-07-18) — Q1~Q6 전부 권장안(A). 산출물 생성 진행.
 **전제**: Functional Design 확정(`construction/novelty-agent-v2/functional-design/` 4종). 여기서는 "무엇으로 어떻게 돌릴 것인가"의 비기능 결정만 다룬다 — 기능·규칙은 FD에서 동결.
 
 **환경 원칙 (모든 문항 공통)**: 코드는 특정 실행 환경이 아니라 **헥사고날 포트 기준**으로 짠다 — 루프 코어·도메인은 큐가 redis인지 SQS인지, LLM이 OpenAI인지 Bedrock인지 모른다. 아래 질문들은 "포트 뒤에 **1차 어댑터를 무엇으로** 구현하느냐"의 결정이다. 현재 개발·검증 환경은 로컬 컨테이너 체제(AWS 은퇴 — postgres/redis/opensearch/s3proxy + OpenAI 어댑터, `operations/solo-local-migration.md`)이므로 로컬 어댑터가 1차이고, 기존 `real_wiring`(SQS·Bedrock·RDS 등) 계약은 배포 재개 시의 교체 기준선으로 보존한다. `tech-stack-decisions.md`의 모든 TD 항목에 배포 어댑터 경로를 병기한다.
@@ -16,8 +16,8 @@
 
 `aidlc-docs/construction/novelty-agent-v2/nfr-requirements/`에 작성:
 
-- [ ] `nfr-requirements.md`
-- [ ] `tech-stack-decisions.md`
+- [x] `nfr-requirements.md`
+- [x] `tech-stack-decisions.md`
 
 ## 3. 명확화 질문
 
@@ -28,7 +28,7 @@
 - **B) FastAPI 백그라운드 태스크(in-process)** — 프로세스 하나로 단순 / API 재시작 시 실행 중 잡 유실, 협조적 취소·재접속 조회가 약해짐.
 - **X) 기타**
 
-[Answer]:
+[Answer]: A — 잡 큐 포트 + 별도 워커. 1차 어댑터 redis, 배포 재개 시 SQS 어댑터(기존 real_wiring 계약)로 교체.
 
 ### Q2 — LLM 프로바이더 (루프의 뇌)
 루프는 도구 호출(function calling)을 지원하는 LLM이 필요하다. 로컬 이관 체제는 OpenAI 프로바이더 어댑터를 쓰고 있다.
@@ -37,7 +37,7 @@
 - **B) Anthropic API 병행 도입을 지금** — 어댑터 2종 동시 구축. *비교 실험 가능 / 이번 사이클 작업량 증가.*
 - **X) 기타**
 
-[Answer]:
+[Answer]: A — 현 프로바이더 스위치 유지, OpenAI tool-calling 어댑터 1차. 타 프로바이더는 어댑터 추가로 병행 가능.
 
 ### Q3 — MCP 서버 선정 (⑤ 2단계 대비 — 지금은 결정만, 구축은 ⑤)
 FD는 위치(포트 뒤 어댑터)만 정했다. 어떤 서버를 쓸지 확정한다.
@@ -47,7 +47,7 @@ FD는 위치(포트 뒤 어댑터)만 정했다. 어떤 서버를 쓸지 확정�
 - **C) MCP 없이 일반 API 어댑터로만** — arXiv/GitHub REST 직접 호출. *단순 / 로드맵 ⑤ 2단계(MCP 연동) 목표와 상충.*
 - **X) 기타**
 
-[Answer]:
+[Answer]: A — 검증된 기존 MCP 서버 셀프호스트(로컬 컨테이너). 구축은 ⑤ 2단계, allowlist는 우리 어댑터가 강제.
 
 ### Q4 — 루프 예산 시작 수치 (FR-45)
 정책(3중 한도)은 FD에서 동결. 시작 수치를 정한다 — 운영하며 조정 가능하되, 변경은 문서 갱신 동반.
@@ -56,7 +56,7 @@ FD는 위치(포트 뒤 어댑터)만 정했다. 어떤 서버를 쓸지 확정�
 - **B) 여유 시작값** — 반복 50 / 호출 100 / $2.00. *깊은 조사 가능 / 폭주 시 비용 체감 큼.*
 - **X) 기타** — 직접 수치 지정.
 
-[Answer]:
+[Answer]: A — 보수적 시작값: 반복 24 / 도구 호출 총 40(검색류 12·form_evidence 4·view_figure 8·저장 12) / per-job $0.50. 조정은 문서 갱신 동반.
 
 ### Q5 — 진행 피드 전달 방식 (FR-35)
 활동 피드를 FE에 어떻게 흘리나.
@@ -65,7 +65,7 @@ FD는 위치(포트 뒤 어댑터)만 정했다. 어떤 서버를 쓸지 확정�
 - **B) SSE 스트리밍 도입** — 실시간성↑ / 로컬·FE 작업 증가.
 - **X) 기타**
 
-[Answer]:
+[Answer]: A — 폴링 우선(커서 기반 피드 조회). SSE 스트리밍은 후속 개선 항목.
 
 ### Q6 — 트레이스 저장소·보존 (FR-46)
 `ToolCallRecord`를 어디에 어떻게 보존하나.
@@ -74,7 +74,7 @@ FD는 위치(포트 뒤 어댑터)만 정했다. 어떤 서버를 쓸지 확정�
 - **B) 별도 로그 스토어(파일/외부)** — 잡 삭제와 분리되어 BR-NV18 위반 위험, 로컬 체제에 과함.
 - **X) 기타**
 
-[Answer]:
+[Answer]: A — postgres 잡 귀속 테이블, 잡 삭제 시 cascade, 보존 기한 = 잡 수명.
 
 ## 4. 답변 후 생성할 산출물 요약
 
