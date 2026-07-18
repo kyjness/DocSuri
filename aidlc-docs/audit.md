@@ -4019,3 +4019,11 @@ Error: TestingLibraryElementError: Unable to find an element by: [data-testid=\"
 **Context**: INCEPTION / Novelty Agent v2 (U12) — 기능 정의 확정, 문서만
 
 ---
+
+## Functional Design 질문 게이트 — 평문 개정
+**Timestamp**: 2026-07-18T10:08:01Z
+**User Input**: "Q1에 왜 완전자율을 권장하는거야? Q2도 이유를 알려줘 enum은 뭔지, Q3이나 Q5에서 mcp 뭘로할지 아무것도 안정했는데 … Q7에서 어떻게 특정 논문의 figure만 조회를 해..? … 질문들 좀 이해할 수 있게 적어줄 수 있을까"
+**AI Response**: "novelty-agent-v2-functional-design-plan.md §3 전면 평문 개정 — 각 문항에 '무엇을 묻나' 설명·용어 사전 추가. Q2는 낡은 전제(API 유지) 위 선택지를 현행화: 새 권장 = 거시 상태 소수 + 트레이스 파생 활동 피드. Q6에 B(잡 간만) 기각 사유 주석(기능 정의 Q4=B와 모순). 결정된 답·상속 내용은 무변경."
+**Context**: CONSTRUCTION / Novelty Agent v2 (U12) — 질문지 가독성 개정, 문서만
+
+---
