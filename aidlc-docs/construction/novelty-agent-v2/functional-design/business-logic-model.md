@@ -45,7 +45,7 @@
 | `form_evidence` | U11 문헌탐색 엔진 호출 — 근거표 형성 | 공유 계약만 소비(BR-NV1), 자연어 잡 선행 강제(§1) |
 | `github_search` | 구현체·baseline·license 단서 | payload allowlist(§3.1), 품질 점수 판정 금지(FR-31) |
 | `dataset_search` | 데이터셋 이름·URL·라이선스·태스크·metric 후보 | payload allowlist(§3.1) |
-| `view_figure` | 확보한 논문의 figure/표 이미지를 멀티모달 입력으로 조회 | DocModel에 실재하는 figure만, 온디맨드(Q7=A), 비용 계상 — ⑤ 4단계 도입 |
+| `view_figure` | 확보한 논문의 그림(WebP crop)·수식 crop을 멀티모달 입력으로 조회 | DocModel에 실재하는 자산만, 온디맨드(Q7=A), 비용 계상 — ⑤ 4단계 도입. **표는 이미지가 아니라 DocModel 데이터(셀 텍스트)로 존재해 텍스트 경로(검색·근거 결과)로 읽힌다. 수식은 LaTeX 텍스트가 1차, crop 이미지는 렌더 불능 시 폴백** |
 | `save_artifact` | 산출물 저장 시도 | **항상 결정론 게이트(§4) 경유** — 직접 저장 경로 없음 |
 
 **루프 밖(도구 아님)**: Notion export(§10 — 승인 게이트), 잡 삭제, 예산 재배분.
