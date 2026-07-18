@@ -6,7 +6,7 @@
 **결정 요약**: 최종형은 supervisor–서브 에이전트 구조(Q1=C). novelty 단일 루프부터 착수(Q3=A), 모듈 내부 재작성(Q4=A), 단일 루프는 직접 구현하고 supervisor 단계에서 LangGraph 도입(Q5=A). API·화면 계약 유지 + 결정 트레이스 서버 저장(Q6=A), requirements는 소규모 델타 5건 개정(Q7=A), 이번 사이클은 설계 문서까지(Q8=A).
 **대상**: 문헌탐색·근거형성(U11, `backend/modules/{evidence,research}/`)과 연구 아이디어(U12, `backend/modules/novelty/`) 두 기능의 에이전트 아키텍처 전면 재검토.
 **목적**: 에이전트 개발 역량(Tool Calling·Planning·Memory·MCP·멀티 에이전트)을 실제 동작하는 시스템으로 완성. 배포는 비용 확보 전까지 로컬 완성 우선.
-**결정 방식**: 각 질문의 `[Answer]:`에 선택지 문자를 기입. 이 질문지의 답이 확정되면 → ① `solo-roadmap.md` 개정, ② 기존 유닛 질문지(`construction/plans/research-agent-functional-design-plan.md`) 답 상속·갱신, ③ 유닛 설계 문서 작성 순으로 기계적으로 진행한다.
+**결정 방식**: 각 질문의 `[Answer]:`에 선택지 문자를 기입. 이 질문지의 답이 확정되면 → ① `solo-roadmap.md` 개정, ② 기존 유닛 질문지(`construction/plans/novelty-agent-v2-functional-design-plan.md`) 답 상속·갱신, ③ 유닛 설계 문서 작성 순으로 기계적으로 진행한다.
 
 ## 전제 (현황)
 
@@ -103,5 +103,5 @@ FE 채팅 화면과 REST 계약(진행상태 enum 포함)을 유지하는가?
 ## 답변 후 진행 (자동)
 
 1. `operations/solo-roadmap.md` 개정 — ⑤ 재정의 + 신설 항목(문헌탐색 에이전트화, supervisor+프레임워크)을 Q1·Q3·Q5 답대로 등재
-2. `construction/plans/research-agent-functional-design-plan.md` — Q1/Q3/Q12/Q14 등에 본 질문지 답 상속, 잔여 질문만 남김
+2. `construction/plans/novelty-agent-v2-functional-design-plan.md` — Q1/Q3/Q12/Q14 등에 본 질문지 답 상속, 잔여 질문만 남김
 3. Q8 범위대로 설계 문서 작성 → (다음 사이클) 구현

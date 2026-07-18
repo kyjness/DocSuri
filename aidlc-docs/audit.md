@@ -3995,3 +3995,11 @@ Error: TestingLibraryElementError: Unable to find an element by: [data-testid=\"
 **Context**: INCEPTION / 에이전트 아키텍처 재설계 (U11·U12 공통 상위 결정) — 문서만, 코드 변경 없음
 
 ---
+
+## 유닛 명칭 정정 — Research Ideation Agent → Novelty Agent v2
+**Timestamp**: 2026-07-18T07:52:20Z
+**User Input**: "novelty면 novelty인거지 도대체 왜 헷갈리게 research ideation agent라고 한 거냐" — 유닛명은 novelty 유지, "research*" 명칭은 ⑦ supervisor 명명 후보로 예약 요청
+**AI Response**: "질문 게이트 파일명 novelty-agent-v2-functional-design-plan.md로 변경, 설계 문서 경로 construction/novelty-agent-v2/로 정정(v1 frozen은 novelty-agent/ 유지), solo-roadmap ④ 명칭 갱신, 브랜치 docs/novelty-v2-unit-design으로 개명. 유닛 책임(유사연구·차별화 후보·실험계획·export)은 FR-30~35 기존 기능 승계로 불변."
+**Context**: CONSTRUCTION / Novelty Agent v2 (U12) — 명칭 정정, 문서만
+
+---

@@ -1,4 +1,4 @@
-# Research Ideation Agent (U12) — Functional Design Plan + 질문 게이트
+# Novelty Agent v2 재설계 (U12) — Functional Design Plan + 질문 게이트
 
 **단계**: CONSTRUCTION → Functional Design (재설계 라운드)
 **일자**: 2026-07-17
@@ -15,15 +15,16 @@
 
 ## 1. 유닛 컨텍스트
 
-- **대상**: Research Ideation Agent — 현행 novelty 모듈(고정 상태머신 QUEUED→…→EXPORTING_NOTION)의 **도구 호출 루프 기반 재설계** 목표 아키텍처.
-- **책임**(불변): 자연어 연구 의도 또는 업로드 원고에서 유사 연구·차별화 후보·실험 계획·원고 위험 신호·진행상태·선택적 Notion export를 제공한다.
-- **경로 주의**: 코드 모듈은 `backend/modules/novelty/` **유지**. `backend/modules/research/`는 문헌탐색·근거형성 Agent(U11)의 대화 표면으로 **본 유닛과 무관**. 설계 문서만 `construction/research-agent/`에 둔다.
+- **대상**: Novelty Agent v2 — 현행 novelty 모듈(고정 상태머신 QUEUED→…→EXPORTING_NOTION)의 **도구 호출 루프 기반 재설계** 목표 아키텍처.
+- **명칭**: 유닛명·코드 경로 모두 **novelty 유지**. "research*" 계열 명칭은 로드맵 ⑦ supervisor 명명 후보로 예약 (`backend/modules/research/`는 문헌탐색·근거형성 Agent(U11)의 대화 표면 — 본 유닛과 무관).
+- **책임**(불변 — FR-30~35·현행 기능 승계): 자연어 연구 의도 또는 업로드 원고에서 유사 연구·차별화 후보·실험 계획·원고 위험 신호·진행상태·선택적 Notion export를 제공한다.
+- **문서 위치**: 설계 문서는 `construction/novelty-agent-v2/`에 둔다 (`construction/novelty-agent/`는 v1 frozen 기준선).
 - **범위 경계 (로드맵 ④/⑤)**: 이번 라운드는 **설계 문서만** 산출한다. 코드 교체(에이전트 루프 → MCP 연동 → 세션 메모리 → 멀티모달)는 로드맵 ⑤ — 본 설계는 그 4단계 도입을 수용할 수 있어야 하되, 기존 API 계약·모듈 경로 유지가 ⑤의 제약이다.
 - **v1 제외**(승계): 뉴스 검색, novelty 점수, "새로움 확정" 판정, 논문화 가능성 점수, 코드 skeleton/실행 스크립트 생성.
 
 ## 2. Functional Design 실행 계획
 
-답변 확정 후 아래 산출물을 `aidlc-docs/construction/research-agent/functional-design/`에 작성한다.
+답변 확정 후 아래 산출물을 `aidlc-docs/construction/novelty-agent-v2/functional-design/`에 작성한다.
 
 - [ ] `domain-entities.md`
 - [ ] `business-logic-model.md`
