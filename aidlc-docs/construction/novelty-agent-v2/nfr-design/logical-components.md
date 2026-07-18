@@ -40,7 +40,7 @@ backend/modules/novelty/
 | 투영기(`domain/projection.py`) | 트레이스 → 사용자용 활동 피드 문구, 거시 상태 계산. 파생 뷰 — 실패해도 잡 비실패 | FD BLM §7 |
 | API(`api.py`) | 접수·조회(커서 폴링)·취소 플래그·대화 수신. 실행하지 않음 | NFR-NV2-5·6·10 |
 | 워커(`worker.py`) | 큐 소비, `job_id` 실행 잠금, stale 잡 감지·failed 처리, 협조적 취소 확인 | NFR-NV2-2·3·10 |
-| sanitize 어댑터 | 외부행 도구 인자의 allowlist 필터 — 도구별 규칙 표를 데이터로 보유 | BR-RA7, NFR-NV2-15 |
+| sanitize 어댑터 | 외부로 나가는 도구 인자의 allowlist 필터 — 도구별 규칙 표를 데이터로 보유 | BR-RA7, NFR-NV2-15 |
 
 ## 3. 잡 수명 시퀀스
 
