@@ -3,7 +3,9 @@
 **단계**: CONSTRUCTION → NFR Requirements
 **일자**: 2026-07-18
 **상태**: 🟡 답변 대기 — `[Answer]:`를 채우면 산출물 생성을 진행한다.
-**전제**: Functional Design 확정(`construction/novelty-agent-v2/functional-design/` 4종). 실행 환경은 **로컬 컨테이너 체제**(AWS 은퇴 — postgres/redis/opensearch/s3proxy + OpenAI 프로바이더 어댑터, `operations/solo-local-migration.md`). 여기서는 "무엇으로 어떻게 돌릴 것인가"의 비기능 결정만 다룬다 — 기능·규칙은 FD에서 동결.
+**전제**: Functional Design 확정(`construction/novelty-agent-v2/functional-design/` 4종). 여기서는 "무엇으로 어떻게 돌릴 것인가"의 비기능 결정만 다룬다 — 기능·규칙은 FD에서 동결.
+
+**환경 원칙 (모든 문항 공통)**: 코드는 특정 실행 환경이 아니라 **헥사고날 포트 기준**으로 짠다 — 루프 코어·도메인은 큐가 redis인지 SQS인지, LLM이 OpenAI인지 Bedrock인지 모른다. 아래 질문들은 "포트 뒤에 **1차 어댑터를 무엇으로** 구현하느냐"의 결정이다. 현재 개발·검증 환경은 로컬 컨테이너 체제(AWS 은퇴 — postgres/redis/opensearch/s3proxy + OpenAI 어댑터, `operations/solo-local-migration.md`)이므로 로컬 어댑터가 1차이고, 기존 `real_wiring`(SQS·Bedrock·RDS 등) 계약은 배포 재개 시의 교체 기준선으로 보존한다. `tech-stack-decisions.md`의 모든 TD 항목에 배포 어댑터 경로를 병기한다.
 
 ## 1. 컨텍스트
 
@@ -22,7 +24,7 @@
 ### Q1 — 루프는 어떤 프로세스에서 도나 (실행 표면)
 루프 한 번이 수 분씩 걸리므로 API 요청 안에서 돌 수 없다. NFR-P5는 "API는 잡 관리만, 별도 워커가 실행"을 요구한다. 구 구현은 SQS 워커였는데 AWS가 은퇴했다.
 
-- **A) 로컬 큐(redis) + 별도 워커 프로세스** — 이미 컨테이너에 있는 redis를 잡 큐로 쓰고, 워커 프로세스가 루프를 실행. NFR-P5 구조 유지, API 재시작이 실행 중 잡을 죽이지 않음, 향후 배포 재개 시 관리형 큐로 어댑터만 교체. (권장)
+- **A) 잡 큐 포트 + 별도 워커 프로세스 (1차 어댑터 = redis)** — 루프는 "잡 큐 포트" 뒤에서 돌고, 로컬 1차 어댑터는 이미 컨테이너에 있는 redis, 배포 재개 시 SQS 어댑터(기존 `real_wiring` 워커 계약)로 교체. NFR-P5 구조 유지, API 재시작이 실행 중 잡을 죽이지 않음. (권장)
 - **B) FastAPI 백그라운드 태스크(in-process)** — 프로세스 하나로 단순 / API 재시작 시 실행 중 잡 유실, 협조적 취소·재접속 조회가 약해짐.
 - **X) 기타**
 
