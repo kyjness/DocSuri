@@ -4035,3 +4035,11 @@ Error: TestingLibraryElementError: Unable to find an element by: [data-testid=\"
 **Context**: INCEPTION~CONSTRUCTION / U11·U12 공통 — 근거 커버리지 요구 확장, 문서만
 
 ---
+
+## Functional Design 질문 게이트 확정 — Novelty Agent v2
+**Timestamp**: 2026-07-18T10:57:30Z
+**User Input**: "Q1~Q11, Q13, Q14 전부 권장대로 기록해줘"
+**AI Response**: "전 문항 확정 — Q1=A(완전 자율 루프), Q2=B(거시 상태+트레이스 활동 피드), Q3=A(보수적 도구 코어), Q4=A(기본 세트 필수+온디맨드), Q5=A(포트 뒤 어댑터), Q6=C(세션 메모리 둘 다·잡 내 먼저), Q7=A(view_figure 온디맨드), Q8=A(저장 시점 결정론 게이트), Q9=A(3중 예산), Q10=A(협조적 취소), Q11=A(payload allowlist), Q12=X(기상속 — 개정 블록+델타 6건), Q13=A(승계 표+델타), Q14=A(근거 먼저 강제). 다음: requirements 개정 블록 → functional-design 4종 생성."
+**Context**: CONSTRUCTION / Novelty Agent v2 (U12) — Functional Design 질문 게이트 확정, 문서만
+
+---
