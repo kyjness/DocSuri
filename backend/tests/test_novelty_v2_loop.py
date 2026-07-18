@@ -1,0 +1,440 @@
+"""루프 코어 결정론 검증 — 스크립트 LLM 재생(nfr-design-patterns §7).
+
+completed/partial/게이트 거부 재시도/취소/트레이스 실패 주입 + PBT-RA3
+(도구 호출 ↔ ToolCallRecord 1:1, seq 무결).
+"""
+
+from __future__ import annotations
+
+from uuid import uuid4
+
+import pytest
+from hypothesis import given
+from hypothesis import strategies as st
+
+from backend.modules.novelty.domain.loop import LoopDeps, run_loop
+from backend.modules.novelty.domain.models import (
+    AgentLoopRun,
+    ArtifactKind,
+    InputType,
+    JobState,
+    LoopBudget,
+    NoveltyJob,
+    NoveltyJobRequest,
+    TerminationReason,
+    ToolOutcome,
+)
+from backend.modules.novelty.ports.llm import (
+    LlmDecision,
+    TerminationProposal,
+    ToolCallProposal,
+)
+from backend.modules.novelty.ports.tools import (
+    TOOL_CORPUS_SEARCH,
+    TOOL_FORM_EVIDENCE,
+    TOOL_SAVE_ARTIFACT,
+    ToolRegistry,
+    ToolResult,
+)
+from backend.modules.novelty.settings import TOOL_CAP_GROUPS
+
+from .novelty_v2_fakes import FakeTool, InMemoryNoveltyStore, ScriptedToolCallingLlm
+
+_REFS = ("rec:paper-1", "rec:paper-2")
+
+
+def _budget(**overrides) -> LoopBudget:
+    values = dict(
+        max_iterations=24,
+        max_tool_calls_total=40,
+        max_tool_calls={"search": 12, "form_evidence": 4, "save_artifact": 12},
+        tool_cap_groups=dict(TOOL_CAP_GROUPS),
+        token_cost_limit_usd=0.5,
+    )
+    values.update(overrides)
+    return LoopBudget(**values)
+
+
+def _job(
+    store: InMemoryNoveltyStore,
+    input_type: InputType = InputType.NATURAL_LANGUAGE,
+    budget: LoopBudget | None = None,
+) -> NoveltyJob:
+    job = NoveltyJob(
+        owner_id=str(uuid4()),
+        request=NoveltyJobRequest(
+            input_type=input_type,
+            topic="privacy preserving RAG",
+            evidence_request={"topic": "privacy preserving RAG"},
+            manuscript_ref=(
+                None
+                if input_type is InputType.NATURAL_LANGUAGE
+                else {"file_name": "draft.pdf", "content_type": "application/pdf"}
+            ),
+        ),
+        loop_run=AgentLoopRun(budget=budget or _budget()),
+    )
+    store.create_job(job)
+    return job
+
+
+def _evidence_tool() -> FakeTool:
+    snapshot = {
+        "state": "ok",
+        "claims": [{"statement": "s1", "supporting": [], "conflicting": []}],
+    }
+    return FakeTool(
+        TOOL_FORM_EVIDENCE,
+        default=ToolResult(
+            ok=True,
+            content={"evidence": snapshot},
+            result_summary="evidence formed: 1 claim",
+            record_refs=_REFS,
+        ),
+    )
+
+
+def _corpus_tool() -> FakeTool:
+    return FakeTool(
+        TOOL_CORPUS_SEARCH,
+        default=ToolResult(
+            ok=True,
+            content={"items": [{"title": "Sparse retrieval under DP"}]},
+            result_summary="3 findings",
+            record_refs=_REFS,
+        ),
+    )
+
+
+def _registry(*tools: FakeTool) -> ToolRegistry:
+    registry = ToolRegistry()
+    for tool in tools:
+        registry.register(tool)
+    return registry
+
+
+def _ref(record_ref: str = "rec:paper-1") -> dict:
+    return {"paperId": "2401.00001", "recordRef": record_ref}
+
+
+def _similar_payload() -> dict:
+    return {
+        "items": [
+            {
+                "artifact_type": "paper",
+                "title": "Sparse retrieval under DP",
+                "evidence_status": "supported",
+                "source_refs": [_ref()],
+            }
+        ]
+    }
+
+
+def _gap_payload(**item_overrides) -> dict:
+    item = {
+        "area": "sparse retrieval + privacy",
+        "status": "partially_covered",
+        "rationale": "관련 연구 존재하나 결합 평가 부재",
+        "source_refs": [_ref()],
+    }
+    item.update(item_overrides)
+    return {"items": [item]}
+
+
+def _save(kind: str, payload: dict) -> LlmDecision:
+    return LlmDecision(
+        ToolCallProposal(TOOL_SAVE_ARTIFACT, {"kind": kind, "payload": payload})
+    )
+
+
+def test_happy_path_completes_with_gapless_trace() -> None:
+    store = InMemoryNoveltyStore()
+    job = _job(store)
+    llm = ScriptedToolCallingLlm(
+        [
+            LlmDecision(ToolCallProposal(TOOL_CORPUS_SEARCH, {"query": "privacy rag"})),
+            _save("similar_works", _similar_payload()),
+            _save("gap_analysis", _gap_payload()),
+        ]
+    )
+    deps = LoopDeps(store=store, llm=llm, registry=_registry(_evidence_tool(), _corpus_tool()))
+
+    outcome = run_loop(job, deps)
+
+    assert outcome.reason is TerminationReason.ARTIFACTS_COMPLETE
+    stored = store.get_job(job.owner_id, job.job_id)
+    assert stored.state is JobState.COMPLETED
+    assert stored.completed_at is not None
+    kinds = {rec.kind for rec in store.list_artifacts(job.owner_id, job.job_id)}
+    # Evidence First 자동 보존 포함 — 필수 세트 완성(BR-RA1).
+    assert {
+        ArtifactKind.EVIDENCE, ArtifactKind.SIMILAR_WORKS, ArtifactKind.GAP_ANALYSIS
+    } <= kinds
+    trace = store.list_trace(job.owner_id, job.job_id, after_seq=0, limit=50)
+    assert [rec.seq for rec in trace] == list(range(1, len(trace) + 1))
+    assert trace[0].tool_name == TOOL_FORM_EVIDENCE  # 선행 강제(BR-NV2)
+    assert all(rec.outcome is ToolOutcome.OK for rec in trace)
+    assert stored.loop_run.termination_reason is TerminationReason.ARTIFACTS_COMPLETE
+
+
+def test_budget_exhaustion_ends_partial_keeping_saved_artifacts() -> None:
+    store = InMemoryNoveltyStore()
+    job = _job(store, budget=_budget(max_tool_calls_total=3))
+    llm = ScriptedToolCallingLlm(
+        [
+            _save("similar_works", _similar_payload()),
+            LlmDecision(ToolCallProposal(TOOL_CORPUS_SEARCH, {"query": "q2"})),
+            LlmDecision(ToolCallProposal(TOOL_CORPUS_SEARCH, {"query": "q3"})),  # 총 상한 초과
+        ]
+    )
+    deps = LoopDeps(store=store, llm=llm, registry=_registry(_evidence_tool(), _corpus_tool()))
+
+    outcome = run_loop(job, deps)
+
+    assert outcome.reason is TerminationReason.BUDGET_EXHAUSTED
+    stored = store.get_job(job.owner_id, job.job_id)
+    assert stored.state is JobState.PARTIAL
+    kinds = {rec.kind for rec in store.list_artifacts(job.owner_id, job.job_id)}
+    assert ArtifactKind.SIMILAR_WORKS in kinds  # 검증·저장분 유지(BLM §9)
+    trace = store.list_trace(job.owner_id, job.job_id, after_seq=0, limit=50)
+    assert trace[-1].outcome is ToolOutcome.BUDGET_DENIED
+    # budget_denied 레코드는 실행 없음 — 소비는 상한(3)까지만.
+    assert stored.loop_run.budget.consumed.tool_calls_total == 3
+
+
+def test_cost_exhaustion_ends_partial() -> None:
+    store = InMemoryNoveltyStore()
+    job = _job(store, budget=_budget(token_cost_limit_usd=0.4))
+    llm = ScriptedToolCallingLlm(
+        [
+            LlmDecision(
+                ToolCallProposal(TOOL_CORPUS_SEARCH, {"query": "q1"}),
+                cost_estimate_usd=0.45,
+            ),
+            LlmDecision(ToolCallProposal(TOOL_CORPUS_SEARCH, {"query": "q2"})),
+        ]
+    )
+    deps = LoopDeps(store=store, llm=llm, registry=_registry(_evidence_tool(), _corpus_tool()))
+
+    outcome = run_loop(job, deps)
+    assert outcome.reason is TerminationReason.BUDGET_EXHAUSTED
+    assert store.get_job(job.owner_id, job.job_id).state is JobState.PARTIAL
+
+
+def test_gate_rejection_recorded_then_retry_succeeds() -> None:
+    store = InMemoryNoveltyStore()
+    job = _job(store)
+    llm = ScriptedToolCallingLlm(
+        [
+            _save("gap_analysis", _gap_payload(source_refs=[])),  # 거부
+            _save("similar_works", _similar_payload()),
+            _save("gap_analysis", _gap_payload()),  # 재시도 성공
+        ]
+    )
+    deps = LoopDeps(store=store, llm=llm, registry=_registry(_evidence_tool(), _corpus_tool()))
+
+    outcome = run_loop(job, deps)
+
+    assert outcome.reason is TerminationReason.ARTIFACTS_COMPLETE
+    trace = store.list_trace(job.owner_id, job.job_id, after_seq=0, limit=50)
+    outcomes = [rec.outcome for rec in trace if rec.tool_name == TOOL_SAVE_ARTIFACT]
+    assert outcomes == [ToolOutcome.REJECTED_BY_GATE, ToolOutcome.OK, ToolOutcome.OK]
+    # 거부 사유가 다음 관찰에 노출된다(재시도 근거).
+    rejected_views = [
+        view
+        for observation in llm.observations
+        for view in observation.recent_results
+        if not view.ok
+    ]
+    assert any("missing_source_refs" in (view.error or "") for view in rejected_views)
+
+
+def test_cancel_between_turns_is_cooperative() -> None:
+    store = InMemoryNoveltyStore()
+    job = _job(store)
+
+    def cancel_then_search(observation):
+        store.request_cancel(job.owner_id, job.job_id)
+        return LlmDecision(ToolCallProposal(TOOL_CORPUS_SEARCH, {"query": "q"}))
+
+    llm = ScriptedToolCallingLlm([cancel_then_search])
+    deps = LoopDeps(store=store, llm=llm, registry=_registry(_evidence_tool(), _corpus_tool()))
+
+    outcome = run_loop(job, deps)
+
+    assert outcome.reason is TerminationReason.CANCELLED
+    stored = store.get_job(job.owner_id, job.job_id)
+    assert stored.state is JobState.CANCELLED
+    # 협조적 취소 — 진행 중이던 도구 호출은 완료되어 트레이스에 남는다(BR-RA8).
+    trace = store.list_trace(job.owner_id, job.job_id, after_seq=0, limit=50)
+    assert trace[-1].tool_name == TOOL_CORPUS_SEARCH
+    assert trace[-1].outcome is ToolOutcome.OK
+
+
+def test_termination_proposal_without_required_set_is_not_accepted() -> None:
+    store = InMemoryNoveltyStore()
+    job = _job(store)
+    llm = ScriptedToolCallingLlm(
+        [
+            LlmDecision(TerminationProposal(note="충분함")),  # 불수용(BR-RA1)
+            _save("similar_works", _similar_payload()),
+            _save("gap_analysis", _gap_payload()),
+        ]
+    )
+    deps = LoopDeps(store=store, llm=llm, registry=_registry(_evidence_tool(), _corpus_tool()))
+
+    outcome = run_loop(job, deps)
+
+    assert outcome.reason is TerminationReason.ARTIFACTS_COMPLETE
+    assert any(
+        any("종료 제안 불수용" in note for note in observation.notes)
+        for observation in llm.observations
+    )
+
+
+def test_manuscript_job_has_no_forced_form_evidence() -> None:
+    store = InMemoryNoveltyStore()
+    job = _job(store, input_type=InputType.MANUSCRIPT)
+    llm = ScriptedToolCallingLlm(
+        [
+            LlmDecision(ToolCallProposal(TOOL_FORM_EVIDENCE, {"topic": "t"})),
+            _save("similar_works", _similar_payload()),
+            _save("gap_analysis", _gap_payload()),
+        ]
+    )
+    deps = LoopDeps(store=store, llm=llm, registry=_registry(_evidence_tool(), _corpus_tool()))
+
+    outcome = run_loop(job, deps)
+    assert outcome.reason is TerminationReason.ARTIFACTS_COMPLETE
+    # 첫 결정 시점의 관찰이 비어 있다 = 강제 선행 없이 LLM 자율 선택으로 시작.
+    assert llm.observations[0].recent_results == ()
+
+
+def test_natural_job_without_evidence_tool_fails_fast() -> None:
+    store = InMemoryNoveltyStore()
+    job = _job(store)
+    llm = ScriptedToolCallingLlm([])
+    deps = LoopDeps(store=store, llm=llm, registry=_registry(_corpus_tool()))
+
+    outcome = run_loop(job, deps)
+
+    assert outcome.reason is TerminationReason.FATAL_ERROR
+    assert store.get_job(job.owner_id, job.job_id).state is JobState.FAILED
+
+
+class _FlakyTraceStore(InMemoryNoveltyStore):
+    def __init__(self, fail_times: int) -> None:
+        super().__init__()
+        self._fail_times = fail_times
+
+    def append_trace(self, record) -> None:
+        if self._fail_times > 0:
+            self._fail_times -= 1
+            raise RuntimeError("trace store down")
+        super().append_trace(record)
+
+
+def test_transient_trace_failure_does_not_fail_tool_call() -> None:
+    store = _FlakyTraceStore(fail_times=1)  # 첫 시도 실패 → 재시도 성공
+    job = _job(store)
+    llm = ScriptedToolCallingLlm(
+        [_save("similar_works", _similar_payload()), _save("gap_analysis", _gap_payload())]
+    )
+    deps = LoopDeps(store=store, llm=llm, registry=_registry(_evidence_tool(), _corpus_tool()))
+
+    outcome = run_loop(job, deps)
+    assert outcome.reason is TerminationReason.ARTIFACTS_COMPLETE
+    trace = store.list_trace(job.owner_id, job.job_id, after_seq=0, limit=50)
+    assert [rec.seq for rec in trace] == list(range(1, len(trace) + 1))
+
+
+def test_persistent_trace_failure_halts_loop() -> None:
+    store = _FlakyTraceStore(fail_times=99)
+    job = _job(store)
+    llm = ScriptedToolCallingLlm(
+        [
+            LlmDecision(ToolCallProposal(TOOL_CORPUS_SEARCH, {"query": "q1"})),
+            LlmDecision(ToolCallProposal(TOOL_CORPUS_SEARCH, {"query": "q2"})),
+            LlmDecision(ToolCallProposal(TOOL_CORPUS_SEARCH, {"query": "q3"})),
+        ]
+    )
+    deps = LoopDeps(store=store, llm=llm, registry=_registry(_evidence_tool(), _corpus_tool()))
+
+    outcome = run_loop(job, deps)
+
+    # 트레이스는 계약 — 기록 없는 실행을 계속하지 않는다(NFR-NV2-13).
+    assert outcome.reason is TerminationReason.FATAL_ERROR
+    assert store.get_job(job.owner_id, job.job_id).state is JobState.FAILED
+
+
+def test_tool_error_returned_to_agent_then_degraded_source_recorded() -> None:
+    store = InMemoryNoveltyStore()
+    job = _job(store)
+    failing = FakeTool(
+        TOOL_CORPUS_SEARCH,
+        default=ToolResult(ok=False, error="upstream 500", result_summary="corpus error"),
+    )
+    llm = ScriptedToolCallingLlm(
+        [
+            LlmDecision(ToolCallProposal(TOOL_CORPUS_SEARCH, {"query": "q1"})),
+            LlmDecision(ToolCallProposal(TOOL_CORPUS_SEARCH, {"query": "q2"})),
+            _save("similar_works", _similar_payload()),
+            _save("gap_analysis", _gap_payload()),
+        ]
+    )
+    deps = LoopDeps(store=store, llm=llm, registry=_registry(_evidence_tool(), failing))
+
+    outcome = run_loop(job, deps)
+
+    assert outcome.reason is TerminationReason.ARTIFACTS_COMPLETE
+    stored = store.get_job(job.owner_id, job.job_id)
+    # 지속 실패 소스는 저하 기록, 잡은 나머지로 진행(BR-NV16).
+    assert TOOL_CORPUS_SEARCH in stored.degraded_sources
+
+
+# ── PBT-RA3: 실행된 도구 호출 ↔ ToolCallRecord 1:1, seq 무결 ──
+
+_DECISION_POOL = st.sampled_from(
+    [
+        LlmDecision(ToolCallProposal(TOOL_CORPUS_SEARCH, {"query": "q"})),
+        LlmDecision(ToolCallProposal("unknown_tool", {})),
+        _save("similar_works", _similar_payload()),
+        _save("gap_analysis", _gap_payload(source_refs=[])),
+        _save("gap_analysis", _gap_payload()),
+        LlmDecision(TerminationProposal()),
+    ]
+)
+
+
+@given(script=st.lists(_DECISION_POOL, max_size=20))
+def test_pbt_ra3_trace_one_to_one_and_gapless(script) -> None:
+    store = InMemoryNoveltyStore()
+    job = _job(store, budget=_budget(max_iterations=25))
+    evidence, corpus = _evidence_tool(), _corpus_tool()
+    llm = ScriptedToolCallingLlm(
+        [*script, _save("similar_works", _similar_payload()), _save("gap_analysis", _gap_payload())]
+    )
+    deps = LoopDeps(store=store, llm=llm, registry=_registry(evidence, corpus))
+
+    run_loop(job, deps)
+
+    trace = store.list_trace(job.owner_id, job.job_id, after_seq=0, limit=200)
+    # seq 무결 — 빈틈없이 단조 증가.
+    assert [rec.seq for rec in trace] == list(range(1, len(trace) + 1))
+
+    # 실행된 도구 호출 ↔ 레코드 1:1 — budget_denied 레코드는 실행이 없어야 한다.
+    def executed_records(tool_name: str) -> int:
+        return sum(
+            1
+            for rec in trace
+            if rec.tool_name == tool_name and rec.outcome is not ToolOutcome.BUDGET_DENIED
+        )
+
+    assert executed_records(TOOL_CORPUS_SEARCH) == len(corpus.calls)
+    assert executed_records(TOOL_FORM_EVIDENCE) == len(evidence.calls)
+
+
+def test_notion_can_never_join_registry() -> None:
+    registry = ToolRegistry()
+    with pytest.raises(ValueError):
+        registry.register(FakeTool("notion_export"))

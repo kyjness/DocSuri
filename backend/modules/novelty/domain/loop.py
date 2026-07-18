@@ -1,0 +1,428 @@
+"""루프 코어(BLM §0~§2) — observe→decide→act, 종료 판정(BR-RA1). 어댑터 무지.
+
+불변 조건:
+- 예산 검사는 act 직전 정확히 1회(domain.budget 단일 경로).
+- 실행된 모든 도구 호출은 ToolCallRecord 1:1(BR-RA4). 기록 실패는 도구 호출을
+  실패시키지 않되, 지속 실패 시 루프를 중단한다(NFR-NV2-13 — 트레이스는 계약).
+- 정상 종료의 판정 권위는 저장 게이트다 — 필수 세트(BR-RA1)가 전부 게이트 통과·
+  저장되어야 completed. 에이전트의 종료 제안은 수용 여부만 판정된다.
+- 취소는 협조적(BR-RA8): 진행 중 도구 호출 완료 후 턴 경계에서 탈출.
+- 자연어 잡은 루프 시작 전 form_evidence를 강제한다(BR-NV2, Evidence First).
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any
+
+from ..ports.llm import (
+    LoopObservation,
+    TerminationProposal,
+    ToolCallingLlmPort,
+    ToolCallProposal,
+    ToolResultView,
+)
+from ..ports.store import NoveltyStorePort
+from ..ports.tools import (
+    TOOL_FORM_EVIDENCE,
+    TOOL_SAVE_ARTIFACT,
+    ToolContext,
+    ToolRegistry,
+    ToolResult,
+    ToolSpec,
+)
+from . import budget as budget_rules
+from .gate import evaluate_artifact
+from .models import (
+    REQUIRED_ARTIFACT_KINDS,
+    ArtifactKind,
+    ArtifactRecord,
+    InputType,
+    JobState,
+    NoveltyJob,
+    TerminationReason,
+    ToolCallRecord,
+    ToolOutcome,
+    utc_now,
+    validate_transition,
+)
+
+__all__ = ["SAVE_ARTIFACT_SPEC", "LoopDeps", "LoopOutcome", "run_loop"]
+
+# save_artifact는 레지스트리 도구가 아니라 루프가 직접 게이트로 처리한다 —
+# 우회 저장 경로를 만들지 않기 위해(BR-RA2). LLM에는 이 스펙으로 노출된다.
+SAVE_ARTIFACT_SPEC = ToolSpec(
+    name=TOOL_SAVE_ARTIFACT,
+    description=(
+        "조사 산출물 저장 시도. 결정론 게이트가 SourceRef 실재성·필수 필드·bounded "
+        "규칙을 검증하며, 거부 시 기계 판독 사유가 반환된다. "
+        "kind: evidence|similar_works|gap_analysis|external_findings|"
+        "novelty_candidates|experiment_plan"
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "kind": {"type": "string"},
+            "payload": {"type": "object"},
+        },
+        "required": ["kind", "payload"],
+    },
+)
+
+_RECENT_RESULTS_WINDOW = 6
+_TRACE_FAILURE_HALT_AFTER = 2
+_TOOL_DEGRADED_AFTER = 2
+
+
+@dataclass(slots=True)
+class LoopDeps:
+    store: NoveltyStorePort
+    llm: ToolCallingLlmPort
+    registry: ToolRegistry
+
+
+@dataclass(slots=True)
+class LoopOutcome:
+    reason: TerminationReason
+    final_state: JobState
+    detail: str | None = None
+
+
+@dataclass(slots=True)
+class _LoopState:
+    """한 실행의 가변 문맥 — 실재 출처 핸들·최근 결과·연속 실패 카운터."""
+
+    known_record_refs: set[str] = field(default_factory=set)
+    recent_results: list[ToolResultView] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+    saved_kinds: set[ArtifactKind] = field(default_factory=set)
+    trace_failures: int = 0
+    tool_failures: dict[str, int] = field(default_factory=dict)
+
+
+def run_loop(job: NoveltyJob, deps: LoopDeps) -> LoopOutcome:
+    """잡 하나의 자율 루프를 종단 상태까지 구동한다. 워커가 실행 잠금을 쥔 채 호출."""
+    run = job.loop_run
+    if run is None:
+        raise ValueError("job.loop_run must be allocated before run_loop")
+    state = _LoopState()
+    run.started_at = run.started_at or utc_now()
+    _transition(job, JobState.INVESTIGATING, deps)
+
+    try:
+        outcome = _drive(job, deps, state)
+    except _TraceUnavailable:
+        outcome = LoopOutcome(
+            TerminationReason.FATAL_ERROR, JobState.FAILED, "decision trace unavailable"
+        )
+    except Exception as exc:  # 저장소 등 복구 불가 실패 — fatal(BLM §2 (d))
+        outcome = LoopOutcome(TerminationReason.FATAL_ERROR, JobState.FAILED, str(exc)[:500])
+
+    run.termination_reason = outcome.reason
+    run.ended_at = utc_now()
+    run.iteration_count = run.budget.consumed.iterations
+    run.tool_call_counts = dict(run.budget.consumed.tool_calls)
+    if outcome.detail and outcome.final_state is JobState.FAILED:
+        job.error_message = outcome.detail
+    if outcome.final_state is JobState.COMPLETED and job.state is JobState.INVESTIGATING:
+        # 보고 조립(BLM §0) — 1단계에서는 저장된 산출물 참조가 곧 보고이므로 전이만.
+        _transition(job, JobState.REPORTING, deps)
+    _transition(job, outcome.final_state, deps, terminal=True)
+    return outcome
+
+
+class _TraceUnavailable(Exception):
+    """트레이스 기록 불가 지속 — 실행을 계속하지 않는다(NFR-NV2-13)."""
+
+
+def _drive(job: NoveltyJob, deps: LoopDeps, state: _LoopState) -> LoopOutcome:
+    budget = job.loop_run.budget  # type: ignore[union-attr]
+
+    # Evidence First(BR-NV2) — 자연어 잡은 첫 act가 form_evidence로 강제된다.
+    if job.request.input_type is InputType.NATURAL_LANGUAGE:
+        outcome = _forced_form_evidence(job, deps, state)
+        if outcome is not None:
+            return outcome
+
+    while True:
+        if deps.store.is_cancel_requested(job.job_id):
+            return LoopOutcome(TerminationReason.CANCELLED, JobState.CANCELLED)
+        if budget_rules.begin_iteration(budget) is not None:
+            return _budget_exhausted()
+
+        decision = deps.llm.decide(_observe(job, state), _exposed_tools(deps))
+        if decision.cost_estimate_usd:
+            budget_rules.record_cost(budget, decision.cost_estimate_usd)
+
+        proposal = decision.proposal
+        if isinstance(proposal, TerminationProposal):
+            if _required_complete(state):
+                return LoopOutcome(TerminationReason.ARTIFACTS_COMPLETE, JobState.COMPLETED)
+            missing = _missing_kinds(state)
+            state.notes.append(
+                f"종료 제안 불수용 — 필수 산출물 미완성: {', '.join(sorted(missing))}"
+            )
+            continue
+
+        outcome = _act(job, deps, state, proposal)
+        if outcome is not None:
+            return outcome
+        if _required_complete(state):
+            return LoopOutcome(TerminationReason.ARTIFACTS_COMPLETE, JobState.COMPLETED)
+
+
+def _act(
+    job: NoveltyJob,
+    deps: LoopDeps,
+    state: _LoopState,
+    proposal: ToolCallProposal,
+) -> LoopOutcome | None:
+    """act 한 번: 예산 검사(단일 지점) → 실행 → 트레이스 1:1. 종단이면 LoopOutcome."""
+    budget = job.loop_run.budget  # type: ignore[union-attr]
+    started = utc_now()
+    denial = budget_rules.check_and_consume_tool_call(budget, proposal.tool_name)
+    if denial is not None:
+        _record(
+            job, deps, state, proposal,
+            result_summary=f"budget denied: {denial.reason}: {denial.detail}",
+            outcome=ToolOutcome.BUDGET_DENIED, started=started,
+        )
+        if denial.reason is budget_rules.BudgetDenialReason.TOOL_CAP_EXHAUSTED:
+            # 도구별 캡 소진은 해당 도구만 막는다 — 잔여 예산으로 다른 도구 진행 가능.
+            state.notes.append(f"도구 캡 소진: {denial.detail} — 다른 도구를 사용하라")
+            return None
+        return _budget_exhausted()
+
+    if proposal.tool_name == TOOL_SAVE_ARTIFACT:
+        result = _execute_save(job, deps, state, proposal.args)
+    else:
+        result = _execute_tool(job, deps, state, proposal)
+
+    if result.cost_usd:
+        budget_rules.record_cost(budget, result.cost_usd)
+    state.recent_results.append(
+        ToolResultView(
+            seq=len(state.recent_results) + 1,
+            tool_name=proposal.tool_name,
+            ok=result.ok,
+            content=result.content,
+            error=result.error,
+        )
+    )
+    del state.recent_results[:-_RECENT_RESULTS_WINDOW]
+
+    if result.ok:
+        state.tool_failures.pop(proposal.tool_name, None)
+        record_outcome = ToolOutcome.OK
+    elif result.error and result.error.startswith("rejected_by_gate"):
+        record_outcome = ToolOutcome.REJECTED_BY_GATE
+    else:
+        record_outcome = ToolOutcome.ERROR
+        failures = state.tool_failures.get(proposal.tool_name, 0) + 1
+        state.tool_failures[proposal.tool_name] = failures
+        if failures >= _TOOL_DEGRADED_AFTER:
+            # source별 저하(BR-NV16) — 잡은 계속, 저하 사실만 남긴다.
+            job.degraded_sources[proposal.tool_name] = (result.error or "repeated failure")[:200]
+
+    _record(
+        job, deps, state, proposal,
+        result_summary=result.result_summary or (result.error or "")[:500],
+        outcome=record_outcome, started=started,
+        cost=result.cost_usd,
+    )
+    return None
+
+
+def _execute_tool(
+    job: NoveltyJob, deps: LoopDeps, state: _LoopState, proposal: ToolCallProposal
+) -> ToolResult:
+    tool = deps.registry.get(proposal.tool_name)
+    if tool is None:
+        return ToolResult(ok=False, error=f"unknown tool: {proposal.tool_name}")
+    try:
+        result = tool.invoke(
+            proposal.args, ToolContext(owner_id=job.owner_id, job_id=job.job_id)
+        )
+    except Exception as exc:  # 도구 실패는 에이전트에 오류로 반환(BR-NV16)
+        return ToolResult(ok=False, error=f"{type(exc).__name__}: {exc}"[:500])
+    state.known_record_refs.update(result.record_refs)
+    if proposal.tool_name == TOOL_FORM_EVIDENCE and result.ok:
+        _auto_save_evidence(job, deps, state, result)
+    return result
+
+
+def _execute_save(
+    job: NoveltyJob, deps: LoopDeps, state: _LoopState, args: dict[str, Any]
+) -> ToolResult:
+    """save_artifact — 항상 게이트 경유(BR-RA2). 거부는 기계 판독 사유로 반환."""
+    raw_kind = str(args.get("kind", ""))
+    try:
+        kind = ArtifactKind(raw_kind)
+    except ValueError:
+        return ToolResult(ok=False, error=f"rejected_by_gate: unsupported_kind: {raw_kind[:40]}")
+    payload = args.get("payload")
+    if not isinstance(payload, dict):
+        return ToolResult(ok=False, error="rejected_by_gate: invalid_shape: payload must be object")
+    rejection = evaluate_artifact(kind, payload, frozenset(state.known_record_refs))
+    if rejection is not None:
+        return ToolResult(
+            ok=False,
+            content={"rejected": {"reason": rejection.reason.value, "detail": rejection.detail}},
+            error=f"rejected_by_gate: {rejection.reason.value}: {rejection.detail}",
+            result_summary=f"save rejected: {rejection.reason.value}",
+        )
+    deps.store.save_artifact(
+        ArtifactRecord(job_id=job.job_id, owner_id=job.owner_id, kind=kind, payload=payload)
+    )
+    state.saved_kinds.add(kind)
+    return ToolResult(
+        ok=True,
+        content={"saved": kind.value},
+        result_summary=f"saved {kind.value}",
+    )
+
+
+def _auto_save_evidence(
+    job: NoveltyJob, deps: LoopDeps, state: _LoopState, result: ToolResult
+) -> None:
+    """form_evidence 성공 시 EvidenceSnapshot(포트 결과의 내부 보존본)을 게이트 경유로
+    저장한다 — 별도 save_artifact 호출 불요, 게이트 우회 아님."""
+    snapshot = result.content.get("evidence")
+    if not isinstance(snapshot, dict):
+        return
+    if evaluate_artifact(
+        ArtifactKind.EVIDENCE, snapshot, frozenset(state.known_record_refs)
+    ) is None:
+        deps.store.save_artifact(
+            ArtifactRecord(
+                job_id=job.job_id, owner_id=job.owner_id,
+                kind=ArtifactKind.EVIDENCE, payload=snapshot,
+            )
+        )
+        state.saved_kinds.add(ArtifactKind.EVIDENCE)
+
+
+def _forced_form_evidence(
+    job: NoveltyJob, deps: LoopDeps, state: _LoopState
+) -> LoopOutcome | None:
+    if deps.store.is_cancel_requested(job.job_id):
+        return LoopOutcome(TerminationReason.CANCELLED, JobState.CANCELLED)
+    if deps.registry.get(TOOL_FORM_EVIDENCE) is None:
+        return LoopOutcome(
+            TerminationReason.FATAL_ERROR, JobState.FAILED,
+            "evidence tool unavailable for natural-language job",
+        )
+    proposal = ToolCallProposal(
+        tool_name=TOOL_FORM_EVIDENCE,
+        args={"topic": job.request.topic},
+        decision_note="Evidence First — 자연어 잡 선행 강제(BR-NV2)",
+    )
+    outcome = _act(job, deps, state, proposal)
+    if outcome is not None:
+        return outcome
+    last = state.recent_results[-1] if state.recent_results else None
+    evidence = last.content.get("evidence") if last is not None and last.ok else None
+    if isinstance(evidence, dict) and evidence.get("state") == "abstain":
+        state.notes.append("근거형성 기권(abstain) — 보강 탐색 목적으로만 진행하거나 조기 종료")
+    return None
+
+
+def _record(
+    job: NoveltyJob,
+    deps: LoopDeps,
+    state: _LoopState,
+    proposal: ToolCallProposal,
+    *,
+    result_summary: str,
+    outcome: ToolOutcome,
+    started: datetime,
+    cost: float | None = None,
+) -> None:
+    """도구 호출 1:1 트레이스(BR-RA4). 실패는 호출을 실패시키지 않되 지속 시 중단."""
+    fields: dict[str, Any] = {
+        "job_id": job.job_id,
+        "tool_name": proposal.tool_name,
+        "args_summary": _summarize_args(proposal.args),
+        "decision_note": proposal.decision_note or None,
+        "result_summary": result_summary[:2000],
+        "outcome": outcome,
+        "cost_estimate_usd": cost,
+        "started_at": started,
+        "finished_at": utc_now(),
+    }
+    for _ in range(2):  # 1회 재시도
+        try:
+            seq = deps.store.next_trace_seq(job.job_id)
+            deps.store.append_trace(ToolCallRecord(seq=seq, **fields))
+            state.trace_failures = 0
+            return
+        except Exception:  # noqa: BLE001 — 기록 실패 자체는 호출을 실패시키지 않는다
+            continue
+    state.trace_failures += 1
+    if state.trace_failures >= _TRACE_FAILURE_HALT_AFTER:
+        raise _TraceUnavailable
+
+
+def _observe(job: NoveltyJob, state: _LoopState) -> LoopObservation:
+    budget = job.loop_run.budget  # type: ignore[union-attr]
+    consumed = budget.consumed
+    observation = LoopObservation(
+        topic=job.request.topic,
+        input_type=job.request.input_type.value,
+        recent_results=tuple(state.recent_results),
+        saved_artifact_kinds=frozenset(kind.value for kind in state.saved_kinds),
+        missing_required_kinds=frozenset(_missing_kinds(state)),
+        iterations_left=budget.max_iterations - consumed.iterations,
+        tool_calls_left=budget.max_tool_calls_total - consumed.tool_calls_total,
+        cost_left_usd=max(budget.token_cost_limit_usd - consumed.cost_usd, 0.0),
+        notes=tuple(state.notes[-4:]),
+    )
+    return observation
+
+
+def _exposed_tools(deps: LoopDeps) -> tuple[ToolSpec, ...]:
+    return (*deps.registry.specs(), SAVE_ARTIFACT_SPEC)
+
+
+def _required_complete(state: _LoopState) -> bool:
+    return REQUIRED_ARTIFACT_KINDS <= state.saved_kinds
+
+
+def _missing_kinds(state: _LoopState) -> set[str]:
+    return {kind.value for kind in REQUIRED_ARTIFACT_KINDS - state.saved_kinds}
+
+
+def _budget_exhausted() -> LoopOutcome:
+    # 예산 소진 — 그 시점까지 검증·저장된 산출물로 부분 완료(BLM §9).
+    return LoopOutcome(TerminationReason.BUDGET_EXHAUSTED, JobState.PARTIAL)
+
+
+def _transition(
+    job: NoveltyJob, target: JobState, deps: LoopDeps, *, terminal: bool = False
+) -> None:
+    validate_transition(job.state, target)
+    job.state = target
+    job.updated_at = utc_now()
+    if terminal:
+        job.completed_at = utc_now()
+    deps.store.update_job(job)
+
+
+def _summarize_args(args: dict[str, Any]) -> str:
+    """트레이스용 sanitized 인자 요약 — 값 절단으로 원문 통짜 저장을 막는다(SEC-9/15)."""
+    parts: list[str] = []
+    for key, value in list(args.items())[:8]:
+        if isinstance(value, str):
+            text = value
+        else:
+            try:
+                text = json.dumps(value, ensure_ascii=False, default=str)
+            except (TypeError, ValueError):
+                text = str(type(value).__name__)
+        if len(text) > 120:
+            text = text[:120] + "…"
+        parts.append(f"{key}={text}")
+    summary = ", ".join(parts)
+    return summary[:2000]
