@@ -4027,3 +4027,11 @@ Error: TestingLibraryElementError: Unable to find an element by: [data-testid=\"
 **Context**: CONSTRUCTION / Novelty Agent v2 (U12) — 질문지 가독성 개정, 문서만
 
 ---
+
+## Requirements 델타 확장 — 근거 대상을 DocModel 전 객체로
+**Timestamp**: 2026-07-18T10:54:32Z
+**User Input**: "문장근거뿐 아니라 그림, 도표, 수식 다 포함한 전체 논문 docmodel에서 찾아야 하는 거 아니냐"
+**AI Response**: "지적 수용 — 현행 근거 형성은 문장(텍스트 청크) 중심이라 표·그림에만 있는 사실을 근거로 못 잡는 격차 확인. requirements 델타에 ⑥ '근거 대상 확장 FR'(근거 검색·인용·앵커가 DocModel의 표·그림·수식 객체까지 커버) 추가(5건→6건), 구체 설계는 로드맵 ⑥ 게이트 결정 항목으로 등재. 질문지 Q7은 '이미지를 LLM에 넣는 방식'만 다룸을 명시."
+**Context**: INCEPTION~CONSTRUCTION / U11·U12 공통 — 근거 커버리지 요구 확장, 문서만
+
+---
