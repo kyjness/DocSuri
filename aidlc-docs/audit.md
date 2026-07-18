@@ -4051,3 +4051,11 @@ Error: TestingLibraryElementError: Unable to find an element by: [data-testid=\"
 **Context**: CONSTRUCTION / Novelty Agent v2 (U12) — Functional Design 산출물, 문서만
 
 ---
+
+## NFR Requirements — 질문 게이트 (Novelty Agent v2)
+**Timestamp**: 2026-07-18T11:17:32Z
+**User Input**: "계속" (Functional Design 승인)
+**AI Response**: "Functional Design 승인 처리. `construction/plans/novelty-agent-v2-nfr-requirements-plan.md` 질문 게이트 작성(Q1 실행 표면[redis 큐+워커 권장] · Q2 LLM 프로바이더[현 체제 유지 권장] · Q3 MCP 서버 선정[기존 서버 셀프호스트 권장] · Q4 예산 시작 수치[보수값 권장] · Q5 피드 전달[폴링 권장] · Q6 트레이스 저장[postgres 잡 귀속 권장]). 답변 대기."
+**Context**: CONSTRUCTION / Novelty Agent v2 (U12) — NFR Requirements 질문 게이트, 문서만
+
+---
