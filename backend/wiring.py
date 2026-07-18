@@ -564,81 +564,41 @@ def _mount_personalization(app: FastAPI, settings: Settings, result: MountResult
 
 
 def _mount_novelty(app: FastAPI, settings: Settings, result: MountResult) -> None:
-    from backend.modules.novelty import controller as novelty
-    from backend.modules.novelty.adapters import (
-        EvidenceFormationClient,
-        NoveltyAdapters,
-        U2FullSearchCorpusRetrievalClient,
-        build_evidence_formation_adapter,
-        build_external_adapter,
-        build_llm_adapter,
-        build_notion_adapter,
-        build_similarity_adapter,
-    )
-    from backend.modules.novelty.repository import (
-        InMemoryNoveltyRepository,
-        SqlNoveltyRepository,
-    )
+    """Novelty v2 — 자율 루프 API 마운트. API는 접수·조회만 하고 실행은 별도 워커
+    프로세스(``python -m backend.modules.novelty.worker``)가 담당한다.
+
+    항상 마운트한다(/readyz 필수 모듈): postgres 미구성이면 InMemory 스토어 폴백,
+    큐 미구성이면 잡 접수가 503(queue_unavailable)으로 거부된다 — 제로 서비스 부팅
+    유지."""
+    from backend.modules.novelty import api as novelty_api
+    from backend.modules.novelty.adapters.local_wiring import build_queue, build_store
+    from backend.modules.novelty.settings import NoveltySettings
     from backend.modules.user_docmodel import build_default_user_docmodel_coordinator
 
+    novelty_settings = NoveltySettings.from_env()
+    app.state.novelty_settings = novelty_settings
+
+    session_factory = None
     if _is_postgres(settings.database_url):
         from .db import make_engine, make_session_factory
 
         engine = getattr(app.state, "db_engine", None) or make_engine(settings.database_url)
         app.state.db_engine = engine
         session_factory = make_session_factory(engine)
+    store = build_store(session_factory)
+    app.state.novelty_store = store
+    app.dependency_overrides[novelty_api.get_store] = lambda: store
 
-        def get_novelty_repo():
-            session = session_factory()
-            try:
-                yield SqlNoveltyRepository(session)
-                session.commit()
-            except Exception:
-                session.rollback()
-                raise
-            finally:
-                session.close()
-    else:
-        repo = InMemoryNoveltyRepository()
-        app.state.novelty_repo = repo
+    try:
+        app.state.novelty_queue = build_queue(novelty_settings)
+    except Exception:  # noqa: BLE001 — 큐 조립 실패는 접수 503으로 수렴, 마운트는 유지
+        log.warning("app-shell: novelty queue unavailable", exc_info=True)
+        app.state.novelty_queue = None
 
-        def get_novelty_repo():
-            return repo
+    if getattr(app.state, "user_docmodel", None) is None:
+        app.state.user_docmodel = build_default_user_docmodel_coordinator()
 
-    app.dependency_overrides[novelty.get_repo] = get_novelty_repo
-    user_docmodel = getattr(app.state, "user_docmodel", None)
-    if user_docmodel is None:
-        user_docmodel = build_default_user_docmodel_coordinator()
-        app.state.user_docmodel = user_docmodel
-    discovery_bundle = getattr(app.state, "discovery_bundle", None)
-    grounding_hook = getattr(app.state, "grounding_hook", None)
-    if discovery_bundle is not None and grounding_hook is not None:
-        corpus = U2FullSearchCorpusRetrievalClient(
-            discovery_bundle.orchestrator,
-            grounding_hook,
-        )
-        # US-NV1(#251) — 앱쉘이 이미 U11 오케스트레이터를 세웠으면 재사용, 아니면 env 조립.
-        evidence_bundle = getattr(app.state, "evidence_bundle", None)
-        if evidence_bundle is not None:
-            from backend.modules.evidence.service import EvidenceFormationService
-
-            evidence_adapter = EvidenceFormationClient(
-                EvidenceFormationService(orchestrator=evidence_bundle.orchestrator)
-            )
-        else:
-            evidence_adapter = build_evidence_formation_adapter(
-                cost_guard=getattr(app.state, "cost_guard", None)
-            )
-        app.state.novelty_adapters = NoveltyAdapters(
-            corpus=corpus,
-            external=build_external_adapter(),
-            similarity=build_similarity_adapter(corpus, user_docmodel=user_docmodel),
-            llm=build_llm_adapter(cost_guard=getattr(app.state, "cost_guard", None)),
-            evidence=evidence_adapter,
-            notion=build_notion_adapter(),
-        )
-        log.info("app-shell: novelty wired U2 full-search corpus adapter")
-    for router in novelty.routers:
+    for router in novelty_api.routers:
         app.include_router(router)
     result.mounted.append("novelty")
 

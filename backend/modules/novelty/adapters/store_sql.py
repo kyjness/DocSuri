@@ -231,6 +231,19 @@ class SqlNoveltyStore:
             row = session.get(NoveltyJobV2Table, job_id)
             return bool(row and row.cancel_requested)
 
+    def list_stale_active(self, *, updated_before: Any, limit: int) -> list[NoveltyJob]:
+        with self._session_factory() as session:
+            rows = session.scalars(
+                select(NoveltyJobV2Table)
+                .where(
+                    NoveltyJobV2Table.state.in_(("investigating", "reporting")),
+                    NoveltyJobV2Table.updated_at < updated_before,
+                )
+                .order_by(NoveltyJobV2Table.updated_at.asc())
+                .limit(limit)
+            ).all()
+            return [_job_model(row) for row in rows]
+
     # ── 산출물 ──
     def save_artifact(self, record: ArtifactRecord) -> None:
         with self._session_factory() as session:

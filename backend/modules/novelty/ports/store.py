@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Protocol
 
 from ..domain.models import (
@@ -42,6 +43,8 @@ class NoveltyStorePort(Protocol):
     def request_cancel(self, owner_id: str, job_id: str) -> bool: ...
 
     def is_cancel_requested(self, job_id: str) -> bool: ...
+
+    def list_stale_active(self, *, updated_before: datetime, limit: int) -> list[NoveltyJob]: ...
 
     # ── 산출물 (종류별 최신 검증본) ──
     def save_artifact(self, record: ArtifactRecord) -> None: ...

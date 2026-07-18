@@ -121,6 +121,17 @@ class InMemoryNoveltyStore:
         job = self._jobs.get(job_id)
         return bool(job and job.cancel_requested)
 
+    def list_stale_active(self, *, updated_before, limit: int) -> list[NoveltyJob]:
+        """실행 중 상태(investigating/reporting)로 오래 방치된 잡 — stale 감지 입력."""
+        stale = [
+            job
+            for job in self._jobs.values()
+            if job.state.value in ("investigating", "reporting")
+            and job.updated_at < updated_before
+        ]
+        stale.sort(key=lambda job: job.updated_at)
+        return [job.model_copy(deep=True) for job in stale[:limit]]
+
     # ── 산출물 ──
     def save_artifact(self, record: ArtifactRecord) -> None:
         # 종류별 최신 검증본만 유지(domain-entities: artifacts 참조 목록).
