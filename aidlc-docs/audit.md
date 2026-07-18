@@ -4003,3 +4003,11 @@ Error: TestingLibraryElementError: Unable to find an element by: [data-testid=\"
 **Context**: CONSTRUCTION / Novelty Agent v2 (U12) — 명칭 정정, 문서만
 
 ---
+
+## Requirements Analysis — Novelty v2 기능 정의 질문지 신설
+**Timestamp**: 2026-07-18T07:58:31Z
+**User Input**: "지금 구현되어있는거 없는셈치라고 … 기존 기능을 다 삭제를 하든 뜯어고치든 … 유지를 내가 확정했다고? 나 그 질문을 잘 이해를 못했어" → 기능 범위 선택지에서 "기능부터 재정의" 선택
+**AI Response**: "U12 기능 정의(임무·입력·산출물·상호작용)는 어느 질문지에서도 물은 적 없이 기존 문서에서 '책임 불변'으로 승계돼 있었음을 인정. 미니 인셉션 질문지 `requirement-verification-questions-novelty-v2-function.md`(Q1~Q7) 신설, 유닛 질문 게이트는 기능 정의 확정까지 보류 표시, 아키텍처 질문지 Q6 답변에 재확인 예정 주석."
+**Context**: INCEPTION / Novelty Agent v2 (U12) — 기능 정의 라운드, 문서만
+
+---

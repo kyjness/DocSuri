@@ -2,7 +2,7 @@
 
 **단계**: CONSTRUCTION → Functional Design (재설계 라운드)
 **일자**: 2026-07-17
-**상태**: 🟡 답변 대기 — 아키텍처 질문지(2026-07-18 확정)에서 Q2·Q12 상속 완료. 잔여 `[Answer]:`를 채우면 산출물 생성을 진행한다.
+**상태**: ⏸ 보류 — **기능 정의 질문지**(`inception/requirements/requirement-verification-questions-novelty-v2-function.md`, 2026-07-18) 확정 대기. 기능 정의(임무·입력·산출물·상호작용)가 정해지면 본 문서의 문항을 그에 맞게 갱신한 뒤 잔여 답변을 진행한다. 아키텍처 질문지(2026-07-18 확정)에서 Q2·Q12 상속 완료.
 **근거 SSOT**: `inception/requirements/requirements.md` FR-30~35 · NFR-P5/R3 · QT-10 [U12] · 유지보수 로드맵 ④~⑦(`operations/solo-roadmap.md`) · **아키텍처 결정** `inception/requirements/requirement-verification-questions-agent-rearchitecture.md`(2026-07-18 확정) · 현행 frozen 설계 `construction/novelty-agent/`(BR-NV1~19, PBT-NV1~7) · 공유 계약 `EvidenceFormationPort`/`SourceRef`(D5).
 
 **상속된 아키텍처 결정** (재논의 없음):
