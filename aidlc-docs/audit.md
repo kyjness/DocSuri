@@ -4011,3 +4011,11 @@ Error: TestingLibraryElementError: Unable to find an element by: [data-testid=\"
 **Context**: INCEPTION / Novelty Agent v2 (U12) — 기능 정의 라운드, 문서만
 
 ---
+
+## Requirements Analysis — Novelty v2 기능 정의 확정 (Q1~Q7)
+**Timestamp**: 2026-07-18T09:01:04Z
+**User Input**: Q1 논의("원래 이 기능의 목적인 … 검색하고 조사하고 알아봐주는 역할 아니야?") → 채팅 모드 전제의 권장 요청 → "Q2~Q5 권장대로 기록할거긴 한데 … Q6이랑 Q7의 너의 권장은 뭐야?" → "기록해줘"
+**AI Response**: "기능 정의 질문지 확정 — Q1=X(조사+여백 분석 기본, 제안·실험계획은 대화 온디맨드), Q2=A(주제+선택적 원고), Q3=X(구조화 세트·근거 링크 필수), Q4=B(채팅 모드+잡+대화 스티어링), Q5=B(원고 위험 신호 폐기), Q6=A(Notion export 유지), Q7=B(화면·API 재설계 허용). 후속 반영: 아키텍처 질문지 Q6을 A→B로 개정(결정 트레이스 조건 유지), 유닛 질문 게이트 갱신(책임 재정의·Q2 재개방·Q4 산출물 계약 재작성·Q12 델타 확장·frontend-components 산출물 추가), solo-roadmap ④ 갱신."
+**Context**: INCEPTION / Novelty Agent v2 (U12) — 기능 정의 확정, 문서만
+
+---

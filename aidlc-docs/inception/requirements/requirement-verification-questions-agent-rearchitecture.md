@@ -3,7 +3,7 @@
 **단계**: INCEPTION → Requirements Analysis (솔로 유지보수 사이클)
 **일자**: 2026-07-17
 **상태**: ✅ 확정 (2026-07-18)
-**결정 요약**: 최종형은 supervisor–서브 에이전트 구조(Q1=C). novelty 단일 루프부터 착수(Q3=A), 모듈 내부 재작성(Q4=A), 단일 루프는 직접 구현하고 supervisor 단계에서 LangGraph 도입(Q5=A). API·화면 계약 유지 + 결정 트레이스 서버 저장(Q6=A), requirements는 소규모 델타 5건 개정(Q7=A), 이번 사이클은 설계 문서까지(Q8=A).
+**결정 요약**: 최종형은 supervisor–서브 에이전트 구조(Q1=C). novelty 단일 루프부터 착수(Q3=A), 모듈 내부 재작성(Q4=A), 단일 루프는 직접 구현하고 supervisor 단계에서 LangGraph 도입(Q5=A). API·화면 계약은 유지(Q6=A)였다가 **기능 정의 확정(2026-07-18, `requirement-verification-questions-novelty-v2-function.md` Q7=B)으로 B(새 산출물에 맞춘 재설계 허용)로 개정** — 결정 트레이스 서버 저장 조건은 유지. requirements는 소규모 델타 개정(Q7=A, 기능 정의 개정 포함), 이번 사이클은 설계 문서까지(Q8=A).
 **대상**: 문헌탐색·근거형성(U11, `backend/modules/{evidence,research}/`)과 연구 아이디어(U12, `backend/modules/novelty/`) 두 기능의 에이전트 아키텍처 전면 재검토.
 **목적**: 에이전트 개발 역량(Tool Calling·Planning·Memory·MCP·멀티 에이전트)을 실제 동작하는 시스템으로 완성. 배포는 비용 확보 전까지 로컬 완성 우선.
 **결정 방식**: 각 질문의 `[Answer]:`에 선택지 문자를 기입. 이 질문지의 답이 확정되면 → ① `solo-roadmap.md` 개정, ② 기존 유닛 질문지(`construction/plans/novelty-agent-v2-functional-design-plan.md`) 답 상속·갱신, ③ 유닛 설계 문서 작성 순으로 기계적으로 진행한다.
@@ -77,7 +77,7 @@ FE 채팅 화면과 REST 계약(진행상태 enum 포함)을 유지하는가?
 - **X) 기타**
 
 [Answer]: A — 조건: REST 계약은 유지하되, 에이전트의 결정 트레이스(선택한 도구·질의·종료 사유)는 루프 도입 시점부터 서버에 구조화 저장한다. 자율 루프 디버깅·근거 재현성에 필수이며 소급 수집이 불가능하기 때문. FE 노출은 별도 결정.
-  *(2026-07-18 후속: 본 답변은 U12 기능 정의가 현행과 같다는 전제에서의 답이었음 — 기능 정의 질문지 `requirement-verification-questions-novelty-v2-function.md` Q7 결과에 따라 재확인한다. 결정 트레이스 저장 조건은 어느 쪽이든 유지.)*
+  *(2026-07-18 개정: 기능 정의 질문지 `requirement-verification-questions-novelty-v2-function.md` Q7=B 확정에 따라 본 답을 **A → B(계약 재설계 허용)**로 개정 — 기능 정의(여백 분석 신설·실험 계획 온디맨드화·위험 신호 폐기·대화 스티어링)가 달라진 만큼 결과 렌더링·잡 API 계약을 새 산출물에 맞춘다. 채팅 화면·모드 구조와 결정 트레이스 저장 조건은 유지.)*
 
 ## Q7 — 요구사항 문서 처리
 

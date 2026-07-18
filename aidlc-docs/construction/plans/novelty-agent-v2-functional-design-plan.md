@@ -2,14 +2,15 @@
 
 **단계**: CONSTRUCTION → Functional Design (재설계 라운드)
 **일자**: 2026-07-17
-**상태**: ⏸ 보류 — **기능 정의 질문지**(`inception/requirements/requirement-verification-questions-novelty-v2-function.md`, 2026-07-18) 확정 대기. 기능 정의(임무·입력·산출물·상호작용)가 정해지면 본 문서의 문항을 그에 맞게 갱신한 뒤 잔여 답변을 진행한다. 아키텍처 질문지(2026-07-18 확정)에서 Q2·Q12 상속 완료.
+**상태**: 🟡 답변 대기 — **기능 정의 질문지 확정(2026-07-18) 반영 완료.** 잔여 `[Answer]:`를 채우면 산출물 생성을 진행한다.
+**기능 정의(확정 — `inception/requirements/requirement-verification-questions-novelty-v2-function.md`)**: 임무 = **조사 + 여백 분석**(방향 제안·실험 계획은 대화 요청 시 온디맨드) · 입력 = 주제 + 선택적 원고 · 산출물 = 구조화 세트(유사 연구 표 + 여백 분석, 근거 링크 필수) · 상호작용 = 채팅 모드 + 잡 + 대화 스티어링 · 원고 위험 신호 폐기 · Notion export 유지(승인 게이트) · 화면·API는 새 산출물에 맞춰 재설계 허용.
 **근거 SSOT**: `inception/requirements/requirements.md` FR-30~35 · NFR-P5/R3 · QT-10 [U12] · 유지보수 로드맵 ④~⑦(`operations/solo-roadmap.md`) · **아키텍처 결정** `inception/requirements/requirement-verification-questions-agent-rearchitecture.md`(2026-07-18 확정) · 현행 frozen 설계 `construction/novelty-agent/`(BR-NV1~19, PBT-NV1~7) · 공유 계약 `EvidenceFormationPort`/`SourceRef`(D5).
 
 **상속된 아키텍처 결정** (재논의 없음):
 - 최종형은 supervisor–서브 에이전트 구조이며, **본 유닛은 그 1단계 — novelty를 단일 자율 루프 에이전트로** (arch Q1=C, Q3=A).
 - 코드 전략은 **모듈 내부 재작성** — 기존 파이프라인 위 개조가 아니라 새 루프 코어를 짜고 가치 있는 부품만 이식 (arch Q4=A).
 - 단일 루프는 **프레임워크 없이 직접 구현** — LangGraph는 로드맵 ⑦ supervisor 단계에서 도입 (arch Q5=A).
-- REST 계약·FE 화면 유지 + **결정 트레이스(도구·질의·종료 사유) 구조화 저장은 루프 도입과 동시 시작** (arch Q6=A).
+- 화면·API 계약은 **새 산출물에 맞춰 재설계 허용** — 채팅 화면·모드 구조는 유지 (arch Q6, 기능 정의 Q7=B로 개정). **결정 트레이스(도구·질의·종료 사유) 구조화 저장은 루프 도입과 동시 시작** (불변 조건).
 - requirements.md는 소규모 개정 블록 — 델타 5건 (arch Q7=A → 본 문서 Q12).
 - 이번 사이클 산출물은 설계 문서까지, 구현은 로드맵 ⑤ (arch Q8=A).
 
@@ -17,10 +18,10 @@
 
 - **대상**: Novelty Agent v2 — 현행 novelty 모듈(고정 상태머신 QUEUED→…→EXPORTING_NOTION)의 **도구 호출 루프 기반 재설계** 목표 아키텍처.
 - **명칭**: 유닛명·코드 경로 모두 **novelty 유지**. "research*" 계열 명칭은 로드맵 ⑦ supervisor 명명 후보로 예약 (`backend/modules/research/`는 문헌탐색·근거형성 Agent(U11)의 대화 표면 — 본 유닛과 무관).
-- **책임**(불변 — FR-30~35·현행 기능 승계): 자연어 연구 의도 또는 업로드 원고에서 유사 연구·차별화 후보·실험 계획·원고 위험 신호·진행상태·선택적 Notion export를 제공한다.
+- **책임**(2026-07-18 기능 정의 확정): 자연어 연구 주제 또는 업로드 원고에서 **관련 연구 조사 + 여백 분석**(무엇이 이미 있고 어디가 비어 있는지, 근거 링크 필수)을 기본 산출물로 제공하고, **방향 제안·실험 계획은 대화 요청 시 온디맨드**로 생성한다. 진행상태·선택적 Notion export(승인 게이트) 포함. 원고 위험 신호는 v2 범위에서 폐기.
 - **문서 위치**: 설계 문서는 `construction/novelty-agent-v2/`에 둔다 (`construction/novelty-agent/`는 v1 frozen 기준선).
 - **범위 경계 (로드맵 ④/⑤)**: 이번 라운드는 **설계 문서만** 산출한다. 코드 교체(에이전트 루프 → MCP 연동 → 세션 메모리 → 멀티모달)는 로드맵 ⑤ — 본 설계는 그 4단계 도입을 수용할 수 있어야 하되, 기존 API 계약·모듈 경로 유지가 ⑤의 제약이다.
-- **v1 제외**(승계): 뉴스 검색, novelty 점수, "새로움 확정" 판정, 논문화 가능성 점수, 코드 skeleton/실행 스크립트 생성.
+- **v2 제외**: 뉴스 검색, novelty 점수, "새로움 확정" 판정, 논문화 가능성 점수, 코드 skeleton/실행 스크립트 생성(이상 승계), **원고 위험 신호(표절 유사도·AI 어투 — 기능 정의 Q5=B로 폐기)**.
 
 ## 2. Functional Design 실행 계획
 
@@ -29,8 +30,9 @@
 - [ ] `domain-entities.md`
 - [ ] `business-logic-model.md`
 - [ ] `business-rules.md`
+- [ ] `frontend-components.md` — 기능 정의 Q7=B(계약 재설계 허용)로 결과 렌더링·진행 표시·대화 스티어링 FE 변경이 발생하므로 포함.
 
-`frontend-components.md`는 제외 — API 계약 유지가 기본값이라 FE 변경이 없다(Q2에서 계약이 바뀌는 답이 나오면 재결정). `infrastructure-design/`은 AWS 배포 은퇴·로컬 컨테이너 체제로 본 세트에서 제외.
+`infrastructure-design/`은 AWS 배포 은퇴·로컬 컨테이너 체제로 본 세트에서 제외.
 
 ## 3. 명확화 질문
 
@@ -56,7 +58,7 @@ FR-35가 고정한 진행상태 enum(`queued`~`exporting_notion`)을 어떻게 �
 - **C) enum 교체** — 루프에 맞는 새 상태 체계로 대체. *⑤ 제약과 정면 충돌 → 사실상 기각 후보.*
 - **X) 기타**
 
-[Answer]: A — 아키텍처 질문지 Q6=A 상속. 조건: 결정 트레이스(선택 도구·질의·종료 사유)를 루프 도입 시점부터 서버에 구조화 저장(`ToolCallRecord` — §4 참조). enum 투영은 사용자 표시용일 뿐, 감사·디버깅·재현성은 트레이스가 담당. FE 노출은 별도 결정.
+[Answer]: *(재개방 — 기능 정의 Q7=B로 아키텍처 Q6이 계약 재설계 허용으로 개정되어, A 전제가 사라짐. B/C도 유효한 선택지가 됨. 결정 트레이스 구조화 저장(`ToolCallRecord`)은 어느 답이든 불변 조건.)*
 
 #### Q3 — v1 도구 집합 (루프에 노출할 도구)
 에이전트가 자율 호출할 수 있는 도구를 무엇으로 하나?
@@ -69,11 +71,10 @@ FR-35가 고정한 진행상태 enum(`queued`~`exporting_notion`)을 어떻게 �
 [Answer]:
 
 #### Q4 — 산출물 계약
-현행 ArtifactKind 세트(EVIDENCE, SIMILAR_WORKS, EXTERNAL_FINDINGS, RISK_SIGNALS, NOVELTY_CANDIDATES, EXPERIMENT_PLAN, EXPORT_STATUS)를 어떻게 다루나?
+기능 정의(Q3=X) 확정으로 산출물 세트가 재편됐다: **기본 = 조사 보고(유사 연구 표) + 여백 분석 / 온디맨드 = 방향 제안·실험 계획 / EXPORT_STATUS 유지 / RISK_SIGNALS·EXTERNAL_FINDINGS 등 구세트는 재검토**. 루프의 완성 조건을 어떻게 정의하나?
 
-- **A) 전부 유지 + 루프의 필수 완성 조건으로 승격** — 입력 유형별 필수 산출물(자연어: EVIDENCE·SIMILAR_WORKS·NOVELTY_CANDIDATES·EXPERIMENT_PLAN / 원고: +RISK_SIGNALS)을 채워야 정상 종료. 기존 결과 API 무변경. (권장)
-- **B) 필수는 NOVELTY_CANDIDATES·EXPERIMENT_PLAN만** — 나머지는 에이전트 재량. *유연 / FE 결과 화면·QT-10 검증 대상 약화.*
-- **C) 산출물 자유화** — 계약 없는 자유 출력. *API 계약 파괴 → 기각 후보.*
+- **A) 기본 세트 필수 + 온디맨드는 요청 시 생성** — 유사 연구 표·여백 분석(+EVIDENCE)을 채워야 잡 정상 종료. 방향 제안·실험 계획은 후속 대화 요청이 있을 때만 생성하되 같은 검증 게이트(Q8)를 통과해야 저장. (권장)
+- **B) 필수 없음** — 에이전트가 산출물 구성을 재량 결정. *유연 / 결과 예측 불가·QT-10 검증 대상 약화.*
 - **X) 기타**
 
 [Answer]:
@@ -158,7 +159,7 @@ FR 레벨 개정이 필요한가?
 - **B) requirements.md 개정판 선행** — 세션 메모리·멀티모달을 신규 FR로 등재 후 FD 진행. *엄밀 / 이번 범위(④=문서)에 인셉션 라운드가 추가됨.*
 - **X) 기타**
 
-[Answer]: X — 아키텍처 질문지 Q7=A 상속: **소규모 개정 블록 선행**(기존 개정 관례 형식). 델타 5건 — ① 외부 탐색 메커니즘 중립화(FR-31 Agent-Browser → 외부 탐색 어댑터, MCP 포함) ② 세션 메모리 신규 FR ③ 진행상태 enum 재해석 각주(FR-35) ④ 루프 예산·반복 상한 FR ⑤ 결정 추적성 FR. 이번 범위는 문서만.
+[Answer]: X — 아키텍처 질문지 Q7=A 상속: **소규모 개정 블록 선행**(기존 개정 관례 형식). 내용 두 축 — **(a) 기능 정의 개정**(2026-07-18 확정): 기본 산출물을 조사+여백 분석으로 재정의, 실험 계획 온디맨드화, 원고 위험 신호 FR 폐기, 상호작용을 잡+대화 스티어링으로 (FR-30~35 해당 조항 개정). **(b) 에이전트화 델타 5건**: ① 외부 탐색 메커니즘 중립화(FR-31 Agent-Browser → 외부 탐색 어댑터, MCP 포함) ② 세션 메모리 신규 FR ③ 진행상태 계약 개정(FR-35 — 본 문서 Q2 답에 연동) ④ 루프 예산·반복 상한 FR ⑤ 결정 추적성 FR. 이번 범위는 문서만.
 
 #### Q13 — 기존 BR-NV 규칙 승계 방식
 `business-rules.md`를 어떻게 쓰나?
@@ -180,6 +181,7 @@ BR-NV2(Evidence First — 자연어 경로는 `form_evidence` 선행)를 루프�
 
 ## 4. 답변 후 생성할 산출물 요약
 
-- `domain-entities.md`: NoveltyJob(승계) · AgentLoopRun · ToolCallRecord · SessionMemory(Q6) · ArtifactRef(승계) · ProgressEvent 투영 모델(Q2) · 루프 예산 모델(Q9) — 기존 엔티티 승계/신설 구분 명시
-- `business-logic-model.md`: 루프 수명주기(시작→도구 선택→검증 저장→종료 조건), 진행상태 투영, 취소, 예산 소진, degraded 경로, ⑤ 4단계(루프→MCP→메모리→멀티모달) 단계별 도입 지도
-- `business-rules.md`: BR-NV1~19 승계/개정/폐기 표(Q13) + 루프 신설 규칙(그라운딩 게이트, 예산, 프라이버시 allowlist, Notion 루프 밖 경계) + PBT 속성 + 추적성 매트릭스(FR-30~35·QT-10 미커버 0)
+- `domain-entities.md`: NoveltyJob(승계) · AgentLoopRun · ToolCallRecord · SessionMemory(Q6) · 산출물 모델(유사 연구 표·여백 분석·온디맨드 제안/실험 계획 — 기능 정의 반영) · ProgressEvent 모델(Q2) · 루프 예산 모델(Q9) — 기존 엔티티 승계/신설/폐기 구분 명시
+- `business-logic-model.md`: 루프 수명주기(시작→도구 선택→검증 저장→종료 조건), 온디맨드 산출물 경로(대화 요청→생성→검증), 대화 스티어링, 진행상태, 취소, 예산 소진, degraded 경로, ⑤ 4단계(루프→MCP→메모리→멀티모달) 단계별 도입 지도
+- `business-rules.md`: BR-NV1~19 승계/개정/폐기 표(Q13) + 루프 신설 규칙(그라운딩 게이트, 예산, 프라이버시 allowlist, Notion 루프 밖 경계) + PBT 속성 + 추적성 매트릭스(개정 후 FR 세트·QT-10 미커버 0)
+- `frontend-components.md`: 조사 보고·여백 분석 렌더링, 온디맨드 요청 UI, 진행 표시, 대화 스티어링 입력
