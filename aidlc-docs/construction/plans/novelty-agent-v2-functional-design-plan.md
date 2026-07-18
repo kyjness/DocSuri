@@ -29,10 +29,10 @@
 
 답변 확정 후 아래 산출물을 `aidlc-docs/construction/novelty-agent-v2/functional-design/`에 작성한다.
 
-- [ ] `domain-entities.md`
-- [ ] `business-logic-model.md`
-- [ ] `business-rules.md`
-- [ ] `frontend-components.md` — 기능 정의 Q7=B(계약 재설계 허용)로 결과 렌더링·진행 표시·대화 스티어링 FE 변경이 발생하므로 포함.
+- [x] `domain-entities.md`
+- [x] `business-logic-model.md`
+- [x] `business-rules.md`
+- [x] `frontend-components.md` — 기능 정의 Q7=B(계약 재설계 허용)로 결과 렌더링·진행 표시·대화 스티어링 FE 변경이 발생하므로 포함.
 
 `infrastructure-design/`은 AWS 배포 은퇴·로컬 컨테이너 체제로 본 세트에서 제외.
 

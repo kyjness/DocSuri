@@ -4043,3 +4043,11 @@ Error: TestingLibraryElementError: Unable to find an element by: [data-testid=\"
 **Context**: CONSTRUCTION / Novelty Agent v2 (U12) — Functional Design 질문 게이트 확정, 문서만
 
 ---
+
+## Functional Design — Novelty Agent v2 산출물 생성
+**Timestamp**: 2026-07-18T11:09:44Z
+**User Input**: "시작해"
+**AI Response**: "requirements.md 개정 블록 등재(FR-30~33·35 v2 개정, FR-34 폐기, FR-44~47 신규, NFR-P5/R3·QT-10·성공기준·추적성 갱신) 후 `construction/novelty-agent-v2/functional-design/` 4종 생성 — domain-entities(신설: AgentLoopRun·LoopBudget·ToolCallRecord·GapAnalysis / 폐기: ManuscriptRiskSignal), business-logic-model(루프 수명주기·결정론 저장 게이트·온디맨드 경로·⑤ 4단계 지도), business-rules(BR-NV1~19 승계/개정/폐기 표 + BR-RA1~12 신설 + PBT-RA1~3), frontend-components(거시 상태·활동 피드·여백 분석 렌더·온디맨드 UI). 경로 함정 grep 0건, 추적성 미커버 0. aidlc-state 항목 추가."
+**Context**: CONSTRUCTION / Novelty Agent v2 (U12) — Functional Design 산출물, 문서만
+
+---
