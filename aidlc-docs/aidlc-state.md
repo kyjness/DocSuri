@@ -900,3 +900,36 @@ _Resiliency 옵트인은 `requirements.md` 확정 전에 필수 요구사항 명
   - `npx --yes aws-cdk@2 --app "/Users/revenantonthemission/Projects/DocSuri/ops/cdk/.venv/bin/python app.py" synth Docsuri-Compute` -> passed with existing Node/CDK annotation warnings
   - `git diff --check` -> passed
 - Current gate: ready for review/deploy decision.
+
+## Novelty Agent v2 — Functional Design (재설계 라운드)
+
+- Date: 2026-07-18
+- Stage: INCEPTION(아키텍처·기능 정의) → CONSTRUCTION / Functional Design
+- Trigger: 유지보수 로드맵 ④ — novelty 모듈(고정 상태머신)의 자율 에이전트 재설계.
+- Decisions (질문지 3장 확정):
+  - 아키텍처(`requirement-verification-questions-agent-rearchitecture.md` Q1~Q8): 최종형 supervisor–서브(Q1=C), 문헌탐색은 검색 전략만 자율(Q2=A), novelty 선행(Q3=A), 모듈 내부 재작성(Q4=A), 직접 구현→supervisor 단계 LangGraph(Q5=A), 계약은 이후 B로 개정, requirements 소규모 델타(Q7=A), 이번 사이클은 설계까지(Q8=A). 로드맵 ⑤~⑦ 재편.
+  - 기능 정의(`requirement-verification-questions-novelty-v2-function.md` Q1~Q7): 임무=조사+여백 분석(제안·실험계획은 대화 온디맨드), 입력=주제+선택적 원고, 구조화 세트, 채팅 모드+잡+대화 스티어링, 위험 신호 폐기, Notion 유지, 화면·API 재설계 허용.
+  - FD 게이트(`construction/plans/novelty-agent-v2-functional-design-plan.md` Q1~Q14): 완전 자율 루프, 거시 상태+트레이스 활동 피드, 보수적 도구 코어, 기본 세트 필수, MCP=포트 뒤 어댑터, 세션 메모리 잡 내 먼저, view_figure 온디맨드, 저장 시점 결정론 게이트, 3중 예산, 협조적 취소, payload allowlist, BR 승계표, Evidence First 유지.
+- Outputs:
+  - `requirements.md` 개정 블록(2026-07-18): FR-30~33·35 v2 개정, FR-34 폐기, FR-44~47 신규(세션 메모리·루프 예산·결정 추적성·근거 대상 확장[U11/U12]), NFR-P5/R3·QT-10·성공기준 #9·추적성 갱신.
+  - `construction/novelty-agent-v2/functional-design/` 4종: domain-entities(AgentLoopRun·LoopBudget·ToolCallRecord·GapAnalysis 신설, ManuscriptRiskSignal 폐기), business-logic-model(루프 수명주기·저장 게이트·온디맨드·⑤ 4단계 지도), business-rules(BR-NV1~19 승계표 + BR-RA1~12 + PBT-RA1~3), frontend-components(거시 상태·활동 피드·여백 분석 렌더·온디맨드 UI).
+  - 유닛명 novelty 유지("research*"는 supervisor 명명 후보로 예약), v1 문서는 `construction/novelty-agent/` frozen 기준선.
+- Verification: 신규 문서 경로 함정 grep 0건(`backend/modules/research` 미참조), 추적성 매트릭스 미커버 0(FR-30~33·35·44~47·QT-10).
+- Delivery: branch `docs/novelty-v2-unit-design`(구 research-agent-unit-design). Current gate: Functional Design 사용자 리뷰 → NFR Requirements 질문 게이트. push/PR은 사용자 승인 대기.
+
+## Novelty Agent v2 — NFR Requirements
+
+- Date: 2026-07-18
+- Stage: CONSTRUCTION / NFR Requirements
+- Decisions (`construction/plans/novelty-agent-v2-nfr-requirements-plan.md` Q1~Q6=A): 포트 기준 환경 원칙(로컬 어댑터 1차, real_wiring 계약은 배포 기준선) 하에 — 잡 큐 포트+별도 워커(redis→SQS), LLM 프로바이더 스위치 유지(OpenAI tool-calling 1차), MCP 기존 서버 셀프호스트(⑤ 2단계 구축), 루프 예산 시작값(반복 24 / 도구 호출 40 / per-job $0.50), 폴링 피드(SSE 후속), postgres 잡 귀속 트레이스(cascade 삭제).
+- Outputs: `construction/novelty-agent-v2/nfr-requirements/` — nfr-requirements.md(NFR-NV2-1~18: 실행 표면·멱등·stale 복구·성능 프로파일·예산 수치표·협조적 취소·트레이스 계약·allowlist·U6 연동), tech-stack-decisions.md(TD-NV2-1~8 — 전 항목 배포 교체 경로 병기).
+- Current gate: NFR Requirements 사용자 리뷰 → NFR Design 질문 게이트. push/PR은 사용자 승인 대기.
+
+## Novelty Agent v2 — NFR Design (로드맵 ④ 완료)
+
+- Date: 2026-07-18
+- Stage: CONSTRUCTION / NFR Design
+- Decisions (`construction/plans/novelty-agent-v2-nfr-design-plan.md` Q1~Q4=A, 선행 결정 귀결로 일괄 적용): 모듈 내부 헥사고날 배치(conditional mounting 유지), u2/u7 패턴 재사용(의존성별 서킷 브레이커·도구 1회 기계 재시도 후 에이전트 판단), 트레이스=1차 관측+보조 카운터, v2 신규 캐시 없음.
+- Outputs: `construction/novelty-agent-v2/nfr-design/` — logical-components.md(컴포넌트 지도·잡 수명 시퀀스·마운팅 조건·Notion 도구 미등록), nfr-design-patterns.md(재시도 저하 계단·멱등 잠금·예산 단일 집행·관측·테스트 전략).
+- 로드맵 ④ ✅ 완료 — 산출물 총계: 질문지 3장(inception 2 + FD 게이트 1) + NFR 게이트 2 + requirements 개정 블록 + 설계 문서 8종.
+- Current gate: 사용자 최종 리뷰 → push + PR(develop) 승인 대기. 다음 = 로드맵 ⑤(novelty 코어 재작성 — 구현)는 별도 사이클·명시적 착수 지시 후.

@@ -3979,3 +3979,99 @@ Error: TestingLibraryElementError: Unable to find an element by: [data-testid=\"
 
 
 ---
+
+## Functional Design — 질문 게이트 (Research Ideation Agent 재설계)
+**Timestamp**: 2026-07-17T01:08:39Z
+**User Input**: "로드맵 ④ research-agent 유닛 설계를 시작하자. 플랜 모드로 진행해줘. … 산출물: aidlc-docs/construction/research-agent/ 에 functional-design(business-rules, business-logic-model, domain-entities) / nfr-design / nfr-requirements 세트. 유닛명은 \"Research Ideation Agent\", 코드 모듈 경로는 novelty 유지 (research 경로는 evidence agent 대화 표면이 사용 중). 파악 끝나면 문서 작성 순서와 핵심 설계 질문 목록부터 플랜으로 제안해줘." → (플랜 검토 후) "시작해"
+**AI Response**: "로드맵 ④ 착수 플랜 승인 — 3단계(Functional Design → NFR Requirements → NFR Design) 각 질문 게이트 방식 확정. 작업 브랜치 docs/research-agent-unit-design 생성, `construction/plans/research-agent-functional-design-plan.md`(Q1~Q14 질문 게이트) 작성, 답변 대기."
+**Context**: CONSTRUCTION / Research Ideation Agent (U12) — Functional Design 질문 게이트 (로드맵 ④, 코드 변경 없음)
+
+---
+
+## Requirements Analysis — 에이전트 아키텍처 재설계 질문지 확정
+**Timestamp**: 2026-07-18T03:06:45Z
+**User Input**: "Q1: C" → (Q5 문구·프로젝트 문서 내 자기지시적 표현 제거 요청, Q6 결정 로그 조건·Q7 델타 2건 추가 논의) → "나머지는 권장안에 다 동의" → "응 그렇게 적어줘"
+**AI Response**: "`inception/requirements/requirement-verification-questions-agent-rearchitecture.md` Q1~Q8 확정 기록 — Q1=C(supervisor 완성형), Q2=A, Q3=A(novelty 먼저), Q4=A(모듈 내부 재작성), Q5=A(직접 구현→supervisor 단계 LangGraph), Q6=A+결정 트레이스 저장 조건, Q7=A+델타 5건, Q8=A(설계 문서까지). 후속: solo-roadmap ⑤ 재정의·⑥⑦ 신설, 유닛 질문 게이트에 Q2·Q12 상속."
+**Context**: INCEPTION / 에이전트 아키텍처 재설계 (U11·U12 공통 상위 결정) — 문서만, 코드 변경 없음
+
+---
+
+## 유닛 명칭 정정 — Research Ideation Agent → Novelty Agent v2
+**Timestamp**: 2026-07-18T07:52:20Z
+**User Input**: "novelty면 novelty인거지 도대체 왜 헷갈리게 research ideation agent라고 한 거냐" — 유닛명은 novelty 유지, "research*" 명칭은 ⑦ supervisor 명명 후보로 예약 요청
+**AI Response**: "질문 게이트 파일명 novelty-agent-v2-functional-design-plan.md로 변경, 설계 문서 경로 construction/novelty-agent-v2/로 정정(v1 frozen은 novelty-agent/ 유지), solo-roadmap ④ 명칭 갱신, 브랜치 docs/novelty-v2-unit-design으로 개명. 유닛 책임(유사연구·차별화 후보·실험계획·export)은 FR-30~35 기존 기능 승계로 불변."
+**Context**: CONSTRUCTION / Novelty Agent v2 (U12) — 명칭 정정, 문서만
+
+---
+
+## Requirements Analysis — Novelty v2 기능 정의 질문지 신설
+**Timestamp**: 2026-07-18T07:58:31Z
+**User Input**: "지금 구현되어있는거 없는셈치라고 … 기존 기능을 다 삭제를 하든 뜯어고치든 … 유지를 내가 확정했다고? 나 그 질문을 잘 이해를 못했어" → 기능 범위 선택지에서 "기능부터 재정의" 선택
+**AI Response**: "U12 기능 정의(임무·입력·산출물·상호작용)는 어느 질문지에서도 물은 적 없이 기존 문서에서 '책임 불변'으로 승계돼 있었음을 인정. 미니 인셉션 질문지 `requirement-verification-questions-novelty-v2-function.md`(Q1~Q7) 신설, 유닛 질문 게이트는 기능 정의 확정까지 보류 표시, 아키텍처 질문지 Q6 답변에 재확인 예정 주석."
+**Context**: INCEPTION / Novelty Agent v2 (U12) — 기능 정의 라운드, 문서만
+
+---
+
+## Requirements Analysis — Novelty v2 기능 정의 확정 (Q1~Q7)
+**Timestamp**: 2026-07-18T09:01:04Z
+**User Input**: Q1 논의("원래 이 기능의 목적인 … 검색하고 조사하고 알아봐주는 역할 아니야?") → 채팅 모드 전제의 권장 요청 → "Q2~Q5 권장대로 기록할거긴 한데 … Q6이랑 Q7의 너의 권장은 뭐야?" → "기록해줘"
+**AI Response**: "기능 정의 질문지 확정 — Q1=X(조사+여백 분석 기본, 제안·실험계획은 대화 온디맨드), Q2=A(주제+선택적 원고), Q3=X(구조화 세트·근거 링크 필수), Q4=B(채팅 모드+잡+대화 스티어링), Q5=B(원고 위험 신호 폐기), Q6=A(Notion export 유지), Q7=B(화면·API 재설계 허용). 후속 반영: 아키텍처 질문지 Q6을 A→B로 개정(결정 트레이스 조건 유지), 유닛 질문 게이트 갱신(책임 재정의·Q2 재개방·Q4 산출물 계약 재작성·Q12 델타 확장·frontend-components 산출물 추가), solo-roadmap ④ 갱신."
+**Context**: INCEPTION / Novelty Agent v2 (U12) — 기능 정의 확정, 문서만
+
+---
+
+## Functional Design 질문 게이트 — 평문 개정
+**Timestamp**: 2026-07-18T10:08:01Z
+**User Input**: "Q1에 왜 완전자율을 권장하는거야? Q2도 이유를 알려줘 enum은 뭔지, Q3이나 Q5에서 mcp 뭘로할지 아무것도 안정했는데 … Q7에서 어떻게 특정 논문의 figure만 조회를 해..? … 질문들 좀 이해할 수 있게 적어줄 수 있을까"
+**AI Response**: "novelty-agent-v2-functional-design-plan.md §3 전면 평문 개정 — 각 문항에 '무엇을 묻나' 설명·용어 사전 추가. Q2는 낡은 전제(API 유지) 위 선택지를 현행화: 새 권장 = 거시 상태 소수 + 트레이스 파생 활동 피드. Q6에 B(잡 간만) 기각 사유 주석(기능 정의 Q4=B와 모순). 결정된 답·상속 내용은 무변경."
+**Context**: CONSTRUCTION / Novelty Agent v2 (U12) — 질문지 가독성 개정, 문서만
+
+---
+
+## Requirements 델타 확장 — 근거 대상을 DocModel 전 객체로
+**Timestamp**: 2026-07-18T10:54:32Z
+**User Input**: "문장근거뿐 아니라 그림, 도표, 수식 다 포함한 전체 논문 docmodel에서 찾아야 하는 거 아니냐"
+**AI Response**: "지적 수용 — 현행 근거 형성은 문장(텍스트 청크) 중심이라 표·그림에만 있는 사실을 근거로 못 잡는 격차 확인. requirements 델타에 ⑥ '근거 대상 확장 FR'(근거 검색·인용·앵커가 DocModel의 표·그림·수식 객체까지 커버) 추가(5건→6건), 구체 설계는 로드맵 ⑥ 게이트 결정 항목으로 등재. 질문지 Q7은 '이미지를 LLM에 넣는 방식'만 다룸을 명시."
+**Context**: INCEPTION~CONSTRUCTION / U11·U12 공통 — 근거 커버리지 요구 확장, 문서만
+
+---
+
+## Functional Design 질문 게이트 확정 — Novelty Agent v2
+**Timestamp**: 2026-07-18T10:57:30Z
+**User Input**: "Q1~Q11, Q13, Q14 전부 권장대로 기록해줘"
+**AI Response**: "전 문항 확정 — Q1=A(완전 자율 루프), Q2=B(거시 상태+트레이스 활동 피드), Q3=A(보수적 도구 코어), Q4=A(기본 세트 필수+온디맨드), Q5=A(포트 뒤 어댑터), Q6=C(세션 메모리 둘 다·잡 내 먼저), Q7=A(view_figure 온디맨드), Q8=A(저장 시점 결정론 게이트), Q9=A(3중 예산), Q10=A(협조적 취소), Q11=A(payload allowlist), Q12=X(기상속 — 개정 블록+델타 6건), Q13=A(승계 표+델타), Q14=A(근거 먼저 강제). 다음: requirements 개정 블록 → functional-design 4종 생성."
+**Context**: CONSTRUCTION / Novelty Agent v2 (U12) — Functional Design 질문 게이트 확정, 문서만
+
+---
+
+## Functional Design — Novelty Agent v2 산출물 생성
+**Timestamp**: 2026-07-18T11:09:44Z
+**User Input**: "시작해"
+**AI Response**: "requirements.md 개정 블록 등재(FR-30~33·35 v2 개정, FR-34 폐기, FR-44~47 신규, NFR-P5/R3·QT-10·성공기준·추적성 갱신) 후 `construction/novelty-agent-v2/functional-design/` 4종 생성 — domain-entities(신설: AgentLoopRun·LoopBudget·ToolCallRecord·GapAnalysis / 폐기: ManuscriptRiskSignal), business-logic-model(루프 수명주기·결정론 저장 게이트·온디맨드 경로·⑤ 4단계 지도), business-rules(BR-NV1~19 승계/개정/폐기 표 + BR-RA1~12 신설 + PBT-RA1~3), frontend-components(거시 상태·활동 피드·여백 분석 렌더·온디맨드 UI). 경로 함정 grep 0건, 추적성 미커버 0. aidlc-state 항목 추가."
+**Context**: CONSTRUCTION / Novelty Agent v2 (U12) — Functional Design 산출물, 문서만
+
+---
+
+## NFR Requirements — 질문 게이트 (Novelty Agent v2)
+**Timestamp**: 2026-07-18T11:17:32Z
+**User Input**: "계속" (Functional Design 승인)
+**AI Response**: "Functional Design 승인 처리. `construction/plans/novelty-agent-v2-nfr-requirements-plan.md` 질문 게이트 작성(Q1 실행 표면[redis 큐+워커 권장] · Q2 LLM 프로바이더[현 체제 유지 권장] · Q3 MCP 서버 선정[기존 서버 셀프호스트 권장] · Q4 예산 시작 수치[보수값 권장] · Q5 피드 전달[폴링 권장] · Q6 트레이스 저장[postgres 잡 귀속 권장]). 답변 대기."
+**Context**: CONSTRUCTION / Novelty Agent v2 (U12) — NFR Requirements 질문 게이트, 문서만
+
+---
+
+## NFR Requirements — Novelty Agent v2 확정·산출물 생성
+**Timestamp**: 2026-07-18T11:25:43Z
+**User Input**: "근데 코드자체는 기존의 aws 실제배포하던걸 기준으로 짜고 로컬에서도 개발할 수 있게 짜야하지 않아?" → (게이트에 포트 기준 환경 원칙 명시) → "전부 권장으로 해줘"
+**AI Response**: "Q1~Q6=A 확정 — 잡 큐 포트+워커(1차 redis, 배포 시 SQS), OpenAI tool-calling 어댑터 1차(프로바이더 스위치 유지), MCP 기존 서버 셀프호스트(⑤ 2단계), 예산 시작값(반복 24/호출 40/$0.50), 폴링 피드, postgres 트레이스. `construction/novelty-agent-v2/nfr-requirements/` 2종 생성(NFR-NV2-1~18, TD-NV2-1~8 — 전 항목에 배포 교체 경로 병기)."
+**Context**: CONSTRUCTION / Novelty Agent v2 (U12) — NFR Requirements, 문서만
+
+---
+
+## NFR Design — Novelty Agent v2 완료 (로드맵 ④ 종결)
+**Timestamp**: 2026-07-18T12:39:55Z
+**User Input**: "계속" ×3 (연속 진행 지시)
+**AI Response**: "NFR Design 게이트(Q1~Q4)는 선행 결정의 직접 귀결이라 권장안 일괄 적용(게이트에 명시, 리뷰 시 개정 가능). `construction/novelty-agent-v2/nfr-design/` 2종 생성 — logical-components(모듈 내부 헥사고날 배치·잡 수명 시퀀스·conditional mounting·Notion 도구 미등록), nfr-design-patterns(의존성별 서킷 브레이커[u2 재사용]·재시도 저하 계단·멱등 실행 잠금·예산 단일 집행 지점·트레이스 1차 관측·캐시 없음·테스트 전략). solo-roadmap ④ ✅ 완료 표기."
+**Context**: CONSTRUCTION / Novelty Agent v2 (U12) — NFR Design·로드맵 ④ 종결, 문서만
+
+---

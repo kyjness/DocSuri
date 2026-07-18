@@ -2,15 +2,19 @@
 
 단독 유지보수 전환(로컬 인프라 이관) 이후의 작업 계획. 두 축으로 구성한다:
 (a) 기존 유닛(u1/u2/u7)의 설계 문서 대비 정합성 리뷰 및 결함 수리,
-(b) novelty 모듈의 고정 워크플로우를 도구 호출 기반 에이전트 아키텍처로 재설계.
+(b) 두 에이전트 모듈(novelty, 문헌탐색·근거형성)을 자율 에이전트 아키텍처로 재설계 —
+최종형은 supervisor–서브 에이전트 구조. 아키텍처 결정:
+[requirement-verification-questions-agent-rearchitecture.md](../inception/requirements/requirement-verification-questions-agent-rearchitecture.md) (2026-07-18 확정, Q1~Q8).
 
 | # | 단계 | 상태 | 내용 |
 |---|---|---|---|
 | ① | 저장소 정리 | ✅ 완료 | 비프로덕션 문서 제거 (a8003e2) |
 | ② | 로컬 인프라 이관 | ✅ 완료 | AWS 관리형 서비스 → 컨테이너 4종(postgres/redis/opensearch/s3proxy) + OpenAI 프로바이더 어댑터, 1,000편 재색인, E2E 검증. 상세: [solo-local-migration.md](solo-local-migration.md) |
 | ③ | 유닛 정합성 리뷰 | ✅ 완료 | u7(0f5d866·dc778bb) → u1(e90634a) → u2(59ee3b7) — 각 유닛의 frozen 설계 문서 기준 리뷰·확정 결함 수리. 이관 이슈(아래) 전건 처리. u2에서 reader 임베딩 공간 가드(`_meta.embedding` manifest)·의존성별 서킷 브레이커 신설. 잔여 후속: evidence 모듈(제2 리더)의 space guard/프로바이더 스위치 미적용 |
-| ④ | research-agent 유닛 설계 | ⬜ | `aidlc-docs/construction/research-agent/`에 기존 유닛과 동일한 형식(functional-design / nfr-design / nfr-requirements)으로 작성. 유닛 명칭은 "Research Ideation Agent" — 코드 모듈 경로는 `novelty` 유지(`research` 경로는 evidence agent의 대화 표면이 사용 중) |
-| ⑤ | novelty 코어 재설계 | ⬜ | 고정 상태머신(QUEUED→…→EXPORTING_NOTION)을 도구 호출 루프 기반 에이전트로 교체. 단계: 에이전트 루프 → MCP 연동(arXiv/GitHub/Notion) → 세션 메모리 → 멀티모달 입력(figure crop을 LLM 컨텍스트에 편입). 기존 API 계약·모듈 경로는 유지 |
+| ④ | novelty v2 유닛 설계 | ✅ 완료 (2026-07-18) | 질문지 3장 확정(아키텍처 Q1~Q8 · 기능 정의 Q1~Q7 · FD 게이트 Q1~Q14) — v2 임무 = **조사 + 여백 분석**(방향 제안·실험 계획은 대화 온디맨드), 완전 자율 루프, 채팅 모드 + 잡 + 대화 스티어링, 원고 위험 신호 폐기, Notion export 유지(승인 게이트). `requirements.md` 개정 블록(FR-30~33·35 개정, FR-34 폐기, FR-44~47 신규) + `construction/novelty-agent-v2/` 설계 세트 8종(functional-design 4 / nfr-requirements 2 / nfr-design 2). 유닛명·코드 경로 모두 `novelty` 유지 — "research*"는 ⑦ supervisor 명명 후보로 예약 |
+| ⑤ | novelty 코어 재작성 | ⬜ | 고정 상태머신(QUEUED→…→EXPORTING_NOTION)을 **단일 자율 도구 호출 루프**로 모듈 내부 재작성(Q4=A; 루프는 프레임워크 없이 직접 구현, Q5=A). 단계: 에이전트 루프 → MCP 연동(arXiv/GitHub/Notion) → 세션 메모리 → 멀티모달 입력(figure crop을 LLM 컨텍스트에 편입). 모듈 경로 유지, API·화면 계약은 새 산출물 기준 재설계(기능 정의 Q7=B), 결정 트레이스(도구·질의·종료 사유) 구조화 저장을 루프 도입과 동시 시작 |
+| ⑥ | 문헌탐색 에이전트화 | ⬜ | U11 evidence를 **검색 전략만 자율**(어떤 질의로, 어떤 논문을 깊이, 언제 충분한지)인 에이전트로 재작성(Q2=A). 문장 추출·근거표 조립·날조 검사 게이트는 기계식 유지 — C-2 fail-closed 불변. 설계 문서(질문 게이트) 선행. **⑥ 게이트에서 결정할 항목**: ① **근거 대상 확장** — 근거 검색·추출·앵커(SourceRef)를 문장만이 아니라 DocModel의 표·그림·수식 객체까지 커버하도록 설계(requirements 델타 ⑥ 연동) ② figure/표 조회 도구(DocModel/S3 공용 부품)를 문헌탐색 루프에도 노출할지 |
+| ⑦ | supervisor + LangGraph | ⬜ | supervisor가 서브 에이전트(문헌탐색 탐색 워커, 아이디어 생성)를 지휘·병렬 실행하는 멀티 에이전트 완성형(Q1=C). 병렬 배선·에이전트 간 상태 전달에 LangGraph 도입(Q5=A). **미결**: supervisor 구성 방식(⑤ 루프의 계획층 승격 vs 독립 에이전트 위 별도 신설)·전용 UI 모드·서브 활동 노출 수준은 ⑦ 질문 게이트에서 결정 |
 
 ## ③ 유닛 리뷰 이관 이슈
 

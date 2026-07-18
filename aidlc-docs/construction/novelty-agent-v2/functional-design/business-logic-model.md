@@ -1,0 +1,133 @@
+# Novelty Agent v2 — Business Logic Model
+
+**Unit**: Novelty Agent v2 (U12)
+**Stage**: Functional Design (재설계 라운드, 2026-07-18)
+**Scope**: 자율 도구 호출 루프의 수명주기, 도구 계약, 산출물 저장 게이트, 온디맨드 경로, 대화 스티어링, 진행 투영, 취소·예산·저하 경로, 로드맵 ⑤ 4단계 도입 지도. LLM 프롬프트·저장소·큐 세부는 NFR/Code 단계.
+
+## 0. 개관 — 루프 수명주기
+
+```
+잡 생성(§1)
+  → [자연어] form_evidence 선행 (BR-NV2)
+  → 루프 시작 (state: investigating)
+      ┌────────────────────────────────────────────┐
+      │ observe: 지금까지의 도구 결과·산출물·대화     │
+      │ decide : 다음 도구·인자 선택 or 종료 판단     │←─ 사용자 스티어링(§6)
+      │ act    : 도구 실행 (예산 검사 → 호출 → 기록) │
+      └────────────────────────────────────────────┘
+  → 종료 조건: 필수 산출물 완성 │ 예산 소진 │ 취소 │ 치명 오류
+  → 보고 조립 (state: reporting) → 종단 상태(§7)
+  → (종단 후) 잡 내 대화: 스티어링 질문 응답·온디맨드 산출물(§5)
+  → (선택) Notion preview → 승인 → export (§10, 루프 밖)
+```
+
+매 `act`는 `ToolCallRecord`로 기록된다(FR-46). 산출물 저장은 항상 결정론 게이트(§4)를 통과한다.
+
+## 1. 잡 생성·검증
+
+1. owner 인증·요청 envelope 검증(SECURITY-05/08).
+2. `input_type=manuscript`이면 첨부 핸들 검증 — 파싱은 공통 ingestion/doc-model 경로 위임(BR-NV1, 재구현 금지).
+3. **Evidence First**: 자연어 잡은 루프 시작 전 `form_evidence`를 강제 실행(FD 게이트 Q14=A). `abstain`이면 근거 부족을 사용자에게 표시하고 루프는 보강 탐색 목적으로만 진행하거나 조기 종료한다(BR-NV2 승계).
+4. `LoopBudget` 배분 — U6 `get_budget_state()` 확인 후 per-job 한도 설정. 예산 저하 모드면 축소 배분 또는 기권(U6 단일 권위).
+
+## 2. 루프 코어
+
+- **decide**: LLM이 대화 이력·도구 결과·산출물 현황·남은 예산 요약을 보고 다음 행동을 선택한다(완전 자율 — FD 게이트 Q1=A). 고정 단계 순서 없음.
+- **act 전 예산 검사**: 반복 수·도구별 호출 수·토큰/비용 한도 확인. 초과 시 도구 실행 없이 `budget_denied` 기록 후 종료 경로(§9).
+- **종료 판단**: (a) 필수 산출물(§4 기본 세트)이 모두 검증·저장됨 → `artifacts_complete`, (b) 예산 소진 → `budget_exhausted`, (c) 취소 신호 → `cancelled`, (d) 복구 불가 오류(권한·필수 입력) → `fatal_error`.
+- 에이전트가 "충분하다"고 판단해도 필수 산출물이 미완성이면 정상 종료로 인정하지 않는다 — 저장 게이트가 판정 권위다.
+
+## 3. v1 도구 목록과 계약 (FD 게이트 Q3=A)
+
+| Tool | 하는 일 | 경계 |
+|---|---|---|
+| `corpus_search` | U2 `full` 검색 — 유사 연구 확장 탐색 | 기존 포트 재사용, 전용 인덱스·랭킹 금지(BR-NV4) |
+| `form_evidence` | U11 문헌탐색 엔진 호출 — 근거표 형성 | 공유 계약만 소비(BR-NV1), 자연어 잡 선행 강제(§1) |
+| `github_search` | 구현체·baseline·license 단서 | payload allowlist(§3.1), 품질 점수 판정 금지(FR-31) |
+| `dataset_search` | 데이터셋 이름·URL·라이선스·태스크·metric 후보 | payload allowlist(§3.1) |
+| `view_figure` | 확보한 논문의 그림(WebP crop)·수식 crop을 멀티모달 입력으로 조회 | DocModel에 실재하는 자산만, 온디맨드(Q7=A), 비용 계상 — ⑤ 4단계 도입. **표는 이미지가 아니라 DocModel 데이터(셀 텍스트)로 존재해 텍스트 경로(검색·근거 결과)로 읽힌다. 수식은 LaTeX 텍스트가 1차, crop 이미지는 렌더 불능 시 폴백** |
+| `save_artifact` | 산출물 저장 시도 | **항상 결정론 게이트(§4) 경유** — 직접 저장 경로 없음 |
+
+**루프 밖(도구 아님)**: Notion export(§10 — 승인 게이트), 잡 삭제, 예산 재배분.
+**⑤ 2단계 추가 예정**: `arxiv_search`(외부 arXiv — MCP 어댑터). 외부 결과는 DocModel 앵커가 없으므로 근거 등급 구분과 함께 도입한다(그 시점 설계 델타).
+
+### 3.1 외부 도구 payload allowlist (FD 게이트 Q11=A)
+
+외부로 나가는 도구(`github_search`, `dataset_search`, 향후 `arxiv_search`)는 도구별 허용 payload(topic, 키워드, 논문 제목, 기술명, 익명화 요약)를 규칙으로 명시하고, **어댑터가 기계식으로 sanitize/차단**한다. 에이전트가 인자에 원고 원문·근거 전문을 넣어도 어댑터 경계에서 제거된다(BR-NV6 승계·확장). 위반 시 도구는 오류를 반환하고 `ToolCallRecord.outcome=error`로 기록한다.
+
+### 3.2 MCP 통합 위치 (FD 게이트 Q5=A)
+
+MCP는 기존 헥사고날 포트(외부 탐색 포트 등)의 **어댑터 구현 디테일**이다. 루프 코어·도메인은 MCP를 모른다. 테스트 대역은 포트 수준에서 구성하고, allowlist(§3.1)는 어댑터에 건다. MCP 서버·제품 선정은 NFR Requirements(`tech-stack-decisions.md`).
+
+## 4. 산출물 저장 게이트 (FD 게이트 Q8=A)
+
+`save_artifact` 호출마다 산출물 종류별 결정론 검증(LLM-judge 없음)을 수행한다:
+
+| 검사 | 내용 |
+|---|---|
+| 앵커 실재성 | 모든 `source_refs`가 실재하는 논문·DocModel 객체를 가리킴(BR-NV19 — 공유 앵커 검증 재사용; FR-47 확장 시 표·그림·수식 객체 포함) |
+| 필수 필드 | 산출물 종류별 필수 필드 완비(GapItem.rationale·source_refs, ExperimentPlan 9필드 등) |
+| bounded 규칙 | NoveltyCandidate는 한계·데이터셋/코드 근거·사용자 의도 범위 내(BR-NV11), 금지 주장(`새로움 확정`·score) 부재(BR-NV10) |
+| open_gap 표기 | `open_gap` 항목은 `searched_scope_note` 필수 — 탐색 범위 내 미발견임을 명시 |
+
+**위반 시 저장 거부 + 기계 판독 가능한 사유를 에이전트에 반환** — 에이전트는 예산 내에서 수정·재시도할 수 있다. 거부는 `ToolCallRecord.outcome=rejected_by_gate`로 기록된다. **기본 세트**(EvidenceSnapshot, SimilarWork 표, GapAnalysis)가 모두 저장되어야 정상 완료(FD 게이트 Q4=A).
+
+## 5. 온디맨드 산출물 경로 (기능 정의 Q1=X)
+
+1. 종단 상태(완료/부분 완료)의 잡에서 사용자가 대화로 요청("이 여백으로 실험 계획 짜줘").
+2. 요청 의도 분류(스티어링 질문 vs 온디맨드 생성 요청) → `NoveltyChatMessage.kind` 기록.
+3. 생성은 저장된 조사 산출물(유사 연구 표·여백 분석)을 근거 입력으로 사용 — 새 외부 탐색이 필요하면 잔여 예산 내 도구 호출 허용.
+4. 생성물(NoveltyCandidate, ExperimentPlan)도 **같은 저장 게이트(§4)를 통과해야** 저장·응답된다(BR-RA6).
+5. 응답은 대화 턴으로 반환하고 `resulting_artifact_ref` 연결. 잡의 거시 상태는 변하지 않는다.
+
+## 6. 대화 스티어링 (FD 게이트 Q6=C — 잡 내 먼저)
+
+- 실행 중 사용자 메시지는 저장 후 **다음 decide 시점**에 에이전트 컨텍스트로 주입된다(진행 중 도구 호출을 중단시키지 않음).
+- 스티어링으로 바꿀 수 있는 것: 조사 방향·우선순위·추가 질의 요청. **바꿀 수 없는 것**: 예산 한도, 저장 게이트 규칙, allowlist, Notion 승인 요건(BR-RA9).
+- 잡 간 사용자 메모리는 목표 아키텍처에 정의만 — ⑤ 3단계 후반 도입 시 설계 델타로 확정.
+
+## 7. 진행 투영 (FD 게이트 Q2=B)
+
+- 거시 상태 전이: `received → investigating → reporting → completed | partial | failed | cancelled`. 전이 규칙은 business-rules.md의 Progress State Rules 표.
+- 활동 피드: `ToolCallRecord`를 사용자용 문구로 투영("'sparse retrieval' 계열 검색 중 → 논문 4편 깊이 읽는 중"). 스트리밍 또는 폴링으로 갱신(FR-35). 내부 payload·민감 정보는 투영에서 제외(SEC-9/15).
+- 활동 피드는 파생 뷰다 — 트레이스가 SSOT이고, 피드 생성 실패가 잡을 실패시키지 않는다(best-effort side path).
+
+## 8. 취소 (FD 게이트 Q10=A)
+
+협조적 취소: 취소 신호 수신 → 진행 중 도구 호출 완료 대기 → 루프 탈출 → 검증·저장된 산출물 유지, `state=cancelled`, `termination_reason=cancelled`. v1 재개 미지원 — 이어가기는 새 잡으로 하되 잡 내 대화·산출물을 세션 메모리 참조로 활용(⑤ 3단계 이후).
+
+## 9. 예산 소진·저하 경로 (FD 게이트 Q9=A)
+
+- 예산 소진: 그 시점까지 검증·저장된 산출물로 `partial`(부분 완료) 종료(BR-NV16 정신 승계). 사용자에게 소진 사유와 부분 결과 범위를 표시.
+- source별 저하: 도구 실패는 오류 결과로 에이전트에 반환 → 에이전트가 대체 경로 판단(재시도·다른 소스). 지속 실패 시 `degraded_sources`에 기록하고 나머지로 진행(NFR-R3). 필수 산출물이 완성 불가능해지면 `partial` 또는 `failed`.
+- U6 예산 저하 모드(`get_budget_state()`)는 잡 생성 시 축소 배분 또는 기권으로 반영 — 루프 중 재판정하지 않는다(비용 단일 권위).
+
+## 10. Notion Export (루프 밖 — BR-NV17 승계)
+
+조사 보고(유사 연구 표 + 여백 분석 + 온디맨드 산출물)를 preview로 조립 → 사용자 승인 → export. 에이전트 루프는 export를 트리거할 수 없다. 상태 모델은 `NotionExport`(domain-entities) — preview/approval 없이 `exported` 도달 불가(PBT-NV7).
+
+## 11. 로드맵 ⑤ 단계별 도입 지도
+
+| 단계 | 도입 | 본 설계에서의 준비 |
+|---|---|---|
+| 1. 에이전트 루프 | §0~§4, §7~§9 + 결정 트레이스(동시 시작 — FR-46) | 본 문서 전체가 1단계 사양 |
+| 2. MCP 연동 | `arxiv_search` 어댑터, GitHub/Notion의 MCP 어댑터 교체 | 포트 뒤 어댑터 위치 고정(§3.2), allowlist 어댑터 강제(§3.1), 근거 등급 구분은 도입 시 델타 |
+| 3. 세션 메모리 | 잡 내 멀티턴(§5·§6) → 잡 간 메모리 | `NoveltyChatMessage` 승계, 잡 간 메모리는 정의 유보 명시 |
+| 4. 멀티모달 | `view_figure` 도구(§3) | DocModel/S3 공용 부품 — 문헌탐색 노출 여부는 로드맵 ⑥ 게이트 |
+
+## Traceability
+
+| Source | Covered By |
+|---|---|
+| FR-30 | §1, §2 (자율 루프 오케스트레이션·Evidence First) |
+| FR-31 | §3, §3.1, §3.2 (U2 재사용·외부 탐색 어댑터·allowlist) |
+| FR-32 | §4 기본 세트(유사 연구 표·GapAnalysis), §5 온디맨드 후보 |
+| FR-33 | §5 (온디맨드 실험 계획 + 동일 게이트) |
+| FR-35 | §7 (거시 상태·활동 피드), §10 (export) |
+| FR-44 | §5, §6 (잡 내 멀티턴·스티어링) |
+| FR-45 | §1.4, §2, §9 (예산 배분·검사·소진 경로) |
+| FR-46 | §0, §7 (트레이스 기록·투영) |
+| FR-47 | §4 앵커 실재성(객체 앵커 수용 명시 — 구체 설계 로드맵 ⑥) |
+| NFR-P5 | §0 (비동기 잡·워커=루프 실행 주체), §8 (협조적 취소) |
+| NFR-R3 | §9 (source별 저하 분리) |
+| QT-10 | §4 게이트 차단성, §2 예산 invariant, §7 상태 전이 — business-rules.md PBT 표와 연동 |
