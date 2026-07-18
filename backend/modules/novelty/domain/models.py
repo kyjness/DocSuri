@@ -258,7 +258,10 @@ class LoopBudget(BaseModel):
 
     max_iterations: int = Field(ge=1)
     max_tool_calls_total: int = Field(ge=1)
+    # 캡 그룹별 상한(NFR §3: 탐색류는 corpus/github/dataset 합산 캡). 키는 캡 그룹명.
     max_tool_calls: dict[str, int] = Field(default_factory=dict)
+    # 도구명 → 캡 그룹명. 미등록 도구는 총 상한만 적용.
+    tool_cap_groups: dict[str, str] = Field(default_factory=dict)
     token_cost_limit_usd: float = Field(gt=0.0)
     consumed: BudgetConsumed = Field(default_factory=BudgetConsumed)
 
