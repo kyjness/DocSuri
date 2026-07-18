@@ -1,0 +1,201 @@
+"""v2 API — 라이프사이클·503 폴백·owner 격리·Notion 승인 게이트(PBT-NV7 승계)·quota."""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+from uuid import uuid4
+
+import pytest
+from docsuri_shared.authz import Principal, UserRole
+from fastapi import FastAPI, Request
+from fastapi.testclient import TestClient
+
+from backend.modules.novelty import api
+from backend.modules.novelty.adapters.memory import InMemoryJobQueue, InMemoryNoveltyStore
+
+_OWNER = str(uuid4())
+_OTHER = str(uuid4())
+
+
+@pytest.fixture()
+def app_bundle(monkeypatch):
+    # Fernet 키(SEC-8) — Notion 연결 저장 경로.
+    from cryptography.fernet import Fernet
+
+    monkeypatch.setenv("DOCSURI_NOTION_TOKEN_KEY", Fernet.generate_key().decode())
+
+    app = FastAPI()
+    store = InMemoryNoveltyStore()
+    queue = InMemoryJobQueue()
+    app.state.novelty_queue = queue
+    app.state.user_docmodel = None
+
+    def fake_principal(request: Request) -> Principal:
+        return Principal(user_id=request.headers.get("x-test-user", _OWNER), role=UserRole.USER)
+
+    app.dependency_overrides[api.get_store] = lambda: store
+    app.dependency_overrides[api.get_principal] = fake_principal
+    for router in api.routers:
+        app.include_router(router)
+    return app, store, queue
+
+
+def _create_job(client: TestClient, topic: str = "privacy preserving RAG") -> str:
+    response = client.post("/api/novelty/jobs", json={"inputType": "natural_language",
+                                                      "topic": topic})
+    assert response.status_code == 200, response.text
+    return response.json()["jobId"]
+
+
+def test_job_lifecycle_create_poll_cancel_delete(app_bundle) -> None:
+    app, store, queue = app_bundle
+    client = TestClient(app)
+    job_id = _create_job(client)
+
+    # 접수 즉시 큐 적재(API는 실행하지 않는다 — NFR-NV2-5).
+    queued = queue.consume(timeout_seconds=0)
+    assert queued is not None and queued.job_id == job_id
+
+    status = client.get(f"/api/novelty/jobs/{job_id}").json()
+    assert status["state"] == "received"
+    assert status["stateLabel"] == "접수"
+    assert status["loop"]["iterations"] == 0
+
+    feed = client.get(f"/api/novelty/jobs/{job_id}/feed").json()
+    assert feed == {"items": [], "nextCursor": 0}
+
+    cancel = client.post(f"/api/novelty/jobs/{job_id}/cancel").json()
+    assert cancel["cancelRequested"] is True
+    assert store.is_cancel_requested(job_id)
+
+    assert client.delete(f"/api/novelty/jobs/{job_id}").status_code == 204
+    assert client.get(f"/api/novelty/jobs/{job_id}").status_code == 404
+
+
+def test_create_without_queue_returns_machine_readable_503(app_bundle) -> None:
+    app, _, _ = app_bundle
+    app.state.novelty_queue = None
+    client = TestClient(app)
+    response = client.post(
+        "/api/novelty/jobs", json={"inputType": "natural_language", "topic": "rag"}
+    )
+    assert response.status_code == 503
+    assert response.json()["detail"] == {"error": "queue_unavailable"}
+
+
+def test_budget_degraded_abstains_job_creation(app_bundle) -> None:
+    app, _, _ = app_bundle
+    app.state.cost_guard = SimpleNamespace(
+        get_budget_state=lambda: SimpleNamespace(
+            tier="critical", degrade_mode="lexical_only", circuit_state="open"
+        )
+    )
+    client = TestClient(app)
+    response = client.post(
+        "/api/novelty/jobs", json={"inputType": "natural_language", "topic": "rag"}
+    )
+    assert response.status_code == 503
+    assert response.json()["detail"] == {"error": "budget_degraded"}
+
+
+def test_owner_isolation_on_job_feed_and_messages(app_bundle) -> None:
+    app, _, _ = app_bundle
+    client = TestClient(app)
+    job_id = _create_job(client)
+    for path in (
+        f"/api/novelty/jobs/{job_id}",
+        f"/api/novelty/jobs/{job_id}/feed",
+        f"/api/novelty/jobs/{job_id}/result",
+        f"/api/novelty/jobs/{job_id}/messages",
+    ):
+        assert client.get(path, headers={"x-test-user": _OTHER}).status_code == 404
+    assert (
+        client.delete(f"/api/novelty/jobs/{job_id}", headers={"x-test-user": _OTHER}).status_code
+        == 404
+    )
+
+
+def test_messages_persist_but_loop_does_not_consume(app_bundle) -> None:
+    app, store, _ = app_bundle
+    client = TestClient(app)
+    job_id = _create_job(client)
+    created = client.post(
+        f"/api/novelty/jobs/{job_id}/messages",
+        json={"content": "베이스라인은 BM25 위주로 봐줘", "kind": "steering"},
+    )
+    assert created.status_code == 200
+    listed = client.get(f"/api/novelty/jobs/{job_id}/messages").json()
+    assert [m["kind"] for m in listed["messages"]] == ["steering"]
+
+
+def test_notion_export_gate_matrix(app_bundle) -> None:
+    app, store, _ = app_bundle
+    client = TestClient(app)
+    job_id = _create_job(client)
+
+    # preview 없이 승인 금지(PBT-NV7 승계).
+    denied = client.post(f"/api/novelty/jobs/{job_id}/notion/approve", json={"approved": True})
+    assert denied.status_code == 409
+
+    preview = client.post(f"/api/novelty/jobs/{job_id}/notion/preview")
+    assert preview.status_code == 200
+    assert preview.json()["export"]["status"] == "preview_ready"
+
+    # 연결 없이 승인 → 실행은 FAILED 상태로 수렴(예외 아님 — export 무결성).
+    failed = client.post(f"/api/novelty/jobs/{job_id}/notion/approve", json={"approved": True})
+    assert failed.status_code == 200
+    assert failed.json()["status"] == "failed"
+
+    # 연결 등록 후 preview→approve 재시도 → 실제 클라이언트 호출로 exported.
+    connection = client.put(
+        "/api/novelty/connection".replace("/api/novelty", "/api/novelty/notion"),
+        json={"token": "secret-token-1234567890", "parentPageId": "0" * 32},
+    )
+    assert connection.status_code == 200 and connection.json()["connected"] is True
+
+    app.state.novelty_notion_client = SimpleNamespace(
+        export=lambda conn, content: "page-123"
+    )
+    client.post(f"/api/novelty/jobs/{job_id}/notion/preview")
+    exported = client.post(f"/api/novelty/jobs/{job_id}/notion/approve", json={"approved": True})
+    assert exported.status_code == 200
+    body = exported.json()
+    assert body["status"] == "exported"
+    assert body["notionPageId"] == "page-123"
+
+
+def test_job_creation_route_carries_quota_dependency() -> None:
+    # NFR-C1 — 쿼터 의존성이 라우트에 붙어 있는지 구조 확인(회귀 방지).
+    from backend.middleware.agent_quota import enforce_novelty_job_quota
+
+    route = next(
+        r for r in api.router.routes if getattr(r, "path", "") == "/api/novelty/jobs"
+        and "POST" in getattr(r, "methods", set())
+    )
+    dependency_calls = [d.call for d in route.dependant.dependencies]
+    assert enforce_novelty_job_quota in dependency_calls
+
+
+def test_manuscript_job_waits_for_upload_and_pdf_path_gated(app_bundle) -> None:
+    app, store, queue = app_bundle
+    client = TestClient(app)
+    response = client.post(
+        "/api/novelty/jobs",
+        json={
+            "inputType": "manuscript",
+            "topic": "privacy preserving RAG",
+            "manuscript": {"fileName": "draft.pdf", "contentType": "application/pdf"},
+        },
+    )
+    assert response.status_code == 200
+    job_id = response.json()["jobId"]
+    # 원고 대기 잡은 업로드 전 큐 미적재.
+    assert queue.consume(timeout_seconds=0) is None
+    # 저장소(user_docmodel) 미구성 → 기계 판독 503.
+    upload = client.post(
+        f"/api/novelty/jobs/{job_id}/manuscript",
+        content=b"%PDF-1.4",
+        headers={"content-type": "application/pdf"},
+    )
+    assert upload.status_code == 503
+    assert upload.json()["detail"] == {"error": "manuscript_storage_unavailable"}

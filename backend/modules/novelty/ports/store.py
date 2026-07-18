@@ -11,6 +11,8 @@ from typing import Protocol
 
 from ..domain.models import (
     ArtifactRecord,
+    NotionConnection,
+    NotionExport,
     NoveltyChatMessage,
     NoveltyJob,
     ToolCallRecord,
@@ -61,3 +63,14 @@ class NoveltyStorePort(Protocol):
     def list_messages(
         self, owner_id: str, job_id: str, *, after: str | None, limit: int
     ) -> list[NoveltyChatMessage]: ...
+
+    # ── Notion export·연결 (루프 밖 — BR-RA12, 승인 게이트 BR-NV17) ──
+    def get_export(self, owner_id: str, job_id: str) -> NotionExport | None: ...
+
+    def save_export(self, export: NotionExport) -> None: ...
+
+    def get_notion_connection(self, owner_id: str) -> NotionConnection | None: ...
+
+    def save_notion_connection(self, connection: NotionConnection) -> None: ...
+
+    def delete_notion_connection(self, owner_id: str) -> None: ...
