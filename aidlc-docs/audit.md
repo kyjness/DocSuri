@@ -3979,3 +3979,19 @@ Error: TestingLibraryElementError: Unable to find an element by: [data-testid=\"
 
 
 ---
+
+## Functional Design — 질문 게이트 (Research Ideation Agent 재설계)
+**Timestamp**: 2026-07-17T01:08:39Z
+**User Input**: "로드맵 ④ research-agent 유닛 설계를 시작하자. 플랜 모드로 진행해줘. … 산출물: aidlc-docs/construction/research-agent/ 에 functional-design(business-rules, business-logic-model, domain-entities) / nfr-design / nfr-requirements 세트. 유닛명은 \"Research Ideation Agent\", 코드 모듈 경로는 novelty 유지 (research 경로는 evidence agent 대화 표면이 사용 중). 파악 끝나면 문서 작성 순서와 핵심 설계 질문 목록부터 플랜으로 제안해줘." → (플랜 검토 후) "시작해"
+**AI Response**: "로드맵 ④ 착수 플랜 승인 — 3단계(Functional Design → NFR Requirements → NFR Design) 각 질문 게이트 방식 확정. 작업 브랜치 docs/research-agent-unit-design 생성, `construction/plans/research-agent-functional-design-plan.md`(Q1~Q14 질문 게이트) 작성, 답변 대기."
+**Context**: CONSTRUCTION / Research Ideation Agent (U12) — Functional Design 질문 게이트 (로드맵 ④, 코드 변경 없음)
+
+---
+
+## Requirements Analysis — 에이전트 아키텍처 재설계 질문지 확정
+**Timestamp**: 2026-07-18T03:06:45Z
+**User Input**: "Q1: C" → (Q5 문구·프로젝트 문서 내 자기지시적 표현 제거 요청, Q6 결정 로그 조건·Q7 델타 2건 추가 논의) → "나머지는 권장안에 다 동의" → "응 그렇게 적어줘"
+**AI Response**: "`inception/requirements/requirement-verification-questions-agent-rearchitecture.md` Q1~Q8 확정 기록 — Q1=C(supervisor 완성형), Q2=A, Q3=A(novelty 먼저), Q4=A(모듈 내부 재작성), Q5=A(직접 구현→supervisor 단계 LangGraph), Q6=A+결정 트레이스 저장 조건, Q7=A+델타 5건, Q8=A(설계 문서까지). 후속: solo-roadmap ⑤ 재정의·⑥⑦ 신설, 유닛 질문 게이트에 Q2·Q12 상속."
+**Context**: INCEPTION / 에이전트 아키텍처 재설계 (U11·U12 공통 상위 결정) — 문서만, 코드 변경 없음
+
+---
