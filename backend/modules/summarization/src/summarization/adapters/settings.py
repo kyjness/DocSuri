@@ -10,6 +10,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from docsuri_shared.env import env_flag
+
 # Concrete model bindings (TD-S3). modelVer is part of the immutable cache key.
 # Invoked via Bedrock inference profiles — the bare foundation-model ids (``anthropic.claude-*``)
 # are NOT on-demand invocable here (ValidationException: "Invocation with on-demand throughput
@@ -25,10 +27,9 @@ DEFAULT_OPENAI_SUMMARY_MODEL = "gpt-4o-mini"
 DEFAULT_OPENAI_TRANSLATE_MODEL = "gpt-4o-mini"
 
 
-def _env_flag(name: str) -> bool:
-    """Truthy when the env var is set to a common affirmative ("1"/"true"/"yes"). All feature
-    gates here default OFF (unset → False), so a misspelled value fails closed."""
-    return os.environ.get(name, "").lower() in ("1", "true", "yes")
+# Feature gates default OFF (unset → False), so a misspelled value fails closed —
+# the semantics the shared helper preserves.
+_env_flag = env_flag
 
 
 @dataclass(frozen=True, slots=True)

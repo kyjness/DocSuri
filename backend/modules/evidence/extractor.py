@@ -8,6 +8,7 @@ from typing import Any
 
 from docsuri_shared._generated.dtos.docmodel_schema import DocModel
 from docsuri_shared._generated.dtos.evidence_schema import EvidenceItem, SourceRef
+from docsuri_shared.resilience import CircuitBreaker
 
 from .prompts import build_evidence_extraction_prompt
 
@@ -24,26 +25,6 @@ class LlmUnavailable(Exception):
 
 
 DocModelSource = tuple[str, DocModel] | tuple[str, DocModel, str]
-
-
-class _LocalCircuitBreaker:
-    def __init__(self) -> None:
-        self._failures = 0
-        self._open_until: float = 0.0
-
-    def allow_request(self) -> bool:
-        if self._open_until and time.monotonic() < self._open_until:
-            return False
-        return True
-
-    def record_success(self) -> None:
-        self._failures = 0
-        self._open_until = 0.0
-
-    def record_failure(self) -> None:
-        self._failures += 1
-        if self._failures >= _CB_FAILURE_THRESHOLD:
-            self._open_until = time.monotonic() + _CB_RECOVERY_TIMEOUT
 
 
 class EvidenceExtractor:
@@ -71,7 +52,11 @@ class EvidenceExtractor:
         self._client = client
         self._model_id = model_id
         self._max_retries = max_retries
-        self._cb = _LocalCircuitBreaker()
+        self._cb = CircuitBreaker(
+            "bedrock-evidence",
+            failure_threshold=_CB_FAILURE_THRESHOLD,
+            recovery_seconds=_CB_RECOVERY_TIMEOUT,
+        )
         # NFR-C1: Bedrock 사용량(USD 추정)을 기록할 cost guard — None이면 계측 생략.
         self._cost_guard = cost_guard
 
@@ -96,7 +81,8 @@ class EvidenceExtractor:
         return _filter_hallucinated(raw_items, paper_texts, paper_anchor_ids)
 
     def _invoke_json(self, system: str, user: str) -> dict:
-        if not self._cb.allow_request():
+        permit = self._cb.acquire()
+        if permit is None:
             raise LlmUnavailable('EvidenceExtractor circuit breaker OPEN')
 
         body = {
@@ -106,17 +92,19 @@ class EvidenceExtractor:
             'messages': [{'role': 'user', 'content': [{'type': 'text', 'text': user}]}],
         }
         last_exc: Exception | None = None
-        for attempt in range(self._max_retries + 1):
-            if attempt > 0:
-                time.sleep(2 ** attempt * 0.5)
-            try:
-                text = self._stream_text(body)
-                payload = _parse_json(text)
-                self._cb.record_success()
-                return payload
-            except Exception as exc:
-                last_exc = exc
-        self._cb.record_failure()
+        try:
+            for attempt in range(self._max_retries + 1):
+                if attempt > 0:
+                    time.sleep(2 ** attempt * 0.5)
+                try:
+                    text = self._stream_text(body)
+                    payload = _parse_json(text)
+                    permit.success()
+                    return payload
+                except Exception as exc:
+                    last_exc = exc
+        finally:
+            permit.failure()  # 멱등 — 성공 완료 후엔 no-op(catch-all 해제)
         raise LlmUnavailable('EvidenceExtractor Bedrock call failed') from last_exc
 
     def _stream_text(self, body: dict) -> str:

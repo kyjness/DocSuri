@@ -24,6 +24,8 @@ import urllib.request
 from collections.abc import Sequence
 from typing import Any
 
+from docsuri_shared.resilience import CircuitBreaker
+
 from ..domain.models import (
     Glossary,
     RefinedSource,
@@ -39,7 +41,7 @@ from ..prompts import (
     build_summary_prompt,
     build_translate_segments_prompt,
 )
-from .bedrock_llm import LocalCircuitBreaker, _to_summary_draft
+from .bedrock_llm import _to_summary_draft
 
 log = logging.getLogger("docsuri.summarization.openai")
 
@@ -64,7 +66,7 @@ class OpenAILlmGateway:
         self._summary_model = summary_model_id
         self._translate_model = translate_model_id
         self._max_retries = max_retries
-        self._cb = LocalCircuitBreaker()
+        self._cb = CircuitBreaker("openai-summarization")
 
     # --- public ports (same surface as BedrockLlmGateway) ---------------------
     def summarize(

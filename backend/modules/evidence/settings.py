@@ -9,12 +9,10 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from docsuri_shared.env import env_flag as _env_flag
+
 # Bedrock inference profile (TD-E3 / infrastructure-design §1)
 DEFAULT_EVIDENCE_MODEL = 'global.anthropic.claude-sonnet-4-6'
-
-
-def _env_flag(name: str) -> bool:
-    return os.environ.get(name, '').lower() in ('1', 'true', 'yes')
 
 
 @dataclass(frozen=True, slots=True)

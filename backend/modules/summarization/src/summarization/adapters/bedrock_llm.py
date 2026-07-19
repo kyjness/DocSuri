@@ -14,10 +14,11 @@ from __future__ import annotations
 
 import json
 import logging
-import threading
 import time
 from collections.abc import Sequence
 from typing import Any
+
+from docsuri_shared.resilience import CircuitBreaker
 
 from ..domain.models import (
     Anchor,
@@ -38,95 +39,6 @@ from ..prompts import (
 )
 
 log = logging.getLogger("docsuri.summarization.bedrock")
-
-
-class CircuitPermit:
-    """One-shot completion handle from ``LocalCircuitBreaker.acquire()``.
-
-    The caller MUST complete it with ``success()`` or ``failure()``. ``failure()`` is
-    idempotent, so a ``finally: permit.failure()`` is the catch-all release: even a
-    non-``Exception`` escape (KeyboardInterrupt/SystemExit mid-call) can't strand the
-    HALF-OPEN probe reservation and lock the breaker out forever."""
-
-    def __init__(self, breaker: LocalCircuitBreaker, *, is_probe: bool) -> None:
-        self._breaker = breaker
-        self._is_probe = is_probe
-        self._done = False
-
-    def success(self) -> None:
-        self._resolve(success=True)
-
-    def failure(self) -> None:
-        self._resolve(success=False)
-
-    def _resolve(self, *, success: bool) -> None:
-        if self._done:
-            return
-        self._done = True
-        self._breaker._complete(is_probe=self._is_probe, success=success)
-
-
-class LocalCircuitBreaker:
-    """Stateful in-memory circuit breaker.
-
-    Callers ``acquire()`` a permit (``None`` = rejected) and complete it; the permit carries
-    whether the caller is THE single HALF-OPEN probe, so only the probe's outcome drives the
-    recovery transition — a stale success from a call admitted before the trip can't close a
-    HALF-OPEN circuit while the probe is still checking the dependency."""
-
-    def __init__(self, failure_threshold: int = 5, recovery_timeout: float = 30.0) -> None:
-        self._failure_threshold = failure_threshold
-        self._recovery_timeout = recovery_timeout
-        self._state = "CLOSED"  # CLOSED, OPEN, HALF-OPEN
-        self._failure_count = 0
-        self._last_state_change = time.time()
-        # HALF-OPEN admits exactly ONE probe: concurrent workers share this breaker, and without
-        # the gate every caller arriving during HALF-OPEN would hit the (possibly still-down)
-        # dependency at once — the burst the breaker exists to prevent.
-        self._probe_in_flight = False
-        self._lock = threading.Lock()
-
-    def acquire(self) -> CircuitPermit | None:
-        with self._lock:
-            self._check_recovery()
-            if self._state == "OPEN":
-                return None
-            if self._state == "HALF-OPEN":
-                if self._probe_in_flight:
-                    return None
-                self._probe_in_flight = True
-                return CircuitPermit(self, is_probe=True)
-            return CircuitPermit(self, is_probe=False)
-
-    def _complete(self, *, is_probe: bool, success: bool) -> None:
-        with self._lock:
-            now = time.time()
-            if is_probe:
-                self._probe_in_flight = False
-                if success:
-                    self._state = "CLOSED"
-                    self._failure_count = 0
-                else:
-                    self._state = "OPEN"
-                self._last_state_change = now
-            elif success:
-                if self._state == "CLOSED":
-                    self._failure_count = 0
-                # Stale success (admitted before the trip) while HALF-OPEN/OPEN: ignored —
-                # only the probe may close the circuit.
-            else:
-                self._failure_count += 1
-                if self._state == "CLOSED" and self._failure_count >= self._failure_threshold:
-                    self._state = "OPEN"
-                    self._last_state_change = now
-
-    def _check_recovery(self) -> None:
-        if self._state == "OPEN":
-            now = time.time()
-            if now - self._last_state_change > self._recovery_timeout:
-                self._state = "HALF-OPEN"
-                self._probe_in_flight = False
-                self._last_state_change = now
 
 
 class BedrockLlmGateway:
@@ -160,7 +72,9 @@ class BedrockLlmGateway:
         self._summary_model = summary_model_id
         self._translate_model = translate_model_id
         self._max_retries = max_retries
-        self._cb = LocalCircuitBreaker()
+        # Shared breaker (docsuri_shared.resilience): single HALF-OPEN probe, stale-success
+        # ignore, probe-slot expiry — the guarantees the local copy used to carry.
+        self._cb = CircuitBreaker("bedrock-summarization")
 
     # --- public ports --------------------------------------------------------
     def summarize(

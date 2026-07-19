@@ -89,8 +89,11 @@ def _search_hits(
     real cause correlated to the request id in one self-contained line (no timestamp join to a
     separate adapter log). The bare ``raise ... from exc`` previously discarded that cause, making
     a real outage indistinguishable from a transient blip."""
-    if breaker is not None and not breaker.allow():
-        raise IndexUnavailable(f"{message}: {breaker.name} circuit open — failing fast")
+    permit = None
+    if breaker is not None:
+        permit = breaker.acquire()
+        if permit is None:
+            raise IndexUnavailable(f"{message}: {breaker.name} circuit open — failing fast")
     last_exc: Exception | None = None
     attempt = 0
     for attempt in range(_SEARCH_MAX_ATTEMPTS):
@@ -105,19 +108,19 @@ def _search_hits(
                 break
             time.sleep(_SEARCH_RETRY_BACKOFF_S[attempt])
             continue
-        if breaker is not None:
-            breaker.record_success()
+        if permit is not None:
+            permit.success()
         return hits
-    if breaker is not None:
+    if permit is not None:
         # Only an OUTAGE-shaped final error (transient class: connection/timeout/5xx) counts
         # toward opening the circuit. A 4xx or unexpected response shape means the store
         # RESPONDED — same rule as CircuitGuardedEmbedder — so a poisoned query or an index
         # misconfig fail-closes per-request without turning a healthy store into a fast-fail
         # 503 wall for every adapter sharing the breaker.
         if last_exc is not None and _is_transient(last_exc):
-            breaker.record_failure()
+            permit.failure()
         else:
-            breaker.record_success()
+            permit.success()
     raise IndexUnavailable(f"{message} after {attempt + 1} attempt(s)") from last_exc
 # arXiv version suffix ("v3"). paperId is stored version-less, so stripping the requested id's
 # version lets the detail lookup resolve a paper indexed at a *different* version than the one
