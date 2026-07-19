@@ -225,11 +225,13 @@ class SqlNoveltyStore:
 
     def list_artifacts(self, owner_id: str, job_id: str) -> list[ArtifactRecord]:
         with self._session_factory() as session:
-            if not self._owns(session, owner_id, job_id):
-                return []
+            # owner 격리는 행 필터로 같은 왕복에서 강제 — 선행 소유권 조회 불필요.
             rows = session.scalars(
                 select(ArtifactV2Table)
-                .where(ArtifactV2Table.job_id == job_id)
+                .where(
+                    ArtifactV2Table.job_id == job_id,
+                    ArtifactV2Table.owner_id == owner_id,
+                )
                 .order_by(ArtifactV2Table.created_at.asc(), ArtifactV2Table.artifact_id.asc())
             ).all()
             return [
@@ -287,12 +289,16 @@ class SqlNoveltyStore:
         self, owner_id: str, job_id: str, *, after_seq: int, limit: int
     ) -> list[ToolCallRecord]:
         with self._session_factory() as session:
-            if not self._owns(session, owner_id, job_id):
-                return []
+            # 트레이스 테이블엔 owner 컬럼이 없으므로 잡 조인으로 같은 왕복에서 격리.
             rows = session.scalars(
                 select(ToolCallRecordTable)
+                .join(
+                    NoveltyJobV2Table,
+                    NoveltyJobV2Table.job_id == ToolCallRecordTable.job_id,
+                )
                 .where(
                     ToolCallRecordTable.job_id == job_id,
+                    NoveltyJobV2Table.owner_id == owner_id,
                     ToolCallRecordTable.seq > after_seq,
                 )
                 .order_by(ToolCallRecordTable.seq.asc())
@@ -335,14 +341,19 @@ class SqlNoveltyStore:
         self, owner_id: str, job_id: str, *, after: str | None, limit: int
     ) -> list[NoveltyChatMessage]:
         with self._session_factory() as session:
-            if not self._owns(session, owner_id, job_id):
-                return []
             stmt = (
                 select(MessageV2Table)
-                .where(MessageV2Table.job_id == job_id)
+                .where(
+                    MessageV2Table.job_id == job_id,
+                    MessageV2Table.owner_id == owner_id,
+                )
                 .order_by(MessageV2Table.created_at.asc(), MessageV2Table.message_id.asc())
             )
             if after is not None:
+                # 커서 경로만 선행 소유권 확인 — 비소유자 커서 탐침에 KeyError로
+                # 존재 여부가 노출되지 않게 한다(무커서 폴링 핫패스는 단일 쿼리).
+                if not self._owns(session, owner_id, job_id):
+                    return []
                 anchor = session.get(MessageV2Table, after)
                 if anchor is None or anchor.job_id != job_id:
                     raise KeyError(f"unknown cursor: {after}")

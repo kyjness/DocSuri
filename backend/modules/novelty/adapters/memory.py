@@ -7,6 +7,7 @@ SQL·redis 구현과 같은 계약 테스트를 공유한다(nfr-design-patterns
 
 from __future__ import annotations
 
+import threading
 import time
 from collections import deque
 from collections.abc import Callable
@@ -154,12 +155,20 @@ class InMemoryJobQueue:
         self._queue: deque[QueuedJob] = deque()
         self._locks: dict[str, float] = {}
         self._clock = clock
+        # consume 블로킹 대기(redis BLMOVE 등가 계약) — 폴백 워커의 busy-spin 방지.
+        self._not_empty = threading.Condition()
 
     def enqueue(self, job_id: str, owner_id: str) -> None:
-        self._queue.append(QueuedJob(job_id=job_id, owner_id=owner_id))
+        with self._not_empty:
+            self._queue.append(QueuedJob(job_id=job_id, owner_id=owner_id))
+            self._not_empty.notify()
 
     def consume(self, timeout_seconds: float) -> QueuedJob | None:
-        return self._queue.popleft() if self._queue else None
+        with self._not_empty:
+            self._not_empty.wait_for(
+                lambda: bool(self._queue), timeout=max(timeout_seconds, 0.0)
+            )
+            return self._queue.popleft() if self._queue else None
 
     def ack(self, job: QueuedJob) -> None:
         return None

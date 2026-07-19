@@ -205,6 +205,25 @@ class TestExecutionLockContract:
         queue.release("job-1")
         assert queue.acquire("job-1", ttl_seconds=10) is True
 
+    def test_consume_blocks_until_enqueue_or_timeout(self) -> None:
+        # BLMOVE 등가 계약 — 빈 큐에서 timeout까지 대기하고(busy-spin 금지),
+        # 대기 중 적재되면 timeout 전에 깨어난다.
+        import threading
+        import time
+
+        from .novelty_v2_fakes import InMemoryJobQueue
+
+        queue = InMemoryJobQueue()
+        started = time.monotonic()
+        assert queue.consume(timeout_seconds=0.15) is None
+        assert time.monotonic() - started >= 0.1
+        timer = threading.Timer(0.05, lambda: queue.enqueue("job-1", "owner-1"))
+        started = time.monotonic()
+        timer.start()
+        job = queue.consume(timeout_seconds=5)
+        assert job is not None and job.job_id == "job-1"
+        assert time.monotonic() - started < 3.0
+
 
 class TestStoreLatches:
     """update_job의 단방향 래치 계약 — 취소 플래그·종단 상태(BR-RA5), 양 구현 공통."""
