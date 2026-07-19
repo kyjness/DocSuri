@@ -58,6 +58,8 @@ class ToolResult:
     content        — 다음 observe에서 LLM에 보이는 내용(신뢰 경계 밖 데이터).
     result_summary — 트레이스·활동 피드용 sanitized 요약(SEC-9/15).
     record_refs    — 결과가 확보한 실재 출처 핸들(recordRef) — 게이트 실재성 검사 입력.
+    gate_rejection_code — 저장 게이트 거부 사유 코드(BR-RA2). 트레이스 outcome 분류의
+                     타입 채널 — 오류 문자열 프로토콜에 의존하지 않는다.
     """
 
     ok: bool
@@ -66,6 +68,7 @@ class ToolResult:
     record_refs: tuple[str, ...] = ()
     cost_usd: float | None = None
     error: str | None = None
+    gate_rejection_code: str | None = None
 
 
 class ToolPort(Protocol):

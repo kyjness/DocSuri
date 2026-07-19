@@ -438,3 +438,193 @@ def test_notion_can_never_join_registry() -> None:
     registry = ToolRegistry()
     with pytest.raises(ValueError):
         registry.register(FakeTool("notion_export"))
+
+
+# ── 코드 리뷰 반영(1단계) 회귀 테스트 ──
+
+
+def test_redelivered_job_resumes_from_saved_artifacts() -> None:
+    """crash 재전달: 저장된 산출물·출처 핸들을 시드해 작업·예산을 이중 소진하지 않는다."""
+    from backend.modules.novelty.domain.models import ArtifactRecord
+
+    store = InMemoryNoveltyStore()
+    job = _job(store)
+    # 이전 실행이 남긴 검증본 — evidence(자동 보존분) + similar_works.
+    evidence_payload = {
+        "state": "ok",
+        "claims": [
+            {"statement": "s1", "supporting": [_ref()], "conflicting": []}
+        ],
+    }
+    for kind, payload in (
+        (ArtifactKind.EVIDENCE, evidence_payload),
+        (ArtifactKind.SIMILAR_WORKS, _similar_payload()),
+    ):
+        store.save_artifact(
+            ArtifactRecord(job_id=job.job_id, owner_id=job.owner_id, kind=kind, payload=payload)
+        )
+    evidence_tool = _evidence_tool()
+    # 남은 것은 gap 하나 — 이전 실행이 확보한 rec:paper-1을 인용해도 게이트 통과해야 한다.
+    llm = ScriptedToolCallingLlm([_save("gap_analysis", _gap_payload())])
+    deps = LoopDeps(store=store, llm=llm, registry=_registry(evidence_tool, _corpus_tool()))
+
+    outcome = run_loop(job, deps)
+
+    assert outcome.reason is TerminationReason.ARTIFACTS_COMPLETE
+    assert evidence_tool.calls == []  # Evidence First 재강제 없음(이미 보존됨)
+    assert any(
+        any("재개된 잡" in note for note in observation.notes) for observation in llm.observations
+    )
+
+
+def test_budget_consumption_is_persisted_every_turn() -> None:
+    """실행 중 스냅샷이 소비를 반영한다 — crash 재시작이 전액 예산으로 되돌지 않는다."""
+    store = InMemoryNoveltyStore()
+    job = _job(store)
+
+    observed: dict[str, int] = {}
+
+    def second_decision(observation):
+        stored = store.get_job_for_worker(job.job_id)
+        observed["tool_calls"] = stored.loop_run.budget.consumed.tool_calls_total
+        observed["iterations"] = stored.loop_run.iteration_count
+        raise RuntimeError("simulated crash mid-run")
+
+    llm = ScriptedToolCallingLlm(
+        [LlmDecision(ToolCallProposal(TOOL_CORPUS_SEARCH, {"query": "q1"})), second_decision]
+    )
+    deps = LoopDeps(store=store, llm=llm, registry=_registry(_evidence_tool(), _corpus_tool()))
+
+    outcome = run_loop(job, deps)
+
+    assert outcome.reason is TerminationReason.FATAL_ERROR
+    # 두 번째 결정 시점(중간)에 이미 소비가 영속돼 있다(선행 evidence + corpus 1회).
+    assert observed["tool_calls"] >= 2
+    stored = store.get_job_for_worker(job.job_id)
+    assert stored.loop_run.budget.consumed.tool_calls_total >= 2
+
+
+def test_concurrent_terminal_write_wins_and_loop_does_not_crash() -> None:
+    """스윕 등 다른 기록자가 먼저 종단시킨 잡 — 최초 종단 기록이 승리(BR-RA5)하고
+    완주한 루프는 예외 없이 결과만 반환한다."""
+    store = InMemoryNoveltyStore()
+    job = _job(store)
+
+    def save_gap_after_sweep(observation):
+        # 마지막 저장 직전, 외부 기록자가 잡을 FAILED로 종단시킨 상황을 재현.
+        store._jobs[job.job_id].state = JobState.FAILED  # noqa: SLF001 — 경합 재현
+        return _save("gap_analysis", _gap_payload())
+
+    llm = ScriptedToolCallingLlm(
+        [_save("similar_works", _similar_payload()), save_gap_after_sweep]
+    )
+    deps = LoopDeps(store=store, llm=llm, registry=_registry(_evidence_tool(), _corpus_tool()))
+
+    outcome = run_loop(job, deps)  # 예외가 밖으로 새지 않는다
+
+    assert outcome.reason is TerminationReason.ARTIFACTS_COMPLETE
+    assert store.get_job_for_worker(job.job_id).state is JobState.FAILED
+
+
+def test_manuscript_record_ref_is_citable() -> None:
+    """업로드 원고의 recordRef는 실재 출처로 시드된다 — 원고 인용 산출물이 게이트를 통과."""
+    store = InMemoryNoveltyStore()
+    job = NoveltyJob(
+        owner_id=str(uuid4()),
+        request=NoveltyJobRequest(
+            input_type=InputType.MANUSCRIPT,
+            topic="privacy preserving RAG",
+            evidence_request={"topic": "privacy preserving RAG"},
+            manuscript_ref={
+                "file_name": "draft.pdf",
+                "content_type": "application/pdf",
+                "record_ref": "upload:o1:j1:manuscript",
+            },
+        ),
+        loop_run=AgentLoopRun(budget=_budget()),
+    )
+    store.create_job(job)
+    manuscript_similar = {
+        "items": [
+            {
+                "artifact_type": "paper",
+                "title": "사용자 원고",
+                "evidence_status": "supported",
+                "source_refs": [
+                    {"paperId": "userdoc:abc", "recordRef": "upload:o1:j1:manuscript"}
+                ],
+            }
+        ]
+    }
+    llm = ScriptedToolCallingLlm(
+        [
+            LlmDecision(ToolCallProposal(TOOL_FORM_EVIDENCE, {"topic": "t"})),
+            _save("similar_works", manuscript_similar),
+            _save("gap_analysis", _gap_payload()),
+        ]
+    )
+    deps = LoopDeps(store=store, llm=llm, registry=_registry(_evidence_tool(), _corpus_tool()))
+
+    outcome = run_loop(job, deps)
+
+    assert outcome.reason is TerminationReason.ARTIFACTS_COMPLETE
+    trace = store.list_trace(job.owner_id, job.job_id, after_seq=0, limit=20)
+    saves = [rec for rec in trace if rec.tool_name == TOOL_SAVE_ARTIFACT]
+    assert all(rec.outcome is ToolOutcome.OK for rec in saves)
+
+
+def test_evidence_auto_save_rejection_is_observable() -> None:
+    """자동 보존 거부는 트레이스 요약·다음 관찰 노트로 표면화된다(무기록 실패 금지)."""
+    store = InMemoryNoveltyStore()
+    job = _job(store)
+    empty_evidence = FakeTool(
+        TOOL_FORM_EVIDENCE,
+        default=ToolResult(
+            ok=True,
+            content={"evidence": {"state": "ok", "claims": []}},  # 게이트 거부 대상
+            result_summary="evidence formed: 0 claims",
+            record_refs=_REFS,  # 출처 핸들은 확보 — 스냅샷 형태만 불량인 경우
+        ),
+    )
+    llm = ScriptedToolCallingLlm(
+        [
+            _save("evidence", {"state": "abstain", "claims": [], "abstain_reason": "few"}),
+            _save("similar_works", _similar_payload()),
+            _save("gap_analysis", _gap_payload()),
+        ]
+    )
+    deps = LoopDeps(store=store, llm=llm, registry=_registry(empty_evidence, _corpus_tool()))
+
+    outcome = run_loop(job, deps)
+
+    assert outcome.reason is TerminationReason.ARTIFACTS_COMPLETE
+    trace = store.list_trace(job.owner_id, job.job_id, after_seq=0, limit=20)
+    assert "auto-save rejected" in trace[0].result_summary
+    assert any(
+        any("자동 보존 거부" in note for note in observation.notes)
+        for observation in llm.observations
+    )
+
+
+def test_observation_result_seq_is_monotonic_past_window() -> None:
+    """관찰 뷰 순번은 윈도우(6) 절단 후에도 중복 없이 단조 증가한다."""
+    store = InMemoryNoveltyStore()
+    job = _job(store)
+    searches = [
+        LlmDecision(ToolCallProposal(TOOL_CORPUS_SEARCH, {"query": f"q{i}"})) for i in range(9)
+    ]
+    llm = ScriptedToolCallingLlm(
+        [
+            *searches,
+            _save("similar_works", _similar_payload()),
+            _save("gap_analysis", _gap_payload()),
+        ]
+    )
+    deps = LoopDeps(store=store, llm=llm, registry=_registry(_evidence_tool(), _corpus_tool()))
+
+    run_loop(job, deps)
+
+    last = llm.observations[-1]
+    seqs = [view.seq for view in last.recent_results]
+    assert seqs == sorted(set(seqs))  # 중복 없음·오름차순
+    assert len(seqs) <= 6 and seqs[-1] > 6  # 윈도우 절단 후에도 전역 순번 유지

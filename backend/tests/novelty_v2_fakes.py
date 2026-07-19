@@ -13,7 +13,9 @@ from collections.abc import Callable, Iterable
 from typing import Any
 
 from backend.modules.novelty.domain.models import (
+    TERMINAL_STATES,
     ArtifactRecord,
+    InvalidTransitionError,
     NoveltyChatMessage,
     NoveltyJob,
     ToolCallRecord,
@@ -63,9 +65,16 @@ class InMemoryNoveltyStore:
         return [job.model_copy(deep=True) for job in owned[:limit]]
 
     def update_job(self, job: NoveltyJob) -> None:
-        if job.job_id not in self._jobs:
+        existing = self._jobs.get(job.job_id)
+        if existing is None:
             raise KeyError(job.job_id)
-        self._jobs[job.job_id] = job.model_copy(deep=True)
+        updated = job.model_copy(deep=True)
+        # 취소 플래그는 단방향 래치 — 워커의 낡은 스냅샷이 동시 취소 요청을 덮지 못한다.
+        updated.cancel_requested = updated.cancel_requested or existing.cancel_requested
+        # 종단 상태 재진입 금지(BR-RA5)를 저장 수준에서도 강제 — 최초 종단 기록이 승리.
+        if existing.state in TERMINAL_STATES and updated.state is not existing.state:
+            raise InvalidTransitionError(f"job is terminal: {existing.state}")
+        self._jobs[job.job_id] = updated
 
     def delete_job(self, owner_id: str, job_id: str) -> bool:
         job = self._jobs.get(job_id)

@@ -13,7 +13,8 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+import logging
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any
 
@@ -34,12 +35,13 @@ from ..ports.tools import (
     ToolSpec,
 )
 from . import budget as budget_rules
-from .gate import evaluate_artifact
+from .gate import GateRejectionReason, evaluate_artifact
 from .models import (
     REQUIRED_ARTIFACT_KINDS,
     ArtifactKind,
     ArtifactRecord,
     InputType,
+    InvalidTransitionError,
     JobState,
     NoveltyJob,
     TerminationReason,
@@ -50,6 +52,8 @@ from .models import (
 )
 
 __all__ = ["SAVE_ARTIFACT_SPEC", "LoopDeps", "LoopOutcome", "run_loop"]
+
+log = logging.getLogger("docsuri.novelty.loop")
 
 # save_artifact는 레지스트리 도구가 아니라 루프가 직접 게이트로 처리한다 —
 # 우회 저장 경로를 만들지 않기 위해(BR-RA2). LLM에는 이 스펙으로 노출된다.
@@ -100,6 +104,7 @@ class _LoopState:
     saved_kinds: set[ArtifactKind] = field(default_factory=set)
     trace_failures: int = 0
     tool_failures: dict[str, int] = field(default_factory=dict)
+    result_seq: int = 0  # 관찰 뷰 순번 — 윈도우 절단과 무관하게 단조 증가
 
 
 def run_loop(job: NoveltyJob, deps: LoopDeps) -> LoopOutcome:
@@ -107,7 +112,7 @@ def run_loop(job: NoveltyJob, deps: LoopDeps) -> LoopOutcome:
     run = job.loop_run
     if run is None:
         raise ValueError("job.loop_run must be allocated before run_loop")
-    state = _LoopState()
+    state = _seed_state(job, deps)
     run.started_at = run.started_at or utc_now()
     _transition(job, JobState.INVESTIGATING, deps)
 
@@ -122,15 +127,55 @@ def run_loop(job: NoveltyJob, deps: LoopDeps) -> LoopOutcome:
 
     run.termination_reason = outcome.reason
     run.ended_at = utc_now()
-    run.iteration_count = run.budget.consumed.iterations
-    run.tool_call_counts = dict(run.budget.consumed.tool_calls)
     if outcome.detail and outcome.final_state is JobState.FAILED:
         job.error_message = outcome.detail
-    if outcome.final_state is JobState.COMPLETED and job.state is JobState.INVESTIGATING:
-        # 보고 조립(BLM §0) — 1단계에서는 저장된 산출물 참조가 곧 보고이므로 전이만.
-        _transition(job, JobState.REPORTING, deps)
-    _transition(job, outcome.final_state, deps, terminal=True)
+    try:
+        if outcome.final_state is JobState.COMPLETED and job.state is JobState.INVESTIGATING:
+            # 보고 조립(BLM §0) — 1단계에서는 저장된 산출물 참조가 곧 보고이므로 전이만.
+            _transition(job, JobState.REPORTING, deps)
+        _transition(job, outcome.final_state, deps, terminal=True)
+    except InvalidTransitionError:
+        # 다른 기록자(예: stale 스윕)가 먼저 종단시킴 — 결과를 덮어쓰지 않는다.
+        log.warning(
+            "novelty loop: job %s already terminal (%s); dropping %s",
+            job.job_id, job.state, outcome.final_state,
+        )
+    except Exception:  # noqa: BLE001 — 종단 기록 실패는 스윕이 수렴시킨다(잡 비종단 유지)
+        log.exception("novelty loop: failed to persist terminal state for job %s", job.job_id)
     return outcome
+
+
+def _seed_state(job: NoveltyJob, deps: LoopDeps) -> _LoopState:
+    """재전달 복원(코드 리뷰 반영): 이미 게이트를 통과해 저장된 산출물과 그 출처 핸들,
+    원고 잡의 원고 recordRef를 시드한다 — crash 후 재실행이 작업·예산을 이중 소진하지
+    않고, 저장소가 완성 판정의 단일 진실로 남는다(BR-RA1)."""
+    state = _LoopState()
+    for record in deps.store.list_artifacts(job.owner_id, job.job_id):
+        state.saved_kinds.add(record.kind)
+        _collect_record_refs(record.payload, state.known_record_refs)
+    manuscript = job.request.manuscript_ref
+    if manuscript is not None and manuscript.record_ref:
+        # 업로드 원고도 실재 출처다 — 게이트가 원고 인용을 거부하지 않게 시드(FR-47 방향).
+        state.known_record_refs.add(manuscript.record_ref)
+    if state.saved_kinds:
+        state.notes.append(
+            "재개된 잡 — 이미 저장된 산출물: "
+            + ", ".join(sorted(kind.value for kind in state.saved_kinds))
+        )
+    return state
+
+
+def _collect_record_refs(node: Any, into: set[str]) -> None:
+    """산출물 payload에서 recordRef 핸들을 결정론적으로 회수(재전달 시 실재성 집합 복원)."""
+    if isinstance(node, dict):
+        ref = node.get("recordRef")
+        if isinstance(ref, str) and ref:
+            into.add(ref)
+        for value in node.values():
+            _collect_record_refs(value, into)
+    elif isinstance(node, list):
+        for item in node:
+            _collect_record_refs(item, into)
 
 
 class _TraceUnavailable(Exception):
@@ -141,8 +186,13 @@ def _drive(job: NoveltyJob, deps: LoopDeps, state: _LoopState) -> LoopOutcome:
     budget = job.loop_run.budget  # type: ignore[union-attr]
 
     # Evidence First(BR-NV2) — 자연어 잡은 첫 act가 form_evidence로 강제된다.
-    if job.request.input_type is InputType.NATURAL_LANGUAGE:
+    # 재전달로 evidence가 이미 저장돼 있으면 반복하지 않는다(예산 보호).
+    if (
+        job.request.input_type is InputType.NATURAL_LANGUAGE
+        and ArtifactKind.EVIDENCE not in state.saved_kinds
+    ):
         outcome = _forced_form_evidence(job, deps, state)
+        _persist_progress(job, deps)
         if outcome is not None:
             return outcome
 
@@ -164,13 +214,26 @@ def _drive(job: NoveltyJob, deps: LoopDeps, state: _LoopState) -> LoopOutcome:
             state.notes.append(
                 f"종료 제안 불수용 — 필수 산출물 미완성: {', '.join(sorted(missing))}"
             )
+            _persist_progress(job, deps)
             continue
 
         outcome = _act(job, deps, state, proposal)
+        # 예산 소비·진행 상황을 매 턴 영속(코드 리뷰 반영) — crash 재시작이 전액
+        # 예산으로 되돌지 않고, 실행 중 API 조회가 실시간 소비를 보여준다.
+        _persist_progress(job, deps)
         if outcome is not None:
             return outcome
         if _required_complete(state):
             return LoopOutcome(TerminationReason.ARTIFACTS_COMPLETE, JobState.COMPLETED)
+
+
+def _persist_progress(job: NoveltyJob, deps: LoopDeps) -> None:
+    """루프 진행 스냅샷 영속 — 실패해도 턴을 죽이지 않는다(다음 턴·종단에서 재시도)."""
+    job.updated_at = utc_now()
+    try:
+        deps.store.update_job(job)
+    except Exception:  # noqa: BLE001 — 진행 영속은 best-effort, 종단 기록이 최종 권위
+        log.warning("novelty loop: progress persist failed for job %s", job.job_id)
 
 
 def _act(
@@ -202,9 +265,10 @@ def _act(
 
     if result.cost_usd:
         budget_rules.record_cost(budget, result.cost_usd)
+    state.result_seq += 1
     state.recent_results.append(
         ToolResultView(
-            seq=len(state.recent_results) + 1,
+            seq=state.result_seq,
             tool_name=proposal.tool_name,
             ok=result.ok,
             content=result.content,
@@ -216,7 +280,7 @@ def _act(
     if result.ok:
         state.tool_failures.pop(proposal.tool_name, None)
         record_outcome = ToolOutcome.OK
-    elif result.error and result.error.startswith("rejected_by_gate"):
+    elif result.gate_rejection_code is not None:
         record_outcome = ToolOutcome.REJECTED_BY_GATE
     else:
         record_outcome = ToolOutcome.ERROR
@@ -249,7 +313,11 @@ def _execute_tool(
         return ToolResult(ok=False, error=f"{type(exc).__name__}: {exc}"[:500])
     state.known_record_refs.update(result.record_refs)
     if proposal.tool_name == TOOL_FORM_EVIDENCE and result.ok:
-        _auto_save_evidence(job, deps, state, result)
+        auto_save_note = _auto_save_evidence(job, deps, state, result)
+        result = replace(
+            result,
+            result_summary=f"{result.result_summary}; {auto_save_note}".strip("; "),
+        )
     return result
 
 
@@ -261,10 +329,18 @@ def _execute_save(
     try:
         kind = ArtifactKind(raw_kind)
     except ValueError:
-        return ToolResult(ok=False, error=f"rejected_by_gate: unsupported_kind: {raw_kind[:40]}")
+        return ToolResult(
+            ok=False,
+            error=f"rejected_by_gate: unsupported_kind: {raw_kind[:40]}",
+            gate_rejection_code=GateRejectionReason.UNSUPPORTED_KIND.value,
+        )
     payload = args.get("payload")
     if not isinstance(payload, dict):
-        return ToolResult(ok=False, error="rejected_by_gate: invalid_shape: payload must be object")
+        return ToolResult(
+            ok=False,
+            error="rejected_by_gate: invalid_shape: payload must be object",
+            gate_rejection_code=GateRejectionReason.INVALID_SHAPE.value,
+        )
     rejection = evaluate_artifact(kind, payload, frozenset(state.known_record_refs))
     if rejection is not None:
         return ToolResult(
@@ -272,6 +348,7 @@ def _execute_save(
             content={"rejected": {"reason": rejection.reason.value, "detail": rejection.detail}},
             error=f"rejected_by_gate: {rejection.reason.value}: {rejection.detail}",
             result_summary=f"save rejected: {rejection.reason.value}",
+            gate_rejection_code=rejection.reason.value,
         )
     deps.store.save_artifact(
         ArtifactRecord(job_id=job.job_id, owner_id=job.owner_id, kind=kind, payload=payload)
@@ -286,22 +363,33 @@ def _execute_save(
 
 def _auto_save_evidence(
     job: NoveltyJob, deps: LoopDeps, state: _LoopState, result: ToolResult
-) -> None:
+) -> str:
     """form_evidence 성공 시 EvidenceSnapshot(포트 결과의 내부 보존본)을 게이트 경유로
-    저장한다 — 별도 save_artifact 호출 불요, 게이트 우회 아님."""
+    저장한다 — 별도 save_artifact 호출 불요, 게이트 우회 아님. 결과(성공·거부)는
+    트레이스 요약과 다음 관찰 노트로 표면화한다(무기록 실패 금지 — 코드 리뷰 반영)."""
     snapshot = result.content.get("evidence")
     if not isinstance(snapshot, dict):
-        return
-    if evaluate_artifact(
-        ArtifactKind.EVIDENCE, snapshot, frozenset(state.known_record_refs)
-    ) is None:
-        deps.store.save_artifact(
-            ArtifactRecord(
-                job_id=job.job_id, owner_id=job.owner_id,
-                kind=ArtifactKind.EVIDENCE, payload=snapshot,
-            )
+        state.notes.append(
+            "evidence 자동 보존 불가(결과 형태 비정상) — save_artifact(evidence)로 저장하라"
         )
-        state.saved_kinds.add(ArtifactKind.EVIDENCE)
+        return "evidence auto-save skipped: malformed content"
+    rejection = evaluate_artifact(
+        ArtifactKind.EVIDENCE, snapshot, frozenset(state.known_record_refs)
+    )
+    if rejection is not None:
+        state.notes.append(
+            f"evidence 자동 보존 거부({rejection.reason.value}) — 보완 후 "
+            "save_artifact(evidence)로 저장하라"
+        )
+        return f"evidence auto-save rejected: {rejection.reason.value}"
+    deps.store.save_artifact(
+        ArtifactRecord(
+            job_id=job.job_id, owner_id=job.owner_id,
+            kind=ArtifactKind.EVIDENCE, payload=snapshot,
+        )
+    )
+    state.saved_kinds.add(ArtifactKind.EVIDENCE)
+    return "evidence saved"
 
 
 def _forced_form_evidence(

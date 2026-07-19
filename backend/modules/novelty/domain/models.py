@@ -11,7 +11,14 @@ from enum import StrEnum
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    computed_field,
+    field_validator,
+    model_validator,
+)
 
 from docsuri_shared._generated.dtos.evidence_schema import (
     EvidenceCoverage,
@@ -23,7 +30,6 @@ from docsuri_shared._generated.dtos.evidence_schema import (
 __all__ = [
     "ALLOWED_TRANSITIONS",
     "REQUIRED_ARTIFACT_KINDS",
-    "SUPPORTED_MANUSCRIPT_CONTENT_TYPES",
     "TERMINAL_STATES",
     "AgentLoopRun",
     "ArtifactKind",
@@ -157,14 +163,6 @@ class ExportStatus(StrEnum):
     FAILED = "failed"
 
 
-SUPPORTED_MANUSCRIPT_CONTENT_TYPES = frozenset(
-    {
-        "application/pdf",
-        "text/markdown",
-        "text/plain",
-    }
-)
-
 # 기본 세트(BR-RA1) — 전부 게이트 통과·저장되어야 completed.
 REQUIRED_ARTIFACT_KINDS = frozenset(
     {ArtifactKind.EVIDENCE, ArtifactKind.SIMILAR_WORKS, ArtifactKind.GAP_ANALYSIS}
@@ -267,14 +265,25 @@ class LoopBudget(BaseModel):
 
 
 class AgentLoopRun(BaseModel):
-    """한 잡의 자율 루프 실행 상태 — 예산 집행·종료 사유의 SSOT."""
+    """한 잡의 자율 루프 실행 상태 — 예산 집행·종료 사유의 SSOT.
 
-    iteration_count: int = Field(default=0, ge=0)
-    tool_call_counts: dict[str, int] = Field(default_factory=dict)
+    iteration_count·tool_call_counts는 budget.consumed의 파생 뷰다(코드 리뷰 반영:
+    이중 장부 제거) — 직렬화에는 포함되어 엔티티 계약(domain-entities.md)을 유지한다."""
+
     budget: LoopBudget
     termination_reason: TerminationReason | None = None
     started_at: datetime | None = None
     ended_at: datetime | None = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def iteration_count(self) -> int:
+        return self.budget.consumed.iterations
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def tool_call_counts(self) -> dict[str, int]:
+        return dict(self.budget.consumed.tool_calls)
 
 
 class ToolCallRecord(BaseModel):
