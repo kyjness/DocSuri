@@ -17,6 +17,7 @@ from docsuri_shared.authz import Principal
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
+from backend.middleware.agent_attachments import ATTACHMENT_MAX_BYTES
 from backend.middleware.agent_quota import enforce_novelty_job_quota
 from backend.modules.user_docmodel import (
     USER_DOCMODEL_PDF_CONTENT_TYPE,
@@ -471,6 +472,10 @@ async def upload_manuscript(
     content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
     if content_type != USER_DOCMODEL_PDF_CONTENT_TYPE:
         raise HTTPException(status_code=415, detail="지원하지 않는 원고 형식입니다.")
+    declared_size = request.headers.get("content-length")
+    if declared_size and declared_size.isdigit() and int(declared_size) > ATTACHMENT_MAX_BYTES:
+        # 본문을 읽기 전에 거부 — 대용량 원고의 메모리 적재 차단(요청 남용 방어).
+        raise HTTPException(status_code=413, detail="원고 크기 한도를 초과했습니다.")
     coordinator = getattr(request.app.state, "user_docmodel", None)
     if coordinator is None:
         raise HTTPException(
@@ -481,6 +486,10 @@ async def upload_manuscript(
         raise HTTPException(status_code=503, detail={"error": "queue_unavailable"})
 
     file_name = request.query_params.get("fileName") or manuscript.file_name
+    pdf = await request.body()
+    if len(pdf) > ATTACHMENT_MAX_BYTES:
+        # Content-Length가 없거나 거짓인 경우의 이중 방어.
+        raise HTTPException(status_code=413, detail="원고 크기 한도를 초과했습니다.")
     object_key = object_key_for_upload(
         module="novelty",
         owner_id=principal.user_id,
@@ -495,9 +504,7 @@ async def upload_manuscript(
         object_key=object_key,
         module="novelty",
     )
-    coordinator.upload_pdf(
-        ref, await request.body(), file_name=file_name, content_type=content_type
-    )
+    coordinator.upload_pdf(ref, pdf, file_name=file_name, content_type=content_type)
     coordinator.enqueue_build(ref)
     job.request.manuscript_ref = manuscript.model_copy(
         update={

@@ -16,6 +16,7 @@ from ..domain.models import (
     TERMINAL_STATES,
     ArtifactRecord,
     InvalidTransitionError,
+    JobState,
     NotionConnection,
     NotionExport,
     NoveltyChatMessage,
@@ -135,7 +136,7 @@ class InMemoryNoveltyStore:
         stale = [
             job
             for job in self._jobs.values()
-            if job.state.value in ("received", "investigating", "reporting")
+            if job.state in (JobState.RECEIVED, JobState.INVESTIGATING, JobState.REPORTING)
             and job.updated_at < updated_before
         ]
         stale.sort(key=lambda job: job.updated_at)

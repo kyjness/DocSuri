@@ -201,11 +201,12 @@ def build_worker_deps() -> WorkerDeps:
         raise SystemExit("novelty worker: job queue is not configured")
     if not settings.llm_configured:
         raise SystemExit("novelty worker: LLM provider is not configured")
+    from backend.wiring import _is_postgres
+
     app_settings = Settings.from_env()
     database_url = app_settings.database_url
-    if not database_url or not database_url.startswith(
-        ("postgresql://", "postgresql+psycopg://", "postgres://")
-    ):
+    # 판별은 앱쉘과 동일 헬퍼 공유 — 드라이버 표기 변형이 생겨도 한 곳만 갱신.
+    if not _is_postgres(database_url):
         raise SystemExit("novelty worker: postgres DATABASE_URL is required")
     session_factory = make_session_factory(make_engine(database_url))
     store = build_store(session_factory)

@@ -293,3 +293,30 @@ def test_list_view_omits_artifact_kinds_to_avoid_n_plus_one(app_bundle) -> None:
     assert listed["jobs"][0]["artifactKinds"] == []  # 목록 뷰는 생략(N+1 방지)
     detail = client.get(f"/api/novelty/jobs/{job_id}").json()
     assert detail["artifactKinds"] == ["evidence"]  # 상세 뷰가 담당
+
+
+def test_manuscript_upload_rejects_oversized_pdf(app_bundle) -> None:
+    """원고 크기 한도(공용 첨부 한도) — 본문 적재 전 413 거부."""
+    from backend.middleware.agent_attachments import ATTACHMENT_MAX_BYTES
+
+    app, _, _ = app_bundle
+    app.state.user_docmodel = object()  # 저장소는 있는 상태로 가정
+    client = TestClient(app)
+    created = client.post(
+        "/api/novelty/jobs",
+        json={
+            "inputType": "manuscript",
+            "topic": "privacy preserving RAG",
+            "manuscript": {"fileName": "draft.pdf", "contentType": "application/pdf"},
+        },
+    )
+    job_id = created.json()["jobId"]
+    response = client.post(
+        f"/api/novelty/jobs/{job_id}/manuscript",
+        content=b"%PDF-1.4",
+        headers={
+            "content-type": "application/pdf",
+            "content-length": str(ATTACHMENT_MAX_BYTES + 1),
+        },
+    )
+    assert response.status_code == 413

@@ -30,6 +30,7 @@ from ..domain.models import (
     ArtifactKind,
     ArtifactRecord,
     InvalidTransitionError,
+    JobState,
     NotionConnection,
     NotionExport,
     NoveltyChatMessage,
@@ -259,7 +260,13 @@ class SqlNoveltyStore:
             rows = session.scalars(
                 select(NoveltyJobV2Table)
                 .where(
-                    NoveltyJobV2Table.state.in_(("received", "investigating", "reporting")),
+                    NoveltyJobV2Table.state.in_(
+                        (
+                            JobState.RECEIVED.value,
+                            JobState.INVESTIGATING.value,
+                            JobState.REPORTING.value,
+                        )
+                    ),
                     NoveltyJobV2Table.updated_at < updated_before,
                 )
                 .order_by(NoveltyJobV2Table.updated_at.asc())
