@@ -217,6 +217,29 @@ class SqlNoveltyStore:
             self._trace_seq_cache.pop(job_id, None)
             return True
 
+    def delete_all_jobs(self, owner_id: str) -> int:
+        """소유 잡 전부를 한 트랜잭션으로 벌크 삭제 — 잡당 개별 삭제의 왕복 제거."""
+        with self._session_factory() as session:
+            job_ids = session.scalars(
+                select(NoveltyJobV2Table.job_id).where(NoveltyJobV2Table.owner_id == owner_id)
+            ).all()
+            if not job_ids:
+                return 0
+            for table in (
+                ToolCallRecordTable,
+                ArtifactV2Table,
+                MessageV2Table,
+                NotionExportTable,
+            ):
+                session.execute(delete(table).where(table.job_id.in_(job_ids)))
+            result = session.execute(
+                delete(NoveltyJobV2Table).where(NoveltyJobV2Table.owner_id == owner_id)
+            )
+            session.commit()
+            for job_id in job_ids:
+                self._trace_seq_cache.pop(job_id, None)
+            return int(result.rowcount or 0)
+
     def request_cancel(self, owner_id: str, job_id: str) -> bool:
         with self._session_factory() as session:
             row = session.get(NoveltyJobV2Table, job_id)
@@ -236,7 +259,7 @@ class SqlNoveltyStore:
             rows = session.scalars(
                 select(NoveltyJobV2Table)
                 .where(
-                    NoveltyJobV2Table.state.in_(("investigating", "reporting")),
+                    NoveltyJobV2Table.state.in_(("received", "investigating", "reporting")),
                     NoveltyJobV2Table.updated_at < updated_before,
                 )
                 .order_by(NoveltyJobV2Table.updated_at.asc())

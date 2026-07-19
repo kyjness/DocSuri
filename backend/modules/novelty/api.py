@@ -243,11 +243,23 @@ class ExportPreviewResponse(BaseModel):
 # ── 잡 수명주기 ──
 
 
+def _require_dispatchable(request: Request) -> None:
+    """접수 가능성 선행 검사 — 쿼터 의존성보다 먼저 실행되어 503 거부가 일일
+    쿼터를 소비하지 않게 한다(코드 리뷰 반영, 의존성은 선언 순서대로 실행)."""
+    if _queue(request) is None:
+        raise HTTPException(status_code=503, detail={"error": "queue_unavailable"})
+    guard = _cost_guard(request)
+    if guard is not None and _budget_critical(guard):
+        # U6 단일 비용 권위 — 예산 저하 모드에서는 신규 잡을 기권한다(BLM §1.4/§9).
+        raise HTTPException(status_code=503, detail={"error": "budget_degraded"})
+
+
 @router.post(
     "/jobs",
     response_model=CreateJobResponse,
-    # NFR-C1: novelty job은 LLM 지출을 유발 — 사용자별 일일 쿼터.
-    dependencies=[Depends(enforce_novelty_job_quota)],
+    # NFR-C1: novelty job은 LLM 지출 유발 — 사용자별 일일 쿼터(배선 감사 대상 라우트
+    # 의존성 유지). _require_dispatchable이 앞서 실행된다.
+    dependencies=[Depends(_require_dispatchable), Depends(enforce_novelty_job_quota)],
 )
 async def create_job(
     dto: CreateJobRequest,
@@ -255,14 +267,12 @@ async def create_job(
     principal: Principal = PRINCIPAL_DEP,
     store: NoveltyStorePort = STORE_DEP,
 ) -> CreateJobResponse:
-    queue = _queue(request)
-    if queue is None:
-        raise HTTPException(status_code=503, detail={"error": "queue_unavailable"})
-    guard = _cost_guard(request)
-    if guard is not None and _budget_critical(guard):
-        # U6 단일 비용 권위 — 예산 저하 모드에서는 신규 잡을 기권한다(BLM §1.4/§9).
-        raise HTTPException(status_code=503, detail={"error": "budget_degraded"})
-
+    queue = _queue(request)  # _require_dispatchable이 존재를 보장
+    if dto.inputType is InputType.NATURAL_LANGUAGE and dto.manuscript is not None:
+        # 자연어 잡의 원고 첨부는 적재 조건이 성립하지 않는다(영구 대기 방지).
+        raise HTTPException(
+            status_code=422, detail="자연어 입력 잡에는 원고를 첨부할 수 없습니다."
+        )
     settings = _settings(request)
     manuscript_ref = None
     if dto.manuscript is not None:
@@ -291,8 +301,26 @@ async def create_job(
     # 원고 본문이 아직 없는 잡은 업로드 완료 시점에 적재한다(US-NV2 승계).
     awaiting_manuscript = manuscript_ref is not None and not manuscript_ref.object_key
     if not awaiting_manuscript:
-        queue.enqueue(job.job_id, principal.user_id)
+        _enqueue_or_fail(store, queue, job)
     return CreateJobResponse(jobId=job.job_id, state=job.state)
+
+
+def _enqueue_or_fail(store: NoveltyStorePort, queue: Any, job: NoveltyJob) -> None:
+    """적재 실패를 조용한 RECEIVED 방치로 두지 않는다 — FAILED 수렴 + 503(v1 의미)."""
+    try:
+        queue.enqueue(job.job_id, job.owner_id)
+    except Exception as exc:  # noqa: BLE001 — 실패는 상태로 수렴, 내부 상세 비노출
+        job.state = JobState.FAILED
+        job.error_message = "job dispatch failed"
+        job.updated_at = utc_now()
+        job.completed_at = utc_now()
+        try:
+            store.update_job(job)
+        except Exception:  # noqa: BLE001 — 상태 수렴 실패 시 stale 스윕이 처리
+            log.exception("novelty api: failed to persist dispatch failure")
+        raise HTTPException(
+            status_code=503, detail={"error": "dispatch_failed"}
+        ) from exc
 
 
 @router.get("/jobs", response_model=JobListResponse)
@@ -303,10 +331,15 @@ async def list_jobs(
     principal: Principal = PRINCIPAL_DEP,
     store: NoveltyStorePort = STORE_DEP,
 ) -> JobListResponse:
-    jobs = store.list_jobs(principal.user_id, cursor=cursor, limit=min(max(limit, 1), 100))
-    views = [_job_view(job, store) for job in jobs]
+    page_size = min(max(limit, 1), 100)
+    try:
+        jobs = store.list_jobs(principal.user_id, cursor=cursor, limit=page_size)
+    except KeyError as exc:
+        raise HTTPException(status_code=422, detail="invalid cursor") from exc
+    # 목록 뷰는 산출물 종류 조회를 생략한다(N+1 방지) — 상세·결과 조회가 담당.
+    views = [_job_view(job, store, include_artifacts=False) for job in jobs]
     return JobListResponse(
-        jobs=views, nextCursor=jobs[-1].job_id if len(jobs) == min(max(limit, 1), 100) else None
+        jobs=views, nextCursor=jobs[-1].job_id if len(jobs) == page_size else None
     )
 
 
@@ -411,13 +444,9 @@ async def reset_jobs(
     principal: Principal = PRINCIPAL_DEP,
     store: NoveltyStorePort = STORE_DEP,
 ) -> Response:
-    """전체 세션 초기화(SEC-14 승계) — 소유 잡 전부 삭제(트레이스·대화 cascade), 멱등."""
-    while True:
-        jobs = store.list_jobs(principal.user_id, cursor=None, limit=100)
-        if not jobs:
-            return Response(status_code=204)
-        for job in jobs:
-            store.delete_job(principal.user_id, job.job_id)
+    """전체 세션 초기화(SEC-14 승계) — 소유 잡 전부 벌크 삭제(트레이스·대화 cascade), 멱등."""
+    store.delete_all_jobs(principal.user_id)
+    return Response(status_code=204)
 
 
 @router.post("/jobs/{job_id}/manuscript", response_model=JobView)
@@ -499,9 +528,12 @@ async def get_messages(
     job = store.get_job(principal.user_id, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")
-    messages = store.list_messages(
-        principal.user_id, job_id, after=after, limit=min(max(limit, 1), 200)
-    )
+    try:
+        messages = store.list_messages(
+            principal.user_id, job_id, after=after, limit=min(max(limit, 1), 200)
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=422, detail="invalid cursor") from exc
     return ChatMessageListResponse(
         messages=[_message_dto(message) for message in messages],
         nextCursor=messages[-1].message_id if messages else after,
@@ -543,13 +575,7 @@ async def preview_notion_export(
     job = store.get_job(principal.user_id, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")
-    artifacts = store.list_artifacts(principal.user_id, job_id)
-    preview = {
-        "title": _export_title(),
-        "inputPrompt": job.request.topic,
-        "jobId": job_id,
-        "artifacts": [{"kind": rec.kind.value} for rec in artifacts],
-    }
+    preview = _export_content(store, principal.user_id, job_id, include_payload=False)
     export = store.get_export(principal.user_id, job_id) or NotionExport(
         job_id=job_id, owner_id=principal.user_id
     )
@@ -648,8 +674,10 @@ def _budget_critical(guard: Any) -> bool:
         return False
 
 
-def _job_view(job: NoveltyJob, store: NoveltyStorePort) -> JobView:
-    artifacts = store.list_artifacts(job.owner_id, job.job_id)
+def _job_view(
+    job: NoveltyJob, store: NoveltyStorePort, *, include_artifacts: bool = True
+) -> JobView:
+    artifacts = store.list_artifacts(job.owner_id, job.job_id) if include_artifacts else []
     run = job.loop_run
     loop_view = None
     if run is not None:
@@ -705,6 +733,23 @@ def _export_title() -> str:
     return f"DocSuri Novelty 조사 보고 ({utc_now().date().isoformat()})"
 
 
+def _export_content(
+    store: NoveltyStorePort, owner_id: str, job_id: str, *, include_payload: bool
+) -> dict[str, Any]:
+    """preview와 실제 export가 같은 조립을 공유한다 — 승인한 것과 내보내는 것의 구조 일치."""
+    job = store.get_job(owner_id, job_id)
+    artifacts = store.list_artifacts(owner_id, job_id)
+    return {
+        "title": _export_title(),
+        "inputPrompt": job.request.topic if job else "",
+        "jobId": job_id,
+        "artifacts": [
+            {"kind": rec.kind.value, **({"payload": rec.payload} if include_payload else {})}
+            for rec in artifacts
+        ],
+    }
+
+
 def _execute_export(
     request: Request,
     store: NoveltyStorePort,
@@ -720,14 +765,7 @@ def _execute_export(
     export.status = ExportStatus.EXPORTING
     export.updated_at = utc_now()
     store.save_export(export)
-    job = store.get_job(owner_id, job_id)
-    artifacts = store.list_artifacts(owner_id, job_id)
-    content = {
-        "title": _export_title(),
-        "inputPrompt": job.request.topic if job else "",
-        "jobId": job_id,
-        "artifacts": [{"kind": rec.kind.value, "payload": rec.payload} for rec in artifacts],
-    }
+    content = _export_content(store, owner_id, job_id, include_payload=True)
     try:
         token = decrypt_secret(connection.token_encrypted)
         page_id = _notion_client(request).export(

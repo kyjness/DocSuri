@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .external.base import SourceBreaker
+
 __all__ = ["NotionApiExportClient", "build_notion_client"]
 
 
@@ -16,10 +18,16 @@ class NotionApiExportClient:
     _VERSION = "2022-06-28"
     _MAX_BLOCKS = 90  # Notion 페이지 생성 children 한도(100) 밑
 
-    def __init__(self, client: Any) -> None:
+    def __init__(self, client: Any, *, breaker: SourceBreaker | None = None) -> None:
         self._client = client
+        # 외부 연동 규칙: 일시 실패 재시도 1회 + 반복 실패 차단 — 일시적 502로
+        # 승인된 export가 FAILED로 수렴하지 않게 한다(코드 리뷰 반영).
+        self._breaker = breaker or SourceBreaker()
 
     def export(self, connection: dict[str, str], content: dict[str, Any]) -> str:
+        return self._breaker.call(lambda: self._export_once(connection, content))
+
+    def _export_once(self, connection: dict[str, str], content: dict[str, Any]) -> str:
         response = self._client.post(
             self._API_URL,
             headers={

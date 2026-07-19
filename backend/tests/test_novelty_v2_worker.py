@@ -251,3 +251,43 @@ def test_stale_sweep_fails_abandoned_jobs_but_spares_locked() -> None:
     assert swept == 1
     assert store.get_job(stale.owner_id, stale.job_id).state is JobState.FAILED
     assert store.get_job(running.owner_id, running.job_id).state is JobState.INVESTIGATING
+
+
+# ── 코드 리뷰 반영(3단계) 회귀 테스트 ──
+
+
+def test_stale_sweep_also_fails_never_picked_up_received_jobs() -> None:
+    """큐 메시지가 유실된 RECEIVED 잡도 수렴 경로를 가진다(영구 방치 금지)."""
+    store, queue = InMemoryNoveltyStore(), InMemoryJobQueue()
+    lost = _job(store)  # RECEIVED인 채 메시지 없음
+    lost.updated_at = utc_now() - timedelta(seconds=3600)
+    store.update_job(lost)
+
+    deps = _deps(store, queue, ScriptedToolCallingLlm([]))
+    swept = sweep_stale_jobs(deps)
+
+    assert swept == 1
+    stored = store.get_job(lost.owner_id, lost.job_id)
+    assert stored.state is JobState.FAILED
+    assert "never picked up" in (stored.error_message or "")
+
+
+def test_lease_heartbeat_renews_in_background() -> None:
+    """리스 하트비트 — 턴 길이와 무관하게 주기 갱신(중간 만료 방지)."""
+    import time as time_mod
+
+    from backend.modules.novelty.worker import _LeaseHeartbeat
+
+    class _RecordingQueue:
+        def __init__(self) -> None:
+            self.renews: list[tuple[str, float]] = []
+
+        def renew(self, job_id: str, ttl_seconds: float) -> bool:
+            self.renews.append((job_id, ttl_seconds))
+            return True
+
+    queue = _RecordingQueue()
+    with _LeaseHeartbeat(queue, "job-1", ttl_seconds=1.5):  # interval = max(0.5, 1.0) = 1.0s
+        time_mod.sleep(1.3)
+    assert len(queue.renews) >= 1
+    assert queue.renews[0] == ("job-1", 1.5)

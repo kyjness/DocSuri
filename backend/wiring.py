@@ -589,11 +589,20 @@ def _mount_novelty(app: FastAPI, settings: Settings, result: MountResult) -> Non
     app.state.novelty_store = store
     app.dependency_overrides[novelty_api.get_store] = lambda: store
 
-    try:
-        app.state.novelty_queue = build_queue(novelty_settings)
-    except Exception:  # noqa: BLE001 — 큐 조립 실패는 접수 503으로 수렴, 마운트는 유지
-        log.warning("app-shell: novelty queue unavailable", exc_info=True)
+    # 조립 불변식(코드 리뷰 반영): 큐는 내구 스토어(postgres)와만 짝지어진다 —
+    # InMemory 스토어로 적재하면 별도 프로세스 워커가 잡을 못 찾고 조용히 유실된다.
+    if session_factory is None:
+        if novelty_settings.queue_configured:
+            log.warning(
+                "app-shell: novelty queue disabled — durable store (postgres) required"
+            )
         app.state.novelty_queue = None
+    else:
+        try:
+            app.state.novelty_queue = build_queue(novelty_settings)
+        except Exception:  # noqa: BLE001 — 큐 조립 실패는 접수 503으로 수렴, 마운트는 유지
+            log.warning("app-shell: novelty queue unavailable", exc_info=True)
+            app.state.novelty_queue = None
 
     if getattr(app.state, "user_docmodel", None) is None:
         app.state.user_docmodel = build_default_user_docmodel_coordinator()

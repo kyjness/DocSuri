@@ -110,6 +110,14 @@ class InMemoryNoveltyStore:
     def delete_notion_connection(self, owner_id: str) -> None:
         self._connections.pop(owner_id, None)
 
+    def delete_all_jobs(self, owner_id: str) -> int:
+        """소유 잡 전부 벌크 삭제(전체 초기화 — SEC-14 계열) — cascade 동일."""
+        deleted = 0
+        for job_id in [j.job_id for j in self._jobs.values() if j.owner_id == owner_id]:
+            if self.delete_job(owner_id, job_id):
+                deleted += 1
+        return deleted
+
     def request_cancel(self, owner_id: str, job_id: str) -> bool:
         job = self._jobs.get(job_id)
         if job is None or job.owner_id != owner_id:
@@ -122,11 +130,12 @@ class InMemoryNoveltyStore:
         return bool(job and job.cancel_requested)
 
     def list_stale_active(self, *, updated_before, limit: int) -> list[NoveltyJob]:
-        """실행 중 상태(investigating/reporting)로 오래 방치된 잡 — stale 감지 입력."""
+        """오래 방치된 활성 잡 — 실행 중(investigating/reporting)과 미픽업(received,
+        큐 메시지 유실 잔재) 모두 stale 감지 입력이다."""
         stale = [
             job
             for job in self._jobs.values()
-            if job.state.value in ("investigating", "reporting")
+            if job.state.value in ("received", "investigating", "reporting")
             and job.updated_at < updated_before
         ]
         stale.sort(key=lambda job: job.updated_at)

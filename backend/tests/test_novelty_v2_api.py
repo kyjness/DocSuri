@@ -199,3 +199,97 @@ def test_manuscript_job_waits_for_upload_and_pdf_path_gated(app_bundle) -> None:
     )
     assert upload.status_code == 503
     assert upload.json()["detail"] == {"error": "manuscript_storage_unavailable"}
+
+
+# ── 코드 리뷰 반영(3단계) 회귀 테스트 ──
+
+
+def test_rejected_creation_does_not_consume_quota(app_bundle) -> None:
+    """503 거부(큐 미구성)가 일일 쿼터를 소비하지 않는다 — 가용성 검사가 선행."""
+    from backend.middleware.agent_quota import enforce_novelty_job_quota
+
+    app, _, _ = app_bundle
+    app.state.novelty_queue = None
+    calls = {"n": 0}
+
+    async def counting_quota(request):
+        calls["n"] += 1
+
+    app.dependency_overrides[enforce_novelty_job_quota] = counting_quota
+    client = TestClient(app)
+    response = client.post(
+        "/api/novelty/jobs", json={"inputType": "natural_language", "topic": "rag"}
+    )
+    assert response.status_code == 503
+    assert calls["n"] == 0  # 쿼터 의존성 미실행
+
+
+def test_enqueue_failure_converges_job_to_failed(app_bundle) -> None:
+    app, store, _ = app_bundle
+
+    class _BrokenQueue:
+        def enqueue(self, job_id, owner_id):
+            raise RuntimeError("redis down")
+
+    app.state.novelty_queue = _BrokenQueue()
+    client = TestClient(app)
+    response = client.post(
+        "/api/novelty/jobs", json={"inputType": "natural_language", "topic": "rag topic"}
+    )
+    assert response.status_code == 503
+    assert response.json()["detail"] == {"error": "dispatch_failed"}
+    jobs = store.list_jobs(_OWNER, cursor=None, limit=10)
+    assert jobs and jobs[0].state.value == "failed"  # RECEIVED 방치 아님
+
+
+def test_natural_language_job_rejects_manuscript_attachment(app_bundle) -> None:
+    app, _, queue = app_bundle
+    client = TestClient(app)
+    response = client.post(
+        "/api/novelty/jobs",
+        json={
+            "inputType": "natural_language",
+            "topic": "privacy preserving RAG",
+            "manuscript": {"fileName": "draft.pdf", "contentType": "application/pdf"},
+        },
+    )
+    assert response.status_code == 422  # 영구 대기 조합 차단
+    assert queue.consume(timeout_seconds=0) is None
+
+
+def test_invalid_cursor_returns_422_not_empty_page(app_bundle) -> None:
+    app, _, _ = app_bundle
+    client = TestClient(app)
+    job_id = _create_job(client)
+    assert client.delete(f"/api/novelty/jobs/{job_id}").status_code == 204
+    listed = client.get(f"/api/novelty/jobs?cursor={job_id}")
+    assert listed.status_code == 422
+    other = _create_job(client)
+    messages = client.get(f"/api/novelty/jobs/{other}/messages?after={job_id}")
+    assert messages.status_code == 422
+
+
+def test_reset_bulk_deletes_all_owned_jobs(app_bundle) -> None:
+    app, store, _ = app_bundle
+    client = TestClient(app)
+    for _ in range(3):
+        _create_job(client)
+    assert client.delete("/api/novelty/jobs").status_code == 204
+    assert store.list_jobs(_OWNER, cursor=None, limit=10) == []
+    assert client.delete("/api/novelty/jobs").status_code == 204  # 멱등
+
+
+def test_list_view_omits_artifact_kinds_to_avoid_n_plus_one(app_bundle) -> None:
+    app, store, _ = app_bundle
+    client = TestClient(app)
+    job_id = _create_job(client)
+    from backend.modules.novelty.domain.models import ArtifactKind, ArtifactRecord
+
+    store.save_artifact(
+        ArtifactRecord(job_id=job_id, owner_id=_OWNER, kind=ArtifactKind.EVIDENCE,
+                       payload={"state": "ok"})
+    )
+    listed = client.get("/api/novelty/jobs").json()
+    assert listed["jobs"][0]["artifactKinds"] == []  # 목록 뷰는 생략(N+1 방지)
+    detail = client.get(f"/api/novelty/jobs/{job_id}").json()
+    assert detail["artifactKinds"] == ["evidence"]  # 상세 뷰가 담당

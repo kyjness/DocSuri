@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import signal
 import sys
+import threading
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
@@ -86,7 +87,12 @@ def process_message(deps: WorkerDeps, message: QueuedJob) -> None:
             return
         if job.loop_run is None:
             job.loop_run = AgentLoopRun(budget=deps.settings.build_loop_budget())
-        outcome = run_loop(job, _loop_deps(deps, message.job_id))
+        # 리스 하트비트 — 한 턴이 TTL(기본 120s)보다 길어도(LLM 재시도·근거형성)
+        # 잠금이 중간에 만료되지 않도록 백그라운드에서 주기 갱신한다(코드 리뷰 반영).
+        with _LeaseHeartbeat(deps.queue, message.job_id, deps.settings.lock_ttl_seconds):
+            outcome = run_loop(
+                job, LoopDeps(store=store, llm=deps.llm, registry=deps.registry)
+            )
         _emit(deps.observability, f"novelty.loop_{outcome.reason.value}")
         deps.queue.ack(message)
     except Exception:  # noqa: BLE001 — 잡 하나의 실패가 워커를 죽이지 않는다
@@ -98,7 +104,8 @@ def process_message(deps: WorkerDeps, message: QueuedJob) -> None:
 
 
 def sweep_stale_jobs(deps: WorkerDeps) -> int:
-    """실행 잠금이 만료된 채 방치된 잡을 failed로 수렴(NFR-NV2-3)."""
+    """방치된 잡을 failed로 수렴(NFR-NV2-3) — 실행 잠금이 만료된 실행 중 잡과,
+    큐 메시지가 유실된 채 남은 RECEIVED 잡(적재 실패·독약 메시지 폐기 잔재) 모두."""
     cutoff = utc_now() - timedelta(seconds=deps.settings.stale_after_seconds)
     swept = 0
     for job in deps.store.list_stale_active(updated_before=cutoff, limit=20):
@@ -106,7 +113,12 @@ def sweep_stale_jobs(deps: WorkerDeps) -> int:
         if not deps.queue.acquire(job.job_id, deps.settings.lock_ttl_seconds):
             continue
         try:
-            _mark_failed(deps.store, job.job_id, "stale job — worker lease expired")
+            reason = (
+                "stale job — never picked up (queue message lost)"
+                if job.state is JobState.RECEIVED
+                else "stale job — worker lease expired"
+            )
+            _mark_failed(deps.store, job.job_id, reason)
             _emit(deps.observability, "novelty.job_stale_failed")
             swept += 1
         finally:
@@ -114,32 +126,32 @@ def sweep_stale_jobs(deps: WorkerDeps) -> int:
     return swept
 
 
-def _loop_deps(deps: WorkerDeps, job_id: str) -> LoopDeps:
-    return LoopDeps(
-        store=_LeaseKeepingStore(deps.store, deps.queue, job_id, deps.settings.lock_ttl_seconds),
-        llm=deps.llm,
-        registry=deps.registry,
-    )
+class _LeaseHeartbeat:
+    """실행 리스 백그라운드 갱신 — TTL의 1/3 주기로 renew(SQS visibility 하트비트
+    등가). 스토어 프록시에 갱신을 숨기던 방식을 대체한다(턴 길이와 무관하게 유지)."""
 
-
-class _LeaseKeepingStore:
-    """스토어 위임 프록시 — 루프가 매 턴 호출하는 취소 확인 시점에 실행 리스를
-    갱신한다(장기 실행 잡의 잠금 유지, SQS visibility 갱신과 등가)."""
-
-    def __init__(
-        self, store: NoveltyStorePort, queue: Any, job_id: str, ttl_seconds: float
-    ) -> None:
-        self._store = store
+    def __init__(self, queue: Any, job_id: str, ttl_seconds: float) -> None:
         self._queue = queue
         self._job_id = job_id
         self._ttl = ttl_seconds
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._beat, daemon=True)
 
-    def is_cancel_requested(self, job_id: str) -> bool:
-        self._queue.renew(self._job_id, self._ttl)
-        return self._store.is_cancel_requested(job_id)
+    def _beat(self) -> None:
+        interval = max(self._ttl / 3.0, 1.0)
+        while not self._stop.wait(interval):
+            try:
+                self._queue.renew(self._job_id, self._ttl)
+            except Exception:  # noqa: BLE001 — 갱신 실패는 다음 주기 재시도
+                log.warning("novelty worker: lease renew failed for %s", self._job_id)
 
-    def __getattr__(self, name: str):
-        return getattr(self._store, name)
+    def __enter__(self) -> _LeaseHeartbeat:
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self._stop.set()
+        self._thread.join(timeout=5.0)
 
 
 def _finalize_cancelled(store: NoveltyStorePort, job: NoveltyJob) -> None:
@@ -207,7 +219,26 @@ def build_worker_deps() -> WorkerDeps:
         grounding_hook=grounding_hook,
         evidence_port=evidence_port,
     )
-    return WorkerDeps(store=store, queue=queue, llm=llm, registry=registry, settings=settings)
+    return WorkerDeps(
+        store=store,
+        queue=queue,
+        llm=llm,
+        registry=registry,
+        settings=settings,
+        observability=_build_observability(),
+    )
+
+
+def _build_observability() -> Any | None:
+    """앱쉘과 동일한 U6 관측 허브 — 워커 메트릭(novelty.loop_* 등)의 실제 배선."""
+    try:
+        from backend.app import _build_observability as build
+
+        observability, _telemetry_store = build()
+        return observability
+    except Exception:  # noqa: BLE001 — 계측 조립 실패가 워커를 막지 않는다
+        log.warning("novelty worker: observability unavailable", exc_info=True)
+        return None
 
 
 def _build_corpus_deps() -> tuple[Any | None, Any | None]:
