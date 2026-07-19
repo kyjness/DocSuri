@@ -163,3 +163,17 @@ def test_loop_run_budget_values_are_injected_not_defaulted() -> None:
         )
     )
     assert run.termination_reason is None
+
+
+def test_loop_run_computed_fields_mirror_consumed() -> None:
+    # iteration_count/tool_call_counts는 budget.consumed의 파생 뷰 — 이중 장부 금지.
+    run = AgentLoopRun(
+        budget=LoopBudget(max_iterations=24, max_tool_calls_total=40, token_cost_limit_usd=0.5)
+    )
+    run.budget.consumed.iterations = 3
+    run.budget.consumed.tool_calls = {"corpus_search": 2, "save_artifact": 1}
+    assert run.iteration_count == 3
+    assert run.tool_call_counts == {"corpus_search": 2, "save_artifact": 1}
+    dumped = run.model_dump(mode="json")  # 직렬화에도 포함(엔티티 계약 유지)
+    assert dumped["iteration_count"] == 3
+    assert dumped["tool_call_counts"]["corpus_search"] == 2

@@ -185,3 +185,32 @@ class TestExecutionLockContract:
         assert queue.acquire("job-1", ttl_seconds=10) is True
         queue.release("job-1")
         assert queue.acquire("job-1", ttl_seconds=10) is True
+
+
+class TestStoreLatches:
+    """update_job의 단방향 래치 계약 — 취소 플래그·종단 상태(BR-RA5) 직접 검증."""
+
+    def test_stale_snapshot_cannot_clear_cancel_flag(self) -> None:
+        store = InMemoryNoveltyStore()
+        job = _job()
+        store.create_job(job)
+        stale_snapshot = store.get_job(job.owner_id, job.job_id)  # cancel=False 시점
+        assert store.request_cancel(job.owner_id, job.job_id) is True
+        store.update_job(stale_snapshot)  # 워커의 낡은 전체 덮어쓰기
+        assert store.is_cancel_requested(job.job_id) is True  # 래치 유지
+
+    def test_terminal_state_is_write_once(self) -> None:
+        from backend.modules.novelty.domain.models import InvalidTransitionError, JobState
+
+        store = InMemoryNoveltyStore()
+        job = _job()
+        store.create_job(job)
+        job.state = JobState.INVESTIGATING
+        store.update_job(job)
+        sweep_view = store.get_job(job.owner_id, job.job_id)
+        sweep_view.state = JobState.FAILED
+        store.update_job(sweep_view)  # 스윕이 먼저 종단
+        job.state = JobState.COMPLETED
+        with pytest.raises(InvalidTransitionError):
+            store.update_job(job)  # 완주 워커의 후행 종단 기록은 거부
+        assert store.get_job(job.owner_id, job.job_id).state is JobState.FAILED

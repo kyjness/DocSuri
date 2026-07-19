@@ -137,3 +137,14 @@ def test_uncapped_tool_counts_toward_total_only() -> None:
     assert check_and_consume_tool_call(budget, "unknown_tool") is None
     denial = check_and_consume_tool_call(budget, "unknown_tool")
     assert denial is not None and denial.reason is BudgetDenialReason.TOOL_CALLS_EXHAUSTED
+
+
+def test_negative_cost_is_rejected() -> None:
+    # 소비 단조성(PBT-RA2)의 방어선 — 음수 계상으로 소비를 되돌릴 수 없다.
+    budget = _budget()
+    record_cost(budget, 0.1)
+    import pytest
+
+    with pytest.raises(ValueError):
+        record_cost(budget, -0.05)
+    assert budget.consumed.cost_usd == 0.1
