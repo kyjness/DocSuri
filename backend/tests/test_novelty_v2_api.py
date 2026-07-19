@@ -320,3 +320,43 @@ def test_manuscript_upload_rejects_oversized_pdf(app_bundle) -> None:
         },
     )
     assert response.status_code == 413
+
+
+def test_exact_multiple_page_does_not_emit_trailing_cursor(app_bundle) -> None:
+    """총량이 page_size의 정확한 배수 — 마지막 페이지가 nextCursor 없이 닫힌다."""
+    app, _, _ = app_bundle
+    client = TestClient(app)
+    for i in range(2):
+        _create_job(client, topic=f"topic {i} privacy rag")
+    first = client.get("/api/novelty/jobs?limit=2").json()
+    assert len(first["jobs"]) == 2
+    assert first["nextCursor"] is None  # 빈 페이지 왕복 없음
+    # 배수가 아닌 경우엔 커서가 이어진다.
+    partial = client.get("/api/novelty/jobs?limit=1").json()
+    assert len(partial["jobs"]) == 1
+    assert partial["nextCursor"] == partial["jobs"][0]["jobId"]
+    rest = client.get(f"/api/novelty/jobs?limit=1&cursor={partial['nextCursor']}").json()
+    assert len(rest["jobs"]) == 1
+    assert rest["nextCursor"] is None
+
+
+def test_v1_api_metrics_are_emitted_best_effort(app_bundle) -> None:
+    """v1 승계 계측(novelty.job_created 등) — 방출은 best-effort, 실패 무해."""
+    app, _, _ = app_bundle
+    emitted: list[str] = []
+    app.state.observability = SimpleNamespace(
+        emit_metric=lambda name, *a, **k: emitted.append(name)
+    )
+    client = TestClient(app)
+    job_id = _create_job(client)
+    client.post(f"/api/novelty/jobs/{job_id}/cancel")
+    assert emitted == ["novelty.job_created", "novelty.job_cancelled"]
+
+    # 계측 허브가 던져도 요청은 성공한다.
+    def _boom(name, *a, **k):
+        raise RuntimeError("metrics down")
+
+    app.state.observability = SimpleNamespace(emit_metric=_boom)
+    assert client.post(
+        "/api/novelty/jobs", json={"inputType": "natural_language", "topic": "rag again"}
+    ).status_code == 200

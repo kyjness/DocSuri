@@ -87,6 +87,20 @@ def _cost_guard(request: Request):
     return getattr(request.app.state, "cost_guard", None)
 
 
+def _observability(request: Request):
+    return getattr(request.app.state, "observability", None)
+
+
+def _emit_metric(observability: Any, name: str) -> None:
+    """v1 승계 API 메트릭(관측 가능성) — 방출 실패가 요청을 실패시키지 않는다."""
+    if observability is None:
+        return
+    try:
+        observability.emit_metric(name)
+    except Exception:  # noqa: BLE001 — best-effort 계측
+        log.debug("novelty api: metric emit failed: %s", name, exc_info=True)
+
+
 def _notion_client(request: Request):
     client = getattr(request.app.state, "novelty_notion_client", None)
     if client is None:
@@ -303,6 +317,7 @@ async def create_job(
     awaiting_manuscript = manuscript_ref is not None and not manuscript_ref.object_key
     if not awaiting_manuscript:
         _enqueue_or_fail(store, queue, job)
+    _emit_metric(_observability(request), "novelty.job_created")
     return CreateJobResponse(jobId=job.job_id, state=job.state)
 
 
@@ -334,13 +349,17 @@ async def list_jobs(
 ) -> JobListResponse:
     page_size = min(max(limit, 1), 100)
     try:
-        jobs = store.list_jobs(principal.user_id, cursor=cursor, limit=page_size)
+        # 한 건 더 조회해 다음 페이지 존재를 확정 — 총량이 page_size의 정확한
+        # 배수일 때 빈 마지막 페이지 왕복이 생기지 않는다.
+        jobs = store.list_jobs(principal.user_id, cursor=cursor, limit=page_size + 1)
     except KeyError as exc:
         raise HTTPException(status_code=422, detail="invalid cursor") from exc
+    has_more = len(jobs) > page_size
+    jobs = jobs[:page_size]
     # 목록 뷰는 산출물 종류 조회를 생략한다(N+1 방지) — 상세·결과 조회가 담당.
     views = [_job_view(job, store, include_artifacts=False) for job in jobs]
     return JobListResponse(
-        jobs=views, nextCursor=jobs[-1].job_id if len(jobs) == page_size else None
+        jobs=views, nextCursor=jobs[-1].job_id if has_more else None
     )
 
 
@@ -424,6 +443,7 @@ async def cancel_job(
     if job.state in {JobState.COMPLETED, JobState.PARTIAL, JobState.FAILED, JobState.CANCELLED}:
         raise HTTPException(status_code=409, detail="job is terminal")
     store.request_cancel(principal.user_id, job_id)
+    _emit_metric(_observability(request), "novelty.job_cancelled")
     return CancelJobResponse(jobId=job_id, state=job.state, cancelRequested=True)
 
 
@@ -517,6 +537,7 @@ async def upload_manuscript(
     job.updated_at = utc_now()
     store.update_job(job)
     queue.enqueue(job_id, principal.user_id)
+    _emit_metric(_observability(request), "novelty.manuscript_uploaded")
     return _job_view(job, store)
 
 
@@ -589,6 +610,7 @@ async def preview_notion_export(
     export.status = ExportStatus.PREVIEW_READY
     export.updated_at = utc_now()
     store.save_export(export)
+    _emit_metric(_observability(request), "novelty.export_preview_created")
     return ExportPreviewResponse(export=_export_view(export), preview=preview)
 
 
@@ -615,6 +637,7 @@ async def approve_notion_export(
     export.approved_at = utc_now()
     export.updated_at = utc_now()
     store.save_export(export)
+    _emit_metric(_observability(request), "novelty.export_approved")
     # 승인 직후 실제 export까지 완결(자동 export 없음 — 승인이 유일한 트리거).
     return _export_view(_execute_export(request, store, principal.user_id, job_id, export))
 
@@ -651,6 +674,7 @@ async def save_notion_connection(
         parent_page_id=dto.parentPageId,
     )
     store.save_notion_connection(connection)
+    _emit_metric(_observability(request), "novelty.notion_connection_saved")
     return NotionConnectionStatusResponse(
         connected=True, parentPageId=connection.parent_page_id, updatedAt=connection.updated_at
     )
@@ -663,6 +687,7 @@ async def delete_notion_connection(
     store: NoveltyStorePort = STORE_DEP,
 ) -> Response:
     store.delete_notion_connection(principal.user_id)
+    _emit_metric(_observability(request), "novelty.notion_connection_deleted")
     return Response(status_code=204)
 
 
@@ -764,10 +789,12 @@ def _execute_export(
     job_id: str,
     export: NotionExport,
 ) -> NotionExport:
+    observability = _observability(request)
     connection = store.get_notion_connection(owner_id)
     if connection is None:
         return _fail_export(
-            store, export, "Notion 연결이 없습니다. 먼저 연결 토큰을 등록해 주세요."
+            store, export, "Notion 연결이 없습니다. 먼저 연결 토큰을 등록해 주세요.",
+            observability=observability,
         )
     export.status = ExportStatus.EXPORTING
     export.updated_at = utc_now()
@@ -783,18 +810,27 @@ def _execute_export(
             store,
             export,
             "Notion 내보내기에 실패했습니다. 연결 상태를 확인한 뒤 다시 시도해 주세요.",
+            observability=observability,
         )
     export.status = ExportStatus.EXPORTED
     export.notion_page_id = page_id
     export.exported_at = utc_now()
     export.updated_at = utc_now()
     store.save_export(export)
+    _emit_metric(observability, "novelty.notion_export_completed")
     return export
 
 
-def _fail_export(store: NoveltyStorePort, export: NotionExport, message: str) -> NotionExport:
+def _fail_export(
+    store: NoveltyStorePort,
+    export: NotionExport,
+    message: str,
+    *,
+    observability: Any = None,
+) -> NotionExport:
     export.status = ExportStatus.FAILED
     export.error_message = message
     export.updated_at = utc_now()
     store.save_export(export)
+    _emit_metric(observability, "novelty.notion_export_failed")
     return export
