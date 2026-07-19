@@ -8,10 +8,12 @@ Notion은 도구가 아니다(BR-RA12) — 레지스트리가 등록 자체를 �
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 __all__ = [
+    "KNOWN_LOOP_TOOLS",
     "TOOL_CORPUS_SEARCH",
     "TOOL_DATASET_SEARCH",
     "TOOL_FORM_EVIDENCE",
@@ -32,6 +34,22 @@ TOOL_GITHUB_SEARCH = "github_search"
 TOOL_DATASET_SEARCH = "dataset_search"
 TOOL_VIEW_FIGURE = "view_figure"
 TOOL_SAVE_ARTIFACT = "save_artifact"
+
+# 레지스트리 기본 allowlist — 루프에 등록될 수 있는 도구 어휘의 전체(BLM §3).
+# MCP(⑤ 2단계) 도구는 이 어휘를 명시 확장하는 방식으로만 합류한다.
+KNOWN_LOOP_TOOLS: frozenset[str] = frozenset(
+    {
+        TOOL_CORPUS_SEARCH,
+        TOOL_FORM_EVIDENCE,
+        TOOL_GITHUB_SEARCH,
+        TOOL_DATASET_SEARCH,
+        TOOL_VIEW_FIGURE,
+        TOOL_SAVE_ARTIFACT,
+    }
+)
+
+# BR-RA12 — Notion은 도구가 아니다. allowlist에 올리는 것 자체를 거부한다.
+_FORBIDDEN_MARKER = "notion"
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,16 +97,23 @@ class ToolPort(Protocol):
 
 class ToolRegistry:
     """가용 설정이 있는 도구만 등록된다 — 없으면 에이전트 도구 목록이 자연 축소
-    (logical-components §4). Notion 계열 이름은 등록 자체를 거부한다(BR-RA12)."""
+    (logical-components §4).
 
-    _FORBIDDEN_PREFIXES = ("notion",)
+    등록은 allowlist 기반 deny-by-default — 어휘(`KNOWN_LOOP_TOOLS`) 밖 도구는
+    이름 패턴과 무관하게 구조적으로 등록 불가. Notion 계열 이름은 allowlist에
+    올리는 것 자체를 생성자가 거부하므로(BR-RA12) 어떤 확장 경로로도 합류할 수 없다."""
 
-    def __init__(self) -> None:
+    def __init__(self, allowed_names: Iterable[str] | None = None) -> None:
+        allowed = frozenset(allowed_names) if allowed_names is not None else KNOWN_LOOP_TOOLS
+        forbidden = sorted(name for name in allowed if _FORBIDDEN_MARKER in name.lower())
+        if forbidden:
+            raise ValueError(f"notion tools may never be allowlisted: {forbidden}")
+        self._allowed = allowed
         self._tools: dict[str, ToolPort] = {}
 
     def register(self, tool: ToolPort) -> None:
         name = tool.spec.name
-        if name.lower().startswith(self._FORBIDDEN_PREFIXES):
+        if name not in self._allowed:
             raise ValueError(f"tool may not join the loop registry: {name}")
         if name in self._tools:
             raise ValueError(f"duplicate tool: {name}")

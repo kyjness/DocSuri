@@ -314,7 +314,6 @@ class EvidenceSnapshot(BaseModel):
     claims: list[EvidenceItem] = Field(default_factory=list)
     coverage: EvidenceCoverage | None = None
     abstain_reason: str | None = None
-    contract_version: str | None = None
 
 
 class SimilarWorkItem(BaseModel):

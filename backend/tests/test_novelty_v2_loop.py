@@ -440,6 +440,23 @@ def test_notion_can_never_join_registry() -> None:
         registry.register(FakeTool("notion_export"))
 
 
+def test_registry_is_deny_by_default_allowlist() -> None:
+    # BR-RA12 구조화 — 어휘 밖 도구는 이름 패턴과 무관하게 등록 불가.
+    registry = ToolRegistry()
+    with pytest.raises(ValueError):
+        registry.register(FakeTool("export_to_page"))  # notion 접두사 없이도 거부
+
+
+def test_notion_cannot_even_be_allowlisted() -> None:
+    # 확장 경로(allowed_names)로도 Notion 계열은 합류 불가 — 생성자가 거부.
+    with pytest.raises(ValueError):
+        ToolRegistry(allowed_names={"corpus_search", "export_to_notion"})
+    # 정상 확장은 허용된다(MCP 단계의 어휘 확장 경로).
+    registry = ToolRegistry(allowed_names={"corpus_search", "mcp_paper_qa"})
+    registry.register(FakeTool("mcp_paper_qa"))
+    assert "mcp_paper_qa" in registry.names()
+
+
 # ── 코드 리뷰 반영(1단계) 회귀 테스트 ──
 
 
