@@ -71,11 +71,12 @@ def test_sqs_queue_roundtrip_and_visibility_lease() -> None:
     queue.enqueue("job-1", "owner-1")
     job = queue.consume(timeout_seconds=1)
     assert job is not None and job.job_id == "job-1" and job.receipt == "r-1"
-    # 수신한 잡만 잠글 수 있고, 잠금 갱신은 visibility 연장으로 표현된다.
+    # 수신한 잡의 잠금 갱신은 visibility 연장으로 표현된다.
     assert queue.acquire("job-1", ttl_seconds=120) is True
     assert queue.renew("job-1", ttl_seconds=120) is True
     assert client.visibility_calls and client.visibility_calls[0][1] == 120
-    assert queue.acquire("job-9", ttl_seconds=120) is False  # 미수신 잡
+    # 미수신 잡: 충돌 리스 없음 → stale 스윕이 잠글 수 있다(NFR-NV2-3, 코드 리뷰 반영).
+    assert queue.acquire("job-9", ttl_seconds=120) is True
     queue.ack(job)
     assert client.deleted == ["r-1"]
     assert queue.renew("job-1", ttl_seconds=120) is False  # ack 후 리스 소멸

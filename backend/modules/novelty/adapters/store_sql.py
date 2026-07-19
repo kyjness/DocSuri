@@ -26,8 +26,10 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 from sqlalchemy.types import JSON
 
 from ..domain.models import (
+    TERMINAL_STATES,
     ArtifactKind,
     ArtifactRecord,
+    InvalidTransitionError,
     NoveltyChatMessage,
     NoveltyJob,
     ToolCallRecord,
@@ -35,6 +37,8 @@ from ..domain.models import (
 from ..ports.store import DuplicateTraceSeqError
 
 __all__ = ["NoveltyV2Base", "SqlNoveltyStore"]
+
+_TERMINAL_STATE_VALUES = frozenset(state.value for state in TERMINAL_STATES)
 
 
 class NoveltyV2Base(DeclarativeBase):
@@ -99,6 +103,9 @@ class MessageV2Table(NoveltyV2Base):
 class SqlNoveltyStore:
     def __init__(self, session_factory: Callable[[], Session]) -> None:
         self._session_factory = session_factory
+        # 잡별 마지막 seq 캐시 — 트레이스 1건당 SELECT+INSERT 2왕복을 1왕복으로.
+        # 다중 워커 경합은 (job_id, seq) PK가 잡고, 충돌 시 캐시를 무효화해 재동기화한다.
+        self._trace_seq_cache: dict[str, int] = {}
 
     # ── 잡 ──
     def create_job(self, job: NoveltyJob) -> None:
@@ -128,7 +135,8 @@ class SqlNoveltyStore:
             if cursor is not None:
                 anchor = session.get(NoveltyJobV2Table, cursor)
                 if anchor is None or anchor.owner_id != owner_id:
-                    return []
+                    # 앵커 소실(삭제 등) — 조용한 절단 대신 무효 커서를 표면화한다.
+                    raise KeyError(f"unknown cursor: {cursor}")
                 stmt = stmt.where(
                     (NoveltyJobV2Table.created_at < anchor.created_at)
                     | (
@@ -144,19 +152,24 @@ class SqlNoveltyStore:
             row = session.get(NoveltyJobV2Table, job.job_id)
             if row is None:
                 raise KeyError(job.job_id)
+            # 종단 상태 재진입 금지(BR-RA5)를 저장 수준에서도 강제 — 최초 종단 기록 승리
+            # (예: stale 스윕과 완주 워커의 경합에서 이중 종단 기록 차단).
+            if row.state in _TERMINAL_STATE_VALUES and row.state != job.state.value:
+                raise InvalidTransitionError(f"job is terminal: {row.state}")
             data = _job_row(job)
             for attr in (
                 "request",
                 "state",
                 "loop_run",
                 "degraded_sources",
-                "cancel_requested",
                 "error_message",
                 "created_at",
                 "updated_at",
                 "completed_at",
             ):
                 setattr(row, attr, getattr(data, attr))
+            # 취소 플래그는 단방향 래치 — 워커의 낡은 스냅샷이 동시 취소 요청을 덮지 못한다.
+            row.cancel_requested = row.cancel_requested or data.cancel_requested
             session.commit()
 
     def delete_job(self, owner_id: str, job_id: str) -> bool:
@@ -168,6 +181,7 @@ class SqlNoveltyStore:
                 session.execute(delete(table).where(table.job_id == job_id))
             session.delete(row)
             session.commit()
+            self._trace_seq_cache.pop(job_id, None)
             return True
 
     def request_cancel(self, owner_id: str, job_id: str) -> bool:
@@ -232,6 +246,9 @@ class SqlNoveltyStore:
 
     # ── 트레이스 ──
     def next_trace_seq(self, job_id: str) -> int:
+        cached = self._trace_seq_cache.get(job_id)
+        if cached is not None:
+            return cached + 1
         with self._session_factory() as session:
             last = session.scalars(
                 select(ToolCallRecordTable.seq)
@@ -261,7 +278,10 @@ class SqlNoveltyStore:
                 session.commit()
             except IntegrityError as exc:
                 session.rollback()
+                # 다른 기록자와 충돌 — 캐시를 버리고 호출자 재시도가 DB에서 재동기화.
+                self._trace_seq_cache.pop(record.job_id, None)
                 raise DuplicateTraceSeqError(f"{record.job_id}:{record.seq}") from exc
+            self._trace_seq_cache[record.job_id] = record.seq
 
     def list_trace(
         self, owner_id: str, job_id: str, *, after_seq: int, limit: int
@@ -325,7 +345,7 @@ class SqlNoveltyStore:
             if after is not None:
                 anchor = session.get(MessageV2Table, after)
                 if anchor is None or anchor.job_id != job_id:
-                    return []
+                    raise KeyError(f"unknown cursor: {after}")
                 stmt = stmt.where(
                     (MessageV2Table.created_at > anchor.created_at)
                     | (

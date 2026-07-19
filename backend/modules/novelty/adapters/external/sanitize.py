@@ -14,7 +14,13 @@ from typing import Any
 
 from ...ports.tools import TOOL_DATASET_SEARCH, TOOL_GITHUB_SEARCH
 
-__all__ = ["PAYLOAD_ALLOWLISTS", "FieldRule", "PayloadViolation", "sanitize_payload"]
+__all__ = [
+    "PAYLOAD_ALLOWLISTS",
+    "FieldRule",
+    "PayloadViolation",
+    "blocked_result",
+    "sanitize_payload",
+]
 
 # 허용 payload의 정신(BLM §3.1): topic·키워드·논문 제목·기술명·익명화 요약 —
 # 전부 짧은 텍스트다. 길이 상한이 '전문 투입'을 구조적으로 막는다.
@@ -72,3 +78,18 @@ def sanitize_payload(
         if rule.required and key not in sanitized:
             violations.append(PayloadViolation(key=key, reason="missing_required"))
     return sanitized, violations
+
+
+def blocked_result(tool_name: str, args: dict[str, Any]) -> "tuple[dict[str, str], Any]":
+    """sanitize 후 (정제 payload, 위반 시 차단 ToolResult|None) — 도구 공통 진입부."""
+    from ...ports.tools import ToolResult
+
+    sanitized, violations = sanitize_payload(tool_name, args)
+    if not violations:
+        return sanitized, None
+    detail = ", ".join(f"{v.key}:{v.reason}" for v in violations)
+    return sanitized, ToolResult(
+        ok=False,
+        error=f"payload_blocked: {detail}",
+        result_summary=f"payload blocked ({detail})",
+    )

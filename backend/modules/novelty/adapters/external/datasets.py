@@ -11,8 +11,8 @@ from typing import Any
 from ...domain.models import utc_now
 from ...ports.tools import TOOL_DATASET_SEARCH, ToolContext, ToolResult, ToolSpec
 from ...security import is_safe_external_url
-from .base import SourceBreaker, SourceUnavailable
-from .sanitize import sanitize_payload
+from .base import SourceBreaker, SourceUnavailable, check_response
+from .sanitize import blocked_result
 
 __all__ = ["DatasetSearchTool"]
 
@@ -48,14 +48,9 @@ class DatasetSearchTool:
         self._zenodo_breaker = zenodo_breaker or SourceBreaker()
 
     def invoke(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-        payload, violations = sanitize_payload(TOOL_DATASET_SEARCH, args)
-        if violations:
-            detail = ", ".join(f"{v.key}:{v.reason}" for v in violations)
-            return ToolResult(
-                ok=False,
-                error=f"payload_blocked: {detail}",
-                result_summary=f"payload blocked ({detail})",
-            )
+        payload, blocked = blocked_result(TOOL_DATASET_SEARCH, args)
+        if blocked is not None:
+            return blocked
         query = payload["query"]
         findings: list[dict[str, Any]] = []
         degraded: list[str] = []
@@ -89,7 +84,7 @@ class DatasetSearchTool:
             "https://huggingface.co/api/datasets",
             params={"search": query, "limit": self._per_source},
         )
-        _check(response)
+        check_response(response)
         findings = []
         for dataset in list(response.json())[: self._per_source]:
             dataset_id = dataset.get("id")
@@ -115,7 +110,7 @@ class DatasetSearchTool:
                 "size": self._per_source,
             },
         )
-        _check(response)
+        check_response(response)
         records = (response.json().get("hits") or {}).get("hits") or []
         findings = []
         for record in records[: self._per_source]:
@@ -129,14 +124,6 @@ class DatasetSearchTool:
             if finding:
                 findings.append(finding)
         return findings
-
-
-def _check(response: Any) -> None:
-    if getattr(response, "status_code", 200) >= 400:
-        raise RuntimeError("external API unavailable")
-    raise_for_status = getattr(response, "raise_for_status", None)
-    if raise_for_status is not None:
-        raise_for_status()
 
 
 def _normalize(

@@ -10,7 +10,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-__all__ = ["SourceBreaker", "SourceUnavailable"]
+__all__ = ["SourceBreaker", "SourceUnavailable", "check_response"]
 
 
 class SourceUnavailable(RuntimeError):
@@ -50,3 +50,12 @@ class SourceBreaker:
         if self._failures >= self._failure_threshold:
             self._open_until = self._clock() + self._cooldown_seconds
         raise SourceUnavailable(str(last_error) if last_error else "external source failed")
+
+
+def check_response(response: Any) -> None:
+    """외부 API 응답 공통 검사 — 4xx/5xx는 예외로 승격(소스 실패 집계 대상)."""
+    if getattr(response, "status_code", 200) >= 400:
+        raise RuntimeError("external API unavailable")
+    raise_for_status = getattr(response, "raise_for_status", None)
+    if raise_for_status is not None:
+        raise_for_status()

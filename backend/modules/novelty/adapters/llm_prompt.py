@@ -10,9 +10,27 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from ..ports.llm import LoopObservation
+from ..ports.llm import (
+    LlmDecision,
+    LoopObservation,
+    TerminationProposal,
+    ToolCallProposal,
+)
 
-__all__ = ["SYSTEM_PROMPT", "TERMINATION_TOOL", "render_observation", "termination_parameters"]
+__all__ = [
+    "SYSTEM_PROMPT",
+    "TERMINATION_TOOL",
+    "LlmUnavailable",
+    "conservative_termination",
+    "decision_from_tool_call",
+    "estimate_cost",
+    "render_observation",
+    "termination_parameters",
+]
+
+
+class LlmUnavailable(RuntimeError):
+    """전송 실패(재시도·차단기 이후) — 루프가 fatal로 수렴한다(outage → abstain 계열)."""
 
 TERMINATION_TOOL = "propose_termination"
 
@@ -66,3 +84,40 @@ def render_observation(observation: LoopObservation) -> str:
             lines.append(json.dumps(view.content, ensure_ascii=False, default=str)[:6000])
     lines.append("=== 도구 결과 데이터 끝 ===")
     return "\n".join(lines)
+
+
+def decision_from_tool_call(
+    name: str,
+    args: dict[str, Any],
+    cost: float | None,
+    *,
+    decision_note: str | None = None,
+) -> LlmDecision:
+    """프로바이더 중립 결정 매핑 — 종료 합성 함수·무명 호출 정책의 단일 정의."""
+    if name == TERMINATION_TOOL:
+        return LlmDecision(TerminationProposal(note=str(args.get("note") or "")[:500]), cost)
+    if not name:
+        raise LlmUnavailable("tool call without function name")
+    return LlmDecision(
+        ToolCallProposal(tool_name=name, args=args, decision_note=decision_note), cost
+    )
+
+
+def conservative_termination(text: str, cost: float | None) -> LlmDecision:
+    """강제 함수 호출 위반(텍스트 응답) — 보수적으로 종료 제안으로 해석(수용은 게이트 몫)."""
+    return LlmDecision(TerminationProposal(note=text.strip()[:500] or None), cost)
+
+
+def estimate_cost(
+    input_tokens: Any,
+    output_tokens: Any,
+    *,
+    input_usd_per_mtok: float,
+    output_usd_per_mtok: float,
+) -> float | None:
+    if input_tokens is None and output_tokens is None:
+        return None
+    return (
+        float(input_tokens or 0) * input_usd_per_mtok
+        + float(output_tokens or 0) * output_usd_per_mtok
+    ) / 1_000_000

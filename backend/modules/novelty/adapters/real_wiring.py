@@ -17,18 +17,17 @@ import json
 import logging
 from typing import Any
 
-from ..ports.llm import (
-    LlmDecision,
-    LoopObservation,
-    TerminationProposal,
-    ToolCallProposal,
-)
+from ..ports.llm import LlmDecision, LoopObservation
 from ..ports.queue import QueuedJob
 from ..ports.tools import ToolSpec
-from .llm_openai import LlmUnavailable
+from .external.base import SourceBreaker, SourceUnavailable
 from .llm_prompt import (
     SYSTEM_PROMPT,
     TERMINATION_TOOL,
+    LlmUnavailable,
+    conservative_termination,
+    decision_from_tool_call,
+    estimate_cost,
     render_observation,
     termination_parameters,
 )
@@ -85,7 +84,10 @@ class SqsJobQueue:
     def acquire(self, job_id: str, ttl_seconds: float) -> bool:
         receipt = self._in_flight.get(job_id)
         if receipt is None:
-            return False  # 수신하지 않은 잡은 이 프로세스가 잠글 수 없다
+            # 이 프로세스가 수신하지 않은 잡: 충돌할 리스가 없다 — stale 스윕이 방치된
+            # 잡을 잠글 수 있어야 한다(NFR-NV2-3). 프로세스 간 이중 스윕은 종단 상태
+            # 래치(update_job)가 멱등으로 흡수한다.
+            return True
         return self.renew(job_id, ttl_seconds)
 
     def renew(self, job_id: str, ttl_seconds: float) -> bool:
@@ -114,12 +116,14 @@ class BedrockToolCallingLlm:
         max_tokens: int = 4096,
         input_usd_per_mtok: float = 3.0,
         output_usd_per_mtok: float = 15.0,
+        breaker: SourceBreaker | None = None,
     ) -> None:
         self._model_id = model_id
         self._client = client
         self._max_tokens = max_tokens
         self._input_rate = input_usd_per_mtok
         self._output_rate = output_usd_per_mtok
+        self._breaker = breaker or SourceBreaker()
 
     def decide(self, observation: LoopObservation, tools: tuple[ToolSpec, ...]) -> LlmDecision:
         body = {
@@ -139,32 +143,31 @@ class BedrockToolCallingLlm:
         return self._parse(response)
 
     def _invoke(self, body: dict[str, Any]) -> dict[str, Any]:
-        last_error: Exception | None = None
-        for _ in range(2):  # 기계 재시도 1회(NFR-NV2-11)
-            try:
-                response = self._client.invoke_model(
-                    modelId=self._model_id,
-                    body=json.dumps(body).encode("utf-8"),
-                    accept="application/json",
-                    contentType="application/json",
-                )
-                raw = response["body"]
-                payload = raw.read() if hasattr(raw, "read") else raw
-                return json.loads(
-                    payload.decode("utf-8") if isinstance(payload, bytes) else payload
-                )
-            except Exception as exc:  # noqa: BLE001 — 재시도 후 LlmUnavailable로 수렴
-                last_error = exc
-        raise LlmUnavailable(str(last_error))
+        def call() -> dict[str, Any]:
+            response = self._client.invoke_model(
+                modelId=self._model_id,
+                body=json.dumps(body).encode("utf-8"),
+                accept="application/json",
+                contentType="application/json",
+            )
+            raw = response["body"]
+            payload = raw.read() if hasattr(raw, "read") else raw
+            return json.loads(payload.decode("utf-8") if isinstance(payload, bytes) else payload)
+
+        try:
+            # 재시도 1회 + 서킷 브레이커(외부 연동 규칙) — OpenAI 어댑터와 동일 실패 계약.
+            return self._breaker.call(call)
+        except SourceUnavailable as exc:
+            raise LlmUnavailable(str(exc)) from exc
 
     def _parse(self, response: dict[str, Any]) -> LlmDecision:
         usage = response.get("usage") or {}
-        cost = None
-        if usage:
-            cost = (
-                float(usage.get("input_tokens") or 0) * self._input_rate
-                + float(usage.get("output_tokens") or 0) * self._output_rate
-            ) / 1_000_000
+        cost = estimate_cost(
+            usage.get("input_tokens") if usage else None,
+            usage.get("output_tokens") if usage else None,
+            input_usd_per_mtok=self._input_rate,
+            output_usd_per_mtok=self._output_rate,
+        )
         tool_use = next(
             (
                 block
@@ -178,15 +181,10 @@ class BedrockToolCallingLlm:
                 str(block.get("text") or "")
                 for block in response.get("content") or []
                 if block.get("type") == "text"
-            ).strip()
-            return LlmDecision(TerminationProposal(note=text[:500] or None), cost)
-        name = str(tool_use.get("name") or "")
+            )
+            return conservative_termination(text, cost)
         args = tool_use.get("input") if isinstance(tool_use.get("input"), dict) else {}
-        if name == TERMINATION_TOOL:
-            return LlmDecision(TerminationProposal(note=str(args.get("note") or "")[:500]), cost)
-        if not name:
-            raise LlmUnavailable("tool_use without name")
-        return LlmDecision(ToolCallProposal(tool_name=name, args=args), cost)
+        return decision_from_tool_call(str(tool_use.get("name") or ""), args, cost)
 
 
 def _to_tool(spec: ToolSpec) -> dict[str, Any]:

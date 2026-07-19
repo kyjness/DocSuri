@@ -207,21 +207,25 @@ class TestExecutionLockContract:
 
 
 class TestStoreLatches:
-    """update_job의 단방향 래치 계약 — 취소 플래그·종단 상태(BR-RA5) 직접 검증."""
+    """update_job의 단방향 래치 계약 — 취소 플래그·종단 상태(BR-RA5), 양 구현 공통."""
 
-    def test_stale_snapshot_cannot_clear_cancel_flag(self) -> None:
-        store = InMemoryNoveltyStore()
+    @pytest.fixture(params=["memory", "sql"])
+    def latched_store(self, request):
+        return _sql_store() if request.param == "sql" else InMemoryNoveltyStore()
+
+    def test_stale_snapshot_cannot_clear_cancel_flag(self, latched_store) -> None:
+        store = latched_store
         job = _job()
         store.create_job(job)
-        stale_snapshot = store.get_job(job.owner_id, job.job_id)  # cancel=False 시점
+        stale_snapshot = store.get_job(job.owner_id, job.job_id)  # cancel=False 시점 스냅샷
         assert store.request_cancel(job.owner_id, job.job_id) is True
         store.update_job(stale_snapshot)  # 워커의 낡은 전체 덮어쓰기
         assert store.is_cancel_requested(job.job_id) is True  # 래치 유지
 
-    def test_terminal_state_is_write_once(self) -> None:
+    def test_terminal_state_is_write_once(self, latched_store) -> None:
         from backend.modules.novelty.domain.models import InvalidTransitionError, JobState
 
-        store = InMemoryNoveltyStore()
+        store = latched_store
         job = _job()
         store.create_job(job)
         job.state = JobState.INVESTIGATING
@@ -233,3 +237,22 @@ class TestStoreLatches:
         with pytest.raises(InvalidTransitionError):
             store.update_job(job)  # 완주 워커의 후행 종단 기록은 거부
         assert store.get_job(job.owner_id, job.job_id).state is JobState.FAILED
+
+    def test_unknown_cursor_raises_instead_of_truncating(self, latched_store) -> None:
+        store = latched_store
+        owner = str(uuid4())
+        jobs = [_job(owner) for _ in range(2)]
+        for job in jobs:
+            store.create_job(job)
+        page = store.list_jobs(owner, cursor=None, limit=1)
+        deleted_cursor = page[0].job_id
+        store.delete_job(owner, deleted_cursor)
+        with pytest.raises(KeyError):
+            store.list_jobs(owner, cursor=deleted_cursor, limit=10)
+
+    def test_unknown_message_cursor_raises(self, latched_store) -> None:
+        store = latched_store
+        job = _job()
+        store.create_job(job)
+        with pytest.raises(KeyError):
+            store.list_messages(job.owner_id, job.job_id, after=str(uuid4()), limit=5)

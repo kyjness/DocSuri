@@ -71,7 +71,12 @@ class FormEvidenceTool:
 
 
 def _run_coro_in_thread(coro: Any) -> Any:
-    """이벤트 루프 유무와 무관하게 코루틴을 동기 완주(레거시 승계)."""
+    """코루틴 동기 완주 — 동기 워커(일반 경로)에선 asyncio.run 직행, 이벤트 루프
+    위에서 호출된 경우에만 전용 스레드로 우회(호출당 스레드풀 생성 제거)."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
     with ThreadPoolExecutor(max_workers=1) as pool:
         return pool.submit(asyncio.run, coro).result()
 

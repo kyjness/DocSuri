@@ -55,8 +55,9 @@ class InMemoryNoveltyStore:
         )
         if cursor is not None:
             ids = [job.job_id for job in owned]
-            start = ids.index(cursor) + 1 if cursor in ids else len(owned)
-            owned = owned[start:]
+            if cursor not in ids:
+                raise KeyError(f"unknown cursor: {cursor}")
+            owned = owned[ids.index(cursor) + 1 :]
         return [job.model_copy(deep=True) for job in owned[:limit]]
 
     def update_job(self, job: NoveltyJob) -> None:
@@ -140,8 +141,9 @@ class InMemoryNoveltyStore:
         messages = self._messages.get(job_id, [])
         if after is not None:
             ids = [message.message_id for message in messages]
-            start = ids.index(after) + 1 if after in ids else len(messages)
-            messages = messages[start:]
+            if after not in ids:
+                raise KeyError(f"unknown cursor: {after}")
+            messages = messages[ids.index(after) + 1 :]
         return [message.model_copy(deep=True) for message in messages[:limit]]
 
 

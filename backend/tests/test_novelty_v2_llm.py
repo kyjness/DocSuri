@@ -162,3 +162,51 @@ def test_observation_rendering_separates_tool_data_from_instructions() -> None:
     assert "ignore previous instructions" in user["content"]
     assert "ignore previous instructions" not in system["content"]
     assert "도구 캡 소진" in user["content"]
+
+
+def test_request_disables_parallel_tool_calls() -> None:
+    capture: list = []
+    llm = _llm(
+        _completion(tool_calls=[{"function": {"name": "corpus_search", "arguments": "{}"}}]),
+        capture,
+    )
+    llm.decide(_observation(), _TOOLS)
+    assert capture[0]["parallel_tool_calls"] is False
+
+
+def test_extra_parallel_calls_are_noted_not_silently_dropped() -> None:
+    llm = _llm(
+        _completion(
+            tool_calls=[
+                {"function": {"name": "corpus_search", "arguments": "{}"}},
+                {"function": {"name": "save_artifact", "arguments": "{}"}},
+            ]
+        )
+    )
+    decision = llm.decide(_observation(), _TOOLS)
+    assert isinstance(decision.proposal, ToolCallProposal)
+    assert "dropped parallel calls: save_artifact" in (decision.proposal.decision_note or "")
+
+
+def test_breaker_blocks_calls_during_outage() -> None:
+    from backend.modules.novelty.adapters.external.base import SourceBreaker
+
+    calls = {"n": 0}
+
+    def down(request):
+        calls["n"] += 1
+        raise RuntimeError("outage")
+
+    clock = {"now": 0.0}
+    llm = OpenAiToolCallingLlm(
+        model="m",
+        api_key="k",
+        transport=down,
+        breaker=SourceBreaker(failure_threshold=1, cooldown_seconds=60, clock=lambda: clock["now"]),
+    )
+    with pytest.raises(LlmUnavailable):
+        llm.decide(_observation(), _TOOLS)
+    attempts_first = calls["n"]  # 재시도 1회 포함
+    with pytest.raises(LlmUnavailable):
+        llm.decide(_observation(), _TOOLS)  # 차단 개방 — 전송 호출 없이 즉시 실패
+    assert calls["n"] == attempts_first

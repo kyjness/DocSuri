@@ -11,8 +11,8 @@ from typing import Any
 from ...domain.models import utc_now
 from ...ports.tools import TOOL_GITHUB_SEARCH, ToolContext, ToolResult, ToolSpec
 from ...security import is_safe_external_url
-from .base import SourceBreaker, SourceUnavailable
-from .sanitize import sanitize_payload
+from .base import SourceBreaker, SourceUnavailable, check_response
+from .sanitize import blocked_result
 
 __all__ = ["GithubSearchTool"]
 
@@ -48,14 +48,9 @@ class GithubSearchTool:
         self._breaker = breaker or SourceBreaker()
 
     def invoke(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-        payload, violations = sanitize_payload(TOOL_GITHUB_SEARCH, args)
-        if violations:
-            detail = ", ".join(f"{v.key}:{v.reason}" for v in violations)
-            return ToolResult(
-                ok=False,
-                error=f"payload_blocked: {detail}",
-                result_summary=f"payload blocked ({detail})",
-            )
+        payload, blocked = blocked_result(TOOL_GITHUB_SEARCH, args)
+        if blocked is not None:
+            return blocked
         try:
             repos = self._breaker.call(lambda: self._search(payload))
         except SourceUnavailable:
@@ -89,11 +84,7 @@ class GithubSearchTool:
             },
             headers=headers,
         )
-        if getattr(response, "status_code", 200) >= 400:
-            raise RuntimeError("github API unavailable")
-        raise_for_status = getattr(response, "raise_for_status", None)
-        if raise_for_status is not None:
-            raise_for_status()
+        check_response(response)
         return list(response.json().get("items", []))[: self._per_source]
 
 
