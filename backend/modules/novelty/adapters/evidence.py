@@ -70,15 +70,26 @@ class FormEvidenceTool:
         return _to_result(result)
 
 
+_FALLBACK_POOL: ThreadPoolExecutor | None = None
+
+
+def _fallback_pool() -> ThreadPoolExecutor:
+    global _FALLBACK_POOL  # noqa: PLW0603 — 프로세스 수명 단일 실행기(지연 생성)
+    if _FALLBACK_POOL is None:
+        _FALLBACK_POOL = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="novelty-evidence"
+        )
+    return _FALLBACK_POOL
+
+
 def _run_coro_in_thread(coro: Any) -> Any:
     """코루틴 동기 완주 — 동기 워커(일반 경로)에선 asyncio.run 직행, 이벤트 루프
-    위에서 호출된 경우에만 전용 스레드로 우회(호출당 스레드풀 생성 제거)."""
+    위에서 호출된 경우에만 공유 실행기로 우회(호출당 스레드풀 생성 없음)."""
     try:
         asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(coro)
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(asyncio.run, coro).result()
+    return _fallback_pool().submit(asyncio.run, coro).result()
 
 
 def _to_result(result: Any) -> ToolResult:

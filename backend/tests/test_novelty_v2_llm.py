@@ -210,3 +210,17 @@ def test_breaker_blocks_calls_during_outage() -> None:
     with pytest.raises(LlmUnavailable):
         llm.decide(_observation(), _TOOLS)  # 차단 개방 — 전송 호출 없이 즉시 실패
     assert calls["n"] == attempts_first
+
+
+def test_missing_usage_yields_no_cost_estimate() -> None:
+    llm = _llm(
+        _completion(tool_calls=[{"function": {"name": "corpus_search", "arguments": "{}"}}])
+    )
+    decision = llm.decide(_observation(), _TOOLS)
+    assert decision.cost_estimate_usd is None  # usage 부재 → 추정치 없음(0 아님)
+
+
+def test_empty_choices_raises_llm_unavailable() -> None:
+    llm = _llm({"choices": [], "usage": {}})
+    with pytest.raises(LlmUnavailable):
+        llm.decide(_observation(), _TOOLS)

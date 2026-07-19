@@ -70,8 +70,9 @@ def test_pbt_sanitized_payload_always_within_allowlist(tool: str, args: dict) ->
         assert key in rules
         assert isinstance(value, str)
         assert len(value) <= rules[key].max_length
+    # 위반으로 지목된 키는 정제 결과에 절대 실리지 않는다(유출 차단의 핵심 불변식).
     violated_keys = {v.key for v in violations}
-    assert violated_keys.isdisjoint(sanitized.keys() - {"query"}) or True
+    assert violated_keys.isdisjoint(sanitized.keys())
     if not violations:
         assert all(key in rules for key in args)
 

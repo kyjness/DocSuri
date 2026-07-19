@@ -194,3 +194,29 @@ def test_tool_registry_shrinks_naturally_without_deps() -> None:
     registry = build_tool_registry(_settings(), http_client=_NoopHttp())
     # corpus·evidence 의존성 없음 → 외부 탐색 도구만. Notion·view_figure 부재.
     assert registry.names() == frozenset({"github_search", "dataset_search"})
+
+
+def test_bedrock_outage_goes_through_breaker_to_llm_unavailable() -> None:
+    """OpenAI 어댑터와 대칭 — 재시도 1회 후 실패, 차단 개방 중 즉시 거부."""
+    from backend.modules.novelty.adapters.external.base import SourceBreaker
+    from backend.modules.novelty.adapters.llm_prompt import LlmUnavailable
+
+    calls = {"n": 0}
+
+    class _DownClient:
+        def invoke_model(self, **kwargs):
+            calls["n"] += 1
+            raise RuntimeError("bedrock outage")
+
+    clock = {"now": 0.0}
+    llm = BedrockToolCallingLlm(
+        model_id="anthropic.test",
+        client=_DownClient(),
+        breaker=SourceBreaker(failure_threshold=1, cooldown_seconds=60, clock=lambda: clock["now"]),
+    )
+    with pytest.raises(LlmUnavailable):
+        llm.decide(_observation(), _TOOLS)
+    first_attempts = calls["n"]  # 재시도 1회 포함
+    with pytest.raises(LlmUnavailable):
+        llm.decide(_observation(), _TOOLS)  # 차단 개방 — 호출 없이 즉시 실패
+    assert calls["n"] == first_attempts
