@@ -56,6 +56,9 @@ class NoveltySettings:
     llm_provider: str
     openai_api_key: str | None
     openai_model: str
+    # 비용 추정 단가(USD/1M tokens) — 예산 집계 입력(FR-45). 모델 교체 시 env로 조정.
+    openai_input_usd_per_mtok: float
+    openai_output_usd_per_mtok: float
     bedrock_model_id: str
     region_name: str | None
     # 잡 큐(TD-NV2-1): redis URL(로컬 1차) / SQS URL(배포 기준선, v1 env 보존)
@@ -106,6 +109,12 @@ class NoveltySettings:
             llm_provider=os.environ.get("DOCSURI_NOVELTY_LLM_PROVIDER", "openai").lower(),
             openai_api_key=os.environ.get("OPENAI_API_KEY"),
             openai_model=os.environ.get("DOCSURI_NOVELTY_OPENAI_MODEL", DEFAULT_OPENAI_MODEL),
+            openai_input_usd_per_mtok=_env_float(
+                "DOCSURI_NOVELTY_OPENAI_INPUT_USD_PER_MTOK", 0.15
+            ),
+            openai_output_usd_per_mtok=_env_float(
+                "DOCSURI_NOVELTY_OPENAI_OUTPUT_USD_PER_MTOK", 0.60
+            ),
             bedrock_model_id=os.environ.get(
                 "DOCSURI_NOVELTY_LLM_MODEL_ID", DEFAULT_BEDROCK_MODEL
             ),

@@ -16,8 +16,8 @@ from backend.modules.user_docmodel import (
     ref_from_attachment,
 )
 
-from .models import EvidenceStatus
-from .security import sanitize_external_query
+from ..models import EvidenceStatus
+from ..security import sanitize_external_query
 
 log = logging.getLogger(__name__)
 
