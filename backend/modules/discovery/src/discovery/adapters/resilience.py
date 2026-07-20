@@ -18,26 +18,11 @@ Infra's call (DS-1).
 
 from __future__ import annotations
 
-from docsuri_shared.resilience import (
-    DEFAULT_FAILURE_THRESHOLD as FAILURE_THRESHOLD,
-)
-from docsuri_shared.resilience import (
-    DEFAULT_RECOVERY_SECONDS as OPEN_SECONDS,
-)
-from docsuri_shared.resilience import (
-    CircuitBreaker,
-    CircuitPermit,
-)
+from docsuri_shared.resilience import CircuitBreaker
 
 from ..ports.search_ports import EmbeddingAdapter, EmbeddingUnavailable
 
-__all__ = [
-    "FAILURE_THRESHOLD",
-    "OPEN_SECONDS",
-    "CircuitBreaker",
-    "CircuitGuardedEmbedder",
-    "CircuitPermit",
-]
+__all__ = ["CircuitBreaker", "CircuitGuardedEmbedder"]
 
 
 class CircuitGuardedEmbedder:

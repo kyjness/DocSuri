@@ -14,6 +14,9 @@ from datetime import datetime
 from typing import Any
 
 from docsuri_shared.authz import Principal
+
+# v1 승계 API 메트릭 — 방출은 공유 best-effort 헬퍼(포트 시그니처 강제).
+from docsuri_shared.observability import emit_metric as _emit_metric
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -89,16 +92,6 @@ def _cost_guard(request: Request):
 
 def _observability(request: Request):
     return getattr(request.app.state, "observability", None)
-
-
-def _emit_metric(observability: Any, name: str) -> None:
-    """v1 승계 API 메트릭(관측 가능성) — 방출 실패가 요청을 실패시키지 않는다."""
-    if observability is None:
-        return
-    try:
-        observability.emit_metric(name)
-    except Exception:  # noqa: BLE001 — best-effort 계측
-        log.debug("novelty api: metric emit failed: %s", name, exc_info=True)
 
 
 def _notion_client(request: Request):
