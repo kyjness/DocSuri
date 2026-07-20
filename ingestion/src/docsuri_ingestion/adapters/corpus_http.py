@@ -73,6 +73,30 @@ def _get_json_retrying(
             time.sleep(_RETRY_BACKOFF_SECONDS * attempt)
 
 
+def _fetch_record_pdf(
+    record: SourcePaperRecord,
+    *,
+    source_label: str,
+    stage: str,
+    timeout_seconds: float,
+    transport: object | None,
+) -> bytes:
+    """Open-access PDF bytes for a corpus record. A record with no PDF URL is a permanent
+    fetch failure — the record should never have passed the source adapter's OA filter."""
+    if not record.pdf_url:
+        raise PermanentIngestionError(
+            f"{source_label} record has no PDF URL",
+            reason=FailureReason.FETCH_FAILURE,
+            stage="source",
+        )
+    return _get_bytes(
+        record.pdf_url,
+        timeout_seconds=timeout_seconds,
+        transport=transport,
+        stage=stage,
+    )
+
+
 class SemanticScholarCorpusSource:
     def __init__(
         self,
@@ -144,17 +168,12 @@ class SemanticScholarCorpusSource:
             time.sleep(_SS_REQUEST_INTERVAL_SECONDS)
 
     def fetch_pdf(self, record: SourcePaperRecord) -> bytes:
-        if not record.pdf_url:
-            raise PermanentIngestionError(
-                "Semantic Scholar record has no PDF URL",
-                reason=FailureReason.FETCH_FAILURE,
-                stage="source",
-            )
-        return _get_bytes(
-            record.pdf_url,
+        return _fetch_record_pdf(
+            record,
+            source_label="Semantic Scholar",
+            stage="semantic_scholar_pdf",
             timeout_seconds=self._timeout_seconds,
             transport=self._transport,
-            stage="semantic_scholar_pdf",
         )
 
 
@@ -231,17 +250,12 @@ class OpenAlexCorpusSource:
         return records
 
     def fetch_pdf(self, record: SourcePaperRecord) -> bytes:
-        if not record.pdf_url:
-            raise PermanentIngestionError(
-                "OpenAlex record has no PDF URL",
-                reason=FailureReason.FETCH_FAILURE,
-                stage="source",
-            )
-        return _get_bytes(
-            record.pdf_url,
+        return _fetch_record_pdf(
+            record,
+            source_label="OpenAlex",
+            stage="openalex_pdf",
             timeout_seconds=self._timeout_seconds,
             transport=self._transport,
-            stage="openalex_pdf",
         )
 
 

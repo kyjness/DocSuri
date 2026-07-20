@@ -7,7 +7,8 @@ from typing import Any
 
 from psycopg.types.json import Jsonb
 
-from docsuri_ingestion.domain.enums import DedupDecision, DedupStateKind, SourceName
+from docsuri_ingestion.domain.dedup import decide_dedup
+from docsuri_ingestion.domain.enums import DedupStateKind, SourceName
 from docsuri_ingestion.domain.models import (
     CanonicalDedupState,
     DedupResult,
@@ -137,18 +138,7 @@ class PostgresControlPlaneStore:
             ).fetchall()
 
     def evaluate_dedup(self, paper_id: str, version: int, fingerprint: str) -> DedupResult:
-        state = self._get_dedup_state(paper_id)
-        if state is None:
-            return DedupResult(DedupDecision.NEW)
-        if version < state.current_version:
-            return DedupResult(DedupDecision.STALE)
-        if (
-            version == state.current_version
-            and state.fingerprint == fingerprint
-            and state.state is DedupStateKind.INDEXED
-        ):
-            return DedupResult(DedupDecision.DUPLICATE)
-        return DedupResult(DedupDecision.CHANGED)
+        return decide_dedup(self._get_dedup_state(paper_id), version, fingerprint)
 
     def try_claim_upsert(self, paper_id: str, version: int, fingerprint: str) -> bool:
         del fingerprint

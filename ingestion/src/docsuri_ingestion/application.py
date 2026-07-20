@@ -10,7 +10,7 @@ from uuid import uuid4
 from docsuri_shared.dtos import DocModel, DocModelResultDTO, SourceTier, SourceUnavailableDTO
 
 from .asset_extraction import AssetExtractor, crop_assets_from_specs
-from .config import CORPUS_SLICE_CATEGORIES, WITHDRAWAL_MARKERS
+from .config import CORPUS_SLICE_CATEGORIES
 from .corpus_sources import CorpusSourceAdapterSet, CorpusTextCandidate, SourcePaperRecord
 from .docmodel import DocModelBuilder
 from .docmodel.tei import tei_crop_specs
@@ -48,6 +48,7 @@ from .processors import (
     FetchParseProcessor,
     IndexRecordAssembler,
     assert_writer_embedding_role,
+    detect_withdrawal_text,
     normalize_text,
 )
 from .resilience import IngestFailureHandler, IngestionResilienceService
@@ -520,7 +521,7 @@ class IngestionPipelineService:
             arxiv_url=record.html_url or record.pdf_url or source_url,
             full_text=normalized_text,
             license_url=record.license_url or "",
-            withdrawal_detected=detect_withdrawal_proxy(record.title, abstract, normalized_text),
+            withdrawal_detected=detect_withdrawal_text(record.title, abstract, normalized_text),
             doi=record.doi or "",
             source_arxiv_id=record.arxiv_id or "",
             source_name=record.source_name,
@@ -1087,6 +1088,3 @@ def _source_priority(source_name: SourceName) -> int:
     }[source_name]
 
 
-def detect_withdrawal_proxy(title: str, abstract: str, text: str) -> bool:
-    haystack = f"{title} {abstract} {text}".lower()
-    return any(marker in haystack for marker in WITHDRAWAL_MARKERS)

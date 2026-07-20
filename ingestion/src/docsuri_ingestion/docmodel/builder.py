@@ -15,6 +15,7 @@ from typing import Protocol, runtime_checkable
 
 from docsuri_shared.docmodel_contract import DOCMODEL_PARSER_VERSION, DOCMODEL_SCHEMA_VERSION
 from docsuri_shared.dtos import DocModel, DocModelResultDTO, SourceTier, SourceUnavailableDTO
+from docsuri_shared.observability import emit_metric
 
 from docsuri_ingestion.docmodel.macros import extract_macros
 from docsuri_ingestion.docmodel.parser import parse_html_to_docmodel, parse_text_to_docmodel
@@ -175,7 +176,7 @@ class DocModelBuilder:
             # Broken ar5iv conversion (HTML 200 but abstract-only) — do NOT cache a truncated
             # doc-model as "complete"; degrade to source_unavailable so the viewer links out to
             # arXiv instead of showing a fragment. Observed so the truncation rate is trackable.
-            self._emit("ingestion.docmodel.truncated_source", 1.0)
+            emit_metric(self._observability, "ingestion.docmodel.truncated_source", 1.0)
             return SourceUnavailableDTO(
                 status="source_unavailable", reason=_SOURCE_UNAVAILABLE_REASON
             )
@@ -192,15 +193,11 @@ class DocModelBuilder:
             return {}
         try:
             macros = extract_macros(self._eprint_source.fetch_eprint(metadata))
-            self._emit("ingestion.docmodel.macros", float(len(macros)))
+            emit_metric(self._observability, "ingestion.docmodel.macros", float(len(macros)))
             return macros
         except Exception:  # noqa: BLE001 - macros are a display refinement, never blocking
-            self._emit("ingestion.docmodel.macros_failed", 1.0)
+            emit_metric(self._observability, "ingestion.docmodel.macros_failed", 1.0)
             return {}
-
-    def _emit(self, name: str, value: float) -> None:
-        if self._observability is not None:
-            self._observability.emit_metric(name, value, {})
 
     def build_from_text(
         self,
@@ -210,24 +207,14 @@ class DocModelBuilder:
         source_tier: SourceTier = SourceTier.pdf,
     ) -> DocModelResultDTO:
         """Return/cache a minimal doc-model from already-fetched PDF/GROBID text."""
-        paper_id = metadata.paper_id
-        version = metadata.version
-        cached = self._fresh_cached(paper_id, version)
-        if cached is not None:
-            return DocModelResultDTO(status="ok", cached=True, docModel=cached)
-        doc = parse_text_to_docmodel(
+        return self.build_from_paper(
+            metadata.paper_id,
+            metadata.version,
+            metadata.title,
+            metadata.abstract or "",
             text,
-            paper_id=paper_id,
-            version=version,
-            title=metadata.title,
-            abstract=metadata.abstract or None,
             source_tier=source_tier,
-            parser_version=self._parser_version,
-            schema_version=self._schema_version,
-            generated_at=self._clock.now(),
         )
-        self._store.put(doc)
-        return DocModelResultDTO(status="ok", cached=False, docModel=doc)
 
     def build_from_paper(
         self,
@@ -299,10 +286,10 @@ class DocModelBuilder:
                     crops=crops,
                 )
                 if _non_abstract_body_len(doc) <= 0:
-                    self._emit("ingestion.docmodel.tei_fallback", 1.0)
+                    emit_metric(self._observability, "ingestion.docmodel.tei_fallback", 1.0)
                     doc = None
             except Exception:  # noqa: BLE001 - any TEI parse fault degrades to flat text
-                self._emit("ingestion.docmodel.tei_fallback", 1.0)
+                emit_metric(self._observability, "ingestion.docmodel.tei_fallback", 1.0)
                 doc = None
         if doc is None:
             return self.build_from_paper(

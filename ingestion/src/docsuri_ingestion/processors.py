@@ -353,9 +353,15 @@ def _docmodel_block_text(block) -> str:
     return ""
 
 
-def detect_withdrawal(metadata: MetadataRecord, text: str) -> bool:
-    haystack = f"{metadata.title} {metadata.abstract} {text}".lower()
+def detect_withdrawal_text(title: str, abstract: str, text: str) -> bool:
+    """Withdrawal-marker scan over the raw strings — for callers that hold no MetadataRecord
+    (the corpus source path builds a ParsedPaper straight from a SourcePaperRecord)."""
+    haystack = f"{title} {abstract} {text}".lower()
     return any(marker in haystack for marker in WITHDRAWAL_MARKERS)
+
+
+def detect_withdrawal(metadata: MetadataRecord, text: str) -> bool:
+    return detect_withdrawal_text(metadata.title, metadata.abstract, text)
 
 
 def split_sections(text: str) -> list[tuple[str, str]]:

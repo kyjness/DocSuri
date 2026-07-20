@@ -406,12 +406,15 @@ class OpenSearchVectorIndex:
         self._record_write()
         self._stats_cache.invalidate()
 
-    def tombstone_paper(self, tombstone: Tombstone) -> None:
-        # Version ordering is guarded by ControlPlaneStore. The index operation deletes
-        # all existing chunks for the paper that won that CAS.
+    def _delete_by_query(self, query: dict, *, stage: str, label: str = "") -> None:
+        """Run a refreshing delete_by_query and fail retriably on partial deletion.
+
+        ``conflicts="proceed"`` keeps the sweep going past concurrent writes, so any reported
+        failure or version conflict means chunks survived that should not have — retriable
+        rather than silently accepted."""
         response = self._client.delete_by_query(
             index=self._index_name,
-            body={"query": {"term": {"paperId": tombstone.paper_id}}},
+            body={"query": query},
             refresh=True,
             conflicts="proceed",
         )
@@ -419,41 +422,35 @@ class OpenSearchVectorIndex:
         version_conflicts = response.get("version_conflicts", 0)
         if failures or version_conflicts > 0:
             raise RetriableIngestionError(
-                f"OpenSearch delete_by_query had {len(failures)} failures and "
+                f"OpenSearch delete_by_query{label} had {len(failures)} failures and "
                 f"{version_conflicts} version conflicts",
                 reason=FailureReason.BULK_INDEX_PARTIAL_FAILURE,
-                stage="index_tombstone",
+                stage=stage,
             )
         self._record_write()
         self._stats_cache.invalidate()
 
+    def tombstone_paper(self, tombstone: Tombstone) -> None:
+        # Version ordering is guarded by ControlPlaneStore. The index operation deletes
+        # all existing chunks for the paper that won that CAS.
+        self._delete_by_query(
+            {"term": {"paperId": tombstone.paper_id}},
+            stage="index_tombstone",
+        )
+
     def delete_stale_chunks(self, paper_id: str, keep_chunk_ids: set[str]) -> None:
         if not keep_chunk_ids:
             return
-        response = self._client.delete_by_query(
-            index=self._index_name,
-            body={
-                "query": {
-                    "bool": {
-                        "filter": [{"term": {"paperId": paper_id}}],
-                        "must_not": [{"terms": {"chunkId": sorted(keep_chunk_ids)}}],
-                    }
+        self._delete_by_query(
+            {
+                "bool": {
+                    "filter": [{"term": {"paperId": paper_id}}],
+                    "must_not": [{"terms": {"chunkId": sorted(keep_chunk_ids)}}],
                 }
             },
-            refresh=True,
-            conflicts="proceed",
+            stage="index_delete_stale",
+            label=" (stale)",
         )
-        failures = response.get("failures", [])
-        version_conflicts = response.get("version_conflicts", 0)
-        if failures or version_conflicts > 0:
-            raise RetriableIngestionError(
-                f"OpenSearch delete_by_query (stale) had {len(failures)} failures and "
-                f"{version_conflicts} version conflicts",
-                reason=FailureReason.BULK_INDEX_PARTIAL_FAILURE,
-                stage="index_delete_stale",
-            )
-        self._record_write()
-        self._stats_cache.invalidate()
 
     def index_stats(self) -> IndexStats:
         return self._stats_cache.get_or_refresh(self._index_name, self._fetch_stats)

@@ -11,7 +11,8 @@ from docsuri_shared.events import NewArxivEvent
 from docsuri_shared.vector_spec import DIMENSIONS, IndexRecord
 
 from docsuri_ingestion.domain.canonical import source_priority_from_tier
-from docsuri_ingestion.domain.enums import DedupDecision, DedupStateKind, FailureReason
+from docsuri_ingestion.domain.dedup import decide_dedup
+from docsuri_ingestion.domain.enums import DedupStateKind, FailureReason
 from docsuri_ingestion.domain.errors import RetriableIngestionError
 from docsuri_ingestion.domain.models import (
     CanonicalDedupState,
@@ -110,18 +111,7 @@ class InMemoryControlPlaneStore:
             return watermark
 
     def evaluate_dedup(self, paper_id: str, version: int, fingerprint: str) -> DedupResult:
-        state = self._dedup.get(paper_id)
-        if state is None:
-            return DedupResult(DedupDecision.NEW)
-        if version < state.current_version:
-            return DedupResult(DedupDecision.STALE)
-        if (
-            version == state.current_version
-            and state.fingerprint == fingerprint
-            and state.state is DedupStateKind.INDEXED
-        ):
-            return DedupResult(DedupDecision.DUPLICATE)
-        return DedupResult(DedupDecision.CHANGED)
+        return decide_dedup(self._dedup.get(paper_id), version, fingerprint)
 
     def try_claim_upsert(self, paper_id: str, version: int, fingerprint: str) -> bool:
         del fingerprint
