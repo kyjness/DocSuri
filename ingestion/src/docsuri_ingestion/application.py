@@ -714,15 +714,7 @@ class IngestionPipelineService:
                 "ingestion.assets.stored", float(len(extracted)), {"paperId": paper.paper_id}
             )
         except Exception as exc:  # noqa: BLE001 - best-effort: never block indexing (BR-27)
-            self._observability.emit_log(
-                {
-                    "type": "asset_pipeline_failure",
-                    "reason": reason.value,
-                    "paperId": paper.paper_id,
-                    "error": str(exc),
-                }
-            )
-            self._observability.emit_metric("ingestion.assets.failed", 1.0, {})
+            self._report_asset_failure(paper.paper_id, reason, exc)
 
     def _store_record_assets_best_effort(
         self,
@@ -768,15 +760,22 @@ class IngestionPipelineService:
                 "ingestion.assets.stored", float(len(extracted)), {"paperId": paper.paper_id}
             )
         except Exception as exc:  # noqa: BLE001 - best-effort: never block indexing (BR-27)
-            self._observability.emit_log(
-                {
-                    "type": "asset_pipeline_failure",
-                    "reason": reason.value,
-                    "paperId": paper.paper_id,
-                    "error": str(exc),
-                }
-            )
-            self._observability.emit_metric("ingestion.assets.failed", 1.0, {})
+            self._report_asset_failure(paper.paper_id, reason, exc)
+
+    def _report_asset_failure(
+        self, paper_id: str, reason: FailureReason, exc: Exception
+    ) -> None:
+        """Log + count an asset pipeline failure. The asset path is best-effort (BR-27), so this
+        is the whole handling — the caller swallows the exception and indexing continues."""
+        self._observability.emit_log(
+            {
+                "type": "asset_pipeline_failure",
+                "reason": reason.value,
+                "paperId": paper_id,
+                "error": str(exc),
+            }
+        )
+        self._observability.emit_metric("ingestion.assets.failed", 1.0, {})
 
     def _remove_assets_best_effort(self, paper_id: str) -> None:
         if self._asset_store is None:

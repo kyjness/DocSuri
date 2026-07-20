@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import time
 import xml.etree.ElementTree as ET
 from collections.abc import Iterable, Sequence
 from dataclasses import replace
@@ -18,7 +17,7 @@ from docsuri_ingestion.full_text_extraction import (
     pdf_to_text,
 )
 from docsuri_ingestion.ports import RawContentStorePort
-from docsuri_ingestion.resilience import RetryPolicy, TokenBucket
+from docsuri_ingestion.resilience import RetryPolicy, TokenBucket, retry_with_policy
 from docsuri_ingestion.xmlsafe import safe_fromstring
 
 _log = logging.getLogger("docsuri.ingestion.arxiv")
@@ -324,9 +323,13 @@ class ArxivHttpSource:
             "until": category_filter.updated_before.date().isoformat(),
         }
         while True:
-            body = self._fetch_oai_page(params)
-            yield from parse_oai_records(body)
-            token = parse_oai_resumption_token(body)
+            # Parse the page once and read both records and the resumption token off the same
+            # tree — this ran the XML parser twice per page over a multi-hour harvest.
+            root = _parse_xml(
+                self._fetch_oai_page(params), stage="parse_oai_records", label="OAI records"
+            )
+            yield from _oai_records_from(root)
+            token = _oai_token_from(root)
             if not token:
                 return
             params = {"verb": "ListRecords", "resumptionToken": token}
@@ -339,16 +342,14 @@ class ArxivHttpSource:
         (the timeout-mid-pagination crash). Retry transient blips in-place; if they persist past
         the policy, abort loudly — a re-run resumes via idempotent upserts rather than silently
         dropping a page of papers."""
-        policy = self._oai_retry_policy
-        for attempt in range(1, policy.max_attempts + 1):
-            try:
-                return self._get_text(self._oai_base_url, params=params, stage="harvest_seed")
-            except RetriableIngestionError:
-                if attempt >= policy.max_attempts:
-                    raise
-                _log.warning("harvest page fetch failed (attempt %d), retrying", attempt)
-                time.sleep(policy.delay_for_attempt(attempt))
-        raise AssertionError("unreachable")  # pragma: no cover
+        return retry_with_policy(
+            self._oai_retry_policy,
+            lambda: self._get_text(self._oai_base_url, params=params, stage="harvest_seed"),
+            retriable=lambda exc: isinstance(exc, RetriableIngestionError),
+            on_retry=lambda attempt, _exc: _log.warning(
+                "harvest page fetch failed (attempt %d), retrying", attempt
+            ),
+        )
 
     def _get_text(self, url: str, *, params: dict[str, str] | None, stage: str) -> str:
         return self._get_bytes(url, params=params, stage=stage).decode("utf-8", errors="replace")
@@ -405,15 +406,25 @@ class ArxivHttpSource:
             ) from exc
 
 
-def parse_atom_feed(body: str) -> list[MetadataRecord]:
+def _parse_xml(body: str, *, stage: str, label: str) -> ET.Element:
+    """Parse an untrusted arXiv/OAI XML body into the failure taxonomy.
+
+    ``safe_fromstring`` forbids DTD/entity expansion (NFR §0.5); a malformed body is a permanent
+    parse failure, never a retry. The license-enrichment path deliberately does NOT use this — it
+    degrades to the unenriched record instead of raising.
+    """
     try:
-        root = safe_fromstring(body)
+        return safe_fromstring(body)
     except ET.ParseError as e:
         raise PermanentIngestionError(
-            f"Failed to parse XML Atom feed: {e}",
+            f"Failed to parse XML {label}: {e}",
             reason=FailureReason.PARSE_FAILURE,
-            stage="parse_atom_feed",
+            stage=stage,
         ) from e
+
+
+def parse_atom_feed(body: str) -> list[MetadataRecord]:
+    root = _parse_xml(body, stage="parse_atom_feed", label="Atom feed")
     records: list[MetadataRecord] = []
     for entry in root.findall("atom:entry", ATOM_NS):
         arxiv_ref = _required_text(entry, "atom:id", ATOM_NS).rsplit("/", 1)[-1]
@@ -478,14 +489,10 @@ def _build_oai_record(metadata: ET.Element) -> MetadataRecord:
 
 
 def parse_oai_records(body: str) -> list[MetadataRecord]:
-    try:
-        root = safe_fromstring(body)
-    except ET.ParseError as e:
-        raise PermanentIngestionError(
-            f"Failed to parse XML OAI records: {e}",
-            reason=FailureReason.PARSE_FAILURE,
-            stage="parse_oai_records",
-        ) from e
+    return _oai_records_from(_parse_xml(body, stage="parse_oai_records", label="OAI records"))
+
+
+def _oai_records_from(root: ET.Element) -> list[MetadataRecord]:
     records: list[MetadataRecord] = []
     for metadata in root.findall(".//oai:metadata/arxiv:arXiv", OAI_NS):
         # A single malformed record must not abort the harvest: parse_oai_records runs inside
@@ -500,14 +507,12 @@ def parse_oai_records(body: str) -> list[MetadataRecord]:
 
 
 def parse_oai_resumption_token(body: str) -> str | None:
-    try:
-        root = safe_fromstring(body)
-    except ET.ParseError as e:
-        raise PermanentIngestionError(
-            f"Failed to parse XML OAI resumption token: {e}",
-            reason=FailureReason.PARSE_FAILURE,
-            stage="parse_oai_resumption_token",
-        ) from e
+    return _oai_token_from(
+        _parse_xml(body, stage="parse_oai_resumption_token", label="OAI resumption token")
+    )
+
+
+def _oai_token_from(root: ET.Element) -> str | None:
     token = root.findtext(".//oai:resumptionToken", default="", namespaces=OAI_NS).strip()
     return token or None
 

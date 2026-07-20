@@ -257,3 +257,28 @@ def is_retriable(exc: Exception) -> bool:
         if isinstance(status, int) and status >= 500:
             return True
     return False
+
+
+def retry_with_policy(
+    policy: RetryPolicy,
+    func: Callable[[], T],
+    *,
+    retriable: Callable[[Exception], bool] = is_retriable,
+    on_retry: Callable[[int, Exception], None] | None = None,
+) -> T:
+    """Run ``func``, retrying transient failures on ``policy``'s backoff schedule.
+
+    The final failure propagates unchanged, so the caller keeps the original error taxonomy.
+    ``IngestionResilienceService.retry`` is the richer variant for the pipeline path — it also
+    emits retry metrics and wraps exhaustion in a stage-tagged RetriableIngestionError.
+    """
+    for attempt in range(1, policy.max_attempts + 1):
+        try:
+            return func()
+        except Exception as exc:
+            if not retriable(exc) or attempt >= policy.max_attempts:
+                raise
+            if on_retry is not None:
+                on_retry(attempt, exc)
+            time.sleep(policy.delay_for_attempt(attempt))
+    raise AssertionError("unreachable")  # pragma: no cover

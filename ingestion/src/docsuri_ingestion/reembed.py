@@ -29,7 +29,7 @@ from .adapters.aws import (
     admin_client_from_settings,
     collect_bulk_failures,
 )
-from .resilience import RetryPolicy, TokenBucket, is_retriable
+from .resilience import RetryPolicy, TokenBucket, retry_with_policy
 from .settings import IngestionSettings
 
 log = logging.getLogger("docsuri.ingestion.reembed")
@@ -63,16 +63,7 @@ def _embed_with_retry(embedding, texts, policy: RetryPolicy | None = None) -> li
     """Embed with backoff on transient Bedrock failures (throttling/5xx are now retriable via
     resilience.is_retriable), rather than letting one throttle abort a shard."""
     policy = policy or RetryPolicy(max_attempts=8, base_delay_seconds=2.0)
-    attempt = 0
-    while True:
-        attempt += 1
-        try:
-            return embedding.embed_documents(texts)
-        except Exception as exc:
-            if is_retriable(exc) and attempt < policy.max_attempts:
-                time.sleep(policy.delay_for_attempt(attempt))
-                continue
-            raise
+    return retry_with_policy(policy, lambda: embedding.embed_documents(texts))
 
 
 def reembed_provision(settings: IngestionSettings | None = None) -> int:
