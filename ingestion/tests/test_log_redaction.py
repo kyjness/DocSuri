@@ -10,12 +10,15 @@ from __future__ import annotations
 from docsuri_ingestion.observability import LoggingObservabilityHub, sanitize_log_entry
 from docsuri_ingestion.settings import IngestionSettings
 
-_DSN = "postgresql://docsuri:hunter2@db.internal:5432/docsuri"
+_DSN = "postgresql://docsuri:db-password-placeholder@db.internal:5432/docsuri"
 _ENDPOINT = "https://vpc-docsuri-abc123.ap-northeast-2.es.amazonaws.com"
 _QUEUE_URL = "https://sqs.ap-northeast-2.amazonaws.com/123456789012/docsuri-ingest"
-_API_KEY = "ss-live-0123456789abcdef"
+# Placeholder values, deliberately word-shaped rather than key-shaped: what these assertions
+# need is a distinctive string to look for in the dump, and a realistic high-entropy literal
+# is indistinguishable from a real leak to the repository secret scan.
+_API_KEY = "semantic-scholar-api-key-placeholder"
 _MAILTO = "operator@example.com"
-_KMS_KEY = "arn:aws:kms:ap-northeast-2:123456789012:key/abcd-ef01"
+_KMS_KEY = "arn:aws:kms:ap-northeast-2:000000000000:key/kms-key-placeholder"
 
 
 def _configured_settings() -> IngestionSettings:
@@ -38,7 +41,7 @@ def test_safe_log_dict_discloses_no_configured_value() -> None:
     for secret in (_DSN, _ENDPOINT, _QUEUE_URL, _API_KEY, _MAILTO, _KMS_KEY):
         assert secret not in dumped, f"safe_log_dict leaked {secret!r}"
     # Even a fragment must not survive — a password or host alone is a disclosure.
-    for fragment in ("hunter2", "db.internal", "vpc-docsuri-abc123", "operator@example.com"):
+    for fragment in ("db-password-placeholder", "db.internal", "vpc-docsuri-abc123"):
         assert fragment not in dumped, f"safe_log_dict leaked {fragment!r}"
 
 
