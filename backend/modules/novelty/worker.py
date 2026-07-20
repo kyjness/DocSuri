@@ -1,753 +1,297 @@
+"""워커 엔트리포인트(NFR-NV2-1~3) — 큐 소비 → 실행 잠금 → 자율 루프 실행.
+
+기동: ``python -m backend.modules.novelty.worker`` (API 프로세스와 동일 설정,
+TD-NV2-2 — 배포 워커도 같은 엔트리포인트). 큐·저장소·LLM 미구성은 기동 시점에
+fail-fast한다. 실행 잠금은 ``job_id`` 리스(TTL)로 이중 실행을 막고(멱등), 리스가
+만료된 채 방치된 잡은 stale 스윕이 failed로 수렴시킨다(NFR-NV2-3). 협조적 취소는
+루프의 턴 경계 확인에 위임한다(BR-RA8).
+
+비용: per-job 3중 예산은 루프가 집행한다(FR-45). U6 전역 예산 판정은 잡 접수
+시점(API)의 단일 권위 확인으로 수행되며 워커는 재판정하지 않는다(BLM §9).
+"""
+
 from __future__ import annotations
 
-import json
 import logging
-import os
 import signal
 import sys
 import threading
-from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import Any
 
-from backend.modules.user_docmodel import USER_DOCMODEL_PDF_CONTENT_TYPE
-
-from .adapters import (
-    NoveltyAdapters,
-    NoveltySearchPlan,
-    RetrievalBundle,
-    build_default_novelty_adapters,
+from .domain.loop import LoopDeps, run_loop
+from .domain.models import (
+    TERMINAL_STATES,
+    AgentLoopRun,
+    JobState,
+    NoveltyJob,
+    TerminationReason,
+    utc_now,
+    validate_transition,
 )
-from .models import TERMINAL_STATES, ArtifactKind, EvidenceStatus, InputType, JobState
-from .repository import NoveltyRepository
-from .security import sanitize_external_query
-from .service import NoveltyService, _emit_metric
+from .ports.queue import QueuedJob
+from .ports.store import NoveltyStorePort
+from .ports.tools import ToolRegistry
+from .settings import NoveltySettings
 
 log = logging.getLogger("docsuri.novelty.worker")
 
-
-class InvalidWorkerPayload(ValueError):
-    pass
-
-
-class JobProcessingFailed(RuntimeError):
-    pass
+_CONSUME_TIMEOUT_S = 5.0
+_STALE_SWEEP_EVERY_N_IDLE = 12  # 유휴 consume 12회(~1분)마다 스윕
 
 
-# US-EV4/#268 consume-on-retry: a user-uploaded manuscript PDF's doc-model builds asynchronously
-# (slower than one poll). Rather than terminally DEGRADE, re-drive the job with a bounded backoff.
-_MANUSCRIPT_DOCMODEL_MAX_ATTEMPTS = int(os.getenv("DOCSURI_NOVELTY_MANUSCRIPT_MAX_ATTEMPTS", "8"))
-_MANUSCRIPT_DOCMODEL_RETRY_DELAY_SECONDS = min(
-    900, max(0, int(os.getenv("DOCSURI_NOVELTY_MANUSCRIPT_RETRY_DELAY_SECONDS", "30")))
-)
+@dataclass(slots=True)
+class WorkerDeps:
+    store: NoveltyStorePort
+    queue: Any  # JobQueuePort + ExecutionLockPort
+    llm: Any
+    registry: ToolRegistry
+    settings: NoveltySettings
+    observability: Any | None = None
+    _idle_count: int = field(default=0, init=False)
 
 
-class _Message:
-    def __init__(self, body: dict[str, Any], receipt_handle: str | None = None) -> None:
-        self.body = body
-        self.receipt_handle = receipt_handle
-
-
-def parse_sqs_payload(body: str | bytes | dict[str, Any]) -> tuple[str, str]:
-    if isinstance(body, bytes):
-        body = body.decode("utf-8")
-    payload = json.loads(body) if isinstance(body, str) else body
-    owner_id = payload.get("ownerId") or payload.get("owner_id")
-    job_id = payload.get("jobId") or payload.get("job_id")
-    if not owner_id or not job_id:
-        raise InvalidWorkerPayload("ownerId and jobId are required")
-    return str(owner_id), str(job_id)
-
-
-def _payload_attempt(body: str | bytes | dict[str, Any]) -> int:
-    if isinstance(body, bytes):
-        body = body.decode("utf-8")
-    payload = json.loads(body) if isinstance(body, str) else body
-    value = payload.get("attempt", 0)
-    return value if isinstance(value, int) and not isinstance(value, bool) else 0
-
-
-def process_sqs_payload(
-    repo: NoveltyRepository,
-    body: str | bytes | dict[str, Any],
-    *,
-    adapters: NoveltyAdapters | None = None,
-    observability=None,
-    reenqueue: Callable[[str, str, int], None] | None = None,
-) -> None:
-    owner_id, job_id = parse_sqs_payload(body)
-    process_job(
-        repo,
-        owner_id,
-        job_id,
-        adapters=adapters,
-        observability=observability,
-        attempt=_payload_attempt(body),
-        reenqueue=reenqueue,
-    )
-
-
-def run_worker(
-    *,
-    repo_factory: Callable[[], NoveltyRepository],
-    receive: Callable[[], Iterable[_Message]],
-    ack: Callable[[_Message], None],
-    should_stop: Callable[[], bool],
-    adapters: NoveltyAdapters | None = None,
-    observability=None,
-    reenqueue: Callable[[str, str, int], None] | None = None,
-) -> None:
+def run_worker(deps: WorkerDeps, should_stop) -> None:
+    recover = getattr(deps.queue, "recover_processing", None)
+    if recover is not None:
+        requeued = recover()
+        if requeued:
+            log.info("novelty worker: requeued %d in-flight jobs", requeued)
     while not should_stop():
-        for message in receive():
-            repo = repo_factory()
-            try:
-                process_sqs_payload(
-                    repo,
-                    message.body,
-                    adapters=adapters,
-                    observability=observability,
-                    reenqueue=reenqueue,
-                )
-                commit = getattr(repo, "commit", None)
-                if commit is not None:
-                    commit()
-            except JobProcessingFailed:  # FAILED state was recorded; commit and ack.
-                commit = getattr(repo, "commit", None)
-                if commit is not None:
-                    commit()
-                log.exception("novelty job failed; committed FAILED state")
-            except Exception:  # noqa: BLE001 - leave unacked for retry/DLQ.
-                rollback = getattr(repo, "rollback", None)
-                if rollback is not None:
-                    rollback()
-                log.exception("novelty job failed; leaving message for redelivery")
-                continue
-            finally:
-                close = getattr(repo, "close", None)
-                if close is not None:
-                    close()
-            ack(message)
-            if should_stop():
-                break
-
-
-def _await_manuscript_doc_model(
-    service: NoveltyService,
-    adapters: NoveltyAdapters,
-    job: Any,
-    owner_id: str,
-    job_id: str,
-    attempt: int,
-    reenqueue: Callable[[str, str, int], None] | None,
-) -> bool:
-    """Early retry gate for user-uploaded manuscript PDFs (#268 consume-on-retry). The doc-model
-    builds asynchronously and is usually not ready within one poll; rather than run the LLM
-    pipeline and terminally DEGRADE, re-enqueue the same job with a bounded backoff until the
-    doc-model lands. Returns True when re-enqueued (caller returns without running the pipeline)."""
-    if reenqueue is None or job.manuscript is None:
-        return False
-    if job.inputType is not InputType.MANUSCRIPT:
-        return False
-    if job.manuscript.contentType != USER_DOCMODEL_PDF_CONTENT_TYPE:
-        return False
-    probe = getattr(adapters.similarity, "manuscript_doc_model_ready", None)
-    if probe is None:
-        return False
-    manuscript_ref = {**job.manuscript.model_dump(), "jobId": job_id}
-    if probe(owner_id, manuscript_ref):
-        return False
-    if attempt >= _MANUSCRIPT_DOCMODEL_MAX_ATTEMPTS:
-        return False  # exhausted → run the pipeline; it degrades as before.
-    service.record_event(
-        job,
-        "Waiting for the uploaded PDF to be processed",
-        {"source": _SIMILARITY_SOURCE, "attempt": attempt + 1},
-    )
-    reenqueue(owner_id, job_id, attempt + 1)
-    return True
-
-
-def process_job(
-    repo: NoveltyRepository,
-    owner_id: str,
-    job_id: str,
-    *,
-    adapters: NoveltyAdapters | None = None,
-    observability=None,
-    attempt: int = 0,
-    reenqueue: Callable[[str, str, int], None] | None = None,
-) -> None:
-    adapters = adapters or NoveltyAdapters()
-    service = NoveltyService(repo, observability)
-    try:
-        job = repo.get_job(owner_id, job_id)
-    except KeyError:
-        log.warning("novelty job not found; dropping stale message", extra={"jobId": job_id})
-        return
-    if job.cancelled or job.state in TERMINAL_STATES:
-        return
-    if _await_manuscript_doc_model(service, adapters, job, owner_id, job_id, attempt, reenqueue):
-        return
-    try:
-        degraded_reasons: list[str] = []
-        topic_preview = job.topic[:_PREVIEW_LEN]
-        job = service.advance_state(
-            owner_id,
-            job_id,
-            JobState.RETRIEVING_CORPUS,
-            "Planning expanded search queries",
-            {"source": _LLM_SOURCE, "query": topic_preview},
-        )
-        search_plan = _search_plan(adapters.llm, job.topic)
-        search_queries = _search_queries(search_plan, job.topic)
-        if search_plan.degradedReason:
-            degraded_reasons.append(search_plan.degradedReason)
-            _note_degraded(observability, _LLM_SOURCE)
-        service.record_event(
-            job,
-            "Expanded search queries",
-            {
-                "source": _LLM_SOURCE,
-                "query": topic_preview,
-                "queries": search_queries,
-                "keywords": search_plan.keywords,
-                "intent": search_plan.intent,
-            },
-        )
-        primary_query = search_queries[0]
-
-        # US-NV1(#251) — 자연어 잡은 D5 EvidenceFormationPort로 근거 묶음을 먼저 만들고(AC1),
-        # 아래 U2 full 검색이 결과를 보강한다(AC2). abstain·장애는 저하로 계속(날조 금지, D5).
-        evidence_bundle: RetrievalBundle | None = None
-        if job.inputType is InputType.NATURAL_LANGUAGE:
-            job = service.advance_state(
-                owner_id,
-                job_id,
-                JobState.RETRIEVING_CORPUS,
-                "Forming evidence bundle",
-                {"source": _EVIDENCE_SOURCE, "query": topic_preview},
-            )
-            evidence_bundle = adapters.evidence.form(owner_id, job.topic)
-            service.record_event(
-                job,
-                "Evidence bundle formed",
-                _step_result_payload(
-                    _EVIDENCE_SOURCE, len(evidence_bundle.items), None
-                ),
-            )
-
-        # US-NV7(#257) — 단계 이벤트가 도구/쿼리/발견 수/저하 사유를 싣는다. 검색 단계는
-        # 시작 이벤트(도구+쿼리) 뒤 완료 이벤트(count)를 덧붙이고, LLM 단계는 draft가 이미
-        # 끝난 뒤 전이되므로 시작 이벤트 하나가 결과 수까지 나른다.
-        job = service.advance_state(
-            owner_id,
-            job_id,
-            JobState.RETRIEVING_CORPUS,
-            "Searching U2 corpus",
-            {"source": _CORPUS_SOURCE, "query": primary_query[:_PREVIEW_LEN]},
-        )
-        corpus = _search_corpus(adapters, owner_id, search_queries)
-        corpus_payload, degraded_reason = _payload_from_bundle(corpus)
-        if degraded_reason:
-            degraded_reasons.append(degraded_reason)
-            _note_degraded(observability, _CORPUS_SOURCE)
-        service.record_event(
-            job,
-            "U2 corpus search finished",
-            _step_result_payload(_CORPUS_SOURCE, len(corpus.items), degraded_reason),
-        )
-        if evidence_bundle is not None and evidence_bundle.items:
-            # 근거 묶음이 앞서고 corpus가 보강 — 병합 번들이 artifact와 LLM draft에 흐른다.
-            corpus = _merge_bundles(evidence_bundle, corpus)
-        corpus = _rerank_bundle(corpus, search_plan, job.topic)
-        corpus_payload, _ = _payload_from_bundle(corpus)
-        service.save_artifact(
-            owner_id,
-            job_id,
-            ArtifactKind.EVIDENCE,
-            "검색된 논문 근거",
-            corpus_payload,
-        )
-
-        job = service.advance_state(
-            owner_id,
-            job_id,
-            JobState.SEARCHING_EXTERNAL,
-            "Searching external sources",
-            {"source": _EXTERNAL_SOURCE, "query": primary_query[:_PREVIEW_LEN]},
-        )
-        external = _rerank_bundle(
-            _search_external(adapters, search_queries),
-            search_plan,
-            job.topic,
-        )
-        external_payload, degraded_reason = _payload_from_bundle(external)
-        if degraded_reason:
-            degraded_reasons.append(degraded_reason)
-            _note_degraded(observability, _EXTERNAL_SOURCE)
-        service.record_event(
-            job,
-            "External source search finished",
-            _step_result_payload(_EXTERNAL_SOURCE, len(external.items), degraded_reason),
-        )
-        service.save_artifact(
-            owner_id,
-            job_id,
-            ArtifactKind.EXTERNAL_FINDINGS,
-            "External findings",
-            external_payload,
-        )
-
-        draft = adapters.llm.draft(topic=job.topic, corpus=corpus, external=external)
-        if draft.degradedReason:
-            degraded_reasons.append(draft.degradedReason)
-            _note_degraded(observability, _LLM_SOURCE)
-
-        job = service.advance_state(
-            owner_id,
-            job_id,
-            JobState.SUMMARIZING_PRIOR_WORK,
-            "Summarizing similar completed work",
-            _step_result_payload(
-                _LLM_SOURCE,
-                len(draft.similarWorks.get("items") or []),
-                draft.degradedReason,
-            ),
-        )
-        service.save_artifact(
-            owner_id,
-            job_id,
-            ArtifactKind.SIMILAR_WORKS,
-            "Similar completed work",
-            draft.similarWorks,
-        )
-
-        if job.inputType is InputType.MANUSCRIPT and job.manuscript is not None:
-            job = service.advance_state(
-                owner_id,
-                job_id,
-                JobState.CHECKING_SIMILARITY,
-                "Checking sentence similarity and AI-style risks",
-                {"source": _SIMILARITY_SOURCE, "query": job.manuscript.fileName},
-            )
-            similarity_ref = {**job.manuscript.model_dump(), "jobId": job_id}
-            similarity = adapters.similarity.check(owner_id, similarity_ref)
-            similarity_payload, degraded_reason = _payload_from_bundle(similarity)
-            if degraded_reason:
-                degraded_reasons.append(degraded_reason)
-                _note_degraded(observability, _SIMILARITY_SOURCE)
-            service.record_event(
-                job,
-                "Similarity check finished",
-                _step_result_payload(_SIMILARITY_SOURCE, len(similarity.items), degraded_reason),
-            )
-            service.save_artifact(
-                owner_id,
-                job_id,
-                ArtifactKind.RISK_SIGNALS,
-                "Similarity and style risk signals",
-                similarity_payload,
-            )
-
-        job = service.advance_state(
-            owner_id,
-            job_id,
-            JobState.FORMING_IDEAS,
-            "Forming novelty candidates",
-            _step_result_payload(
-                _LLM_SOURCE,
-                len(draft.noveltyCandidates.get("items") or []),
-                draft.degradedReason,
-            ),
-        )
-        service.save_artifact(
-            owner_id,
-            job_id,
-            ArtifactKind.NOVELTY_CANDIDATES,
-            "Novelty candidates",
-            draft.noveltyCandidates,
-        )
-
-        plan_summary = str(draft.experimentPlan.get("researchQuestion") or "")[:_PREVIEW_LEN]
-        planning_payload: dict[str, Any] = {"source": _LLM_SOURCE}
-        if plan_summary:
-            planning_payload["outputSummary"] = plan_summary
-        job = service.advance_state(
-            owner_id,
-            job_id,
-            JobState.PLANNING_EXPERIMENT,
-            "Drafting experiment plan",
-            planning_payload,
-        )
-        service.save_artifact(
-            owner_id,
-            job_id,
-            ArtifactKind.EXPERIMENT_PLAN,
-            "Experiment plan",
-            draft.experimentPlan,
-        )
-        if degraded_reasons:
-            service.advance_state(
-                owner_id,
-                job_id,
-                JobState.DEGRADED,
-                "Novelty analysis complete with degraded adapters",
-                {"degradedReasons": degraded_reasons},
-            )
-        else:
-            service.advance_state(owner_id, job_id, JobState.COMPLETED, "Novelty analysis complete")
-    except Exception as exc:
-        service.advance_state(
-            owner_id,
-            job_id,
-            JobState.FAILED,
-            "Novelty analysis failed",
-            {"error": str(exc)},
-        )
-        raise JobProcessingFailed(str(exc)) from exc
-
-
-# US-NV7(#257) — 이벤트 payload 키는 FE timelineDetail 계약(source/query/count/outputSummary/
-# reason)을 따른다. 값은 표시용 프리뷰라 _PREVIEW_LEN에서 자른다.
-_PREVIEW_LEN = 160
-_EVIDENCE_SOURCE = "U11 evidence formation"
-_CORPUS_SOURCE = "U2 full search"
-_EXTERNAL_SOURCE = "GitHub · Hugging Face · Zenodo"
-_SIMILARITY_SOURCE = "manuscript similarity"
-_LLM_SOURCE = "Bedrock LLM"
-
-
-def _note_degraded(observability, source: str) -> None:
-    """US-NV9(#259) — 대시보드용 소스별 저하 카운트."""
-    _emit_metric(observability, "novelty.step_degraded", tags={"source": source})
-
-
-def _search_plan(llm: Any, topic: str) -> NoveltySearchPlan:
-    planner = getattr(llm, "plan_search", None)
-    if planner is None:
-        terms = _terms(topic)
-        return NoveltySearchPlan(
-            englishQuery=sanitize_external_query(topic),
-            keywords=terms,
-            subqueries=[sanitize_external_query(topic)],
-            intent={"goal": topic[:240]},
-            rankingSignals=terms,
-        )
-    try:
-        return planner(topic)
-    except Exception as exc:  # noqa: BLE001 - query rewrite failure degrades, not fails, jobs.
-        terms = _terms(topic)
-        query = sanitize_external_query(topic)
-        return NoveltySearchPlan(
-            englishQuery=query,
-            keywords=terms,
-            subqueries=[query],
-            intent={"goal": topic[:240]},
-            rankingSignals=terms,
-            degradedReason=f"LLM query planning unavailable: {type(exc).__name__}",
-        )
-
-
-def _search_queries(plan: NoveltySearchPlan, topic: str) -> list[str]:
-    return _dedupe_texts(
-        sanitize_external_query(query)
-        for query in [plan.englishQuery, *plan.subqueries, topic]
-        if sanitize_external_query(query)
-    )[:4] or [sanitize_external_query(topic)]
-
-
-def _search_corpus(adapters: NoveltyAdapters, owner_id: str, queries: list[str]) -> RetrievalBundle:
-    bundles: list[RetrievalBundle] = []
-    degraded: list[str] = []
-    for query in queries:
-        try:
-            bundles.append(_with_query_used(adapters.corpus.full_search(owner_id, query), query))
-        except Exception as exc:  # noqa: BLE001 - one expanded query must not fail the job.
-            if len(queries) == 1:
-                raise
-            degraded.append(f"U2 full search failed for expanded query: {type(exc).__name__}")
-    return _join_bundles(bundles, degraded)
-
-
-def _search_external(adapters: NoveltyAdapters, queries: list[str]) -> RetrievalBundle:
-    bundles: list[RetrievalBundle] = []
-    degraded: list[str] = []
-    for query in queries:
-        try:
-            bundles.append(_with_query_used(adapters.external.search(query), query))
-        except Exception as exc:  # noqa: BLE001 - one expanded query must not fail the job.
-            degraded.append(f"external search failed for expanded query: {type(exc).__name__}")
-    return _join_bundles(bundles, degraded)
-
-
-def _with_query_used(bundle: RetrievalBundle, query: str) -> RetrievalBundle:
-    return RetrievalBundle(
-        items=[{**item, "queryUsed": item.get("queryUsed") or query} for item in bundle.items],
-        evidenceStatus=bundle.evidenceStatus,
-        degradedReason=bundle.degradedReason,
-    )
-
-
-def _join_bundles(
-    bundles: list[RetrievalBundle], degraded: list[str] | None = None
-) -> RetrievalBundle:
-    items: list[dict[str, Any]] = []
-    reasons = list(degraded or [])
-    for bundle in bundles:
-        items.extend(bundle.items)
-        if bundle.degradedReason:
-            reasons.append(bundle.degradedReason)
-    items = _dedupe_items(items)
-    return RetrievalBundle(
-        items=items,
-        evidenceStatus=EvidenceStatus.SUPPORTED if items else EvidenceStatus.ABSTAINED,
-        degradedReason="; ".join(_dedupe_texts(reasons)) or None,
-    )
-
-
-def _rerank_bundle(bundle: RetrievalBundle, plan: NoveltySearchPlan, topic: str) -> RetrievalBundle:
-    terms = _rank_terms(plan, topic)
-    items = [_with_evidence_note(item, terms) for item in bundle.items]
-    return RetrievalBundle(
-        items=sorted(items, key=lambda item: float(item.get("confidence") or 0), reverse=True),
-        evidenceStatus=bundle.evidenceStatus,
-        degradedReason=bundle.degradedReason,
-    )
-
-
-def _with_evidence_note(item: dict[str, Any], terms: list[str]) -> dict[str, Any]:
-    text = _item_text(item)
-    matches = [term for term in terms if term.lower() in text.lower()][:4]
-    refs = item.get("sourceRefs") or item.get("source_refs") or []
-    return {
-        **item,
-        "confidence": _confidence(matches, bool(refs), text),
-        "evidenceNote": _evidence_note(item, matches),
-    }
-
-
-def _confidence(matches: list[str], has_refs: bool, text: str) -> float:
-    base = 0.55 if has_refs else 0.25
-    match_bonus = min(0.35, len(matches) * 0.08)
-    text_bonus = 0.05 if len(text) > 120 else 0
-    return round(min(0.95, base + match_bonus + text_bonus), 2)
-
-
-def _evidence_note(item: dict[str, Any], matches: list[str]) -> str:
-    title = str(item.get("title") or "이 논문").strip()
-    snippet = str(item.get("summary") or item.get("abstractSnippet") or "").strip()
-    if matches and snippet:
-        return f"{title}에서 {', '.join(matches)} 관련 내용이 확인됩니다: {snippet[:180]}"
-    if matches:
-        return f"{title}에서 {', '.join(matches)} 관련 표현이 제목 또는 메타데이터에 확인됩니다."
-    if snippet:
-        return f"{title}의 요약 내용을 근거로 질의와의 관련성을 판단했습니다: {snippet[:180]}"
-    return f"{title}는 출처가 제공된 검색 결과라 후보 근거로 포함했습니다."
-
-
-def _rank_terms(plan: NoveltySearchPlan, topic: str) -> list[str]:
-    intent_values: list[str] = []
-    for value in plan.intent.values():
-        if isinstance(value, list):
-            intent_values.extend(str(item) for item in value)
-        else:
-            intent_values.append(str(value))
-    return _dedupe_texts(
-        [*plan.keywords, *plan.rankingSignals, *intent_values, *_terms(topic)]
-    )[:16]
-
-
-def _item_text(item: dict[str, Any]) -> str:
-    return " ".join(
-        str(item.get(key) or "")
-        for key in ("title", "summary", "abstractSnippet", "sourceName")
-    )
-
-
-def _terms(text: str) -> list[str]:
-    return _dedupe_texts(
-        token.strip(".,;:()[]{}\"'")
-        for token in str(text).split()
-        if len(token.strip(".,;:()[]{}\"'")) >= 2
-    )[:8]
-
-
-def _dedupe_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    seen: set[str] = set()
-    result: list[dict[str, Any]] = []
-    for item in items:
-        key = _item_key(item)
-        if key in seen:
+        message = deps.queue.consume(_CONSUME_TIMEOUT_S)
+        if message is None:
+            deps._idle_count += 1
+            if deps._idle_count >= _STALE_SWEEP_EVERY_N_IDLE:
+                deps._idle_count = 0
+                sweep_stale_jobs(deps)
             continue
-        seen.add(key)
-        result.append(item)
-    return result
+        deps._idle_count = 0
+        process_message(deps, message)
 
 
-def _item_key(item: dict[str, Any]) -> str:
-    refs = item.get("sourceRefs") or item.get("source_refs") or []
-    if refs and isinstance(refs[0], dict):
-        ref = refs[0]
-        source = ref.get("sourceKey") or ref.get("url") or ref.get("identifier") or item
-        return f"{item.get('title') or ''}|{source}"
-    return str(item.get("sourceUrl") or item.get("url") or item.get("title") or item)
+def process_message(deps: WorkerDeps, message: QueuedJob) -> None:
+    """한 메시지 처리 — 멱등: 종단 잡 재전달은 ack만, 잠금 실패는 재전달에 맡긴다."""
+    store = deps.store
+    job = store.get_job_for_worker(message.job_id)
+    if job is None or job.state in TERMINAL_STATES:
+        deps.queue.ack(message)
+        return
+    if not deps.queue.acquire(message.job_id, deps.settings.lock_ttl_seconds):
+        # 다른 워커가 실행 중 — ack하지 않고 재전달(리스 만료 후 회수)에 맡긴다.
+        return
+    try:
+        if job.cancel_requested:
+            _finalize_cancelled(store, job)
+            deps.queue.ack(message)
+            return
+        if job.loop_run is None:
+            job.loop_run = AgentLoopRun(budget=deps.settings.build_loop_budget())
+        # 리스 하트비트 — 한 턴이 TTL(기본 120s)보다 길어도(LLM 재시도·근거형성)
+        # 잠금이 중간에 만료되지 않도록 백그라운드에서 주기 갱신한다(코드 리뷰 반영).
+        with _LeaseHeartbeat(deps.queue, message.job_id, deps.settings.lock_ttl_seconds):
+            outcome = run_loop(
+                job, LoopDeps(store=store, llm=deps.llm, registry=deps.registry)
+            )
+        _emit(deps.observability, f"novelty.loop_{outcome.reason.value}")
+        deps.queue.ack(message)
+    except Exception:  # noqa: BLE001 — 잡 하나의 실패가 워커를 죽이지 않는다
+        log.exception("novelty worker: job %s crashed", message.job_id)
+        _mark_failed(store, message.job_id, "worker crashed while running the loop")
+        deps.queue.ack(message)
+    finally:
+        deps.queue.release(message.job_id)
 
 
-def _dedupe_texts(values) -> list[str]:
-    seen: set[str] = set()
-    result: list[str] = []
-    for value in values:
-        text = str(value).strip()
-        key = text.lower()
-        if text and key not in seen:
-            seen.add(key)
-            result.append(text)
-    return result
+def sweep_stale_jobs(deps: WorkerDeps) -> int:
+    """방치된 잡을 failed로 수렴(NFR-NV2-3) — 실행 잠금이 만료된 실행 중 잡과,
+    큐 메시지가 유실된 채 남은 RECEIVED 잡(적재 실패·독약 메시지 폐기 잔재) 모두."""
+    cutoff = utc_now() - timedelta(seconds=deps.settings.stale_after_seconds)
+    swept = 0
+    for job in deps.store.list_stale_active(updated_before=cutoff, limit=20):
+        # 유효한 리스가 남아 있으면(acquire 실패) 실행 중 — 건드리지 않는다.
+        if not deps.queue.acquire(job.job_id, deps.settings.lock_ttl_seconds):
+            continue
+        try:
+            reason = (
+                "stale job — never picked up (queue message lost)"
+                if job.state is JobState.RECEIVED
+                else "stale job — worker lease expired"
+            )
+            _mark_failed(deps.store, job.job_id, reason)
+            _emit(deps.observability, "novelty.job_stale_failed")
+            swept += 1
+        finally:
+            deps.queue.release(job.job_id)
+    return swept
 
 
-def _step_result_payload(source: str, count: int, reason: str | None) -> dict[str, Any]:
-    payload: dict[str, Any] = {"source": source, "count": count}
-    if reason:
-        payload["reason"] = reason
-    return payload
+class _LeaseHeartbeat:
+    """실행 리스 백그라운드 갱신 — TTL의 1/3 주기로 renew(SQS visibility 하트비트
+    등가). 스토어 프록시에 갱신을 숨기던 방식을 대체한다(턴 길이와 무관하게 유지)."""
+
+    def __init__(self, queue: Any, job_id: str, ttl_seconds: float) -> None:
+        self._queue = queue
+        self._job_id = job_id
+        self._ttl = ttl_seconds
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._beat, daemon=True)
+
+    def _beat(self) -> None:
+        interval = max(self._ttl / 3.0, 1.0)
+        while not self._stop.wait(interval):
+            try:
+                self._queue.renew(self._job_id, self._ttl)
+            except Exception:  # noqa: BLE001 — 갱신 실패는 다음 주기 재시도
+                log.warning("novelty worker: lease renew failed for %s", self._job_id)
+
+    def __enter__(self) -> _LeaseHeartbeat:
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self._stop.set()
+        self._thread.join(timeout=5.0)
 
 
-def _merge_bundles(first: RetrievalBundle, second: RetrievalBundle) -> RetrievalBundle:
-    """US-NV1(#251) — 근거 묶음 + corpus 보강 병합. 개별 저하 사유는 각 단계에서 이미 기록됨."""
-    items = [*first.items, *second.items]
-    return RetrievalBundle(
-        items=items,
-        evidenceStatus=EvidenceStatus.SUPPORTED if items else EvidenceStatus.ABSTAINED,
-        degradedReason=second.degradedReason,
-    )
+def _finalize_cancelled(store: NoveltyStorePort, job: NoveltyJob) -> None:
+    """워커 픽업 전 취소된 잡 — 루프 진입 없이 종단 처리(협조적 취소의 즉시 경로)."""
+    validate_transition(job.state, JobState.CANCELLED)
+    job.state = JobState.CANCELLED
+    if job.loop_run is not None:
+        job.loop_run.termination_reason = TerminationReason.CANCELLED
+        job.loop_run.ended_at = utc_now()
+    job.updated_at = utc_now()
+    job.completed_at = utc_now()
+    store.update_job(job)
 
 
-def _payload_from_bundle(bundle: RetrievalBundle) -> tuple[dict[str, Any], str | None]:
-    source_refs = _collect_source_refs(bundle.items)
-    degraded_reason = bundle.degradedReason
-    status = bundle.evidenceStatus
-    if status is EvidenceStatus.SUPPORTED and not source_refs:
-        status = EvidenceStatus.UNSUPPORTED
-        degraded_reason = degraded_reason or "supported adapter output missing sourceRefs"
-    return (
-        {
-            "items": bundle.items,
-            "evidenceStatus": status.value,
-            "degradedReason": degraded_reason,
-            "sourceRefs": source_refs,
-        },
-        degraded_reason,
-    )
+def _mark_failed(store: NoveltyStorePort, job_id: str, reason: str) -> None:
+    job = store.get_job_for_worker(job_id)
+    if job is None or job.state in TERMINAL_STATES:
+        return
+    job.state = JobState.FAILED
+    job.error_message = reason
+    if job.loop_run is not None:
+        job.loop_run.termination_reason = TerminationReason.FATAL_ERROR
+        job.loop_run.ended_at = utc_now()
+    job.updated_at = utc_now()
+    job.completed_at = utc_now()
+    store.update_job(job)
 
 
-def _collect_source_refs(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    refs: list[dict[str, Any]] = []
-    for item in items:
-        for ref in item.get("sourceRefs") or item.get("source_refs") or []:
-            if isinstance(ref, dict):
-                refs.append(ref)
-    return refs
+def _emit(observability: Any | None, name: str) -> None:
+    if observability is None:
+        return
+    try:
+        observability.emit_metric(name)
+    except Exception:  # noqa: BLE001 — 계측은 best-effort side path
+        log.debug("novelty worker: metric emit failed", exc_info=True)
 
 
-_shutdown = threading.Event()
-
-
-def _on_signal(signum, _frame) -> None:
-    log.info("received %s; draining then exiting", signal.Signals(signum).name)
-    _shutdown.set()
-
-
-def main(argv: list[str] | None = None) -> int:
-    del argv
-    logging.basicConfig(level=logging.INFO)
-    signal.signal(signal.SIGTERM, _on_signal)
-    signal.signal(signal.SIGINT, _on_signal)
-
-    queue_url = os.getenv("DOCSURI_NOVELTY_JOB_QUEUE_URL")
-    if not queue_url:
-        log.error("DOCSURI_NOVELTY_JOB_QUEUE_URL not set; nothing to consume")
-        return 1
-
+def build_worker_deps() -> WorkerDeps:
+    """env 조립 — 미구성 의존성은 fail-fast(NFR-NV2-1)."""
     from backend.config import Settings
     from backend.db import make_engine, make_session_factory
 
-    from .repository import SqlNoveltyRepository
+    from .adapters.local_wiring import build_llm, build_queue, build_store, build_tool_registry
 
-    settings = Settings.from_env()
-    engine = make_engine(settings.database_url)
-    session_factory = make_session_factory(engine)
+    settings = NoveltySettings.from_env()
+    if not settings.queue_configured:
+        raise SystemExit("novelty worker: job queue is not configured")
+    if not settings.llm_configured:
+        raise SystemExit("novelty worker: LLM provider is not configured")
+    from backend.wiring import _is_postgres
 
-    def repo_factory() -> NoveltyRepository:
-        return SqlNoveltyRepository(session_factory())
-
-    import boto3
-
-    sqs = boto3.client(
-        "sqs",
-        region_name=os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION", "ap-northeast-2"),
+    app_settings = Settings.from_env()
+    database_url = app_settings.database_url
+    # 판별은 앱쉘과 동일 헬퍼 공유 — 드라이버 표기 변형이 생겨도 한 곳만 갱신.
+    if not _is_postgres(database_url):
+        raise SystemExit("novelty worker: postgres DATABASE_URL is required")
+    session_factory = make_session_factory(make_engine(database_url))
+    store = build_store(session_factory)
+    queue = build_queue(settings)
+    llm = build_llm(settings)
+    orchestrator, grounding_hook = _build_corpus_deps()
+    evidence_port = _build_evidence_port()
+    registry = build_tool_registry(
+        settings,
+        orchestrator=orchestrator,
+        grounding_hook=grounding_hook,
+        evidence_port=evidence_port,
     )
-    observability, cost_guard, telemetry_store = _build_worker_ops()
+    return WorkerDeps(
+        store=store,
+        queue=queue,
+        llm=llm,
+        registry=registry,
+        settings=settings,
+        observability=_build_observability(),
+    )
 
-    def receive() -> list[_Message]:
-        resp = sqs.receive_message(
-            QueueUrl=queue_url,
-            MaxNumberOfMessages=1,
-            WaitTimeSeconds=20,
-        )
-        return [
-            _Message(json.loads(message["Body"]), message["ReceiptHandle"])
-            for message in resp.get("Messages", [])
-        ]
 
-    def ack(message: _Message) -> None:
-        if message.receipt_handle:
-            sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=message.receipt_handle)
-
-    def reenqueue(o_id: str, j_id: str, attempt: int) -> None:
-        sqs.send_message(
-            QueueUrl=queue_url,
-            MessageBody=json.dumps({"ownerId": o_id, "jobId": j_id, "attempt": attempt}),
-            DelaySeconds=_MANUSCRIPT_DOCMODEL_RETRY_DELAY_SECONDS,
-        )
-
-    log.info("novelty worker started; polling queue")
+def _build_observability() -> Any | None:
+    """앱쉘과 동일한 U6 관측 허브 — 워커 메트릭(novelty.loop_* 등)의 실제 배선."""
     try:
-        run_worker(
-            repo_factory=repo_factory,
-            receive=receive,
-            ack=ack,
-            should_stop=_shutdown.is_set,
-            adapters=build_default_novelty_adapters(
-                observability=observability,
-                cost_guard=cost_guard,
-                user_docmodel=_build_user_docmodel(),
-            ),
-            observability=observability,
-            reenqueue=reenqueue,
-        )
-    finally:
-        close = getattr(telemetry_store, "close", None)
-        if close is not None:
-            close()
-    log.info("novelty worker shut down gracefully")
+        from backend.app import _build_observability as build
+
+        observability, _telemetry_store = build()
+        return observability
+    except Exception:  # noqa: BLE001 — 계측 조립 실패가 워커를 막지 않는다
+        log.warning("novelty worker: observability unavailable", exc_info=True)
+        return None
+
+
+def _build_corpus_deps() -> tuple[Any | None, Any | None]:
+    """U2 full 검색 의존성 — discovery 설정이 있을 때만(없으면 도구 미노출)."""
+    try:
+        from discovery.adapters.settings import DiscoverySettings
+        from discovery.real_wiring import build_real_orchestrator
+        from docsuri_ops.grounding import GroundingEnforcementHook
+
+        discovery_settings = DiscoverySettings.from_env()
+        if not discovery_settings.search_enabled:
+            return None, None
+        bundle = build_real_orchestrator(discovery_settings)
+        return bundle.orchestrator, GroundingEnforcementHook()
+    except Exception:  # noqa: BLE001 — 코퍼스 검색은 선택 의존성, 부재 시 도구 축소
+        log.warning("novelty worker: corpus search unavailable", exc_info=True)
+        return None, None
+
+
+def _build_evidence_port() -> Any | None:
+    """U11 EvidenceFormationPort — evidence 설정이 있을 때만."""
+    try:
+        from backend.modules.evidence.real_wiring import build_evidence_orchestrator
+        from backend.modules.evidence.service import EvidenceFormationService
+        from backend.modules.evidence.settings import EvidenceSettings
+
+        evidence_settings = EvidenceSettings.from_env()
+        if not evidence_settings.evidence_enabled:
+            return None
+        bundle = build_evidence_orchestrator(evidence_settings)
+        return EvidenceFormationService(orchestrator=bundle.orchestrator)
+    except Exception:  # noqa: BLE001 — 근거형성은 선택 의존성(자연어 잡은 fatal로 표면화)
+        log.warning("novelty worker: evidence engine unavailable", exc_info=True)
+        return None
+
+
+def main(argv: list[str] | None = None) -> int:
+    logging.basicConfig(level=logging.INFO)
+    deps = build_worker_deps()
+    stop = {"flag": False}
+
+    def _handle_signal(signum, frame) -> None:  # noqa: ARG001
+        log.info("novelty worker: draining (signal %s)", signum)
+        stop["flag"] = True
+
+    signal.signal(signal.SIGTERM, _handle_signal)
+    signal.signal(signal.SIGINT, _handle_signal)
+    log.info("novelty worker: started (tools=%s)", sorted(deps.registry.names()))
+    run_worker(deps, should_stop=lambda: stop["flag"])
+    log.info("novelty worker: stopped")
     return 0
 
 
-def _build_worker_ops() -> tuple[Any, Any, Any]:
-    try:
-        from backend.app import _build_observability, _build_ops_dashboard_service
-    except ImportError:
-        return None, None, None
-
-    observability, telemetry_store = _build_observability()
-    _, cost_guard, _, _ = _build_ops_dashboard_service(telemetry_store)
-    return observability, cost_guard, telemetry_store
-
-
-def _build_user_docmodel():
-    from backend.modules.user_docmodel import build_default_user_docmodel_coordinator
-
-    return build_default_user_docmodel_coordinator()
-
-
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    sys.exit(main(sys.argv[1:]))

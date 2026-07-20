@@ -16,6 +16,9 @@ from ..domain.models import (
     TERMINAL_STATES,
     ArtifactRecord,
     InvalidTransitionError,
+    JobState,
+    NotionConnection,
+    NotionExport,
     NoveltyChatMessage,
     NoveltyJob,
     ToolCallRecord,
@@ -33,6 +36,8 @@ class InMemoryNoveltyStore:
         self._artifacts: dict[tuple[str, str], ArtifactRecord] = {}
         self._trace: dict[str, list[ToolCallRecord]] = {}
         self._messages: dict[str, list[NoveltyChatMessage]] = {}
+        self._exports: dict[str, NotionExport] = {}
+        self._connections: dict[str, NotionConnection] = {}
 
     # ── 잡 ──
     def create_job(self, job: NoveltyJob) -> None:
@@ -78,12 +83,41 @@ class InMemoryNoveltyStore:
         if job is None or job.owner_id != owner_id:
             return False
         del self._jobs[job_id]
-        # cascade — 산출물·트레이스·대화 동반 삭제(BR-NV18 개정).
+        # cascade — 산출물·트레이스·대화·export 동반 삭제(BR-NV18 개정).
         for key in [key for key in self._artifacts if key[0] == job_id]:
             del self._artifacts[key]
         self._trace.pop(job_id, None)
         self._messages.pop(job_id, None)
+        self._exports.pop(job_id, None)
         return True
+
+    # ── Notion export·연결 ──
+    def get_export(self, owner_id: str, job_id: str) -> NotionExport | None:
+        export = self._exports.get(job_id)
+        if export is None or export.owner_id != owner_id:
+            return None
+        return export.model_copy(deep=True)
+
+    def save_export(self, export: NotionExport) -> None:
+        self._exports[export.job_id] = export.model_copy(deep=True)
+
+    def get_notion_connection(self, owner_id: str) -> NotionConnection | None:
+        connection = self._connections.get(owner_id)
+        return None if connection is None else connection.model_copy(deep=True)
+
+    def save_notion_connection(self, connection: NotionConnection) -> None:
+        self._connections[connection.owner_id] = connection.model_copy(deep=True)
+
+    def delete_notion_connection(self, owner_id: str) -> None:
+        self._connections.pop(owner_id, None)
+
+    def delete_all_jobs(self, owner_id: str) -> int:
+        """소유 잡 전부 벌크 삭제(전체 초기화 — SEC-14 계열) — cascade 동일."""
+        deleted = 0
+        for job_id in [j.job_id for j in self._jobs.values() if j.owner_id == owner_id]:
+            if self.delete_job(owner_id, job_id):
+                deleted += 1
+        return deleted
 
     def request_cancel(self, owner_id: str, job_id: str) -> bool:
         job = self._jobs.get(job_id)
@@ -95,6 +129,18 @@ class InMemoryNoveltyStore:
     def is_cancel_requested(self, job_id: str) -> bool:
         job = self._jobs.get(job_id)
         return bool(job and job.cancel_requested)
+
+    def list_stale_active(self, *, updated_before, limit: int) -> list[NoveltyJob]:
+        """오래 방치된 활성 잡 — 실행 중(investigating/reporting)과 미픽업(received,
+        큐 메시지 유실 잔재) 모두 stale 감지 입력이다."""
+        stale = [
+            job
+            for job in self._jobs.values()
+            if job.state in (JobState.RECEIVED, JobState.INVESTIGATING, JobState.REPORTING)
+            and job.updated_at < updated_before
+        ]
+        stale.sort(key=lambda job: job.updated_at)
+        return [job.model_copy(deep=True) for job in stale[:limit]]
 
     # ── 산출물 ──
     def save_artifact(self, record: ArtifactRecord) -> None:
