@@ -87,6 +87,12 @@ class ArxivHttpSource:
         # B3 raw-content cache. Default off → fetch_full_text hits arXiv exactly as before.
         self._raw_store = raw_store
         self._raw_cache_mode = raw_cache_mode
+        # Single-entry HTML memo, keyed (base, arxiv_id) — mirrors the asset source's e-print
+        # memo. Ingesting one paper asks for its HTML twice: fetch_full_text takes the plain-text
+        # rung and discards the markup, then the doc-model builder asks for the ar5iv source. At
+        # 1 request per 3s that second GET doubled the wall-clock cost of every fresh paper.
+        # A miss is memoized too, so a paper with no ar5iv build is not re-requested.
+        self._html_memo: tuple[tuple[str, str], str | None] | None = None
 
     def harvest_seed(self, category_filter: CategoryFilter) -> Iterable[MetadataRecord]:
         for category in category_filter.categories:
@@ -225,7 +231,13 @@ class ArxivHttpSource:
             for tier in (SourceTier.ar5iv, SourceTier.native_html):
                 cached = store.get_raw(pid, ver, tier.value)
                 if cached:
-                    return cached.decode("utf-8"), f"cache://{tier.value}", tier
+                    text = cached.decode("utf-8")
+                    # Prime the memo so the doc-model rung reads the cached bytes too; it calls
+                    # _get_html_at directly and would otherwise go to the network in cache mode.
+                    base = self._base_for_tier(tier)
+                    if base is not None:
+                        self._html_memo = ((base, metadata.identifier.arxiv_id), text)
+                    return text, f"cache://{tier.value}", tier
             if mode == "only":
                 return None, "", SourceTier.native_html
         html, url = self._try_get_html(metadata.identifier.arxiv_id)
@@ -291,7 +303,18 @@ class ArxivHttpSource:
         return None, last_url
 
     def _get_html_at(self, base: str, arxiv_id: str) -> str | None:
-        """GET one HTML base; ``None`` on any non-200, non-HTML, or transport error."""
+        """One HTML base, memoized; ``None`` on any non-200, non-HTML, or transport error."""
+        key = (base, arxiv_id)
+        if self._html_memo is not None and self._html_memo[0] == key:
+            return self._html_memo[1]
+        html = self._fetch_html_at(base, arxiv_id)
+        self._html_memo = (key, html)
+        return html
+
+    def _base_for_tier(self, tier: SourceTier) -> str | None:
+        return next((base for base, t in self._html_source_tiers if t is tier), None)
+
+    def _fetch_html_at(self, base: str, arxiv_id: str) -> str | None:
         import httpx
 
         url = f"{base}/{arxiv_id}"

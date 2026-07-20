@@ -189,7 +189,7 @@ def test_semantic_scholar_provider_fetches_oa_pdf_records() -> None:
         base_url="https://example.test",
         transport=httpx.MockTransport(handler),
     )
-    records = source.fetch_incremental(datetime(2026, 1, 1, tzinfo=UTC), ("cs.LG",))
+    records = list(source.fetch_incremental(datetime(2026, 1, 1, tzinfo=UTC), ("cs.LG",)))
 
     assert len(records) == 1
     assert records[0].source_name is SourceName.SEMANTIC_SCHOLAR
@@ -230,7 +230,7 @@ def test_semantic_scholar_rejects_spoofed_license_host() -> None:
         transport=httpx.MockTransport(handler),
     )
 
-    assert source.fetch_incremental(datetime(2025, 1, 1, tzinfo=UTC), ("cs.LG",)) == []
+    assert list(source.fetch_incremental(datetime(2025, 1, 1, tzinfo=UTC), ("cs.LG",))) == []
 
 
 def test_semantic_scholar_bulk_request_omits_limit_and_updated_field() -> None:
@@ -248,7 +248,9 @@ def test_semantic_scholar_bulk_request_omits_limit_and_updated_field() -> None:
         base_url="https://example.test",
         transport=httpx.MockTransport(handler),
     )
-    source.fetch_incremental(datetime(2026, 1, 1, tzinfo=UTC), ("cs.LG",))
+    # list() drives the generator: the harvest is lazy now, so a bare call would make no
+    # request at all and leave the assertions below inspecting nothing.
+    list(source.fetch_incremental(datetime(2026, 1, 1, tzinfo=UTC), ("cs.LG",)))
 
     assert captured["has_limit"] is False
     assert "updated" not in captured["fields"]
@@ -292,7 +294,7 @@ def test_paged_harvest_retries_transient_429_then_succeeds(monkeypatch) -> None:
         base_url="https://example.test",
         transport=httpx.MockTransport(handler),
     )
-    records = source.fetch_incremental(datetime(2025, 1, 1, tzinfo=UTC), ("cs.LG",))
+    records = list(source.fetch_incremental(datetime(2025, 1, 1, tzinfo=UTC), ("cs.LG",)))
 
     assert calls["n"] == 2  # first 429 retried, second attempt served 200
     assert len(records) == 1
@@ -334,7 +336,7 @@ def test_openalex_provider_reconstructs_abstract_and_pdf_record() -> None:
         transport=httpx.MockTransport(handler),
     )
     # Windowed by publication_date (2025-01-01) now, not updated_date — since must precede it.
-    records = source.fetch_incremental(datetime(2024, 12, 31, tzinfo=UTC), ("cs.LG",))
+    records = list(source.fetch_incremental(datetime(2024, 12, 31, tzinfo=UTC), ("cs.LG",)))
 
     assert len(records) == 1
     assert records[0].source_name is SourceName.OPENALEX

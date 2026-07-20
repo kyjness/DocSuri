@@ -4,7 +4,7 @@ import ipaddress
 import json
 import socket
 import time
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urljoin, urlsplit, urlunsplit
@@ -116,8 +116,14 @@ class SemanticScholarCorpusSource:
         since: datetime,
         categories: Sequence[str],
         until: datetime | None = None,
-    ) -> list[SourcePaperRecord]:
-        records: list[SourcePaperRecord] = []
+    ) -> Iterator[SourcePaperRecord]:
+        """Yield in-window records page by page.
+
+        Streams rather than accumulating: a full-corpus window is tens of thousands of records
+        each carrying an abstract, and the caller only iterates — it queues a job per record. A
+        page failure mid-harvest now leaves the earlier pages' jobs queued instead of discarding
+        the run, which matches the arXiv harvest and is safe because the jobs are idempotent.
+        """
         token: str | None = None
         # Server-side publication-year bound: the bulk endpoint has no date filter but accepts a
         # `year` range, cutting the harvest from "all of CS, all years" to the window's years —
@@ -158,10 +164,10 @@ class SemanticScholarCorpusSource:
             for item in payload.get("data", []) or []:
                 record = _semantic_record(item)
                 if record and _in_window(record, since, until):
-                    records.append(record)
+                    yield record
             token = payload.get("token")
             if not token:
-                return records
+                return
             # Pace pages to honour the SS key's ~1 req/s cumulative cap (only between pages, so
             # single-page tests don't sleep). 429s still happen under contention — the retry above
             # absorbs those.
@@ -196,8 +202,8 @@ class OpenAlexCorpusSource:
         since: datetime,
         categories: Sequence[str],
         until: datetime | None = None,
-    ) -> list[SourcePaperRecord]:
-        records: list[SourcePaperRecord] = []
+    ) -> Iterator[SourcePaperRecord]:
+        """Yield in-window records page by page — see the Semantic Scholar source for why."""
         cursor = "*"
         while cursor:
             # Window by publication_date, not updated_date: updated_date range queries are
@@ -245,9 +251,8 @@ class OpenAlexCorpusSource:
             for item in payload.get("results", []) or []:
                 record = _openalex_record(item)
                 if record and _in_window(record, since, until):
-                    records.append(record)
+                    yield record
             cursor = (payload.get("meta") or {}).get("next_cursor")
-        return records
 
     def fetch_pdf(self, record: SourcePaperRecord) -> bytes:
         return _fetch_record_pdf(

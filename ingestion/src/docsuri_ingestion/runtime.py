@@ -163,7 +163,21 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
                 webp_quality=settings.asset_webp_quality,
             )
         )
-        asset_source = ArxivAssetSource(timeout_seconds=settings.asset_fetch_timeout_seconds)
+        asset_source = ArxivAssetSource(
+            timeout_seconds=settings.asset_fetch_timeout_seconds,
+            # Share the raw cache with the full-text source so an assets-enabled paper does not
+            # download its PDF once for text and again for crops.
+            raw_store=(
+                S3RawContentStore(
+                    bucket=settings.s3_bucket or "",
+                    prefix=settings.raw_cache_prefix,
+                    kms_key_id=settings.asset_kms_key_id,
+                )
+                if raw_cache_on
+                else None
+            ),
+            raw_cache_mode=settings.raw_cache_mode if raw_cache_on else "off",
+        )
         asset_store = S3RdsAssetStore(
             bucket=settings.s3_bucket or "",
             control_plane_dsn=settings.control_plane_dsn or "",

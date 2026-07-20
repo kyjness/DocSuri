@@ -348,6 +348,7 @@ class AssetExtractor:
         hits: list[_CropHit] = []
         try:
             pdfium_doc = pdfium.PdfDocument(pdf)
+            bitmaps = _PageBitmapCache()
             with pdfplumber.open(io.BytesIO(pdf)) as plumber:
                 for page_no, page in enumerate(plumber.pages):
                     captions = _page_captions(page.extract_text_lines() or [])
@@ -366,7 +367,9 @@ class AssetExtractor:
                         bbox = _caption_bbox(page, prims, words)
                         if bbox is None:
                             continue  # no graphic assigned → caption was a body cross-reference
-                        image = _render_bbox_to_png(pdfium_doc, page_no, bbox, plumber_page=page)
+                        image = _render_bbox_to_png(
+                            pdfium_doc, page_no, bbox, plumber_page=page, bitmap_cache=bitmaps
+                        )
                         image = self._normalizer.normalize(image) if image else None
                         if image is None:
                             continue
@@ -523,8 +526,28 @@ def _caption_bbox(page, prims: dict[str, list], words: Sequence[dict]):
     )
 
 
+class _PageBitmapCache:
+    """The most recently rendered page, held as a single entry.
+
+    Rendering a page at 2x costs tens of milliseconds and roughly 6 MB, and a page carrying five
+    figures used to be rendered five times — once per crop. Both crop callers walk their specs in
+    page order (the caption path iterates pages directly, the spec path receives them sorted by
+    page), so one entry removes the repeats without letting a long paper pin every page in memory.
+    """
+
+    def __init__(self) -> None:
+        self._page_no: int | None = None
+        self._pil = None
+
+    def page_image(self, pdfium_doc, page_no: int):
+        if self._page_no != page_no or self._pil is None:
+            self._pil = pdfium_doc[page_no].render(scale=2.0).to_pil()
+            self._page_no = page_no
+        return self._pil
+
+
 def _render_bbox_to_png(
-    pdfium_doc, page_no: int, bbox, *, plumber_page=None
+    pdfium_doc, page_no: int, bbox, *, plumber_page=None, bitmap_cache=None
 ) -> bytes | None:
     """Render the bbox region of a page to PNG bytes via pypdfium2 (points-space bbox -> pixels).
 
@@ -534,8 +557,9 @@ def _render_bbox_to_png(
     bitmap so an over-range coordinate can't yield an empty/oversized crop."""
     try:
         page = pdfium_doc[page_no]
-        bitmap = page.render(scale=2.0)
-        pil = bitmap.to_pil()
+        cache = bitmap_cache if bitmap_cache is not None else _PageBitmapCache()
+        # crop() copies, so successive crops of one cached page cannot disturb each other.
+        pil = cache.page_image(pdfium_doc, page_no)
         if plumber_page is not None:
             width_pt, height_pt = plumber_page.width, plumber_page.height
         else:
@@ -584,11 +608,12 @@ def crop_assets_from_specs(
     try:
         doc = pdfium.PdfDocument(pdf)
         page_count = len(doc)
+        bitmaps = _PageBitmapCache()
         for spec in specs:
             page_idx = spec.page - 1  # GROBID coords are 1-based
             if page_idx < 0 or page_idx >= page_count:
                 continue
-            raw = _render_bbox_to_png(doc, page_idx, spec.bbox)
+            raw = _render_bbox_to_png(doc, page_idx, spec.bbox, bitmap_cache=bitmaps)
             image = normalizer.normalize(raw) if raw else None
             if image is None:
                 continue
