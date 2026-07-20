@@ -358,9 +358,19 @@ def _get_bytes(
     """
     import httpx
 
-    from docsuri_ingestion.http_limits import ResponseTooLargeError, read_capped
+    from docsuri_ingestion.http_limits import (
+        http_failures_as_ingestion_errors,
+        raise_for_fetch_status,
+        read_capped,
+    )
 
-    try:
+    with http_failures_as_ingestion_errors(
+        stage=stage,
+        timeout_message="external corpus request timed out",
+        failure_message="external corpus request failed",
+        rejected_message="external corpus PDF rejected (too large or non-public host)",
+        also_rejected=(SsrfBlockedError,),
+    ):
         with httpx.Client(
             timeout=timeout_seconds, follow_redirects=False, transport=transport
         ) as client:
@@ -382,24 +392,10 @@ def _get_bytes(
                     if response.is_redirect and location:
                         current = urljoin(current, location)
                         continue
-                    _raise_for_corpus_status(response.status_code, stage)
+                    raise_for_fetch_status(
+                        response.status_code, stage=stage, source_label="external corpus source"
+                    )
                     return read_capped(response)
-    except httpx.TimeoutException as exc:
-        raise RetriableIngestionError(
-            "external corpus request timed out", reason=FailureReason.TIMEOUT, stage=stage
-        ) from exc
-    except httpx.HTTPError as exc:
-        raise RetriableIngestionError(
-            "external corpus request failed",
-            reason=FailureReason.FETCH_FAILURE,
-            stage=stage,
-        ) from exc
-    except (ResponseTooLargeError, SsrfBlockedError) as exc:
-        raise PermanentIngestionError(
-            "external corpus PDF rejected (too large or non-public host)",
-            reason=FailureReason.FETCH_FAILURE,
-            stage=stage,
-        ) from exc
     raise PermanentIngestionError(
         "external corpus PDF exceeded redirect limit",
         reason=FailureReason.FETCH_FAILURE,
@@ -448,23 +444,6 @@ def _pin_url(url: str, ip: str) -> str:
     return urlunsplit((parts.scheme, netloc, parts.path or "/", parts.query, ""))
 
 
-def _raise_for_corpus_status(status_code: int, stage: str) -> None:
-    if status_code == 429 or status_code >= 500:
-        raise RetriableIngestionError(
-            f"external corpus source returned {status_code}",
-            reason=FailureReason.RATE_LIMITED
-            if status_code == 429
-            else FailureReason.FETCH_FAILURE,
-            stage=stage,
-        )
-    if status_code >= 400:
-        raise PermanentIngestionError(
-            f"external corpus source returned {status_code}",
-            reason=FailureReason.FETCH_FAILURE,
-            stage=stage,
-        )
-
-
 def _request(
     url: str,
     *,
@@ -476,33 +455,28 @@ def _request(
 ) -> bytes:
     import httpx
 
-    from docsuri_ingestion.http_limits import ResponseTooLargeError, read_capped
+    from docsuri_ingestion.http_limits import (
+        http_failures_as_ingestion_errors,
+        raise_for_fetch_status,
+        read_capped,
+    )
 
-    try:
+    with http_failures_as_ingestion_errors(
+        stage=stage,
+        timeout_message="external corpus request timed out",
+        failure_message="external corpus request failed",
+        rejected_message="external corpus metadata exceeded size cap",
+    ):
         with (
             httpx.Client(
                 timeout=timeout_seconds, follow_redirects=True, transport=transport
             ) as client,
             client.stream("GET", url, params=params, headers=headers) as response,
         ):
-            _raise_for_corpus_status(response.status_code, stage)
+            raise_for_fetch_status(
+                response.status_code, stage=stage, source_label="external corpus source"
+            )
             return read_capped(response)  # metadata JSON is capped too (NFR §0.5)
-    except httpx.TimeoutException as exc:
-        raise RetriableIngestionError(
-            "external corpus request timed out", reason=FailureReason.TIMEOUT, stage=stage
-        ) from exc
-    except httpx.HTTPError as exc:
-        raise RetriableIngestionError(
-            "external corpus request failed",
-            reason=FailureReason.FETCH_FAILURE,
-            stage=stage,
-        ) from exc
-    except ResponseTooLargeError as exc:
-        raise PermanentIngestionError(
-            "external corpus metadata exceeded size cap",
-            reason=FailureReason.FETCH_FAILURE,
-            stage=stage,
-        ) from exc
 
 
 def _response_json(raw: bytes, stage: str) -> dict[str, Any]:

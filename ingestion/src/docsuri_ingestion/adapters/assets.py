@@ -11,6 +11,7 @@ import json
 from collections.abc import Sequence
 from typing import Any
 
+from docsuri_ingestion.adapters.aws import s3_put
 from docsuri_ingestion.domain.assets import AssetManifest, ExtractedAsset, FigureTableAsset
 from docsuri_ingestion.domain.enums import AssetSourceMode, AssetType
 from docsuri_ingestion.domain.models import MetadataRecord
@@ -111,18 +112,14 @@ class S3RdsAssetStore:
 
     def _put_object(self, asset: ExtractedAsset) -> str:
         meta = asset.meta
-        key = f"{self._prefix}/{meta.paper_id}/v{meta.version}/{meta.asset_id}.webp"
-        kwargs: dict[str, Any] = {
-            "Bucket": self._bucket,
-            "Key": key,
-            "Body": asset.image,
-            "ContentType": "image/webp",
-            "ServerSideEncryption": "aws:kms" if self._kms_key_id else "AES256",
-        }
-        if self._kms_key_id:
-            kwargs["SSEKMSKeyId"] = self._kms_key_id
-        self._s3.put_object(**kwargs)
-        return f"s3://{self._bucket}/{key}"
+        return s3_put(
+            self._s3,
+            bucket=self._bucket,
+            key=f"{self._prefix}/{meta.paper_id}/v{meta.version}/{meta.asset_id}.webp",
+            body=asset.image,
+            content_type="image/webp",
+            kms_key_id=self._kms_key_id,
+        )
 
     # ---- RDS ----
 

@@ -357,53 +357,25 @@ class ArxivHttpSource:
     def _get_bytes(self, url: str, *, params: dict[str, str] | None, stage: str) -> bytes:
         import httpx
 
-        from docsuri_ingestion.http_limits import ResponseTooLargeError, read_capped
+        from docsuri_ingestion.http_limits import (
+            http_failures_as_ingestion_errors,
+            raise_for_fetch_status,
+            read_capped,
+        )
 
         self._rate_limiter.acquire()
-        try:
+        with http_failures_as_ingestion_errors(
+            stage=stage,
+            timeout_message="arXiv request timed out",
+            failure_message="arXiv request failed",
+            rejected_message="arXiv response exceeded size cap",
+        ):
             with (
                 httpx.Client(timeout=self._timeout_seconds, follow_redirects=True) as client,
                 client.stream("GET", url, params=params) as response,
             ):
-                if response.status_code == 404:
-                    raise PermanentIngestionError(
-                        "arXiv resource not found",
-                        reason=FailureReason.FETCH_FAILURE,
-                        stage=stage,
-                    )
-                if response.status_code == 429 or response.status_code >= 500:
-                    raise RetriableIngestionError(
-                        f"arXiv returned retriable status {response.status_code}",
-                        reason=FailureReason.RATE_LIMITED
-                        if response.status_code == 429
-                        else FailureReason.FETCH_FAILURE,
-                        stage=stage,
-                    )
-                if response.status_code >= 400:
-                    raise PermanentIngestionError(
-                        f"arXiv returned permanent status {response.status_code}",
-                        reason=FailureReason.FETCH_FAILURE,
-                        stage=stage,
-                    )
+                raise_for_fetch_status(response.status_code, stage=stage, source_label="arXiv")
                 return read_capped(response)
-        except httpx.TimeoutException as exc:
-            raise RetriableIngestionError(
-                "arXiv request timed out",
-                reason=FailureReason.TIMEOUT,
-                stage=stage,
-            ) from exc
-        except httpx.HTTPError as exc:
-            raise RetriableIngestionError(
-                "arXiv request failed",
-                reason=FailureReason.FETCH_FAILURE,
-                stage=stage,
-            ) from exc
-        except ResponseTooLargeError as exc:
-            raise PermanentIngestionError(
-                "arXiv response exceeded size cap",
-                reason=FailureReason.FETCH_FAILURE,
-                stage=stage,
-            ) from exc
 
 
 def _parse_xml(body: str, *, stage: str, label: str) -> ET.Element:

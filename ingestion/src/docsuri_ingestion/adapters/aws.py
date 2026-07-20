@@ -39,23 +39,19 @@ class S3FullTextStore:
         self._kms_key_id = kms_key_id
 
     def put_full_text(self, paper: ParsedPaper) -> str:
-        key = f"{self._prefix}/{paper.paper_id}/v{paper.version}.txt"
-        kwargs: dict[str, Any] = {
-            "Bucket": self._bucket,
-            "Key": key,
-            "Body": paper.full_text.encode("utf-8"),
-            "ContentType": "text/plain; charset=utf-8",
-            "ServerSideEncryption": "aws:kms" if self._kms_key_id else "AES256",
-            "Metadata": {
+        return s3_put(
+            self._client,
+            bucket=self._bucket,
+            key=f"{self._prefix}/{paper.paper_id}/v{paper.version}.txt",
+            body=paper.full_text.encode("utf-8"),
+            content_type="text/plain; charset=utf-8",
+            kms_key_id=self._kms_key_id,
+            metadata={
                 "paper-id": paper.paper_id,
                 "version": str(paper.version),
                 "license": paper.license_url,
             },
-        }
-        if self._kms_key_id:
-            kwargs["SSEKMSKeyId"] = self._kms_key_id
-        self._client.put_object(**kwargs)
-        return f"s3://{self._bucket}/{key}"
+        )
 
 
 class S3DocModelStore:
@@ -81,18 +77,13 @@ class S3DocModelStore:
         return f"{self._prefix}/{paper_id}/v{version}.json"
 
     def get(self, paper_id: str, version: int) -> DocModel | None:
-        from botocore.exceptions import ClientError
-
+        raw = s3_get_or_none(
+            self._client, bucket=self._bucket, key=self._key(paper_id, version)
+        )
+        if raw is None:
+            return None
         try:
-            response = self._client.get_object(
-                Bucket=self._bucket, Key=self._key(paper_id, version)
-            )
-        except ClientError as exc:
-            if exc.response.get("Error", {}).get("Code") in {"NoSuchKey", "404", "NotFound"}:
-                return None
-            raise
-        try:
-            return DocModel.model_validate_json(response["Body"].read())
+            return DocModel.model_validate_json(raw)
         except ValidationError:
             # An artifact cached under an older schema (e.g. pre-``fullText``) no longer
             # deserializes. Treat it as a cache miss so the builder rebuilds and re-caches a
@@ -101,25 +92,21 @@ class S3DocModelStore:
             return None
 
     def put(self, doc: DocModel) -> str:
-        key = self._key(doc.meta.paperId, doc.meta.version)
-        kwargs: dict[str, Any] = {
-            "Bucket": self._bucket,
-            "Key": key,
+        return s3_put(
+            self._client,
+            bucket=self._bucket,
+            key=self._key(doc.meta.paperId, doc.meta.version),
             # exclude_none keeps optional fields off the wire; consumers ignore unknowns.
-            "Body": doc.model_dump_json(exclude_none=True).encode("utf-8"),
-            "ContentType": "application/json; charset=utf-8",
-            "ServerSideEncryption": "aws:kms" if self._kms_key_id else "AES256",
-            "Metadata": {
+            body=doc.model_dump_json(exclude_none=True).encode("utf-8"),
+            content_type="application/json; charset=utf-8",
+            kms_key_id=self._kms_key_id,
+            metadata={
                 "paper-id": doc.meta.paperId,
                 "version": str(doc.meta.version),
                 "parser-version": doc.meta.provenance.parserVersion,
                 "schema-version": doc.meta.provenance.schemaVersion,
             },
-        }
-        if self._kms_key_id:
-            kwargs["SSEKMSKeyId"] = self._kms_key_id
-        self._client.put_object(**kwargs)
-        return f"s3://{self._bucket}/{key}"
+        )
 
     def remove(self, paper_id: str) -> None:
         paginator = self._client.get_paginator("list_objects_v2")
@@ -163,32 +150,20 @@ class S3RawContentStore:
         *,
         content_type: str = "application/octet-stream",
     ) -> str:
-        key = self._key(paper_id, version, tier)
-        kwargs: dict[str, Any] = {
-            "Bucket": self._bucket,
-            "Key": key,
-            "Body": data,
-            "ContentType": content_type,
-            "ServerSideEncryption": "aws:kms" if self._kms_key_id else "AES256",
-            "Metadata": {"paper-id": paper_id, "version": str(version), "tier": tier},
-        }
-        if self._kms_key_id:
-            kwargs["SSEKMSKeyId"] = self._kms_key_id
-        self._client.put_object(**kwargs)
-        return f"s3://{self._bucket}/{key}"
+        return s3_put(
+            self._client,
+            bucket=self._bucket,
+            key=self._key(paper_id, version, tier),
+            body=data,
+            content_type=content_type,
+            kms_key_id=self._kms_key_id,
+            metadata={"paper-id": paper_id, "version": str(version), "tier": tier},
+        )
 
     def get_raw(self, paper_id: str, version: int, tier: str) -> bytes | None:
-        from botocore.exceptions import ClientError
-
-        try:
-            response = self._client.get_object(
-                Bucket=self._bucket, Key=self._key(paper_id, version, tier)
-            )
-        except ClientError as exc:
-            if exc.response.get("Error", {}).get("Code") in {"NoSuchKey", "404", "NotFound"}:
-                return None
-            raise
-        return response["Body"].read()
+        return s3_get_or_none(
+            self._client, bucket=self._bucket, key=self._key(paper_id, version, tier)
+        )
 
 
 class S3UserDocumentSource:
@@ -219,7 +194,7 @@ class S3UserDocumentSource:
             response = self._client.get_object(Bucket=self._bucket, Key=object_key)
         except ClientError as exc:
             code = exc.response.get("Error", {}).get("Code")
-            if code in {"NoSuchKey", "404", "NotFound"}:
+            if code in _S3_MISSING_CODES:
                 raise PermanentIngestionError(
                     "user document object not found",
                     reason=FailureReason.FETCH_FAILURE,
@@ -319,6 +294,56 @@ class BedrockCohereEmbeddingPort:
                     stage="embed",
                 )
         return vectors
+
+
+# S3 error codes that mean "no such object" rather than a real fault. get_object reports a
+# missing key differently depending on whether the caller holds s3:ListBucket, so all three
+# spellings must count as a miss.
+_S3_MISSING_CODES = frozenset({"NoSuchKey", "404", "NotFound"})
+
+
+def s3_put(
+    client: Any,
+    *,
+    bucket: str,
+    key: str,
+    body: bytes,
+    content_type: str,
+    kms_key_id: str | None,
+    metadata: dict[str, str] | None = None,
+) -> str:
+    """PUT an encrypted object and return its ``s3://`` URI.
+
+    Server-side encryption is KMS when a key is configured and SSE-S3 otherwise; keeping that
+    branch here means no writer can accidentally ship an unencrypted object.
+    """
+    kwargs: dict[str, Any] = {
+        "Bucket": bucket,
+        "Key": key,
+        "Body": body,
+        "ContentType": content_type,
+        "ServerSideEncryption": "aws:kms" if kms_key_id else "AES256",
+    }
+    if metadata:
+        kwargs["Metadata"] = metadata
+    if kms_key_id:
+        kwargs["SSEKMSKeyId"] = kms_key_id
+    client.put_object(**kwargs)
+    return f"s3://{bucket}/{key}"
+
+
+def s3_get_or_none(client: Any, *, bucket: str, key: str) -> bytes | None:
+    """Object bytes, or None when the key is absent — an absent cache entry is a miss, not a
+    fault. Every other ClientError propagates so real S3 faults stay retriable."""
+    from botocore.exceptions import ClientError
+
+    try:
+        response = client.get_object(Bucket=bucket, Key=key)
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") in _S3_MISSING_CODES:
+            return None
+        raise
+    return response["Body"].read()
 
 
 def admin_client_from_settings(settings: IngestionSettings):
