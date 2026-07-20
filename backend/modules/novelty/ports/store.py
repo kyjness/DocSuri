@@ -7,10 +7,13 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Protocol
 
 from ..domain.models import (
     ArtifactRecord,
+    NotionConnection,
+    NotionExport,
     NoveltyChatMessage,
     NoveltyJob,
     ToolCallRecord,
@@ -37,9 +40,13 @@ class NoveltyStorePort(Protocol):
 
     def delete_job(self, owner_id: str, job_id: str) -> bool: ...
 
+    def delete_all_jobs(self, owner_id: str) -> int: ...
+
     def request_cancel(self, owner_id: str, job_id: str) -> bool: ...
 
     def is_cancel_requested(self, job_id: str) -> bool: ...
+
+    def list_stale_active(self, *, updated_before: datetime, limit: int) -> list[NoveltyJob]: ...
 
     # ── 산출물 (종류별 최신 검증본) ──
     def save_artifact(self, record: ArtifactRecord) -> None: ...
@@ -61,3 +68,14 @@ class NoveltyStorePort(Protocol):
     def list_messages(
         self, owner_id: str, job_id: str, *, after: str | None, limit: int
     ) -> list[NoveltyChatMessage]: ...
+
+    # ── Notion export·연결 (루프 밖 — BR-RA12, 승인 게이트 BR-NV17) ──
+    def get_export(self, owner_id: str, job_id: str) -> NotionExport | None: ...
+
+    def save_export(self, export: NotionExport) -> None: ...
+
+    def get_notion_connection(self, owner_id: str) -> NotionConnection | None: ...
+
+    def save_notion_connection(self, connection: NotionConnection) -> None: ...
+
+    def delete_notion_connection(self, owner_id: str) -> None: ...

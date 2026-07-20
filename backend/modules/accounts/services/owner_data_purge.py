@@ -34,10 +34,11 @@ OWNER_SCOPED_TABLES: tuple[OwnerScopedTable, ...] = (
     OwnerScopedTable("research_messages"),
     OwnerScopedTable("research_jobs"),
     OwnerScopedTable("novelty_messages"),
-    OwnerScopedTable("novelty_progress_events"),
     OwnerScopedTable("novelty_artifacts"),
     OwnerScopedTable("novelty_notion_exports"),
     OwnerScopedTable("novelty_notion_connections"),
+    # novelty_tool_call_records(결정 트레이스)는 owner_id 컬럼이 없고
+    # novelty_jobs FK ON DELETE CASCADE로 함께 삭제된다(BR-NV18 개정, migrations/004).
     OwnerScopedTable("novelty_jobs"),
     OwnerScopedTable("saved_searches"),
     OwnerScopedTable("library_items"),

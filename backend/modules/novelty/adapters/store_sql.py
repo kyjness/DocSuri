@@ -30,6 +30,9 @@ from ..domain.models import (
     ArtifactKind,
     ArtifactRecord,
     InvalidTransitionError,
+    JobState,
+    NotionConnection,
+    NotionExport,
     NoveltyChatMessage,
     NoveltyJob,
     ToolCallRecord,
@@ -98,6 +101,32 @@ class MessageV2Table(NoveltyV2Base):
     content: Mapped[str] = mapped_column(String(12000), nullable=False)
     resulting_artifact_ref: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class NotionExportTable(NoveltyV2Base):
+    __tablename__ = "novelty_notion_exports"
+
+    export_id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True)
+    job_id: Mapped[str] = mapped_column(Uuid(as_uuid=False), nullable=False, index=True)
+    owner_id: Mapped[str] = mapped_column(Uuid(as_uuid=False), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    preview_object_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    notion_page_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    approved_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    exported_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[Any] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class NotionConnectionTable(NoveltyV2Base):
+    __tablename__ = "novelty_notion_connections"
+
+    owner_id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True)
+    token_encrypted: Mapped[str] = mapped_column(String(2000), nullable=False)
+    parent_page_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[Any] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class SqlNoveltyStore:
@@ -177,12 +206,40 @@ class SqlNoveltyStore:
             row = session.get(NoveltyJobV2Table, job_id)
             if row is None or row.owner_id != owner_id:
                 return False
-            for table in (ToolCallRecordTable, ArtifactV2Table, MessageV2Table):
+            for table in (
+                ToolCallRecordTable,
+                ArtifactV2Table,
+                MessageV2Table,
+                NotionExportTable,
+            ):
                 session.execute(delete(table).where(table.job_id == job_id))
             session.delete(row)
             session.commit()
             self._trace_seq_cache.pop(job_id, None)
             return True
+
+    def delete_all_jobs(self, owner_id: str) -> int:
+        """소유 잡 전부를 한 트랜잭션으로 벌크 삭제 — 잡당 개별 삭제의 왕복 제거."""
+        with self._session_factory() as session:
+            job_ids = session.scalars(
+                select(NoveltyJobV2Table.job_id).where(NoveltyJobV2Table.owner_id == owner_id)
+            ).all()
+            if not job_ids:
+                return 0
+            for table in (
+                ToolCallRecordTable,
+                ArtifactV2Table,
+                MessageV2Table,
+                NotionExportTable,
+            ):
+                session.execute(delete(table).where(table.job_id.in_(job_ids)))
+            result = session.execute(
+                delete(NoveltyJobV2Table).where(NoveltyJobV2Table.owner_id == owner_id)
+            )
+            session.commit()
+            for job_id in job_ids:
+                self._trace_seq_cache.pop(job_id, None)
+            return int(result.rowcount or 0)
 
     def request_cancel(self, owner_id: str, job_id: str) -> bool:
         with self._session_factory() as session:
@@ -197,6 +254,25 @@ class SqlNoveltyStore:
         with self._session_factory() as session:
             row = session.get(NoveltyJobV2Table, job_id)
             return bool(row and row.cancel_requested)
+
+    def list_stale_active(self, *, updated_before: Any, limit: int) -> list[NoveltyJob]:
+        with self._session_factory() as session:
+            rows = session.scalars(
+                select(NoveltyJobV2Table)
+                .where(
+                    NoveltyJobV2Table.state.in_(
+                        (
+                            JobState.RECEIVED.value,
+                            JobState.INVESTIGATING.value,
+                            JobState.REPORTING.value,
+                        )
+                    ),
+                    NoveltyJobV2Table.updated_at < updated_before,
+                )
+                .order_by(NoveltyJobV2Table.updated_at.asc())
+                .limit(limit)
+            ).all()
+            return [_job_model(row) for row in rows]
 
     # ── 산출물 ──
     def save_artifact(self, record: ArtifactRecord) -> None:
@@ -350,13 +426,13 @@ class SqlNoveltyStore:
                 .order_by(MessageV2Table.created_at.asc(), MessageV2Table.message_id.asc())
             )
             if after is not None:
-                # 커서 경로만 선행 소유권 확인 — 비소유자 커서 탐침에 KeyError로
-                # 존재 여부가 노출되지 않게 한다(무커서 폴링 핫패스는 단일 쿼리).
-                if not self._owns(session, owner_id, job_id):
-                    return []
+                # 앵커 행 자체가 소유자를 알려주므로 별도 잡 조회 없이 판정한다.
+                # 비소유자의 유효 커서는 KeyError 대신 빈 페이지 — 존재 비노출.
                 anchor = session.get(MessageV2Table, after)
                 if anchor is None or anchor.job_id != job_id:
                     raise KeyError(f"unknown cursor: {after}")
+                if anchor.owner_id != owner_id:
+                    return []
                 stmt = stmt.where(
                     (MessageV2Table.created_at > anchor.created_at)
                     | (
@@ -379,10 +455,93 @@ class SqlNoveltyStore:
                 for row in rows
             ]
 
-    @staticmethod
-    def _owns(session: Session, owner_id: str, job_id: str) -> bool:
-        row = session.get(NoveltyJobV2Table, job_id)
-        return row is not None and row.owner_id == owner_id
+    # ── Notion export·연결 ──
+    def get_export(self, owner_id: str, job_id: str) -> NotionExport | None:
+        with self._session_factory() as session:
+            row = session.scalars(
+                select(NotionExportTable).where(
+                    NotionExportTable.job_id == job_id,
+                    NotionExportTable.owner_id == owner_id,
+                )
+            ).first()
+            if row is None:
+                return None
+            return NotionExport(
+                export_id=row.export_id,
+                job_id=row.job_id,
+                owner_id=row.owner_id,
+                status=row.status,
+                preview_object_key=row.preview_object_key,
+                notion_page_id=row.notion_page_id,
+                error_message=row.error_message,
+                approved_at=row.approved_at,
+                exported_at=row.exported_at,
+                created_at=row.created_at,
+                updated_at=row.updated_at,
+            )
+
+    def save_export(self, export: NotionExport) -> None:
+        with self._session_factory() as session:
+            row = session.scalars(
+                select(NotionExportTable).where(NotionExportTable.job_id == export.job_id)
+            ).first()
+            if row is None:
+                row = NotionExportTable(
+                    export_id=export.export_id,
+                    job_id=export.job_id,
+                    owner_id=export.owner_id,
+                    created_at=export.created_at,
+                    status=export.status.value,
+                    updated_at=export.updated_at,
+                )
+                session.add(row)
+            row.status = export.status.value
+            row.preview_object_key = export.preview_object_key
+            row.notion_page_id = export.notion_page_id
+            row.error_message = export.error_message
+            row.approved_at = export.approved_at
+            row.exported_at = export.exported_at
+            row.updated_at = export.updated_at
+            session.commit()
+
+    def get_notion_connection(self, owner_id: str) -> NotionConnection | None:
+        with self._session_factory() as session:
+            row = session.get(NotionConnectionTable, owner_id)
+            if row is None:
+                return None
+            return NotionConnection(
+                owner_id=row.owner_id,
+                token_encrypted=row.token_encrypted,
+                parent_page_id=row.parent_page_id,
+                created_at=row.created_at,
+                updated_at=row.updated_at,
+            )
+
+    def save_notion_connection(self, connection: NotionConnection) -> None:
+        with self._session_factory() as session:
+            row = session.get(NotionConnectionTable, connection.owner_id)
+            if row is None:
+                session.add(
+                    NotionConnectionTable(
+                        owner_id=connection.owner_id,
+                        token_encrypted=connection.token_encrypted,
+                        parent_page_id=connection.parent_page_id,
+                        created_at=connection.created_at,
+                        updated_at=connection.updated_at,
+                    )
+                )
+            else:
+                row.token_encrypted = connection.token_encrypted
+                row.parent_page_id = connection.parent_page_id
+                row.updated_at = connection.updated_at
+            session.commit()
+
+    def delete_notion_connection(self, owner_id: str) -> None:
+        with self._session_factory() as session:
+            session.execute(
+                delete(NotionConnectionTable).where(NotionConnectionTable.owner_id == owner_id)
+            )
+            session.commit()
 
 
 def _job_row(job: NoveltyJob) -> NoveltyJobV2Table:

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import ipaddress
 import os
-import re
 from urllib.parse import urlparse
 
 ALLOWED_EXTERNAL_HOSTS = frozenset(
@@ -18,11 +17,6 @@ ALLOWED_EXTERNAL_HOSTS = frozenset(
         "api.notion.com",
     }
 )
-
-
-def sanitize_external_query(text: str, *, max_len: int = 180) -> str:
-    cleaned = re.sub(r"\s+", " ", text).strip()
-    return cleaned[:max_len]
 
 
 def encrypt_secret(plaintext: str) -> str:
