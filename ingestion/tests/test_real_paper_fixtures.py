@@ -350,3 +350,58 @@ def test_real_pdf_crops_render_for_every_tei_spec() -> None:
         assert asset.meta.asset_id in referenced, (
             f"{asset.meta.asset_id} rendered but no doc-model block references it"
         )
+
+
+# ---------------------------------------------------------------------------------------
+# Chunking — what actually reaches the search index, fed from the real parsed documents.
+# ---------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("kind", ["html", "tei"])
+def test_real_document_chunks_into_indexable_pieces(kind: str) -> None:
+    """Parsing correctly is not enough: the doc-model still has to chunk.
+
+    Chunking is where a parse regression becomes a *search* regression — a document that parses
+    into one giant block, or into blocks whose ids do not resolve, still produces a DocModel but
+    ruins retrieval. Synthetic input cannot show that, because it is already chunk-sized.
+    """
+    from docsuri_ingestion.processors import Chunker
+
+    doc = _parse(TRIPLE) if kind == "html" else _parse_tei()
+    chunker = Chunker()
+    chunk_set = chunker.chunk_doc_model(doc)
+    chunks = chunk_set.chunks
+
+    assert chunks, "a full paper produced no chunks"
+    assert len(chunks) <= chunker.max_chunks_per_paper
+    # A real paper must not collapse into a couple of chunks, nor shatter into hundreds.
+    assert 20 <= len(chunks) <= 100, f"{kind}: implausible chunk count {len(chunks)}"
+
+    for chunk in chunks:
+        assert chunk.text.strip(), f"{kind}: empty chunk at ordinal {chunk.ordinal}"
+        assert len(chunk.text) <= chunker.max_chunk_chars, (
+            f"{kind}: chunk {chunk.ordinal} is {len(chunk.text)} chars, over the embedding cap"
+        )
+
+    # Ordinals are the chunk id input, so gaps or repeats would collide ids across a paper.
+    assert [c.ordinal for c in chunks] == list(range(len(chunks)))
+    assert len({c.chunk_id for c in chunks}) == len(chunks), "duplicate chunk ids"
+
+    # Block refs are what lets a search hit anchor back to a place in the document. Every ref
+    # must name a block that really exists, or the citation lands nowhere.
+    def walk(sections):
+        for section in sections:
+            yield section
+            yield from walk(section.sections or [])
+
+    real_blocks = {(s.id, b.root.id) for s in walk(doc.sections) for b in s.blocks}
+    for chunk in chunks:
+        assert chunk.block_refs, f"{kind}: chunk {chunk.ordinal} has no block refs to anchor on"
+        for ref in chunk.block_refs:
+            assert (ref.section_id, ref.block_id) in real_blocks, (
+                f"{kind}: chunk {chunk.ordinal} references unknown block "
+                f"{ref.section_id}/{ref.block_id}"
+            )
+
+    # Chunks must span the document, not just its opening.
+    assert len({c.section for c in chunks}) >= 10, f"{kind}: chunks cover too few sections"
