@@ -6,11 +6,11 @@ import time
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
-from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from dataclasses import dataclass
 from typing import Any, TypeVar
 
 from docsuri_shared.events import IngestError, IngestionFailureSignal
+from docsuri_shared.resilience import CircuitBreaker
 
 from .domain.enums import FailureClass, FailureReason
 from .domain.errors import IngestionError, RetriableIngestionError
@@ -71,6 +71,12 @@ class TimeoutRunner:
         return result
 
 
+# Consecutive availability failures that trip a dependency, and how long it stays tripped.
+# Carried over from the per-unit breaker this replaced.
+_CIRCUIT_FAILURE_THRESHOLD = 5
+_CIRCUIT_RECOVERY_SECONDS = 60.0
+
+
 class CircuitOpenError(RetriableIngestionError):
     def __init__(self, dependency: str) -> None:
         super().__init__(
@@ -78,49 +84,6 @@ class CircuitOpenError(RetriableIngestionError):
             reason=FailureReason.DEPENDENCY_UNAVAILABLE,
             stage=dependency,
         )
-
-
-@dataclass(slots=True)
-class CircuitBreaker:
-    dependency: str
-    failure_threshold: int = 5
-    recovery_timeout_seconds: float = 60.0
-    _failures: int = 0
-    _opened_at: datetime | None = None
-    _lock: threading.Lock = field(default_factory=threading.Lock)
-
-    def call(self, func: Callable[[], T]) -> T:
-        if not self.allow_call():
-            raise CircuitOpenError(self.dependency)
-        try:
-            result = func()
-        except Exception as exc:
-            # Only availability failures (retriable/timeout) are a dependency-health signal;
-            # permanent errors (404, validation) must not trip the breaker on healthy deps.
-            if is_retriable(exc):
-                self.record_failure()
-            raise
-        self.record_success()
-        return result
-
-    def allow_call(self) -> bool:
-        with self._lock:
-            if self._opened_at is None:
-                return True
-            return datetime.now(UTC) - self._opened_at >= timedelta(
-                seconds=self.recovery_timeout_seconds
-            )
-
-    def record_success(self) -> None:
-        with self._lock:
-            self._failures = 0
-            self._opened_at = None
-
-    def record_failure(self) -> None:
-        with self._lock:
-            self._failures += 1
-            if self._failures >= self.failure_threshold:
-                self._opened_at = datetime.now(UTC)
 
 
 class TokenBucket:
@@ -201,10 +164,33 @@ class IngestionResilienceService:
         self._circuits: dict[str, CircuitBreaker] = {}
 
     def dependency_call(self, dependency: str, stage: str, func: Callable[[], T]) -> T:
-        circuit = self._circuits.setdefault(dependency, CircuitBreaker(dependency))
+        circuit = self._circuits.setdefault(
+            dependency,
+            CircuitBreaker(
+                dependency,
+                failure_threshold=_CIRCUIT_FAILURE_THRESHOLD,
+                recovery_seconds=_CIRCUIT_RECOVERY_SECONDS,
+            ),
+        )
 
         def guarded() -> T:
-            return circuit.call(lambda: self._timeout_runner.run(func))
+            # guard(): leaving the block without success() counts as a failure, so an outage
+            # needs no explicit report and a half-open probe slot cannot leak.
+            with circuit.guard() as permit:
+                if permit is None:
+                    raise CircuitOpenError(dependency)
+                try:
+                    result = self._timeout_runner.run(func)
+                except Exception as exc:
+                    # Only availability failures are a dependency-health signal. A permanent
+                    # error (404, validation) means the dependency RESPONDED, so it counts as
+                    # circuit-success — otherwise a run of bad papers would trip a healthy
+                    # dependency and stall the worker.
+                    if not is_retriable(exc):
+                        permit.success()
+                    raise
+                permit.success()
+                return result
 
         return self.retry(stage, guarded)
 
