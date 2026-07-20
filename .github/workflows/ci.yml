@@ -130,8 +130,19 @@ jobs:
       run:
         working-directory: backend/modules/summarization
     # Same reason as the ingestion lane: the FR-17 reader's SQL is DSN-gated and was skipping.
-    # The test creates its own DDL, so an empty database is enough.
+    # The test creates its own DDL, so an empty database is enough. minio + redis stand in for
+    # the retired AWS deployment the integration tests used to target — boto3 honours
+    # AWS_ENDPOINT_URL_S3, so the adapters are the shipped ones, unmodified.
     services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
       postgres:
         image: postgres:16-alpine
         env:
@@ -151,12 +162,38 @@ jobs:
           enable-cache: true
       - name: Lint
         run: uv run ruff check .
+      # Started as a step, not a `services:` entry: minio needs the `server /data` command and
+      # service containers cannot set one. Pinned by digest — the tag is mutable.
+      - name: Start MinIO (S3 stand-in)
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=docsuri -e MINIO_ROOT_PASSWORD=docsuri123 \
+            minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e \
+            server /data
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:9000/minio/health/live && echo "minio ready" && exit 0
+            sleep 2
+          done
+          echo "minio failed to start" >&2
+          docker logs minio >&2
+          exit 1
       # --all-extras, not `--extra api` like discovery: test_docmodel_endpoint.py imports the S3
       # adapter (botocore, from the `real` extra) at collection time and does NOT self-skip when
       # it's absent. The live-service integration tests still self-skip without credentials.
       - name: Tests (needs the `real` extra — s3_docmodel imports botocore)
         env:
           DOCSURI_TEST_PG_DSN: postgresql://postgres:docsuri@localhost:5432/docsuri
+          # Local stand-ins for the retired AWS deployment. The integration tests create the
+          # bucket themselves and never call an LLM, so the key is a placeholder.
+          DOCSURI_SUMMARY_BUCKET: docsuri
+          DOCSURI_REDIS_URL: redis://localhost:6379/0
+          DATABASE_URL: postgresql://postgres:docsuri@localhost:5432/docsuri
+          AWS_ENDPOINT_URL_S3: http://localhost:9000
+          AWS_ACCESS_KEY_ID: docsuri
+          AWS_SECRET_ACCESS_KEY: docsuri123
+          AWS_REGION: us-east-1
+          DOCSURI_LLM_PROVIDER: openai
+          OPENAI_API_KEY: placeholder-no-llm-call-in-these-tests
         run: uv run --all-extras pytest
 
   ops:
