@@ -49,6 +49,22 @@ jobs:
     defaults:
       run:
         working-directory: ingestion
+    # The control-plane store's SQL only ever ran in deployment: its test is DSN-gated, so
+    # without a service container it skips here exactly as it does locally, and a skip reads
+    # as a pass. Give it a throwaway Postgres so the gate actually opens.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: docsuri
+          POSTGRES_DB: docsuri
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
@@ -56,7 +72,15 @@ jobs:
           enable-cache: true
       - name: Lint
         run: uv run ruff check .
+      - name: Apply control-plane migrations
+        run: |
+          for f in migrations/postgres/*.sql; do
+            echo "applying $f"
+            PGPASSWORD=docsuri psql -h localhost -U postgres -d docsuri -v ON_ERROR_STOP=1 -f "$f"
+          done
       - name: Tests
+        env:
+          DOCSURI_TEST_PG_DSN: postgresql://postgres:docsuri@localhost:5432/docsuri
         run: uv run pytest
 
   discovery:
@@ -66,6 +90,23 @@ jobs:
     defaults:
       run:
         working-directory: backend/modules/discovery
+    # The k-NN/BM25 adapters were covered only by mocks: the integration test needs both the
+    # `real` extra AND a reachable cluster, and CI installed neither, so it skipped twice over.
+    # The test seeds its own corpus, so a bare single-node cluster is enough.
+    services:
+      opensearch:
+        image: opensearchproject/opensearch:2.17.1
+        env:
+          discovery.type: single-node
+          DISABLE_SECURITY_PLUGIN: "true"
+          OPENSEARCH_JAVA_OPTS: -Xms512m -Xmx512m
+        ports:
+          - 9200:9200
+        options: >-
+          --health-cmd "curl -sf http://localhost:9200 || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 20
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
@@ -73,8 +114,13 @@ jobs:
           enable-cache: true
       - name: Lint
         run: uv run ruff check .
-      - name: Tests (incl. the api router extra)
-        run: uv run --extra api pytest
+      # `real` in addition to `api`: without opensearch-py the integration module skips at import.
+      - name: Tests (api router + real read-path adapters)
+        env:
+          DOCSURI_OPENSEARCH_ENDPOINT: http://localhost:9200
+          DOCSURI_OPENSEARCH_USE_SSL: "false"
+          DOCSURI_OPENSEARCH_VERIFY_CERTS: "false"
+        run: uv run --extra api --extra real pytest
 
   summarization:
     name: summarization (U7)
@@ -83,6 +129,21 @@ jobs:
     defaults:
       run:
         working-directory: backend/modules/summarization
+    # Same reason as the ingestion lane: the FR-17 reader's SQL is DSN-gated and was skipping.
+    # The test creates its own DDL, so an empty database is enough.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: docsuri
+          POSTGRES_DB: docsuri
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
@@ -94,6 +155,8 @@ jobs:
       # adapter (botocore, from the `real` extra) at collection time and does NOT self-skip when
       # it's absent. The live-service integration tests still self-skip without credentials.
       - name: Tests (needs the `real` extra — s3_docmodel imports botocore)
+        env:
+          DOCSURI_TEST_PG_DSN: postgresql://postgres:docsuri@localhost:5432/docsuri
         run: uv run --all-extras pytest
 
   ops:
@@ -120,6 +183,19 @@ jobs:
     defaults:
       run:
         working-directory: backend
+    # u12's redis job-queue adapter (locks, claim/release, visibility timeout) was verified only
+    # against a fake: its integration test is URL-gated and this lane had no redis, so it skipped.
+    # The loop's execution lock is exactly the thing a fake cannot prove.
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
@@ -128,6 +204,8 @@ jobs:
       - name: Lint
         run: uv run ruff check .
       - name: Tests (asserts discovery actually mounts)
+        env:
+          NOVELTY_TEST_REDIS_URL: redis://localhost:6379/1
         run: uv run pytest
 
   root-suites:
