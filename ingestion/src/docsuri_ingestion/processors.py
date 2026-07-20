@@ -10,6 +10,7 @@ from docsuri_shared.ids import chunk_id
 from docsuri_shared.vector_spec import EMBEDDING_SPEC, IndexRecord
 
 from .config import OPEN_ACCESS_LICENSE_ALLOWLIST, WITHDRAWAL_MARKERS
+from .domain.canonical import arxiv_tier_label
 from .domain.enums import SourceName
 from .domain.errors import LicenseRejectedError, ValidationViolationError
 from .domain.ids import year_from_paper_id
@@ -65,7 +66,7 @@ class FetchParseProcessor:
             withdrawal_detected=withdrawal_detected,
             source_name=SourceName.ARXIV,
             source_id=identifier.arxiv_id,
-            source_tier="ARXIV_PDF" if "/pdf/" in raw.source_url else "ARXIV_HTML",
+            source_tier=arxiv_tier_label(raw.source_tier),
             source_url=raw.source_url,
             source_arxiv_id=identifier.arxiv_id,
             display_arxiv_id=identifier.arxiv_id,

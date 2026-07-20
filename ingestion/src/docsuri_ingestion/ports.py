@@ -150,6 +150,13 @@ class QueuePort(Protocol):
 
 
 @runtime_checkable
+class GrobidPort(Protocol):
+    """GROBID sidecar: PDF bytes -> raw TEI XML (structure for the doc-model parser)."""
+
+    def extract_tei(self, pdf: bytes) -> str: ...
+
+
+@runtime_checkable
 class AssetSourcePort(Protocol):
     """FR-17 figure/table source bytes. Fetched lazily for NEW|CHANGED papers only."""
 

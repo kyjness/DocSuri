@@ -31,6 +31,7 @@ from docsuri_ingestion.processors import (
     FetchParseProcessor,
     IndexRecordAssembler,
     detect_withdrawal,
+    normalize_text,
 )
 
 _HOST_LABEL = st.text(
@@ -378,3 +379,74 @@ def test_tombstone_strictly_newer_version_wins() -> None:
     state = store._dedup["2401.00001"]
     assert state.current_version == 3
     assert state.state is DedupStateKind.INDEXED
+
+
+def test_arxiv_tier_label_reads_the_fetch_tier_not_the_url() -> None:
+    # The stored winning_source_tier drives canonical dedup precedence, so it must come from the
+    # rung the fetch adapter actually used. Consumers used to infer it by looking for "/pdf/" in
+    # the source URL, which the raw-content cache ("cache://<tier>") does not carry and the
+    # configurable PDF base URL is not required to contain.
+    from docsuri_shared.dtos import SourceTier
+
+    from docsuri_ingestion.domain.canonical import (
+        ARXIV_HTML_TIER,
+        ARXIV_PDF_TIER,
+        arxiv_tier_label,
+        grobid_tier_label,
+        source_priority_from_tier,
+    )
+
+    assert arxiv_tier_label(SourceTier.pdf) == ARXIV_PDF_TIER
+    assert arxiv_tier_label(SourceTier.ar5iv) == ARXIV_HTML_TIER
+    assert arxiv_tier_label(SourceTier.native_html) == ARXIV_HTML_TIER
+    # An untagged RawDocument stays on the HTML label, as the URL sniff did for a non-PDF URL.
+    assert arxiv_tier_label(None) == ARXIV_HTML_TIER
+
+    assert grobid_tier_label(SourceName.SEMANTIC_SCHOLAR) == "SEMANTIC_SCHOLAR_GROBID"
+    assert grobid_tier_label(SourceName.OPENALEX) == "OPENALEX_GROBID"
+
+    # Every label this vocabulary emits must be readable by the precedence rule that consumes it.
+    assert source_priority_from_tier(ARXIV_PDF_TIER) == 0
+    assert source_priority_from_tier(ARXIV_HTML_TIER) == 0
+    assert source_priority_from_tier(grobid_tier_label(SourceName.SEMANTIC_SCHOLAR)) == 1
+    assert source_priority_from_tier(grobid_tier_label(SourceName.OPENALEX)) == 2
+
+
+def test_reembed_recovers_the_embed_text_the_writer_used() -> None:
+    """The re-embed runner reconstructs each stored doc's embed text from the indexed fields,
+    because the exact chunk text is not stored. That reconstruction reads ``section``,
+    ``abstract``, ``lexicalTerms`` and ``title`` — all owned by IndexRecordAssembler — so a change
+    there silently re-embeds the wrong text. Pin the contract here.
+    """
+    from docsuri_ingestion.reembed import _embed_text_for_source
+
+    metadata = replace(
+        sample_metadata(), title="Recover Title", abstract="Recover the abstract text."
+    )
+    paper = FetchParseProcessor().parse(
+        RawDocument(
+            metadata=metadata,
+            text="INTRODUCTION\nRecover the body text",
+            source_url="local://paper",
+        )
+    )
+    chunks = Chunker(max_chunk_chars=200, overlap_chars=0).chunk(paper)
+    embedding_batch = EmbeddingBatch(
+        chunk_ids=tuple(chunk.chunk_id for chunk in chunks.chunks),
+        vectors=tuple(tuple([0.0] * DIMENSIONS) for _ in chunks.chunks),
+    )
+    records = IndexRecordAssembler().assemble(paper, chunks, embedding_batch).records
+
+    by_chunk = {chunk.chunk_id: chunk for chunk in chunks.chunks}
+    for record in records:
+        source = record.model_dump(mode="json")
+        recovered = _embed_text_for_source(source)
+        assert recovered, f"no embed text recovered for {record.chunkId}"
+        chunk = by_chunk[record.chunkId]
+        if record.section == "abstract":
+            # lexicalTerms is blanked for abstract chunks, so the reconstruction falls back to the
+            # stored abstract. It matches only while the abstract fits a single chunk.
+            assert recovered == paper.abstract
+            assert recovered == chunk.text
+        else:
+            assert recovered == normalize_text(chunk.text)

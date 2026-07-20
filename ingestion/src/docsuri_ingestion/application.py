@@ -4,7 +4,6 @@ import hashlib
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime
-from typing import Protocol
 from uuid import uuid4
 
 from docsuri_shared.dtos import DocModel, DocModelResultDTO, SourceTier, SourceUnavailableDTO
@@ -15,7 +14,12 @@ from .corpus_sources import CorpusSourceAdapterSet, CorpusTextCandidate, SourceP
 from .docmodel import DocModelBuilder
 from .docmodel.tei import tei_crop_specs
 from .domain.assets import AssetCropSpec, FigureSpec
-from .domain.canonical import canonical_key, source_priority, source_priority_from_tier
+from .domain.canonical import (
+    arxiv_tier_label,
+    canonical_key,
+    source_priority,
+    source_priority_from_tier,
+)
 from .domain.enums import DedupDecision, FailureClass, FailureReason, JobKind, SourceName
 from .domain.errors import IngestionError, PermanentIngestionError
 from .domain.models import (
@@ -35,6 +39,7 @@ from .ports import (
     ControlPlaneStorePort,
     EmbeddingPort,
     FullTextStorePort,
+    GrobidPort,
     ObservabilityPort,
     QueuePort,
     SystemClock,
@@ -52,10 +57,6 @@ from .processors import (
     normalize_text,
 )
 from .resilience import IngestFailureHandler, IngestionResilienceService
-
-
-class _GrobidTeiClient(Protocol):
-    def extract_tei(self, pdf: bytes) -> str: ...
 
 
 class IngestionPipelineService:
@@ -78,7 +79,7 @@ class IngestionPipelineService:
         asset_store: AssetStorePort | None = None,
         asset_source: AssetSourcePort | None = None,
         user_document_source: UserDocumentSourcePort | None = None,
-        grobid: _GrobidTeiClient | None = None,
+        grobid: GrobidPort | None = None,
         doc_model_builder: DocModelBuilder | None = None,
         corpus_sources: CorpusSourceAdapterSet | None = None,
     ) -> None:
@@ -339,7 +340,7 @@ class IngestionPipelineService:
             self._record_canonical_winner(
                 keys,
                 paper,
-                "ARXIV_PDF" if "/pdf/" in raw_document.source_url else "ARXIV_HTML",
+                arxiv_tier_label(raw_document.source_tier),
                 SourceName.ARXIV,
                 existing,
             )

@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import re
 
+from docsuri_shared.dtos import SourceTier
+
 from .enums import SourceName
 
 _WS_RE = re.compile(r"\s+")
@@ -29,6 +31,28 @@ def canonical_key(
         )
     )
     return "title:" + hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:24]
+
+
+# Stored ``winning_source_tier`` vocabulary (canonical dedup ledger, migrate.audit). arXiv text
+# is labelled by which rung produced it; a non-arXiv source that won dedup is labelled by its
+# name plus the extractor that read its PDF.
+ARXIV_HTML_TIER = "ARXIV_HTML"
+ARXIV_PDF_TIER = "ARXIV_PDF"
+
+
+def arxiv_tier_label(source_tier: SourceTier | None) -> str:
+    """Stored tier label for arXiv-sourced text: the PDF rung, or either HTML rung.
+
+    Reads the tier the fetch adapter recorded on the RawDocument. Consumers used to re-derive it
+    by looking for ``/pdf/`` in the source URL, which is not something a URL is required to carry
+    — the raw-content cache serves ``cache://<tier>``, and the PDF base URL is configurable.
+    """
+    return ARXIV_PDF_TIER if source_tier is SourceTier.pdf else ARXIV_HTML_TIER
+
+
+def grobid_tier_label(source_name: SourceName) -> str:
+    """Stored tier label for a non-arXiv source whose PDF was structured by GROBID."""
+    return f"{source_name.value}_GROBID"
 
 
 def source_priority(source_name: SourceName) -> int:

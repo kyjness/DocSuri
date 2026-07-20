@@ -43,7 +43,8 @@ from docsuri_ingestion.docmodel.parser import (
     _with_abstract_section,
 )
 from docsuri_ingestion.domain.assets import AssetCropSpec, asset_id
-from docsuri_ingestion.domain.enums import AssetType
+from docsuri_ingestion.domain.enums import AssetType, FailureReason
+from docsuri_ingestion.domain.errors import PermanentIngestionError
 from docsuri_ingestion.xmlsafe import safe_fromstring
 
 _WS_RE = re.compile(r"\s+")
@@ -395,3 +396,29 @@ def _find_descendant(root: ET.Element, local_name: str) -> ET.Element | None:
         if _local(el.tag) == local_name:
             return el
     return None
+
+
+def tei_to_text(tei: str) -> str:
+    """Flat reading-order text of a TEI document — the projection used when GROBID structure is
+    available but a doc-model is not being built (the corpus source's text candidate).
+
+    Public sibling of ``parse_tei_to_docmodel`` so callers outside the GROBID adapter do not have
+    to reach into it for a private helper. Invalid or empty TEI is a permanent parse failure:
+    retrying the same bytes cannot produce text.
+    """
+    try:
+        root = safe_fromstring(tei)
+    except ET.ParseError as exc:
+        raise PermanentIngestionError(
+            "GROBID returned invalid TEI",
+            reason=FailureReason.PARSE_FAILURE,
+            stage="grobid",
+        ) from exc
+    text = " ".join(part.strip() for part in root.itertext() if part.strip())
+    if not text:
+        raise PermanentIngestionError(
+            "GROBID returned empty TEI",
+            reason=FailureReason.PARSE_FAILURE,
+            stage="grobid",
+        )
+    return text
