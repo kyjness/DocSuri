@@ -15,7 +15,7 @@ from .corpus_sources import CorpusSourceAdapterSet, CorpusTextCandidate, SourceP
 from .docmodel import DocModelBuilder
 from .docmodel.tei import tei_crop_specs
 from .domain.assets import AssetCropSpec, FigureSpec
-from .domain.canonical import canonical_key, source_priority_from_tier
+from .domain.canonical import canonical_key, source_priority, source_priority_from_tier
 from .domain.enums import DedupDecision, FailureClass, FailureReason, JobKind, SourceName
 from .domain.errors import IngestionError, PermanentIngestionError
 from .domain.models import (
@@ -1076,14 +1076,6 @@ def _append_source(seen_sources: tuple, source_name) -> tuple:
 def _source_can_replace(winning_source_tier: str, candidate: SourceName) -> bool:
     # source_priority_from_tier is the single source of truth shared with the
     # control-plane guarded upsert (domain.canonical).
-    return _source_priority(candidate) < source_priority_from_tier(winning_source_tier)
-
-
-def _source_priority(source_name: SourceName) -> int:
-    return {
-        SourceName.ARXIV: 0,
-        SourceName.SEMANTIC_SCHOLAR: 1,
-        SourceName.OPENALEX: 2,
-    }[source_name]
+    return source_priority(candidate) < source_priority_from_tier(winning_source_tier)
 
 

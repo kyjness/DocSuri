@@ -33,7 +33,6 @@ def reparse(settings: IngestionSettings | None = None) -> int:
     from .config import CORPUS_END, CORPUS_SLICE_CATEGORIES, CORPUS_START
     from .domain.enums import JobKind
     from .domain.models import CategoryFilter, IngestionJob
-    from .migrate import _window
     from .runtime import build_production_runtime
 
     # Pipeline writes to the OFFLINE re-embed index and fetches source bytes CACHE-ONLY (no arXiv).
@@ -47,10 +46,11 @@ def reparse(settings: IngestionSettings | None = None) -> int:
     )
     # harvest_seed only lists OAI metadata (cheap/paged) — not the per-paper bottleneck.
     arxiv = ArxivHttpSource(timeout_seconds=30.0)
+    window_start, window_end = settings.backfill_window(CORPUS_START, CORPUS_END)
     filter_ = CategoryFilter(
         categories=CORPUS_SLICE_CATEGORIES,
-        updated_after=_window("DOCSURI_BACKFILL_START", CORPUS_START),
-        updated_before=_window("DOCSURI_BACKFILL_END", CORPUS_END),
+        updated_after=window_start,
+        updated_before=window_end,
     )
 
     count = errors = 0

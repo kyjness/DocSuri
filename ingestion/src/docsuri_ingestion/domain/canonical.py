@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import re
 
+from .enums import SourceName
+
 _WS_RE = re.compile(r"\s+")
 
 
@@ -27,6 +29,19 @@ def canonical_key(
         )
     )
     return "title:" + hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:24]
+
+
+def source_priority(source_name: SourceName) -> int:
+    """Canonical-winner precedence from a source name: lower wins (BR-C1, BR-C3).
+
+    The name-keyed and tier-keyed views of the same ordering; ``source_priority_from_tier``
+    derives it from a stored tier string when only that is available.
+    """
+    return {
+        SourceName.ARXIV: 0,
+        SourceName.SEMANTIC_SCHOLAR: 1,
+        SourceName.OPENALEX: 2,
+    }[source_name]
 
 
 def source_priority_from_tier(source_tier: str) -> int:

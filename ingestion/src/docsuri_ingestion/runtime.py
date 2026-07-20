@@ -103,7 +103,7 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
             base_url=settings.grobid_url,
             timeout_seconds=settings.request_timeout_seconds,
         )
-    enabled_sources = _enabled_sources(settings.corpus_sources)
+    enabled_sources = _enabled_sources(settings.parsed_corpus_sources)
     semantic_scholar = openalex = None
     if grobid is not None:
         from .adapters.corpus_http import OpenAlexCorpusSource, SemanticScholarCorpusSource
@@ -239,6 +239,5 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
     )
 
 
-def _enabled_sources(raw: str) -> tuple[SourceName, ...]:
-    sources = tuple(SourceName(part.strip()) for part in raw.split(",") if part.strip())
-    return sources or (SourceName.ARXIV,)
+def _enabled_sources(names: tuple[str, ...]) -> tuple[SourceName, ...]:
+    return tuple(SourceName(name) for name in names) or (SourceName.ARXIV,)

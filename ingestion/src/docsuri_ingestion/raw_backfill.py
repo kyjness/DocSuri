@@ -47,8 +47,8 @@ def _yymm_from_paper_id(paper_id: str) -> str | None:
 
 
 def _tmp_dir() -> str:
-    job_dir = os.getenv("CLAUDE_JOB_DIR")
-    tmp = os.path.join(job_dir, "tmp") if job_dir else tempfile.gettempdir()
+    """Scratch directory for the bulk tar downloads (each is deleted as soon as it is drained)."""
+    tmp = os.path.join(tempfile.gettempdir(), "docsuri-raw-backfill")
     os.makedirs(tmp, exist_ok=True)
     return tmp
 
@@ -104,13 +104,13 @@ def raw_backfill(settings: IngestionSettings | None = None) -> int:
     from .adapters.aws import S3RawContentStore
     from .config import CORPUS_END, CORPUS_SLICE_CATEGORIES, CORPUS_START
     from .domain.models import CategoryFilter
-    from .migrate import _window
 
     arxiv = ArxivHttpSource(timeout_seconds=30.0)
+    window_start, window_end = settings.backfill_window(CORPUS_START, CORPUS_END)
     filter_ = CategoryFilter(
         categories=CORPUS_SLICE_CATEGORIES,
-        updated_after=_window("DOCSURI_BACKFILL_START", CORPUS_START),
-        updated_before=_window("DOCSURI_BACKFILL_END", CORPUS_END),
+        updated_after=window_start,
+        updated_before=window_end,
     )
     # Target set keyed by versionless paperId → its canonical version for the cache key.
     targets: dict[str, int] = {

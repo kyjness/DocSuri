@@ -1,9 +1,17 @@
 from __future__ import annotations
 
 import os
+from datetime import UTC, datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
+
+
+def _parse_window_bound(raw: str | None, default: datetime) -> datetime:
+    if not raw:
+        return default
+    parsed = datetime.fromisoformat(raw)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 class IngestionSettings(BaseModel):
@@ -59,6 +67,10 @@ class IngestionSettings(BaseModel):
     raw_cache_prefix: str = Field(default="raw", alias="DOCSURI_RAW_CACHE_PREFIX")
     # arXiv requester-pays bulk PDF bucket + optional YYMM month shards (csv, e.g. "2501,2502").
     arxiv_bulk_bucket: str = Field(default="arxiv", alias="DOCSURI_ARXIV_BULK_BUCKET")
+    # Run-scoped harvest window override (ISO dates). Lets a one-off backfill narrow the slice
+    # without redefining the corpus — config.CORPUS_START/END stay canonical.
+    backfill_start: str | None = Field(default=None, alias="DOCSURI_BACKFILL_START")
+    backfill_end: str | None = Field(default=None, alias="DOCSURI_BACKFILL_END")
     raw_backfill_months: str | None = Field(default=None, alias="DOCSURI_RAW_BACKFILL_MONTHS")
     control_plane_dsn: str | None = Field(default=None, alias="DOCSURI_CONTROL_PLANE_DSN")
     sqs_queue_url: str | None = Field(default=None, alias="DOCSURI_SQS_QUEUE_URL")
@@ -140,6 +152,23 @@ class IngestionSettings(BaseModel):
         if missing:
             raise RuntimeError(f"missing required production settings: {', '.join(missing)}")
 
+    def backfill_window(
+        self, default_start: datetime, default_end: datetime
+    ) -> tuple[datetime, datetime]:
+        """The harvest window for a one-off backfill: the ISO overrides when set, else the
+        canonical corpus bounds. Naive dates are read as UTC."""
+        return (
+            _parse_window_bound(self.backfill_start, default_start),
+            _parse_window_bound(self.backfill_end, default_end),
+        )
+
+    @property
+    def parsed_corpus_sources(self) -> tuple[str, ...]:
+        """DOCSURI_CORPUS_SOURCES split into stripped, non-empty names — the one place the CSV
+        is interpreted, so the runtime wiring and the corpus-build guard cannot read it
+        differently."""
+        return tuple(part.strip() for part in self.corpus_sources.split(",") if part.strip())
+
     def safe_log_dict(self) -> dict[str, object]:
         data = self.model_dump(by_alias=False)
         for key in list(data):
@@ -152,7 +181,7 @@ class IngestionSettings(BaseModel):
 def validate_corpus_build_settings(settings: IngestionSettings) -> None:
     if settings.env == "local":
         return
-    sources = {part.strip() for part in settings.corpus_sources.split(",") if part.strip()}
+    sources = set(settings.parsed_corpus_sources)
     errors: list[str] = []
     if not settings.multimodal_assets_enabled:
         errors.append("DOCSURI_MULTIMODAL_ASSETS_ENABLED must be true before corpus build")

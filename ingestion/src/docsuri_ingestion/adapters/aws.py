@@ -23,8 +23,9 @@ from docsuri_ingestion.settings import IngestionSettings
 
 _log = logging.getLogger(__name__)
 
-# Cohere Embed on Bedrock accepts at most 96 texts per invoke_model call.
-_BEDROCK_EMBED_BATCH_LIMIT = 96
+# Cohere Embed on Bedrock accepts at most 96 texts per invoke_model call. Public because the
+# re-embed runner pages against the same ceiling.
+BEDROCK_EMBED_BATCH_LIMIT = 96
 
 
 class S3FullTextStore:
@@ -256,8 +257,8 @@ class BedrockCohereEmbeddingPort:
         # past that (max_chunks_per_paper=128). Sub-batch and concatenate IN ORDER — the
         # assembler zips chunk_ids↔vectors with strict=True, so order must be preserved.
         vectors: list[list[float]] = []
-        for start in range(0, len(texts), _BEDROCK_EMBED_BATCH_LIMIT):
-            vectors.extend(self._embed_batch(texts[start : start + _BEDROCK_EMBED_BATCH_LIMIT]))
+        for start in range(0, len(texts), BEDROCK_EMBED_BATCH_LIMIT):
+            vectors.extend(self._embed_batch(texts[start : start + BEDROCK_EMBED_BATCH_LIMIT]))
         return vectors
 
     def _embed_batch(self, texts: Sequence[str]) -> list[list[float]]:

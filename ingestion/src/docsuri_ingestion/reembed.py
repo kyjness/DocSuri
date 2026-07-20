@@ -25,6 +25,7 @@ from docsuri_shared.index_spec import papers_index_body
 from docsuri_shared.vector_spec import EMBEDDING_SPEC
 
 from .adapters.aws import (
+    BEDROCK_EMBED_BATCH_LIMIT,
     BedrockCohereEmbeddingPort,
     admin_client_from_settings,
     collect_bulk_failures,
@@ -179,7 +180,7 @@ def reembed(settings: IngestionSettings | None = None) -> int:
         output_dimension=settings.reembed_dimension,
     )
     src, dst = _source_index(settings), settings.opensearch_index_reembed
-    page_size = min(96, max(1, settings.reembed_batch_size))
+    page_size = min(BEDROCK_EMBED_BATCH_LIMIT, max(1, settings.reembed_batch_size))
     # Paced mode: cap token throughput below the Bedrock quota + skip already-written docs. None →
     # unpaced legacy behaviour (needs quota headroom), byte-identical to before this knob existed.
     limiter = (
