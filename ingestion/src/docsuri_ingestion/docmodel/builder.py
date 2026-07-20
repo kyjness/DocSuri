@@ -11,7 +11,6 @@ The build is deterministic (D1) — the only non-deterministic input is ``proven
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 
 from docsuri_shared.docmodel_contract import DOCMODEL_PARSER_VERSION, DOCMODEL_SCHEMA_VERSION
@@ -22,7 +21,13 @@ from docsuri_ingestion.docmodel.parser import parse_html_to_docmodel, parse_text
 from docsuri_ingestion.docmodel.tei import parse_tei_to_docmodel
 from docsuri_ingestion.domain.assets import AssetCropSpec, FigureSpec
 from docsuri_ingestion.domain.models import MetadataRecord
-from docsuri_ingestion.ports import DocModelSourcePort, DocModelStorePort, EprintSourcePort
+from docsuri_ingestion.ports import (
+    ClockPort,
+    DocModelSourcePort,
+    DocModelStorePort,
+    EprintSourcePort,
+    SystemClock,
+)
 
 # Bumping PARSER_VERSION invalidates cached doc-models (provenance.parserVersion, BR-30/TD-16).
 PARSER_VERSION = DOCMODEL_PARSER_VERSION
@@ -100,18 +105,8 @@ def _non_abstract_body_len(doc: DocModel) -> int:
 
 
 @runtime_checkable
-class ClockPort(Protocol):
-    def now(self) -> datetime: ...
-
-
-@runtime_checkable
 class MetricSink(Protocol):
     def emit_metric(self, name: str, value: float, tags: object = None) -> None: ...
-
-
-class _SystemClock:
-    def now(self) -> datetime:
-        return datetime.now(UTC)
 
 
 class DocModelBuilder:
@@ -132,7 +127,7 @@ class DocModelBuilder:
         self._store = store
         self._eprint_source = eprint_source
         self._observability = observability
-        self._clock = clock or _SystemClock()
+        self._clock = clock or SystemClock()
         self._parser_version = parser_version
         self._schema_version = schema_version
 

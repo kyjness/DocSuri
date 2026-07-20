@@ -64,12 +64,3 @@ class ValidationViolationError(PermanentIngestionError):
             reason=FailureReason.VALIDATION_VIOLATION,
             stage=stage,
         )
-
-
-class DependencyUnavailableError(RetriableIngestionError):
-    def __init__(self, message: str, *, stage: str) -> None:
-        super().__init__(
-            message,
-            reason=FailureReason.DEPENDENCY_UNAVAILABLE,
-            stage=stage,
-        )

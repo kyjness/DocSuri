@@ -267,7 +267,6 @@ class AssetExtractor:
 
         out: list[RawAssetCandidate] = []
         try:
-            budget = _MAX_EPRINT_IMAGE_TOTAL
             with tarfile.open(fileobj=io.BytesIO(eprint), mode="r:*") as tar:
                 files = [m for m in tar.getmembers() if m.isfile()]
                 budget = _MAX_EPRINT_IMAGE_TOTAL  # per-tarball decode budget (TD-15)

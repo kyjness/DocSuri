@@ -10,7 +10,7 @@ from docsuri_shared.ids import chunk_id
 from docsuri_shared.vector_spec import EMBEDDING_SPEC, IndexRecord
 
 from .config import OPEN_ACCESS_LICENSE_ALLOWLIST, WITHDRAWAL_MARKERS
-from .domain.enums import DedupDecision, SourceName
+from .domain.enums import SourceName
 from .domain.errors import LicenseRejectedError, ValidationViolationError
 from .domain.ids import year_from_paper_id
 from .domain.models import (
@@ -410,10 +410,6 @@ def snippet(abstract: str, max_chars: int = 280) -> str:
     if len(clean) <= max_chars:
         return clean
     return clean[: max_chars - 1].rstrip() + "..."
-
-
-def decision_from_state(result: DedupResult) -> DedupDecision:
-    return result.decision
 
 
 def assert_writer_embedding_role() -> None:

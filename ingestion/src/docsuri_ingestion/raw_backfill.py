@@ -62,7 +62,7 @@ def _prime_from_tar(
     client,
     bucket: str,
     key: str,
-    targets: dict[str, tuple[str, int]],
+    targets: dict[str, int],
     raw_store: RawContentStorePort,
     tmp_dir: str,
 ) -> set[str]:
@@ -83,9 +83,8 @@ def _prime_from_tar(
                 fobj = tar.extractfile(member)
                 if fobj is None:
                     continue
-                target_pid, target_ver = targets[pid]
                 raw_store.put_raw(
-                    target_pid, target_ver, "pdf", fobj.read(),
+                    pid, targets[pid], "pdf", fobj.read(),
                     content_type="application/pdf",
                 )
                 cached.add(pid)
@@ -113,14 +112,17 @@ def raw_backfill(settings: IngestionSettings | None = None) -> int:
         updated_after=_window("DOCSURI_BACKFILL_START", CORPUS_START),
         updated_before=_window("DOCSURI_BACKFILL_END", CORPUS_END),
     )
-    # Target set keyed by versionless paperId → its canonical (paperId, version) for the cache key.
-    targets: dict[str, tuple[str, int]] = {
-        metadata.paper_id: (metadata.paper_id, metadata.version)
-        for metadata in arxiv.harvest_seed(filter_)
+    # Target set keyed by versionless paperId → its canonical version for the cache key.
+    targets: dict[str, int] = {
+        metadata.paper_id: metadata.version for metadata in arxiv.harvest_seed(filter_)
     }
     months = _wanted_months(settings)
     if months:
-        targets = {pid: pv for pid, pv in targets.items() if _yymm_from_paper_id(pid) in months}
+        targets = {
+            pid: version
+            for pid, version in targets.items()
+            if _yymm_from_paper_id(pid) in months
+        }
     log.info("raw_backfill targets: %d papers (months=%s)", len(targets), sorted(months) or "all")
 
     raw_store = S3RawContentStore(

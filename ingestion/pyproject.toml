@@ -8,13 +8,11 @@ license = "MIT"
 dependencies = [
     "docsuri-shared",
     "pydantic>=2.7,<3",
-    "pydantic-settings>=2.3,<3",
     "httpx>=0.27,<1",
     "boto3>=1.34,<2",
     "opensearch-py>=2.6,<3",
     "psycopg[binary]>=3.2,<4",
     "psycopg-pool>=3.2,<4",
-    "structlog>=24.1,<25",
     # BR-29 full-text PDF fallback (MIT, permissive) — core because the full-text path now
     # depends on PDF text extraction when arXiv HTML is unavailable.
     "pdfplumber>=0.11,<1",

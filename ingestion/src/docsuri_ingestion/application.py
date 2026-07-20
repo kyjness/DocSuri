@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Protocol
 from uuid import uuid4
 
@@ -37,6 +37,7 @@ from .ports import (
     FullTextStorePort,
     ObservabilityPort,
     QueuePort,
+    SystemClock,
     UserDocumentSourcePort,
     VectorIndexPort,
     dedup_decision_applies_to_index,
@@ -50,11 +51,6 @@ from .processors import (
     normalize_text,
 )
 from .resilience import IngestFailureHandler, IngestionResilienceService
-
-
-class SystemClock:
-    def now(self) -> datetime:
-        return datetime.now(UTC)
 
 
 class _GrobidTeiClient(Protocol):
@@ -534,9 +530,6 @@ class IngestionPipelineService:
             display_arxiv_id=record.arxiv_id or "",
         )
 
-    def _canonical_key_for_record(self, record: SourcePaperRecord, year: int) -> str:
-        return self._canonical_keys_for_record(record, year)[0]
-
     def _canonical_keys_for_metadata(self, metadata, year: int) -> tuple[str, ...]:
         first_author = metadata.authors[0] if metadata.authors else None
         return _dedupe_keys(
@@ -592,7 +585,7 @@ class IngestionPipelineService:
         ]
         if not states:
             return None
-        return min(states, key=lambda state: _source_priority_from_tier(state.winning_source_tier))
+        return min(states, key=lambda state: source_priority_from_tier(state.winning_source_tier))
 
     def _record_canonical_duplicate(
         self,
@@ -1081,7 +1074,9 @@ def _append_source(seen_sources: tuple, source_name) -> tuple:
 
 
 def _source_can_replace(winning_source_tier: str, candidate: SourceName) -> bool:
-    return _source_priority(candidate) < _source_priority_from_tier(winning_source_tier)
+    # source_priority_from_tier is the single source of truth shared with the
+    # control-plane guarded upsert (domain.canonical).
+    return _source_priority(candidate) < source_priority_from_tier(winning_source_tier)
 
 
 def _source_priority(source_name: SourceName) -> int:
@@ -1090,11 +1085,6 @@ def _source_priority(source_name: SourceName) -> int:
         SourceName.SEMANTIC_SCHOLAR: 1,
         SourceName.OPENALEX: 2,
     }[source_name]
-
-
-def _source_priority_from_tier(source_tier: str) -> int:
-    # Single source of truth shared with the control-plane guarded upsert (domain.canonical).
-    return source_priority_from_tier(source_tier)
 
 
 def detect_withdrawal_proxy(title: str, abstract: str, text: str) -> bool:

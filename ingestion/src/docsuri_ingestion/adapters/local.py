@@ -114,14 +114,14 @@ class InMemoryControlPlaneStore:
         if state is None:
             return DedupResult(DedupDecision.NEW)
         if version < state.current_version:
-            return DedupResult(DedupDecision.STALE, state)
+            return DedupResult(DedupDecision.STALE)
         if (
             version == state.current_version
             and state.fingerprint == fingerprint
             and state.state is DedupStateKind.INDEXED
         ):
-            return DedupResult(DedupDecision.DUPLICATE, state)
-        return DedupResult(DedupDecision.CHANGED, state)
+            return DedupResult(DedupDecision.DUPLICATE)
+        return DedupResult(DedupDecision.CHANGED)
 
     def try_claim_upsert(self, paper_id: str, version: int, fingerprint: str) -> bool:
         del fingerprint

@@ -26,7 +26,8 @@ from .application import IngestionPipelineService, RefreshOrchestrationService
 from .corpus_sources import CorpusSourceAdapterSet
 from .domain.enums import SourceName
 from .observability import LoggingObservabilityHub
-from .resilience import IngestFailureHandler, IngestionResilienceService
+from .processors import Chunker
+from .resilience import IngestFailureHandler, IngestionResilienceService, TokenBucket
 from .settings import IngestionSettings
 
 
@@ -82,7 +83,7 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
     raw_cache_on = settings.raw_cache_mode != "off" and bool(settings.s3_bucket)
     arxiv = ArxivHttpSource(
         timeout_seconds=settings.request_timeout_seconds,
-        rate_limiter=None,
+        rate_limiter=TokenBucket(rate_per_second=settings.arxiv_rate_per_second),
         raw_store=(
             S3RawContentStore(
                 bucket=settings.s3_bucket or "",
@@ -204,6 +205,11 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
         observability=observability,
         resilience=resilience,
         failure_handler=failure_handler,
+        chunker=Chunker(
+            max_chunk_chars=settings.max_chunk_chars,
+            overlap_chars=settings.chunk_overlap_chars,
+            max_chunks_per_paper=settings.max_chunks_per_paper,
+        ),
         asset_extractor=asset_extractor,
         asset_store=asset_store,
         asset_source=asset_source,

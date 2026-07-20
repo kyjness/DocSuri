@@ -1,17 +1,9 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
 from typing import Literal
 
-from pydantic import BaseModel, Field, SecretStr, ValidationError
-
-
-class SecretSetting(BaseModel):
-    value: SecretStr
-
-    def __repr__(self) -> str:
-        return "SecretSetting(value=**********)"
+from pydantic import BaseModel, Field
 
 
 class IngestionSettings(BaseModel):
@@ -175,9 +167,3 @@ def validate_corpus_build_settings(settings: IngestionSettings) -> None:
         errors.append("DOCSURI_GROBID_URL is required for Semantic Scholar/OpenAlex corpus build")
     if errors:
         raise RuntimeError("; ".join(errors))
-
-
-@dataclass(frozen=True, slots=True)
-class SettingsLoadResult:
-    settings: IngestionSettings | None
-    error: ValidationError | RuntimeError | None

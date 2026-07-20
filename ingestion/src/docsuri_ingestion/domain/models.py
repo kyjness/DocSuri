@@ -203,7 +203,6 @@ class IngestionJob:
     job_id: str
     kind: JobKind
     arxiv_ref: str | None = None
-    category_filter: CategoryFilter | None = None
     event_id: str | None = None
     correlation_id: str | None = None
     source_name: SourceName | None = None
@@ -280,7 +279,6 @@ class CanonicalDedupState:
 @dataclass(frozen=True, slots=True)
 class DedupResult:
     decision: DedupDecision
-    current_state: DedupState | None = None
 
 
 @dataclass(frozen=True, slots=True)

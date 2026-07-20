@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 
 from docsuri_shared.dtos import DocModel, SourceTier
 from docsuri_shared.events import NewArxivEvent
 
 from .domain.assets import AssetManifest, ExtractedAsset
-from .domain.enums import DedupDecision, JobKind
+from .domain.enums import DedupDecision
 from .domain.models import (
     CanonicalDedupState,
     CategoryFilter,
@@ -27,6 +27,13 @@ from .domain.models import (
 @runtime_checkable
 class ClockPort(Protocol):
     def now(self) -> datetime: ...
+
+
+class SystemClock:
+    """Default ClockPort — the single wall-clock implementation for the unit."""
+
+    def now(self) -> datetime:
+        return datetime.now(UTC)
 
 
 @runtime_checkable
@@ -220,7 +227,3 @@ class ObservabilityPort(Protocol):
 
 def dedup_decision_applies_to_index(decision: DedupDecision) -> bool:
     return decision in {DedupDecision.NEW, DedupDecision.CHANGED}
-
-
-def job_can_run_during_rebuild(kind: JobKind) -> bool:
-    return kind is JobKind.SEED_REBUILD
