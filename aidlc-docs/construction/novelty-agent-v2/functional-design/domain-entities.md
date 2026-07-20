@@ -74,7 +74,7 @@
 
 ### EvidenceSnapshot (승계)
 
-v1과 동일 — `EvidenceFormationPort` 결과의 내부 보존본. `state`(`ok`/`abstain`), `claims`, `coverage`, `abstain_reason`, `contract_version`. PROVISIONAL 필드(`conflicting`/`confidence`)는 있으면 소비하되 필수로 의존하지 않는다(BR-NV3 승계).
+v1과 동일 — `EvidenceFormationPort` 결과의 내부 보존본. `state`(`ok`/`abstain`), `claims`, `coverage`, `abstain_reason`. (초안의 `contract_version`은 공유 계약(evidence 스키마)에 대응 필드가 없어 정오 — 계약 버전이 스키마에 도입되면 그때 함께 추가한다.) PROVISIONAL 필드(`conflicting`/`confidence`)는 있으면 소비하되 필수로 의존하지 않는다(BR-NV3 승계).
 
 ### SimilarWorkItem (승계)
 
