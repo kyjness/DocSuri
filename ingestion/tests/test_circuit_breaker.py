@@ -19,6 +19,7 @@ from docsuri_ingestion.resilience import (
     CircuitOpenError,
     IngestionResilienceService,
     RetryPolicy,
+    is_retriable,
 )
 
 _THRESHOLD = 5
@@ -234,3 +235,66 @@ def test_a_probe_that_never_completes_cannot_wedge_the_circuit_shut() -> None:
 
     clock.advance(_RECOVERY_SECONDS + 1)
     assert service.dependency_call("arxiv", "fetch", lambda: "reclaimed") == "reclaimed"
+
+
+# ---------------------------------------------------------------------------------------
+# botocore error classification — the Bedrock/S3 adapters raise these RAW.
+# ---------------------------------------------------------------------------------------
+
+
+class _FakeClientError(Exception):
+    """Shaped like botocore's ClientError, which ``is_retriable`` duck-types rather than imports."""
+
+    def __init__(self, code: str = "", status: int | None = None) -> None:
+        super().__init__(code or str(status))
+        error: dict = {"Code": code} if code else {}
+        metadata: dict = {"HTTPStatusCode": status} if status is not None else {}
+        self.response = {"Error": error, "ResponseMetadata": metadata}
+
+
+def test_bedrock_throttling_is_retriable() -> None:
+    """``BedrockCohereEmbeddingPort._embed_batch`` wraps ``invoke_model`` in no try/except, so a
+    throttled embed reaches the resilience layer as a raw botocore error.
+
+    Classification therefore happens here and nowhere else. Getting it wrong is not hypothetical:
+    the OpenAI embedding adapter had exactly this bug — its 429 classified as permanent, so a
+    rate-limited re-index gave up instead of backing off.
+    """
+    for code in (
+        "ThrottlingException",
+        "Throttling",
+        "TooManyRequestsException",
+        "ProvisionedThroughputExceededException",
+        "RequestLimitExceeded",
+        "SlowDown",
+        "ServiceUnavailable",
+        "ModelTimeoutException",
+        "ModelNotReadyException",
+    ):
+        assert is_retriable(_FakeClientError(code)), f"{code} must back off, not fail the paper"
+
+
+def test_botocore_5xx_is_retriable_even_with_an_unknown_code() -> None:
+    # AWS adds error codes over time; a 5xx is transient regardless of what it is called.
+    assert is_retriable(_FakeClientError("SomeFutureOverloadError", status=503))
+    assert is_retriable(_FakeClientError(status=500))
+
+
+def test_client_side_botocore_errors_are_not_retriable() -> None:
+    # Retrying these burns the retry budget and delays the DLQ without any chance of succeeding.
+    for code, status in (
+        ("ValidationException", 400),
+        ("AccessDeniedException", 403),
+        ("ResourceNotFoundException", 404),
+    ):
+        assert not is_retriable(_FakeClientError(code, status=status)), f"{code} must not retry"
+
+
+def test_a_plain_exception_is_not_retriable() -> None:
+    # The duck-type check must not treat an unrelated exception as an AWS response.
+    assert not is_retriable(RuntimeError("boom"))
+
+    class _OddResponse(Exception):
+        response = "not-a-dict"
+
+    assert not is_retriable(_OddResponse())
