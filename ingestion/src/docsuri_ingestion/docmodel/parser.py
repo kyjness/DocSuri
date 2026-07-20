@@ -24,8 +24,10 @@ the document-order ordinal per type — no pixels are re-extracted (re-extractio
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 
 from bs4 import BeautifulSoup, NavigableString, Tag
 from docsuri_shared.dtos import DocModel, SourceTier
@@ -663,6 +665,40 @@ def _finish_docmodel(
     return DocModel.model_validate(data)
 
 
+def block_text_parts(block: Mapping[str, Any]) -> list[str]:
+    """The renderable text fragments of one doc-model block, in reading order.
+
+    This is the single statement of *which fields of each block type carry text* — tables
+    contribute their label/caption plus a fragment per row, figures their label/caption, formulas
+    their LaTeX, and AssetRef internals never contribute. Presentation is the caller's business:
+    ``_project_full_text`` joins fragments as separate paragraphs, while the doc-model builder's
+    truncation gate only measures their total length. Fragments are raw; callers collapse
+    whitespace and drop empties.
+
+    ``processors._docmodel_block_text`` applies the same rule to *validated* blocks — it runs on
+    the chunking hot path where dumping each block to a dict would be wasteful. The two are kept
+    in lockstep by ``test_block_projection_covers_every_block_type``.
+    """
+    kind = block.get("type")
+    if kind in ("paragraph", "code"):
+        return [block.get("text") or ""]
+    if kind == "formula":
+        return [block.get("latex") or ""]
+    if kind == "list":
+        return [item.get("text") or "" for item in block.get("items") or []]
+    if kind in ("figure", "table"):
+        label = block.get("anchorLabel")
+        caption = block.get("caption")
+        parts = [" ".join(v for v in (label, caption) if v)]
+        if kind == "table":
+            parts.extend(
+                " | ".join(cell.get("text", "") for cell in row.get("cells", []) or [])
+                for row in block.get("rows") or []
+            )
+        return parts
+    return []
+
+
 def _project_full_text(sections: list[dict]) -> str:
     """Reading-order text projection for DocModel.fullText.
 
@@ -680,26 +716,8 @@ def _project_full_text(sections: list[dict]) -> str:
     def walk_section(section: dict) -> None:
         add(section.get("title"))
         for block in section.get("blocks", []):
-            kind = block.get("type")
-            if kind == "paragraph":
-                add(block.get("text"))
-            elif kind == "table":
-                label = block.get("anchorLabel")
-                caption = block.get("caption")
-                add(" ".join(v for v in (label, caption) if v))
-                for row in block.get("rows", []):
-                    add(" | ".join(cell.get("text", "") for cell in row.get("cells", [])))
-            elif kind == "formula":
-                add(block.get("latex"))
-            elif kind == "figure":
-                label = block.get("anchorLabel")
-                caption = block.get("caption")
-                add(" ".join(v for v in (label, caption) if v))
-            elif kind == "list":
-                for item in block.get("items", []):
-                    add(item.get("text"))
-            elif kind == "code":
-                add(block.get("text"))
+            for part in block_text_parts(block):
+                add(part)
         for child in section.get("sections", []) or []:
             walk_section(child)
 

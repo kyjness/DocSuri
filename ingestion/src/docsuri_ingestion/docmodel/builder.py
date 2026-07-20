@@ -18,7 +18,11 @@ from docsuri_shared.dtos import DocModel, DocModelResultDTO, SourceTier, SourceU
 from docsuri_shared.observability import emit_metric
 
 from docsuri_ingestion.docmodel.macros import extract_macros
-from docsuri_ingestion.docmodel.parser import parse_html_to_docmodel, parse_text_to_docmodel
+from docsuri_ingestion.docmodel.parser import (
+    block_text_parts,
+    parse_html_to_docmodel,
+    parse_text_to_docmodel,
+)
 from docsuri_ingestion.docmodel.tei import parse_tei_to_docmodel
 from docsuri_ingestion.domain.assets import AssetCropSpec, FigureSpec
 from docsuri_ingestion.domain.models import MetadataRecord
@@ -59,25 +63,12 @@ _MIN_BODY_TEXT_CHARS = 500
 
 
 def _block_text_len(block: dict) -> int:
-    """Length of a block's renderable text, per block type. Paragraph/code carry ``text``, but
-    body prose also lives in list items, table cells, and figure/table captions — counting only
-    ``block['text']`` reads 0 for a paper whose body is mostly lists/tables and wrongly degrades a
-    complete conversion. Mirror the full-text projection so every text-bearing block contributes."""
-    kind = block.get("type")
-    if kind in ("paragraph", "code"):
-        return len(block.get("text") or "")
-    if kind == "formula":
-        return len(block.get("latex") or "")
-    if kind == "list":
-        return sum(len(item.get("text") or "") for item in block.get("items") or [])
-    if kind in ("figure", "table"):
-        total = len(block.get("caption") or "")
-        if kind == "table":
-            for row in block.get("rows") or []:
-                for cell in row.get("cells") or []:
-                    total += len(str(cell.get("text") or ""))
-        return total
-    return len(block.get("text") or "")
+    """Length of a block's renderable text. Body prose lives in list items, table cells, and
+    figure/table captions as well as paragraphs, so counting only ``block['text']`` would read 0
+    for a paper whose body is mostly lists/tables and wrongly degrade a complete conversion.
+    Measures exactly the fragments the fullText projection emits, so the gate cannot drift from
+    what the doc-model actually carries."""
+    return sum(len(part) for part in block_text_parts(block))
 
 
 def _non_abstract_body_len(doc: DocModel) -> int:
