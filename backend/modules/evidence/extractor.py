@@ -81,18 +81,18 @@ class EvidenceExtractor:
         return _filter_hallucinated(raw_items, paper_texts, paper_anchor_ids)
 
     def _invoke_json(self, system: str, user: str) -> dict:
-        permit = self._cb.acquire()
-        if permit is None:
-            raise LlmUnavailable('EvidenceExtractor circuit breaker OPEN')
+        # guard(): success() 없이 블록을 이탈하면 실패로 마감 — 수동 finally 불필요.
+        with self._cb.guard() as permit:
+            if permit is None:
+                raise LlmUnavailable('EvidenceExtractor circuit breaker OPEN')
 
-        body = {
-            'anthropic_version': 'bedrock-2023-05-31',
-            'max_tokens': _MAX_TOKENS,
-            'system': system,
-            'messages': [{'role': 'user', 'content': [{'type': 'text', 'text': user}]}],
-        }
-        last_exc: Exception | None = None
-        try:
+            body = {
+                'anthropic_version': 'bedrock-2023-05-31',
+                'max_tokens': _MAX_TOKENS,
+                'system': system,
+                'messages': [{'role': 'user', 'content': [{'type': 'text', 'text': user}]}],
+            }
+            last_exc: Exception | None = None
             for attempt in range(self._max_retries + 1):
                 if attempt > 0:
                     time.sleep(2 ** attempt * 0.5)
@@ -103,9 +103,7 @@ class EvidenceExtractor:
                     return payload
                 except Exception as exc:
                     last_exc = exc
-        finally:
-            permit.failure()  # 멱등 — 성공 완료 후엔 no-op(catch-all 해제)
-        raise LlmUnavailable('EvidenceExtractor Bedrock call failed') from last_exc
+            raise LlmUnavailable('EvidenceExtractor Bedrock call failed') from last_exc
 
     def _stream_text(self, body: dict) -> str:
         response = self._client.invoke_model_with_response_stream(

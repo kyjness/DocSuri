@@ -18,6 +18,7 @@ import logging
 import re
 import time
 from collections.abc import Sequence
+from contextlib import nullcontext
 from typing import Any
 
 from docsuri_shared.vector_spec import IndexRecord
@@ -89,39 +90,36 @@ def _search_hits(
     real cause correlated to the request id in one self-contained line (no timestamp join to a
     separate adapter log). The bare ``raise ... from exc`` previously discarded that cause, making
     a real outage indistinguishable from a transient blip."""
-    permit = None
-    if breaker is not None:
-        permit = breaker.acquire()
-        if permit is None:
+    # guard(): leaving the block without success() counts as failure, so the
+    # outage-shaped exit below needs no explicit report.
+    with (breaker.guard() if breaker is not None else nullcontext()) as permit:
+        if breaker is not None and permit is None:
             raise IndexUnavailable(f"{message}: {breaker.name} circuit open — failing fast")
-    last_exc: Exception | None = None
-    attempt = 0
-    for attempt in range(_SEARCH_MAX_ATTEMPTS):
-        try:
-            response = client.search(
-                index=index, body=body, request_timeout=_SEARCH_REQUEST_TIMEOUT_S
-            )
-            hits = response["hits"]["hits"]
-        except Exception as exc:  # noqa: BLE001 — one store; transient-tolerant then fail-closed
-            last_exc = exc
-            if not _is_transient(exc) or attempt == _SEARCH_MAX_ATTEMPTS - 1:
-                break
-            time.sleep(_SEARCH_RETRY_BACKOFF_S[attempt])
-            continue
-        if permit is not None:
-            permit.success()
-        return hits
-    if permit is not None:
+        last_exc: Exception | None = None
+        attempt = 0
+        for attempt in range(_SEARCH_MAX_ATTEMPTS):
+            try:
+                response = client.search(
+                    index=index, body=body, request_timeout=_SEARCH_REQUEST_TIMEOUT_S
+                )
+                hits = response["hits"]["hits"]
+            except Exception as exc:  # noqa: BLE001 — one store; transient-tolerant then fail-closed
+                last_exc = exc
+                if not _is_transient(exc) or attempt == _SEARCH_MAX_ATTEMPTS - 1:
+                    break
+                time.sleep(_SEARCH_RETRY_BACKOFF_S[attempt])
+                continue
+            if permit is not None:
+                permit.success()
+            return hits
         # Only an OUTAGE-shaped final error (transient class: connection/timeout/5xx) counts
         # toward opening the circuit. A 4xx or unexpected response shape means the store
         # RESPONDED — same rule as CircuitGuardedEmbedder — so a poisoned query or an index
         # misconfig fail-closes per-request without turning a healthy store into a fast-fail
         # 503 wall for every adapter sharing the breaker.
-        if last_exc is not None and _is_transient(last_exc):
-            permit.failure()
-        else:
+        if permit is not None and not (last_exc is not None and _is_transient(last_exc)):
             permit.success()
-    raise IndexUnavailable(f"{message} after {attempt + 1} attempt(s)") from last_exc
+        raise IndexUnavailable(f"{message} after {attempt + 1} attempt(s)") from last_exc
 # arXiv version suffix ("v3"). paperId is stored version-less, so stripping the requested id's
 # version lets the detail lookup resolve a paper indexed at a *different* version than the one
 # asked for. Mirrors ingestion's normalize_arxiv_ref (ingestion/.../domain/ids.py); cross-module

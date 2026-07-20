@@ -125,23 +125,25 @@ class BedrockLlmGateway:
         max_tokens: int = 2000,
         graceful_truncation: bool = False,
     ) -> dict:
-        permit = self._cb.acquire()
-        if permit is None:
-            raise LlmUnavailable("Bedrock LLM circuit breaker is open")
+        # guard(): leaving the block without success() counts as failure — even a
+        # BaseException escaping the retry loop can't strand the HALF-OPEN probe.
+        with self._cb.guard() as permit:
+            if permit is None:
+                raise LlmUnavailable("Bedrock LLM circuit breaker is open")
 
-        # Force the structured-output tool: the model must call ``tool`` and return its arguments
-        # as ``tool_use.input``, so the response is a schema-shaped object rather than free-text
-        # JSON we have to slice out of prose and repair (unescaped quotes / raw LaTeX backslashes).
-        body = {
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": max_tokens,
-            "system": system,
-            "messages": [{"role": "user", "content": [{"type": "text", "text": user}]}],
-            "tools": [tool],
-            "tool_choice": {"type": "tool", "name": tool["name"]},
-        }
-        last_exc: Exception | None = None
-        try:
+            # Force the structured-output tool: the model must call ``tool`` and return its
+            # arguments as ``tool_use.input``, so the response is a schema-shaped object rather
+            # than free-text JSON we have to slice out of prose and repair (unescaped quotes /
+            # raw LaTeX backslashes).
+            body = {
+                "anthropic_version": "bedrock-2023-05-31",
+                "max_tokens": max_tokens,
+                "system": system,
+                "messages": [{"role": "user", "content": [{"type": "text", "text": user}]}],
+                "tools": [tool],
+                "tool_choice": {"type": "tool", "name": tool["name"]},
+            }
+            last_exc: Exception | None = None
             for attempt in range(self._max_retries + 1):
                 if attempt > 0:
                     time.sleep(2 ** attempt * 0.5)
@@ -152,14 +154,14 @@ class BedrockLlmGateway:
                         if not isinstance(payload, dict):
                             raise ValueError("tool input is not a JSON object")
                     except (ValueError, json.JSONDecodeError):
-                        # A response stopped at max_tokens is cut MID-JSON, so the accumulated tool
-                        # arguments are incomplete and don't parse — a raw re-raise loses the
-                        # truncation signal and the whole batch hard-fails (the observed
+                        # A response stopped at max_tokens is cut MID-JSON, so the accumulated
+                        # tool arguments are incomplete and don't parse — a raw re-raise loses
+                        # the truncation signal and the whole batch hard-fails (the observed
                         # full-translation abstain on long papers). For a re-splittable caller
                         # (translate), surface truncation so the chunk is split into smaller
                         # batches — each emits less output and fits the cap — instead of
-                        # abstaining. A parse failure on a COMPLETE response is genuine bad output
-                        # and still raises (retry then abstain).
+                        # abstaining. A parse failure on a COMPLETE response is genuine bad
+                        # output and still raises (retry then abstain).
                         if not (graceful_truncation and truncated):
                             raise
                         permit.success()  # the call succeeded; only the batch was oversized
@@ -169,9 +171,10 @@ class BedrockLlmGateway:
                     return payload
                 except Exception as exc:  # noqa: BLE001 — any Bedrock/transport/parse error → retry/abstain
                     last_exc = exc
-            # Surface the swallowed root cause: without this the orchestrator only logs a generic
-            # ``generation_unavailable`` abstain, so a paper-specific transport/parse failure (e.g.
-            # a math-heavy translate batch) is invisible on the request path and undiagnosable.
+            # Surface the swallowed root cause: without this the orchestrator only logs a
+            # generic ``generation_unavailable`` abstain, so a paper-specific transport/parse
+            # failure (e.g. a math-heavy translate batch) is invisible on the request path and
+            # undiagnosable.
             log.warning(
                 "Bedrock generation failed after %d attempt(s): %s: %s",
                 self._max_retries + 1,
@@ -179,10 +182,6 @@ class BedrockLlmGateway:
                 last_exc,
             )
             raise LlmUnavailable("Bedrock generation failed") from last_exc
-        finally:
-            # Catch-all release (no-op after success()): records the failure and frees the
-            # HALF-OPEN probe even when a BaseException escapes the retry loop.
-            permit.failure()
 
     def _stream_tool_input(self, model_id: str, body: dict) -> tuple[str, bool]:
         """Buffer the forced tool call's ``input`` JSON from the stream (buffer-validate, Q5).

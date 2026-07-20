@@ -112,3 +112,27 @@ def test_permit_completion_is_one_shot() -> None:
     permit.success()
     permit.failure()
     assert breaker.acquire() is not None  # 여전히 CLOSED
+
+
+def test_guard_completes_permit_structurally() -> None:
+    import pytest
+
+    breaker = CircuitBreaker(failure_threshold=1)
+    # 예외 이탈 → 자동 실패 마감(수동 finally 불필요).
+    with pytest.raises(RuntimeError):
+        with breaker.guard() as permit:
+            assert permit is not None
+            raise RuntimeError("dependency down")
+    assert breaker.acquire() is None  # threshold 1 → OPEN
+
+    # OPEN 중 guard는 None을 내주고, None 경로는 아무것도 마감하지 않는다.
+    with breaker.guard() as permit:
+        assert permit is None
+
+    # 성공 선언 후 이탈 → 자동 마감은 no-op(멱등) — 회로가 실패로 오염되지 않는다.
+    clock = _Clock()
+    healthy = _breaker(clock, threshold=1)
+    with healthy.guard() as permit:
+        assert permit is not None
+        permit.success()
+    assert healthy.acquire() is not None  # CLOSED 유지

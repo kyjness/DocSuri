@@ -36,11 +36,11 @@ class SourceBreaker:
         )
 
     def call(self, fn: Callable[[], Any]) -> Any:
-        permit = self._breaker.acquire()
-        if permit is None:
-            raise SourceUnavailable("circuit open")
-        last_error: Exception | None = None
-        try:
+        # guard(): success() 없이 블록을 이탈하면 실패로 마감 — 수동 finally 불필요.
+        with self._breaker.guard() as permit:
+            if permit is None:
+                raise SourceUnavailable("circuit open")
+            last_error: Exception | None = None
             for _ in range(2):  # 기계 재시도 1회 — 이후는 에이전트 판단(NFR-NV2-11)
                 try:
                     result = fn()
@@ -49,9 +49,9 @@ class SourceBreaker:
                     continue
                 permit.success()
                 return result
-        finally:
-            permit.failure()  # 멱등 — 성공 완료 후엔 no-op(catch-all 해제)
-        raise SourceUnavailable(str(last_error) if last_error else "external source failed")
+            raise SourceUnavailable(
+                str(last_error) if last_error else "external source failed"
+            )
 
 
 def check_response(response: Any) -> None:

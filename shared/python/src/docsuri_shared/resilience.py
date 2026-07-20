@@ -31,7 +31,8 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 
 __all__ = ["CircuitBreaker", "CircuitPermit"]
 
@@ -85,6 +86,24 @@ class CircuitBreaker:
         self._probe_in_flight = False
         self._probe_started = 0.0
         self._probe_token = 0
+
+    @contextmanager
+    def guard(self) -> Iterator[CircuitPermit | None]:
+        """:meth:`acquire`의 컨텍스트 매니저 형태 — permit 완주 계약을 구조로 보장.
+
+        진입 시 permit(거부면 ``None``)을 내주고, 블록 이탈 시 완료되지 않은
+        permit을 실패로 마감한다(``failure()`` 멱등 — 성공 완료 후엔 no-op).
+        ``finally: permit.failure()``를 소비처마다 손으로 지킬 필요가 없어져
+        HALF-OPEN 프로브 슬롯 누수를 놓칠 수 없다. 거부 시 어떤 예외를 던질지,
+        어떤 결과를 성공으로 볼지는 호출자 정책으로 남는다(성공은 블록 안에서
+        ``permit.success()``로 선언).
+        """
+        permit = self.acquire()
+        try:
+            yield permit
+        finally:
+            if permit is not None:
+                permit.failure()
 
     def acquire(self) -> CircuitPermit | None:
         with self._lock:

@@ -37,19 +37,23 @@ class CircuitGuardedEmbedder:
         self._breaker = breaker
 
     def embed_query(self, text: str) -> list[float]:
-        permit = self._breaker.acquire()
-        if permit is None:
-            raise EmbeddingUnavailable(f"{self._breaker.name} circuit open — degrading fast")
-        try:
-            vector = self._adapter.embed_query(text)
-        except EmbeddingUnavailable:
-            permit.failure()
-            raise
-        except Exception:
-            # A non-transient error (e.g. the loud dimension-mismatch config error) means the
-            # dependency RESPONDED — count it as circuit-success (frees a half-open probe slot)
-            # and re-raise: the circuit is for outages, not for masking config bugs.
+        # guard(): exiting the block without success() counts as failure — the
+        # EmbeddingUnavailable path needs no explicit report.
+        with self._breaker.guard() as permit:
+            if permit is None:
+                raise EmbeddingUnavailable(
+                    f"{self._breaker.name} circuit open — degrading fast"
+                )
+            try:
+                vector = self._adapter.embed_query(text)
+            except EmbeddingUnavailable:
+                raise
+            except Exception:
+                # A non-transient error (e.g. the loud dimension-mismatch config error) means
+                # the dependency RESPONDED — count it as circuit-success (frees a half-open
+                # probe slot) and re-raise: the circuit is for outages, not for masking
+                # config bugs.
+                permit.success()
+                raise
             permit.success()
-            raise
-        permit.success()
-        return vector
+            return vector
