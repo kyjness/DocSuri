@@ -97,24 +97,39 @@ class Chunker:
     overlap_chars: int = 240
     max_chunks_per_paper: int = 128
 
+    def _fill(
+        self,
+        chunks: list[Chunk],
+        paper_id: str,
+        section: str,
+        text: str,
+        refs: tuple[ChunkBlockRef, ...] = (),
+    ) -> bool:
+        """Split ``text`` and append chunks in ordinal order until the per-paper cap is reached.
+
+        Returns True once the cap is full, so callers can stop feeding sections.
+        """
+        for part in split_text(text, self.max_chunk_chars, self.overlap_chars):
+            if len(chunks) >= self.max_chunks_per_paper:
+                return True
+            ordinal = len(chunks)
+            chunks.append(
+                Chunk(
+                    paper_id=paper_id,
+                    ordinal=ordinal,
+                    section=section,
+                    text=part,
+                    chunk_id=chunk_id(paper_id, ordinal),
+                    block_refs=refs,
+                )
+            )
+        return len(chunks) >= self.max_chunks_per_paper
+
     def chunk(self, paper: ParsedPaper) -> ChunkSet:
         sections = [("abstract", paper.abstract), *split_sections(paper.full_text)]
         chunks: list[Chunk] = []
         for section, section_text in sections:
-            for text in split_text(section_text, self.max_chunk_chars, self.overlap_chars):
-                if len(chunks) >= self.max_chunks_per_paper:
-                    break
-                ordinal = len(chunks)
-                chunks.append(
-                    Chunk(
-                        paper_id=paper.paper_id,
-                        ordinal=ordinal,
-                        section=section,
-                        text=text,
-                        chunk_id=chunk_id(paper.paper_id, ordinal),
-                    )
-                )
-            if len(chunks) >= self.max_chunks_per_paper:
+            if self._fill(chunks, paper.paper_id, section, section_text):
                 break
         if not chunks:
             raise ValidationViolationError("paper produced no chunks", stage="chunk")
@@ -168,40 +183,11 @@ class Chunker:
 
         chunks: list[Chunk] = []
         for section, text, refs in entries:
-            if len(chunks) >= self.max_chunks_per_paper:
-                break
-            for part in split_text(text, self.max_chunk_chars, self.overlap_chars):
-                if len(chunks) >= self.max_chunks_per_paper:
-                    break
-                ordinal = len(chunks)
-                chunks.append(
-                    Chunk(
-                        paper_id=doc.meta.paperId,
-                        ordinal=ordinal,
-                        section=section or "body",
-                        text=part,
-                        chunk_id=chunk_id(doc.meta.paperId, ordinal),
-                        block_refs=refs,
-                    )
-                )
-            if len(chunks) >= self.max_chunks_per_paper:
+            if self._fill(chunks, doc.meta.paperId, section or "body", text, refs):
                 break
 
         if not chunks and doc.fullText and fallback_refs:
-            for part in split_text(doc.fullText, self.max_chunk_chars, self.overlap_chars):
-                ordinal = len(chunks)
-                chunks.append(
-                    Chunk(
-                        paper_id=doc.meta.paperId,
-                        ordinal=ordinal,
-                        section="body",
-                        text=part,
-                        chunk_id=chunk_id(doc.meta.paperId, ordinal),
-                        block_refs=fallback_refs,
-                    )
-                )
-                if len(chunks) >= self.max_chunks_per_paper:
-                    break
+            self._fill(chunks, doc.meta.paperId, "body", doc.fullText, fallback_refs)
 
         referenced = {
             (ref.section_id, ref.block_id, ref.block_type)

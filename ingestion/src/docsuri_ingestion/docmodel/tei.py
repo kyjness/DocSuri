@@ -38,7 +38,7 @@ from docsuri_shared.dtos import DocModel, SourceTier
 
 from docsuri_ingestion.docmodel.parser import (
     _DocCtx,
-    _project_full_text,
+    _finish_docmodel,
     _SectionCtx,
     _with_abstract_section,
 )
@@ -96,23 +96,17 @@ def parse_tei_to_docmodel(
         sections.append(figure_section)
 
     sections = _with_abstract_section(sections, abstract)
-    data = {
-        "meta": {
-            "paperId": paper_id,
-            "version": version,
-            "title": title,
-            **({"abstract": abstract} if abstract else {}),
-            "provenance": {
-                "sourceTier": source_tier.value,
-                "parserVersion": parser_version,
-                "schemaVersion": schema_version,
-                "generatedAt": generated_at,
-            },
-        },
-        "fullText": _project_full_text(sections),
-        "sections": sections,
-    }
-    return DocModel.model_validate(data)
+    return _finish_docmodel(
+        sections,
+        paper_id=paper_id,
+        version=version,
+        title=title,
+        abstract=abstract,
+        source_tier=source_tier,
+        parser_version=parser_version,
+        schema_version=schema_version,
+        generated_at=generated_at,
+    )
 
 
 # --------------------------------------------------------------------------- sections

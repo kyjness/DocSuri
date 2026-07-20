@@ -24,7 +24,11 @@ import time
 from docsuri_shared.index_spec import papers_index_body
 from docsuri_shared.vector_spec import EMBEDDING_SPEC
 
-from .adapters.aws import BedrockCohereEmbeddingPort, build_opensearch_client, collect_bulk_failures
+from .adapters.aws import (
+    BedrockCohereEmbeddingPort,
+    admin_client_from_settings,
+    collect_bulk_failures,
+)
 from .resilience import RetryPolicy, TokenBucket, is_retriable
 from .settings import IngestionSettings
 
@@ -32,18 +36,7 @@ log = logging.getLogger("docsuri.ingestion.reembed")
 
 
 def _client(settings: IngestionSettings):
-    """OpenSearch admin client matching migrate._admin_client (TLS + SigV4 in prod, unsigned
-    local). Duplicated here rather than imported from .migrate: migrate imports THIS module for
-    _STEPS, so reusing its client would be a circular import."""
-    if not settings.opensearch_endpoint:
-        raise SystemExit("DOCSURI_OPENSEARCH_ENDPOINT is required")
-    local = settings.env == "local"
-    return build_opensearch_client(
-        endpoint=settings.opensearch_endpoint,
-        region_name=None if local else settings.aws_region,
-        use_ssl=not local,
-        verify_certs=not local,
-    )
+    return admin_client_from_settings(settings)
 
 
 def _source_index(settings: IngestionSettings) -> str:

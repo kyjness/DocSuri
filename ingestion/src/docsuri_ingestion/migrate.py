@@ -52,20 +52,9 @@ def _window(env_name: str, default: datetime) -> datetime:
 
 
 def _admin_client(settings: IngestionSettings):
-    """OpenSearch admin client matching the writer adapter (aws.build_opensearch_client):
-    TLS on in prod and SigV4-signed (service ``es``) with the ECS task role, so the managed
-    VPC domain's resource policy authorizes the request. Unsigned only for local clusters."""
-    from .adapters.aws import build_opensearch_client
+    from .adapters.aws import admin_client_from_settings
 
-    if not settings.opensearch_endpoint:
-        raise SystemExit("DOCSURI_OPENSEARCH_ENDPOINT is required")
-    local = settings.env == "local"
-    return build_opensearch_client(
-        endpoint=settings.opensearch_endpoint,
-        region_name=None if local else settings.aws_region,
-        use_ssl=not local,
-        verify_certs=not local,
-    )
+    return admin_client_from_settings(settings)
 
 
 def provision(settings: IngestionSettings | None = None) -> int:

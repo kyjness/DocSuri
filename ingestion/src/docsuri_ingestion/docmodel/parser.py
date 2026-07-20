@@ -143,24 +143,18 @@ def parse_html_to_docmodel(
         sections = [_span_only_section(root, doc_ctx)]
     sections = _with_abstract_section(sections, abstract)
 
-    data = {
-        "meta": {
-            "paperId": paper_id,
-            "version": version,
-            "title": title,
-            **({"abstract": abstract} if abstract else {}),
-            **({"macros": macros} if macros else {}),
-            "provenance": {
-                "sourceTier": source_tier.value,
-                "parserVersion": parser_version,
-                "schemaVersion": schema_version,
-                "generatedAt": generated_at,
-            },
-        },
-        "fullText": _project_full_text(sections),
-        "sections": sections,
-    }
-    return DocModel.model_validate(data)
+    return _finish_docmodel(
+        sections,
+        paper_id=paper_id,
+        version=version,
+        title=title,
+        abstract=abstract,
+        source_tier=source_tier,
+        parser_version=parser_version,
+        schema_version=schema_version,
+        generated_at=generated_at,
+        macros=macros,
+    )
 
 
 def parse_text_to_docmodel(
@@ -189,23 +183,17 @@ def parse_text_to_docmodel(
         "blocks": ([{"id": "s1.p1", "type": "paragraph", "text": body}] if body else []),
     }
     sections.append(section)
-    data = {
-        "meta": {
-            "paperId": paper_id,
-            "version": version,
-            "title": title,
-            **({"abstract": abstract} if abstract else {}),
-            "provenance": {
-                "sourceTier": source_tier.value,
-                "parserVersion": parser_version,
-                "schemaVersion": schema_version,
-                "generatedAt": generated_at,
-            },
-        },
-        "fullText": _project_full_text(sections),
-        "sections": sections,
-    }
-    return DocModel.model_validate(data)
+    return _finish_docmodel(
+        sections,
+        paper_id=paper_id,
+        version=version,
+        title=title,
+        abstract=abstract,
+        source_tier=source_tier,
+        parser_version=parser_version,
+        schema_version=schema_version,
+        generated_at=generated_at,
+    )
 
 
 # --------------------------------------------------------------------------- sections
@@ -635,6 +623,44 @@ def _int_attr(el: Tag, name: str) -> int:
         return int(raw) if raw is not None else 1
     except (TypeError, ValueError):
         return 1
+
+
+def _finish_docmodel(
+    sections: list[dict],
+    *,
+    paper_id: str,
+    version: int,
+    title: str,
+    abstract: str | None,
+    source_tier: SourceTier,
+    parser_version: str,
+    schema_version: str,
+    generated_at: datetime,
+    macros: object | None = None,
+) -> DocModel:
+    """Wrap a built section tree in meta/provenance, project fullText, and validate.
+
+    Every doc-model producer (ar5iv HTML, GROBID TEI, flat text) ends here, so the meta shape
+    and the fullText projection cannot diverge between parsers.
+    """
+    data = {
+        "meta": {
+            "paperId": paper_id,
+            "version": version,
+            "title": title,
+            **({"abstract": abstract} if abstract else {}),
+            **({"macros": macros} if macros else {}),
+            "provenance": {
+                "sourceTier": source_tier.value,
+                "parserVersion": parser_version,
+                "schemaVersion": schema_version,
+                "generatedAt": generated_at,
+            },
+        },
+        "fullText": _project_full_text(sections),
+        "sections": sections,
+    }
+    return DocModel.model_validate(data)
 
 
 def _project_full_text(sections: list[dict]) -> str:

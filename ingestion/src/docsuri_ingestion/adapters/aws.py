@@ -19,6 +19,7 @@ from docsuri_ingestion.domain.errors import (
 )
 from docsuri_ingestion.domain.models import IndexRecordBatch, IndexStats, ParsedPaper, Tombstone
 from docsuri_ingestion.ports import QueueMessage
+from docsuri_ingestion.settings import IngestionSettings
 
 _log = logging.getLogger(__name__)
 
@@ -318,6 +319,23 @@ class BedrockCohereEmbeddingPort:
                     stage="embed",
                 )
         return vectors
+
+
+def admin_client_from_settings(settings: IngestionSettings):
+    """Admin OpenSearch client for the one-off migrate/re-embed entrypoints.
+
+    Lives beside ``build_opensearch_client`` rather than in either entrypoint: migrate imports
+    reembed for its step table, so a copy in one of them cannot be imported by the other.
+    """
+    if not settings.opensearch_endpoint:
+        raise SystemExit("DOCSURI_OPENSEARCH_ENDPOINT is required")
+    local = settings.env == "local"
+    return build_opensearch_client(
+        endpoint=settings.opensearch_endpoint,
+        region_name=None if local else settings.aws_region,
+        use_ssl=not local,
+        verify_certs=not local,
+    )
 
 
 def build_opensearch_client(
