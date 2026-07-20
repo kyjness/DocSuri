@@ -40,11 +40,17 @@ def configure_logging(level: str = "INFO") -> None:
     logging.basicConfig(level=level, format="%(message)s")
 
 
+# Credential markers for log entries. Narrower than the settings dump's list on purpose: a log
+# entry's URLs, endpoints and ids are the debugging signal, so only actual secrets are removed.
+# "api_key"/"apikey" rather than a bare "key" so domain fields like canonical_key stay readable.
+_SECRET_LOG_MARKERS = ("secret", "password", "token", "dsn", "credential", "api_key", "apikey")
+
+
 def sanitize_log_entry(entry: dict[str, Any]) -> dict[str, Any]:
     redacted: dict[str, Any] = {}
     for key, value in entry.items():
         lowered = key.lower()
-        if "secret" in lowered or "password" in lowered or "token" in lowered or "dsn" in lowered:
+        if any(marker in lowered for marker in _SECRET_LOG_MARKERS):
             redacted[key] = "***redacted***"
         else:
             redacted[key] = value

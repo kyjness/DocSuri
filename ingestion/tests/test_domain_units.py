@@ -450,3 +450,36 @@ def test_reembed_recovers_the_embed_text_the_writer_used() -> None:
             assert recovered == chunk.text
         else:
             assert recovered == normalize_text(chunk.text)
+
+
+def test_reembed_abstract_reconstruction_is_exact_at_the_default_chunk_size() -> None:
+    """The abstract branch of the re-embed reconstruction is exact only while the abstract fits
+    one chunk. Pin both sides of that bound so the safe default is guaranteed and the failure
+    mode under a lowered DOCSURI_MAX_CHUNK_CHARS is visible rather than silent.
+    """
+    from docsuri_ingestion.reembed import _embed_text_for_source
+
+    # arXiv caps submitted abstracts well under the 2400-char default, so one chunk is the real
+    # operating point — the reconstruction returns exactly what the writer embedded.
+    long_abstract = "Sentence about the method. " * 60  # ~1620 chars, a realistic upper end
+    metadata = replace(sample_metadata(), title="Bound Title", abstract=long_abstract)
+    paper = FetchParseProcessor().parse(
+        RawDocument(
+            metadata=metadata, text="INTRODUCTION\nBody", source_url="local://paper"
+        )
+    )
+    default_chunks = Chunker().chunk(paper)
+    abstract_chunks = [c for c in default_chunks.chunks if c.section == "abstract"]
+    assert len(abstract_chunks) == 1
+    assert _embed_text_for_source({"section": "abstract", "abstract": paper.abstract}) == (
+        abstract_chunks[0].text
+    )
+
+    # Lower the cap below the abstract length and it splits. Every one of those chunks would
+    # re-embed the whole abstract, so the paper gets duplicate vectors in the abstract space.
+    # Fixing that needs the embedded text stored per document, not a re-split in the runner.
+    split_chunks = Chunker(max_chunk_chars=400, overlap_chars=0).chunk(paper)
+    split_abstract_chunks = [c for c in split_chunks.chunks if c.section == "abstract"]
+    assert len(split_abstract_chunks) > 1
+    recovered = _embed_text_for_source({"section": "abstract", "abstract": paper.abstract})
+    assert all(recovered != chunk.text for chunk in split_abstract_chunks)

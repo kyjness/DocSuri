@@ -6,6 +6,20 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+# Field-name markers for values that must never be logged verbatim: connection targets (which
+# disclose private infrastructure) and credentials/contacts. Matched as substrings against the
+# field name, so a new setting is covered by naming it conventionally.
+_SENSITIVE_SETTING_MARKERS = (
+    "dsn",
+    "url",
+    "endpoint",
+    "key",
+    "secret",
+    "password",
+    "token",
+    "mailto",
+)
+
 
 def _parse_window_bound(raw: str | None, default: datetime) -> datetime:
     if not raw:
@@ -170,11 +184,17 @@ class IngestionSettings(BaseModel):
         return tuple(part.strip() for part in self.corpus_sources.split(",") if part.strip())
 
     def safe_log_dict(self) -> dict[str, object]:
+        """Settings dump safe to log: every credential and connection target is replaced by a
+        presence marker, so the dump answers "is it configured" without disclosing the value.
+
+        Deliberately broader than ``observability.sanitize_log_entry``: a settings dump has no
+        debugging value in the literal endpoint or key, whereas a log entry's URLs and ids are
+        the signal, so the two use different policies rather than one shared rule.
+        """
         data = self.model_dump(by_alias=False)
         for key in list(data):
-            if "dsn" in key.lower() or "url" in key.lower() or "endpoint" in key.lower():
-                if data[key]:
-                    data[key] = "***configured***"
+            if any(marker in key.lower() for marker in _SENSITIVE_SETTING_MARKERS) and data[key]:
+                data[key] = "***configured***"
         return data
 
 

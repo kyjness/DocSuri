@@ -45,9 +45,24 @@ def _source_index(settings: IngestionSettings) -> str:
 
 
 def _embed_text_for_source(src: dict) -> str:
-    """The text that produced a stored doc's vector: abstract chunks embedded the ``abstract``
-    field; body chunks embedded ``lexicalTerms`` (== normalize_text(chunk.text)). Fall back to
-    abstract then title so a body chunk with an empty lexicalTerms still yields a usable vector."""
+    """Reconstruct the text that produced a stored doc's vector.
+
+    The writer embeds ``chunk.text``, which the index does not store, so this reads it back from
+    the fields that do survive: body chunks from ``lexicalTerms`` (== normalize_text(chunk.text),
+    and the chunk text is already normalized upstream, so this is exact), abstract chunks from
+    ``abstract`` (``lexicalTerms`` is deliberately blanked for them). Falls back to abstract then
+    title so a body chunk with empty lexicalTerms still yields a usable vector.
+
+    EXACTNESS BOUND: the abstract branch is exact only while a paper's abstract fits one chunk,
+    which it always does at the default ``DOCSURI_MAX_CHUNK_CHARS`` (2400) because arXiv caps
+    submitted abstracts well below it. Lower that setting under the abstract length and every
+    abstract chunk of a paper re-embeds the WHOLE abstract instead of its own slice, giving that
+    paper duplicate vectors in the ``section=abstract`` space the reader searches. Making this
+    exact under any chunk size needs the embedded text stored per document (a shared-schema
+    change), not a re-split here — re-splitting would silently depend on the chunk settings
+    matching the ones used at write time, which nothing records.
+    Pinned by ``test_reembed_recovers_the_embed_text_the_writer_used``.
+    """
     if src.get("section") == "abstract":
         return src.get("abstract") or ""
     return src.get("lexicalTerms") or src.get("abstract") or src.get("title") or ""
