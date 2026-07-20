@@ -426,13 +426,13 @@ class SqlNoveltyStore:
                 .order_by(MessageV2Table.created_at.asc(), MessageV2Table.message_id.asc())
             )
             if after is not None:
-                # 커서 경로만 선행 소유권 확인 — 비소유자 커서 탐침에 KeyError로
-                # 존재 여부가 노출되지 않게 한다(무커서 폴링 핫패스는 단일 쿼리).
-                if not self._owns(session, owner_id, job_id):
-                    return []
+                # 앵커 행 자체가 소유자를 알려주므로 별도 잡 조회 없이 판정한다.
+                # 비소유자의 유효 커서는 KeyError 대신 빈 페이지 — 존재 비노출.
                 anchor = session.get(MessageV2Table, after)
                 if anchor is None or anchor.job_id != job_id:
                     raise KeyError(f"unknown cursor: {after}")
+                if anchor.owner_id != owner_id:
+                    return []
                 stmt = stmt.where(
                     (MessageV2Table.created_at > anchor.created_at)
                     | (
@@ -542,11 +542,6 @@ class SqlNoveltyStore:
                 delete(NotionConnectionTable).where(NotionConnectionTable.owner_id == owner_id)
             )
             session.commit()
-
-    @staticmethod
-    def _owns(session: Session, owner_id: str, job_id: str) -> bool:
-        row = session.get(NoveltyJobV2Table, job_id)
-        return row is not None and row.owner_id == owner_id
 
 
 def _job_row(job: NoveltyJob) -> NoveltyJobV2Table:

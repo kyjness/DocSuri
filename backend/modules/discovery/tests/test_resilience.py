@@ -1,8 +1,12 @@
 """Per-dependency circuit breakers (nfr-design-patterns §1.2 / RES-9 / BR-16).
 
-Covers the breaker state machine, the embedding decorator (open → immediate
-``EmbeddingUnavailable`` → the orchestrator's tested lexical-only fallback), and the
-OpenSearch adapter integration (open → immediate ``IndexUnavailable`` without a store call).
+The breaker state machine is the SHARED implementation and its contract
+(consecutive-failure trip, single HALF-OPEN probe, stale-success ignore,
+probe-slot expiry) is verified by ``shared/python/tests/test_resilience.py``.
+This file keeps the discovery-specific integration: the embedding decorator
+(open → immediate ``EmbeddingUnavailable`` → the orchestrator's tested
+lexical-only fallback) and the OpenSearch adapter (open → immediate
+``IndexUnavailable`` without a store call; only outage-class errors trip).
 """
 
 from __future__ import annotations
@@ -22,49 +26,10 @@ class _Clock:
         return self.now
 
 
-def _breaker(clock: _Clock, threshold: int = 3, open_seconds: float = 30.0) -> CircuitBreaker:
+def _breaker(clock: _Clock, threshold: int = 3, recovery_seconds: float = 30.0) -> CircuitBreaker:
     return CircuitBreaker(
-        "test", failure_threshold=threshold, open_seconds=open_seconds, clock=clock
+        "test", failure_threshold=threshold, recovery_seconds=recovery_seconds, clock=clock
     )
-
-
-def test_breaker_opens_after_consecutive_failures_and_recovers_via_probe() -> None:
-    clock = _Clock()
-    breaker = _breaker(clock)
-    for _ in range(3):
-        assert breaker.allow() is True
-        breaker.record_failure()
-    assert breaker.allow() is False  # OPEN — fail fast
-
-    clock.now = 31.0
-    assert breaker.allow() is True  # half-open probe slot
-    assert breaker.allow() is False  # only ONE probe per window
-    breaker.record_success()
-    assert breaker.allow() is True  # CLOSED again
-
-
-def test_breaker_failed_probe_reopens_a_fresh_window() -> None:
-    clock = _Clock()
-    breaker = _breaker(clock)
-    for _ in range(3):
-        breaker.record_failure()
-    clock.now = 31.0
-    assert breaker.allow() is True  # probe
-    breaker.record_failure()  # probe failed → re-open
-    clock.now = 60.0  # inside the NEW window (opened at 31.0)
-    assert breaker.allow() is False
-    clock.now = 62.0
-    assert breaker.allow() is True  # next probe
-
-
-def test_breaker_success_resets_consecutive_count() -> None:
-    breaker = _breaker(_Clock())
-    breaker.record_failure()
-    breaker.record_failure()
-    breaker.record_success()
-    breaker.record_failure()
-    breaker.record_failure()
-    assert breaker.allow() is True  # never reached 3 consecutive
 
 
 class _FlakyEmbedder:
@@ -91,6 +56,10 @@ def test_guarded_embedder_fails_fast_when_open_without_calling_adapter() -> None
     with pytest.raises(EmbeddingUnavailable):
         guarded.embed_query("q")  # circuit open → no adapter call
     assert inner.calls == 3
+    clock.now = 31.0
+    with pytest.raises(EmbeddingUnavailable):
+        guarded.embed_query("q")  # half-open probe reaches the adapter again
+    assert inner.calls == 4
 
 
 def test_guarded_embedder_passes_non_transient_errors_through_without_tripping() -> None:
@@ -100,7 +69,7 @@ def test_guarded_embedder_passes_non_transient_errors_through_without_tripping()
     with pytest.raises(ValueError, match="dimension mismatch"):
         guarded.embed_query("q")
     # A config error is a RESPONSE, not an outage — the circuit stays closed.
-    assert breaker.allow() is True
+    assert breaker.acquire() is not None
 
 
 class _AlwaysFailingClient:
@@ -145,20 +114,5 @@ def test_store_breaker_ignores_non_transient_client_errors() -> None:
     for _ in range(5):
         with pytest.raises(IndexUnavailable):
             adapter.bm25_search(("q",), 5)
-    assert breaker.allow() is True  # still CLOSED
+    assert breaker.acquire() is not None  # still CLOSED
     assert client.calls == 5  # every request reached the store (no fast-fail)
-
-
-def test_breaker_leaked_probe_slot_self_heals() -> None:
-    # A probe holder that never reports an outcome (crashed) must not wedge the circuit OPEN
-    # forever: the slot expires after one cooldown window and a new probe is admitted.
-    clock = _Clock()
-    breaker = _breaker(clock)
-    for _ in range(3):
-        breaker.record_failure()
-    clock.now = 31.0
-    assert breaker.allow() is True  # probe taken… and its holder dies silently
-    clock.now = 40.0
-    assert breaker.allow() is False  # slot still live inside the window
-    clock.now = 62.0
-    assert breaker.allow() is True  # expired slot reclaimed

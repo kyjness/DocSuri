@@ -10,6 +10,9 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from docsuri_shared.env import env_float as _env_float
+from docsuri_shared.env import env_int as _env_int
+
 from .domain.models import LoopBudget
 from .ports.tools import (
     TOOL_CORPUS_SEARCH,
@@ -38,16 +41,6 @@ TOOL_CAP_GROUPS: dict[str, str] = {
     TOOL_VIEW_FIGURE: CAP_GROUP_VIEW_FIGURE,
     TOOL_SAVE_ARTIFACT: CAP_GROUP_SAVE_ARTIFACT,
 }
-
-
-def _env_int(name: str, default: int) -> int:
-    raw = os.environ.get(name)
-    return int(raw) if raw else default
-
-
-def _env_float(name: str, default: float) -> float:
-    raw = os.environ.get(name)
-    return float(raw) if raw else default
 
 
 @dataclass(frozen=True, slots=True)

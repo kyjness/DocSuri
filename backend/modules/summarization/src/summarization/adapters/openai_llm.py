@@ -24,6 +24,8 @@ import urllib.request
 from collections.abc import Sequence
 from typing import Any
 
+from docsuri_shared.resilience import CircuitBreaker
+
 from ..domain.models import (
     Glossary,
     RefinedSource,
@@ -39,7 +41,7 @@ from ..prompts import (
     build_summary_prompt,
     build_translate_segments_prompt,
 )
-from .bedrock_llm import LocalCircuitBreaker, _to_summary_draft
+from .bedrock_llm import _to_summary_draft
 
 log = logging.getLogger("docsuri.summarization.openai")
 
@@ -64,7 +66,7 @@ class OpenAILlmGateway:
         self._summary_model = summary_model_id
         self._translate_model = translate_model_id
         self._max_retries = max_retries
-        self._cb = LocalCircuitBreaker()
+        self._cb = CircuitBreaker("openai-summarization")
 
     # --- public ports (same surface as BedrockLlmGateway) ---------------------
     def summarize(
@@ -106,31 +108,32 @@ class OpenAILlmGateway:
         max_tokens: int = 2000,
         graceful_truncation: bool = False,
     ) -> dict:
-        permit = self._cb.acquire()
-        if permit is None:
-            raise LlmUnavailable("OpenAI LLM circuit breaker is open")
+        # guard(): leaving the block without success() counts as failure — even a
+        # BaseException escaping the retry loop can't strand the HALF-OPEN probe.
+        with self._cb.guard() as permit:
+            if permit is None:
+                raise LlmUnavailable("OpenAI LLM circuit breaker is open")
 
-        body = {
-            "model": model_id,
-            "max_completion_tokens": max_tokens,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            # The Bedrock tool schema (name/description/input_schema) maps 1:1 onto the
-            # Chat Completions function shape — templates.py stays the single SSOT.
-            "tools": [{
-                "type": "function",
-                "function": {
-                    "name": tool["name"],
-                    "description": tool["description"],
-                    "parameters": tool["input_schema"],
-                },
-            }],
-            "tool_choice": {"type": "function", "function": {"name": tool["name"]}},
-        }
-        last_exc: Exception | None = None
-        try:
+            body = {
+                "model": model_id,
+                "max_completion_tokens": max_tokens,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                # The Bedrock tool schema (name/description/input_schema) maps 1:1 onto the
+                # Chat Completions function shape — templates.py stays the single SSOT.
+                "tools": [{
+                    "type": "function",
+                    "function": {
+                        "name": tool["name"],
+                        "description": tool["description"],
+                        "parameters": tool["input_schema"],
+                    },
+                }],
+                "tool_choice": {"type": "function", "function": {"name": tool["name"]}},
+            }
+            last_exc: Exception | None = None
             for attempt in range(self._max_retries + 1):
                 if attempt > 0:
                     time.sleep(2 ** attempt * 0.5)
@@ -141,9 +144,10 @@ class OpenAILlmGateway:
                         if not isinstance(payload, dict):
                             raise ValueError("tool arguments are not a JSON object")
                     except (ValueError, json.JSONDecodeError):
-                        # finish_reason=length cuts the arguments mid-JSON — surface truncation to
-                        # a re-splittable caller (translate) instead of hard-failing the batch;
-                        # a parse failure on a COMPLETE response is genuine bad output → retry.
+                        # finish_reason=length cuts the arguments mid-JSON — surface truncation
+                        # to a re-splittable caller (translate) instead of hard-failing the
+                        # batch; a parse failure on a COMPLETE response is genuine bad output
+                        # → retry.
                         if not (graceful_truncation and truncated):
                             raise
                         permit.success()
@@ -160,10 +164,6 @@ class OpenAILlmGateway:
                 last_exc,
             )
             raise LlmUnavailable("OpenAI generation failed") from last_exc
-        finally:
-            # Catch-all release (no-op after success()): records the failure and frees the
-            # HALF-OPEN probe even when a BaseException escapes the retry loop.
-            permit.failure()
 
     def _request_tool_arguments(self, body: dict) -> tuple[str, bool]:
         """One Chat Completions call → (forced tool call's ``arguments`` JSON, truncated?)."""

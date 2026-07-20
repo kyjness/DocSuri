@@ -20,6 +20,9 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
 
+# 계측 방출은 공유 best-effort 헬퍼(포트 시그니처 강제) — 유닛 사본 금지.
+from docsuri_shared.observability import emit_metric as _emit
+
 from .domain.loop import LoopDeps, run_loop
 from .domain.models import (
     TERMINAL_STATES,
@@ -178,15 +181,6 @@ def _mark_failed(store: NoveltyStorePort, job_id: str, reason: str) -> None:
     job.updated_at = utc_now()
     job.completed_at = utc_now()
     store.update_job(job)
-
-
-def _emit(observability: Any | None, name: str) -> None:
-    if observability is None:
-        return
-    try:
-        observability.emit_metric(name)
-    except Exception:  # noqa: BLE001 — 계측은 best-effort side path
-        log.debug("novelty worker: metric emit failed", exc_info=True)
 
 
 def build_worker_deps() -> WorkerDeps:

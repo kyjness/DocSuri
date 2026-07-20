@@ -182,15 +182,17 @@ class InMemoryNoveltyStore:
     def list_messages(
         self, owner_id: str, job_id: str, *, after: str | None, limit: int
     ) -> list[NoveltyChatMessage]:
-        job = self._jobs.get(job_id)
-        if job is None or job.owner_id != owner_id:
-            return []
+        # SQL 구현과 동일 계약: 미지의 커서는 KeyError, 비소유자는 빈 페이지
+        # (유효 커서를 들고 와도 KeyError로 존재를 노출하지 않는다).
         messages = self._messages.get(job_id, [])
         if after is not None:
             ids = [message.message_id for message in messages]
             if after not in ids:
                 raise KeyError(f"unknown cursor: {after}")
             messages = messages[ids.index(after) + 1 :]
+        job = self._jobs.get(job_id)
+        if job is None or job.owner_id != owner_id:
+            return []
         return [message.model_copy(deep=True) for message in messages[:limit]]
 
 

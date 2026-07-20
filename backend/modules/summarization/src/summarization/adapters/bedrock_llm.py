@@ -14,10 +14,11 @@ from __future__ import annotations
 
 import json
 import logging
-import threading
 import time
 from collections.abc import Sequence
 from typing import Any
+
+from docsuri_shared.resilience import CircuitBreaker
 
 from ..domain.models import (
     Anchor,
@@ -38,95 +39,6 @@ from ..prompts import (
 )
 
 log = logging.getLogger("docsuri.summarization.bedrock")
-
-
-class CircuitPermit:
-    """One-shot completion handle from ``LocalCircuitBreaker.acquire()``.
-
-    The caller MUST complete it with ``success()`` or ``failure()``. ``failure()`` is
-    idempotent, so a ``finally: permit.failure()`` is the catch-all release: even a
-    non-``Exception`` escape (KeyboardInterrupt/SystemExit mid-call) can't strand the
-    HALF-OPEN probe reservation and lock the breaker out forever."""
-
-    def __init__(self, breaker: LocalCircuitBreaker, *, is_probe: bool) -> None:
-        self._breaker = breaker
-        self._is_probe = is_probe
-        self._done = False
-
-    def success(self) -> None:
-        self._resolve(success=True)
-
-    def failure(self) -> None:
-        self._resolve(success=False)
-
-    def _resolve(self, *, success: bool) -> None:
-        if self._done:
-            return
-        self._done = True
-        self._breaker._complete(is_probe=self._is_probe, success=success)
-
-
-class LocalCircuitBreaker:
-    """Stateful in-memory circuit breaker.
-
-    Callers ``acquire()`` a permit (``None`` = rejected) and complete it; the permit carries
-    whether the caller is THE single HALF-OPEN probe, so only the probe's outcome drives the
-    recovery transition — a stale success from a call admitted before the trip can't close a
-    HALF-OPEN circuit while the probe is still checking the dependency."""
-
-    def __init__(self, failure_threshold: int = 5, recovery_timeout: float = 30.0) -> None:
-        self._failure_threshold = failure_threshold
-        self._recovery_timeout = recovery_timeout
-        self._state = "CLOSED"  # CLOSED, OPEN, HALF-OPEN
-        self._failure_count = 0
-        self._last_state_change = time.time()
-        # HALF-OPEN admits exactly ONE probe: concurrent workers share this breaker, and without
-        # the gate every caller arriving during HALF-OPEN would hit the (possibly still-down)
-        # dependency at once — the burst the breaker exists to prevent.
-        self._probe_in_flight = False
-        self._lock = threading.Lock()
-
-    def acquire(self) -> CircuitPermit | None:
-        with self._lock:
-            self._check_recovery()
-            if self._state == "OPEN":
-                return None
-            if self._state == "HALF-OPEN":
-                if self._probe_in_flight:
-                    return None
-                self._probe_in_flight = True
-                return CircuitPermit(self, is_probe=True)
-            return CircuitPermit(self, is_probe=False)
-
-    def _complete(self, *, is_probe: bool, success: bool) -> None:
-        with self._lock:
-            now = time.time()
-            if is_probe:
-                self._probe_in_flight = False
-                if success:
-                    self._state = "CLOSED"
-                    self._failure_count = 0
-                else:
-                    self._state = "OPEN"
-                self._last_state_change = now
-            elif success:
-                if self._state == "CLOSED":
-                    self._failure_count = 0
-                # Stale success (admitted before the trip) while HALF-OPEN/OPEN: ignored —
-                # only the probe may close the circuit.
-            else:
-                self._failure_count += 1
-                if self._state == "CLOSED" and self._failure_count >= self._failure_threshold:
-                    self._state = "OPEN"
-                    self._last_state_change = now
-
-    def _check_recovery(self) -> None:
-        if self._state == "OPEN":
-            now = time.time()
-            if now - self._last_state_change > self._recovery_timeout:
-                self._state = "HALF-OPEN"
-                self._probe_in_flight = False
-                self._last_state_change = now
 
 
 class BedrockLlmGateway:
@@ -160,7 +72,9 @@ class BedrockLlmGateway:
         self._summary_model = summary_model_id
         self._translate_model = translate_model_id
         self._max_retries = max_retries
-        self._cb = LocalCircuitBreaker()
+        # Shared breaker (docsuri_shared.resilience): single HALF-OPEN probe, stale-success
+        # ignore, probe-slot expiry — the guarantees the local copy used to carry.
+        self._cb = CircuitBreaker("bedrock-summarization")
 
     # --- public ports --------------------------------------------------------
     def summarize(
@@ -211,23 +125,25 @@ class BedrockLlmGateway:
         max_tokens: int = 2000,
         graceful_truncation: bool = False,
     ) -> dict:
-        permit = self._cb.acquire()
-        if permit is None:
-            raise LlmUnavailable("Bedrock LLM circuit breaker is open")
+        # guard(): leaving the block without success() counts as failure — even a
+        # BaseException escaping the retry loop can't strand the HALF-OPEN probe.
+        with self._cb.guard() as permit:
+            if permit is None:
+                raise LlmUnavailable("Bedrock LLM circuit breaker is open")
 
-        # Force the structured-output tool: the model must call ``tool`` and return its arguments
-        # as ``tool_use.input``, so the response is a schema-shaped object rather than free-text
-        # JSON we have to slice out of prose and repair (unescaped quotes / raw LaTeX backslashes).
-        body = {
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": max_tokens,
-            "system": system,
-            "messages": [{"role": "user", "content": [{"type": "text", "text": user}]}],
-            "tools": [tool],
-            "tool_choice": {"type": "tool", "name": tool["name"]},
-        }
-        last_exc: Exception | None = None
-        try:
+            # Force the structured-output tool: the model must call ``tool`` and return its
+            # arguments as ``tool_use.input``, so the response is a schema-shaped object rather
+            # than free-text JSON we have to slice out of prose and repair (unescaped quotes /
+            # raw LaTeX backslashes).
+            body = {
+                "anthropic_version": "bedrock-2023-05-31",
+                "max_tokens": max_tokens,
+                "system": system,
+                "messages": [{"role": "user", "content": [{"type": "text", "text": user}]}],
+                "tools": [tool],
+                "tool_choice": {"type": "tool", "name": tool["name"]},
+            }
+            last_exc: Exception | None = None
             for attempt in range(self._max_retries + 1):
                 if attempt > 0:
                     time.sleep(2 ** attempt * 0.5)
@@ -238,14 +154,14 @@ class BedrockLlmGateway:
                         if not isinstance(payload, dict):
                             raise ValueError("tool input is not a JSON object")
                     except (ValueError, json.JSONDecodeError):
-                        # A response stopped at max_tokens is cut MID-JSON, so the accumulated tool
-                        # arguments are incomplete and don't parse — a raw re-raise loses the
-                        # truncation signal and the whole batch hard-fails (the observed
+                        # A response stopped at max_tokens is cut MID-JSON, so the accumulated
+                        # tool arguments are incomplete and don't parse — a raw re-raise loses
+                        # the truncation signal and the whole batch hard-fails (the observed
                         # full-translation abstain on long papers). For a re-splittable caller
                         # (translate), surface truncation so the chunk is split into smaller
                         # batches — each emits less output and fits the cap — instead of
-                        # abstaining. A parse failure on a COMPLETE response is genuine bad output
-                        # and still raises (retry then abstain).
+                        # abstaining. A parse failure on a COMPLETE response is genuine bad
+                        # output and still raises (retry then abstain).
                         if not (graceful_truncation and truncated):
                             raise
                         permit.success()  # the call succeeded; only the batch was oversized
@@ -255,9 +171,10 @@ class BedrockLlmGateway:
                     return payload
                 except Exception as exc:  # noqa: BLE001 — any Bedrock/transport/parse error → retry/abstain
                     last_exc = exc
-            # Surface the swallowed root cause: without this the orchestrator only logs a generic
-            # ``generation_unavailable`` abstain, so a paper-specific transport/parse failure (e.g.
-            # a math-heavy translate batch) is invisible on the request path and undiagnosable.
+            # Surface the swallowed root cause: without this the orchestrator only logs a
+            # generic ``generation_unavailable`` abstain, so a paper-specific transport/parse
+            # failure (e.g. a math-heavy translate batch) is invisible on the request path and
+            # undiagnosable.
             log.warning(
                 "Bedrock generation failed after %d attempt(s): %s: %s",
                 self._max_retries + 1,
@@ -265,10 +182,6 @@ class BedrockLlmGateway:
                 last_exc,
             )
             raise LlmUnavailable("Bedrock generation failed") from last_exc
-        finally:
-            # Catch-all release (no-op after success()): records the failure and frees the
-            # HALF-OPEN probe even when a BaseException escapes the retry loop.
-            permit.failure()
 
     def _stream_tool_input(self, model_id: str, body: dict) -> tuple[str, bool]:
         """Buffer the forced tool call's ``input`` JSON from the stream (buffer-validate, Q5).

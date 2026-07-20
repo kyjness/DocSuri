@@ -156,6 +156,11 @@ class TestNoveltyStoreContract:
         rest = store.list_messages(job.owner_id, job.job_id, after=page[-1].message_id, limit=5)
         assert [m.content for m in rest] == ["m2"]
         assert store.list_messages(_OTHER_OWNER, job.job_id, after=None, limit=5) == []
+        # 비소유자는 유효 커서를 들고 와도 KeyError가 아니라 빈 페이지 — 존재 비노출.
+        assert (
+            store.list_messages(_OTHER_OWNER, job.job_id, after=page[-1].message_id, limit=5)
+            == []
+        )
 
     def test_delete_job_cascades_everything(self, store) -> None:
         job = _job()

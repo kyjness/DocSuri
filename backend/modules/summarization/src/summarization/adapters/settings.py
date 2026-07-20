@@ -10,6 +10,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from docsuri_shared.env import env_flag, env_int
+
 # Concrete model bindings (TD-S3). modelVer is part of the immutable cache key.
 # Invoked via Bedrock inference profiles — the bare foundation-model ids (``anthropic.claude-*``)
 # are NOT on-demand invocable here (ValidationException: "Invocation with on-demand throughput
@@ -23,12 +25,6 @@ MODEL_VER = "sonnet46-haiku45"
 # Bedrock-era summaries instead of silently mixing under one version.
 DEFAULT_OPENAI_SUMMARY_MODEL = "gpt-4o-mini"
 DEFAULT_OPENAI_TRANSLATE_MODEL = "gpt-4o-mini"
-
-
-def _env_flag(name: str) -> bool:
-    """Truthy when the env var is set to a common affirmative ("1"/"true"/"yes"). All feature
-    gates here default OFF (unset → False), so a misspelled value fails closed."""
-    return os.environ.get(name, "").lower() in ("1", "true", "yes")
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,7 +92,7 @@ class SummarizationSettings:
             redis_url=os.environ.get("DOCSURI_REDIS_URL"),
             database_url=os.environ.get("DATABASE_URL"),
             region_name=os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION"),
-            redis_ttl_seconds=int(os.environ.get("DOCSURI_SUMMARY_TTL", "86400")),  # 24h (§11)
+            redis_ttl_seconds=env_int("DOCSURI_SUMMARY_TTL", 86400),  # 24h (§11)
             # OpenAI model_ver derives from the ACTUAL model ids so swapping models rotates
             # the cache key (a fixed provider tag would silently serve stale-model output).
             model_ver=(
@@ -107,10 +103,10 @@ class SummarizationSettings:
                 if provider == "openai"
                 else MODEL_VER
             ),
-            assets_enabled=_env_flag("DOCSURI_MULTIMODAL_ASSETS_ENABLED"),
-            asset_url_ttl_seconds=int(os.environ.get("DOCSURI_ASSET_URL_TTL_SECONDS", "600")),
-            docmodel_viewer_enabled=_env_flag("DOCSURI_DOCMODEL_VIEWER_ENABLED"),
+            assets_enabled=env_flag("DOCSURI_MULTIMODAL_ASSETS_ENABLED"),
+            asset_url_ttl_seconds=env_int("DOCSURI_ASSET_URL_TTL_SECONDS", 600),
+            docmodel_viewer_enabled=env_flag("DOCSURI_DOCMODEL_VIEWER_ENABLED"),
             docmodel_build_queue_url=os.environ.get("DOCSURI_DOCMODEL_BUILD_QUEUE_URL"),
-            map_reduce_enabled=_env_flag("DOCSURI_MAP_REDUCE_ENABLED"),
+            map_reduce_enabled=env_flag("DOCSURI_MAP_REDUCE_ENABLED"),
             summary_job_queue_url=os.environ.get("DOCSURI_SUMMARY_JOB_QUEUE_URL"),
         )
