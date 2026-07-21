@@ -169,6 +169,17 @@ class TableExtractorPort(Protocol):
 
 
 @runtime_checkable
+class FormulaReaderPort(Protocol):
+    """Read approximate LaTeX out of a formula's page-crop image (PDF/GROBID path).
+
+    The PDF path has no LaTeX to store, so an equation is a picture: faithful, but unsearchable
+    and unquotable. A reader recovers something close enough to index. Optional — without one the
+    equation stays image-only, exactly as before."""
+
+    def read_latex(self, image: bytes) -> str | None: ...
+
+
+@runtime_checkable
 class AssetSourcePort(Protocol):
     """FR-17 figure/table source bytes. Fetched lazily for NEW|CHANGED papers only."""
 

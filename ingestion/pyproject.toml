@@ -37,6 +37,9 @@ assets = [
 tables = [
     "docling>=2.0",
 ]
+formulas = [
+    "pix2tex>=0.1.4",
+]
 
 [dependency-groups]
 dev = [

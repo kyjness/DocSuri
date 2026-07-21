@@ -318,9 +318,10 @@ def _docmodel_block_text(block) -> str:
     if kind == "paragraph":
         return normalize_text(block.text)
     if kind == "formula":
-        # Image-only formulas (PDF page-crop fallback, no recoverable LaTeX) carry no text —
-        # they are display-only and not indexed for search.
-        return normalize_text(block.latex) if getattr(block, "latex", None) else ""
+        # Source LaTeX first; failing that, the approximation an OCR reader recovered from the
+        # page crop (PDF path). An image-only formula with neither carries no text at all.
+        latex = getattr(block, "latex", None) or getattr(block, "latexOcr", None)
+        return normalize_text(latex) if latex else ""
     if kind == "table":
         lines: list[str] = []
         label = getattr(block, "anchorLabel", "") or ""

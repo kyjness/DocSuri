@@ -101,6 +101,9 @@ class IngestionSettings(BaseModel):
     # Optional second reading of the tables GROBID reconstructs wrongly ("docling" today, unset =
     # off). The models are heavy, so this stays opt-in and the TEI cells stand without it.
     table_extractor: str | None = Field(default=None, alias="DOCSURI_TABLE_EXTRACTOR")
+    # Optional OCR of the formula crops the PDF path produces ("pix2tex" today, unset = off).
+    # Recovered LaTeX is indexed, never rendered — see docmodel/formula_ocr.py.
+    formula_reader: str | None = Field(default=None, alias="DOCSURI_FORMULA_READER")
     semantic_scholar_api_key: str | None = Field(
         default=None, alias="DOCSURI_SEMANTIC_SCHOLAR_API_KEY"
     )

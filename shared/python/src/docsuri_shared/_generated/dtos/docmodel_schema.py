@@ -224,6 +224,10 @@ class FormulaBlock(BaseModel):
         None,
         description='Page-crop image fallback for a formula with no recoverable LaTeX (PDF/GROBID path). assetRef.type is "formula". Display-only — not indexed for search. Trace: FR-17, TD-12.',
     )
+    latexOcr: str | None = Field(
+        None,
+        description="Approximate LaTeX read back OUT of the page-crop image by an OCR model, on the PDF/GROBID path where no real LaTeX exists. Indexed for search and readable by agents, but NEVER a render source — the crop stays what is displayed, because a mis-read equation must not be shown as the paper's. Trace: TD-12.",
+    )
     display: bool | None = Field(
         None,
         description='Always true for a FormulaBlock (display/block equation); present for renderer clarity.',

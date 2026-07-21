@@ -50,10 +50,15 @@ from __future__ import annotations
 # — so a listing was reachable only as a page-crop image: readable, but absent from search and
 # unquotable. A listing now becomes a CodeBlock carrying its extracted text AND its crop. Formula
 # ordinals after a converted listing shift, so cached doc-models and their crops must rebuild.
-DOCMODEL_PARSER_VERSION = "docmodel-parser@11"
+# @12: formulas on the PDF/GROBID path can carry `latexOcr` — LaTeX read back out of their page
+# crop, indexed for search and never rendered. That changes fullText (an equation contributes text
+# where it contributed none), so cached doc-models must rebuild to gain it.
+DOCMODEL_PARSER_VERSION = "docmodel-parser@12"
 # 1.1.0: additive optional meta.macros (consumers ignore if unset).
 # 1.2.0: additive optional CodeBlock.assetRef — a listing the PDF path could only approximate as
 # text also carries its page crop, so the text stays searchable while the image renders faithfully.
-DOCMODEL_SCHEMA_VERSION = "1.2.0"
+# 1.3.0: additive optional FormulaBlock.latexOcr — an approximation of an equation that exists
+# only as pixels, searchable but never a render source (the crop stays what is displayed).
+DOCMODEL_SCHEMA_VERSION = "1.3.0"
 
 __all__ = ["DOCMODEL_PARSER_VERSION", "DOCMODEL_SCHEMA_VERSION"]

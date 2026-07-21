@@ -58,6 +58,11 @@ export interface DocFormulaBlock {
   type: 'formula';
   latex?: string;
   assetRef?: DocAssetRef;
+  /**
+   * Approximate LaTeX recovered from the crop image on the PDF path. Indexed for search and
+   * readable by agents, but never rendered — the crop is what the reader sees.
+   */
+  latexOcr?: string;
   display?: boolean;
   anchorLabel?: string;
 }

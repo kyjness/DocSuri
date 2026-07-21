@@ -17,6 +17,7 @@ from docsuri_shared.docmodel_contract import DOCMODEL_PARSER_VERSION, DOCMODEL_S
 from docsuri_shared.dtos import DocModel, DocModelResultDTO, SourceTier, SourceUnavailableDTO
 from docsuri_shared.observability import emit_metric
 
+from docsuri_ingestion.docmodel.formula_ocr import apply_ocr, formula_crops
 from docsuri_ingestion.docmodel.macros import extract_macros
 from docsuri_ingestion.docmodel.parser import (
     block_text_parts,
@@ -36,6 +37,7 @@ from docsuri_ingestion.ports import (
     DocModelSourcePort,
     DocModelStorePort,
     EprintSourcePort,
+    FormulaReaderPort,
     SystemClock,
     TableExtractorPort,
 )
@@ -117,6 +119,7 @@ class DocModelBuilder:
         store: DocModelStorePort,
         eprint_source: EprintSourcePort | None = None,
         table_extractor: TableExtractorPort | None = None,
+        formula_reader: FormulaReaderPort | None = None,
         observability: MetricSink | None = None,
         clock: ClockPort | None = None,
         parser_version: str = PARSER_VERSION,
@@ -126,6 +129,7 @@ class DocModelBuilder:
         self._store = store
         self._eprint_source = eprint_source
         self._table_extractor = table_extractor
+        self._formula_reader = formula_reader
         self._observability = observability
         self._clock = clock or SystemClock()
         self._parser_version = parser_version
@@ -296,6 +300,7 @@ class DocModelBuilder:
                 paper_id, version, title, abstract, fallback_text, source_tier=source_tier
             )
         doc = self._repair_tables(doc, pdf, crops)
+        doc = self._read_formulas(doc, pdf, crops)
         self._store.put(doc)
         return DocModelResultDTO(status="ok", cached=False, docModel=doc)
 
@@ -322,6 +327,38 @@ class DocModelBuilder:
             return DocModel.model_validate(payload)
         except Exception:  # noqa: BLE001 - a repair must never cost us the doc-model we have
             emit_metric(self._observability, "ingestion.docmodel.table_repair_failed", 1.0)
+            return doc
+
+    def _read_formulas(
+        self, doc: DocModel, pdf: bytes | None, crops: list[AssetCropSpec] | None
+    ) -> DocModel:
+        """Recover searchable LaTeX from the formula crops, when a reader is configured.
+
+        The crops are rendered here rather than waited for: the asset step runs later and may not
+        run at all. Best-effort — any failure leaves the image-only formulas untouched (BR-27).
+        """
+        if self._formula_reader is None or not pdf or not crops:
+            return doc
+        try:
+            from docsuri_ingestion.asset_extraction import crop_assets_from_specs
+
+            specs = formula_crops(crops)
+            if not specs:
+                return doc
+            images = {
+                asset.meta.asset_id: asset.image
+                for asset in crop_assets_from_specs(
+                    pdf, specs, paper_id=doc.meta.paperId, version=doc.meta.version
+                )
+            }
+            payload = doc.model_dump(mode="json")
+            filled = apply_ocr(payload, images, self._formula_reader.read_latex)
+            if not filled:
+                return doc
+            emit_metric(self._observability, "ingestion.docmodel.formulas_read", float(filled))
+            return DocModel.model_validate(payload)
+        except Exception:  # noqa: BLE001 - a failed read must never cost us the doc-model
+            emit_metric(self._observability, "ingestion.docmodel.formula_read_failed", 1.0)
             return doc
 
     def invalidate(self, paper_id: str) -> None:

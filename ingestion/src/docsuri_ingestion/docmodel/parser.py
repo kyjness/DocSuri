@@ -736,7 +736,7 @@ def block_text_parts(block: Mapping[str, Any]) -> list[str]:
     if kind in ("paragraph", "code"):
         return [block.get("text") or ""]
     if kind == "formula":
-        return [block.get("latex") or ""]
+        return [block.get("latex") or block.get("latexOcr") or ""]
     if kind == "list":
         return [item.get("text") or "" for item in block.get("items") or []]
     if kind in ("figure", "table"):

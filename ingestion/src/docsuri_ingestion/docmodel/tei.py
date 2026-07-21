@@ -13,6 +13,8 @@ What each TEI node maps to (and the honest fidelity limits of the PDF path):
         GROBID emits OCR'd formula text, not reliable LaTeX, so we do NOT store garbled LaTeX
         — the equation degrades to a page-crop image (TD-12, our 3a decision). Image bytes are
         populated by the coordinate crop pipeline; the parser only assigns the deterministic id.
+        When a formula reader is configured the builder later fills ``latexOcr`` from that crop —
+        searchable, never rendered (docmodel/formula_ocr.py).
   - ``<figure type="table"><table>``     -> TableBlock as DATA (rows/cells) — GROBID gives real
         table structure, so the structured rows stay the PRIMARY representation (D8). When the
         table also carries coordinates we ALSO attach a page-crop ``assetRef`` as a last-resort

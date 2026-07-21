@@ -26,7 +26,7 @@ from .application import IngestionPipelineService, RefreshOrchestrationService
 from .corpus_sources import CorpusSourceAdapterSet
 from .domain.enums import SourceName
 from .observability import LoggingObservabilityHub
-from .ports import TableExtractorPort
+from .ports import FormulaReaderPort, TableExtractorPort
 from .processors import Chunker
 from .resilience import IngestFailureHandler, IngestionResilienceService, TokenBucket
 from .settings import IngestionSettings
@@ -201,6 +201,7 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
         # preamble for KaTeX macros — best-effort, so None (assets off) just omits macros.
         eprint_source=asset_source,
         table_extractor=_table_extractor(settings),
+        formula_reader=_formula_reader(settings),
         observability=observability,
     )
     pipeline = IngestionPipelineService(
@@ -266,3 +267,12 @@ def _table_extractor(settings: IngestionSettings) -> TableExtractorPort | None:
     from .adapters.docling_tables import DoclingTableExtractor
 
     return DoclingTableExtractor()
+
+
+def _formula_reader(settings: IngestionSettings) -> FormulaReaderPort | None:
+    """The configured reader for the PDF path's formula images, or None (feature off)."""
+    if (settings.formula_reader or "").strip().lower() != "pix2tex":
+        return None
+    from .adapters.pix2tex_formulas import Pix2TexFormulaReader
+
+    return Pix2TexFormulaReader()

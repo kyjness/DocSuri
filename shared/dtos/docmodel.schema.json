@@ -230,6 +230,7 @@
         "type": { "const": "formula" },
         "latex": { "type": "string", "description": "LaTeX (converted from source MathML when needed; HTML-borne <math> coverage ~94% per Q1 spike). Rendered by KaTeX/MathJax. Absent on the PDF/GROBID path when no LaTeX is recoverable — `assetRef` carries the image instead. Trace: D1, TD-16." },
         "assetRef": { "$ref": "#/$defs/AssetRef", "description": "Page-crop image fallback for a formula with no recoverable LaTeX (PDF/GROBID path). assetRef.type is \"formula\". Display-only — not indexed for search. Trace: FR-17, TD-12." },
+        "latexOcr": { "type": "string", "description": "Approximate LaTeX read back OUT of the page-crop image by an OCR model, on the PDF/GROBID path where no real LaTeX exists. Indexed for search and readable by agents, but NEVER a render source — the crop stays what is displayed, because a mis-read equation must not be shown as the paper's. Trace: TD-12." },
         "display": { "type": "boolean", "description": "Always true for a FormulaBlock (display/block equation); present for renderer clarity." },
         "anchorLabel": { "type": "string", "description": "Equation number as in the paper, e.g. \"(3)\"." },
         "mathmlSource": { "type": "string", "description": "Optional original MathML, retained for fidelity/debugging." }
