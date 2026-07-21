@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import cast
 
 from .adapters.arxiv import ArxivHttpSource
 from .adapters.aws import (
@@ -260,19 +262,54 @@ def _enabled_sources(names: tuple[str, ...]) -> tuple[SourceName, ...]:
     return tuple(SourceName(name) for name in names) or (SourceName.ARXIV,)
 
 
-def _table_extractor(settings: IngestionSettings) -> TableExtractorPort | None:
-    """The configured second reader for GROBID's mangled tables, or None (feature off)."""
-    if (settings.table_extractor or "").strip().lower() != "docling":
-        return None
-    from .adapters.docling_tables import DoclingTableExtractor
+_OFF = {"", "off", "none", "false", "0", "disabled"}
 
-    return DoclingTableExtractor()
+
+def _optional_reader(setting: str | None, name: str, build: Callable[[], object]) -> object | None:
+    """Resolve an ``auto`` / ``off`` / ``<name>`` reader setting to an adapter or None.
+
+    ``auto`` (the default) means "on wherever the extra is installed": these readers only run on
+    the PDF/GROBID path, which is the weakest one and the only path non-arXiv sources and user
+    uploads ever take, so leaving them off by default would keep the worst path at its worst. The
+    models ship as optional extras, so an environment without them silently gets the old
+    behaviour instead of failing to boot. Naming the reader explicitly is the opposite contract —
+    the ImportError propagates, because a deployment that asked for it must not quietly run without
+    it.
+    """
+    value = (setting or "").strip().lower()
+    if value in _OFF:
+        return None
+    if value == name:
+        return build()
+    if value != "auto":
+        raise ValueError(f"unknown reader {setting!r}: expected 'auto', 'off', or {name!r}")
+    try:
+        return build()
+    except ImportError:
+        return None
+
+
+def _table_extractor(settings: IngestionSettings) -> TableExtractorPort | None:
+    """The second reader for the tables GROBID reconstructs wrongly (see ``_optional_reader``)."""
+
+    def build() -> TableExtractorPort:
+        from .adapters.docling_tables import DoclingTableExtractor
+
+        return DoclingTableExtractor()
+
+    return cast(
+        "TableExtractorPort | None", _optional_reader(settings.table_extractor, "docling", build)
+    )
 
 
 def _formula_reader(settings: IngestionSettings) -> FormulaReaderPort | None:
-    """The configured reader for the PDF path's formula images, or None (feature off)."""
-    if (settings.formula_reader or "").strip().lower() != "pix2tex":
-        return None
-    from .adapters.pix2tex_formulas import Pix2TexFormulaReader
+    """The reader for the PDF path's formula images (see ``_optional_reader``)."""
 
-    return Pix2TexFormulaReader()
+    def build() -> FormulaReaderPort:
+        from .adapters.pix2tex_formulas import Pix2TexFormulaReader
+
+        return Pix2TexFormulaReader()
+
+    return cast(
+        "FormulaReaderPort | None", _optional_reader(settings.formula_reader, "pix2tex", build)
+    )
