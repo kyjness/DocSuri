@@ -174,7 +174,12 @@ def audit(settings: IngestionSettings | None = None) -> int:
     from .adapters.postgres import PostgresControlPlaneStore
 
     settings = settings or IngestionSettings.from_env()
-    store = PostgresControlPlaneStore(settings.control_plane_dsn or "")
+    # Fail loudly rather than handing psycopg an empty conninfo: libpq would then fall back to
+    # PGHOST/PGUSER (or the local socket and the OS user) and the audit would report tier counts
+    # from whatever database happens to be there, which reads as an authoritative answer.
+    if not settings.control_plane_dsn:
+        raise SystemExit("DOCSURI_CONTROL_PLANE_DSN is required")
+    store = PostgresControlPlaneStore(settings.control_plane_dsn)
     try:
         rows = store.source_tier_counts()
     finally:
