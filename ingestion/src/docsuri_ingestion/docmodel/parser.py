@@ -60,6 +60,10 @@ _SECTION_CLASSES = {
     "ltx_appendix",
 }
 _HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
+# A figure float's own number as LaTeXML writes it in the caption's ltx_tag span ("Figure 7 :",
+# "Fig. 2:"). Only used to tell a numbered float apart from a "(a)"/"(b)" sub-panel mark — the
+# PDF-side caption rule lives in asset_extraction and reads a very different kind of text.
+_FIGURE_TAG_RE = re.compile(r"^(figure|fig\.?)\s*\d+", re.IGNORECASE)
 # Block-id type abbreviations (1-based ordinals per section): s3.p2, s3.tbl1, s3.eq2, ...
 _ABBREV = {
     "paragraph": "p",
@@ -324,8 +328,7 @@ def _blocks_from(
         block = _table_block(el, sec_ctx)
         return [block] if block else []
     if name == "figure" and "ltx_figure" in classes:
-        block = _figure_block(el, sec_ctx, doc_ctx)
-        return [block] if block else []
+        return _figure_blocks(el, sec_ctx, doc_ctx)
     if "ltx_equation" in classes or "ltx_eqn_table" in classes or "ltx_equationgroup" in classes:
         return _formula_blocks(el, sec_ctx)
     if name in {"ul", "ol"} and ("ltx_itemize" in classes or "ltx_enumerate" in classes):
@@ -400,13 +403,56 @@ def _table_block(figure_el: Tag, sec_ctx: _SectionCtx) -> dict | None:
     return block
 
 
+def _figure_blocks(figure_el: Tag, sec_ctx: _SectionCtx, doc_ctx: _DocCtx) -> list[dict]:
+    """The figure block(s) a LaTeXML float yields — usually one, but a float can hold several.
+
+    Two figures set side by side share one ``<figure>`` container, and each panel carries its OWN
+    numbered caption ("Figure 7 :", "Figure 8 :"). Treating the container as one figure dropped the
+    second one from the document entirely and left the survivor with no label, so it could not be
+    matched to a page-crop either. Panels captioned "(a)"/"(b)" are the other construct — real
+    sub-panels of ONE figure — and are left alone, as is any container with a caption of its own."""
+    panels = _numbered_figure_panels(figure_el)
+    if panels:
+        return [b for b in (_figure_block(p, sec_ctx, doc_ctx) for p in panels) if b]
+    block = _figure_block(figure_el, sec_ctx, doc_ctx)
+    return [block] if block else []
+
+
+def _numbered_figure_panels(figure_el: Tag) -> list[Tag]:
+    """Panels of ``figure_el`` that are separate numbered figures rather than sub-panels. Pure."""
+    if _own_figcaption(figure_el) is not None:
+        return []  # the container captions itself, so its panels belong to it
+    panels = [
+        panel
+        for panel in figure_el.find_all("figure")
+        if _nearest_figure_ancestor(panel) is figure_el and panel.find_all("img")
+    ]
+    numbered = [p for p in panels if _numbered_figure_label(_own_figcaption(p))]
+    return numbered if len(numbered) == len(panels) else []
+
+
+def _numbered_figure_label(figcaption: Tag | None) -> bool:
+    """Whether a panel's caption tag reads "Figure 7" — a float number, not a "(a)" panel mark."""
+    if figcaption is None:
+        return False
+    tag = figcaption.find("span", class_="ltx_tag")
+    return tag is not None and bool(_FIGURE_TAG_RE.match(_WS_RE.sub(" ", tag.get_text()).strip()))
+
+
 def _figure_block(figure_el: Tag, sec_ctx: _SectionCtx, doc_ctx: _DocCtx) -> dict | None:
     imgs = figure_el.find_all("img")
     if not imgs:
         return None  # no graphic to reference
+    label, caption = _caption(figure_el)
+    if not label and not caption and len(imgs) > 1:
+        # A float with several images and no caption at all is decoration (a funder/logo strip),
+        # and nothing could ever image it: with no caption there is no number for a page-crop, and
+        # a multi-image float carries no single e-print src. Emitting a block here only mints an
+        # assetRef that must dangle. A single uncaptioned image keeps its block — its src can still
+        # resolve against the e-print.
+        return None
     ordinal = doc_ctx.figure_ordinal
     doc_ctx.figure_ordinal += 1
-    label, caption = _caption(figure_el)
     # Record this figure's resolution hints at its ordinal so the asset extractor can align its
     # image to this block (the append order matches the ordinal increment, keeping
     # figure_specs[ordinal] == this block).

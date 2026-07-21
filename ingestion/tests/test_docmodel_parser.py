@@ -273,6 +273,59 @@ def test_subfigure_uses_own_caption_not_first_panel() -> None:
     assert specs[0].src == ""
 
 
+def test_two_numbered_floats_sharing_one_container_stay_two_figures() -> None:
+    """Two figures set side by side share one <figure> container, each panel carrying its own
+    numbered caption. Reading the container as one figure dropped the second from the document and
+    left the first with no label, so it could not be matched to a page-crop either."""
+    panel = (
+        '<figure class="ltx_figure ltx_figure_panel"><img src="{src}"/>'
+        '<figcaption class="ltx_caption"><span class="ltx_tag">{tag} </span>{cap}</figcaption>'
+        "</figure>"
+    )
+    html = (
+        '<html><body><div class="ltx_document">'
+        '<section class="ltx_section"><h2>1 Results</h2>'
+        '<figure class="ltx_figure">'
+        + panel.format(src="left.png", tag="Figure 7 :", cap="Effect of batch size")
+        + panel.format(src="right.png", tag="Figure 8 :", cap="Effect of z loss")
+        + "</figure></section></div></body></html>"
+    )
+    specs: list = []
+    doc = parse_html_to_docmodel(
+        html, paper_id="2401.00011", version=1, title="T", abstract=None,
+        source_tier=SourceTier.ar5iv, parser_version="p", schema_version="1.0.0",
+        generated_at=_FIXED_TS, figure_specs=specs,
+    )
+    figures = [b.root for s in doc.sections for b in s.blocks if isinstance(b.root, FigureBlock)]
+    assert [f.anchorLabel for f in figures] == ["Figure 7", "Figure 8"]
+    assert [f.caption for f in figures] == ["Effect of batch size", "Effect of z loss"]
+    # Each panel is its own float, so each keeps its own e-print graphic rather than being blanked.
+    assert [(s.label, s.src) for s in specs] == [
+        ("Figure 7", "left.png"),
+        ("Figure 8", "right.png"),
+    ]
+
+
+def test_uncaptioned_logo_strip_makes_no_figure_block() -> None:
+    """A float with several images and NO caption is decoration (a funder/logo strip). Nothing
+    could ever image it — no caption number for a page-crop, no single src for the e-print — so
+    emitting a block only mints an assetRef that must dangle."""
+    html = (
+        '<html><body><div class="ltx_document">'
+        '<section class="ltx_section"><h2>1 Intro</h2>'
+        '<figure class="ltx_figure"><img src="funder_a.png"/><img src="funder_b.png"/></figure>'
+        "</section></div></body></html>"
+    )
+    specs: list = []
+    doc = parse_html_to_docmodel(
+        html, paper_id="2401.00012", version=1, title="T", abstract=None,
+        source_tier=SourceTier.ar5iv, parser_version="p", schema_version="1.0.0",
+        generated_at=_FIXED_TS, figure_specs=specs,
+    )
+    assert [b for s in doc.sections for b in s.blocks if isinstance(b.root, FigureBlock)] == []
+    assert specs == []
+
+
 def test_single_image_figure_keeps_eprint_src() -> None:
     """A single-image figure keeps its <img src> so the asset extractor images the
     original-quality e-print graphic (the blank-src page-crop path is multi-panel only)."""

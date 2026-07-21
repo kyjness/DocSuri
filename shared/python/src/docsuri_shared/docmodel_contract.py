@@ -39,7 +39,13 @@ from __future__ import annotations
 # on real papers, that silently lost whole "Finding N:"/"Assumption N:" subsections — 34 body
 # paragraphs on arXiv:2503.02879, 18 on arXiv:2505.19488. Recovering them adds blocks, shifts the
 # per-section paragraph ids after each recovered one, and changes fullText, so caches must rebuild.
-DOCMODEL_PARSER_VERSION = "docmodel-parser@9"
+# @10: two figure-float fixes on the HTML path, both changing how many FigureBlocks a document
+# has (so every later figure's ordinal and asset id shifts). Two figures set side by side share
+# one LaTeXML <figure> container with a numbered caption on each panel; that container used to
+# yield ONE block, dropping the second figure from the document and leaving the first unlabelled
+# (hence unmatchable to a page-crop). And a caption-less float holding several images — a funder
+# logo strip — no longer yields a block at all, since nothing can ever image it.
+DOCMODEL_PARSER_VERSION = "docmodel-parser@10"
 # 1.1.0: additive optional meta.macros (consumers ignore if unset).
 DOCMODEL_SCHEMA_VERSION = "1.1.0"
 
