@@ -310,6 +310,29 @@ def test_a_stray_rule_far_from_the_caption_is_not_pulled_into_the_crop() -> None
     assert assets[0].meta.bbox[3] < 400
 
 
+def test_table_crop_covers_rows_the_journal_did_not_rule() -> None:
+    """Most journals rule a table's header and its last row only, so the graphic span is a couple
+    of rules with the body between them. The crop grows over the rows that continue from it —
+    recognised as columnar text — and stops at the prose that follows."""
+    # Three columns per row: separate text runs, which is what makes the row read as columnar.
+    rows = [
+        cell
+        for i, y in ((i, 640 - i * 14) for i in range(6))
+        for cell in ((f"r{i}", y, 100), (f"0.5{i}", y, 200), ("yes", y, 300))
+    ]
+    pdf = _make_text_pdf(
+        [("Table 1: results", 700), *rows, ("Body prose resumes here after the table.", 480, 100)],
+        rects=[(100, 660, 400, 664), (100, 548, 400, 552)],  # header rule and last-row rule
+    )
+    assets = AssetExtractor().extract(paper_id="p", version=1, pdf=pdf, eprint=None)
+
+    assert [a.meta.type for a in assets] == [AssetType.TABLE]
+    bbox = assets[0].meta.bbox
+    # top-origin: covers the last row (792 - 570 = 222) but stops above the prose (792 - 480 = 312).
+    assert bbox[3] > 222
+    assert bbox[3] < 300
+
+
 def test_mid_sentence_cross_reference_is_not_read_as_a_column_caption() -> None:
     """Recovering mid-line captions must not admit the body cross-references that sit INSIDE prose.
     Single-column prose flows through the strip left of "Figure 1.", so it is not a column start."""

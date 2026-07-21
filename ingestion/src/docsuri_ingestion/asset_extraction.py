@@ -375,14 +375,14 @@ class AssetExtractor:
                     captions = _page_captions(lines, words)
                     if not captions:
                         continue
-                    buckets = _assign_graphics(page, captions)
+                    buckets = _assign_graphics(page, captions, words)
                     for cap, prims in zip(captions, buckets, strict=True):
                         kind = cap["kind"]
                         if (kind is AssetType.FIGURE and not figures) or (
                             kind is AssetType.TABLE and not tables
                         ):
                             continue
-                        bbox = _caption_bbox(page, prims, words)
+                        bbox = _caption_bbox(page, prims, words, cap)
                         if bbox is None:
                             continue  # no graphic assigned → caption was a body cross-reference
                         image = _render_bbox_to_png(
@@ -444,6 +444,15 @@ _COLUMN_MIN_GAP_PT = 8.0
 # How far a crop may reach across empty space before the next primitive counts as unrelated
 # content rather than another panel/rule of the same figure or table (1 inch).
 _CROP_PRIM_GAP_PT = 72.0
+# Recognising a table's unruled body rows. Measured on a real table: its rows carry five word gaps
+# of 12-28pt inside the table's width, while every prose row around it carries none.
+_TABLE_COL_GAP_PT = 8.0
+_TABLE_MIN_COL_GAPS = 2
+# A two-column table's row has a single gap, so it must be far wider than the ~10pt a justified
+# line can stretch a space to. Measured on a real two-column table: 28-103pt.
+_TABLE_WIDE_GAP_PT = 20.0
+_TABLE_ROW_MAX_GAP_PT = 20.0  # a row further than this has stopped being the next line of the table
+_TABLE_ROW_PAD_PT = 12.0
 
 
 def _page_captions(lines: Sequence[dict], words: Sequence[dict] = ()) -> list[dict]:
@@ -555,7 +564,9 @@ def _starts_a_column(x0: float, rows: Sequence[Sequence[dict]]) -> bool:
     return crossed <= _COLUMN_EDGE_MAX_CROSSED_FRAC * len(rows)
 
 
-def _assign_graphics(page, captions: Sequence[dict]) -> list[dict[str, list]]:
+def _assign_graphics(
+    page, captions: Sequence[dict], words: Sequence[dict] = ()
+) -> list[dict[str, list]]:
     """Assign each graphic primitive to the caption whose content-side edge is NEAREST — a figure's
     content sits ABOVE its caption, a table's on EITHER side — restricted to captions its x-span
     overlaps.
@@ -601,7 +612,7 @@ def _assign_graphics(page, captions: Sequence[dict]) -> list[dict[str, list]]:
             if chosen is not None:
                 buckets[chosen][key].append((px0, ptop, px1, pbot))
     return [
-        _contiguous_with_caption(cap, _one_sided(cap, bucket))
+        _contiguous_with_caption(cap, _one_sided(cap, bucket), words)
         for cap, bucket in zip(captions, buckets, strict=True)
     ]
 
@@ -636,40 +647,44 @@ def _one_sided(caption: dict, bucket: dict[str, list]) -> dict[str, list]:
     }
 
 
-def _contiguous_with_caption(caption: dict, bucket: dict[str, list]) -> dict[str, list]:
-    """Keep only the run of primitives that reaches the caption without a page-sized break.
+def _contiguous_with_caption(
+    caption: dict, bucket: dict[str, list], words: Sequence[dict]
+) -> dict[str, list]:
+    """Keep only the run of primitives that reaches the caption without an unfilled break.
 
     A caption is the nearest one for everything on its side of the page, including a rule at the
-    very bottom that belongs to nothing near it. A figure or table is a CONTIGUOUS band of
-    primitives, so walk outward from the caption and stop at the first gap wide enough to be
-    unrelated content — keeping a tall multi-panel figure whole while dropping the stray. Pure."""
+    very bottom that belongs to nothing near it. A figure or table is a contiguous band, so walk
+    outward from the caption and stop at the first wide gap — unless the gap is FILLED by the
+    table's own rows. Most journals rule only a table's header and its last row, leaving a body
+    of unruled text between them that is otherwise indistinguishable from a page-sized break.
+    Pure given the page's words."""
     boxes = sorted(
         bucket["img"] + bucket["vec"],
         key=lambda b: _content_distance(caption, (b[1] + b[3]) / 2.0) or 0.0,
     )
     if not boxes:
         return bucket
-    reach = _content_distance(caption, (boxes[0][1] + boxes[0][3]) / 2.0) or 0.0
-    kept_far = reach
-    for box in boxes:
-        near = min(
-            _content_distance(caption, box[1]) or 0.0, _content_distance(caption, box[3]) or 0.0
-        )
-        far = max(
-            _content_distance(caption, box[1]) or 0.0, _content_distance(caption, box[3]) or 0.0
-        )
-        if near > kept_far + _CROP_PRIM_GAP_PT:
+    top, bottom = boxes[0][1], boxes[0][3]
+    for box in boxes[1:]:
+        if max(top - box[3], box[1] - bottom) > _CROP_PRIM_GAP_PT and not _rows_bridge(
+            caption, words, (top, bottom), box
+        ):
             break
-        kept_far = max(kept_far, far)
-    limit = kept_far
+        top, bottom = min(top, box[1]), max(bottom, box[3])
     return {
-        key: [
-            b
-            for b in boxes_of_kind
-            if (_content_distance(caption, (b[1] + b[3]) / 2.0) or 0.0) <= limit
-        ]
+        key: [b for b in boxes_of_kind if b[1] <= bottom and b[3] >= top]
         for key, boxes_of_kind in bucket.items()
     }
+
+
+def _rows_bridge(
+    caption: dict, words: Sequence[dict], span: tuple[float, float], box: tuple
+) -> bool:
+    """Whether a table's rows fill the gap between the kept band and the next primitive. Pure."""
+    if caption["kind"] is not AssetType.TABLE or not words:
+        return False
+    top, bottom = _table_row_span(words, caption, (box[0], box[2]), span)
+    return box[1] <= bottom + _CROP_PRIM_GAP_PT and box[3] >= top - _CROP_PRIM_GAP_PT
 
 
 def _accept_graphics(img_boxes: list, vec_boxes: list, page) -> bool:
@@ -688,13 +703,18 @@ def _accept_graphics(img_boxes: list, vec_boxes: list, page) -> bool:
     return False
 
 
-def _caption_bbox(page, prims: dict[str, list], words: Sequence[dict]):
+def _caption_bbox(page, prims: dict[str, list], words: Sequence[dict], caption: dict | None = None):
     """Tight crop bbox for one caption's assigned primitives, or None to skip.
 
     The bbox is the union of the assigned primitives grown to include the words that sit within the
     (FIXED) primitive span — axis labels, legends, table cells. Membership is tested against the
     frozen graphic span, never the growing bbox, so a word cannot chain the crop outward into
-    neighbouring prose or the running header. Pure given the page."""
+    neighbouring prose or the running header.
+
+    A table is the exception: most journals rule only the header and the last row, so the frozen
+    span covers a couple of rules and the crop came out as a header strip with the table's body
+    below it. For a table the box therefore also grows over the ROWS that continue from it (see
+    ``_table_row_span``). Pure given the page."""
     img_boxes, vec_boxes = prims["img"], prims["vec"]
     if not _accept_graphics(img_boxes, vec_boxes, page):
         return None
@@ -711,12 +731,72 @@ def _caption_bbox(page, prims: dict[str, list], words: Sequence[dict]):
             x1 = max(x1, float(w["x1"]))
             t0 = min(t0, float(w["top"]))
             t1 = max(t1, float(w["bottom"]))
+    if caption is not None and caption["kind"] is AssetType.TABLE:
+        t0, t1 = _table_row_span(words, caption, (gx0, gx1), (t0, t1))
     return (
         max(0.0, x0 - _REGION_PAD),
         max(0.0, t0 - _REGION_PAD),
         min(float(page.width), x1 + _REGION_PAD),
         min(float(page.height), t1 + _REGION_PAD),
     )
+
+
+def _table_row_span(
+    words: Sequence[dict],
+    caption: dict,
+    x_span: tuple[float, float],
+    v_span: tuple[float, float],
+) -> tuple[float, float]:
+    """Grow a table's vertical span over the rows that continue from its ruled band.
+
+    A ruled band is only where the journal drew lines — usually the header and the last row — so
+    the rest of the body has to be recognised from the text itself. A table row is columnar: it
+    carries several wide inter-word gaps within the table's width, which running prose never does.
+    Rows are taken while they keep coming (line spacing) and never past the caption. Pure."""
+    gx0, gx1 = x_span
+    top, bottom = v_span
+    rows = sorted(
+        (
+            (min(float(w["top"]) for w in row), max(float(w["bottom"]) for w in row), row)
+            for row in _text_rows(
+                [
+                    w
+                    for w in words
+                    if float(w["x0"]) >= gx0 - _TABLE_ROW_PAD_PT
+                    and float(w["x1"]) <= gx1 + _TABLE_ROW_PAD_PT
+                ]
+            )
+        ),
+        key=lambda r: r[0],
+    )
+    for direction in (1, -1):
+        edge = bottom if direction == 1 else top
+        for row_top, row_bottom, row in rows if direction == 1 else reversed(rows):
+            near, far = (row_top, row_bottom) if direction == 1 else (row_bottom, row_top)
+            if (near - edge) * direction <= 0:
+                continue  # already inside the span
+            if abs(near - edge) > _TABLE_ROW_MAX_GAP_PT or not _is_columnar(row):
+                break
+            if caption["top"] <= near <= caption["bottom"]:
+                break  # reached the caption itself
+            edge = far
+        if direction == 1:
+            bottom = max(bottom, edge)
+        else:
+            top = min(top, edge)
+    return top, bottom
+
+
+def _is_columnar(row: Sequence[dict]) -> bool:
+    """Whether a text row reads as table columns rather than prose.
+
+    A many-column row shows several moderate gaps; a two-column row shows exactly one, so that one
+    has to be wide enough that justified prose could not have stretched a space to it. Pure."""
+    ordered = sorted(row, key=lambda w: float(w["x0"]))
+    gaps = [float(b["x0"]) - float(a["x1"]) for a, b in zip(ordered, ordered[1:], strict=False)]
+    if sum(1 for g in gaps if g >= _TABLE_COL_GAP_PT) >= _TABLE_MIN_COL_GAPS:
+        return True
+    return any(g >= _TABLE_WIDE_GAP_PT for g in gaps)
 
 
 class _PageBitmapCache:
