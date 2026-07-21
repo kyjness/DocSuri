@@ -444,12 +444,18 @@ def _figure_block(figure_el: Tag, sec_ctx: _SectionCtx, doc_ctx: _DocCtx) -> dic
     if not imgs:
         return None  # no graphic to reference
     label, caption = _caption(figure_el)
-    if not label and not caption and len(imgs) > 1:
-        # A float with several images and no caption at all is decoration (a funder/logo strip),
-        # and nothing could ever image it: with no caption there is no number for a page-crop, and
-        # a multi-image float carries no single e-print src. Emitting a block here only mints an
-        # assetRef that must dangle. A single uncaptioned image keeps its block — its src can still
-        # resolve against the e-print.
+    if not label and not caption and len(imgs) > 1 and figure_el.find("figcaption") is None:
+        # A float with several images and no caption ANYWHERE inside it is decoration (a funder/
+        # logo strip), and nothing could ever image it: with no caption there is no number for a
+        # page-crop, and a multi-image float carries no single e-print src. Emitting a block here
+        # only mints an assetRef that must dangle. A single uncaptioned image keeps its block —
+        # its src can still resolve against the e-print.
+        #
+        # The descendant check is what separates the two: measured on arXiv:2510.23156, LaTeXML
+        # wraps a numbered figure's panels in an outer float and leaves the "Figure 5:" caption in
+        # a SIBLING float, so the group has no caption of its own and looked exactly like a logo
+        # strip — dropping it deleted a real figure. A genuine group always captions its panels
+        # ("(a) PS", "TABLE III"); decoration captions nothing at any depth.
         return None
     ordinal = doc_ctx.figure_ordinal
     doc_ctx.figure_ordinal += 1

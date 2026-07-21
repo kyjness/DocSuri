@@ -326,6 +326,33 @@ def test_uncaptioned_logo_strip_makes_no_figure_block() -> None:
     assert specs == []
 
 
+def test_panel_group_whose_number_sits_in_a_sibling_float_is_kept() -> None:
+    """LaTeXML can wrap a numbered figure's panels in an outer float and leave the "Figure 5:"
+    caption in a sibling float (arXiv:2510.23156). The group then has no caption of its own and
+    reads exactly like a logo strip — but its panels are captioned, and dropping it deletes a real
+    figure, which is the one outcome the strip rule exists to avoid causing."""
+    html = (
+        '<html><body><div class="ltx_document">'
+        '<section class="ltx_section"><h2>1 Results</h2>'
+        '<figure class="ltx_figure">'
+        '<figure class="ltx_figure ltx_figure_panel"><img src="ps.png"/>'
+        '<figcaption class="ltx_caption"><span class="ltx_tag">(a) </span>PS</figcaption></figure>'
+        '<figure class="ltx_figure ltx_figure_panel"><img src="loso.png"/>'
+        '<figcaption class="ltx_caption"><span class="ltx_tag">(b) </span>LOSO</figcaption>'
+        "</figure>"
+        '</figure>'
+        "</section></div></body></html>"
+    )
+    specs: list = []
+    doc = parse_html_to_docmodel(
+        html, paper_id="2401.00013", version=1, title="T", abstract=None,
+        source_tier=SourceTier.ar5iv, parser_version="p", schema_version="1.0.0",
+        generated_at=_FIXED_TS, figure_specs=specs,
+    )
+    figures = [b for s in doc.sections for b in s.blocks if isinstance(b.root, FigureBlock)]
+    assert len(figures) == 1
+
+
 def test_single_image_figure_keeps_eprint_src() -> None:
     """A single-image figure keeps its <img src> so the asset extractor images the
     original-quality e-print graphic (the blank-src page-crop path is multi-panel only)."""
