@@ -116,3 +116,59 @@ def test_store_breaker_ignores_non_transient_client_errors() -> None:
             adapter.bm25_search(("q",), 5)
     assert breaker.acquire() is not None  # still CLOSED
     assert client.calls == 5  # every request reached the store (no fast-fail)
+
+
+class _MixedFailureClient:
+    """Alternates outage-class and client-class failures, as a degraded store really does."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.searches = 0
+
+    def search(self, *, index, body, request_timeout=None):  # noqa: ARG002
+        self.calls += 1
+        error = RuntimeError("store failure")
+        # Odd searches look like an outage, even ones like a client error.
+        error.status_code = "N/A" if self.searches % 2 == 0 else 400
+        raise error
+
+
+def test_non_transient_errors_do_not_forgive_accumulated_outages(monkeypatch) -> None:
+    """A client-class error is circuit-NEUTRAL, not circuit-success.
+
+    Counting it as success clears the consecutive-outage count, so a store degraded into a MIX of
+    connection failures and malformed responses never reaches the threshold. The breaker then
+    never opens and every read pays the full retry ladder against a store that is effectively
+    down — the latency wall the breaker exists to prevent on a read path.
+    """
+    monkeypatch.setattr("discovery.adapters.opensearch_index.time.sleep", lambda _s: None)
+    breaker = _breaker(_Clock(), threshold=2)
+    client = _MixedFailureClient()
+    adapter = OpenSearchLexicalIndexAdapter(client, "idx", breaker)
+
+    for _ in range(3):  # outage, client error, outage
+        with pytest.raises(IndexUnavailable):
+            adapter.bm25_search(("q",), 5)
+        client.searches += 1
+
+    with pytest.raises(IndexUnavailable, match="circuit open"):
+        adapter.bm25_search(("q",), 5)
+
+
+def test_a_config_error_does_not_forgive_accumulated_embedding_outages() -> None:
+    """Same rule on the embedding path: the config error must not reset the outage count."""
+    breaker = _breaker(_Clock(), threshold=2)
+    # EmbeddingUnavailable is the decorator's outage signal: it re-raises without completing the
+    # permit, so guard()'s finally records the failure. Anything else is the non-outage branch.
+    down = _FlakyEmbedder(error=EmbeddingUnavailable("provider down"))
+    outage = CircuitGuardedEmbedder(down, breaker)
+    config = CircuitGuardedEmbedder(_FlakyEmbedder(error=ValueError("dimension mismatch")), breaker)
+
+    with pytest.raises(EmbeddingUnavailable):
+        outage.embed_query("q")
+    with pytest.raises(ValueError):
+        config.embed_query("q")  # neutral — neither trips nor forgives
+    with pytest.raises(EmbeddingUnavailable):
+        outage.embed_query("q")  # the second outage reaches the threshold
+
+    assert breaker.acquire() is None, "the config error wiped the outage count"

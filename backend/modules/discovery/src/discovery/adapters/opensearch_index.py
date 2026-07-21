@@ -116,9 +116,11 @@ def _search_hits(
         # toward opening the circuit. A 4xx or unexpected response shape means the store
         # RESPONDED — same rule as CircuitGuardedEmbedder — so a poisoned query or an index
         # misconfig fail-closes per-request without turning a healthy store into a fast-fail
-        # 503 wall for every adapter sharing the breaker.
+        # 503 wall for every adapter sharing the breaker. NEUTRAL, not success: success would
+        # clear the accumulated outage count, and a store degraded into a mix of timeouts and
+        # malformed responses would then never trip — every read paying the full retry ladder.
         if permit is not None and not (last_exc is not None and _is_transient(last_exc)):
-            permit.success()
+            permit.neutral()
         raise IndexUnavailable(f"{message} after {attempt + 1} attempt(s)") from last_exc
 # arXiv version suffix ("v3"). paperId is stored version-less, so stripping the requested id's
 # version lets the detail lookup resolve a paper indexed at a *different* version than the one
