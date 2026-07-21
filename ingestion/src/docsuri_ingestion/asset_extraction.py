@@ -538,10 +538,18 @@ class _PageBitmapCache:
     def __init__(self) -> None:
         self._page_no: int | None = None
         self._pil = None
+        self._bitmap = None  # keeps the buffer the PIL image may be a view of — see page_image
 
     def page_image(self, pdfium_doc, page_no: int):
         if self._page_no != page_no or self._pil is None:
-            self._pil = pdfium_doc[page_no].render(scale=2.0).to_pil()
+            bitmap = pdfium_doc[page_no].render(scale=2.0)
+            # Hold the PdfBitmap for as long as the image: pypdfium2's to_pil() returns a view
+            # over the bitmap buffer for RGBA/RGBX/L modes and deliberately attaches no keep-alive
+            # finalizer, so dropping it would leave the cached image reading freed memory. Today's
+            # render yields RGB, which copies — but the cache outlives the call that made it, and
+            # that safety must not depend on a render flag nobody links back to here.
+            self._pil = bitmap.to_pil()
+            self._bitmap = bitmap
             self._page_no = page_no
         return self._pil
 
@@ -556,14 +564,15 @@ def _render_bbox_to_png(
     the only thing that differs between the two callers. The bbox is clamped to the rendered
     bitmap so an over-range coordinate can't yield an empty/oversized crop."""
     try:
-        page = pdfium_doc[page_no]
         cache = bitmap_cache if bitmap_cache is not None else _PageBitmapCache()
         # crop() copies, so successive crops of one cached page cannot disturb each other.
         pil = cache.page_image(pdfium_doc, page_no)
         if plumber_page is not None:
             width_pt, height_pt = plumber_page.width, plumber_page.height
         else:
-            width_pt, height_pt = page.get_size()
+            # Load the page only on the branch that needs it: the caption path supplies its own
+            # page size, and loading it there was one FPDF_LoadPage per crop for nothing.
+            width_pt, height_pt = pdfium_doc[page_no].get_size()
         scale_x = pil.width / float(width_pt)
         scale_y = pil.height / float(height_pt)
         box = (

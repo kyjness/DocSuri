@@ -305,8 +305,13 @@ class ArxivHttpSource:
     def _get_html_at(self, base: str, arxiv_id: str) -> str | None:
         """One HTML base, memoized; ``None`` on any non-200, non-HTML, or transport error."""
         key = (base, arxiv_id)
-        if self._html_memo is not None and self._html_memo[0] == key:
-            return self._html_memo[1]
+        # Load the slot ONCE. Reading self._html_memo three times (None-check, key, value) lets a
+        # concurrent writer swap papers between the key check and the value read, which would
+        # return another paper's HTML under this id — silently indexing the wrong body. One load
+        # of the immutable tuple is atomic, so the key and the value always belong together.
+        memo = self._html_memo
+        if memo is not None and memo[0] == key:
+            return memo[1]
         html = self._fetch_html_at(base, arxiv_id)
         self._html_memo = (key, html)
         return html
