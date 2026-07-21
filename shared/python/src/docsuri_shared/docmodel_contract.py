@@ -34,7 +34,12 @@ from __future__ import annotations
 # page-crop asset ids shift with them. The same rebuild also re-renders figure page-crops, which
 # now recover the vector graphic GROBID reports no <graphic> for — cached doc-models otherwise
 # keep both the missing caption and the caption-only figure images.
-DOCMODEL_PARSER_VERSION = "docmodel-parser@8"
+# @9: a paragraph LaTeXML emitted as ``<span class="ltx_p">`` (which is what it does inside a
+# minipage / inline-sectional block, where HTML forbids <p>) is kept instead of dropped. Measured
+# on real papers, that silently lost whole "Finding N:"/"Assumption N:" subsections — 34 body
+# paragraphs on arXiv:2503.02879, 18 on arXiv:2505.19488. Recovering them adds blocks, shifts the
+# per-section paragraph ids after each recovered one, and changes fullText, so caches must rebuild.
+DOCMODEL_PARSER_VERSION = "docmodel-parser@9"
 # 1.1.0: additive optional meta.macros (consumers ignore if unset).
 DOCMODEL_SCHEMA_VERSION = "1.1.0"
 

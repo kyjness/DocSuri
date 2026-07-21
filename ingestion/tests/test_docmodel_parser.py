@@ -175,6 +175,27 @@ def test_paragraph_blocks_with_inline_math() -> None:
     assert paras[0].text == "We study \\(x^{2}\\) models."
 
 
+def test_paragraph_inside_a_minipage_is_a_span_and_is_still_kept() -> None:
+    """Inside a minipage / inline-sectional block LaTeXML emits the paragraph as
+    ``<span class="ltx_p">`` — HTML forbids ``<p>`` there. Requiring the tag name dropped that
+    text, leaving titled subsections ("Finding 1:", "Assumption 1:") with no blocks at all."""
+    html = """
+    <!DOCTYPE html><html><body><article class="ltx_document">
+     <section class="ltx_section" id="S1">
+      <h2 class="ltx_title ltx_title_section">Results</h2>
+      <section class="ltx_paragraph" id="S1.Px1">
+       <h5 class="ltx_title ltx_title_paragraph">Finding 1:</h5>
+       <span class="ltx_para"><span class="ltx_p">Page views declined slightly.</span></span>
+      </section>
+     </section>
+    </article></body></html>
+    """
+    doc = _parse(html)
+    finding = _body_sections(doc)[0].sections[0]
+    assert finding.title == "Finding 1:"
+    assert [b.root.text for b in finding.blocks] == ["Page views declined slightly."]
+
+
 def test_formula_block_latex_and_anchor() -> None:
     doc = _parse()
     formula = next(b for b in _blocks(_body_sections(doc)[0]) if isinstance(b, FormulaBlock))

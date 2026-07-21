@@ -334,7 +334,13 @@ def _blocks_from(
     if "ltx_listing" in classes or "ltx_verbatim" in classes:
         block = _code_block(el, sec_ctx)
         return [block] if block else []
-    if name == "p" and "ltx_p" in classes:
+    # A paragraph is normally <p class="ltx_p">, but inside a minipage / inline-sectional block
+    # (LaTeXML renders those into <span class="ltx_inline-sectional-block"> or a <foreignobject>)
+    # the SAME paragraph comes out as <span class="ltx_p"> — HTML forbids <p> there. Requiring the
+    # tag name dropped that text entirely, which is how a "Finding 1:"/"Assumption 1:" subsection
+    # ended up with a title and no blocks. A span inside a p.ltx_p is never reached: the paragraph
+    # branch returns without recursing, so the outermost paragraph still wins.
+    if name in {"p", "span"} and "ltx_p" in classes:
         block = _paragraph_block(el, sec_ctx)
         return [block] if block else []
     if skip_sections and _is_section(el):
