@@ -42,6 +42,11 @@ _UPDATE = os.environ.get("DOCSURI_UPDATE_FIXTURES") == "1"
 PAPERS = ["2210.12090", "2112.01799"]
 # The one paper carried in all three forms, so the paths can be compared against each other.
 TRIPLE = "2210.12090"
+# TEI is a separate parser from the HTML one, and the maths-heavy papers are only here: 2210.12090
+# has no display maths at all, so without these the TEI formula path had no real-paper coverage.
+TEI_PAPERS = ["2210.12090", "2607.16138", "2112.01799"]
+# Carried in TEI *and* PDF, so its formula/algorithm crops can actually be rendered.
+FORMULA_PAPER = "2607.16138"
 
 
 def _load(paper_id: str) -> str:
@@ -199,10 +204,10 @@ def test_ar5iv_no_content_page_stays_below_the_html_fulltext_floor() -> None:
 # ---------------------------------------------------------------------------------------
 
 
-def _parse_tei():
+def _parse_tei(paper_id: str = TRIPLE):
     return parse_tei_to_docmodel(
-        _load_tei(),
-        paper_id=TRIPLE,
+        _load_tei(paper_id),
+        paper_id=paper_id,
         version=1,
         title="Fixture Paper",
         abstract=None,
@@ -213,9 +218,12 @@ def _parse_tei():
     )
 
 
-def test_real_tei_parses_to_the_recorded_structure() -> None:
+@pytest.mark.parametrize("paper_id", TEI_PAPERS)
+def test_real_tei_parses_to_the_recorded_structure(paper_id: str) -> None:
     _assert_matches_recorded(
-        _digest(_parse_tei()), FIXTURE_ROOT / "grobid" / f"{TRIPLE}.digest.json", f"{TRIPLE} TEI"
+        _digest(_parse_tei(paper_id)),
+        FIXTURE_ROOT / "grobid" / f"{paper_id}.digest.json",
+        f"{paper_id} TEI",
     )
 
 
@@ -513,3 +521,120 @@ def test_no_cell_grobid_reconstructed_is_lost_in_translation() -> None:
     # And the damaged text is carried verbatim rather than silently "cleaned" into something else.
     flat = [c.text for cells in doc_rows for c in cells]
     assert "Dimensionality Fast ICA" in " ".join(flat)
+
+
+# ---------------------------------------------------------------------------------------
+# TEI formulas and algorithms — the maths-heavy path 2210.12090 could not reach.
+# ---------------------------------------------------------------------------------------
+
+
+def _tei_blocks(paper_id: str):
+    doc = _parse_tei(paper_id)
+
+    def walk(sections):
+        for section in sections:
+            yield section
+            yield from walk(section.sections or [])
+
+    return doc, [b.root for s in walk(doc.sections) for b in s.blocks]
+
+
+@pytest.mark.parametrize("paper_id", [FORMULA_PAPER, "2112.01799"])
+def test_tei_display_formulas_become_image_backed_blocks(paper_id: str) -> None:
+    """On the PDF path a formula is an IMAGE, deliberately, and carries no LaTeX (TD-12/3a).
+
+    That is not an oversight to be "fixed" later: GROBID's own formula text for these papers is
+    font-mangled beyond use — equation (1) of 2607.16138 arrives as
+    ``'r a " # w a a " 1 w a ´řa´1 i"1 ...'``. Indexing that would poison search and hand U7's
+    numeric-match garbage to ground against. The block therefore points at a page-crop and the
+    LaTeX stays empty; the ar5iv path is where real LaTeX comes from.
+    """
+    _doc, blocks = _tei_blocks(paper_id)
+    formulas = [b for b in blocks if b.type == "formula"]
+
+    assert len(formulas) >= 20, f"{paper_id}: display maths collapsed to {len(formulas)} blocks"
+    for block in formulas:
+        assert block.display is True
+        assert block.assetRef is not None, "a formula with no image has no representation at all"
+        assert block.assetRef.sourceMode.value == "page-crop"
+        assert not (block.latex or ""), "TEI formulas must not carry GROBID's mangled text as LaTeX"
+
+
+def test_tei_formula_crop_specs_are_renderable_regions() -> None:
+    specs = [
+        s
+        for s in tei_crop_specs(_load_tei(FORMULA_PAPER), paper_id=FORMULA_PAPER, version=1)
+        if s.type.value == "formula"
+    ]
+    assert len(specs) >= 20, f"only {len(specs)} formula crop specs"
+    for spec in specs:
+        x0, y0, x1, y1 = spec.bbox
+        assert spec.page >= 1
+        assert x1 > x0 and y1 > y0, f"{spec.asset_id}: degenerate bbox {spec.bbox}"
+        assert x0 >= 0 and y0 >= 0
+
+
+def test_tei_formula_crops_actually_render_from_the_real_pdf() -> None:
+    """The half that specs alone cannot prove — that the coordinates hit real ink."""
+    pytest.importorskip("pypdfium2")
+    pytest.importorskip("PIL")
+    from docsuri_ingestion.asset_extraction import crop_assets_from_specs
+
+    specs = tei_crop_specs(_load_tei(FORMULA_PAPER), paper_id=FORMULA_PAPER, version=1)
+    assets = crop_assets_from_specs(
+        _load_pdf(FORMULA_PAPER), specs, paper_id=FORMULA_PAPER, version=1
+    )
+    assert len(assets) == len(specs), f"{len(specs) - len(assets)} crops failed to render"
+    formulas = [a for a in assets if a.meta.type.value == "formula"]
+    assert len(formulas) >= 20
+    for asset in formulas:
+        assert asset.image[:4] == b"RIFF" and asset.image[8:12] == b"WEBP"
+        # A formula strip is short but never a hairline: a collapsed bbox would still be valid WebP.
+        _x0, y0, _x1, y1 = asset.meta.bbox
+        assert y1 - y0 >= 8.0, f"{asset.meta.asset_id}: {y1 - y0:.1f}pt tall, likely an empty strip"
+
+
+def test_grobid_files_algorithm_floats_under_formulas_not_code() -> None:
+    """Observed GROBID behaviour, pinned so a parser change cannot silently move it.
+
+    GROBID has no algorithm concept: it labels an ``algorithm`` float a ``<formula>``, so the
+    pseudocode arrives as a page-crop image like any equation (verified by eye — the crop of
+    2607.16138's formula:3 is the whole "Algorithm 1 Step 2 of IKPLS" listing). It also splits one
+    listing across several formula elements. Consequences worth stating: on this path an algorithm
+    is READABLE but not SEARCHABLE, and there are no ``code`` blocks. The ar5iv path is where
+    listings keep their text.
+    """
+    doc, blocks = _tei_blocks(FORMULA_PAPER)
+
+    assert not [b for b in blocks if b.type == "code"], "GROBID grew a code block — recheck this"
+    # The listing's text still reaches fullText via the surrounding paragraph flow, but as prose.
+    assert "Algorithm 1" in doc.fullText
+    formula_ids = {b.assetRef.assetId for b in blocks if b.type == "formula" and b.assetRef}
+    assert f"{FORMULA_PAPER}:v1:formula:3" in formula_ids, (
+        "the Algorithm 1 float no longer lands on formula ordinal 3 — re-verify the crop by eye"
+    )
+
+
+def test_recovery_ignores_decorative_vector_glyphs() -> None:
+    """Only a graphic big enough to BE a figure may widen a crop.
+
+    A QED tombstone is drawn as four hairline FORM XObjects (0.5pt thick), and GROBID mislabels
+    the "Proposition 3" block above one as a figure. Without a size floor the recovery latched
+    onto that glyph and dragged the tail of the preceding proof into the crop — the exact
+    "widened into unrelated content" failure the recovery is supposed to refuse. Verified by eye:
+    figure:3 is a real heatmap and must still be recovered, figure:0 must not move.
+    """
+    pytest.importorskip("pypdfium2")
+    pytest.importorskip("PIL")
+    from docsuri_ingestion.asset_extraction import crop_assets_from_specs
+
+    specs = tei_crop_specs(_load_tei(FORMULA_PAPER), paper_id=FORMULA_PAPER, version=1)
+    by_spec = {s.asset_id: s.bbox for s in specs}
+    assets = crop_assets_from_specs(
+        _load_pdf(FORMULA_PAPER), specs, paper_id=FORMULA_PAPER, version=1
+    )
+    widened = {a.meta.asset_id for a in assets if a.meta.bbox != by_spec[a.meta.asset_id]}
+
+    assert widened == {f"{FORMULA_PAPER}:v1:figure:3"}, (
+        f"recovery fired on the wrong blocks: {sorted(widened)}"
+    )

@@ -230,3 +230,15 @@ def test_normalizer_rejects_undecodable_and_empty() -> None:
     norm = ImageNormalizer()
     assert norm.normalize(b"") is None
     assert norm.normalize(b"not an image") is None
+
+
+def test_a_decorative_hairline_does_not_count_as_a_graphic() -> None:
+    """A QED tombstone's sides are 0.5pt-thick form objects; latching onto one drags in text."""
+    qed_side = (380.0, 288.0, 386.0, 288.5)  # 6.0 x 0.5pt, directly above the caption
+    assert crop_bbox_for(_spec(_CAPTION), [qed_side]) == _CAPTION
+
+
+def test_a_graphic_just_over_the_area_floor_still_counts() -> None:
+    """The floor must separate glyphs from figures, not reject small real plots."""
+    small_plot = (110.0, 255.0, 250.0, 295.0)  # 140 x 40pt = 5,600pt²
+    assert crop_bbox_for(_spec(_CAPTION), [small_plot])[1] == 255.0

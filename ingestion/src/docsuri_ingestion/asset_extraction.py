@@ -604,8 +604,14 @@ def _graphic_boxes(pdfium_doc, page_no: int) -> tuple[tuple[float, float, float,
 
 # A figure caption sits directly beneath its graphic. Allowing an unbounded gap would let a crop
 # reach up the page and swallow an unrelated figure, so the search stops half an inch above the
-# caption — measured gaps on the fixture paper are 3.0, -2.2 and 15.1pt.
+# caption — measured gaps on the fixture papers are 3.0, -2.2 and 15.1pt.
 _CAPTION_GRAPHIC_GAP_PT = 36.0
+
+# Not every vector object is a picture. A QED tombstone is four 0.5pt-thick FORM XObjects, and
+# rules and underlines are similarly thin; latching onto one drags unrelated text into the crop.
+# Real figure graphics on the fixture papers run 157-291pt per side (>= 25,000pt² of area), so a
+# floor of roughly a 32pt square separates them by orders of magnitude rather than by a hair.
+_MIN_GRAPHIC_AREA_PT2 = 1000.0
 
 
 def crop_bbox_for(
@@ -637,6 +643,9 @@ def _recover_figure_bbox(
     figure lands here and is left exactly as it was.
     """
     x0, y0, x1, y1 = bbox
+    # Decorative vector objects are not pictures — see _MIN_GRAPHIC_AREA_PT2. Filtering here rather
+    # than in _graphic_boxes keeps that helper an honest report of what is on the page.
+    graphics = [g for g in graphics if (g[2] - g[0]) * (g[3] - g[1]) >= _MIN_GRAPHIC_AREA_PT2]
     # "Already covers a graphic" has to mean most of one, not a hairline touch: a caption's first
     # line routinely tucks a point or two under the plot above it, and treating that as coverage
     # would leave exactly the figures this exists to recover uncorrected.

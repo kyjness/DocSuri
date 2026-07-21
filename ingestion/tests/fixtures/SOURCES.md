@@ -21,6 +21,7 @@ all checked and all carry that default licence; none of them can live in this di
 | [2210.12090](https://arxiv.org/abs/2210.12090) | AutoPrognosis 2.0: Democratizing Diagnostic and Prognostic Modeling in Healthcare with Automated Machine Learning | Imrie, Cebere, McKinney, van der Schaar | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) |
 | [2112.01799](https://arxiv.org/abs/2112.01799) | Global Context with Discrete Diffusion in Vector Quantised Modelling for Image Generation | Hu, Wang, Cham, Yang, Suganthan | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) |
 | [2305.02531](https://arxiv.org/abs/2305.02531) | Can LLMs Capture Human Preferences? | Goli, Singh | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) |
+| [2607.16138](https://arxiv.org/abs/2607.16138) | Improving Improved Kernel PLS | Engstrøm | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) |
 
 ## Layout
 
@@ -38,9 +39,22 @@ all checked and all carry that default licence; none of them can live in this di
 ### `grobid/` — TEI, the only doc-model path for non-arXiv sources
 
 - **2210.12090** (23 KB gz) — produced by GROBID 0.8.0 from `pdf/2210.12090.pdf`. Parses to 23
-  sections / 54 blocks with 6 figures, 5 tables and 11 crop specs. GROBID segments far more
+  sections / 54 blocks with 6 figures, 6 tables and 11 crop specs. GROBID segments far more
   aggressively than LaTeXML (each numbered "Challenge N." subheading becomes its own div, and the
-  leading div has an empty head), which is exactly the real-world shape worth pinning.
+  leading div has an empty head), which is exactly the real-world shape worth pinning. Table 1
+  arrives as an empty `<table/>` — GROBID's cell reconstruction failed on it — so it is the paper
+  that pins a rowless table keeping its caption. Its wider tables also show GROBID merging and
+  truncating cells (`'Dimensionality Fast ICA '`, `PCA (1)` swallowed); that damage is in the TEI
+  itself and is deliberately carried through rather than repaired.
+- **2607.16138** (19 KB gz) — the maths path, from `pdf/2607.16138.pdf`. 28 display formulas, 10
+  figures, 1 table, 39 crop specs. Present because 2210.12090 has **no display maths at all**, so
+  the TEI formula path had no real-paper coverage. Also the only fixture with an `algorithm`
+  float: GROBID has no algorithm concept and files it under `<formula>`, splitting one listing
+  across several elements — `formula:3` is the whole "Algorithm 1 Step 2 of IKPLS" listing
+  (verified by eye), `formula:9` a later fragment of it.
+- **2112.01799** (19 KB gz) — TEI only, **no PDF vendored**: the source PDF is 42 MB, far too heavy
+  for the marginal coverage. 27 formulas / 13 figures. Gives a second, independent maths document
+  for the parse and crop-spec assertions; crop *rendering* for it cannot be tested without the PDF.
 
 Requested with the same parameters `GrobidHttpClient` uses in production — `teiCoordinates` for
 `figure` and `formula` only, no consolidation — so the fixture matches what the adapter really
@@ -56,10 +70,16 @@ curl -F "input=@tests/fixtures/pdf/2210.12090.pdf" \
 
 ### `pdf/` — the source PDF
 
-- **2210.12090** (930 KB) — the only uncompressed fixture, and the only paper carried in all three
-  forms. It backs PDF text extraction and the bbox page-crop render, which cannot be exercised
-  without real page geometry. Kept to one paper deliberately: `2112.01799`'s PDF is 42 MB, far too
-  heavy to vendor for the marginal coverage it would add.
+The uncompressed fixtures, and the only ones that can back a *rendered* crop — bbox rendering
+cannot be exercised without real page geometry.
+
+- **2210.12090** (930 KB) — the only paper carried in all three forms, so the ar5iv and TEI parsers
+  can be compared against each other on one document. Backs PDF text extraction and the
+  figure/table crops.
+- **2607.16138** (335 KB) — backs the formula and algorithm crops. Vector figures here also make it
+  the second witness for recovering a graphic GROBID reports no `<graphic>` for.
+
+`2112.01799`'s PDF is deliberately absent at 42 MB — its TEI is vendored instead.
 
 ## Refreshing
 
