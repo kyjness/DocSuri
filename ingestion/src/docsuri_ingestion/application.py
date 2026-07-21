@@ -256,6 +256,7 @@ class IngestionPipelineService:
             tei,
             text,
             source_tier=SourceTier.pdf,
+            pdf=pdf,
         )
         self._observability.emit_metric(
             "ingestion.docmodel.user_build",
@@ -840,6 +841,8 @@ class IngestionPipelineService:
             paper.full_text,
             source_tier=SourceTier.pdf,
             crops=crops,
+            # The same PDF GROBID read, so a table it mangled can be re-read from the page.
+            pdf=candidate.pdf,
         )
         self._observability.emit_metric(
             "ingestion.docmodel.eager_build",

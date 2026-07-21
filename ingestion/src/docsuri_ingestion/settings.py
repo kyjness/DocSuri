@@ -98,6 +98,9 @@ class IngestionSettings(BaseModel):
         default="ARXIV,SEMANTIC_SCHOLAR,OPENALEX", alias="DOCSURI_CORPUS_SOURCES"
     )
     grobid_url: str | None = Field(default=None, alias="DOCSURI_GROBID_URL")
+    # Optional second reading of the tables GROBID reconstructs wrongly ("docling" today, unset =
+    # off). The models are heavy, so this stays opt-in and the TEI cells stand without it.
+    table_extractor: str | None = Field(default=None, alias="DOCSURI_TABLE_EXTRACTOR")
     semantic_scholar_api_key: str | None = Field(
         default=None, alias="DOCSURI_SEMANTIC_SCHOLAR_API_KEY"
     )

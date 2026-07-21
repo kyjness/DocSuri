@@ -23,6 +23,11 @@ from docsuri_ingestion.docmodel.parser import (
     parse_html_to_docmodel,
     parse_text_to_docmodel,
 )
+from docsuri_ingestion.docmodel.table_repair import (
+    apply_repairs,
+    printed_numbers,
+    tables_needing_repair,
+)
 from docsuri_ingestion.docmodel.tei import parse_tei_to_docmodel
 from docsuri_ingestion.domain.assets import AssetCropSpec, FigureSpec
 from docsuri_ingestion.domain.models import MetadataRecord
@@ -32,6 +37,7 @@ from docsuri_ingestion.ports import (
     DocModelStorePort,
     EprintSourcePort,
     SystemClock,
+    TableExtractorPort,
 )
 
 # Bumping PARSER_VERSION invalidates cached doc-models (provenance.parserVersion, BR-30/TD-16).
@@ -110,6 +116,7 @@ class DocModelBuilder:
         source: DocModelSourcePort,
         store: DocModelStorePort,
         eprint_source: EprintSourcePort | None = None,
+        table_extractor: TableExtractorPort | None = None,
         observability: MetricSink | None = None,
         clock: ClockPort | None = None,
         parser_version: str = PARSER_VERSION,
@@ -118,6 +125,7 @@ class DocModelBuilder:
         self._source = source
         self._store = store
         self._eprint_source = eprint_source
+        self._table_extractor = table_extractor
         self._observability = observability
         self._clock = clock or SystemClock()
         self._parser_version = parser_version
@@ -246,6 +254,7 @@ class DocModelBuilder:
         *,
         source_tier: SourceTier = SourceTier.pdf,
         crops: list[AssetCropSpec] | None = None,
+        pdf: bytes | None = None,
     ) -> DocModelResultDTO:
         """Structured doc-model from GROBID TEI for non-arXiv sources (sections/tables/figures).
 
@@ -286,8 +295,34 @@ class DocModelBuilder:
             return self.build_from_paper(
                 paper_id, version, title, abstract, fallback_text, source_tier=source_tier
             )
+        doc = self._repair_tables(doc, pdf, crops)
         self._store.put(doc)
         return DocModelResultDTO(status="ok", cached=False, docModel=doc)
+
+    def _repair_tables(
+        self, doc: DocModel, pdf: bytes | None, crops: list[AssetCropSpec] | None
+    ) -> DocModel:
+        """Re-read the tables GROBID merged into single cells, when an extractor is configured.
+
+        Best-effort in the strict sense: any failure, and every table whose rebuild cannot be
+        verified against the TEI numbers, leaves the doc-model exactly as parsed (BR-27).
+        """
+        if self._table_extractor is None or not pdf or not crops:
+            return doc
+        try:
+            payload = doc.model_dump(mode="json")
+            suspect = tables_needing_repair(payload, crops)
+            if not suspect:
+                return doc
+            tables = self._table_extractor.extract_tables(pdf, [s.page for s in suspect])
+            repaired = apply_repairs(payload, crops, tables, printed_numbers(pdf))
+            if not repaired:
+                return doc
+            emit_metric(self._observability, "ingestion.docmodel.tables_repaired", float(repaired))
+            return DocModel.model_validate(payload)
+        except Exception:  # noqa: BLE001 - a repair must never cost us the doc-model we have
+            emit_metric(self._observability, "ingestion.docmodel.table_repair_failed", 1.0)
+            return doc
 
     def invalidate(self, paper_id: str) -> None:
         """Drop every cached doc-model version for a paper (version change / tombstone)."""

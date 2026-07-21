@@ -26,6 +26,7 @@ from .application import IngestionPipelineService, RefreshOrchestrationService
 from .corpus_sources import CorpusSourceAdapterSet
 from .domain.enums import SourceName
 from .observability import LoggingObservabilityHub
+from .ports import TableExtractorPort
 from .processors import Chunker
 from .resilience import IngestFailureHandler, IngestionResilienceService, TokenBucket
 from .settings import IngestionSettings
@@ -199,6 +200,7 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
         # Reuse the asset e-print source (when assets are enabled) to read the author's LaTeX
         # preamble for KaTeX macros — best-effort, so None (assets off) just omits macros.
         eprint_source=asset_source,
+        table_extractor=_table_extractor(settings),
         observability=observability,
     )
     pipeline = IngestionPipelineService(
@@ -255,3 +257,12 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
 
 def _enabled_sources(names: tuple[str, ...]) -> tuple[SourceName, ...]:
     return tuple(SourceName(name) for name in names) or (SourceName.ARXIV,)
+
+
+def _table_extractor(settings: IngestionSettings) -> TableExtractorPort | None:
+    """The configured second reader for GROBID's mangled tables, or None (feature off)."""
+    if (settings.table_extractor or "").strip().lower() != "docling":
+        return None
+    from .adapters.docling_tables import DoclingTableExtractor
+
+    return DoclingTableExtractor()

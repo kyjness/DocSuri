@@ -105,3 +105,17 @@ class AssetManifest:
     paper_id: str
     version: int
     assets: tuple[FigureTableAsset, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ExtractedTable:
+    """A table re-read from the PDF: its page, region, and cell text row by row.
+
+    ``page`` is 1-based (as GROBID's coordinates are) and ``bbox`` is (x0, y0, x1, y1) in PDF
+    points, top-left origin — the same frame the TEI crop specs use, so a rebuilt grid can be
+    matched to the doc-model table that occupies that region.
+    """
+
+    page: int
+    bbox: tuple[float, float, float, float]
+    rows: tuple[tuple[str, ...], ...]
