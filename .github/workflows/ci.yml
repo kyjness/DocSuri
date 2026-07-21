@@ -40,7 +40,7 @@ jobs:
       - name: Lint
         run: uv run ruff check .
       - name: Tests
-        run: uv run pytest
+        run: uv run pytest -rs
 
   ingestion:
     name: ingestion (U1)
@@ -81,7 +81,7 @@ jobs:
       - name: Tests
         env:
           DOCSURI_TEST_PG_DSN: postgresql://postgres:docsuri@localhost:5432/docsuri
-        run: uv run pytest
+        run: uv run pytest -rs
 
   discovery:
     name: discovery (U2)
@@ -120,7 +120,7 @@ jobs:
           DOCSURI_OPENSEARCH_ENDPOINT: http://localhost:9200
           DOCSURI_OPENSEARCH_USE_SSL: "false"
           DOCSURI_OPENSEARCH_VERIFY_CERTS: "false"
-        run: uv run --extra api --extra real pytest
+        run: uv run --extra api --extra real pytest -rs
 
   summarization:
     name: summarization (U7)
@@ -194,7 +194,7 @@ jobs:
           AWS_REGION: us-east-1
           DOCSURI_LLM_PROVIDER: openai
           OPENAI_API_KEY: placeholder-no-llm-call-in-these-tests
-        run: uv run --all-extras pytest
+        run: uv run --all-extras pytest -rs
 
   ops:
     name: ops (U6 reliability/detection)
@@ -211,7 +211,7 @@ jobs:
       - name: Lint
         run: uv run ruff check .
       - name: Tests
-        run: uv run pytest
+        run: uv run pytest -rs
 
   backend:
     name: backend app-shell (mounts U2/U3)
@@ -243,7 +243,7 @@ jobs:
       - name: Tests (asserts discovery actually mounts)
         env:
           NOVELTY_TEST_REDIS_URL: redis://localhost:6379/1
-        run: uv run pytest
+        run: uv run pytest -rs
 
   root-suites:
     name: accounts + library (root tests/ — U3 · U4)
@@ -262,7 +262,7 @@ jobs:
       - name: Lint (accounts + library + ops modules + root tests/)
         run: uv run --project backend ruff check backend/modules/accounts backend/modules/library backend/modules/ops tests
       - name: Tests (accounts + library)
-        run: uv run --project backend pytest tests -c pytest.ini
+        run: uv run --project backend pytest tests -c pytest.ini -rs
 
   frontend:
     name: frontend (U5 · tsc + vitest + type drift + build)
