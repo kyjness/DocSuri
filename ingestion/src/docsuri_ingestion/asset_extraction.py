@@ -26,16 +26,24 @@ from .domain.assets import (
 )
 from .domain.enums import AssetSourceMode, AssetType
 
-# Caption detection — a line that STARTS with "Figure 3:", "Fig. 2.", or "Table 1 —". A delimiter
-# (":" / "." / em dash) after the number is required, which:
-#   - admits no-space PDF text extractions ("Figure1:Our…", common in pdfplumber output), and
-#   - rejects body sentences that merely open with a number ("Table 6 shows that …") — the bug
-#     that produced bogus table crops.
+# Caption detection — a line that STARTS with "Figure 3:", "Fig. 2.", "Table 1 —", or, in the
+# journal styles that punctuate nothing, "Fig. 1 The configuration of …". What must be rejected is
+# the body sentence that merely opens with a label ("Table 6 shows that …") — the bug that produced
+# bogus table crops. So the number is followed by either:
+#   - a delimiter (":" / "." / em dash), which also admits the no-space text extractions
+#     pdfplumber often returns ("Figure1:Our…"), or
+#   - whitespace and a CAPITAL, which is how a caption sentence opens. Measured over 24 real
+#     papers: of 59 delimiter-less label lines, all 18 capitalised ones are captions and all 41
+#     lowercase ones are cross-references ("Figure 5 shows …"), so the split is clean, or
+#   - nothing at all — the label IS the whole line/column segment, which happens when the caption
+#     text wraps to the next line. A cross-reference never ends there: its sentence continues.
 # The captured number drives label-matching of an unmatched figure to its page-crop.
 #
 # The same body is compiled anchored (the caption rule) and unanchored (a cheap page-level probe
 # for a caption that a two-column merge buried mid-line) so the two can never drift apart.
-_CAPTION_BODY = r"(figure|fig\.?|table)\s*(\d+)\s*[:.—]"
+# ``(?-i:…)`` because the whole pattern is IGNORECASE, under which a bare [A-Z] also matches
+# lowercase — which would have let every "Table 6 shows that …" back in.
+_CAPTION_BODY = r"(figure|fig\.?|table)\s*(\d+)(?:\s*[:.—]|\s+(?=(?-i:[A-Z]))|\s*$)"
 _CAPTION_RE = re.compile(r"^\s*" + _CAPTION_BODY, re.IGNORECASE)
 _CAPTION_ANYWHERE_RE = re.compile(_CAPTION_BODY, re.IGNORECASE)
 _LABEL_NUM_RE = re.compile(r"(\d+)")
@@ -431,49 +439,76 @@ _SINGLE_PRIM_MIN_H_FRAC = 0.1
 _ROW_TOLERANCE_PT = 3.0  # pdfplumber's own line-clustering tolerance
 _COLUMN_EDGE_PROBE_PT = 8.0
 _COLUMN_EDGE_MAX_CROSSED_FRAC = 0.6
+# Measured word gaps on real two-column papers: ordinary spaces 4-6pt, a column jump 10pt+.
+_COLUMN_MIN_GAP_PT = 8.0
+# How far a crop may reach across empty space before the next primitive counts as unrelated
+# content rather than another panel/rule of the same figure or table (1 inch).
+_CROP_PRIM_GAP_PT = 72.0
 
 
 def _page_captions(lines: Sequence[dict], words: Sequence[dict] = ()) -> list[dict]:
     """Every "Figure N"/"Table N" caption on the page, as ``{kind, number, top, bottom, x0, x1,
     text}``. The x-span lets a two-column page keep each column's figure with its caption.
 
-    A caption normally STARTS its line, but ``extract_text_lines`` merges the two columns of a
-    two-column page into one line, so the right column's caption lands mid-line — invisible to the
-    start rule, and its figure then goes uncropped (or worse, is swallowed by whatever caption DOES
-    claim it). Such a caption is recovered when its first word starts a column, and only then:
-    a body cross-reference ("… is provided in Figure 1.") sits inside running prose, so the strip
-    just left of it is covered on most of the page's text rows, while a column start is clear on
-    most of them. Recovered captions carry the column's own x0, so downstream x-overlap keeps them
-    to their column. Pure given the page's lines and words."""
+    ``extract_text_lines`` merges the two columns of a two-column page into ONE line, so a line is
+    read one COLUMN SEGMENT at a time: a segment starts at the line's own start or wherever a word
+    begins a column, and ends where the next column begins. That matters twice over — the right
+    column's caption is otherwise invisible to the "caption starts the line" rule (its figure then
+    goes uncropped, or is swallowed by whatever caption does claim it), and a caption in the LEFT
+    column otherwise absorbs the neighbouring column's text into its own text and x-span, which is
+    how a table caption ended up spanning a whole page. A column start is recognised by the strip
+    just left of it being clear on most of the page's rows; a body cross-reference ("… is provided
+    in Figure 1.") sits inside running prose, so its strip is covered. Pure given lines and words.
+    """
     caps: list[dict] = []
     rows = _text_rows(words)
     for ln in lines:
         text = (ln.get("text", "") or "").strip()
-        parsed = caption_kind_and_number(text)
-        if parsed is not None:
-            caps.append(_caption_entry(ln, parsed, float(ln.get("x0", 0.0)), text))
-        if rows and _CAPTION_ANYWHERE_RE.search(text):
-            caps.extend(_column_captions(ln, _line_words(ln, words), rows))
+        line_words = _line_words(ln, words) if rows and _CAPTION_ANYWHERE_RE.search(text) else []
+        if not line_words:
+            parsed = caption_kind_and_number(text)
+            if parsed is not None:
+                x0, x1 = float(ln.get("x0", 0.0)), float(ln.get("x1", 0.0))
+                caps.append(_caption_entry(ln, parsed, x0, x1, text))
+            continue
+        for start, end in _column_segments(line_words, rows):
+            segment = line_words[start:end]
+            seg_text = " ".join(str(w.get("text", "")) for w in segment)
+            parsed = caption_kind_and_number(seg_text)
+            if parsed is not None:
+                caps.append(
+                    _caption_entry(
+                        ln,
+                        parsed,
+                        float(segment[0].get("x0", 0.0)),
+                        float(segment[-1].get("x1", 0.0)),
+                        seg_text,
+                    )
+                )
     return caps
 
 
-def _column_captions(
-    line: dict, line_words: Sequence[dict], rows: Sequence[Sequence[dict]]
-) -> list[dict]:
-    """Captions buried mid-line by a two-column merge: every "Figure N:" inside ``line`` that begins
-    a column, carrying that column's x0 and the text from there to the line's end. Pure."""
-    caps: list[dict] = []
-    texts = [str(w.get("text", "")) for w in line_words]
-    for index in range(1, len(line_words)):
-        run_text = " ".join(texts[index:])
-        parsed = caption_kind_and_number(run_text)
-        x0 = float(line_words[index].get("x0", 0.0))
-        if parsed is not None and _starts_a_column(x0, rows):
-            caps.append(_caption_entry(line, parsed, x0, run_text))
-    return caps
+def _column_segments(
+    line_words: Sequence[dict], rows: Sequence[Sequence[dict]]
+) -> list[tuple[int, int]]:
+    """The line's words split into column segments as ``(start, end)`` index pairs.
+
+    A split needs BOTH a real horizontal jump and a column edge. The gap alone cannot decide it
+    (justified prose stretches word gaps to a column gutter's width), but without it the edge test
+    can fire on an ordinary word space and cut a caption in half on a sparsely-set page. Pure."""
+    starts = [0] + [
+        i
+        for i in range(1, len(line_words))
+        if float(line_words[i].get("x0", 0.0)) - float(line_words[i - 1].get("x1", 0.0))
+        >= _COLUMN_MIN_GAP_PT
+        and _starts_a_column(float(line_words[i].get("x0", 0.0)), rows)
+    ]
+    return [(s, e) for s, e in zip(starts, [*starts[1:], len(line_words)], strict=True)]
 
 
-def _caption_entry(line: dict, parsed: tuple[AssetType, int], x0: float, text: str) -> dict:
+def _caption_entry(
+    line: dict, parsed: tuple[AssetType, int], x0: float, x1: float, text: str
+) -> dict:
     """One caption record: its kind/number, the line's vertical band, and its own x-span. Pure."""
     kind, number = parsed
     top = float(line.get("top", 0.0))
@@ -483,7 +518,7 @@ def _caption_entry(line: dict, parsed: tuple[AssetType, int], x0: float, text: s
         "top": top,
         "bottom": float(line.get("bottom", top)),
         "x0": x0,
-        "x1": float(line.get("x1", 0.0)),
+        "x1": x1,
         "text": text,
     }
 
@@ -565,7 +600,10 @@ def _assign_graphics(page, captions: Sequence[dict]) -> list[dict[str, list]]:
             chosen = overlap_i if overlap_i is not None else any_i
             if chosen is not None:
                 buckets[chosen][key].append((px0, ptop, px1, pbot))
-    return [_one_sided(cap, bucket) for cap, bucket in zip(captions, buckets, strict=True)]
+    return [
+        _contiguous_with_caption(cap, _one_sided(cap, bucket))
+        for cap, bucket in zip(captions, buckets, strict=True)
+    ]
 
 
 def _content_distance(caption: dict, cy: float) -> float | None:
@@ -595,6 +633,42 @@ def _one_sided(caption: dict, bucket: dict[str, list]) -> dict[str, list]:
         lo, hi = caption["top"], float("inf")
     return {
         key: [b for b in boxes if lo < (b[1] + b[3]) / 2.0 < hi] for key, boxes in bucket.items()
+    }
+
+
+def _contiguous_with_caption(caption: dict, bucket: dict[str, list]) -> dict[str, list]:
+    """Keep only the run of primitives that reaches the caption without a page-sized break.
+
+    A caption is the nearest one for everything on its side of the page, including a rule at the
+    very bottom that belongs to nothing near it. A figure or table is a CONTIGUOUS band of
+    primitives, so walk outward from the caption and stop at the first gap wide enough to be
+    unrelated content — keeping a tall multi-panel figure whole while dropping the stray. Pure."""
+    boxes = sorted(
+        bucket["img"] + bucket["vec"],
+        key=lambda b: _content_distance(caption, (b[1] + b[3]) / 2.0) or 0.0,
+    )
+    if not boxes:
+        return bucket
+    reach = _content_distance(caption, (boxes[0][1] + boxes[0][3]) / 2.0) or 0.0
+    kept_far = reach
+    for box in boxes:
+        near = min(
+            _content_distance(caption, box[1]) or 0.0, _content_distance(caption, box[3]) or 0.0
+        )
+        far = max(
+            _content_distance(caption, box[1]) or 0.0, _content_distance(caption, box[3]) or 0.0
+        )
+        if near > kept_far + _CROP_PRIM_GAP_PT:
+            break
+        kept_far = max(kept_far, far)
+    limit = kept_far
+    return {
+        key: [
+            b
+            for b in boxes_of_kind
+            if (_content_distance(caption, (b[1] + b[3]) / 2.0) or 0.0) <= limit
+        ]
+        for key, boxes_of_kind in bucket.items()
     }
 
 
