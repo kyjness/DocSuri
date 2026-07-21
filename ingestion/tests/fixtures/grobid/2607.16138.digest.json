@@ -1,6 +1,6 @@
 {
-  "fullTextLen": 30479,
-  "fullTextSha": "6510b75a5d8f8b28",
+  "fullTextLen": 30655,
+  "fullTextSha": "cb8a3eaf4995839a",
   "sections": [
     {
       "blocks": [
@@ -271,8 +271,8 @@
         {
           "id": "s9.code2",
           "lines": 1,
-          "textLen": 75,
-          "textSha": "d6a706f2de68dd90",
+          "textLen": 251,
+          "textSha": "1fc3e871b7afefdf",
           "type": "code"
         },
         {
@@ -280,13 +280,6 @@
           "textLen": 13,
           "textSha": "7b1a46637d2e5957",
           "type": "paragraph"
-        },
-        {
-          "anchorLabel": null,
-          "display": true,
-          "id": "s9.eq2",
-          "latexSha": null,
-          "type": "formula"
         },
         {
           "id": "s9.p11",

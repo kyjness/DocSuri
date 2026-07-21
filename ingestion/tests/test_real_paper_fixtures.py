@@ -597,7 +597,7 @@ def test_tei_formula_crops_actually_render_from_the_real_pdf() -> None:
     )
     # One spec is deliberately refused: GROBID made a formula element out of a stray ")" and its
     # 4.4x9.6pt region cannot hold an equation. Everything else must render.
-    refused = {f"{FORMULA_PAPER}:v1:formula:23"}
+    refused = {f"{FORMULA_PAPER}:v1:formula:22"}
     rendered = {a.meta.asset_id for a in assets}
     assert {s.asset_id for s in specs} - rendered == refused, (
         f"unexpected crops missing: {sorted({s.asset_id for s in specs} - rendered - refused)}"
@@ -630,10 +630,14 @@ def test_algorithm_floats_grobid_filed_as_formulas_become_searchable_listings() 
     # steps in headless formulas; those fragments join one block rather than becoming three.
     assert _section_of(doc, listings[2].id).title.startswith("Algorithm 3")
     assert "15:" in listings[2].text
+    # A continuation fragment ("4: else … 7: end if …") carries no heading of its own, so it used
+    # to become a formula image and take an ordinal with it. It now rejoins the listing it belongs
+    # to, which is why the last crop sits one ordinal earlier than the headed listings suggest.
+    assert "4: else" in listings[1].text
     assert [b.assetRef.assetId for b in listings] == [
         f"{FORMULA_PAPER}:v1:formula:3",  # verified by eye: the "Algorithm 1 Step 2" crop
         f"{FORMULA_PAPER}:v1:formula:5",
-        f"{FORMULA_PAPER}:v1:formula:7",
+        f"{FORMULA_PAPER}:v1:formula:6",
     ]
     # Searchable now: the listing text reaches fullText as its own block, not as caption prose.
     assert "Algorithm 1 Step 2 of IKPLS" in doc.fullText

@@ -63,6 +63,14 @@ _ALGORITHM_SPLIT_RE = re.compile(r"(Algorithm\s+\d+)")
 _ALGORITHM_STEP_RE = re.compile(r"(?<!\d)\d+\s*:")
 _ALGORITHM_MIN_STEPS = 2
 _ALGORITHM_HEAD_RE = re.compile(r"^\s*Algorithm\s+\d+")
+# Without a heading, numbered steps alone would also match a numbered derivation, so the listing
+# has to speak pseudocode as well — and show more steps than the headed case needs.
+_HEADLESS_MIN_STEPS = 3
+_PSEUDOCODE_RE = re.compile(
+    r"\b(end\s+(?:for|while|if|procedure|function)|for\s+each|repeat|until"
+    r"|procedure|Require|Ensure|Input\s*:|Output\s*:)\b",
+    re.IGNORECASE,
+)
 
 
 def _local(tag: object) -> str:
@@ -215,6 +223,16 @@ def _formula_or_algorithm_blocks(
         if _is_listing(body)
     ]
     if not listings:
+        if _is_headless_listing(text):
+            # GROBID often promotes "Algorithm 1" out of the listing (into the section title, or a
+            # neighbouring float's caption), leaving numbered steps with no heading to split on.
+            # Measured on 40 PDFs, that is how every pseudocode listing but one arrived, so
+            # requiring the heading left them all as formula images: unsearchable and unquotable.
+            host = _last_listing(section_blocks)
+            if host is not None:
+                host["text"] = f"{host['text']} {text}".strip()
+                return []
+            return [_algorithm_block(formula, text, sec_ctx, doc_ctx)]
         if in_algorithm_section and _is_listing(text):
             # The whole section is one listing, so its fragments join one block — the first
             # fragment's crop covers the float's head, and the rest would only mint stray images.
@@ -252,6 +270,19 @@ def _last_listing(blocks: Sequence[dict]) -> dict | None:
 def _is_listing(body: str) -> bool:
     """Whether text after an "Algorithm N" heading is a numbered listing rather than a mention."""
     return len(_ALGORITHM_STEP_RE.findall(body)) >= _ALGORITHM_MIN_STEPS
+
+
+def _is_headless_listing(text: str) -> bool:
+    """Whether a formula is pseudocode that lost its "Algorithm N" heading to GROBID.
+
+    Numbered steps alone are too weak a signal without the heading — a multi-line derivation
+    numbers its equations the same way — so control-flow vocabulary has to be there too, and more
+    steps are required than the headed case asks for. Both together do not occur in an equation.
+    """
+    return (
+        len(_ALGORITHM_STEP_RE.findall(text)) >= _HEADLESS_MIN_STEPS
+        and _PSEUDOCODE_RE.search(text) is not None
+    )
 
 
 def _algorithm_block(
