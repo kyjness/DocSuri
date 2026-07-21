@@ -75,7 +75,7 @@ def http_failures_as_ingestion_errors(
     stage: str,
     timeout_message: str,
     failure_message: str,
-    rejected_message: str,
+    rejected_message: str = "response rejected by the fetch guards",
     also_rejected: tuple[type[Exception], ...] = (),
 ) -> Iterator[None]:
     """Translate httpx transport faults and body rejections into ingestion errors.
@@ -83,6 +83,10 @@ def http_failures_as_ingestion_errors(
     Transport faults are transient by definition (retriable); a body the guards refuse — over the
     size cap, or ``also_rejected`` such as an SSRF-blocked host — is permanent, since retrying
     fetches the same oversized or non-public target again.
+
+    ``rejected_message`` only surfaces for callers that actually run a guard (``read_capped`` or an
+    ``also_rejected`` type), so it is defaulted rather than required: a caller reading a small,
+    authenticated, fixed endpoint has no rejection path to name.
     """
     import httpx
 

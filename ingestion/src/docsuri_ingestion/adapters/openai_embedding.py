@@ -86,9 +86,15 @@ class OpenAIEmbeddingPort:
             stage="embed",
             timeout_message="OpenAI embeddings request timed out",
             failure_message="OpenAI embeddings request failed",
-            rejected_message="OpenAI embeddings response exceeded size cap",
+            # No rejected_message: this path runs no body guard. The endpoint is fixed and
+            # authenticated and the response size is bounded by the batch we just sent, so there
+            # is nothing for the NFR §0.5 size cap (which exists for untrusted hosts) to defend.
         ):
-            with httpx.Client(timeout=_TIMEOUT_S) as client:
+            # follow_redirects: urllib followed 3xx automatically and httpx does not. Without it a
+            # gateway or regional redirect in front of the API falls past raise_for_fetch_status
+            # (which only classifies >= 400) into response.json(), raising a JSONDecodeError that
+            # is_retriable does not recognise — aborting the run this rewrite exists to keep alive.
+            with httpx.Client(timeout=_TIMEOUT_S, follow_redirects=True) as client:
                 response = client.post(
                     _ENDPOINT,
                     content=body,
