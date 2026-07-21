@@ -554,6 +554,113 @@ class _PageBitmapCache:
         return self._pil
 
 
+class _PageGraphicCache:
+    """Bounding boxes of the graphic objects on the most recently inspected page.
+
+    Same single-entry shape as ``_PageBitmapCache`` and for the same reason: specs arrive in page
+    order, and a page can carry over a hundred objects that would otherwise be walked once per
+    spec. Boxes are converted to the top-left origin the specs use, so callers never meet pdfium's
+    bottom-up coordinates.
+    """
+
+    def __init__(self) -> None:
+        self._page_no: int | None = None
+        self._boxes: tuple[tuple[float, float, float, float], ...] = ()
+
+    def boxes(self, pdfium_doc, page_no: int) -> tuple[tuple[float, float, float, float], ...]:
+        if self._page_no != page_no:
+            self._boxes = _graphic_boxes(pdfium_doc, page_no)
+            self._page_no = page_no
+        return self._boxes
+
+
+def _graphic_boxes(pdfium_doc, page_no: int) -> tuple[tuple[float, float, float, float], ...]:
+    """Top-left-origin boxes of the picture-bearing objects on a page.
+
+    IMAGE covers raster figures; FORM covers the vector figures a plotting library emits as an
+    XObject — the ones GROBID never reports, since it looks for embedded images. Bare PATH objects
+    are deliberately excluded: page rules, table borders and underlines are all paths, so treating
+    them as figures would make almost every page look like it had a graphic on it.
+    """
+    try:
+        from pypdfium2 import raw
+    except ImportError:  # pragma: no cover - assets extra not installed
+        return ()
+    try:
+        page = pdfium_doc[page_no]
+        page_height = page.get_size()[1]
+        boxes = []
+        for obj in page.get_objects(max_depth=1):
+            if obj.type not in (raw.FPDF_PAGEOBJ_IMAGE, raw.FPDF_PAGEOBJ_FORM):
+                continue
+            x0, y0, x1, y1 = obj.get_pos()
+            # pdfium measures y upward from the page bottom; specs measure it downward from the
+            # top. Flipping BOTH edges swaps their roles, hence y1 -> top and y0 -> bottom.
+            boxes.append((x0, page_height - y1, x1, page_height - y0))
+        return tuple(boxes)
+    except Exception:  # noqa: BLE001 - a page we cannot inspect simply offers no recovery
+        return ()
+
+
+# A figure caption sits directly beneath its graphic. Allowing an unbounded gap would let a crop
+# reach up the page and swallow an unrelated figure, so the search stops half an inch above the
+# caption — measured gaps on the fixture paper are 3.0, -2.2 and 15.1pt.
+_CAPTION_GRAPHIC_GAP_PT = 36.0
+
+
+def crop_bbox_for(
+    spec: AssetCropSpec, graphics: Sequence[tuple[float, float, float, float]]
+) -> tuple[float, float, float, float]:
+    """The region to render for ``spec``, widened when a figure's graphic went unreported.
+
+    Figures only. A table's coordinates are its body and a formula's are the formula, so neither
+    has anything to recover and widening either would pull in surrounding page content.
+    """
+    if spec.type is not AssetType.FIGURE:
+        return spec.bbox
+    return _recover_figure_bbox(graphics, spec.bbox) or spec.bbox
+
+
+def _recover_figure_bbox(
+    graphics: Sequence[tuple[float, float, float, float]],
+    bbox: tuple[float, float, float, float],
+) -> tuple[float, float, float, float] | None:
+    """Widen a caption-only figure bbox to include the graphic sitting above it, or None.
+
+    GROBID emits a ``<graphic>`` for raster figures only, so a vector figure's coordinates cover
+    just the caption's text lines and the crop shows a sentence where the figure should be. The
+    picture is still in the PDF as a page object; this finds it.
+
+    Returns None whenever the answer is not clear-cut, which keeps the existing crop:
+    a bbox already overlapping a graphic is GROBID's own (correct) figure region, and a page with
+    no graphic object above the caption offers nothing to recover — a text block mislabelled as a
+    figure lands here and is left exactly as it was.
+    """
+    x0, y0, x1, y1 = bbox
+    # "Already covers a graphic" has to mean most of one, not a hairline touch: a caption's first
+    # line routinely tucks a point or two under the plot above it, and treating that as coverage
+    # would leave exactly the figures this exists to recover uncorrected.
+    for g in graphics:
+        overlap = max(0.0, min(x1, g[2]) - max(x0, g[0])) * max(0.0, min(y1, g[3]) - max(y0, g[1]))
+        area = (g[2] - g[0]) * (g[3] - g[1])
+        if area > 0 and overlap / area >= 0.5:
+            return None  # GROBID's own figure region — nothing was missed
+    above = [
+        g
+        for g in graphics
+        # Horizontally overlapping, bottom above the caption's bottom, and close enough that the
+        # caption plausibly belongs to it. The gap may be slightly negative (a caption whose first
+        # line tucks under the graphic's box), which the upper bound alone still admits.
+        if g[0] < x1 and g[2] > x0 and g[3] < y1 and (y0 - g[3]) <= _CAPTION_GRAPHIC_GAP_PT
+    ]
+    if not above:
+        return None
+    # Nearest one only. Unioning every candidate would merge stacked subfigures into one crop that
+    # also swept up whatever text sat between them.
+    nearest = max(above, key=lambda g: g[3])
+    return (min(x0, nearest[0]), min(y0, nearest[1]), max(x1, nearest[2]), max(y1, nearest[3]))
+
+
 def _render_bbox_to_png(
     pdfium_doc, page_no: int, bbox, *, plumber_page=None, bitmap_cache=None
 ) -> bytes | None:
@@ -618,11 +725,13 @@ def crop_assets_from_specs(
         doc = pdfium.PdfDocument(pdf)
         page_count = len(doc)
         bitmaps = _PageBitmapCache()
+        graphics = _PageGraphicCache()
         for spec in specs:
             page_idx = spec.page - 1  # GROBID coords are 1-based
             if page_idx < 0 or page_idx >= page_count:
                 continue
-            raw = _render_bbox_to_png(doc, page_idx, spec.bbox, bitmap_cache=bitmaps)
+            bbox = crop_bbox_for(spec, graphics.boxes(doc, page_idx))
+            raw = _render_bbox_to_png(doc, page_idx, bbox, bitmap_cache=bitmaps)
             image = normalizer.normalize(raw) if raw else None
             if image is None:
                 continue
@@ -635,7 +744,7 @@ def crop_assets_from_specs(
                 source_mode=AssetSourceMode.PAGE_CROP,
                 caption=spec.caption,
                 page_ref=spec.page,
-                bbox=spec.bbox,
+                bbox=bbox,  # the rendered region, which recovery may have widened
             )
             out.append(ExtractedAsset(meta=meta, image=image))
     except Exception:  # noqa: BLE001 - best-effort; skip assets for this paper

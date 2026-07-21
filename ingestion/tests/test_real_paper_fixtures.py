@@ -351,6 +351,64 @@ def test_real_pdf_crops_render_for_every_tei_spec() -> None:
             f"{asset.meta.asset_id} rendered but no doc-model block references it"
         )
 
+# GROBID emits a <graphic> only for RASTER figures, so a vector figure arrives with coordinates
+# covering nothing but its caption's text lines. Cropping those verbatim yields an image of the
+# caption sentence — the figure itself is missing, while every structural assertion still passes.
+# Maps asset id -> the caption-strip height (pt) GROBID supplied, measured from the fixture TEI.
+_VECTOR_FIGURES = {
+    f"{TRIPLE}:v1:figure:1": 44.6,  # p8, Figure 1 — architecture diagram
+    f"{TRIPLE}:v1:figure:2": 20.7,  # p15, Figure 2 — decision curve plot
+    f"{TRIPLE}:v1:figure:3": 68.5,  # p16, Figure 3 — value-of-information plot
+}
+
+
+def _rendered_bboxes() -> dict[str, tuple]:
+    from docsuri_ingestion.asset_extraction import crop_assets_from_specs
+
+    specs = tei_crop_specs(_load_tei(), paper_id=TRIPLE, version=1)
+    assets = crop_assets_from_specs(_load_pdf(), specs, paper_id=TRIPLE, version=1)
+    return {a.meta.asset_id: a.meta.bbox for a in assets}
+
+
+def test_vector_figures_recover_the_graphic_grobid_did_not_locate() -> None:
+    """A caption-only crop must be widened to the figure the PDF really carries.
+
+    Asserting on the *height* rather than on rendering success is the point: the caption-only
+    crops rendered perfectly well and were valid WebP, which is exactly why the existing
+    assertions above could not see the defect.
+    """
+    pytest.importorskip("pypdfium2")
+    pytest.importorskip("PIL")
+    boxes = _rendered_bboxes()
+
+    for aid, caption_height in _VECTOR_FIGURES.items():
+        assert aid in boxes, f"{aid} produced no asset at all"
+        x0, y0, x1, y1 = boxes[aid]
+        height = y1 - y0
+        assert height > caption_height * 2.5, (
+            f"{aid}: crop is {height:.1f}pt tall against a {caption_height}pt caption strip — "
+            "the graphic above the caption was not recovered"
+        )
+        assert 0 <= x0 < x1 and 0 <= y0 < y1, f"{aid}: degenerate bbox after recovery"
+
+
+def test_figures_grobid_located_and_all_tables_keep_their_coordinates() -> None:
+    """The recovery must be inert wherever GROBID's coordinates were already right.
+
+    Figures 4/5 carry a <graphic>; figure 0 is a text block GROBID mislabelled a figure and has no
+    graphic object to find; tables get their body coordinates. None may move — a recovery that
+    widened these would be swallowing neighbouring page content.
+    """
+    pytest.importorskip("pypdfium2")
+    pytest.importorskip("PIL")
+    specs = {s.asset_id: s.bbox for s in tei_crop_specs(_load_tei(), paper_id=TRIPLE, version=1)}
+    boxes = _rendered_bboxes()
+
+    untouched = [aid for aid in specs if aid not in _VECTOR_FIGURES]
+    assert len(untouched) == 8, f"fixture drifted: expected 8 untouched specs, got {untouched}"
+    for aid in untouched:
+        assert boxes[aid] == specs[aid], f"{aid}: bbox changed but GROBID's coordinates were sound"
+
 
 # ---------------------------------------------------------------------------------------
 # Chunking — what actually reaches the search index, fed from the real parsed documents.
