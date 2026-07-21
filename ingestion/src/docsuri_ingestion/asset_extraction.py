@@ -32,7 +32,12 @@ from .domain.enums import AssetSourceMode, AssetType
 #   - rejects body sentences that merely open with a number ("Table 6 shows that …") — the bug
 #     that produced bogus table crops.
 # The captured number drives label-matching of an unmatched figure to its page-crop.
-_CAPTION_RE = re.compile(r"^\s*(figure|fig\.?|table)\s*(\d+)\s*[:.—]", re.IGNORECASE)
+#
+# The same body is compiled anchored (the caption rule) and unanchored (a cheap page-level probe
+# for a caption that a two-column merge buried mid-line) so the two can never drift apart.
+_CAPTION_BODY = r"(figure|fig\.?|table)\s*(\d+)\s*[:.—]"
+_CAPTION_RE = re.compile(r"^\s*" + _CAPTION_BODY, re.IGNORECASE)
+_CAPTION_ANYWHERE_RE = re.compile(_CAPTION_BODY, re.IGNORECASE)
 _LABEL_NUM_RE = re.compile(r"(\d+)")
 
 _ASSETS_EXTRA_MISSING = "multimodal assets extra not installed (pip install .[assets])"
@@ -351,13 +356,18 @@ class AssetExtractor:
             bitmaps = _PageBitmapCache()
             with pdfplumber.open(io.BytesIO(pdf)) as plumber:
                 for page_no, page in enumerate(plumber.pages):
-                    captions = _page_captions(page.extract_text_lines() or [])
+                    lines = page.extract_text_lines() or []
+                    texts = [ln.get("text", "") or "" for ln in lines]
+                    if not any(_CAPTION_ANYWHERE_RE.search(t) for t in texts):
+                        continue  # no caption anywhere on the page — skip before paying for words
+                    # Extract words ONCE (caption detection needs them for column starts, and the
+                    # crop bbox grows to them) and assign the page's graphic primitives to captions
+                    # ONCE — both are O(page), recomputing per caption was pure overhead.
+                    words = page.extract_words() or []
+                    captions = _page_captions(lines, words)
                     if not captions:
                         continue
-                    # Assign the page's graphic primitives to captions ONCE, then extract words ONCE
-                    # (both are O(page) — recomputing per caption was pure overhead on dense pages).
                     buckets = _assign_graphics(page, captions)
-                    words = page.extract_words() or []
                     for cap, prims in zip(captions, buckets, strict=True):
                         kind = cap["kind"]
                         if (kind is AssetType.FIGURE and not figures) or (
@@ -415,41 +425,119 @@ _REGION_PAD = 4.0
 _SINGLE_PRIM_MIN_W_FRAC = 0.3  # a lone primitive counts only if it spans ≥30% width AND ≥10% height
 _SINGLE_PRIM_MIN_H_FRAC = 0.1
 
+# Column-start detection for a caption a two-column merge buried mid-line. Measured on a real
+# two-column paper: a column-starting caption has this strip clear on 57-73% of the page's rows,
+# an in-prose cross-reference on only 10-14% — so the threshold sits far from both.
+_ROW_TOLERANCE_PT = 3.0  # pdfplumber's own line-clustering tolerance
+_COLUMN_EDGE_PROBE_PT = 8.0
+_COLUMN_EDGE_MAX_CROSSED_FRAC = 0.6
 
-def _page_captions(lines: Sequence[dict]) -> list[dict]:
-    """Every "Figure N"/"Table N" caption line on the page, as ``{kind, number, top, bottom, x0, x1,
-    text}``. The x-span lets a two-column page keep each column's figure with its caption. Pure."""
+
+def _page_captions(lines: Sequence[dict], words: Sequence[dict] = ()) -> list[dict]:
+    """Every "Figure N"/"Table N" caption on the page, as ``{kind, number, top, bottom, x0, x1,
+    text}``. The x-span lets a two-column page keep each column's figure with its caption.
+
+    A caption normally STARTS its line, but ``extract_text_lines`` merges the two columns of a
+    two-column page into one line, so the right column's caption lands mid-line — invisible to the
+    start rule, and its figure then goes uncropped (or worse, is swallowed by whatever caption DOES
+    claim it). Such a caption is recovered when its first word starts a column, and only then:
+    a body cross-reference ("… is provided in Figure 1.") sits inside running prose, so the strip
+    just left of it is covered on most of the page's text rows, while a column start is clear on
+    most of them. Recovered captions carry the column's own x0, so downstream x-overlap keeps them
+    to their column. Pure given the page's lines and words."""
     caps: list[dict] = []
+    rows = _text_rows(words)
     for ln in lines:
-        parsed = caption_kind_and_number(ln.get("text", ""))
-        if parsed is None:
-            continue
-        kind, number = parsed
-        top = float(ln.get("top", 0.0))
-        caps.append(
-            {
-                "kind": kind,
-                "number": number,
-                "top": top,
-                "bottom": float(ln.get("bottom", top)),
-                "x0": float(ln.get("x0", 0.0)),
-                "x1": float(ln.get("x1", 0.0)),
-                "text": (ln.get("text", "") or "").strip(),
-            }
-        )
+        text = (ln.get("text", "") or "").strip()
+        parsed = caption_kind_and_number(text)
+        if parsed is not None:
+            caps.append(_caption_entry(ln, parsed, float(ln.get("x0", 0.0)), text))
+        if rows and _CAPTION_ANYWHERE_RE.search(text):
+            caps.extend(_column_captions(ln, _line_words(ln, words), rows))
     return caps
+
+
+def _column_captions(
+    line: dict, line_words: Sequence[dict], rows: Sequence[Sequence[dict]]
+) -> list[dict]:
+    """Captions buried mid-line by a two-column merge: every "Figure N:" inside ``line`` that begins
+    a column, carrying that column's x0 and the text from there to the line's end. Pure."""
+    caps: list[dict] = []
+    texts = [str(w.get("text", "")) for w in line_words]
+    for index in range(1, len(line_words)):
+        run_text = " ".join(texts[index:])
+        parsed = caption_kind_and_number(run_text)
+        x0 = float(line_words[index].get("x0", 0.0))
+        if parsed is not None and _starts_a_column(x0, rows):
+            caps.append(_caption_entry(line, parsed, x0, run_text))
+    return caps
+
+
+def _caption_entry(line: dict, parsed: tuple[AssetType, int], x0: float, text: str) -> dict:
+    """One caption record: its kind/number, the line's vertical band, and its own x-span. Pure."""
+    kind, number = parsed
+    top = float(line.get("top", 0.0))
+    return {
+        "kind": kind,
+        "number": number,
+        "top": top,
+        "bottom": float(line.get("bottom", top)),
+        "x0": x0,
+        "x1": float(line.get("x1", 0.0)),
+        "text": text,
+    }
+
+
+def _text_rows(words: Sequence[dict]) -> list[list[dict]]:
+    """The page's words grouped into rows by ``top`` (pdfplumber's line tolerance). Pure."""
+    rows: dict[int, list[dict]] = {}
+    for word in words:
+        rows.setdefault(int(float(word.get("top", 0.0)) // _ROW_TOLERANCE_PT), []).append(word)
+    return list(rows.values())
+
+
+def _line_words(line: dict, words: Sequence[dict]) -> list[dict]:
+    """The page words whose vertical centre falls inside ``line``, left to right. Pure."""
+    top, bottom = float(line.get("top", 0.0)), float(line.get("bottom", 0.0))
+    inside = []
+    for w in words:
+        cy = (float(w.get("top", 0.0)) + float(w.get("bottom", 0.0))) / 2.0
+        if top - 1.0 <= cy <= bottom + 1.0:
+            inside.append(w)
+    return sorted(inside, key=lambda w: float(w.get("x0", 0.0)))
+
+
+def _starts_a_column(x0: float, rows: Sequence[Sequence[dict]]) -> bool:
+    """Whether ``x0`` looks like a column's left edge: the strip immediately left of it is clear of
+    text on most of the page's rows. Prose flowing through that strip on nearly every row means the
+    position is mid-sentence, not a column start. Pure."""
+    left, right = x0 - _COLUMN_EDGE_PROBE_PT, x0 - 1.0
+    crossed = sum(
+        1
+        for row in rows
+        if any(float(w.get("x0", 0.0)) < right and float(w.get("x1", 0.0)) > left for w in row)
+    )
+    return crossed <= _COLUMN_EDGE_MAX_CROSSED_FRAC * len(rows)
 
 
 def _assign_graphics(page, captions: Sequence[dict]) -> list[dict[str, list]]:
     """Assign each graphic primitive to the caption whose content-side edge is NEAREST — a figure's
-    content sits ABOVE its caption, a table's BELOW — restricted to captions its x-span overlaps.
+    content sits ABOVE its caption, a table's on EITHER side — restricted to captions its x-span
+    overlaps.
+
+    A figure caption always follows its figure, but journals differ on tables: some print the
+    caption above the table, some below it, and papers mix both. So a table caption takes the
+    nearest primitives on whichever side they lie, and ``_one_sided`` then trims it back to a
+    single side — a crop that straddles its own caption is wrong whichever way the paper prints it.
 
     Nearest-edge assignment (not a vertical window) is what keeps a table's rules with the table
-    even when a figure caption sits just after it. Among captions on the primitive's content side an
-    x-overlapping caption is preferred (so a two-column page's left/right figures stay apart), but a
-    primitive that overlaps no caption — a figure wider than its short caption — still falls back to
-    the nearest same-side caption rather than being dropped. Returns a list parallel to
-    ``captions`` of ``{"img": [...], "vec": [...]}`` boxes. Pure given the page."""
+    even when a figure caption sits just after it, and it is also what stops a table caption from
+    stealing the figure above it: that figure's own caption is nearer. Among captions on the
+    primitive's content side an x-overlapping caption is preferred (so a two-column page's
+    left/right figures stay apart), but a primitive that overlaps no caption — a figure wider than
+    its short caption — still falls back to the nearest same-side caption rather than being dropped.
+    Returns a list parallel to ``captions`` of ``{"img": [...], "vec": [...]}`` boxes. Pure given
+    the page."""
     buckets: list[dict[str, list]] = [{"img": [], "vec": []} for _ in captions]
     for name in ("curves", "lines", "rects", "images"):
         key = "img" if name == "images" else "vec"
@@ -463,10 +551,11 @@ def _assign_graphics(page, captions: Sequence[dict]) -> list[dict[str, list]]:
             cy = (ptop + pbot) / 2.0
             overlap_i = overlap_d = any_i = any_d = None
             for i, cap in enumerate(captions):
-                # Signed distance from the primitive to this caption's content side; <0 means the
-                # primitive is on the WRONG side (below a figure caption / above a table caption).
-                dist = cap["top"] - cy if cap["kind"] is AssetType.FIGURE else cy - cap["bottom"]
-                if dist < 0:
+                # Distance from the primitive to this caption's content side; None means the
+                # primitive is on a side this caption's content cannot be on (below a figure
+                # caption).
+                dist = _content_distance(cap, cy)
+                if dist is None:
                     continue
                 if any_d is None or dist < any_d:
                     any_d, any_i = dist, i
@@ -476,7 +565,37 @@ def _assign_graphics(page, captions: Sequence[dict]) -> list[dict[str, list]]:
             chosen = overlap_i if overlap_i is not None else any_i
             if chosen is not None:
                 buckets[chosen][key].append((px0, ptop, px1, pbot))
-    return buckets
+    return [_one_sided(cap, bucket) for cap, bucket in zip(captions, buckets, strict=True)]
+
+
+def _content_distance(caption: dict, cy: float) -> float | None:
+    """Distance from a primitive's centre to the caption's content side, or None if it is on a side
+    that caption's content cannot occupy. Pure."""
+    if caption["kind"] is AssetType.FIGURE:
+        above = caption["top"] - cy
+        return above if above >= 0 else None
+    if cy > caption["bottom"]:
+        return cy - caption["bottom"]
+    return max(0.0, caption["top"] - cy)  # 0 for a primitive overlapping the caption band itself
+
+
+def _one_sided(caption: dict, bucket: dict[str, list]) -> dict[str, list]:
+    """Drop the farther side when a (table) caption drew primitives from both — two tables sharing a
+    caption line's neighbourhood must not merge into one crop spanning the caption. Pure."""
+    centres = [(b[1] + b[3]) / 2.0 for b in bucket["img"] + bucket["vec"]]
+    above = [cy for cy in centres if cy < caption["top"]]
+    below = [cy for cy in centres if cy > caption["bottom"]]
+    if not above or not below:
+        return bucket
+    # The kept bound is the caption's FAR edge, so a primitive overlapping the caption band (a rule
+    # printed through it) stays with whichever side wins rather than being dropped by both.
+    if (caption["top"] - max(above)) <= (min(below) - caption["bottom"]):
+        lo, hi = float("-inf"), caption["bottom"]
+    else:
+        lo, hi = caption["top"], float("inf")
+    return {
+        key: [b for b in boxes if lo < (b[1] + b[3]) / 2.0 < hi] for key, boxes in bucket.items()
+    }
 
 
 def _accept_graphics(img_boxes: list, vec_boxes: list, page) -> bool:

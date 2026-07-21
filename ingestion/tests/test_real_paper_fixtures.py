@@ -720,23 +720,21 @@ def test_eprint_preamble_macros_are_recovered_from_the_real_source() -> None:
     assert macros == {"\\proposed": "{AutoPrognosis}", "\\proposedf": "{AutoPrognosis 2.0}"}
 
 
-def test_hybrid_extraction_leaves_two_known_gaps_on_this_paper() -> None:
-    """The full ar5iv + e-print + PDF resolution on real inputs, gaps and all.
+def test_hybrid_extraction_images_every_figure_and_table_on_this_paper() -> None:
+    """The full ar5iv + e-print + PDF resolution on real inputs — every figure and table imaged.
 
-    Both gaps are in the caption-anchored PDF scan and both are layout assumptions this paper
-    breaks, so they are recorded rather than hidden:
+    This paper is the reason the caption scan cannot assume a tidy layout, and no synthetic PDF
+    reproduces either trap:
 
-    * **Figure 3 gets no image.** Its caption sits in the right column of a two-column page, and
-      ``extract_text_lines`` merges the columns into one line that no longer STARTS with
-      "Figure 3:", so the caption is never detected. Its FigureBlock keeps an assetRef pointing at
-      an asset that was never produced.
-    * **Tables 1, 2 and 4 get no crop.** ``_assign_graphics`` assumes a table's content sits BELOW
-      its caption; this paper prints table captions underneath their tables, so every primitive
-      lands on the "wrong" side and the caption is read as a body cross-reference. Harmless here —
-      on the ar5iv path a table is row DATA and the crop is only a fallback (D8/TD-12) — but the
-      same assumption governs PDF-only papers, where it is the whole table.
+    * **Two-column pages merge their captions.** ``extract_text_lines`` joins both columns at the
+      same height into one line, so the right column's captions (Figure 3, Figure 4, Table 4) do
+      not START their line. They are recovered by their column-start x, while the body
+      cross-references on the same pages ("… is provided in Figure 1.") stay rejected.
+    * **Table captions are printed on both sides.** Tables 1 and 2 are captioned UNDER the table,
+      Tables 3, 5 and 6 above it. A one-sided rule loses whichever half it does not expect.
 
-    Tighten this test when either is fixed; do not delete it.
+    The Figure 4 recovery also keeps its page-16 graphic off the Table 5 crop, which used to
+    swallow it — hence the bbox assertion below.
     """
     pytest.importorskip("pdfplumber")
     pytest.importorskip("PIL")
@@ -752,11 +750,21 @@ def test_hybrid_extraction_leaves_two_known_gaps_on_this_paper() -> None:
     by_mode = {a.meta.asset_id: a.meta.source_mode.value for a in assets}
 
     assert by_mode == {
-        f"{EPRINT_PAPER}:v1:figure:0": "page-crop",  # Figure 1, caption found
+        f"{EPRINT_PAPER}:v1:figure:0": "page-crop",  # Figure 1
         f"{EPRINT_PAPER}:v1:figure:1": "page-crop",  # Figure 2
+        f"{EPRINT_PAPER}:v1:figure:2": "page-crop",  # Figure 3 — right column of a merged line
         f"{EPRINT_PAPER}:v1:figure:3": "structured",  # author raster, original quality
         f"{EPRINT_PAPER}:v1:figure:4": "structured",
-        f"{EPRINT_PAPER}:v1:table:0": "page-crop",  # Tables 3, 5, 6 — captions printed above
-        f"{EPRINT_PAPER}:v1:table:1": "page-crop",
-        f"{EPRINT_PAPER}:v1:table:2": "page-crop",
-    }, "the known gaps moved — if one closed, tighten this test rather than re-recording it"
+        f"{EPRINT_PAPER}:v1:table:0": "page-crop",  # Table 1 — caption printed under the table
+        f"{EPRINT_PAPER}:v1:table:1": "page-crop",  # Table 2 — likewise
+        f"{EPRINT_PAPER}:v1:table:2": "page-crop",  # Table 3
+        f"{EPRINT_PAPER}:v1:table:3": "page-crop",  # Table 4 — right column of a merged line
+        f"{EPRINT_PAPER}:v1:table:4": "page-crop",  # Table 5
+        f"{EPRINT_PAPER}:v1:table:5": "page-crop",  # Table 6
+    }, "every figure and table on this paper must be imaged — do not re-record a regression here"
+
+    table5 = next(a for a in assets if a.meta.asset_id == f"{EPRINT_PAPER}:v1:table:4")
+    assert table5.meta.page_ref == 16
+    assert table5.meta.bbox[3] < 300, (
+        "the Table 5 crop reaches down into Figure 4's graphic again (page 16, top 345-543)"
+    )
