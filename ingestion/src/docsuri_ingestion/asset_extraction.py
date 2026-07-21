@@ -614,6 +614,20 @@ _CAPTION_GRAPHIC_GAP_PT = 36.0
 _MIN_GRAPHIC_AREA_PT2 = 1000.0
 
 
+# A crop smaller than this holds a glyph fragment, not content. GROBID occasionally emits a
+# formula element for a stray delimiter — a lone ")" 4.4pt wide — and rendering it stores an image
+# of one bracket that a reader is then shown in place of the equation. Across the TEI fixtures the
+# offenders measure 35-42pt² while the smallest genuine crop is over 600pt², so this separates them
+# by an order of magnitude rather than by a hair.
+_MIN_CROP_AREA_PT2 = 200.0
+
+
+def crop_is_renderable(bbox: tuple[float, float, float, float]) -> bool:
+    """Whether a crop region is big enough to carry anything — see ``_MIN_CROP_AREA_PT2``."""
+    x0, y0, x1, y1 = bbox
+    return (x1 - x0) * (y1 - y0) >= _MIN_CROP_AREA_PT2
+
+
 def crop_bbox_for(
     spec: AssetCropSpec, graphics: Sequence[tuple[float, float, float, float]]
 ) -> tuple[float, float, float, float]:
@@ -740,6 +754,8 @@ def crop_assets_from_specs(
             if page_idx < 0 or page_idx >= page_count:
                 continue
             bbox = crop_bbox_for(spec, graphics.boxes(doc, page_idx))
+            if not crop_is_renderable(bbox):
+                continue
             raw = _render_bbox_to_png(doc, page_idx, bbox, bitmap_cache=bitmaps)
             image = normalizer.normalize(raw) if raw else None
             if image is None:

@@ -584,7 +584,13 @@ def test_tei_formula_crops_actually_render_from_the_real_pdf() -> None:
     assets = crop_assets_from_specs(
         _load_pdf(FORMULA_PAPER), specs, paper_id=FORMULA_PAPER, version=1
     )
-    assert len(assets) == len(specs), f"{len(specs) - len(assets)} crops failed to render"
+    # One spec is deliberately refused: GROBID made a formula element out of a stray ")" and its
+    # 4.4x9.6pt region cannot hold an equation. Everything else must render.
+    refused = {f"{FORMULA_PAPER}:v1:formula:25"}
+    rendered = {a.meta.asset_id for a in assets}
+    assert {s.asset_id for s in specs} - rendered == refused, (
+        f"unexpected crops missing: {sorted({s.asset_id for s in specs} - rendered - refused)}"
+    )
     formulas = [a for a in assets if a.meta.type.value == "formula"]
     assert len(formulas) >= 20
     for asset in formulas:
@@ -638,3 +644,119 @@ def test_recovery_ignores_decorative_vector_glyphs() -> None:
     assert widened == {f"{FORMULA_PAPER}:v1:figure:3"}, (
         f"recovery fired on the wrong blocks: {sorted(widened)}"
     )
+
+
+# ---------------------------------------------------------------------------------------
+# e-print LaTeX — the tier between ar5iv and the PDF, and the only source of original-quality
+# figure rasters. Synthetic tarballs cannot reproduce what this checks: real member names.
+# ---------------------------------------------------------------------------------------
+
+EPRINT_PAPER = TRIPLE
+
+
+def _load_eprint(paper_id: str = EPRINT_PAPER) -> bytes:
+    return (FIXTURE_ROOT / "eprint" / f"{paper_id}.tar.gz").read_bytes()
+
+
+def _figure_specs(paper_id: str):
+    specs: list = []
+    parse_html_to_docmodel(
+        _load(paper_id),
+        paper_id=paper_id,
+        version=1,
+        title="Fixture Paper",
+        abstract=None,
+        source_tier=SourceTier.ar5iv,
+        parser_version="docmodel-parser@1",
+        schema_version="1.0.0",
+        generated_at=_FIXED_TS,
+        figure_specs=specs,
+    )
+    return specs
+
+
+def test_eprint_figures_match_by_stem_only_where_ar5iv_kept_the_authors_filename() -> None:
+    """Stem matching against a REAL tarball, which is the whole point of this fixture.
+
+    ar5iv rewrites a figure it rendered itself to ``x1.png``/``x2.png``/``x3.png`` while leaving
+    author-supplied rasters under their own names. So only the figures the author shipped as PNGs
+    can be found in the e-print, and the rest must fall through to the page-crop path — an
+    all-or-nothing rule ("any structured hit disables page-crops") would blank them. The ordinals
+    must survive the gap so each assetId still lands on the FigureBlock that references it.
+    """
+    pytest.importorskip("PIL")
+    from docsuri_ingestion.asset_extraction import AssetExtractor
+
+    specs = _figure_specs(EPRINT_PAPER)
+    assert [s.src.rsplit("/", 1)[-1] for s in specs] == [
+        "x1.png",
+        "x2.png",
+        "x3.png",
+        "shap_values_ap.png",
+        "AP_diabetes_webapp.png",
+    ], "the ar5iv fixture's figure sources moved — re-derive what should match"
+
+    candidates = AssetExtractor()._structured_figures(_load_eprint(), specs)
+    assert [c.ordinal for c in candidates] == [3, 4], "stem matching picked the wrong figures"
+    for candidate in candidates:
+        assert candidate.source_mode.value == "structured"
+        assert candidate.image, "a matched figure normalized to nothing"
+
+
+def test_eprint_vector_sources_are_skipped_rather_than_stored_broken() -> None:
+    """The tarball's other three figures are ``.pdf``. Without a doc-model to guide it the legacy
+    scan takes rasters only, so the vector sources cannot leak in as undecodable bytes."""
+    pytest.importorskip("PIL")
+    from docsuri_ingestion.asset_extraction import AssetExtractor
+
+    assert len(AssetExtractor()._structured_figures(_load_eprint())) == 2
+
+
+def test_eprint_preamble_macros_are_recovered_from_the_real_source() -> None:
+    """Doc-model formulas expand author macros, which only exist in the e-print preamble."""
+    from docsuri_ingestion.docmodel.macros import extract_macros
+
+    macros = extract_macros(_load_eprint())
+    assert macros == {"\\proposed": "{AutoPrognosis}", "\\proposedf": "{AutoPrognosis 2.0}"}
+
+
+def test_hybrid_extraction_leaves_two_known_gaps_on_this_paper() -> None:
+    """The full ar5iv + e-print + PDF resolution on real inputs, gaps and all.
+
+    Both gaps are in the caption-anchored PDF scan and both are layout assumptions this paper
+    breaks, so they are recorded rather than hidden:
+
+    * **Figure 3 gets no image.** Its caption sits in the right column of a two-column page, and
+      ``extract_text_lines`` merges the columns into one line that no longer STARTS with
+      "Figure 3:", so the caption is never detected. Its FigureBlock keeps an assetRef pointing at
+      an asset that was never produced.
+    * **Tables 1, 2 and 4 get no crop.** ``_assign_graphics`` assumes a table's content sits BELOW
+      its caption; this paper prints table captions underneath their tables, so every primitive
+      lands on the "wrong" side and the caption is read as a body cross-reference. Harmless here —
+      on the ar5iv path a table is row DATA and the crop is only a fallback (D8/TD-12) — but the
+      same assumption governs PDF-only papers, where it is the whole table.
+
+    Tighten this test when either is fixed; do not delete it.
+    """
+    pytest.importorskip("pdfplumber")
+    pytest.importorskip("PIL")
+    from docsuri_ingestion.asset_extraction import AssetExtractor
+
+    assets = AssetExtractor().extract(
+        paper_id=EPRINT_PAPER,
+        version=1,
+        pdf=_load_pdf(EPRINT_PAPER),
+        eprint=_load_eprint(),
+        figure_specs=_figure_specs(EPRINT_PAPER),
+    )
+    by_mode = {a.meta.asset_id: a.meta.source_mode.value for a in assets}
+
+    assert by_mode == {
+        f"{EPRINT_PAPER}:v1:figure:0": "page-crop",  # Figure 1, caption found
+        f"{EPRINT_PAPER}:v1:figure:1": "page-crop",  # Figure 2
+        f"{EPRINT_PAPER}:v1:figure:3": "structured",  # author raster, original quality
+        f"{EPRINT_PAPER}:v1:figure:4": "structured",
+        f"{EPRINT_PAPER}:v1:table:0": "page-crop",  # Tables 3, 5, 6 — captions printed above
+        f"{EPRINT_PAPER}:v1:table:1": "page-crop",
+        f"{EPRINT_PAPER}:v1:table:2": "page-crop",
+    }, "the known gaps moved — if one closed, tighten this test rather than re-recording it"

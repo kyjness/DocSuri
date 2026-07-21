@@ -81,6 +81,22 @@ cannot be exercised without real page geometry.
 
 `2112.01799`'s PDF is deliberately absent at 42 MB — its TEI is vendored instead.
 
+### `eprint/` — the arXiv source tarball, the tier between ar5iv and the PDF
+
+- **2210.12090** (613 KB) — the only source of original-quality figure rasters, and the source of
+  the author macros doc-model formulas expand. **Reduced**: the paper's own files only (2 PNG and
+  3 PDF figures plus `main.tex`). The Elsevier `elsarticle.cls`/`.bst` members of the real tarball
+  are dropped — they are separately licensed works, and nothing tests them.
+
+What it pins is what a synthetic tarball cannot: real member names. ar5iv rewrites the figures it
+rendered itself to `x1.png`/`x2.png`/`x3.png` while leaving author rasters under their own names,
+so only 2 of the 5 figures can be found by filename stem and the rest must fall through to the
+page-crop path with their ordinals intact.
+
+```bash
+curl -sL "https://arxiv.org/e-print/<id>" -o eprint.tar.gz   # then reduce as described above
+```
+
 ## Refreshing
 
 Fixtures are pinned deliberately: ar5iv re-renders papers as LaTeXML improves and GROBID's

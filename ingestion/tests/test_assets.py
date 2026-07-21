@@ -242,3 +242,20 @@ def test_a_graphic_just_over_the_area_floor_still_counts() -> None:
     """The floor must separate glyphs from figures, not reject small real plots."""
     small_plot = (110.0, 255.0, 250.0, 295.0)  # 140 x 40pt = 5,600pt²
     assert crop_bbox_for(_spec(_CAPTION), [small_plot])[1] == 255.0
+
+
+def test_a_crop_too_small_to_hold_anything_is_not_rendered() -> None:
+    """GROBID sometimes emits a formula element for a stray glyph — a lone ``)``.
+
+    Cropping it faithfully produces a 4x10pt image of one bracket, which is stored, referenced by
+    a block and shown to a reader as if it were the equation. Below this floor a crop cannot carry
+    a formula or a figure at all, so no asset is better than a misleading one. The separation is
+    not a hair: across the three TEI fixtures the offenders are 35-42pt² and the smallest real crop
+    is over 600pt². Assets are best-effort (BR-27), so a skipped one is an already-handled state.
+    """
+    from docsuri_ingestion.asset_extraction import crop_is_renderable
+
+    assert not crop_is_renderable((296.3, 310.4, 300.8, 320.0))  # the real ')' from 2607.16138
+    assert not crop_is_renderable((10.0, 10.0, 14.1, 18.6))
+    assert crop_is_renderable((110.8, 304.1, 499.4, 324.8))  # a caption strip is still renderable
+    assert crop_is_renderable((100.0, 100.0, 130.0, 120.0))  # 600pt², the small end of real crops
