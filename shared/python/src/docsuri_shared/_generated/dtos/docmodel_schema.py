@@ -124,20 +124,6 @@ class ListItem(BaseModel):
     )
 
 
-class CodeBlock(BaseModel):
-    """
-    A verbatim/code/algorithm block (rendered monospace, not interpreted).
-    """
-
-    model_config = ConfigDict(
-        extra='forbid',
-    )
-    id: str = Field(..., description='Deterministic block id, e.g. "s3.code1".')
-    type: Literal['code']
-    text: str = Field(..., description='Verbatim text.')
-    language: str | None = Field(None, description='Optional language hint.')
-
-
 class Type(StrEnum):
     """
     Asset kind. "formula" is a page-crop equation image used only as the FormulaBlock fallback when no LaTeX is recoverable (PDF/GROBID path). Trace: FR-17, TD-12.
@@ -285,6 +271,24 @@ class ListBlock(BaseModel):
     type: Literal['list']
     ordered: bool = Field(..., description='True for an ordered (numbered) list.')
     items: list[ListItem]
+
+
+class CodeBlock(BaseModel):
+    """
+    A verbatim/code/algorithm block (rendered monospace, not interpreted).
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    id: str = Field(..., description='Deterministic block id, e.g. "s3.code1".')
+    type: Literal['code']
+    text: str = Field(..., description='Verbatim text.')
+    language: str | None = Field(None, description='Optional language hint.')
+    assetRef: AssetRef | None = Field(
+        None,
+        description='Page-crop image of the listing, on the PDF/GROBID path where the extracted text is an approximation. `text` stays the searchable representation; the crop is what renders faithfully. Trace: TD-12.',
+    )
 
 
 class DocModelMeta(BaseModel):

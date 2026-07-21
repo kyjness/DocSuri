@@ -82,11 +82,16 @@ export interface DocListBlock {
   items: DocListItem[];
 }
 
+/**
+ * A verbatim/code/algorithm listing. On the PDF/GROBID path the extracted `text` is an
+ * approximation, so the listing also carries its page-crop image in `assetRef`.
+ */
 export interface DocCodeBlock {
   id: string;
   type: 'code';
   text: string;
   language?: string;
+  assetRef?: DocAssetRef;
 }
 
 export type DocBlock =

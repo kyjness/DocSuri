@@ -539,6 +539,17 @@ def _tei_blocks(paper_id: str):
     return doc, [b.root for s in walk(doc.sections) for b in s.blocks]
 
 
+def _section_of(doc, block_id: str):
+    """The section holding ``block_id`` — GROBID sometimes puts a listing's heading there."""
+
+    def walk(sections):
+        for section in sections:
+            yield section
+            yield from walk(section.sections or [])
+
+    return next(s for s in walk(doc.sections) if any(b.root.id == block_id for b in s.blocks))
+
+
 @pytest.mark.parametrize("paper_id", [FORMULA_PAPER, "2112.01799"])
 def test_tei_display_formulas_become_image_backed_blocks(paper_id: str) -> None:
     """On the PDF path a formula is an IMAGE, deliberately, and carries no LaTeX (TD-12/3a).
@@ -586,7 +597,7 @@ def test_tei_formula_crops_actually_render_from_the_real_pdf() -> None:
     )
     # One spec is deliberately refused: GROBID made a formula element out of a stray ")" and its
     # 4.4x9.6pt region cannot hold an equation. Everything else must render.
-    refused = {f"{FORMULA_PAPER}:v1:formula:25"}
+    refused = {f"{FORMULA_PAPER}:v1:formula:23"}
     rendered = {a.meta.asset_id for a in assets}
     assert {s.asset_id for s in specs} - rendered == refused, (
         f"unexpected crops missing: {sorted({s.asset_id for s in specs} - rendered - refused)}"
@@ -600,25 +611,32 @@ def test_tei_formula_crops_actually_render_from_the_real_pdf() -> None:
         assert y1 - y0 >= 8.0, f"{asset.meta.asset_id}: {y1 - y0:.1f}pt tall, likely an empty strip"
 
 
-def test_grobid_files_algorithm_floats_under_formulas_not_code() -> None:
-    """Observed GROBID behaviour, pinned so a parser change cannot silently move it.
+def test_algorithm_floats_grobid_filed_as_formulas_become_searchable_listings() -> None:
+    """GROBID has no algorithm concept: it labels an ``algorithm`` float a ``<formula>`` and often
+    splits one listing across several of them, so the pseudocode used to arrive as a page-crop
+    image like any equation — readable, but invisible to search and unquotable by an agent.
 
-    GROBID has no algorithm concept: it labels an ``algorithm`` float a ``<formula>``, so the
-    pseudocode arrives as a page-crop image like any equation (verified by eye — the crop of
-    2607.16138's formula:3 is the whole "Algorithm 1 Step 2 of IKPLS" listing). It also splits one
-    listing across several formula elements. Consequences worth stating: on this path an algorithm
-    is READABLE but not SEARCHABLE, and there are no ``code`` blocks. The ar5iv path is where
-    listings keep their text.
+    Unlike equation glyphs the listing's text survives extraction well enough to index, so each
+    listing becomes a code block that KEEPS its crop: the text is searchable, the image still
+    renders faithfully. This paper carries two listings, and GROBID hands the tail of the first
+    one over inside the second float — that tail must rejoin the listing it belongs to.
     """
     doc, blocks = _tei_blocks(FORMULA_PAPER)
 
-    assert not [b for b in blocks if b.type == "code"], "GROBID grew a code block — recheck this"
-    # The listing's text still reaches fullText via the surrounding paragraph flow, but as prose.
-    assert "Algorithm 1" in doc.fullText
-    formula_ids = {b.assetRef.assetId for b in blocks if b.type == "formula" and b.assetRef}
-    assert f"{FORMULA_PAPER}:v1:formula:3" in formula_ids, (
-        "the Algorithm 1 float no longer lands on formula ordinal 3 — re-verify the crop by eye"
-    )
+    listings = [b for b in blocks if b.type == "code"]
+    assert [b.text[:11] for b in listings] == ["Algorithm 1", "Algorithm 2", "1: if algor"]
+    assert "end if 12: end if 13:" in listings[0].text, "the split-off tail did not rejoin"
+    # The third listing is the one GROBID filed as a SECTION titled "Algorithm 3 …", leaving its
+    # steps in headless formulas; those fragments join one block rather than becoming three.
+    assert _section_of(doc, listings[2].id).title.startswith("Algorithm 3")
+    assert "15:" in listings[2].text
+    assert [b.assetRef.assetId for b in listings] == [
+        f"{FORMULA_PAPER}:v1:formula:3",  # verified by eye: the "Algorithm 1 Step 2" crop
+        f"{FORMULA_PAPER}:v1:formula:5",
+        f"{FORMULA_PAPER}:v1:formula:7",
+    ]
+    # Searchable now: the listing text reaches fullText as its own block, not as caption prose.
+    assert "Algorithm 1 Step 2 of IKPLS" in doc.fullText
 
 
 def test_recovery_ignores_decorative_vector_glyphs() -> None:

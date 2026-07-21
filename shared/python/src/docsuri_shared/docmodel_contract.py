@@ -45,8 +45,15 @@ from __future__ import annotations
 # yield ONE block, dropping the second figure from the document and leaving the first unlabelled
 # (hence unmatchable to a page-crop). And a caption-less float holding several images — a funder
 # logo strip — no longer yields a block at all, since nothing can ever image it.
-DOCMODEL_PARSER_VERSION = "docmodel-parser@10"
+# @11: algorithm listings on the PDF/GROBID path. GROBID has no algorithm concept — it files a
+# listing as one or more <formula> elements, sometimes promoting its heading to the section title
+# — so a listing was reachable only as a page-crop image: readable, but absent from search and
+# unquotable. A listing now becomes a CodeBlock carrying its extracted text AND its crop. Formula
+# ordinals after a converted listing shift, so cached doc-models and their crops must rebuild.
+DOCMODEL_PARSER_VERSION = "docmodel-parser@11"
 # 1.1.0: additive optional meta.macros (consumers ignore if unset).
-DOCMODEL_SCHEMA_VERSION = "1.1.0"
+# 1.2.0: additive optional CodeBlock.assetRef — a listing the PDF path could only approximate as
+# text also carries its page crop, so the text stays searchable while the image renders faithfully.
+DOCMODEL_SCHEMA_VERSION = "1.2.0"
 
 __all__ = ["DOCMODEL_PARSER_VERSION", "DOCMODEL_SCHEMA_VERSION"]

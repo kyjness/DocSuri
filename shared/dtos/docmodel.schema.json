@@ -287,7 +287,8 @@
         "id": { "type": "string", "description": "Deterministic block id, e.g. \"s3.code1\"." },
         "type": { "const": "code" },
         "text": { "type": "string", "description": "Verbatim text." },
-        "language": { "type": "string", "description": "Optional language hint." }
+        "language": { "type": "string", "description": "Optional language hint." },
+        "assetRef": { "$ref": "#/$defs/AssetRef", "description": "Page-crop image of the listing, on the PDF/GROBID path where the extracted text is an approximation. `text` stays the searchable representation; the crop is what renders faithfully. Trace: TD-12." }
       },
       "required": ["id", "type", "text"],
       "additionalProperties": false
