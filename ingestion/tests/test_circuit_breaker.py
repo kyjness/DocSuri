@@ -298,3 +298,60 @@ def test_a_plain_exception_is_not_retriable() -> None:
         response = "not-a-dict"
 
     assert not is_retriable(_OddResponse())
+
+
+def test_permanent_errors_do_not_reset_an_accumulating_outage_count() -> None:
+    """A permanent error is circuit-NEUTRAL, not circuit-success.
+
+    Treating it as success resets the consecutive-failure counter, so a dependency that fails in a
+    mixed way — GROBID down behind a proxy serving HTML error pages, which time out sometimes and
+    fail TEI parse other times — never accumulates the threshold and the breaker never opens. The
+    worker then keeps paying the full timeout against a dead dependency with no fast-fail.
+    """
+    clock = _FakeClock()
+    service = _service_with_clock(clock)
+
+    for _ in range(_THRESHOLD - 1):
+        with pytest.raises(RetriableIngestionError):
+            service.dependency_call("arxiv", "fetch", _outage)
+
+    # Interleave one permanent error. It must neither trip the circuit nor forgive the outages.
+    with pytest.raises(PermanentIngestionError):
+        service.dependency_call("arxiv", "fetch", _not_found)
+
+    with pytest.raises(RetriableIngestionError):
+        service.dependency_call("arxiv", "fetch", _outage)  # the THRESHOLD-th outage
+
+    with pytest.raises(CircuitOpenError):
+        service.dependency_call("arxiv", "fetch", lambda: "unreachable")
+
+
+def test_a_probe_ending_in_a_permanent_error_leaves_the_circuit_shut() -> None:
+    """An inconclusive probe must not decide recovery for the next caller.
+
+    Closing on it re-admits full traffic to a dependency that never proved it was back; opening on
+    it would burn the whole recovery window on an outcome that was not the dependency's fault.
+    Neither — the slot is released and the next caller probes for real.
+    """
+    clock = _FakeClock()
+    service = _service_with_clock(clock)
+    for _ in range(_THRESHOLD):
+        with pytest.raises(RetriableIngestionError):
+            service.dependency_call("arxiv", "fetch", _outage)
+
+    clock.advance(_RECOVERY_SECONDS + 1)
+    with pytest.raises(PermanentIngestionError):
+        service.dependency_call("arxiv", "fetch", _not_found)  # probe: inconclusive
+
+    # Still HALF-OPEN, so the next caller is the real probe and its single failure re-opens
+    # immediately. Had the inconclusive probe closed the circuit, this outage would merely be
+    # failure #1 of THRESHOLD and traffic would keep flowing to a dependency that never recovered.
+    with pytest.raises(RetriableIngestionError):
+        service.dependency_call("arxiv", "fetch", _outage)
+    with pytest.raises(CircuitOpenError):
+        service.dependency_call("arxiv", "fetch", lambda: "unreachable")
+
+    # And a probe that genuinely succeeds still closes it.
+    clock.advance(_RECOVERY_SECONDS + 1)
+    assert service.dependency_call("arxiv", "fetch", lambda: "probe") == "probe"
+    assert service.dependency_call("arxiv", "fetch", lambda: "again") == "again"

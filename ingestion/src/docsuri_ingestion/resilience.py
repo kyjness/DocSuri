@@ -183,11 +183,13 @@ class IngestionResilienceService:
                     result = self._timeout_runner.run(func)
                 except Exception as exc:
                     # Only availability failures are a dependency-health signal. A permanent
-                    # error (404, validation) means the dependency RESPONDED, so it counts as
-                    # circuit-success — otherwise a run of bad papers would trip a healthy
-                    # dependency and stall the worker.
+                    # error (404, a withdrawn paper, a validation violation) must not trip a
+                    # healthy dependency — but it is not evidence of health either, since the
+                    # same class covers parse failures of a garbage body. Complete NEUTRAL:
+                    # marking it success would reset the outage count, so an outage that fails
+                    # in a mixed way could never reach the threshold.
                     if not is_retriable(exc):
-                        permit.success()
+                        permit.neutral()
                     raise
                 permit.success()
                 return result
