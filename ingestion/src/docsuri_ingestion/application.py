@@ -931,9 +931,18 @@ class RefreshOrchestrationService:
             # rate-limited to abort) must not drop the others — log + skip and carry on, mirroring
             # on_schedule_tick. Each source's paged fetch already retries transient blips, so this
             # only catches a sustained/permanent failure of that whole source.
+            # Count through a tally rather than the return value: the source's paged fetch is a
+            # generator, so a page failure aborts mid-iteration and `return queued` never runs.
+            # The jobs enqueued before that point are real and already in the queue — reporting 0
+            # for them makes a partially-successful backfill look like a no-op and invites a re-run.
+            tally = [0]
             try:
-                queued += self._queue_external_source(
-                    source_name, since=since, until=until, kind=JobKind.SEED_REBUILD
+                self._queue_external_source(
+                    source_name,
+                    since=since,
+                    until=until,
+                    kind=JobKind.SEED_REBUILD,
+                    tally=tally,
                 )
             except Exception as exc:  # noqa: BLE001 — defensive boundary around one source
                 self._observability.emit_metric(
@@ -941,6 +950,8 @@ class RefreshOrchestrationService:
                     1.0,
                     {"source": source_name.value, "error": type(exc).__name__},
                 )
+            finally:
+                queued += tally[0]
         self._observability.emit_metric("ingestion.backfill.external.queued", float(queued), {})
         return queued
 
@@ -1001,7 +1012,13 @@ class RefreshOrchestrationService:
         since: datetime,
         kind: JobKind,
         until: datetime | None = None,
+        tally: list[int] | None = None,
     ) -> int:
+        """Enqueue a source-record job per in-window record; return how many were queued.
+
+        ``tally`` mirrors the count as it goes, for callers that must still see the partial
+        progress when the source's generator raises part-way through and the return never happens.
+        """
         if self._corpus_sources is None or not self._corpus_sources.is_configured(source_name):
             self._observability.emit_metric(
                 "ingestion.source.unconfigured",
@@ -1033,6 +1050,8 @@ class RefreshOrchestrationService:
                 )
             )
             queued += 1
+            if tally is not None:
+                tally[0] = queued
         return queued
 
     def on_new_arxiv_event(self, event) -> bool:
