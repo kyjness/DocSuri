@@ -200,3 +200,28 @@ def test_crop_spec_for_formula_with_coords() -> None:
 
 def test_crop_specs_empty_on_malformed_tei() -> None:
     assert tei_crop_specs("<TEI", paper_id="p", version=1) == []
+
+
+def test_a_table_grobid_could_not_reconstruct_keeps_its_caption() -> None:
+    """GROBID emits an empty <table/> when its cell reconstruction fails on a real table.
+
+    Dropping the block then loses the CAPTION too, which is text the paper really contains and
+    the schema calls out as preserved (BR-S3) — it is a results-number source and the only
+    remaining handle on that table. The rows may legitimately be empty; the caption may not
+    vanish with them.
+    """
+    tei = (
+        f"<TEI {_NS}><text><body><div><head>R</head>"
+        '<figure type="table" coords="2,10,20,100,50">'
+        "<head>Table 1</head><figDesc>Major challenges facing development.</figDesc>"
+        "<table />"
+        "</figure></div></body></text></TEI>"
+    )
+    doc = _parse(tei)
+    tables = [b.root for s in doc.sections for b in s.blocks if b.root.type == "table"]
+    assert len(tables) == 1, "a table GROBID could not reconstruct was dropped outright"
+    assert tables[0].caption == "Major challenges facing development."
+    assert tables[0].anchorLabel == "Table 1"
+    assert tables[0].rows == []
+    # The caption is what makes the table findable at all once its rows are gone.
+    assert "Major challenges facing development." in doc.fullText

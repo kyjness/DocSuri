@@ -245,7 +245,16 @@ def test_real_tei_keeps_its_content() -> None:
     # Tables must survive as DATA, not as a flattened caption string.
     tables = [b for b in blocks if b.type == "table"]
     assert any(len(t.rows) > 1 for t in tables), "no table kept more than one row"
-    assert all(t.rows for t in tables), "a table came through with no rows at all"
+    # This paper carries all six of its tables, including Table 1 — the one GROBID hands over as
+    # an empty <table/>. A rowless table is kept for its caption, so what must never happen is a
+    # table arriving with neither: that is a block conveying nothing.
+    assert len(tables) == 6, f"a table went missing: {len(tables)} of 6"
+    assert all(t.rows or t.caption for t in tables), (
+        "a table came through with no rows and no caption"
+    )
+    rowless = [t for t in tables if not t.rows]
+    assert len(rowless) == 1 and rowless[0].anchorLabel.startswith("Table 1")
+    assert "Major challenges facing clinical development" in doc.fullText
 
 
 def test_real_tei_crop_specs_stay_inside_their_pages() -> None:
@@ -405,7 +414,7 @@ def test_figures_grobid_located_and_all_tables_keep_their_coordinates() -> None:
     boxes = _rendered_bboxes()
 
     untouched = [aid for aid in specs if aid not in _VECTOR_FIGURES]
-    assert len(untouched) == 8, f"fixture drifted: expected 8 untouched specs, got {untouched}"
+    assert len(untouched) == 9, f"fixture drifted: expected 9 untouched specs, got {untouched}"
     for aid in untouched:
         assert boxes[aid] == specs[aid], f"{aid}: bbox changed but GROBID's coordinates were sound"
 
@@ -463,3 +472,44 @@ def test_real_document_chunks_into_indexable_pieces(kind: str) -> None:
 
     # Chunks must span the document, not just its opening.
     assert len({c.section for c in chunks}) >= 10, f"{kind}: chunks cover too few sections"
+
+
+def test_no_cell_grobid_reconstructed_is_lost_in_translation() -> None:
+    """We must carry over every cell GROBID gives us, however poor its reconstruction is.
+
+    GROBID 0.8.0 merges and truncates cells on this paper's wider tables — ``Table 2``'s
+    "Dimensionality Reduction" header arrives as ``'Dimensionality Fast ICA '`` and ``PCA (1)``
+    is swallowed into a neighbour. That damage is in the TEI itself, so it is not ours to repair:
+    inventing the split would fabricate numbers, and the crop image exists precisely as the
+    last-resort re-read path for it (D8 / TD-11). What IS ours is losing nothing on the way
+    across, which is what this pins.
+    """
+    from xml.etree import ElementTree as ET
+
+    root = ET.fromstring(_load_tei())
+    local = lambda tag: tag.rsplit("}", 1)[-1]  # noqa: E731
+    tei_cells = [
+        [c for c in row if local(c.tag) == "cell"]
+        for fig in root.iter()
+        if local(fig.tag) == "figure" and (fig.get("type") or "") == "table"
+        for table in fig.iter()
+        if local(table.tag) == "table"
+        for row in table
+        if local(row.tag) == "row" and any(local(c.tag) == "cell" for c in row)
+    ]
+
+    def walk(sections):
+        for section in sections:
+            yield section
+            yield from walk(section.sections or [])
+
+    doc = _parse_tei()
+    tables = [b.root for s in walk(doc.sections) for b in s.blocks if b.root.type == "table"]
+    doc_rows = [row.cells for t in tables for row in t.rows]
+
+    assert len(doc_rows) == len(tei_cells), "a row GROBID reconstructed never reached the doc-model"
+    for parsed, raw in zip(doc_rows, tei_cells, strict=True):
+        assert len(parsed) == len(raw), "cells were dropped while copying a row across"
+    # And the damaged text is carried verbatim rather than silently "cleaned" into something else.
+    flat = [c.text for cells in doc_rows for c in cells]
+    assert "Dimensionality Fast ICA" in " ".join(flat)

@@ -519,3 +519,27 @@ def test_table_ignores_nested_header_table_rows() -> None:
     assert all(len(r.cells) == 2 for r in table.rows)
     # nested header content is flattened into the parent header cell
     assert "Relevance Rank" in table.rows[0].cells[1].text
+
+
+def test_a_table_with_no_parsable_rows_keeps_its_caption() -> None:
+    """Same contract as the TEI path: empty rows must not take the caption down with them.
+
+    LaTeXML can emit a figure marked as a table whose body carries no <tr> the parser recognises
+    (an image-only table, or markup it does not model). The caption is still real paper text.
+    """
+    html = (
+        "<html><body><section><h2>Results</h2>"
+        '<figure class="ltx_table">'
+        '<figcaption class="ltx_caption"><span class="ltx_tag">Table 4: </span>'
+        "Ablation over depth.</figcaption>"
+        '<img src="table4.png" alt="rendered table"/>'
+        "</figure>"
+        "</section></body></html>"
+    )
+    doc = _parse(html)
+    tables = [b for s in doc.sections for b in _blocks(s) if isinstance(b, TableBlock)]
+    assert len(tables) == 1, "a table with no parsable rows was dropped outright"
+    assert "Ablation over depth." in (tables[0].caption or "")
+    assert tables[0].anchorLabel == "Table 4"
+    assert tables[0].rows == []
+    assert "Ablation over depth." in doc.fullText

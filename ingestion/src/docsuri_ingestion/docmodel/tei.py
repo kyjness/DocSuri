@@ -214,11 +214,17 @@ def _table_block(figure_el: ET.Element, sec_ctx: _SectionCtx, doc_ctx: _DocCtx) 
             ]
             if cells:
                 rows.append({"cells": cells})
-    if not rows:
+    # Empty rows are kept, not dropped. GROBID emits a bare <table/> whenever its cell
+    # reconstruction fails on a table that is plainly there, and discarding the block took the
+    # CAPTION with it — text the paper really contains, that the schema preserves as a
+    # results-number source (BR-S3), and the last handle on that table once its cells are gone.
+    # The crop below still gives a reader the picture of it. Only a table with neither rows nor a
+    # caption carries nothing and is still discarded.
+    label, caption = _figure_label_caption(figure_el)
+    if not rows and not caption:
         return None
     ordinal = doc_ctx.table_ordinal
     doc_ctx.table_ordinal += 1
-    label, caption = _figure_label_caption(figure_el)
     block: dict = {"id": sec_ctx.next_id("table"), "type": "table", "rows": rows}
     if caption:
         block["caption"] = caption

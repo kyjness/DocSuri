@@ -1,6 +1,6 @@
 {
-  "fullTextLen": 38156,
-  "fullTextSha": "0fdebfd853ba9497",
+  "fullTextLen": 38325,
+  "fullTextSha": "9468f2d6ea5ac1ce",
   "sections": [
     {
       "blocks": [
@@ -424,6 +424,14 @@
           "type": "figure"
         },
         {
+          "anchorLabel": "Table 1 :",
+          "caption": "Major challenges facing clinical development of diagnostic a",
+          "cols": 0,
+          "id": "s23.tbl1",
+          "rows": 0,
+          "type": "table"
+        },
+        {
           "anchorLabel": "Figure 1 :",
           "assetRef": "assetId='2210.12090:v1:figure:1' type=<Type.figure: 'figure'> ordinal=1 caption='Figure 1: Overview of the AutoPrognosis 2.0 framework. AutoPrognosis takes either raw or curated medical datasets and provides an imputed dataset, a report detailing the optimized machine learning pipelines, a diagnostic or prognostic model, explanations, and a web-based interface for clinicians to interact with and use the derived model.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
           "caption": "Figure 1: Overview of the AutoPrognosis 2.0 framework. AutoP",
@@ -434,7 +442,7 @@
           "anchorLabel": "Table 2 :",
           "caption": "List of algorithms currently included in AutoPrognosis 2.0, ",
           "cols": 6,
-          "id": "s23.tbl1",
+          "id": "s23.tbl2",
           "rows": 18,
           "type": "table"
         },
@@ -442,7 +450,7 @@
           "anchorLabel": "Table 3 :",
           "caption": "Diabetes risk prediction results. The risk scores automatica",
           "cols": 4,
-          "id": "s23.tbl2",
+          "id": "s23.tbl3",
           "rows": 11,
           "type": "table"
         },
@@ -457,7 +465,7 @@
           "anchorLabel": "Table 4 :",
           "caption": "Quantifying the value of ML.",
           "cols": 2,
-          "id": "s23.tbl3",
+          "id": "s23.tbl4",
           "rows": 8,
           "type": "table"
         },
@@ -472,7 +480,7 @@
           "anchorLabel": "Table 5 :",
           "caption": "Performance of diabetes risk scores for subgroups defined by",
           "cols": 5,
-          "id": "s23.tbl4",
+          "id": "s23.tbl5",
           "rows": 6,
           "type": "table"
         },
@@ -487,7 +495,7 @@
           "anchorLabel": "Table 6 :",
           "caption": "The most important features for AutoPrognosis measured by ri",
           "cols": 2,
-          "id": "s23.tbl5",
+          "id": "s23.tbl6",
           "rows": 15,
           "type": "table"
         },

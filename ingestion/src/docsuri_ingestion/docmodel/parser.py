@@ -356,10 +356,8 @@ def _paragraph_block(p: Tag, sec_ctx: _SectionCtx) -> dict | None:
 
 def _table_block(figure_el: Tag, sec_ctx: _SectionCtx) -> dict | None:
     table = figure_el.find("table", class_="ltx_tabular")
-    if table is None:
-        return None
     rows: list[dict] = []
-    for tr in table.find_all("tr"):
+    for tr in table.find_all("tr") if table is not None else ():
         # A stacked/rotated column header can itself be a NESTED <table> (LaTeXML renders a
         # two-line "Name / ↑" header as a mini table inside the header cell). find_all("tr")
         # descends into those and would pull their rows up as phantom single-cell main rows
@@ -382,9 +380,12 @@ def _table_block(figure_el: Tag, sec_ctx: _SectionCtx) -> dict | None:
                 cell_dict["rowspan"] = rowspan
             cells.append(cell_dict)
         rows.append({"cells": cells})
-    if not rows:
-        return None
+    # Empty rows are kept, not dropped — same contract as the TEI path: a table body this parser
+    # cannot model must not take the caption down with it (BR-S3 preserves captions). Only a
+    # table with neither rows nor a caption carries nothing and is still discarded.
     label, caption = _caption(figure_el)
+    if not rows and not caption:
+        return None
     block: dict = {"id": sec_ctx.next_id("table"), "type": "table", "rows": rows}
     if caption:
         block["caption"] = caption

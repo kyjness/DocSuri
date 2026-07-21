@@ -28,7 +28,13 @@ from __future__ import annotations
 # as literal source. Formula alttext: the ``\Colorbox``/``\lstinline``/``\lst@…`` listings machinery
 # and residual ``{ltx_lst_*}`` class tags are stripped so the boxed identifiers render rather than
 # collapsing the whole formula. Both change stored output, so affected caches must rebuild.
-DOCMODEL_PARSER_VERSION = "docmodel-parser@7"
+# @8: a table whose rows could not be reconstructed keeps its caption instead of being dropped
+# whole (GROBID emits a bare <table/> when cell reconstruction fails; LaTeXML can emit a table
+# figure with no tabular body). That adds a block, so later tables shift ordinal and their
+# page-crop asset ids shift with them. The same rebuild also re-renders figure page-crops, which
+# now recover the vector graphic GROBID reports no <graphic> for — cached doc-models otherwise
+# keep both the missing caption and the caption-only figure images.
+DOCMODEL_PARSER_VERSION = "docmodel-parser@8"
 # 1.1.0: additive optional meta.macros (consumers ignore if unset).
 DOCMODEL_SCHEMA_VERSION = "1.1.0"
 
