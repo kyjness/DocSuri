@@ -1,17 +1,31 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, SecretStr, ValidationError
+from pydantic import BaseModel, Field
+
+# Field-name markers for values that must never be logged verbatim: connection targets (which
+# disclose private infrastructure) and credentials/contacts. Matched as substrings against the
+# field name, so a new setting is covered by naming it conventionally.
+_SENSITIVE_SETTING_MARKERS = (
+    "dsn",
+    "url",
+    "endpoint",
+    "key",
+    "secret",
+    "password",
+    "token",
+    "mailto",
+)
 
 
-class SecretSetting(BaseModel):
-    value: SecretStr
-
-    def __repr__(self) -> str:
-        return "SecretSetting(value=**********)"
+def _parse_window_bound(raw: str | None, default: datetime) -> datetime:
+    if not raw:
+        return default
+    parsed = datetime.fromisoformat(raw)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 class IngestionSettings(BaseModel):
@@ -67,6 +81,10 @@ class IngestionSettings(BaseModel):
     raw_cache_prefix: str = Field(default="raw", alias="DOCSURI_RAW_CACHE_PREFIX")
     # arXiv requester-pays bulk PDF bucket + optional YYMM month shards (csv, e.g. "2501,2502").
     arxiv_bulk_bucket: str = Field(default="arxiv", alias="DOCSURI_ARXIV_BULK_BUCKET")
+    # Run-scoped harvest window override (ISO dates). Lets a one-off backfill narrow the slice
+    # without redefining the corpus — config.CORPUS_START/END stay canonical.
+    backfill_start: str | None = Field(default=None, alias="DOCSURI_BACKFILL_START")
+    backfill_end: str | None = Field(default=None, alias="DOCSURI_BACKFILL_END")
     raw_backfill_months: str | None = Field(default=None, alias="DOCSURI_RAW_BACKFILL_MONTHS")
     control_plane_dsn: str | None = Field(default=None, alias="DOCSURI_CONTROL_PLANE_DSN")
     sqs_queue_url: str | None = Field(default=None, alias="DOCSURI_SQS_QUEUE_URL")
@@ -148,19 +166,42 @@ class IngestionSettings(BaseModel):
         if missing:
             raise RuntimeError(f"missing required production settings: {', '.join(missing)}")
 
+    def backfill_window(
+        self, default_start: datetime, default_end: datetime
+    ) -> tuple[datetime, datetime]:
+        """The harvest window for a one-off backfill: the ISO overrides when set, else the
+        canonical corpus bounds. Naive dates are read as UTC."""
+        return (
+            _parse_window_bound(self.backfill_start, default_start),
+            _parse_window_bound(self.backfill_end, default_end),
+        )
+
+    @property
+    def parsed_corpus_sources(self) -> tuple[str, ...]:
+        """DOCSURI_CORPUS_SOURCES split into stripped, non-empty names — the one place the CSV
+        is interpreted, so the runtime wiring and the corpus-build guard cannot read it
+        differently."""
+        return tuple(part.strip() for part in self.corpus_sources.split(",") if part.strip())
+
     def safe_log_dict(self) -> dict[str, object]:
+        """Settings dump safe to log: every credential and connection target is replaced by a
+        presence marker, so the dump answers "is it configured" without disclosing the value.
+
+        Deliberately broader than ``observability.sanitize_log_entry``: a settings dump has no
+        debugging value in the literal endpoint or key, whereas a log entry's URLs and ids are
+        the signal, so the two use different policies rather than one shared rule.
+        """
         data = self.model_dump(by_alias=False)
         for key in list(data):
-            if "dsn" in key.lower() or "url" in key.lower() or "endpoint" in key.lower():
-                if data[key]:
-                    data[key] = "***configured***"
+            if any(marker in key.lower() for marker in _SENSITIVE_SETTING_MARKERS) and data[key]:
+                data[key] = "***configured***"
         return data
 
 
 def validate_corpus_build_settings(settings: IngestionSettings) -> None:
     if settings.env == "local":
         return
-    sources = {part.strip() for part in settings.corpus_sources.split(",") if part.strip()}
+    sources = set(settings.parsed_corpus_sources)
     errors: list[str] = []
     if not settings.multimodal_assets_enabled:
         errors.append("DOCSURI_MULTIMODAL_ASSETS_ENABLED must be true before corpus build")
@@ -175,9 +216,3 @@ def validate_corpus_build_settings(settings: IngestionSettings) -> None:
         errors.append("DOCSURI_GROBID_URL is required for Semantic Scholar/OpenAlex corpus build")
     if errors:
         raise RuntimeError("; ".join(errors))
-
-
-@dataclass(frozen=True, slots=True)
-class SettingsLoadResult:
-    settings: IngestionSettings | None
-    error: ValidationError | RuntimeError | None

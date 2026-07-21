@@ -267,7 +267,6 @@ class AssetExtractor:
 
         out: list[RawAssetCandidate] = []
         try:
-            budget = _MAX_EPRINT_IMAGE_TOTAL
             with tarfile.open(fileobj=io.BytesIO(eprint), mode="r:*") as tar:
                 files = [m for m in tar.getmembers() if m.isfile()]
                 budget = _MAX_EPRINT_IMAGE_TOTAL  # per-tarball decode budget (TD-15)
@@ -349,6 +348,7 @@ class AssetExtractor:
         hits: list[_CropHit] = []
         try:
             pdfium_doc = pdfium.PdfDocument(pdf)
+            bitmaps = _PageBitmapCache()
             with pdfplumber.open(io.BytesIO(pdf)) as plumber:
                 for page_no, page in enumerate(plumber.pages):
                     captions = _page_captions(page.extract_text_lines() or [])
@@ -367,7 +367,9 @@ class AssetExtractor:
                         bbox = _caption_bbox(page, prims, words)
                         if bbox is None:
                             continue  # no graphic assigned → caption was a body cross-reference
-                        image = _render_bbox_to_png(pdfium_doc, page_no, bbox, plumber_page=page)
+                        image = _render_bbox_to_png(
+                            pdfium_doc, page_no, bbox, plumber_page=page, bitmap_cache=bitmaps
+                        )
                         image = self._normalizer.normalize(image) if image else None
                         if image is None:
                             continue
@@ -524,8 +526,166 @@ def _caption_bbox(page, prims: dict[str, list], words: Sequence[dict]):
     )
 
 
+class _PageBitmapCache:
+    """The most recently rendered page, held as a single entry.
+
+    Rendering a page at 2x costs tens of milliseconds and roughly 6 MB, and a page carrying five
+    figures used to be rendered five times — once per crop. Both crop callers walk their specs in
+    page order (the caption path iterates pages directly, the spec path receives them sorted by
+    page), so one entry removes the repeats without letting a long paper pin every page in memory.
+    """
+
+    def __init__(self) -> None:
+        self._page_no: int | None = None
+        self._pil = None
+        self._bitmap = None  # keeps the buffer the PIL image may be a view of — see page_image
+
+    def page_image(self, pdfium_doc, page_no: int):
+        if self._page_no != page_no or self._pil is None:
+            bitmap = pdfium_doc[page_no].render(scale=2.0)
+            # Hold the PdfBitmap for as long as the image: pypdfium2's to_pil() returns a view
+            # over the bitmap buffer for RGBA/RGBX/L modes and deliberately attaches no keep-alive
+            # finalizer, so dropping it would leave the cached image reading freed memory. Today's
+            # render yields RGB, which copies — but the cache outlives the call that made it, and
+            # that safety must not depend on a render flag nobody links back to here.
+            self._pil = bitmap.to_pil()
+            self._bitmap = bitmap
+            self._page_no = page_no
+        return self._pil
+
+
+class _PageGraphicCache:
+    """Bounding boxes of the graphic objects on the most recently inspected page.
+
+    Same single-entry shape as ``_PageBitmapCache`` and for the same reason: specs arrive in page
+    order, and a page can carry over a hundred objects that would otherwise be walked once per
+    spec. Boxes are converted to the top-left origin the specs use, so callers never meet pdfium's
+    bottom-up coordinates.
+    """
+
+    def __init__(self) -> None:
+        self._page_no: int | None = None
+        self._boxes: tuple[tuple[float, float, float, float], ...] = ()
+
+    def boxes(self, pdfium_doc, page_no: int) -> tuple[tuple[float, float, float, float], ...]:
+        if self._page_no != page_no:
+            self._boxes = _graphic_boxes(pdfium_doc, page_no)
+            self._page_no = page_no
+        return self._boxes
+
+
+def _graphic_boxes(pdfium_doc, page_no: int) -> tuple[tuple[float, float, float, float], ...]:
+    """Top-left-origin boxes of the picture-bearing objects on a page.
+
+    IMAGE covers raster figures; FORM covers the vector figures a plotting library emits as an
+    XObject — the ones GROBID never reports, since it looks for embedded images. Bare PATH objects
+    are deliberately excluded: page rules, table borders and underlines are all paths, so treating
+    them as figures would make almost every page look like it had a graphic on it.
+    """
+    try:
+        from pypdfium2 import raw
+    except ImportError:  # pragma: no cover - assets extra not installed
+        return ()
+    try:
+        page = pdfium_doc[page_no]
+        page_height = page.get_size()[1]
+        boxes = []
+        for obj in page.get_objects(max_depth=1):
+            if obj.type not in (raw.FPDF_PAGEOBJ_IMAGE, raw.FPDF_PAGEOBJ_FORM):
+                continue
+            x0, y0, x1, y1 = obj.get_pos()
+            # pdfium measures y upward from the page bottom; specs measure it downward from the
+            # top. Flipping BOTH edges swaps their roles, hence y1 -> top and y0 -> bottom.
+            boxes.append((x0, page_height - y1, x1, page_height - y0))
+        return tuple(boxes)
+    except Exception:  # noqa: BLE001 - a page we cannot inspect simply offers no recovery
+        return ()
+
+
+# A figure caption sits directly beneath its graphic. Allowing an unbounded gap would let a crop
+# reach up the page and swallow an unrelated figure, so the search stops half an inch above the
+# caption — measured gaps on the fixture papers are 3.0, -2.2 and 15.1pt.
+_CAPTION_GRAPHIC_GAP_PT = 36.0
+
+# Not every vector object is a picture. A QED tombstone is four 0.5pt-thick FORM XObjects, and
+# rules and underlines are similarly thin; latching onto one drags unrelated text into the crop.
+# Real figure graphics on the fixture papers run 157-291pt per side (>= 25,000pt² of area), so a
+# floor of roughly a 32pt square separates them by orders of magnitude rather than by a hair.
+_MIN_GRAPHIC_AREA_PT2 = 1000.0
+
+
+# A crop smaller than this holds a glyph fragment, not content. GROBID occasionally emits a
+# formula element for a stray delimiter — a lone ")" 4.4pt wide — and rendering it stores an image
+# of one bracket that a reader is then shown in place of the equation. Across the TEI fixtures the
+# offenders measure 35-42pt² while the smallest genuine crop is over 600pt², so this separates them
+# by an order of magnitude rather than by a hair.
+_MIN_CROP_AREA_PT2 = 200.0
+
+
+def crop_is_renderable(bbox: tuple[float, float, float, float]) -> bool:
+    """Whether a crop region is big enough to carry anything — see ``_MIN_CROP_AREA_PT2``."""
+    x0, y0, x1, y1 = bbox
+    return (x1 - x0) * (y1 - y0) >= _MIN_CROP_AREA_PT2
+
+
+def crop_bbox_for(
+    spec: AssetCropSpec, graphics: Sequence[tuple[float, float, float, float]]
+) -> tuple[float, float, float, float]:
+    """The region to render for ``spec``, widened when a figure's graphic went unreported.
+
+    Figures only. A table's coordinates are its body and a formula's are the formula, so neither
+    has anything to recover and widening either would pull in surrounding page content.
+    """
+    if spec.type is not AssetType.FIGURE:
+        return spec.bbox
+    return _recover_figure_bbox(graphics, spec.bbox) or spec.bbox
+
+
+def _recover_figure_bbox(
+    graphics: Sequence[tuple[float, float, float, float]],
+    bbox: tuple[float, float, float, float],
+) -> tuple[float, float, float, float] | None:
+    """Widen a caption-only figure bbox to include the graphic sitting above it, or None.
+
+    GROBID emits a ``<graphic>`` for raster figures only, so a vector figure's coordinates cover
+    just the caption's text lines and the crop shows a sentence where the figure should be. The
+    picture is still in the PDF as a page object; this finds it.
+
+    Returns None whenever the answer is not clear-cut, which keeps the existing crop:
+    a bbox already overlapping a graphic is GROBID's own (correct) figure region, and a page with
+    no graphic object above the caption offers nothing to recover — a text block mislabelled as a
+    figure lands here and is left exactly as it was.
+    """
+    x0, y0, x1, y1 = bbox
+    # Decorative vector objects are not pictures — see _MIN_GRAPHIC_AREA_PT2. Filtering here rather
+    # than in _graphic_boxes keeps that helper an honest report of what is on the page.
+    graphics = [g for g in graphics if (g[2] - g[0]) * (g[3] - g[1]) >= _MIN_GRAPHIC_AREA_PT2]
+    # "Already covers a graphic" has to mean most of one, not a hairline touch: a caption's first
+    # line routinely tucks a point or two under the plot above it, and treating that as coverage
+    # would leave exactly the figures this exists to recover uncorrected.
+    for g in graphics:
+        overlap = max(0.0, min(x1, g[2]) - max(x0, g[0])) * max(0.0, min(y1, g[3]) - max(y0, g[1]))
+        area = (g[2] - g[0]) * (g[3] - g[1])
+        if area > 0 and overlap / area >= 0.5:
+            return None  # GROBID's own figure region — nothing was missed
+    above = [
+        g
+        for g in graphics
+        # Horizontally overlapping, bottom above the caption's bottom, and close enough that the
+        # caption plausibly belongs to it. The gap may be slightly negative (a caption whose first
+        # line tucks under the graphic's box), which the upper bound alone still admits.
+        if g[0] < x1 and g[2] > x0 and g[3] < y1 and (y0 - g[3]) <= _CAPTION_GRAPHIC_GAP_PT
+    ]
+    if not above:
+        return None
+    # Nearest one only. Unioning every candidate would merge stacked subfigures into one crop that
+    # also swept up whatever text sat between them.
+    nearest = max(above, key=lambda g: g[3])
+    return (min(x0, nearest[0]), min(y0, nearest[1]), max(x1, nearest[2]), max(y1, nearest[3]))
+
+
 def _render_bbox_to_png(
-    pdfium_doc, page_no: int, bbox, *, plumber_page=None
+    pdfium_doc, page_no: int, bbox, *, plumber_page=None, bitmap_cache=None
 ) -> bytes | None:
     """Render the bbox region of a page to PNG bytes via pypdfium2 (points-space bbox -> pixels).
 
@@ -534,13 +694,15 @@ def _render_bbox_to_png(
     the only thing that differs between the two callers. The bbox is clamped to the rendered
     bitmap so an over-range coordinate can't yield an empty/oversized crop."""
     try:
-        page = pdfium_doc[page_no]
-        bitmap = page.render(scale=2.0)
-        pil = bitmap.to_pil()
+        cache = bitmap_cache if bitmap_cache is not None else _PageBitmapCache()
+        # crop() copies, so successive crops of one cached page cannot disturb each other.
+        pil = cache.page_image(pdfium_doc, page_no)
         if plumber_page is not None:
             width_pt, height_pt = plumber_page.width, plumber_page.height
         else:
-            width_pt, height_pt = page.get_size()
+            # Load the page only on the branch that needs it: the caption path supplies its own
+            # page size, and loading it there was one FPDF_LoadPage per crop for nothing.
+            width_pt, height_pt = pdfium_doc[page_no].get_size()
         scale_x = pil.width / float(width_pt)
         scale_y = pil.height / float(height_pt)
         box = (
@@ -585,11 +747,16 @@ def crop_assets_from_specs(
     try:
         doc = pdfium.PdfDocument(pdf)
         page_count = len(doc)
+        bitmaps = _PageBitmapCache()
+        graphics = _PageGraphicCache()
         for spec in specs:
             page_idx = spec.page - 1  # GROBID coords are 1-based
             if page_idx < 0 or page_idx >= page_count:
                 continue
-            raw = _render_bbox_to_png(doc, page_idx, spec.bbox)
+            bbox = crop_bbox_for(spec, graphics.boxes(doc, page_idx))
+            if not crop_is_renderable(bbox):
+                continue
+            raw = _render_bbox_to_png(doc, page_idx, bbox, bitmap_cache=bitmaps)
             image = normalizer.normalize(raw) if raw else None
             if image is None:
                 continue
@@ -602,7 +769,7 @@ def crop_assets_from_specs(
                 source_mode=AssetSourceMode.PAGE_CROP,
                 caption=spec.caption,
                 page_ref=spec.page,
-                bbox=spec.bbox,
+                bbox=bbox,  # the rendered region, which recovery may have widened
             )
             out.append(ExtractedAsset(meta=meta, image=image))
     except Exception:  # noqa: BLE001 - best-effort; skip assets for this paper

@@ -5,11 +5,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 
-from .adapters.grobid import _tei_to_text
+from .docmodel.tei import tei_to_text
+from .domain.canonical import ARXIV_HTML_TIER, arxiv_tier_label, grobid_tier_label
 from .domain.enums import FailureReason, SourceName
 from .domain.errors import PermanentIngestionError
 from .domain.models import MetadataRecord
-from .ports import ArxivSourcePort
+from .ports import ArxivSourcePort, GrobidPort
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,11 +101,6 @@ class CorpusTextCandidate:
 
 
 @runtime_checkable
-class GrobidPort(Protocol):
-    def extract_tei(self, pdf: bytes) -> str: ...
-
-
-@runtime_checkable
 class ExternalCorpusSourcePort(Protocol):
     def fetch_incremental(
         self,
@@ -142,12 +138,12 @@ class CorpusSourceAdapterSet:
 
     def fetch_arxiv_text(self, metadata: MetadataRecord) -> CorpusTextCandidate:
         raw = self._arxiv.fetch_full_text(metadata)
-        tier = "ARXIV_PDF" if "/pdf/" in raw.source_url else "ARXIV_HTML"
+        tier = arxiv_tier_label(raw.source_tier)
         return CorpusTextCandidate(
             source_name=SourceName.ARXIV,
             source_id=metadata.arxiv_ref,
             source_tier=tier,
-            payload_kind="HTML" if tier == "ARXIV_HTML" else "PDF",
+            payload_kind="HTML" if tier == ARXIV_HTML_TIER else "PDF",
             text=raw.text,
             source_url=raw.source_url,
         )
@@ -193,7 +189,7 @@ class CorpusSourceAdapterSet:
         # One GROBID call yields the structured TEI; the flat text projection is derived from it
         # (the doc-model parser consumes the TEI, withdrawal/scan paths consume the text).
         tei = self._grobid.extract_tei(pdf)
-        text = _tei_to_text(tei).strip()
+        text = tei_to_text(tei).strip()
         if not text:
             raise PermanentIngestionError(
                 "GROBID returned empty text",
@@ -203,7 +199,7 @@ class CorpusSourceAdapterSet:
         return CorpusTextCandidate(
             source_name=record.source_name,
             source_id=record.source_id,
-            source_tier=f"{record.source_name.value}_GROBID",
+            source_tier=grobid_tier_label(record.source_name),
             payload_kind="PDF",
             text=text,
             source_url=record.pdf_url or "",

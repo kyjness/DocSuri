@@ -3,19 +3,23 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import UTC, datetime
-from typing import Protocol
+from datetime import datetime
 from uuid import uuid4
 
 from docsuri_shared.dtos import DocModel, DocModelResultDTO, SourceTier, SourceUnavailableDTO
 
 from .asset_extraction import AssetExtractor, crop_assets_from_specs
-from .config import CORPUS_SLICE_CATEGORIES, WITHDRAWAL_MARKERS
+from .config import CORPUS_SLICE_CATEGORIES
 from .corpus_sources import CorpusSourceAdapterSet, CorpusTextCandidate, SourcePaperRecord
 from .docmodel import DocModelBuilder
 from .docmodel.tei import tei_crop_specs
 from .domain.assets import AssetCropSpec, FigureSpec
-from .domain.canonical import canonical_key, source_priority_from_tier
+from .domain.canonical import (
+    arxiv_tier_label,
+    canonical_key,
+    source_priority,
+    source_priority_from_tier,
+)
 from .domain.enums import DedupDecision, FailureClass, FailureReason, JobKind, SourceName
 from .domain.errors import IngestionError, PermanentIngestionError
 from .domain.models import (
@@ -35,8 +39,10 @@ from .ports import (
     ControlPlaneStorePort,
     EmbeddingPort,
     FullTextStorePort,
+    GrobidPort,
     ObservabilityPort,
     QueuePort,
+    SystemClock,
     UserDocumentSourcePort,
     VectorIndexPort,
     dedup_decision_applies_to_index,
@@ -47,18 +53,10 @@ from .processors import (
     FetchParseProcessor,
     IndexRecordAssembler,
     assert_writer_embedding_role,
+    detect_withdrawal_text,
     normalize_text,
 )
 from .resilience import IngestFailureHandler, IngestionResilienceService
-
-
-class SystemClock:
-    def now(self) -> datetime:
-        return datetime.now(UTC)
-
-
-class _GrobidTeiClient(Protocol):
-    def extract_tei(self, pdf: bytes) -> str: ...
 
 
 class IngestionPipelineService:
@@ -81,7 +79,7 @@ class IngestionPipelineService:
         asset_store: AssetStorePort | None = None,
         asset_source: AssetSourcePort | None = None,
         user_document_source: UserDocumentSourcePort | None = None,
-        grobid: _GrobidTeiClient | None = None,
+        grobid: GrobidPort | None = None,
         doc_model_builder: DocModelBuilder | None = None,
         corpus_sources: CorpusSourceAdapterSet | None = None,
     ) -> None:
@@ -342,7 +340,7 @@ class IngestionPipelineService:
             self._record_canonical_winner(
                 keys,
                 paper,
-                "ARXIV_PDF" if "/pdf/" in raw_document.source_url else "ARXIV_HTML",
+                arxiv_tier_label(raw_document.source_tier),
                 SourceName.ARXIV,
                 existing,
             )
@@ -524,7 +522,7 @@ class IngestionPipelineService:
             arxiv_url=record.html_url or record.pdf_url or source_url,
             full_text=normalized_text,
             license_url=record.license_url or "",
-            withdrawal_detected=detect_withdrawal_proxy(record.title, abstract, normalized_text),
+            withdrawal_detected=detect_withdrawal_text(record.title, abstract, normalized_text),
             doi=record.doi or "",
             source_arxiv_id=record.arxiv_id or "",
             source_name=record.source_name,
@@ -533,9 +531,6 @@ class IngestionPipelineService:
             source_url=source_url,
             display_arxiv_id=record.arxiv_id or "",
         )
-
-    def _canonical_key_for_record(self, record: SourcePaperRecord, year: int) -> str:
-        return self._canonical_keys_for_record(record, year)[0]
 
     def _canonical_keys_for_metadata(self, metadata, year: int) -> tuple[str, ...]:
         first_author = metadata.authors[0] if metadata.authors else None
@@ -592,7 +587,7 @@ class IngestionPipelineService:
         ]
         if not states:
             return None
-        return min(states, key=lambda state: _source_priority_from_tier(state.winning_source_tier))
+        return min(states, key=lambda state: source_priority_from_tier(state.winning_source_tier))
 
     def _record_canonical_duplicate(
         self,
@@ -720,15 +715,7 @@ class IngestionPipelineService:
                 "ingestion.assets.stored", float(len(extracted)), {"paperId": paper.paper_id}
             )
         except Exception as exc:  # noqa: BLE001 - best-effort: never block indexing (BR-27)
-            self._observability.emit_log(
-                {
-                    "type": "asset_pipeline_failure",
-                    "reason": reason.value,
-                    "paperId": paper.paper_id,
-                    "error": str(exc),
-                }
-            )
-            self._observability.emit_metric("ingestion.assets.failed", 1.0, {})
+            self._report_asset_failure(paper.paper_id, reason, exc)
 
     def _store_record_assets_best_effort(
         self,
@@ -774,15 +761,22 @@ class IngestionPipelineService:
                 "ingestion.assets.stored", float(len(extracted)), {"paperId": paper.paper_id}
             )
         except Exception as exc:  # noqa: BLE001 - best-effort: never block indexing (BR-27)
-            self._observability.emit_log(
-                {
-                    "type": "asset_pipeline_failure",
-                    "reason": reason.value,
-                    "paperId": paper.paper_id,
-                    "error": str(exc),
-                }
-            )
-            self._observability.emit_metric("ingestion.assets.failed", 1.0, {})
+            self._report_asset_failure(paper.paper_id, reason, exc)
+
+    def _report_asset_failure(
+        self, paper_id: str, reason: FailureReason, exc: Exception
+    ) -> None:
+        """Log + count an asset pipeline failure. The asset path is best-effort (BR-27), so this
+        is the whole handling — the caller swallows the exception and indexing continues."""
+        self._observability.emit_log(
+            {
+                "type": "asset_pipeline_failure",
+                "reason": reason.value,
+                "paperId": paper_id,
+                "error": str(exc),
+            }
+        )
+        self._observability.emit_metric("ingestion.assets.failed", 1.0, {})
 
     def _remove_assets_best_effort(self, paper_id: str) -> None:
         if self._asset_store is None:
@@ -937,9 +931,18 @@ class RefreshOrchestrationService:
             # rate-limited to abort) must not drop the others — log + skip and carry on, mirroring
             # on_schedule_tick. Each source's paged fetch already retries transient blips, so this
             # only catches a sustained/permanent failure of that whole source.
+            # Count through a tally rather than the return value: the source's paged fetch is a
+            # generator, so a page failure aborts mid-iteration and `return queued` never runs.
+            # The jobs enqueued before that point are real and already in the queue — reporting 0
+            # for them makes a partially-successful backfill look like a no-op and invites a re-run.
+            tally = [0]
             try:
-                queued += self._queue_external_source(
-                    source_name, since=since, until=until, kind=JobKind.SEED_REBUILD
+                self._queue_external_source(
+                    source_name,
+                    since=since,
+                    until=until,
+                    kind=JobKind.SEED_REBUILD,
+                    tally=tally,
                 )
             except Exception as exc:  # noqa: BLE001 — defensive boundary around one source
                 self._observability.emit_metric(
@@ -947,6 +950,8 @@ class RefreshOrchestrationService:
                     1.0,
                     {"source": source_name.value, "error": type(exc).__name__},
                 )
+            finally:
+                queued += tally[0]
         self._observability.emit_metric("ingestion.backfill.external.queued", float(queued), {})
         return queued
 
@@ -1007,7 +1012,13 @@ class RefreshOrchestrationService:
         since: datetime,
         kind: JobKind,
         until: datetime | None = None,
+        tally: list[int] | None = None,
     ) -> int:
+        """Enqueue a source-record job per in-window record; return how many were queued.
+
+        ``tally`` mirrors the count as it goes, for callers that must still see the partial
+        progress when the source's generator raises part-way through and the return never happens.
+        """
         if self._corpus_sources is None or not self._corpus_sources.is_configured(source_name):
             self._observability.emit_metric(
                 "ingestion.source.unconfigured",
@@ -1039,6 +1050,8 @@ class RefreshOrchestrationService:
                 )
             )
             queued += 1
+            if tally is not None:
+                tally[0] = queued
         return queued
 
     def on_new_arxiv_event(self, event) -> bool:
@@ -1081,22 +1094,8 @@ def _append_source(seen_sources: tuple, source_name) -> tuple:
 
 
 def _source_can_replace(winning_source_tier: str, candidate: SourceName) -> bool:
-    return _source_priority(candidate) < _source_priority_from_tier(winning_source_tier)
+    # source_priority_from_tier is the single source of truth shared with the
+    # control-plane guarded upsert (domain.canonical).
+    return source_priority(candidate) < source_priority_from_tier(winning_source_tier)
 
 
-def _source_priority(source_name: SourceName) -> int:
-    return {
-        SourceName.ARXIV: 0,
-        SourceName.SEMANTIC_SCHOLAR: 1,
-        SourceName.OPENALEX: 2,
-    }[source_name]
-
-
-def _source_priority_from_tier(source_tier: str) -> int:
-    # Single source of truth shared with the control-plane guarded upsert (domain.canonical).
-    return source_priority_from_tier(source_tier)
-
-
-def detect_withdrawal_proxy(title: str, abstract: str, text: str) -> bool:
-    haystack = f"{title} {abstract} {text}".lower()
-    return any(marker in haystack for marker in WITHDRAWAL_MARKERS)

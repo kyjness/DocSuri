@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import time
 import xml.etree.ElementTree as ET
 from collections.abc import Iterable, Sequence
 from dataclasses import replace
@@ -18,7 +17,7 @@ from docsuri_ingestion.full_text_extraction import (
     pdf_to_text,
 )
 from docsuri_ingestion.ports import RawContentStorePort
-from docsuri_ingestion.resilience import RetryPolicy, TokenBucket
+from docsuri_ingestion.resilience import RetryPolicy, TokenBucket, retry_with_policy
 from docsuri_ingestion.xmlsafe import safe_fromstring
 
 _log = logging.getLogger("docsuri.ingestion.arxiv")
@@ -88,6 +87,12 @@ class ArxivHttpSource:
         # B3 raw-content cache. Default off → fetch_full_text hits arXiv exactly as before.
         self._raw_store = raw_store
         self._raw_cache_mode = raw_cache_mode
+        # Single-entry HTML memo, keyed (base, arxiv_id) — mirrors the asset source's e-print
+        # memo. Ingesting one paper asks for its HTML twice: fetch_full_text takes the plain-text
+        # rung and discards the markup, then the doc-model builder asks for the ar5iv source. At
+        # 1 request per 3s that second GET doubled the wall-clock cost of every fresh paper.
+        # A miss is memoized too, so a paper with no ar5iv build is not re-requested.
+        self._html_memo: tuple[tuple[str, str], str | None] | None = None
 
     def harvest_seed(self, category_filter: CategoryFilter) -> Iterable[MetadataRecord]:
         for category in category_filter.categories:
@@ -226,7 +231,13 @@ class ArxivHttpSource:
             for tier in (SourceTier.ar5iv, SourceTier.native_html):
                 cached = store.get_raw(pid, ver, tier.value)
                 if cached:
-                    return cached.decode("utf-8"), f"cache://{tier.value}", tier
+                    text = cached.decode("utf-8")
+                    # Prime the memo so the doc-model rung reads the cached bytes too; it calls
+                    # _get_html_at directly and would otherwise go to the network in cache mode.
+                    base = self._base_for_tier(tier)
+                    if base is not None:
+                        self._html_memo = ((base, metadata.identifier.arxiv_id), text)
+                    return text, f"cache://{tier.value}", tier
             if mode == "only":
                 return None, "", SourceTier.native_html
         html, url = self._try_get_html(metadata.identifier.arxiv_id)
@@ -292,7 +303,23 @@ class ArxivHttpSource:
         return None, last_url
 
     def _get_html_at(self, base: str, arxiv_id: str) -> str | None:
-        """GET one HTML base; ``None`` on any non-200, non-HTML, or transport error."""
+        """One HTML base, memoized; ``None`` on any non-200, non-HTML, or transport error."""
+        key = (base, arxiv_id)
+        # Load the slot ONCE. Reading self._html_memo three times (None-check, key, value) lets a
+        # concurrent writer swap papers between the key check and the value read, which would
+        # return another paper's HTML under this id — silently indexing the wrong body. One load
+        # of the immutable tuple is atomic, so the key and the value always belong together.
+        memo = self._html_memo
+        if memo is not None and memo[0] == key:
+            return memo[1]
+        html = self._fetch_html_at(base, arxiv_id)
+        self._html_memo = (key, html)
+        return html
+
+    def _base_for_tier(self, tier: SourceTier) -> str | None:
+        return next((base for base, t in self._html_source_tiers if t is tier), None)
+
+    def _fetch_html_at(self, base: str, arxiv_id: str) -> str | None:
         import httpx
 
         url = f"{base}/{arxiv_id}"
@@ -324,9 +351,13 @@ class ArxivHttpSource:
             "until": category_filter.updated_before.date().isoformat(),
         }
         while True:
-            body = self._fetch_oai_page(params)
-            yield from parse_oai_records(body)
-            token = parse_oai_resumption_token(body)
+            # Parse the page once and read both records and the resumption token off the same
+            # tree — this ran the XML parser twice per page over a multi-hour harvest.
+            root = _parse_xml(
+                self._fetch_oai_page(params), stage="parse_oai_records", label="OAI records"
+            )
+            yield from _oai_records_from(root)
+            token = _oai_token_from(root)
             if not token:
                 return
             params = {"verb": "ListRecords", "resumptionToken": token}
@@ -339,16 +370,14 @@ class ArxivHttpSource:
         (the timeout-mid-pagination crash). Retry transient blips in-place; if they persist past
         the policy, abort loudly — a re-run resumes via idempotent upserts rather than silently
         dropping a page of papers."""
-        policy = self._oai_retry_policy
-        for attempt in range(1, policy.max_attempts + 1):
-            try:
-                return self._get_text(self._oai_base_url, params=params, stage="harvest_seed")
-            except RetriableIngestionError:
-                if attempt >= policy.max_attempts:
-                    raise
-                _log.warning("harvest page fetch failed (attempt %d), retrying", attempt)
-                time.sleep(policy.delay_for_attempt(attempt))
-        raise AssertionError("unreachable")  # pragma: no cover
+        return retry_with_policy(
+            self._oai_retry_policy,
+            lambda: self._get_text(self._oai_base_url, params=params, stage="harvest_seed"),
+            retriable=lambda exc: isinstance(exc, RetriableIngestionError),
+            on_retry=lambda attempt, _exc: _log.warning(
+                "harvest page fetch failed (attempt %d), retrying", attempt
+            ),
+        )
 
     def _get_text(self, url: str, *, params: dict[str, str] | None, stage: str) -> str:
         return self._get_bytes(url, params=params, stage=stage).decode("utf-8", errors="replace")
@@ -356,64 +385,46 @@ class ArxivHttpSource:
     def _get_bytes(self, url: str, *, params: dict[str, str] | None, stage: str) -> bytes:
         import httpx
 
-        from docsuri_ingestion.http_limits import ResponseTooLargeError, read_capped
+        from docsuri_ingestion.http_limits import (
+            http_failures_as_ingestion_errors,
+            raise_for_fetch_status,
+            read_capped,
+        )
 
         self._rate_limiter.acquire()
-        try:
+        with http_failures_as_ingestion_errors(
+            stage=stage,
+            timeout_message="arXiv request timed out",
+            failure_message="arXiv request failed",
+            rejected_message="arXiv response exceeded size cap",
+        ):
             with (
                 httpx.Client(timeout=self._timeout_seconds, follow_redirects=True) as client,
                 client.stream("GET", url, params=params) as response,
             ):
-                if response.status_code == 404:
-                    raise PermanentIngestionError(
-                        "arXiv resource not found",
-                        reason=FailureReason.FETCH_FAILURE,
-                        stage=stage,
-                    )
-                if response.status_code == 429 or response.status_code >= 500:
-                    raise RetriableIngestionError(
-                        f"arXiv returned retriable status {response.status_code}",
-                        reason=FailureReason.RATE_LIMITED
-                        if response.status_code == 429
-                        else FailureReason.FETCH_FAILURE,
-                        stage=stage,
-                    )
-                if response.status_code >= 400:
-                    raise PermanentIngestionError(
-                        f"arXiv returned permanent status {response.status_code}",
-                        reason=FailureReason.FETCH_FAILURE,
-                        stage=stage,
-                    )
+                raise_for_fetch_status(response.status_code, stage=stage, source_label="arXiv")
                 return read_capped(response)
-        except httpx.TimeoutException as exc:
-            raise RetriableIngestionError(
-                "arXiv request timed out",
-                reason=FailureReason.TIMEOUT,
-                stage=stage,
-            ) from exc
-        except httpx.HTTPError as exc:
-            raise RetriableIngestionError(
-                "arXiv request failed",
-                reason=FailureReason.FETCH_FAILURE,
-                stage=stage,
-            ) from exc
-        except ResponseTooLargeError as exc:
-            raise PermanentIngestionError(
-                "arXiv response exceeded size cap",
-                reason=FailureReason.FETCH_FAILURE,
-                stage=stage,
-            ) from exc
+
+
+def _parse_xml(body: str, *, stage: str, label: str) -> ET.Element:
+    """Parse an untrusted arXiv/OAI XML body into the failure taxonomy.
+
+    ``safe_fromstring`` forbids DTD/entity expansion (NFR §0.5); a malformed body is a permanent
+    parse failure, never a retry. The license-enrichment path deliberately does NOT use this — it
+    degrades to the unenriched record instead of raising.
+    """
+    try:
+        return safe_fromstring(body)
+    except ET.ParseError as e:
+        raise PermanentIngestionError(
+            f"Failed to parse XML {label}: {e}",
+            reason=FailureReason.PARSE_FAILURE,
+            stage=stage,
+        ) from e
 
 
 def parse_atom_feed(body: str) -> list[MetadataRecord]:
-    try:
-        root = safe_fromstring(body)
-    except ET.ParseError as e:
-        raise PermanentIngestionError(
-            f"Failed to parse XML Atom feed: {e}",
-            reason=FailureReason.PARSE_FAILURE,
-            stage="parse_atom_feed",
-        ) from e
+    root = _parse_xml(body, stage="parse_atom_feed", label="Atom feed")
     records: list[MetadataRecord] = []
     for entry in root.findall("atom:entry", ATOM_NS):
         arxiv_ref = _required_text(entry, "atom:id", ATOM_NS).rsplit("/", 1)[-1]
@@ -478,14 +489,10 @@ def _build_oai_record(metadata: ET.Element) -> MetadataRecord:
 
 
 def parse_oai_records(body: str) -> list[MetadataRecord]:
-    try:
-        root = safe_fromstring(body)
-    except ET.ParseError as e:
-        raise PermanentIngestionError(
-            f"Failed to parse XML OAI records: {e}",
-            reason=FailureReason.PARSE_FAILURE,
-            stage="parse_oai_records",
-        ) from e
+    return _oai_records_from(_parse_xml(body, stage="parse_oai_records", label="OAI records"))
+
+
+def _oai_records_from(root: ET.Element) -> list[MetadataRecord]:
     records: list[MetadataRecord] = []
     for metadata in root.findall(".//oai:metadata/arxiv:arXiv", OAI_NS):
         # A single malformed record must not abort the harvest: parse_oai_records runs inside
@@ -500,14 +507,12 @@ def parse_oai_records(body: str) -> list[MetadataRecord]:
 
 
 def parse_oai_resumption_token(body: str) -> str | None:
-    try:
-        root = safe_fromstring(body)
-    except ET.ParseError as e:
-        raise PermanentIngestionError(
-            f"Failed to parse XML OAI resumption token: {e}",
-            reason=FailureReason.PARSE_FAILURE,
-            stage="parse_oai_resumption_token",
-        ) from e
+    return _oai_token_from(
+        _parse_xml(body, stage="parse_oai_resumption_token", label="OAI resumption token")
+    )
+
+
+def _oai_token_from(root: ET.Element) -> str | None:
     token = root.findtext(".//oai:resumptionToken", default="", namespaces=OAI_NS).strip()
     return token or None
 

@@ -10,17 +10,27 @@ writer-role assert stays a spec-level concern only.
 
 NOT wired into ``runtime.build_production_pipeline``: the production worker path needs
 SQS + control-plane, which the local migration defers. The local reindex script constructs
-this port directly. Stdlib ``urllib`` only (no new dependency).
+this port directly.
+
+Faults are raised as the unit's failure taxonomy rather than as transport errors: neither
+``urllib.error.HTTPError`` nor a bare ``httpx`` exception is recognised by
+``resilience.is_retriable``, so a 429 from a long local reindex aborted the run instead of
+backing off. Going through the shared HTTP mappers makes rate limits and 5xx retriable and
+leaves genuine 4xx permanent.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import urllib.request
 from collections.abc import Sequence
 
 from docsuri_shared.vector_spec import DIMENSIONS
+
+from docsuri_ingestion.http_limits import (
+    http_failures_as_ingestion_errors,
+    raise_for_fetch_status,
+)
 
 _ENDPOINT = "https://api.openai.com/v1/embeddings"
 # Batch write runs in an offline script/worker — generous ceiling bounds a genuine hang
@@ -70,17 +80,35 @@ class OpenAIEmbeddingPort:
         body = json.dumps(
             {"model": self._model, "input": payload_texts, "dimensions": self._dimensions}
         ).encode("utf-8")
-        request = urllib.request.Request(  # noqa: S310 — fixed https endpoint, not user input
-            _ENDPOINT,
-            data=body,
-            headers={
-                "Authorization": f"Bearer {self._api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        with urllib.request.urlopen(request, timeout=_TIMEOUT_S) as response:  # noqa: S310
-            payload = json.loads(response.read().decode("utf-8"))
+        import httpx
+
+        with http_failures_as_ingestion_errors(
+            stage="embed",
+            timeout_message="OpenAI embeddings request timed out",
+            failure_message="OpenAI embeddings request failed",
+            # No rejected_message: this path runs no body guard. The endpoint is fixed and
+            # authenticated and the response size is bounded by the batch we just sent, so there
+            # is nothing for the NFR §0.5 size cap (which exists for untrusted hosts) to defend.
+        ):
+            # follow_redirects: urllib followed 3xx automatically and httpx does not. Without it a
+            # gateway or regional redirect in front of the API falls past raise_for_fetch_status
+            # (which only classifies >= 400) into response.json(), raising a JSONDecodeError that
+            # is_retriable does not recognise — aborting the run this rewrite exists to keep alive.
+            with httpx.Client(timeout=_TIMEOUT_S, follow_redirects=True) as client:
+                response = client.post(
+                    _ENDPOINT,
+                    content=body,
+                    headers={
+                        "Authorization": f"Bearer {self._api_key}",
+                        "Content-Type": "application/json",
+                    },
+                )
+                # 429 becomes RATE_LIMITED and 5xx FETCH_FAILURE, both retriable, so a paced
+                # reindex backs off instead of losing the run to one throttle.
+                raise_for_fetch_status(
+                    response.status_code, stage="embed", source_label="OpenAI embeddings"
+                )
+                payload = response.json()
         # The API documents index-ordered results; sort defensively so a reordered response
         # can never mis-align chunk_ids↔vectors (that corruption would be silent at query time).
         rows = sorted(payload["data"], key=lambda row: row["index"])

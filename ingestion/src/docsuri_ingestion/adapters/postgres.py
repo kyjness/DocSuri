@@ -7,7 +7,8 @@ from typing import Any
 
 from psycopg.types.json import Jsonb
 
-from docsuri_ingestion.domain.enums import DedupDecision, DedupStateKind, SourceName
+from docsuri_ingestion.domain.dedup import decide_dedup
+from docsuri_ingestion.domain.enums import DedupStateKind, SourceName
 from docsuri_ingestion.domain.models import (
     CanonicalDedupState,
     DedupResult,
@@ -15,6 +16,19 @@ from docsuri_ingestion.domain.models import (
     IngestionJob,
     Watermark,
 )
+
+
+def _canonical_state_from_row(row: Any) -> CanonicalDedupState:
+    """Map a canonical_dedup_state row to the domain model. Column order is fixed by the
+    SELECT list shared by the single-key and per-paper reads."""
+    return CanonicalDedupState(
+        canonical_key=row[0],
+        paper_id=row[1],
+        winning_source_tier=row[2],
+        winning_version=row[3],
+        fingerprint=row[4],
+        seen_sources=tuple(SourceName(v) for v in (row[5] or [])),
+    )
 
 
 def _tier_priority_sql(col: str) -> str:
@@ -124,18 +138,7 @@ class PostgresControlPlaneStore:
             ).fetchall()
 
     def evaluate_dedup(self, paper_id: str, version: int, fingerprint: str) -> DedupResult:
-        state = self._get_dedup_state(paper_id)
-        if state is None:
-            return DedupResult(DedupDecision.NEW)
-        if version < state.current_version:
-            return DedupResult(DedupDecision.STALE, state)
-        if (
-            version == state.current_version
-            and state.fingerprint == fingerprint
-            and state.state is DedupStateKind.INDEXED
-        ):
-            return DedupResult(DedupDecision.DUPLICATE, state)
-        return DedupResult(DedupDecision.CHANGED, state)
+        return decide_dedup(self._get_dedup_state(paper_id), version, fingerprint)
 
     def try_claim_upsert(self, paper_id: str, version: int, fingerprint: str) -> bool:
         del fingerprint
@@ -206,14 +209,7 @@ class PostgresControlPlaneStore:
             ).fetchone()
         if row is None:
             return None
-        return CanonicalDedupState(
-            canonical_key=row[0],
-            paper_id=row[1],
-            winning_source_tier=row[2],
-            winning_version=row[3],
-            fingerprint=row[4],
-            seen_sources=tuple(SourceName(v) for v in (row[5] or [])),
-        )
+        return _canonical_state_from_row(row)
 
     def list_canonical_dedup_states_for_paper(
         self, paper_id: str
@@ -229,17 +225,7 @@ class PostgresControlPlaneStore:
                 """,
                 (paper_id,),
             ).fetchall()
-        return tuple(
-            CanonicalDedupState(
-                canonical_key=row[0],
-                paper_id=row[1],
-                winning_source_tier=row[2],
-                winning_version=row[3],
-                fingerprint=row[4],
-                seen_sources=tuple(SourceName(v) for v in (row[5] or [])),
-            )
-            for row in rows
-        )
+        return tuple(_canonical_state_from_row(row) for row in rows)
 
     def upsert_canonical_dedup_state(self, state: CanonicalDedupState) -> None:
         # Guarded, atomic winner upsert (BR-C3 / BR-14): on a key collision overwrite the winner

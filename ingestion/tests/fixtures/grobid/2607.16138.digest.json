@@ -1,0 +1,994 @@
+{
+  "fullTextLen": 29905,
+  "fullTextSha": "da48c4e448c87cee",
+  "sections": [
+    {
+      "blocks": [
+        {
+          "id": "s1.p1",
+          "textLen": 316,
+          "textSha": "c9776b758d62daf4",
+          "type": "paragraph"
+        },
+        {
+          "id": "s1.p2",
+          "textLen": 1011,
+          "textSha": "aac2d2ac59e99804",
+          "type": "paragraph"
+        },
+        {
+          "id": "s1.p3",
+          "textLen": 370,
+          "textSha": "09279aae961d8718",
+          "type": "paragraph"
+        },
+        {
+          "id": "s1.p4",
+          "textLen": 643,
+          "textSha": "2c5663611f5b2159",
+          "type": "paragraph"
+        },
+        {
+          "id": "s1.p5",
+          "textLen": 616,
+          "textSha": "22866a11e9397108",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s1",
+      "sections": [],
+      "title": "Introduction"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s2.p1",
+          "textLen": 239,
+          "textSha": "a3ee9c69144ad503",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s2",
+      "sections": [],
+      "title": "Nomenclature"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s3.p1",
+          "textLen": 142,
+          "textSha": "37b3acdbb9068be4",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s3",
+      "sections": [],
+      "title": "X"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s4.p1",
+          "textLen": 759,
+          "textSha": "90934a9b5dd016ab",
+          "type": "paragraph"
+        },
+        {
+          "id": "s4.p2",
+          "textLen": 233,
+          "textSha": "5ae3b5a3d28ff045",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s4",
+      "sections": [],
+      "title": "Q"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s5.p1",
+          "textLen": 167,
+          "textSha": "6a70db4b106f166e",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": "(1)",
+          "display": true,
+          "id": "s5.eq1",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s5.p2",
+          "textLen": 904,
+          "textSha": "db071cbd4b348fae",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": "(2)",
+          "display": true,
+          "id": "s5.eq2",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s5.p3",
+          "textLen": 275,
+          "textSha": "0ad9ea8e1bca2bca",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s5",
+      "sections": [],
+      "title": "Improved computation of R"
+    },
+    {
+      "blocks": [],
+      "id": "s6",
+      "sections": [],
+      "title": "Correctness"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s7.p1",
+          "textLen": 106,
+          "textSha": "43ce87810fb8291f",
+          "type": "paragraph"
+        },
+        {
+          "id": "s7.p2",
+          "textLen": 228,
+          "textSha": "dddf6453318163ab",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": "(3)",
+          "display": true,
+          "id": "s7.eq1",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s7.p3",
+          "textLen": 181,
+          "textSha": "b8057f8a860cd868",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s7",
+      "sections": [],
+      "title": "I will now prove the correctness of Equation (2)."
+    },
+    {
+      "blocks": [
+        {
+          "id": "s8.p1",
+          "textLen": 396,
+          "textSha": "141c06648fa26971",
+          "type": "paragraph"
+        },
+        {
+          "id": "s8.p2",
+          "textLen": 904,
+          "textSha": "d5120d544551b8ed",
+          "type": "paragraph"
+        },
+        {
+          "id": "s8.p3",
+          "textLen": 105,
+          "textSha": "ba6f54613d8eceae",
+          "type": "paragraph"
+        },
+        {
+          "id": "s8.p4",
+          "textLen": 66,
+          "textSha": "05f19c7e78fcddb1",
+          "type": "paragraph"
+        },
+        {
+          "id": "s8.p5",
+          "textLen": 206,
+          "textSha": "427cc14cff4e2fbb",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s8",
+      "sections": [],
+      "title": "Runtime"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s9.p1",
+          "textLen": 430,
+          "textSha": "d8ac5d4f68b8b6c2",
+          "type": "paragraph"
+        },
+        {
+          "id": "s9.p2",
+          "textLen": 105,
+          "textSha": "23c4d8a7e839a8e2",
+          "type": "paragraph"
+        },
+        {
+          "id": "s9.p3",
+          "textLen": 166,
+          "textSha": "c81335b5363f6d89",
+          "type": "paragraph"
+        },
+        {
+          "id": "s9.p4",
+          "textLen": 48,
+          "textSha": "77f9f363a84190ff",
+          "type": "paragraph"
+        },
+        {
+          "id": "s9.p5",
+          "textLen": 180,
+          "textSha": "61d8ff6872d9ff08",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": null,
+          "display": true,
+          "id": "s9.eq1",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s9.p6",
+          "textLen": 40,
+          "textSha": "b9de8dce3d3e8d40",
+          "type": "paragraph"
+        },
+        {
+          "id": "s9.p7",
+          "textLen": 16,
+          "textSha": "8680f8eff90ad046",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": null,
+          "display": true,
+          "id": "s9.eq2",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s9.p8",
+          "textLen": 45,
+          "textSha": "2df1314f99cb46f3",
+          "type": "paragraph"
+        },
+        {
+          "id": "s9.p9",
+          "textLen": 41,
+          "textSha": "cd442c88389cd2d4",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": null,
+          "display": true,
+          "id": "s9.eq3",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s9.p10",
+          "textLen": 13,
+          "textSha": "7b1a46637d2e5957",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": null,
+          "display": true,
+          "id": "s9.eq4",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s9.p11",
+          "textLen": 721,
+          "textSha": "e2338a613180dd41",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s9",
+      "sections": [],
+      "title": "Improved computation of Q"
+    },
+    {
+      "blocks": [
+        {
+          "anchorLabel": null,
+          "display": true,
+          "id": "s10.eq1",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s10.p1",
+          "textLen": 13,
+          "textSha": "7b1a46637d2e5957",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": null,
+          "display": true,
+          "id": "s10.eq2",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s10.p2",
+          "textLen": 24,
+          "textSha": "34ec322dface8924",
+          "type": "paragraph"
+        },
+        {
+          "id": "s10.p3",
+          "textLen": 15,
+          "textSha": "2d743087dfbf19f0",
+          "type": "paragraph"
+        },
+        {
+          "id": "s10.p4",
+          "textLen": 3,
+          "textSha": "9dd166d2c075cbaa",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": null,
+          "display": true,
+          "id": "s10.eq3",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s10.p5",
+          "textLen": 56,
+          "textSha": "94fcb5b9e96b05b1",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": null,
+          "display": true,
+          "id": "s10.eq4",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s10.p6",
+          "textLen": 17,
+          "textSha": "5d6739254bc9c8c5",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s10",
+      "sections": [],
+      "title": "Algorithm 3 Improved step 4 of IKPLS"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s11.p1",
+          "textLen": 127,
+          "textSha": "0dd8083c197f9533",
+          "type": "paragraph"
+        },
+        {
+          "id": "s11.p2",
+          "textLen": 177,
+          "textSha": "8672d550a84067bd",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": "(4)",
+          "display": true,
+          "id": "s11.eq1",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s11.p3",
+          "textLen": 292,
+          "textSha": "2bb9c74c74e521e5",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s11",
+      "sections": [],
+      "title": "Correctness"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s12.p1",
+          "textLen": 65,
+          "textSha": "e4d724d8a9f41c10",
+          "type": "paragraph"
+        },
+        {
+          "id": "s12.p2",
+          "textLen": 63,
+          "textSha": "fbd544da8ef9335e",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": null,
+          "display": true,
+          "id": "s12.eq1",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s12.p3",
+          "textLen": 160,
+          "textSha": "b0cc8742670c56f1",
+          "type": "paragraph"
+        },
+        {
+          "id": "s12.p4",
+          "textLen": 114,
+          "textSha": "64377fc34cf85a85",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": null,
+          "display": true,
+          "id": "s12.eq2",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s12.p5",
+          "textLen": 206,
+          "textSha": "9dde78b63f297f26",
+          "type": "paragraph"
+        },
+        {
+          "id": "s12.p6",
+          "textLen": 108,
+          "textSha": "2d837d4790ab1296",
+          "type": "paragraph"
+        },
+        {
+          "id": "s12.p7",
+          "textLen": 85,
+          "textSha": "0f9d6fd741056210",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": "(5)",
+          "display": true,
+          "id": "s12.eq3",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s12.p8",
+          "textLen": 101,
+          "textSha": "7a429c7c46f89750",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": "(6)",
+          "display": true,
+          "id": "s12.eq4",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s12.p9",
+          "textLen": 65,
+          "textSha": "25b5c56e08a1e589",
+          "type": "paragraph"
+        },
+        {
+          "id": "s12.p10",
+          "textLen": 229,
+          "textSha": "b7a08763646d0a73",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": null,
+          "display": true,
+          "id": "s12.eq5",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s12.p11",
+          "textLen": 65,
+          "textSha": "2d1c8f9514fff4cd",
+          "type": "paragraph"
+        },
+        {
+          "id": "s12.p12",
+          "textLen": 127,
+          "textSha": "c92b5cdf0c965f95",
+          "type": "paragraph"
+        },
+        {
+          "id": "s12.p13",
+          "textLen": 119,
+          "textSha": "e829a56f5ac240ef",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": "(7)",
+          "display": true,
+          "id": "s12.eq6",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s12.p14",
+          "textLen": 302,
+          "textSha": "87a5ef4cefeb4ff1",
+          "type": "paragraph"
+        },
+        {
+          "id": "s12.p15",
+          "textLen": 79,
+          "textSha": "d4f92021072b27da",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": null,
+          "display": true,
+          "id": "s12.eq7",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s12.p16",
+          "textLen": 518,
+          "textSha": "2b88dfea67aff402",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": null,
+          "display": true,
+          "id": "s12.eq8",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s12.p17",
+          "textLen": 43,
+          "textSha": "c1bcd6c8fb240567",
+          "type": "paragraph"
+        },
+        {
+          "id": "s12.p18",
+          "textLen": 20,
+          "textSha": "5aef0b260c6276b1",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": null,
+          "display": true,
+          "id": "s12.eq9",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s12.p19",
+          "textLen": 73,
+          "textSha": "cfdc5dc63ef94948",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": "(8)",
+          "display": true,
+          "id": "s12.eq10",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s12.p20",
+          "textLen": 418,
+          "textSha": "ce0d4d3bc871ad91",
+          "type": "paragraph"
+        },
+        {
+          "id": "s12.p21",
+          "textLen": 121,
+          "textSha": "e711d2c9068f02f2",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": null,
+          "display": true,
+          "id": "s12.eq11",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s12.p22",
+          "textLen": 102,
+          "textSha": "7ead7c56049e62fa",
+          "type": "paragraph"
+        },
+        {
+          "id": "s12.p23",
+          "textLen": 169,
+          "textSha": "eeafc0ac363892f5",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": "(9)",
+          "display": true,
+          "id": "s12.eq12",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s12.p24",
+          "textLen": 108,
+          "textSha": "ec467905419320a3",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": "10",
+          "display": true,
+          "id": "s12.eq13",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "anchorLabel": null,
+          "display": true,
+          "id": "s12.eq14",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s12.p25",
+          "textLen": 70,
+          "textSha": "9a43e0ef4a0c25b7",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": null,
+          "display": true,
+          "id": "s12.eq15",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s12.p26",
+          "textLen": 32,
+          "textSha": "251e927673e8ff83",
+          "type": "paragraph"
+        },
+        {
+          "id": "s12.p27",
+          "textLen": 80,
+          "textSha": "409a797fefeff16c",
+          "type": "paragraph"
+        },
+        {
+          "id": "s12.p28",
+          "textLen": 31,
+          "textSha": "81e093a8fef981e4",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": null,
+          "display": true,
+          "id": "s12.eq16",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s12.p29",
+          "textLen": 42,
+          "textSha": "e0738500d7e9c328",
+          "type": "paragraph"
+        },
+        {
+          "id": "s12.p30",
+          "textLen": 424,
+          "textSha": "5b00e48ece93b8a8",
+          "type": "paragraph"
+        },
+        {
+          "id": "s12.p31",
+          "textLen": 107,
+          "textSha": "afb971dc0a1df122",
+          "type": "paragraph"
+        },
+        {
+          "id": "s12.p32",
+          "textLen": 711,
+          "textSha": "59e5dee07fa5760a",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s12",
+      "sections": [],
+      "title": "Lemma 1. P T"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s13.p1",
+          "textLen": 219,
+          "textSha": "e7a61a85ff826649",
+          "type": "paragraph"
+        },
+        {
+          "id": "s13.p2",
+          "textLen": 496,
+          "textSha": "3c4c64d348eba831",
+          "type": "paragraph"
+        },
+        {
+          "id": "s13.p3",
+          "textLen": 174,
+          "textSha": "13524f8a5a28d80e",
+          "type": "paragraph"
+        },
+        {
+          "id": "s13.p4",
+          "textLen": 198,
+          "textSha": "d57320ead0aa7be7",
+          "type": "paragraph"
+        },
+        {
+          "id": "s13.p5",
+          "textLen": 391,
+          "textSha": "f01b78a577c09008",
+          "type": "paragraph"
+        },
+        {
+          "id": "s13.p6",
+          "textLen": 459,
+          "textSha": "c44e286cf63efbd8",
+          "type": "paragraph"
+        },
+        {
+          "id": "s13.p7",
+          "textLen": 219,
+          "textSha": "509a3bb71b7bf0f1",
+          "type": "paragraph"
+        },
+        {
+          "id": "s13.p8",
+          "textLen": 134,
+          "textSha": "2ae2c4c01a032665",
+          "type": "paragraph"
+        },
+        {
+          "id": "s13.p9",
+          "textLen": 150,
+          "textSha": "a4c44eb47887f395",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s13",
+      "sections": [],
+      "title": "Runtime"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s14.p1",
+          "textLen": 826,
+          "textSha": "6d4ba82061992485",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s14",
+      "sections": [],
+      "title": "Additional improvements of IKPLS"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s15.p1",
+          "textLen": 808,
+          "textSha": "b4b506df4fae9d4a",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s15",
+      "sections": [],
+      "title": "Benchmarks"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s16.p1",
+          "textLen": 167,
+          "textSha": "25b2a7a76087687b",
+          "type": "paragraph"
+        },
+        {
+          "id": "s16.p2",
+          "textLen": 202,
+          "textSha": "dd41465dcc1780d4",
+          "type": "paragraph"
+        },
+        {
+          "id": "s16.p3",
+          "textLen": 201,
+          "textSha": "bb64741ecaa6a9b5",
+          "type": "paragraph"
+        },
+        {
+          "id": "s16.p4",
+          "textLen": 640,
+          "textSha": "03a476a5e4f6fc5f",
+          "type": "paragraph"
+        },
+        {
+          "id": "s16.p5",
+          "textLen": 711,
+          "textSha": "42371fea656c29ed",
+          "type": "paragraph"
+        },
+        {
+          "id": "s16.p6",
+          "textLen": 974,
+          "textSha": "da94c0c5f94db8af",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s16",
+      "sections": [],
+      "title": "Improvements in isolation"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s17.p1",
+          "textLen": 311,
+          "textSha": "9ebbfbe6de1b5733",
+          "type": "paragraph"
+        },
+        {
+          "id": "s17.p2",
+          "textLen": 764,
+          "textSha": "05fda8fa8e02dd97",
+          "type": "paragraph"
+        },
+        {
+          "id": "s17.p3",
+          "textLen": 1134,
+          "textSha": "943b1f3be02c77cb",
+          "type": "paragraph"
+        },
+        {
+          "id": "s17.p4",
+          "textLen": 380,
+          "textSha": "79ab1caa12d386a6",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s17",
+      "sections": [],
+      "title": "Improvements relative to full fit"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s18.p1",
+          "textLen": 440,
+          "textSha": "370a65dd38382939",
+          "type": "paragraph"
+        },
+        {
+          "id": "s18.p2",
+          "textLen": 503,
+          "textSha": "87c25d9db93c1fc5",
+          "type": "paragraph"
+        },
+        {
+          "id": "s18.p3",
+          "textLen": 704,
+          "textSha": "6ff592ec1aecdd5c",
+          "type": "paragraph"
+        },
+        {
+          "id": "s18.p4",
+          "textLen": 199,
+          "textSha": "44fd45310d9bd852",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s18",
+      "sections": [],
+      "title": "Conclusion"
+    },
+    {
+      "blocks": [
+        {
+          "anchorLabel": "Proposition 3 .",
+          "assetRef": "assetId='2607.16138:v1:figure:0' type=<Type.figure: 'figure'> ordinal=0 caption='Equation (2) requires 2Kpa\u00b41q multiplications to compute r a .' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "Equation (2) requires 2Kpa\u00b41q multiplications to compute r a",
+          "id": "s19.fig1",
+          "type": "figure"
+        },
+        {
+          "anchorLabel": null,
+          "assetRef": "assetId='2607.16138:v1:figure:1' type=<Type.figure: 'figure'> ordinal=1 caption='14 with the NumPy (Harris et al. 13, version 2.5.1) and JAX (Bradbury et al. 6, version 0.10.2, CUDA version 12.9) implementations of IKPLS in ikpls (Engstr\u00f8m et al. 11, version 6.1.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "14 with the NumPy (Harris et al. 13, version 2.5.1) and JAX ",
+          "id": "s19.fig2",
+          "type": "figure"
+        },
+        {
+          "anchorLabel": null,
+          "assetRef": "assetId='2607.16138:v1:figure:2' type=<Type.figure: 'figure'> ordinal=2 caption='(b) R: speedup for K \u02c6A (JAX, GPU).' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "(b) R: speedup for K \u02c6A (JAX, GPU).",
+          "id": "s19.fig3",
+          "type": "figure"
+        },
+        {
+          "anchorLabel": null,
+          "assetRef": "assetId='2607.16138:v1:figure:3' type=<Type.figure: 'figure'> ordinal=3 caption='(a) R: speedup for K \u02c6A (NumPy, CPU).' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "(a) R: speedup for K \u02c6A (NumPy, CPU).",
+          "id": "s19.fig4",
+          "type": "figure"
+        },
+        {
+          "anchorLabel": "Figure 1 :",
+          "assetRef": "assetId='2607.16138:v1:figure:4' type=<Type.figure: 'figure'> ordinal=4 caption='Figure 1: Heatmap showing the speedup of the computation of R of shape K \u02c6A by using the evaluation strategy of Equation (2) as opposed to the term-by-term accumulation strategy of Equation (1). Since A is upper-bounded by minpN, Kq, the cells with K \u0103 A are not computed.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "Figure 1: Heatmap showing the speedup of the computation of ",
+          "id": "s19.fig5",
+          "type": "figure"
+        },
+        {
+          "anchorLabel": null,
+          "assetRef": "assetId='2607.16138:v1:figure:5' type=<Type.figure: 'figure'> ordinal=5 caption='Q: speedup for K \u02c6M, A \" 10 (NumPy, CPU).' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "Q: speedup for K \u02c6M, A \" 10 (NumPy, CPU).",
+          "id": "s19.fig6",
+          "type": "figure"
+        },
+        {
+          "anchorLabel": null,
+          "assetRef": "assetId='2607.16138:v1:figure:6' type=<Type.figure: 'figure'> ordinal=6 caption='Q: speedup for K \u02c6M, A \" 10 (JAX, GPU).' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "Q: speedup for K \u02c6M, A \" 10 (JAX, GPU).",
+          "id": "s19.fig7",
+          "type": "figure"
+        },
+        {
+          "anchorLabel": "Figure 2 :",
+          "assetRef": "assetId='2607.16138:v1:figure:7' type=<Type.figure: 'figure'> ordinal=7 caption='Figure 2: Heatmap showing the speedup of the computation of Q of shape M \u02c6A with A \" 10 by using Algorithm 3 as opposed to Algorithm 2. Each qa takes time independent of a, and so using A \" 10 simply takes 10 times longer than computing any single qa.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "Figure 2: Heatmap showing the speedup of the computation of ",
+          "id": "s19.fig8",
+          "type": "figure"
+        },
+        {
+          "anchorLabel": null,
+          "caption": "al. 17, Mevik and Wehrens 19), and Theorem 1 answers, affirm",
+          "cols": 3,
+          "id": "s19.tbl1",
+          "rows": 24,
+          "type": "table"
+        },
+        {
+          "anchorLabel": null,
+          "assetRef": "assetId='2607.16138:v1:figure:8' type=<Type.figure: 'figure'> ordinal=8 caption='): 6.11ms \u2192 351\u00b5s Q (isolated): 256\u00b5s \u2192 189\u00b5s speedup (original / improved) 5.541 [5.476, 5.590] A=30, N=2 \u22c5 10 2 , K=10 2 , (=1 [(=1] ./ fit ,mproved ,KP./ fit (d) IKPLS Algorithm 2, JAX, GPU.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "): 6.11ms \u2192 351\u00b5s Q (isolated): 256\u00b5s \u2192 189\u00b5s speedup (origi",
+          "id": "s19.fig9",
+          "type": "figure"
+        },
+        {
+          "anchorLabel": "Figure 3 :",
+          "assetRef": "assetId='2607.16138:v1:figure:9' type=<Type.figure: 'figure'> ordinal=9 caption='Figure3: Time spent on full fits for the original and improved IKPLS algorithms. IKPLS algorithm 2 is only executed when N \u0105 K.2' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "Figure3: Time spent on full fits for the original and improv",
+          "id": "s19.fig10",
+          "type": "figure"
+        }
+      ],
+      "id": "s19",
+      "sections": [],
+      "title": "\uadf8\ub9bc \ubc0f \ud45c"
+    }
+  ]
+}

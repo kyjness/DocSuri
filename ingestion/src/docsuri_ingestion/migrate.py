@@ -15,9 +15,7 @@ so the container runs ``python -m docsuri_ingestion.worker provision``. Every st
 from __future__ import annotations
 
 import logging
-import os
 import time
-from datetime import UTC, datetime
 
 from docsuri_shared.index_spec import papers_index_body
 
@@ -36,36 +34,14 @@ from .settings import IngestionSettings
 
 log = logging.getLogger("docsuri.ingestion.migrate")
 
-_ALIAS = "docsuri-corpus"
 # ponytail: 1 req/3s matches arXiv politeness + Bedrock default TPS; raise if quota allows.
 _BACKFILL_DELAY_SECONDS = 3.0
 
 
-def _window(env_name: str, default: datetime) -> datetime:
-    """Run-scoped window override (ISO date in DOCSURI_BACKFILL_START/END) — lets a one-off
-    backfill narrow the slice without redefining the corpus (CORPUS_START/END stay canonical)."""
-    raw = os.getenv(env_name)
-    if not raw:
-        return default
-    dt = datetime.fromisoformat(raw)
-    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
-
-
 def _admin_client(settings: IngestionSettings):
-    """OpenSearch admin client matching the writer adapter (aws.build_opensearch_client):
-    TLS on in prod and SigV4-signed (service ``es``) with the ECS task role, so the managed
-    VPC domain's resource policy authorizes the request. Unsigned only for local clusters."""
-    from .adapters.aws import build_opensearch_client
+    from .adapters.aws import admin_client_from_settings
 
-    if not settings.opensearch_endpoint:
-        raise SystemExit("DOCSURI_OPENSEARCH_ENDPOINT is required")
-    local = settings.env == "local"
-    return build_opensearch_client(
-        endpoint=settings.opensearch_endpoint,
-        region_name=None if local else settings.aws_region,
-        use_ssl=not local,
-        verify_certs=not local,
-    )
+    return admin_client_from_settings(settings)
 
 
 def provision(settings: IngestionSettings | None = None) -> int:
@@ -85,11 +61,12 @@ def provision(settings: IngestionSettings | None = None) -> int:
 
     # exists_alias returns a clean bool; get_alias(ignore=[404]) returns a *truthy* 404
     # error-dict when the alias is absent, which silently skips creation (the original bug).
-    if client.indices.exists_alias(name=_ALIAS):
-        log.info("alias %s already exists", _ALIAS)
+    alias = settings.opensearch_alias
+    if client.indices.exists_alias(name=alias):
+        log.info("alias %s already exists", alias)
     else:
-        client.indices.put_alias(index=v1, name=_ALIAS)
-        log.info("created alias %s -> %s", _ALIAS, v1)
+        client.indices.put_alias(index=v1, name=alias)
+        log.info("created alias %s -> %s", alias, v1)
     return 0
 
 
@@ -100,13 +77,14 @@ def cutover(settings: IngestionSettings | None = None) -> int:
     client = _admin_client(settings)
     v1, v2 = settings.opensearch_index, settings.opensearch_index_v2
 
+    alias = settings.opensearch_alias
     actions: list[dict] = []
-    existing = client.indices.get_alias(name=_ALIAS, ignore=[404])
+    existing = client.indices.get_alias(name=alias, ignore=[404])
     if isinstance(existing, dict) and v1 in existing:
-        actions.append({"remove": {"index": v1, "alias": _ALIAS}})
-    actions.append({"add": {"index": v2, "alias": _ALIAS}})
+        actions.append({"remove": {"index": v1, "alias": alias}})
+    actions.append({"add": {"index": v2, "alias": alias}})
     client.indices.update_aliases(body={"actions": actions})
-    log.info("alias %s -> %s", _ALIAS, v2)
+    log.info("alias %s -> %s", alias, v2)
     return 0
 
 
@@ -136,10 +114,11 @@ def backfill(settings: IngestionSettings | None = None) -> int:
             }
         )
     )
+    window_start, window_end = settings.backfill_window(CORPUS_START, CORPUS_END)
     filter_ = CategoryFilter(
         categories=CORPUS_SLICE_CATEGORIES,
-        updated_after=_window("DOCSURI_BACKFILL_START", CORPUS_START),
-        updated_before=_window("DOCSURI_BACKFILL_END", CORPUS_END),
+        updated_after=window_start,
+        updated_before=window_end,
     )
 
     count = errors = 0
@@ -178,8 +157,7 @@ def backfill_external(settings: IngestionSettings | None = None) -> int:
     from .runtime import build_production_runtime
 
     runtime = build_production_runtime(settings)
-    since = _window("DOCSURI_BACKFILL_START", CORPUS_START)
-    until = _window("DOCSURI_BACKFILL_END", CORPUS_END)
+    since, until = settings.backfill_window(CORPUS_START, CORPUS_END)
     queued = runtime.refresh.backfill_external_sources(since, until)
     log.info(
         "external backfill enqueued %d jobs [%s .. %s]", queued, since.date(), until.date()
@@ -195,7 +173,13 @@ def audit(settings: IngestionSettings | None = None) -> int:
     ``python -m docsuri_ingestion.worker audit``."""
     from .adapters.postgres import PostgresControlPlaneStore
 
-    store = PostgresControlPlaneStore(os.environ["DOCSURI_CONTROL_PLANE_DSN"])
+    settings = settings or IngestionSettings.from_env()
+    # Fail loudly rather than handing psycopg an empty conninfo: libpq would then fall back to
+    # PGHOST/PGUSER (or the local socket and the OS user) and the audit would report tier counts
+    # from whatever database happens to be there, which reads as an authoritative answer.
+    if not settings.control_plane_dsn:
+        raise SystemExit("DOCSURI_CONTROL_PLANE_DSN is required")
+    store = PostgresControlPlaneStore(settings.control_plane_dsn)
     try:
         rows = store.source_tier_counts()
     finally:

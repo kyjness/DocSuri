@@ -4,7 +4,7 @@ import ipaddress
 import json
 import socket
 import time
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urljoin, urlsplit, urlunsplit
@@ -73,6 +73,30 @@ def _get_json_retrying(
             time.sleep(_RETRY_BACKOFF_SECONDS * attempt)
 
 
+def _fetch_record_pdf(
+    record: SourcePaperRecord,
+    *,
+    source_label: str,
+    stage: str,
+    timeout_seconds: float,
+    transport: object | None,
+) -> bytes:
+    """Open-access PDF bytes for a corpus record. A record with no PDF URL is a permanent
+    fetch failure — the record should never have passed the source adapter's OA filter."""
+    if not record.pdf_url:
+        raise PermanentIngestionError(
+            f"{source_label} record has no PDF URL",
+            reason=FailureReason.FETCH_FAILURE,
+            stage="source",
+        )
+    return _get_bytes(
+        record.pdf_url,
+        timeout_seconds=timeout_seconds,
+        transport=transport,
+        stage=stage,
+    )
+
+
 class SemanticScholarCorpusSource:
     def __init__(
         self,
@@ -92,8 +116,14 @@ class SemanticScholarCorpusSource:
         since: datetime,
         categories: Sequence[str],
         until: datetime | None = None,
-    ) -> list[SourcePaperRecord]:
-        records: list[SourcePaperRecord] = []
+    ) -> Iterator[SourcePaperRecord]:
+        """Yield in-window records page by page.
+
+        Streams rather than accumulating: a full-corpus window is tens of thousands of records
+        each carrying an abstract, and the caller only iterates — it queues a job per record. A
+        page failure mid-harvest now leaves the earlier pages' jobs queued instead of discarding
+        the run, which matches the arXiv harvest and is safe because the jobs are idempotent.
+        """
         token: str | None = None
         # Server-side publication-year bound: the bulk endpoint has no date filter but accepts a
         # `year` range, cutting the harvest from "all of CS, all years" to the window's years —
@@ -134,27 +164,22 @@ class SemanticScholarCorpusSource:
             for item in payload.get("data", []) or []:
                 record = _semantic_record(item)
                 if record and _in_window(record, since, until):
-                    records.append(record)
+                    yield record
             token = payload.get("token")
             if not token:
-                return records
+                return
             # Pace pages to honour the SS key's ~1 req/s cumulative cap (only between pages, so
             # single-page tests don't sleep). 429s still happen under contention — the retry above
             # absorbs those.
             time.sleep(_SS_REQUEST_INTERVAL_SECONDS)
 
     def fetch_pdf(self, record: SourcePaperRecord) -> bytes:
-        if not record.pdf_url:
-            raise PermanentIngestionError(
-                "Semantic Scholar record has no PDF URL",
-                reason=FailureReason.FETCH_FAILURE,
-                stage="source",
-            )
-        return _get_bytes(
-            record.pdf_url,
+        return _fetch_record_pdf(
+            record,
+            source_label="Semantic Scholar",
+            stage="semantic_scholar_pdf",
             timeout_seconds=self._timeout_seconds,
             transport=self._transport,
-            stage="semantic_scholar_pdf",
         )
 
 
@@ -177,8 +202,8 @@ class OpenAlexCorpusSource:
         since: datetime,
         categories: Sequence[str],
         until: datetime | None = None,
-    ) -> list[SourcePaperRecord]:
-        records: list[SourcePaperRecord] = []
+    ) -> Iterator[SourcePaperRecord]:
+        """Yield in-window records page by page — see the Semantic Scholar source for why."""
         cursor = "*"
         while cursor:
             # Window by publication_date, not updated_date: updated_date range queries are
@@ -226,22 +251,16 @@ class OpenAlexCorpusSource:
             for item in payload.get("results", []) or []:
                 record = _openalex_record(item)
                 if record and _in_window(record, since, until):
-                    records.append(record)
+                    yield record
             cursor = (payload.get("meta") or {}).get("next_cursor")
-        return records
 
     def fetch_pdf(self, record: SourcePaperRecord) -> bytes:
-        if not record.pdf_url:
-            raise PermanentIngestionError(
-                "OpenAlex record has no PDF URL",
-                reason=FailureReason.FETCH_FAILURE,
-                stage="source",
-            )
-        return _get_bytes(
-            record.pdf_url,
+        return _fetch_record_pdf(
+            record,
+            source_label="OpenAlex",
+            stage="openalex_pdf",
             timeout_seconds=self._timeout_seconds,
             transport=self._transport,
-            stage="openalex_pdf",
         )
 
 
@@ -344,9 +363,19 @@ def _get_bytes(
     """
     import httpx
 
-    from docsuri_ingestion.http_limits import ResponseTooLargeError, read_capped
+    from docsuri_ingestion.http_limits import (
+        http_failures_as_ingestion_errors,
+        raise_for_fetch_status,
+        read_capped,
+    )
 
-    try:
+    with http_failures_as_ingestion_errors(
+        stage=stage,
+        timeout_message="external corpus request timed out",
+        failure_message="external corpus request failed",
+        rejected_message="external corpus PDF rejected (too large or non-public host)",
+        also_rejected=(SsrfBlockedError,),
+    ):
         with httpx.Client(
             timeout=timeout_seconds, follow_redirects=False, transport=transport
         ) as client:
@@ -368,24 +397,10 @@ def _get_bytes(
                     if response.is_redirect and location:
                         current = urljoin(current, location)
                         continue
-                    _raise_for_corpus_status(response.status_code, stage)
+                    raise_for_fetch_status(
+                        response.status_code, stage=stage, source_label="external corpus source"
+                    )
                     return read_capped(response)
-    except httpx.TimeoutException as exc:
-        raise RetriableIngestionError(
-            "external corpus request timed out", reason=FailureReason.TIMEOUT, stage=stage
-        ) from exc
-    except httpx.HTTPError as exc:
-        raise RetriableIngestionError(
-            "external corpus request failed",
-            reason=FailureReason.FETCH_FAILURE,
-            stage=stage,
-        ) from exc
-    except (ResponseTooLargeError, SsrfBlockedError) as exc:
-        raise PermanentIngestionError(
-            "external corpus PDF rejected (too large or non-public host)",
-            reason=FailureReason.FETCH_FAILURE,
-            stage=stage,
-        ) from exc
     raise PermanentIngestionError(
         "external corpus PDF exceeded redirect limit",
         reason=FailureReason.FETCH_FAILURE,
@@ -434,23 +449,6 @@ def _pin_url(url: str, ip: str) -> str:
     return urlunsplit((parts.scheme, netloc, parts.path or "/", parts.query, ""))
 
 
-def _raise_for_corpus_status(status_code: int, stage: str) -> None:
-    if status_code == 429 or status_code >= 500:
-        raise RetriableIngestionError(
-            f"external corpus source returned {status_code}",
-            reason=FailureReason.RATE_LIMITED
-            if status_code == 429
-            else FailureReason.FETCH_FAILURE,
-            stage=stage,
-        )
-    if status_code >= 400:
-        raise PermanentIngestionError(
-            f"external corpus source returned {status_code}",
-            reason=FailureReason.FETCH_FAILURE,
-            stage=stage,
-        )
-
-
 def _request(
     url: str,
     *,
@@ -462,33 +460,28 @@ def _request(
 ) -> bytes:
     import httpx
 
-    from docsuri_ingestion.http_limits import ResponseTooLargeError, read_capped
+    from docsuri_ingestion.http_limits import (
+        http_failures_as_ingestion_errors,
+        raise_for_fetch_status,
+        read_capped,
+    )
 
-    try:
+    with http_failures_as_ingestion_errors(
+        stage=stage,
+        timeout_message="external corpus request timed out",
+        failure_message="external corpus request failed",
+        rejected_message="external corpus metadata exceeded size cap",
+    ):
         with (
             httpx.Client(
                 timeout=timeout_seconds, follow_redirects=True, transport=transport
             ) as client,
             client.stream("GET", url, params=params, headers=headers) as response,
         ):
-            _raise_for_corpus_status(response.status_code, stage)
+            raise_for_fetch_status(
+                response.status_code, stage=stage, source_label="external corpus source"
+            )
             return read_capped(response)  # metadata JSON is capped too (NFR §0.5)
-    except httpx.TimeoutException as exc:
-        raise RetriableIngestionError(
-            "external corpus request timed out", reason=FailureReason.TIMEOUT, stage=stage
-        ) from exc
-    except httpx.HTTPError as exc:
-        raise RetriableIngestionError(
-            "external corpus request failed",
-            reason=FailureReason.FETCH_FAILURE,
-            stage=stage,
-        ) from exc
-    except ResponseTooLargeError as exc:
-        raise PermanentIngestionError(
-            "external corpus metadata exceeded size cap",
-            reason=FailureReason.FETCH_FAILURE,
-            stage=stage,
-        ) from exc
 
 
 def _response_json(raw: bytes, stage: str) -> dict[str, Any]:

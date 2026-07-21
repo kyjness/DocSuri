@@ -1,0 +1,515 @@
+{
+  "fullTextLen": 38325,
+  "fullTextSha": "9468f2d6ea5ac1ce",
+  "sections": [
+    {
+      "blocks": [
+        {
+          "id": "s1.p1",
+          "textLen": 430,
+          "textSha": "ba63772a225319db",
+          "type": "paragraph"
+        },
+        {
+          "id": "s1.p2",
+          "textLen": 58,
+          "textSha": "4826f9eb76bf4c49",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s1",
+      "sections": [],
+      "title": ""
+    },
+    {
+      "blocks": [
+        {
+          "id": "s2.p1",
+          "textLen": 429,
+          "textSha": "2b831d974d29ab78",
+          "type": "paragraph"
+        },
+        {
+          "id": "s2.p2",
+          "textLen": 458,
+          "textSha": "9212d646a4a56154",
+          "type": "paragraph"
+        },
+        {
+          "id": "s2.p3",
+          "textLen": 882,
+          "textSha": "6241780ac4b93fec",
+          "type": "paragraph"
+        },
+        {
+          "id": "s2.p4",
+          "textLen": 911,
+          "textSha": "d778a452c97adc4d",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s2",
+      "sections": [],
+      "title": "Introduction"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s3.p1",
+          "textLen": 591,
+          "textSha": "525faa6bd6036a7f",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s3",
+      "sections": [],
+      "title": "Challenges in Diagnostic and Prognostic Modeling"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s4.p1",
+          "textLen": 860,
+          "textSha": "42bd1504fa288e6d",
+          "type": "paragraph"
+        },
+        {
+          "id": "s4.p2",
+          "textLen": 921,
+          "textSha": "19fd062dac1d340c",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s4",
+      "sections": [],
+      "title": "Challenge 1. Developing powerful ML pipelines"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s5.p1",
+          "textLen": 845,
+          "textSha": "757e831dcf8cd44e",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s5",
+      "sections": [],
+      "title": "Challenge 2. Understanding the value of ML and when it is necessary"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s6.p1",
+          "textLen": 685,
+          "textSha": "392815690ab42922",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s6",
+      "sections": [],
+      "title": "Challenge 3. Determining the value of information"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s7.p1",
+          "textLen": 614,
+          "textSha": "b317d7c8891acaf0",
+          "type": "paragraph"
+        },
+        {
+          "id": "s7.p2",
+          "textLen": 925,
+          "textSha": "f1e002081e5a5825",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s7",
+      "sections": [],
+      "title": "Challenge 4. Understanding and debugging ML models"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s8.p1",
+          "textLen": 637,
+          "textSha": "dcd26f59c7a86bf0",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s8",
+      "sections": [],
+      "title": "Challenge 5. Making ML models accessible and usable"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s9.p1",
+          "textLen": 723,
+          "textSha": "1a4a3c4e01346d38",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s9",
+      "sections": [],
+      "title": "Challenge 6. Deciding when and if to update clinical models"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s10.p1",
+          "textLen": 837,
+          "textSha": "b5ea78eb8d15310b",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s10",
+      "sections": [],
+      "title": "Challenge 7. Transparent reproducibility"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s11.p1",
+          "textLen": 811,
+          "textSha": "9892c236a08dbf1c",
+          "type": "paragraph"
+        },
+        {
+          "id": "s11.p2",
+          "textLen": 84,
+          "textSha": "5b21dfee30391d25",
+          "type": "paragraph"
+        },
+        {
+          "id": "s11.p3",
+          "textLen": 575,
+          "textSha": "2a341aa8bc739ad1",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s11",
+      "sections": [],
+      "title": "AutoPrognosis 2.0"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s12.p1",
+          "textLen": 667,
+          "textSha": "51df70ab8fe65661",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s12",
+      "sections": [],
+      "title": "Overview"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s13.p1",
+          "textLen": 455,
+          "textSha": "af9b0bd4b636c57f",
+          "type": "paragraph"
+        },
+        {
+          "id": "s13.p2",
+          "textLen": 881,
+          "textSha": "ba57091fa632dedf",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s13",
+      "sections": [],
+      "title": "Missing data imputation"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s14.p1",
+          "textLen": 1342,
+          "textSha": "f0cd81b94d3562c0",
+          "type": "paragraph"
+        },
+        {
+          "id": "s14.p2",
+          "textLen": 745,
+          "textSha": "d90ad9c3b92812e6",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s14",
+      "sections": [],
+      "title": "Developing optimized ML pipelines"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s15.p1",
+          "textLen": 801,
+          "textSha": "ed80bc073b813c1f",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s15",
+      "sections": [],
+      "title": "Model explanations"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s16.p1",
+          "textLen": 441,
+          "textSha": "9352a0dfecc07c72",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s16",
+      "sections": [],
+      "title": "Demonstrators"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s17.p1",
+          "textLen": 432,
+          "textSha": "c8dee03663ec6428",
+          "type": "paragraph"
+        },
+        {
+          "id": "s17.p2",
+          "textLen": 903,
+          "textSha": "c51a55ead33dd326",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s17",
+      "sections": [],
+      "title": "Illustrative application of AutoPrognosis 2.0"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s18.p1",
+          "textLen": 836,
+          "textSha": "177876cf16c0a78d",
+          "type": "paragraph"
+        },
+        {
+          "id": "s18.p2",
+          "textLen": 761,
+          "textSha": "791773577e06fef6",
+          "type": "paragraph"
+        },
+        {
+          "id": "s18.p3",
+          "textLen": 302,
+          "textSha": "e0af4d2615c6e290",
+          "type": "paragraph"
+        },
+        {
+          "id": "s18.p4",
+          "textLen": 212,
+          "textSha": "8b09f063f4de9554",
+          "type": "paragraph"
+        },
+        {
+          "id": "s18.p5",
+          "textLen": 306,
+          "textSha": "8461e02502d7fdfc",
+          "type": "paragraph"
+        },
+        {
+          "id": "s18.p6",
+          "textLen": 168,
+          "textSha": "02eb5fb65ea808c8",
+          "type": "paragraph"
+        },
+        {
+          "id": "s18.p7",
+          "textLen": 472,
+          "textSha": "177eaf6749eb781f",
+          "type": "paragraph"
+        },
+        {
+          "id": "s18.p8",
+          "textLen": 369,
+          "textSha": "23fb36164c65be24",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s18",
+      "sections": [],
+      "title": "Designing experiments"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s19.p1",
+          "textLen": 217,
+          "textSha": "ec76bdbf6301c924",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s19",
+      "sections": [],
+      "title": "Using AutoPrognosis 2.0 to address the challenges of diagnostic and"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s20.p1",
+          "textLen": 1241,
+          "textSha": "fa4aeb70ecfa2cc0",
+          "type": "paragraph"
+        },
+        {
+          "id": "s20.p2",
+          "textLen": 3839,
+          "textSha": "e9a95a194459331c",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s20",
+      "sections": [],
+      "title": "Challenge 1. Developing powerful ML pipelines"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s21.p1",
+          "textLen": 324,
+          "textSha": "54a8ea8b10fb5ee5",
+          "type": "paragraph"
+        },
+        {
+          "id": "s21.p2",
+          "textLen": 1577,
+          "textSha": "ae48f2d5eeb6fc4a",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s21",
+      "sections": [],
+      "title": "Challenge 3. Determining the value of information"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s22.p1",
+          "textLen": 474,
+          "textSha": "02bc6bebd84b00ce",
+          "type": "paragraph"
+        },
+        {
+          "id": "s22.p2",
+          "textLen": 846,
+          "textSha": "18f3fb3258f8ddf8",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s22",
+      "sections": [],
+      "title": "Using AutoPrognosis in Healthcare and Beyond"
+    },
+    {
+      "blocks": [
+        {
+          "anchorLabel": "Challenge 1 .",
+          "assetRef": "assetId='2210.12090:v1:figure:0' type=<Type.figure: 'figure'> ordinal=0 caption='Developing powerful ML pipelines AutoPrognosis uses AutoML to automate pipeline configuration, performing missing value imputation, feature processing, model selection, and hyperparameter optimization. Challenge 2. Understanding the value of ML and when it is necessary AutoPrognosis compares a range of ML methods to traditional approaches and automatically identifies what approach is best. Challenge 3. Determining the value of information AutoPrognosis can quantify the value of including additional predictors, enabling systematic identification of optimal variables. Challenge 4. Understanding and debugging ML models AutoPrognosis incorporates seven state-of-the-art interpretability methods, allowing models to be understood and debugged as they are generated. Challenge 5. Making ML models accessible and usable AutoPrognosis provides a platform to share model outputs by automating the creation of web-based applications. Challenge 6. Deciding when and if to update clinical models AutoPrognosis can quantify the benefit of additional data or new predictive variables, and automatically determine the optimal system for the new dataset. Challenge 7. Transparent reproducibility AutoPrognosis provides a standardized, publicly available framework, facilitating reproducibility.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "Developing powerful ML pipelines AutoPrognosis uses AutoML t",
+          "id": "s23.fig1",
+          "type": "figure"
+        },
+        {
+          "anchorLabel": "Table 1 :",
+          "caption": "Major challenges facing clinical development of diagnostic a",
+          "cols": 0,
+          "id": "s23.tbl1",
+          "rows": 0,
+          "type": "table"
+        },
+        {
+          "anchorLabel": "Figure 1 :",
+          "assetRef": "assetId='2210.12090:v1:figure:1' type=<Type.figure: 'figure'> ordinal=1 caption='Figure 1: Overview of the AutoPrognosis 2.0 framework. AutoPrognosis takes either raw or curated medical datasets and provides an imputed dataset, a report detailing the optimized machine learning pipelines, a diagnostic or prognostic model, explanations, and a web-based interface for clinicians to interact with and use the derived model.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "Figure 1: Overview of the AutoPrognosis 2.0 framework. AutoP",
+          "id": "s23.fig2",
+          "type": "figure"
+        },
+        {
+          "anchorLabel": "Table 2 :",
+          "caption": "List of algorithms currently included in AutoPrognosis 2.0, ",
+          "cols": 6,
+          "id": "s23.tbl2",
+          "rows": 18,
+          "type": "table"
+        },
+        {
+          "anchorLabel": "Table 3 :",
+          "caption": "Diabetes risk prediction results. The risk scores automatica",
+          "cols": 4,
+          "id": "s23.tbl3",
+          "rows": 11,
+          "type": "table"
+        },
+        {
+          "anchorLabel": "Figure 2 :",
+          "assetRef": "assetId='2210.12090:v1:figure:2' type=<Type.figure: 'figure'> ordinal=2 caption='Figure2: Decision curve analysis. AutoPrognosis exhibits higher net benefit at all decision thresholds compared to existing risk scores and baseline treatment plans.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "Figure2: Decision curve analysis. AutoPrognosis exhibits hig",
+          "id": "s23.fig3",
+          "type": "figure"
+        },
+        {
+          "anchorLabel": "Table 4 :",
+          "caption": "Quantifying the value of ML.",
+          "cols": 2,
+          "id": "s23.tbl4",
+          "rows": 8,
+          "type": "table"
+        },
+        {
+          "anchorLabel": "Figure 3 :",
+          "assetRef": "assetId='2210.12090:v1:figure:3' type=<Type.figure: 'figure'> ordinal=3 caption='Figure 3: Value of information. We evaluate AutoPrognosis using different numbers of features, corresponding to different effect size thresholds. The feature efficiency is compared to QDiabetes Model C, the best performing existing risk score.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "Figure 3: Value of information. We evaluate AutoPrognosis us",
+          "id": "s23.fig4",
+          "type": "figure"
+        },
+        {
+          "anchorLabel": "Table 5 :",
+          "caption": "Performance of diabetes risk scores for subgroups defined by",
+          "cols": 5,
+          "id": "s23.tbl5",
+          "rows": 6,
+          "type": "table"
+        },
+        {
+          "anchorLabel": "Figure 4 :",
+          "assetRef": "assetId='2210.12090:v1:figure:4' type=<Type.figure: 'figure'> ordinal=4 caption='Figure 4: SHAP values for the most important features.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "Figure 4: SHAP values for the most important features.",
+          "id": "s23.fig5",
+          "type": "figure"
+        },
+        {
+          "anchorLabel": "Table 6 :",
+          "caption": "The most important features for AutoPrognosis measured by ri",
+          "cols": 2,
+          "id": "s23.tbl6",
+          "rows": 15,
+          "type": "table"
+        },
+        {
+          "anchorLabel": "Figure 5 :",
+          "assetRef": "assetId='2210.12090:v1:figure:5' type=<Type.figure: 'figure'> ordinal=5 caption='Figure 5: Screenshot of an example clinical demonstrator produced by AutoPrognosis.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "Figure 5: Screenshot of an example clinical demonstrator pro",
+          "id": "s23.fig6",
+          "type": "figure"
+        }
+      ],
+      "id": "s23",
+      "sections": [],
+      "title": "\uadf8\ub9bc \ubc0f \ud45c"
+    }
+  ]
+}

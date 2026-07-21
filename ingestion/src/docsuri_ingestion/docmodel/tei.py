@@ -38,12 +38,13 @@ from docsuri_shared.dtos import DocModel, SourceTier
 
 from docsuri_ingestion.docmodel.parser import (
     _DocCtx,
-    _project_full_text,
+    _finish_docmodel,
     _SectionCtx,
     _with_abstract_section,
 )
 from docsuri_ingestion.domain.assets import AssetCropSpec, asset_id
-from docsuri_ingestion.domain.enums import AssetType
+from docsuri_ingestion.domain.enums import AssetType, FailureReason
+from docsuri_ingestion.domain.errors import PermanentIngestionError
 from docsuri_ingestion.xmlsafe import safe_fromstring
 
 _WS_RE = re.compile(r"\s+")
@@ -96,23 +97,17 @@ def parse_tei_to_docmodel(
         sections.append(figure_section)
 
     sections = _with_abstract_section(sections, abstract)
-    data = {
-        "meta": {
-            "paperId": paper_id,
-            "version": version,
-            "title": title,
-            **({"abstract": abstract} if abstract else {}),
-            "provenance": {
-                "sourceTier": source_tier.value,
-                "parserVersion": parser_version,
-                "schemaVersion": schema_version,
-                "generatedAt": generated_at,
-            },
-        },
-        "fullText": _project_full_text(sections),
-        "sections": sections,
-    }
-    return DocModel.model_validate(data)
+    return _finish_docmodel(
+        sections,
+        paper_id=paper_id,
+        version=version,
+        title=title,
+        abstract=abstract,
+        source_tier=source_tier,
+        parser_version=parser_version,
+        schema_version=schema_version,
+        generated_at=generated_at,
+    )
 
 
 # --------------------------------------------------------------------------- sections
@@ -219,11 +214,17 @@ def _table_block(figure_el: ET.Element, sec_ctx: _SectionCtx, doc_ctx: _DocCtx) 
             ]
             if cells:
                 rows.append({"cells": cells})
-    if not rows:
+    # Empty rows are kept, not dropped. GROBID emits a bare <table/> whenever its cell
+    # reconstruction fails on a table that is plainly there, and discarding the block took the
+    # CAPTION with it — text the paper really contains, that the schema preserves as a
+    # results-number source (BR-S3), and the last handle on that table once its cells are gone.
+    # The crop below still gives a reader the picture of it. Only a table with neither rows nor a
+    # caption carries nothing and is still discarded.
+    label, caption = _figure_label_caption(figure_el)
+    if not rows and not caption:
         return None
     ordinal = doc_ctx.table_ordinal
     doc_ctx.table_ordinal += 1
-    label, caption = _figure_label_caption(figure_el)
     block: dict = {"id": sec_ctx.next_id("table"), "type": "table", "rows": rows}
     if caption:
         block["caption"] = caption
@@ -401,3 +402,29 @@ def _find_descendant(root: ET.Element, local_name: str) -> ET.Element | None:
         if _local(el.tag) == local_name:
             return el
     return None
+
+
+def tei_to_text(tei: str) -> str:
+    """Flat reading-order text of a TEI document — the projection used when GROBID structure is
+    available but a doc-model is not being built (the corpus source's text candidate).
+
+    Public sibling of ``parse_tei_to_docmodel`` so callers outside the GROBID adapter do not have
+    to reach into it for a private helper. Invalid or empty TEI is a permanent parse failure:
+    retrying the same bytes cannot produce text.
+    """
+    try:
+        root = safe_fromstring(tei)
+    except ET.ParseError as exc:
+        raise PermanentIngestionError(
+            "GROBID returned invalid TEI",
+            reason=FailureReason.PARSE_FAILURE,
+            stage="grobid",
+        ) from exc
+    text = " ".join(part.strip() for part in root.itertext() if part.strip())
+    if not text:
+        raise PermanentIngestionError(
+            "GROBID returned empty TEI",
+            reason=FailureReason.PARSE_FAILURE,
+            stage="grobid",
+        )
+    return text

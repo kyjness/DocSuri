@@ -23,8 +23,11 @@ strictest per-Unit variants:
 
 Callers ``acquire()`` a permit (``None`` = rejected → fail fast with the
 Unit's own unavailable-exception) and complete it with ``success()`` /
-``failure()``. Completion is one-shot and ``failure()`` is idempotent, so
-``finally: permit.failure()`` is a safe catch-all release.
+``failure()`` / ``neutral()``. Completion is one-shot and ``failure()`` is
+idempotent, so ``finally: permit.failure()`` is a safe catch-all release.
+``neutral()`` is the third outcome for calls whose result says nothing about
+dependency health (local validation, unparseable body) — it leaves the failure
+counter untouched rather than resetting it; see :meth:`CircuitPermit.neutral`.
 """
 
 from __future__ import annotations
@@ -52,17 +55,29 @@ class CircuitPermit:
         self._done = False
 
     def success(self) -> None:
-        self._resolve(success=True)
+        self._resolve(outcome="success")
 
     def failure(self) -> None:
-        self._resolve(success=False)
+        self._resolve(outcome="failure")
 
-    def _resolve(self, *, success: bool) -> None:
+    def neutral(self) -> None:
+        """완주했으나 의존성 건강에 대해 아무것도 말하지 않는 결과 — 카운터를 건드리지 않는다.
+
+        호출은 끝났지만 그 실패가 의존성 탓이 아닌 경우가 있다: 로컬 검증 오류, 응답 본문
+        파싱 실패, 4xx처럼 "상대가 응답했다"고 단정할 수 없는 것들. 이를 ``success()``로
+        마감하면 실패 카운터가 초기화되어 **retriable 실패와 섞인 장애에서 브레이커가 영원히
+        트립하지 않고**, HALF-OPEN 프로브가 이걸로 끝나면 아직 죽어 있는 의존성 앞에서
+        회로가 닫힌다. ``failure()``로 마감하면 반대로 멀쩡한 의존성을 트립시킨다.
+        중립 완주는 CLOSED에서 카운터를 보존하고, 프로브 슬롯은 상태 전이 없이 반납한다.
+        """
+        self._resolve(outcome="neutral")
+
+    def _resolve(self, *, outcome: str) -> None:
         if self._done:
             return
         self._done = True
         self._breaker._complete(
-            is_probe=self._is_probe, success=success, probe_token=self._probe_token
+            is_probe=self._is_probe, outcome=outcome, probe_token=self._probe_token
         )
 
 
@@ -124,19 +139,26 @@ class CircuitBreaker:
                 return CircuitPermit(self, is_probe=True, probe_token=self._probe_token)
             return CircuitPermit(self, is_probe=False)
 
-    def _complete(self, *, is_probe: bool, success: bool, probe_token: int) -> None:
+    def _complete(self, *, is_probe: bool, outcome: str, probe_token: int) -> None:
+        success = outcome == "success"
         with self._lock:
             now = self._clock()
             if is_probe:
                 if probe_token != self._probe_token:
                     return  # late completion of an expired/reclaimed probe — ignore
                 self._probe_in_flight = False
+                if outcome == "neutral":
+                    # Slot released, verdict withheld: stay HALF-OPEN so the next caller
+                    # becomes the probe instead of this inconclusive one deciding for it.
+                    return
                 if success:
                     self._state = "CLOSED"
                     self._failure_count = 0
                 else:
                     self._state = "OPEN"
                 self._last_state_change = now
+            elif outcome == "neutral":
+                return  # counter preserved — see CircuitPermit.neutral
             elif success:
                 if self._state == "CLOSED":
                     self._failure_count = 0

@@ -19,11 +19,13 @@ from docsuri_ingestion.domain.errors import (
 )
 from docsuri_ingestion.domain.models import IndexRecordBatch, IndexStats, ParsedPaper, Tombstone
 from docsuri_ingestion.ports import QueueMessage
+from docsuri_ingestion.settings import IngestionSettings
 
 _log = logging.getLogger(__name__)
 
-# Cohere Embed on Bedrock accepts at most 96 texts per invoke_model call.
-_BEDROCK_EMBED_BATCH_LIMIT = 96
+# Cohere Embed on Bedrock accepts at most 96 texts per invoke_model call. Public because the
+# re-embed runner pages against the same ceiling.
+BEDROCK_EMBED_BATCH_LIMIT = 96
 
 
 class S3FullTextStore:
@@ -38,23 +40,19 @@ class S3FullTextStore:
         self._kms_key_id = kms_key_id
 
     def put_full_text(self, paper: ParsedPaper) -> str:
-        key = f"{self._prefix}/{paper.paper_id}/v{paper.version}.txt"
-        kwargs: dict[str, Any] = {
-            "Bucket": self._bucket,
-            "Key": key,
-            "Body": paper.full_text.encode("utf-8"),
-            "ContentType": "text/plain; charset=utf-8",
-            "ServerSideEncryption": "aws:kms" if self._kms_key_id else "AES256",
-            "Metadata": {
+        return s3_put(
+            self._client,
+            bucket=self._bucket,
+            key=f"{self._prefix}/{paper.paper_id}/v{paper.version}.txt",
+            body=paper.full_text.encode("utf-8"),
+            content_type="text/plain; charset=utf-8",
+            kms_key_id=self._kms_key_id,
+            metadata={
                 "paper-id": paper.paper_id,
                 "version": str(paper.version),
                 "license": paper.license_url,
             },
-        }
-        if self._kms_key_id:
-            kwargs["SSEKMSKeyId"] = self._kms_key_id
-        self._client.put_object(**kwargs)
-        return f"s3://{self._bucket}/{key}"
+        )
 
 
 class S3DocModelStore:
@@ -80,18 +78,13 @@ class S3DocModelStore:
         return f"{self._prefix}/{paper_id}/v{version}.json"
 
     def get(self, paper_id: str, version: int) -> DocModel | None:
-        from botocore.exceptions import ClientError
-
+        raw = s3_get_or_none(
+            self._client, bucket=self._bucket, key=self._key(paper_id, version)
+        )
+        if raw is None:
+            return None
         try:
-            response = self._client.get_object(
-                Bucket=self._bucket, Key=self._key(paper_id, version)
-            )
-        except ClientError as exc:
-            if exc.response.get("Error", {}).get("Code") in {"NoSuchKey", "404", "NotFound"}:
-                return None
-            raise
-        try:
-            return DocModel.model_validate_json(response["Body"].read())
+            return DocModel.model_validate_json(raw)
         except ValidationError:
             # An artifact cached under an older schema (e.g. pre-``fullText``) no longer
             # deserializes. Treat it as a cache miss so the builder rebuilds and re-caches a
@@ -100,25 +93,21 @@ class S3DocModelStore:
             return None
 
     def put(self, doc: DocModel) -> str:
-        key = self._key(doc.meta.paperId, doc.meta.version)
-        kwargs: dict[str, Any] = {
-            "Bucket": self._bucket,
-            "Key": key,
+        return s3_put(
+            self._client,
+            bucket=self._bucket,
+            key=self._key(doc.meta.paperId, doc.meta.version),
             # exclude_none keeps optional fields off the wire; consumers ignore unknowns.
-            "Body": doc.model_dump_json(exclude_none=True).encode("utf-8"),
-            "ContentType": "application/json; charset=utf-8",
-            "ServerSideEncryption": "aws:kms" if self._kms_key_id else "AES256",
-            "Metadata": {
+            body=doc.model_dump_json(exclude_none=True).encode("utf-8"),
+            content_type="application/json; charset=utf-8",
+            kms_key_id=self._kms_key_id,
+            metadata={
                 "paper-id": doc.meta.paperId,
                 "version": str(doc.meta.version),
                 "parser-version": doc.meta.provenance.parserVersion,
                 "schema-version": doc.meta.provenance.schemaVersion,
             },
-        }
-        if self._kms_key_id:
-            kwargs["SSEKMSKeyId"] = self._kms_key_id
-        self._client.put_object(**kwargs)
-        return f"s3://{self._bucket}/{key}"
+        )
 
     def remove(self, paper_id: str) -> None:
         paginator = self._client.get_paginator("list_objects_v2")
@@ -162,32 +151,20 @@ class S3RawContentStore:
         *,
         content_type: str = "application/octet-stream",
     ) -> str:
-        key = self._key(paper_id, version, tier)
-        kwargs: dict[str, Any] = {
-            "Bucket": self._bucket,
-            "Key": key,
-            "Body": data,
-            "ContentType": content_type,
-            "ServerSideEncryption": "aws:kms" if self._kms_key_id else "AES256",
-            "Metadata": {"paper-id": paper_id, "version": str(version), "tier": tier},
-        }
-        if self._kms_key_id:
-            kwargs["SSEKMSKeyId"] = self._kms_key_id
-        self._client.put_object(**kwargs)
-        return f"s3://{self._bucket}/{key}"
+        return s3_put(
+            self._client,
+            bucket=self._bucket,
+            key=self._key(paper_id, version, tier),
+            body=data,
+            content_type=content_type,
+            kms_key_id=self._kms_key_id,
+            metadata={"paper-id": paper_id, "version": str(version), "tier": tier},
+        )
 
     def get_raw(self, paper_id: str, version: int, tier: str) -> bytes | None:
-        from botocore.exceptions import ClientError
-
-        try:
-            response = self._client.get_object(
-                Bucket=self._bucket, Key=self._key(paper_id, version, tier)
-            )
-        except ClientError as exc:
-            if exc.response.get("Error", {}).get("Code") in {"NoSuchKey", "404", "NotFound"}:
-                return None
-            raise
-        return response["Body"].read()
+        return s3_get_or_none(
+            self._client, bucket=self._bucket, key=self._key(paper_id, version, tier)
+        )
 
 
 class S3UserDocumentSource:
@@ -218,7 +195,7 @@ class S3UserDocumentSource:
             response = self._client.get_object(Bucket=self._bucket, Key=object_key)
         except ClientError as exc:
             code = exc.response.get("Error", {}).get("Code")
-            if code in {"NoSuchKey", "404", "NotFound"}:
+            if code in _S3_MISSING_CODES:
                 raise PermanentIngestionError(
                     "user document object not found",
                     reason=FailureReason.FETCH_FAILURE,
@@ -280,8 +257,8 @@ class BedrockCohereEmbeddingPort:
         # past that (max_chunks_per_paper=128). Sub-batch and concatenate IN ORDER — the
         # assembler zips chunk_ids↔vectors with strict=True, so order must be preserved.
         vectors: list[list[float]] = []
-        for start in range(0, len(texts), _BEDROCK_EMBED_BATCH_LIMIT):
-            vectors.extend(self._embed_batch(texts[start : start + _BEDROCK_EMBED_BATCH_LIMIT]))
+        for start in range(0, len(texts), BEDROCK_EMBED_BATCH_LIMIT):
+            vectors.extend(self._embed_batch(texts[start : start + BEDROCK_EMBED_BATCH_LIMIT]))
         return vectors
 
     def _embed_batch(self, texts: Sequence[str]) -> list[list[float]]:
@@ -318,6 +295,73 @@ class BedrockCohereEmbeddingPort:
                     stage="embed",
                 )
         return vectors
+
+
+# S3 error codes that mean "no such object" rather than a real fault. get_object reports a
+# missing key differently depending on whether the caller holds s3:ListBucket, so all three
+# spellings must count as a miss.
+_S3_MISSING_CODES = frozenset({"NoSuchKey", "404", "NotFound"})
+
+
+def s3_put(
+    client: Any,
+    *,
+    bucket: str,
+    key: str,
+    body: bytes,
+    content_type: str,
+    kms_key_id: str | None,
+    metadata: dict[str, str] | None = None,
+) -> str:
+    """PUT an encrypted object and return its ``s3://`` URI.
+
+    Server-side encryption is KMS when a key is configured and SSE-S3 otherwise; keeping that
+    branch here means no writer can accidentally ship an unencrypted object.
+    """
+    kwargs: dict[str, Any] = {
+        "Bucket": bucket,
+        "Key": key,
+        "Body": body,
+        "ContentType": content_type,
+        "ServerSideEncryption": "aws:kms" if kms_key_id else "AES256",
+    }
+    if metadata:
+        kwargs["Metadata"] = metadata
+    if kms_key_id:
+        kwargs["SSEKMSKeyId"] = kms_key_id
+    client.put_object(**kwargs)
+    return f"s3://{bucket}/{key}"
+
+
+def s3_get_or_none(client: Any, *, bucket: str, key: str) -> bytes | None:
+    """Object bytes, or None when the key is absent — an absent cache entry is a miss, not a
+    fault. Every other ClientError propagates so real S3 faults stay retriable."""
+    from botocore.exceptions import ClientError
+
+    try:
+        response = client.get_object(Bucket=bucket, Key=key)
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") in _S3_MISSING_CODES:
+            return None
+        raise
+    return response["Body"].read()
+
+
+def admin_client_from_settings(settings: IngestionSettings):
+    """Admin OpenSearch client for the one-off migrate/re-embed entrypoints.
+
+    Lives beside ``build_opensearch_client`` rather than in either entrypoint: migrate imports
+    reembed for its step table, so a copy in one of them cannot be imported by the other.
+    """
+    if not settings.opensearch_endpoint:
+        raise SystemExit("DOCSURI_OPENSEARCH_ENDPOINT is required")
+    local = settings.env == "local"
+    return build_opensearch_client(
+        endpoint=settings.opensearch_endpoint,
+        region_name=None if local else settings.aws_region,
+        use_ssl=not local,
+        verify_certs=not local,
+    )
 
 
 def build_opensearch_client(
@@ -406,12 +450,15 @@ class OpenSearchVectorIndex:
         self._record_write()
         self._stats_cache.invalidate()
 
-    def tombstone_paper(self, tombstone: Tombstone) -> None:
-        # Version ordering is guarded by ControlPlaneStore. The index operation deletes
-        # all existing chunks for the paper that won that CAS.
+    def _delete_by_query(self, query: dict, *, stage: str, label: str = "") -> None:
+        """Run a refreshing delete_by_query and fail retriably on partial deletion.
+
+        ``conflicts="proceed"`` keeps the sweep going past concurrent writes, so any reported
+        failure or version conflict means chunks survived that should not have — retriable
+        rather than silently accepted."""
         response = self._client.delete_by_query(
             index=self._index_name,
-            body={"query": {"term": {"paperId": tombstone.paper_id}}},
+            body={"query": query},
             refresh=True,
             conflicts="proceed",
         )
@@ -419,41 +466,35 @@ class OpenSearchVectorIndex:
         version_conflicts = response.get("version_conflicts", 0)
         if failures or version_conflicts > 0:
             raise RetriableIngestionError(
-                f"OpenSearch delete_by_query had {len(failures)} failures and "
+                f"OpenSearch delete_by_query{label} had {len(failures)} failures and "
                 f"{version_conflicts} version conflicts",
                 reason=FailureReason.BULK_INDEX_PARTIAL_FAILURE,
-                stage="index_tombstone",
+                stage=stage,
             )
         self._record_write()
         self._stats_cache.invalidate()
 
+    def tombstone_paper(self, tombstone: Tombstone) -> None:
+        # Version ordering is guarded by ControlPlaneStore. The index operation deletes
+        # all existing chunks for the paper that won that CAS.
+        self._delete_by_query(
+            {"term": {"paperId": tombstone.paper_id}},
+            stage="index_tombstone",
+        )
+
     def delete_stale_chunks(self, paper_id: str, keep_chunk_ids: set[str]) -> None:
         if not keep_chunk_ids:
             return
-        response = self._client.delete_by_query(
-            index=self._index_name,
-            body={
-                "query": {
-                    "bool": {
-                        "filter": [{"term": {"paperId": paper_id}}],
-                        "must_not": [{"terms": {"chunkId": sorted(keep_chunk_ids)}}],
-                    }
+        self._delete_by_query(
+            {
+                "bool": {
+                    "filter": [{"term": {"paperId": paper_id}}],
+                    "must_not": [{"terms": {"chunkId": sorted(keep_chunk_ids)}}],
                 }
             },
-            refresh=True,
-            conflicts="proceed",
+            stage="index_delete_stale",
+            label=" (stale)",
         )
-        failures = response.get("failures", [])
-        version_conflicts = response.get("version_conflicts", 0)
-        if failures or version_conflicts > 0:
-            raise RetriableIngestionError(
-                f"OpenSearch delete_by_query (stale) had {len(failures)} failures and "
-                f"{version_conflicts} version conflicts",
-                reason=FailureReason.BULK_INDEX_PARTIAL_FAILURE,
-                stage="index_delete_stale",
-            )
-        self._record_write()
-        self._stats_cache.invalidate()
 
     def index_stats(self) -> IndexStats:
         return self._stats_cache.get_or_refresh(self._index_name, self._fetch_stats)

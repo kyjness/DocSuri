@@ -11,9 +11,11 @@ import json
 from collections.abc import Sequence
 from typing import Any
 
+from docsuri_ingestion.adapters.aws import s3_put
 from docsuri_ingestion.domain.assets import AssetManifest, ExtractedAsset, FigureTableAsset
 from docsuri_ingestion.domain.enums import AssetSourceMode, AssetType
 from docsuri_ingestion.domain.models import MetadataRecord
+from docsuri_ingestion.ports import RawContentStorePort
 
 
 def _no_nul(value: str | None) -> str | None:
@@ -27,10 +29,21 @@ class ArxivAssetSource:
     """Fetch PDF / e-print bytes from arXiv for asset extraction (best-effort)."""
 
     def __init__(
-        self, *, base_url: str = "https://arxiv.org", timeout_seconds: float = 20.0
+        self,
+        *,
+        base_url: str = "https://arxiv.org",
+        timeout_seconds: float = 20.0,
+        raw_store: RawContentStorePort | None = None,
+        raw_cache_mode: str = "off",
     ) -> None:
         self._base = base_url.rstrip("/")
         self._timeout = timeout_seconds
+        # B3 raw-content cache, same store the full-text source primes. Assets and full text are
+        # fetched by two different adapters, so an assets-enabled paper that fell back to PDF text
+        # downloaded the same multi-MB PDF twice. Reading the cache here makes the second download
+        # a cache hit. Default "off" → this source fetches exactly as before.
+        self._raw_store = raw_store
+        self._raw_cache_mode = raw_cache_mode
         # Single-entry e-print memo (arxiv_id, bytes|None). The asset extractor and the doc-model
         # macro extractor both pull the same multi-MB tarball within one paper's processing, and
         # this source is shared between them (one instance in the wiring), so caching the most
@@ -47,6 +60,12 @@ class ArxivAssetSource:
         return data
 
     def fetch_pdf(self, metadata: MetadataRecord) -> bytes | None:
+        if self._raw_cache_mode in ("prefer", "only") and self._raw_store is not None:
+            cached = self._raw_store.get_raw(metadata.paper_id, metadata.version, "pdf")
+            if cached:
+                return cached
+            if self._raw_cache_mode == "only":
+                return None
         return self._get(f"{self._base}/pdf/{metadata.identifier.arxiv_id}")
 
     def _get(self, url: str) -> bytes | None:
@@ -111,18 +130,14 @@ class S3RdsAssetStore:
 
     def _put_object(self, asset: ExtractedAsset) -> str:
         meta = asset.meta
-        key = f"{self._prefix}/{meta.paper_id}/v{meta.version}/{meta.asset_id}.webp"
-        kwargs: dict[str, Any] = {
-            "Bucket": self._bucket,
-            "Key": key,
-            "Body": asset.image,
-            "ContentType": "image/webp",
-            "ServerSideEncryption": "aws:kms" if self._kms_key_id else "AES256",
-        }
-        if self._kms_key_id:
-            kwargs["SSEKMSKeyId"] = self._kms_key_id
-        self._s3.put_object(**kwargs)
-        return f"s3://{self._bucket}/{key}"
+        return s3_put(
+            self._s3,
+            bucket=self._bucket,
+            key=f"{self._prefix}/{meta.paper_id}/v{meta.version}/{meta.asset_id}.webp",
+            body=asset.image,
+            content_type="image/webp",
+            kms_key_id=self._kms_key_id,
+        )
 
     # ---- RDS ----
 
@@ -136,9 +151,20 @@ class S3RdsAssetStore:
     def _upsert_rows(self, assets: Sequence[FigureTableAsset]) -> None:
         if not assets:
             return
+        # One round trip for the paper's whole manifest. A figure-rich paper produced dozens of
+        # rows, each its own execute; the statement and its conflict clause are identical per row,
+        # so executemany sends the parameter sets together instead.
+        params = [
+            (
+                a.paper_id, a.version, a.asset_id, a.type.value, _no_nul(a.caption),
+                _no_nul(a.section_ref), a.ordinal, a.source_mode.value, a.object_ref,
+                a.page_ref, json.dumps(a.bbox) if a.bbox else None,
+            )
+            for a in assets
+        ]
         with self._conn() as conn:
-            for a in assets:
-                conn.execute(
+            with conn.cursor() as cur:
+                cur.executemany(
                     """
                     INSERT INTO paper_asset (
                         paper_id, version, asset_id, type, caption, section_ref,
@@ -150,11 +176,7 @@ class S3RdsAssetStore:
                         source_mode = EXCLUDED.source_mode, object_ref = EXCLUDED.object_ref,
                         page_ref = EXCLUDED.page_ref, bbox = EXCLUDED.bbox
                     """,
-                    (
-                        a.paper_id, a.version, a.asset_id, a.type.value, _no_nul(a.caption),
-                        _no_nul(a.section_ref), a.ordinal, a.source_mode.value, a.object_ref,
-                        a.page_ref, json.dumps(a.bbox) if a.bbox else None,
-                    ),
+                    params,
                 )
             conn.commit()
 

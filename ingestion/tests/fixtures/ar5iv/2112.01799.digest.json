@@ -1,0 +1,872 @@
+{
+  "fullTextLen": 37418,
+  "fullTextSha": "fe0cc52b99aa90af",
+  "sections": [
+    {
+      "blocks": [
+        {
+          "id": "s1.p1",
+          "textLen": 850,
+          "textSha": "5f8ada2250cebe97",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": "Figure 1",
+          "assetRef": "assetId='2112.01799:v1:figure:0' type=<Type.figure: 'figure'> ordinal=0 caption='FID v.s. Operations and Parameters. The size of the blobs is proportional to the number of network parameters, the X-axis indicates FLOPs on a log scale and the Y-axis is the FID score.' sourceMode=None",
+          "caption": "FID v.s. Operations and Parameters. The size of the blobs is",
+          "id": "s1.fig1",
+          "type": "figure"
+        },
+        {
+          "id": "s1.p2",
+          "textLen": 847,
+          "textSha": "6f289c93b704083b",
+          "type": "paragraph"
+        },
+        {
+          "id": "s1.p3",
+          "textLen": 438,
+          "textSha": "fdf29b6692d696db",
+          "type": "paragraph"
+        },
+        {
+          "id": "s1.p4",
+          "textLen": 209,
+          "textSha": "1a86d786441ef51c",
+          "type": "paragraph"
+        },
+        {
+          "id": "s1.p5",
+          "textLen": 402,
+          "textSha": "b687e89d18b3a657",
+          "type": "paragraph"
+        },
+        {
+          "id": "s1.p6",
+          "textLen": 630,
+          "textSha": "0f84992a0fb65c8c",
+          "type": "paragraph"
+        },
+        {
+          "id": "s1.p7",
+          "textLen": 56,
+          "textSha": "1174edba3898c553",
+          "type": "paragraph"
+        },
+        {
+          "id": "s1.list1",
+          "items": 3,
+          "ordered": false,
+          "type": "list"
+        },
+        {
+          "anchorLabel": "Figure 2",
+          "assetRef": "assetId='2112.01799:v1:figure:1' type=<Type.figure: 'figure'> ordinal=1 caption='The proposed VQ-DDM pipeline contains 2 stages: (1) Compress the image into discrete variables via discrete VAE. (2) Fit a prior distribution over discrete coding by a diffusion model. Black squares in the diffusion diagram illustrate states when the underlying distributions are uninformative, but which become progressively more specific during the reverse process. The bar chart at the bottom of the image represents the probability of a particular discrete variable being sampled.' sourceMode=None",
+          "caption": "The proposed VQ-DDM pipeline contains 2 stages: (1) Compress",
+          "id": "s1.fig2",
+          "type": "figure"
+        }
+      ],
+      "id": "s1",
+      "sections": [],
+      "title": "Introduction"
+    },
+    {
+      "blocks": [],
+      "id": "s2",
+      "sections": [
+        {
+          "blocks": [
+            {
+              "id": "s2.1.p1",
+              "textLen": 180,
+              "textSha": "1430ac2d66f7b3df",
+              "type": "paragraph"
+            },
+            {
+              "id": "s2.1.p2",
+              "textLen": 265,
+              "textSha": "dcd628466574b78c",
+              "type": "paragraph"
+            },
+            {
+              "anchorLabel": "(1)",
+              "display": true,
+              "id": "s2.1.eq1",
+              "latexSha": "f5314ca77431fd2c",
+              "type": "formula"
+            },
+            {
+              "anchorLabel": "(2)",
+              "display": true,
+              "id": "s2.1.eq2",
+              "latexSha": "ef2ab11d190c88da",
+              "type": "formula"
+            },
+            {
+              "id": "s2.1.p3",
+              "textLen": 148,
+              "textSha": "d070ad9bcb4e51c9",
+              "type": "paragraph"
+            },
+            {
+              "id": "s2.1.p4",
+              "textLen": 127,
+              "textSha": "a47d317e649a45f2",
+              "type": "paragraph"
+            },
+            {
+              "anchorLabel": "(3)",
+              "display": true,
+              "id": "s2.1.eq3",
+              "latexSha": "c9580ff627222471",
+              "type": "formula"
+            },
+            {
+              "anchorLabel": "(4)",
+              "display": true,
+              "id": "s2.1.eq4",
+              "latexSha": "a188fb7c96e586ba",
+              "type": "formula"
+            },
+            {
+              "id": "s2.1.p5",
+              "textLen": 160,
+              "textSha": "90d09da67fc4a1eb",
+              "type": "paragraph"
+            },
+            {
+              "anchorLabel": "(5)",
+              "display": true,
+              "id": "s2.1.eq5",
+              "latexSha": "4705ec33ac8bc27d",
+              "type": "formula"
+            },
+            {
+              "id": "s2.1.p6",
+              "textLen": 432,
+              "textSha": "d804669e5f9b3a23",
+              "type": "paragraph"
+            },
+            {
+              "anchorLabel": "(6)",
+              "display": true,
+              "id": "s2.1.eq6",
+              "latexSha": "ef6f1def36849664",
+              "type": "formula"
+            },
+            {
+              "anchorLabel": "(7)",
+              "display": true,
+              "id": "s2.1.eq7",
+              "latexSha": "487593e013c60f0d",
+              "type": "formula"
+            },
+            {
+              "id": "s2.1.p7",
+              "textLen": 138,
+              "textSha": "5fc6f9523f58397f",
+              "type": "paragraph"
+            },
+            {
+              "anchorLabel": "(8)",
+              "display": true,
+              "id": "s2.1.eq8",
+              "latexSha": "14c8992782dabd8a",
+              "type": "formula"
+            },
+            {
+              "anchorLabel": "(9)",
+              "display": true,
+              "id": "s2.1.eq9",
+              "latexSha": "b784cd1fac73f8eb",
+              "type": "formula"
+            },
+            {
+              "id": "s2.1.p8",
+              "textLen": 139,
+              "textSha": "d53c37a7a8e44319",
+              "type": "paragraph"
+            },
+            {
+              "anchorLabel": "(10)",
+              "display": true,
+              "id": "s2.1.eq10",
+              "latexSha": "9bdacc6a4588b3c8",
+              "type": "formula"
+            },
+            {
+              "id": "s2.1.p9",
+              "textLen": 115,
+              "textSha": "676b0d06e61fdb7d",
+              "type": "paragraph"
+            },
+            {
+              "id": "s2.1.p10",
+              "textLen": 239,
+              "textSha": "cd2552ec998070cb",
+              "type": "paragraph"
+            },
+            {
+              "anchorLabel": "(11)",
+              "display": true,
+              "id": "s2.1.eq11",
+              "latexSha": "d771c8d3108537d3",
+              "type": "formula"
+            }
+          ],
+          "id": "s2.1",
+          "sections": [],
+          "title": "Diffusion Models in continuous state space"
+        },
+        {
+          "blocks": [
+            {
+              "id": "s2.2.p1",
+              "textLen": 887,
+              "textSha": "9781b07af705876e",
+              "type": "paragraph"
+            },
+            {
+              "anchorLabel": "(12)",
+              "display": true,
+              "id": "s2.2.eq1",
+              "latexSha": "abb2953b111ddd9d",
+              "type": "formula"
+            },
+            {
+              "anchorLabel": "(13)",
+              "display": true,
+              "id": "s2.2.eq2",
+              "latexSha": "e5e87a009cc00eff",
+              "type": "formula"
+            },
+            {
+              "id": "s2.2.p2",
+              "textLen": 301,
+              "textSha": "e73518fbee7b0ef9",
+              "type": "paragraph"
+            },
+            {
+              "anchorLabel": "(14)",
+              "display": true,
+              "id": "s2.2.eq3",
+              "latexSha": "843983ed5cda7914",
+              "type": "formula"
+            },
+            {
+              "id": "s2.2.p3",
+              "textLen": 370,
+              "textSha": "f4b984cd0c6e7522",
+              "type": "paragraph"
+            },
+            {
+              "id": "s2.2.p4",
+              "textLen": 696,
+              "textSha": "2e9e6acf784fa914",
+              "type": "paragraph"
+            }
+          ],
+          "id": "s2.2",
+          "sections": [],
+          "title": "Discrete Representation of Images"
+        }
+      ],
+      "title": "Preliminaries"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s3.p1",
+          "textLen": 162,
+          "textSha": "40fccd8e1dbb227a",
+          "type": "paragraph"
+        },
+        {
+          "id": "s3.p2",
+          "textLen": 845,
+          "textSha": "6db1743e73cd9758",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s3",
+      "sections": [
+        {
+          "blocks": [
+            {
+              "id": "s3.1.p1",
+              "textLen": 324,
+              "textSha": "c0741a90ff6d60af",
+              "type": "paragraph"
+            },
+            {
+              "anchorLabel": "(15)",
+              "display": true,
+              "id": "s3.1.eq1",
+              "latexSha": "33da7eb813c87cb9",
+              "type": "formula"
+            },
+            {
+              "id": "s3.1.p2",
+              "textLen": 436,
+              "textSha": "ce5fee252ba61f07",
+              "type": "paragraph"
+            },
+            {
+              "anchorLabel": "(16)",
+              "display": true,
+              "id": "s3.1.eq2",
+              "latexSha": "3ba55e92d6f842c6",
+              "type": "formula"
+            },
+            {
+              "id": "s3.1.p3",
+              "textLen": 185,
+              "textSha": "447484b1ce720693",
+              "type": "paragraph"
+            },
+            {
+              "anchorLabel": "(17)",
+              "display": true,
+              "id": "s3.1.eq3",
+              "latexSha": "003a23a3057f2246",
+              "type": "formula"
+            },
+            {
+              "anchorLabel": "(18)",
+              "display": true,
+              "id": "s3.1.eq4",
+              "latexSha": "e3e7af228a30aa56",
+              "type": "formula"
+            },
+            {
+              "id": "s3.1.p4",
+              "textLen": 228,
+              "textSha": "887301d3f6e60057",
+              "type": "paragraph"
+            },
+            {
+              "anchorLabel": "(19)",
+              "display": true,
+              "id": "s3.1.eq5",
+              "latexSha": "0a035f8aae371f17",
+              "type": "formula"
+            },
+            {
+              "id": "s3.1.p5",
+              "textLen": 111,
+              "textSha": "5b2244f89d208f6a",
+              "type": "paragraph"
+            },
+            {
+              "anchorLabel": "(20)",
+              "display": true,
+              "id": "s3.1.eq6",
+              "latexSha": "e6b09725d735bbe6",
+              "type": "formula"
+            },
+            {
+              "anchorLabel": "(21)",
+              "display": true,
+              "id": "s3.1.eq7",
+              "latexSha": "bc590c0f95d6a9d7",
+              "type": "formula"
+            },
+            {
+              "id": "s3.1.p6",
+              "textLen": 397,
+              "textSha": "f93dfd3b28c4449c",
+              "type": "paragraph"
+            },
+            {
+              "id": "s3.1.p7",
+              "textLen": 446,
+              "textSha": "0628e64758393d61",
+              "type": "paragraph"
+            },
+            {
+              "anchorLabel": "(22)",
+              "display": true,
+              "id": "s3.1.eq8",
+              "latexSha": "fffc01c80747e571",
+              "type": "formula"
+            },
+            {
+              "id": "s3.1.p8",
+              "textLen": 169,
+              "textSha": "7570218b6451c52d",
+              "type": "paragraph"
+            },
+            {
+              "anchorLabel": "(23)",
+              "display": true,
+              "id": "s3.1.eq9",
+              "latexSha": "b870c067759a44aa",
+              "type": "formula"
+            },
+            {
+              "id": "s3.1.p9",
+              "textLen": 829,
+              "textSha": "baef20f0f1c9d6c1",
+              "type": "paragraph"
+            },
+            {
+              "id": "s3.1.p10",
+              "textLen": 100,
+              "textSha": "66d24cd32c85082a",
+              "type": "paragraph"
+            },
+            {
+              "anchorLabel": "(24)",
+              "display": true,
+              "id": "s3.1.eq10",
+              "latexSha": "a1baffc8c99a4119",
+              "type": "formula"
+            }
+          ],
+          "id": "s3.1",
+          "sections": [],
+          "title": "Discrete Diffusion Model"
+        },
+        {
+          "blocks": [
+            {
+              "id": "s3.2.p1",
+              "textLen": 418,
+              "textSha": "961ab6e524794f2c",
+              "type": "paragraph"
+            },
+            {
+              "id": "s3.2.p2",
+              "textLen": 281,
+              "textSha": "301cc697b90ded15",
+              "type": "paragraph"
+            },
+            {
+              "id": "s3.2.p3",
+              "textLen": 457,
+              "textSha": "c8e099ac5d297c17",
+              "type": "paragraph"
+            },
+            {
+              "id": "s3.2.p4",
+              "textLen": 1254,
+              "textSha": "db88320ecf09e9f4",
+              "type": "paragraph"
+            }
+          ],
+          "id": "s3.2",
+          "sections": [],
+          "title": "Re-build and Fine-tune Strategy"
+        }
+      ],
+      "title": "Methods"
+    },
+    {
+      "blocks": [],
+      "id": "s4",
+      "sections": [
+        {
+          "blocks": [
+            {
+              "id": "s4.1.p1",
+              "textLen": 242,
+              "textSha": "317616afadc7b4c3",
+              "type": "paragraph"
+            },
+            {
+              "id": "s4.1.p2",
+              "textLen": 894,
+              "textSha": "a67bf17eb6bb6e63",
+              "type": "paragraph"
+            },
+            {
+              "id": "s4.1.p3",
+              "textLen": 312,
+              "textSha": "394cca27eadbed7a",
+              "type": "paragraph"
+            }
+          ],
+          "id": "s4.1",
+          "sections": [],
+          "title": "Datasets and Implementation Details"
+        },
+        {
+          "blocks": [
+            {
+              "id": "s4.2.p1",
+              "textLen": 388,
+              "textSha": "78b09d84e45ef535",
+              "type": "paragraph"
+            },
+            {
+              "id": "s4.2.p2",
+              "textLen": 360,
+              "textSha": "d97130e984b2673f",
+              "type": "paragraph"
+            },
+            {
+              "id": "s4.2.p3",
+              "textLen": 693,
+              "textSha": "3ea86fe6493351a0",
+              "type": "paragraph"
+            },
+            {
+              "id": "s4.2.p4",
+              "textLen": 534,
+              "textSha": "4924b7fc06419f1d",
+              "type": "paragraph"
+            },
+            {
+              "anchorLabel": "Table 1",
+              "caption": "FID between reconstructed images and original images on Cele",
+              "cols": 7,
+              "id": "s4.2.tbl1",
+              "rows": 9,
+              "type": "table"
+            },
+            {
+              "anchorLabel": "Figure 3",
+              "assetRef": "assetId='2112.01799:v1:figure:2' type=<Type.figure: 'figure'> ordinal=2 caption='Reconstruction images \\\\(384\\\\times 384\\\\) from ImageNet based VQ-GAN and ReFiT' sourceMode=None",
+              "caption": "Reconstruction images \\(384\\times 384\\) from ImageNet based ",
+              "id": "s4.2.fig1",
+              "type": "figure"
+            },
+            {
+              "anchorLabel": "Figure 4",
+              "assetRef": "assetId='2112.01799:v1:figure:3' type=<Type.figure: 'figure'> ordinal=3 caption='Reconstruction images of CelebA HQ \\\\(256\\\\times 256\\\\) from VQ-GAN and ReFiT.' sourceMode=None",
+              "caption": "Reconstruction images of CelebA HQ \\(256\\times 256\\) from VQ",
+              "id": "s4.2.fig2",
+              "type": "figure"
+            }
+          ],
+          "id": "s4.2",
+          "sections": [],
+          "title": "Codebook Quality"
+        },
+        {
+          "blocks": [
+            {
+              "id": "s4.3.p1",
+              "textLen": 405,
+              "textSha": "2285ca10dd6a9e3b",
+              "type": "paragraph"
+            },
+            {
+              "id": "s4.3.p2",
+              "textLen": 474,
+              "textSha": "54dbc912abcf65ae",
+              "type": "paragraph"
+            },
+            {
+              "anchorLabel": "Figure 5",
+              "assetRef": "assetId='2112.01799:v1:figure:4' type=<Type.figure: 'figure'> ordinal=4 caption='Steps and corresponding FID during the sampling. The text annotations are hours to sample 50k latent feature maps on 1 NVIDIA 2080Ti GPU' sourceMode=None",
+              "caption": "Steps and corresponding FID during the sampling. The text an",
+              "id": "s4.3.fig1",
+              "type": "figure"
+            },
+            {
+              "anchorLabel": "Figure 6",
+              "assetRef": "assetId='2112.01799:v1:figure:5' type=<Type.figure: 'figure'> ordinal=5 caption='Hours to sampling 50k latent codes by VQ-DDM and generating 50k images with VQ-DDM and DDPM' sourceMode=None",
+              "caption": "Hours to sampling 50k latent codes by VQ-DDM and generating ",
+              "id": "s4.3.fig2",
+              "type": "figure"
+            },
+            {
+              "anchorLabel": "Figure 7",
+              "assetRef": "assetId='2112.01799:v1:figure:6' type=<Type.figure: 'figure'> ordinal=6 caption='Samples from VQ-DDM models.' sourceMode=None",
+              "caption": "Samples from VQ-DDM models.",
+              "id": "s4.3.fig3",
+              "type": "figure"
+            },
+            {
+              "id": "s4.3.p3",
+              "textLen": 456,
+              "textSha": "33a5e46a620dd7c1",
+              "type": "paragraph"
+            },
+            {
+              "id": "s4.3.p4",
+              "textLen": 291,
+              "textSha": "28c194bfc77bfa40",
+              "type": "paragraph"
+            },
+            {
+              "id": "s4.3.p5",
+              "textLen": 353,
+              "textSha": "10bc1ded4e85f19f",
+              "type": "paragraph"
+            }
+          ],
+          "id": "s4.3",
+          "sections": [],
+          "title": "Generation Quality"
+        },
+        {
+          "blocks": [
+            {
+              "id": "s4.4.p1",
+              "textLen": 550,
+              "textSha": "d3d67156ebd1c142",
+              "type": "paragraph"
+            },
+            {
+              "id": "s4.4.p2",
+              "textLen": 1038,
+              "textSha": "062583cc825925f0",
+              "type": "paragraph"
+            },
+            {
+              "id": "s4.4.p3",
+              "textLen": 943,
+              "textSha": "2e9e4c1303f85e27",
+              "type": "paragraph"
+            },
+            {
+              "anchorLabel": "Table 2",
+              "caption": "FID on CelebA HQ \\(256\\times 256\\) dataset. All the FLOPs in",
+              "cols": 4,
+              "id": "s4.4.tbl1",
+              "rows": 13,
+              "type": "table"
+            },
+            {
+              "anchorLabel": "Figure 8",
+              "assetRef": "assetId='2112.01799:v1:figure:7' type=<Type.figure: 'figure'> ordinal=7 caption='Completions with the arbitrary masks.' sourceMode=None",
+              "caption": "Completions with the arbitrary masks.",
+              "id": "s4.4.fig1",
+              "type": "figure"
+            }
+          ],
+          "id": "s4.4",
+          "sections": [],
+          "title": "Image Inpainting"
+        }
+      ],
+      "title": "Experiments and Analysis"
+    },
+    {
+      "blocks": [],
+      "id": "s5",
+      "sections": [
+        {
+          "blocks": [
+            {
+              "id": "s5.1.p1",
+              "textLen": 657,
+              "textSha": "c244580f23dedff1",
+              "type": "paragraph"
+            },
+            {
+              "id": "s5.1.p2",
+              "textLen": 196,
+              "textSha": "a3d3aae9ff13a68f",
+              "type": "paragraph"
+            }
+          ],
+          "id": "s5.1",
+          "sections": [],
+          "title": "Vector Quantised Variational Autoencoders"
+        },
+        {
+          "blocks": [
+            {
+              "id": "s5.2.p1",
+              "textLen": 398,
+              "textSha": "12088403f51d4a05",
+              "type": "paragraph"
+            },
+            {
+              "id": "s5.2.p2",
+              "textLen": 742,
+              "textSha": "f6e5b789e2331264",
+              "type": "paragraph"
+            }
+          ],
+          "id": "s5.2",
+          "sections": [],
+          "title": "Diffusion Models"
+        }
+      ],
+      "title": "Related Work"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s6.p1",
+          "textLen": 793,
+          "textSha": "f0c04b7ee182a9e5",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s6",
+      "sections": [
+        {
+          "blocks": [
+            {
+              "id": "s6.1.p1",
+              "textLen": 259,
+              "textSha": "31f7b490dd628901",
+              "type": "paragraph"
+            }
+          ],
+          "id": "s6.1",
+          "sections": [],
+          "title": "Limitations"
+        }
+      ],
+      "title": "Conclusion"
+    },
+    {
+      "blocks": [],
+      "id": "s7",
+      "sections": [
+        {
+          "blocks": [
+            {
+              "id": "s7.1.p1",
+              "textLen": 159,
+              "textSha": "b60b4633683cd8ad",
+              "type": "paragraph"
+            },
+            {
+              "id": "s7.1.p2",
+              "textLen": 222,
+              "textSha": "de79f2fea5d3408b",
+              "type": "paragraph"
+            }
+          ],
+          "id": "s7.1",
+          "sections": [],
+          "title": "Datasets"
+        },
+        {
+          "blocks": [
+            {
+              "id": "s7.2.p1",
+              "textLen": 124,
+              "textSha": "e00faf914145b06e",
+              "type": "paragraph"
+            },
+            {
+              "anchorLabel": "Table 3",
+              "caption": "Brief Architecture of the VQ-GAN encoder and decoder",
+              "cols": 2,
+              "id": "s7.2.tbl1",
+              "rows": 5,
+              "type": "table"
+            },
+            {
+              "id": "s7.2.p2",
+              "textLen": 505,
+              "textSha": "ab4c71e894ae3ba6",
+              "type": "paragraph"
+            }
+          ],
+          "id": "s7.2",
+          "sections": [],
+          "title": "Discrete VAEs"
+        },
+        {
+          "blocks": [
+            {
+              "id": "s7.3.p1",
+              "textLen": 454,
+              "textSha": "bedb13c29a496852",
+              "type": "paragraph"
+            },
+            {
+              "id": "s7.3.p2",
+              "textLen": 369,
+              "textSha": "0b43e3809cf6d36d",
+              "type": "paragraph"
+            },
+            {
+              "id": "s7.3.p3",
+              "textLen": 418,
+              "textSha": "7145399497cb2e53",
+              "type": "paragraph"
+            },
+            {
+              "id": "s7.3.p4",
+              "textLen": 244,
+              "textSha": "8a0b6d89c8d9c451",
+              "type": "paragraph"
+            }
+          ],
+          "id": "s7.3",
+          "sections": [],
+          "title": "Discrete Diffusion Models"
+        },
+        {
+          "blocks": [
+            {
+              "id": "s7.4.p1",
+              "textLen": 160,
+              "textSha": "c946e1705c551890",
+              "type": "paragraph"
+            }
+          ],
+          "id": "s7.4",
+          "sections": [],
+          "title": "Additional Results"
+        },
+        {
+          "blocks": [
+            {
+              "id": "s7.5.p1",
+              "textLen": 387,
+              "textSha": "f2f3e66e2760351a",
+              "type": "paragraph"
+            }
+          ],
+          "id": "s7.5",
+          "sections": [],
+          "title": "Risk of overfitting"
+        },
+        {
+          "blocks": [
+            {
+              "id": "s7.6.p1",
+              "textLen": 384,
+              "textSha": "8d13cd1afadb06bf",
+              "type": "paragraph"
+            },
+            {
+              "anchorLabel": "Figure 9",
+              "assetRef": "assetId='2112.01799:v1:figure:8' type=<Type.figure: 'figure'> ordinal=8 caption='Additional samples on LSUN-Church.' sourceMode=None",
+              "caption": "Additional samples on LSUN-Church.",
+              "id": "s7.6.fig1",
+              "type": "figure"
+            },
+            {
+              "anchorLabel": "Figure 10",
+              "assetRef": "assetId='2112.01799:v1:figure:9' type=<Type.figure: 'figure'> ordinal=9 caption='Additional samples on CelebA-HQ.' sourceMode=None",
+              "caption": "Additional samples on CelebA-HQ.",
+              "id": "s7.6.fig2",
+              "type": "figure"
+            },
+            {
+              "anchorLabel": "Figure 11",
+              "assetRef": "assetId='2112.01799:v1:figure:10' type=<Type.figure: 'figure'> ordinal=10 caption='Additional samples on image inpainting for CelebA-HQ.' sourceMode=None",
+              "caption": "Additional samples on image inpainting for CelebA-HQ.",
+              "id": "s7.6.fig3",
+              "type": "figure"
+            },
+            {
+              "anchorLabel": "Figure 12",
+              "assetRef": "assetId='2112.01799:v1:figure:11' type=<Type.figure: 'figure'> ordinal=11 caption='Nearest Neighbours for CelebA-HQ \\\\(256\\\\times 256\\\\) model. The left column are the images generated by our model, and the remaining images are the nearest neighbors(with minimum LPIPS distance) from the training set.' sourceMode=None",
+              "caption": "Nearest Neighbours for CelebA-HQ \\(256\\times 256\\) model. Th",
+              "id": "s7.6.fig4",
+              "type": "figure"
+            }
+          ],
+          "id": "s7.6",
+          "sections": [],
+          "title": "Societal Impact"
+        }
+      ],
+      "title": "Appendix"
+    }
+  ]
+}

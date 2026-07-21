@@ -24,26 +24,20 @@ import time
 from docsuri_shared.index_spec import papers_index_body
 from docsuri_shared.vector_spec import EMBEDDING_SPEC
 
-from .adapters.aws import BedrockCohereEmbeddingPort, build_opensearch_client, collect_bulk_failures
-from .resilience import RetryPolicy, TokenBucket, is_retriable
+from .adapters.aws import (
+    BEDROCK_EMBED_BATCH_LIMIT,
+    BedrockCohereEmbeddingPort,
+    admin_client_from_settings,
+    collect_bulk_failures,
+)
+from .resilience import RetryPolicy, TokenBucket, retry_with_policy
 from .settings import IngestionSettings
 
 log = logging.getLogger("docsuri.ingestion.reembed")
 
 
 def _client(settings: IngestionSettings):
-    """OpenSearch admin client matching migrate._admin_client (TLS + SigV4 in prod, unsigned
-    local). Duplicated here rather than imported from .migrate: migrate imports THIS module for
-    _STEPS, so reusing its client would be a circular import."""
-    if not settings.opensearch_endpoint:
-        raise SystemExit("DOCSURI_OPENSEARCH_ENDPOINT is required")
-    local = settings.env == "local"
-    return build_opensearch_client(
-        endpoint=settings.opensearch_endpoint,
-        region_name=None if local else settings.aws_region,
-        use_ssl=not local,
-        verify_certs=not local,
-    )
+    return admin_client_from_settings(settings)
 
 
 def _source_index(settings: IngestionSettings) -> str:
@@ -51,9 +45,24 @@ def _source_index(settings: IngestionSettings) -> str:
 
 
 def _embed_text_for_source(src: dict) -> str:
-    """The text that produced a stored doc's vector: abstract chunks embedded the ``abstract``
-    field; body chunks embedded ``lexicalTerms`` (== normalize_text(chunk.text)). Fall back to
-    abstract then title so a body chunk with an empty lexicalTerms still yields a usable vector."""
+    """Reconstruct the text that produced a stored doc's vector.
+
+    The writer embeds ``chunk.text``, which the index does not store, so this reads it back from
+    the fields that do survive: body chunks from ``lexicalTerms`` (== normalize_text(chunk.text),
+    and the chunk text is already normalized upstream, so this is exact), abstract chunks from
+    ``abstract`` (``lexicalTerms`` is deliberately blanked for them). Falls back to abstract then
+    title so a body chunk with empty lexicalTerms still yields a usable vector.
+
+    EXACTNESS BOUND: the abstract branch is exact only while a paper's abstract fits one chunk,
+    which it always does at the default ``DOCSURI_MAX_CHUNK_CHARS`` (2400) because arXiv caps
+    submitted abstracts well below it. Lower that setting under the abstract length and every
+    abstract chunk of a paper re-embeds the WHOLE abstract instead of its own slice, giving that
+    paper duplicate vectors in the ``section=abstract`` space the reader searches. Making this
+    exact under any chunk size needs the embedded text stored per document (a shared-schema
+    change), not a re-split here — re-splitting would silently depend on the chunk settings
+    matching the ones used at write time, which nothing records.
+    Pinned by ``test_reembed_recovers_the_embed_text_the_writer_used``.
+    """
     if src.get("section") == "abstract":
         return src.get("abstract") or ""
     return src.get("lexicalTerms") or src.get("abstract") or src.get("title") or ""
@@ -70,16 +79,7 @@ def _embed_with_retry(embedding, texts, policy: RetryPolicy | None = None) -> li
     """Embed with backoff on transient Bedrock failures (throttling/5xx are now retriable via
     resilience.is_retriable), rather than letting one throttle abort a shard."""
     policy = policy or RetryPolicy(max_attempts=8, base_delay_seconds=2.0)
-    attempt = 0
-    while True:
-        attempt += 1
-        try:
-            return embedding.embed_documents(texts)
-        except Exception as exc:
-            if is_retriable(exc) and attempt < policy.max_attempts:
-                time.sleep(policy.delay_for_attempt(attempt))
-                continue
-            raise
+    return retry_with_policy(policy, lambda: embedding.embed_documents(texts))
 
 
 def reembed_provision(settings: IngestionSettings | None = None) -> int:
@@ -195,7 +195,7 @@ def reembed(settings: IngestionSettings | None = None) -> int:
         output_dimension=settings.reembed_dimension,
     )
     src, dst = _source_index(settings), settings.opensearch_index_reembed
-    page_size = min(96, max(1, settings.reembed_batch_size))
+    page_size = min(BEDROCK_EMBED_BATCH_LIMIT, max(1, settings.reembed_batch_size))
     # Paced mode: cap token throughput below the Bedrock quota + skip already-written docs. None →
     # unpaced legacy behaviour (needs quota headroom), byte-identical to before this knob existed.
     limiter = (

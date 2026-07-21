@@ -136,3 +136,44 @@ def test_guard_completes_permit_structurally() -> None:
         assert permit is not None
         permit.success()
     assert healthy.acquire() is not None  # CLOSED 유지
+
+
+def test_neutral_completion_preserves_the_failure_count() -> None:
+    """중립 완주는 카운터를 초기화하지도, 증가시키지도 않는다.
+
+    ``success()``로 마감하면 카운터가 0이 되어, retriable 실패와 중립 결과가 섞여 들어오는
+    장애에서는 임계에 영원히 도달하지 못한다 — 브레이커가 있으나 마나가 된다.
+    """
+    clock = _Clock()
+    breaker = _breaker(clock, threshold=3)
+    _fail_times(breaker, 2)
+
+    permit = breaker.acquire()
+    assert permit is not None
+    permit.neutral()
+    assert breaker.acquire() is not None, "중립 완주가 회로를 열어서는 안 된다"
+
+    _fail_times(breaker, 1)  # 누적 3회째
+    assert breaker.acquire() is None, "중립 완주가 앞선 실패를 지워버렸다"
+
+
+def test_a_neutral_probe_releases_the_slot_without_deciding_recovery() -> None:
+    """판정을 보류한 프로브는 슬롯만 반납하고 HALF-OPEN을 유지한다.
+
+    닫으면 회복을 증명하지 못한 의존성에 전체 트래픽이 복귀하고, 열면 그 의존성 탓이 아닌
+    결과로 회복 창 하나를 통째로 태운다.
+    """
+    clock = _Clock()
+    breaker = _breaker(clock, threshold=3, recovery=30.0)
+    _fail_times(breaker, 3)
+    clock.now = 31.0
+
+    probe = breaker.acquire()
+    assert probe is not None
+    probe.neutral()
+
+    # 여전히 HALF-OPEN: 다음 호출자가 진짜 프로브가 되고, 그 실패 한 번이 즉시 재개방한다.
+    retry = breaker.acquire()
+    assert retry is not None, "슬롯이 반납되지 않아 회로가 물렸다"
+    retry.failure()
+    assert breaker.acquire() is None

@@ -24,8 +24,10 @@ the document-order ordinal per type — no pixels are re-extracted (re-extractio
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 
 from bs4 import BeautifulSoup, NavigableString, Tag
 from docsuri_shared.dtos import DocModel, SourceTier
@@ -143,24 +145,18 @@ def parse_html_to_docmodel(
         sections = [_span_only_section(root, doc_ctx)]
     sections = _with_abstract_section(sections, abstract)
 
-    data = {
-        "meta": {
-            "paperId": paper_id,
-            "version": version,
-            "title": title,
-            **({"abstract": abstract} if abstract else {}),
-            **({"macros": macros} if macros else {}),
-            "provenance": {
-                "sourceTier": source_tier.value,
-                "parserVersion": parser_version,
-                "schemaVersion": schema_version,
-                "generatedAt": generated_at,
-            },
-        },
-        "fullText": _project_full_text(sections),
-        "sections": sections,
-    }
-    return DocModel.model_validate(data)
+    return _finish_docmodel(
+        sections,
+        paper_id=paper_id,
+        version=version,
+        title=title,
+        abstract=abstract,
+        source_tier=source_tier,
+        parser_version=parser_version,
+        schema_version=schema_version,
+        generated_at=generated_at,
+        macros=macros,
+    )
 
 
 def parse_text_to_docmodel(
@@ -189,23 +185,17 @@ def parse_text_to_docmodel(
         "blocks": ([{"id": "s1.p1", "type": "paragraph", "text": body}] if body else []),
     }
     sections.append(section)
-    data = {
-        "meta": {
-            "paperId": paper_id,
-            "version": version,
-            "title": title,
-            **({"abstract": abstract} if abstract else {}),
-            "provenance": {
-                "sourceTier": source_tier.value,
-                "parserVersion": parser_version,
-                "schemaVersion": schema_version,
-                "generatedAt": generated_at,
-            },
-        },
-        "fullText": _project_full_text(sections),
-        "sections": sections,
-    }
-    return DocModel.model_validate(data)
+    return _finish_docmodel(
+        sections,
+        paper_id=paper_id,
+        version=version,
+        title=title,
+        abstract=abstract,
+        source_tier=source_tier,
+        parser_version=parser_version,
+        schema_version=schema_version,
+        generated_at=generated_at,
+    )
 
 
 # --------------------------------------------------------------------------- sections
@@ -366,10 +356,8 @@ def _paragraph_block(p: Tag, sec_ctx: _SectionCtx) -> dict | None:
 
 def _table_block(figure_el: Tag, sec_ctx: _SectionCtx) -> dict | None:
     table = figure_el.find("table", class_="ltx_tabular")
-    if table is None:
-        return None
     rows: list[dict] = []
-    for tr in table.find_all("tr"):
+    for tr in table.find_all("tr") if table is not None else ():
         # A stacked/rotated column header can itself be a NESTED <table> (LaTeXML renders a
         # two-line "Name / ↑" header as a mini table inside the header cell). find_all("tr")
         # descends into those and would pull their rows up as phantom single-cell main rows
@@ -392,9 +380,12 @@ def _table_block(figure_el: Tag, sec_ctx: _SectionCtx) -> dict | None:
                 cell_dict["rowspan"] = rowspan
             cells.append(cell_dict)
         rows.append({"cells": cells})
-    if not rows:
-        return None
+    # Empty rows are kept, not dropped — same contract as the TEI path: a table body this parser
+    # cannot model must not take the caption down with it (BR-S3 preserves captions). Only a
+    # table with neither rows nor a caption carries nothing and is still discarded.
     label, caption = _caption(figure_el)
+    if not rows and not caption:
+        return None
     block: dict = {"id": sec_ctx.next_id("table"), "type": "table", "rows": rows}
     if caption:
         block["caption"] = caption
@@ -637,6 +628,78 @@ def _int_attr(el: Tag, name: str) -> int:
         return 1
 
 
+def _finish_docmodel(
+    sections: list[dict],
+    *,
+    paper_id: str,
+    version: int,
+    title: str,
+    abstract: str | None,
+    source_tier: SourceTier,
+    parser_version: str,
+    schema_version: str,
+    generated_at: datetime,
+    macros: object | None = None,
+) -> DocModel:
+    """Wrap a built section tree in meta/provenance, project fullText, and validate.
+
+    Every doc-model producer (ar5iv HTML, GROBID TEI, flat text) ends here, so the meta shape
+    and the fullText projection cannot diverge between parsers.
+    """
+    data = {
+        "meta": {
+            "paperId": paper_id,
+            "version": version,
+            "title": title,
+            **({"abstract": abstract} if abstract else {}),
+            **({"macros": macros} if macros else {}),
+            "provenance": {
+                "sourceTier": source_tier.value,
+                "parserVersion": parser_version,
+                "schemaVersion": schema_version,
+                "generatedAt": generated_at,
+            },
+        },
+        "fullText": _project_full_text(sections),
+        "sections": sections,
+    }
+    return DocModel.model_validate(data)
+
+
+def block_text_parts(block: Mapping[str, Any]) -> list[str]:
+    """The renderable text fragments of one doc-model block, in reading order.
+
+    This is the single statement of *which fields of each block type carry text* — tables
+    contribute their label/caption plus a fragment per row, figures their label/caption, formulas
+    their LaTeX, and AssetRef internals never contribute. Presentation is the caller's business:
+    ``_project_full_text`` joins fragments as separate paragraphs, while the doc-model builder's
+    truncation gate only measures their total length. Fragments are raw; callers collapse
+    whitespace and drop empties.
+
+    ``processors._docmodel_block_text`` applies the same rule to *validated* blocks — it runs on
+    the chunking hot path where dumping each block to a dict would be wasteful. The two are kept
+    in lockstep by ``test_block_projection_covers_every_block_type``.
+    """
+    kind = block.get("type")
+    if kind in ("paragraph", "code"):
+        return [block.get("text") or ""]
+    if kind == "formula":
+        return [block.get("latex") or ""]
+    if kind == "list":
+        return [item.get("text") or "" for item in block.get("items") or []]
+    if kind in ("figure", "table"):
+        label = block.get("anchorLabel")
+        caption = block.get("caption")
+        parts = [" ".join(v for v in (label, caption) if v)]
+        if kind == "table":
+            parts.extend(
+                " | ".join(cell.get("text", "") for cell in row.get("cells", []) or [])
+                for row in block.get("rows") or []
+            )
+        return parts
+    return []
+
+
 def _project_full_text(sections: list[dict]) -> str:
     """Reading-order text projection for DocModel.fullText.
 
@@ -654,26 +717,8 @@ def _project_full_text(sections: list[dict]) -> str:
     def walk_section(section: dict) -> None:
         add(section.get("title"))
         for block in section.get("blocks", []):
-            kind = block.get("type")
-            if kind == "paragraph":
-                add(block.get("text"))
-            elif kind == "table":
-                label = block.get("anchorLabel")
-                caption = block.get("caption")
-                add(" ".join(v for v in (label, caption) if v))
-                for row in block.get("rows", []):
-                    add(" | ".join(cell.get("text", "") for cell in row.get("cells", [])))
-            elif kind == "formula":
-                add(block.get("latex"))
-            elif kind == "figure":
-                label = block.get("anchorLabel")
-                caption = block.get("caption")
-                add(" ".join(v for v in (label, caption) if v))
-            elif kind == "list":
-                for item in block.get("items", []):
-                    add(item.get("text"))
-            elif kind == "code":
-                add(block.get("text"))
+            for part in block_text_parts(block):
+                add(part)
         for child in section.get("sections", []) or []:
             walk_section(child)
 

@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import xml.etree.ElementTree as ET
-
+from docsuri_ingestion.docmodel.tei import tei_to_text
 from docsuri_ingestion.domain.enums import FailureReason
 from docsuri_ingestion.domain.errors import PermanentIngestionError, RetriableIngestionError
-from docsuri_ingestion.xmlsafe import safe_fromstring
 
 _TEMPORARY_4XX = {408, 409, 423, 425, 429}
 
@@ -31,7 +29,7 @@ class GrobidHttpClient:
 
     def extract_text(self, pdf: bytes) -> str:
         """Flattened reading-order text (TEI ``itertext``). Legacy/withdrawal-scan use."""
-        return _tei_to_text(self.extract_tei(pdf))
+        return tei_to_text(self.extract_tei(pdf))
 
     def extract_tei(self, pdf: bytes) -> str:
         """Raw TEI XML from ``processFulltextDocument`` (structured doc-model source)."""
@@ -83,22 +81,3 @@ class GrobidHttpClient:
         # TEI from an internal sidecar; the entity-expansion + 32 MB size cap lives in the
         # downstream ``safe_fromstring`` parse (xmlsafe), and the input PDF is itself fetch-capped.
         return response.text
-
-
-def _tei_to_text(tei: str) -> str:
-    try:
-        root = safe_fromstring(tei)
-    except ET.ParseError as exc:
-        raise PermanentIngestionError(
-            "GROBID returned invalid TEI",
-            reason=FailureReason.PARSE_FAILURE,
-            stage="grobid",
-        ) from exc
-    text = " ".join(part.strip() for part in root.itertext() if part.strip())
-    if not text:
-        raise PermanentIngestionError(
-            "GROBID returned empty TEI",
-            reason=FailureReason.PARSE_FAILURE,
-            stage="grobid",
-        )
-    return text

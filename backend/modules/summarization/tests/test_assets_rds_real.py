@@ -87,3 +87,31 @@ def test_presign_signs_s3_ref_and_drops_non_s3():
     assert "bkt" in url and f"assets/{_PAPER}/v1/fig.webp" in url and "900" in url
     # SEC-9: a non-s3 ref must never be returned raw — None so the caller skips the asset.
     assert reader.presign("https://arxiv.org/abs/2401.00001") is None
+
+
+def test_presign_targets_the_configured_endpoint(monkeypatch) -> None:
+    """The reader builds its own boto3 client, so it must honour the local S3 endpoint.
+
+    ``_client`` passes ``endpoint_url`` explicitly, which suppresses boto3's own
+    ``AWS_ENDPOINT_URL_S3`` handling. Without reading that variable back the solo-local stack
+    presigns against real AWS — figures then 404 against infrastructure that is retired, and the
+    failure surfaces as broken images rather than an error.
+    """
+    monkeypatch.setenv("AWS_REGION", "ap-northeast-2")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test-key")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test-secret")
+
+    monkeypatch.setenv("AWS_ENDPOINT_URL_S3", "http://localhost:9000")
+    local = RdsS3AssetReader(dsn=DSN or "", signed_url_ttl_seconds=60)
+    url = local._client().generate_presigned_url(  # noqa: SLF001 - the client under test
+        "get_object", Params={"Bucket": "docsuri", "Key": "assets/x.webp"}, ExpiresIn=60
+    )
+    assert url.startswith("http://localhost:9000/"), url
+
+    # With no override the regional AWS endpoint is still used — the CSP-driven default stands.
+    monkeypatch.delenv("AWS_ENDPOINT_URL_S3", raising=False)
+    aws = RdsS3AssetReader(dsn=DSN or "", signed_url_ttl_seconds=60)
+    url = aws._client().generate_presigned_url(  # noqa: SLF001
+        "get_object", Params={"Bucket": "docsuri", "Key": "assets/x.webp"}, ExpiresIn=60
+    )
+    assert url.startswith("https://s3.ap-northeast-2.amazonaws.com/"), url

@@ -10,7 +10,8 @@ from docsuri_shared.ids import chunk_id
 from docsuri_shared.vector_spec import EMBEDDING_SPEC, IndexRecord
 
 from .config import OPEN_ACCESS_LICENSE_ALLOWLIST, WITHDRAWAL_MARKERS
-from .domain.enums import DedupDecision, SourceName
+from .domain.canonical import arxiv_tier_label
+from .domain.enums import SourceName
 from .domain.errors import LicenseRejectedError, ValidationViolationError
 from .domain.ids import year_from_paper_id
 from .domain.models import (
@@ -65,7 +66,7 @@ class FetchParseProcessor:
             withdrawal_detected=withdrawal_detected,
             source_name=SourceName.ARXIV,
             source_id=identifier.arxiv_id,
-            source_tier="ARXIV_PDF" if "/pdf/" in raw.source_url else "ARXIV_HTML",
+            source_tier=arxiv_tier_label(raw.source_tier),
             source_url=raw.source_url,
             source_arxiv_id=identifier.arxiv_id,
             display_arxiv_id=identifier.arxiv_id,
@@ -97,24 +98,39 @@ class Chunker:
     overlap_chars: int = 240
     max_chunks_per_paper: int = 128
 
+    def _fill(
+        self,
+        chunks: list[Chunk],
+        paper_id: str,
+        section: str,
+        text: str,
+        refs: tuple[ChunkBlockRef, ...] = (),
+    ) -> bool:
+        """Split ``text`` and append chunks in ordinal order until the per-paper cap is reached.
+
+        Returns True once the cap is full, so callers can stop feeding sections.
+        """
+        for part in split_text(text, self.max_chunk_chars, self.overlap_chars):
+            if len(chunks) >= self.max_chunks_per_paper:
+                return True
+            ordinal = len(chunks)
+            chunks.append(
+                Chunk(
+                    paper_id=paper_id,
+                    ordinal=ordinal,
+                    section=section,
+                    text=part,
+                    chunk_id=chunk_id(paper_id, ordinal),
+                    block_refs=refs,
+                )
+            )
+        return len(chunks) >= self.max_chunks_per_paper
+
     def chunk(self, paper: ParsedPaper) -> ChunkSet:
         sections = [("abstract", paper.abstract), *split_sections(paper.full_text)]
         chunks: list[Chunk] = []
         for section, section_text in sections:
-            for text in split_text(section_text, self.max_chunk_chars, self.overlap_chars):
-                if len(chunks) >= self.max_chunks_per_paper:
-                    break
-                ordinal = len(chunks)
-                chunks.append(
-                    Chunk(
-                        paper_id=paper.paper_id,
-                        ordinal=ordinal,
-                        section=section,
-                        text=text,
-                        chunk_id=chunk_id(paper.paper_id, ordinal),
-                    )
-                )
-            if len(chunks) >= self.max_chunks_per_paper:
+            if self._fill(chunks, paper.paper_id, section, section_text):
                 break
         if not chunks:
             raise ValidationViolationError("paper produced no chunks", stage="chunk")
@@ -168,40 +184,11 @@ class Chunker:
 
         chunks: list[Chunk] = []
         for section, text, refs in entries:
-            if len(chunks) >= self.max_chunks_per_paper:
-                break
-            for part in split_text(text, self.max_chunk_chars, self.overlap_chars):
-                if len(chunks) >= self.max_chunks_per_paper:
-                    break
-                ordinal = len(chunks)
-                chunks.append(
-                    Chunk(
-                        paper_id=doc.meta.paperId,
-                        ordinal=ordinal,
-                        section=section or "body",
-                        text=part,
-                        chunk_id=chunk_id(doc.meta.paperId, ordinal),
-                        block_refs=refs,
-                    )
-                )
-            if len(chunks) >= self.max_chunks_per_paper:
+            if self._fill(chunks, doc.meta.paperId, section or "body", text, refs):
                 break
 
         if not chunks and doc.fullText and fallback_refs:
-            for part in split_text(doc.fullText, self.max_chunk_chars, self.overlap_chars):
-                ordinal = len(chunks)
-                chunks.append(
-                    Chunk(
-                        paper_id=doc.meta.paperId,
-                        ordinal=ordinal,
-                        section="body",
-                        text=part,
-                        chunk_id=chunk_id(doc.meta.paperId, ordinal),
-                        block_refs=fallback_refs,
-                    )
-                )
-                if len(chunks) >= self.max_chunks_per_paper:
-                    break
+            self._fill(chunks, doc.meta.paperId, "body", doc.fullText, fallback_refs)
 
         referenced = {
             (ref.section_id, ref.block_id, ref.block_type)
@@ -353,9 +340,15 @@ def _docmodel_block_text(block) -> str:
     return ""
 
 
-def detect_withdrawal(metadata: MetadataRecord, text: str) -> bool:
-    haystack = f"{metadata.title} {metadata.abstract} {text}".lower()
+def detect_withdrawal_text(title: str, abstract: str, text: str) -> bool:
+    """Withdrawal-marker scan over the raw strings — for callers that hold no MetadataRecord
+    (the corpus source path builds a ParsedPaper straight from a SourcePaperRecord)."""
+    haystack = f"{title} {abstract} {text}".lower()
     return any(marker in haystack for marker in WITHDRAWAL_MARKERS)
+
+
+def detect_withdrawal(metadata: MetadataRecord, text: str) -> bool:
+    return detect_withdrawal_text(metadata.title, metadata.abstract, text)
 
 
 def split_sections(text: str) -> list[tuple[str, str]]:
@@ -410,10 +403,6 @@ def snippet(abstract: str, max_chars: int = 280) -> str:
     if len(clean) <= max_chars:
         return clean
     return clean[: max_chars - 1].rstrip() + "..."
-
-
-def decision_from_state(result: DedupResult) -> DedupDecision:
-    return result.decision
 
 
 def assert_writer_embedding_role() -> None:

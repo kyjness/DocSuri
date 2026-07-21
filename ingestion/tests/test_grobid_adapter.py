@@ -2,19 +2,20 @@ from __future__ import annotations
 
 import pytest
 
-from docsuri_ingestion.adapters.grobid import GrobidHttpClient, _tei_to_text
+from docsuri_ingestion.adapters.grobid import GrobidHttpClient
+from docsuri_ingestion.docmodel.tei import tei_to_text
 from docsuri_ingestion.domain.errors import PermanentIngestionError, RetriableIngestionError
 from docsuri_ingestion.settings import IngestionSettings, validate_corpus_build_settings
 
 
 def test_grobid_tei_to_text_extracts_body_text() -> None:
-    text = _tei_to_text("<TEI><text><body><p>First</p><p>Second</p></body></text></TEI>")
+    text = tei_to_text("<TEI><text><body><p>First</p><p>Second</p></body></text></TEI>")
     assert text == "First Second"
 
 
 def test_grobid_tei_to_text_rejects_invalid_xml() -> None:
     with pytest.raises(PermanentIngestionError):
-        _tei_to_text("<TEI>")
+        tei_to_text("<TEI>")
 
 
 def test_corpus_settings_parse_grobid_and_alias_env() -> None:

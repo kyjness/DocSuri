@@ -26,7 +26,8 @@ from .application import IngestionPipelineService, RefreshOrchestrationService
 from .corpus_sources import CorpusSourceAdapterSet
 from .domain.enums import SourceName
 from .observability import LoggingObservabilityHub
-from .resilience import IngestFailureHandler, IngestionResilienceService
+from .processors import Chunker
+from .resilience import IngestFailureHandler, IngestionResilienceService, TokenBucket
 from .settings import IngestionSettings
 
 
@@ -82,7 +83,7 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
     raw_cache_on = settings.raw_cache_mode != "off" and bool(settings.s3_bucket)
     arxiv = ArxivHttpSource(
         timeout_seconds=settings.request_timeout_seconds,
-        rate_limiter=None,
+        rate_limiter=TokenBucket(rate_per_second=settings.arxiv_rate_per_second),
         raw_store=(
             S3RawContentStore(
                 bucket=settings.s3_bucket or "",
@@ -102,7 +103,7 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
             base_url=settings.grobid_url,
             timeout_seconds=settings.request_timeout_seconds,
         )
-    enabled_sources = _enabled_sources(settings.corpus_sources)
+    enabled_sources = _enabled_sources(settings.parsed_corpus_sources)
     semantic_scholar = openalex = None
     if grobid is not None:
         from .adapters.corpus_http import OpenAlexCorpusSource, SemanticScholarCorpusSource
@@ -162,7 +163,21 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
                 webp_quality=settings.asset_webp_quality,
             )
         )
-        asset_source = ArxivAssetSource(timeout_seconds=settings.asset_fetch_timeout_seconds)
+        asset_source = ArxivAssetSource(
+            timeout_seconds=settings.asset_fetch_timeout_seconds,
+            # Share the raw cache with the full-text source so an assets-enabled paper does not
+            # download its PDF once for text and again for crops.
+            raw_store=(
+                S3RawContentStore(
+                    bucket=settings.s3_bucket or "",
+                    prefix=settings.raw_cache_prefix,
+                    kms_key_id=settings.asset_kms_key_id,
+                )
+                if raw_cache_on
+                else None
+            ),
+            raw_cache_mode=settings.raw_cache_mode if raw_cache_on else "off",
+        )
         asset_store = S3RdsAssetStore(
             bucket=settings.s3_bucket or "",
             control_plane_dsn=settings.control_plane_dsn or "",
@@ -204,6 +219,11 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
         observability=observability,
         resilience=resilience,
         failure_handler=failure_handler,
+        chunker=Chunker(
+            max_chunk_chars=settings.max_chunk_chars,
+            overlap_chars=settings.chunk_overlap_chars,
+            max_chunks_per_paper=settings.max_chunks_per_paper,
+        ),
         asset_extractor=asset_extractor,
         asset_store=asset_store,
         asset_source=asset_source,
@@ -233,6 +253,5 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
     )
 
 
-def _enabled_sources(raw: str) -> tuple[SourceName, ...]:
-    sources = tuple(SourceName(part.strip()) for part in raw.split(",") if part.strip())
-    return sources or (SourceName.ARXIV,)
+def _enabled_sources(names: tuple[str, ...]) -> tuple[SourceName, ...]:
+    return tuple(SourceName(name) for name in names) or (SourceName.ARXIV,)

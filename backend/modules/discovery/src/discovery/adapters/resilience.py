@@ -49,11 +49,13 @@ class CircuitGuardedEmbedder:
             except EmbeddingUnavailable:
                 raise
             except Exception:
-                # A non-transient error (e.g. the loud dimension-mismatch config error) means
-                # the dependency RESPONDED — count it as circuit-success (frees a half-open
-                # probe slot) and re-raise: the circuit is for outages, not for masking
-                # config bugs.
-                permit.success()
+                # A non-transient error (e.g. the loud dimension-mismatch config error) is not an
+                # outage, so it must not count as failure — but it is not proof of health either,
+                # since the same catch covers unparseable responses from a degraded provider.
+                # Complete NEUTRAL: the half-open probe slot is freed and the outage count is
+                # preserved. Marking it success would reset that count, so a provider failing in
+                # a mixed way could never trip the circuit at all.
+                permit.neutral()
                 raise
             permit.success()
             return vector

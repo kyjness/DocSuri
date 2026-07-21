@@ -1,0 +1,751 @@
+{
+  "fullTextLen": 26335,
+  "fullTextSha": "cdb2c0830982fa3a",
+  "sections": [
+    {
+      "blocks": [
+        {
+          "id": "s1.p1",
+          "textLen": 846,
+          "textSha": "5dada120bdd28576",
+          "type": "paragraph"
+        },
+        {
+          "id": "s1.p2",
+          "textLen": 845,
+          "textSha": "dad5bb1401874bc2",
+          "type": "paragraph"
+        },
+        {
+          "id": "s1.p3",
+          "textLen": 647,
+          "textSha": "ddf55e01f11a83c3",
+          "type": "paragraph"
+        },
+        {
+          "id": "s1.p4",
+          "textLen": 402,
+          "textSha": "b687e89d18b3a657",
+          "type": "paragraph"
+        },
+        {
+          "id": "s1.p5",
+          "textLen": 630,
+          "textSha": "0f84992a0fb65c8c",
+          "type": "paragraph"
+        },
+        {
+          "id": "s1.p6",
+          "textLen": 56,
+          "textSha": "1174edba3898c553",
+          "type": "paragraph"
+        },
+        {
+          "id": "s1.p7",
+          "textLen": 248,
+          "textSha": "99d71ba68c50f26a",
+          "type": "paragraph"
+        },
+        {
+          "id": "s1.p8",
+          "textLen": 298,
+          "textSha": "3fc2bdcbd3c5714c",
+          "type": "paragraph"
+        },
+        {
+          "id": "s1.p9",
+          "textLen": 378,
+          "textSha": "aa4e833f3779c449",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s1",
+      "sections": [],
+      "title": "Introduction"
+    },
+    {
+      "blocks": [],
+      "id": "s2",
+      "sections": [],
+      "title": "Preliminaries"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s3.p1",
+          "textLen": 150,
+          "textSha": "1137ecb91be32ebc",
+          "type": "paragraph"
+        },
+        {
+          "id": "s3.p2",
+          "textLen": 220,
+          "textSha": "82e722321dcfe2f0",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": "(1)",
+          "display": true,
+          "id": "s3.eq1",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "anchorLabel": "(2)",
+          "display": true,
+          "id": "s3.eq2",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s3.p3",
+          "textLen": 122,
+          "textSha": "371fa68951d18c66",
+          "type": "paragraph"
+        },
+        {
+          "id": "s3.p4",
+          "textLen": 118,
+          "textSha": "2f6cec8609a7f67a",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": "(3)",
+          "display": true,
+          "id": "s3.eq3",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "anchorLabel": "(4)",
+          "display": true,
+          "id": "s3.eq4",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s3.p5",
+          "textLen": 137,
+          "textSha": "97eb04f9f80c95a4",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": "(5)",
+          "display": true,
+          "id": "s3.eq5",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s3.p6",
+          "textLen": 418,
+          "textSha": "c868f3c30eeb7add",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": "(6)",
+          "display": true,
+          "id": "s3.eq6",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "anchorLabel": "(7)",
+          "display": true,
+          "id": "s3.eq7",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "anchorLabel": "(8)",
+          "display": true,
+          "id": "s3.eq8",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "anchorLabel": "(9)",
+          "display": true,
+          "id": "s3.eq9",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s3.p7",
+          "textLen": 123,
+          "textSha": "c42c3f42812008bf",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": "(10)",
+          "display": true,
+          "id": "s3.eq10",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s3.p8",
+          "textLen": 291,
+          "textSha": "f04c38613c6cbca7",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": "(11)",
+          "display": true,
+          "id": "s3.eq11",
+          "latexSha": null,
+          "type": "formula"
+        }
+      ],
+      "id": "s3",
+      "sections": [],
+      "title": "Diffusion Models in continuous state space"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s4.p1",
+          "textLen": 726,
+          "textSha": "d8287d4011270729",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": "(12)",
+          "display": true,
+          "id": "s4.eq1",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "anchorLabel": "(13)",
+          "display": true,
+          "id": "s4.eq2",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s4.p2",
+          "textLen": 270,
+          "textSha": "62b4113a7833d061",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": "14",
+          "display": true,
+          "id": "s4.eq3",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "anchorLabel": null,
+          "display": true,
+          "id": "s4.eq4",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s4.p3",
+          "textLen": 362,
+          "textSha": "948c71560da3a4b0",
+          "type": "paragraph"
+        },
+        {
+          "id": "s4.p4",
+          "textLen": 224,
+          "textSha": "60d4ddefd88f67c7",
+          "type": "paragraph"
+        },
+        {
+          "id": "s4.p5",
+          "textLen": 383,
+          "textSha": "1da8a67027ef6a83",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s4",
+      "sections": [],
+      "title": "Discrete Representation of Images"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s5.p1",
+          "textLen": 162,
+          "textSha": "40fccd8e1dbb227a",
+          "type": "paragraph"
+        },
+        {
+          "id": "s5.p2",
+          "textLen": 841,
+          "textSha": "c7da897f09476688",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s5",
+      "sections": [],
+      "title": "Methods"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s6.p1",
+          "textLen": 272,
+          "textSha": "c1fb0b8c46e1d5b6",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": "(15)",
+          "display": true,
+          "id": "s6.eq1",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s6.p2",
+          "textLen": 326,
+          "textSha": "9828f2da7ac33d5a",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": "(16)",
+          "display": true,
+          "id": "s6.eq2",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s6.p3",
+          "textLen": 60,
+          "textSha": "a8e11b7af8732dcb",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": "(18)",
+          "display": true,
+          "id": "s6.eq3",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s6.p4",
+          "textLen": 204,
+          "textSha": "53089b5d3c0e4d1a",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": "19",
+          "display": true,
+          "id": "s6.eq4",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "anchorLabel": null,
+          "display": true,
+          "id": "s6.eq5",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s6.p5",
+          "textLen": 78,
+          "textSha": "9ad2c2d35316afa3",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": "(20)",
+          "display": true,
+          "id": "s6.eq6",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "anchorLabel": "(21)",
+          "display": true,
+          "id": "s6.eq7",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s6.p6",
+          "textLen": 38,
+          "textSha": "0cabab76c2103ea2",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": null,
+          "display": true,
+          "id": "s6.eq8",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s6.p7",
+          "textLen": 294,
+          "textSha": "1c9578f72a3e878b",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": "(22)",
+          "display": true,
+          "id": "s6.eq9",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s6.p8",
+          "textLen": 141,
+          "textSha": "3e4eb49754b5b38b",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": "(23)",
+          "display": true,
+          "id": "s6.eq10",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s6.p9",
+          "textLen": 701,
+          "textSha": "688dde06d444f06d",
+          "type": "paragraph"
+        },
+        {
+          "id": "s6.p10",
+          "textLen": 98,
+          "textSha": "4f2f7653fc3dec3d",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": "(24)",
+          "display": true,
+          "id": "s6.eq11",
+          "latexSha": null,
+          "type": "formula"
+        }
+      ],
+      "id": "s6",
+      "sections": [],
+      "title": "Discrete Diffusion Model"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s7.p1",
+          "textLen": 395,
+          "textSha": "84117dbefeb73320",
+          "type": "paragraph"
+        },
+        {
+          "id": "s7.p2",
+          "textLen": 264,
+          "textSha": "9d0552a52db3d600",
+          "type": "paragraph"
+        },
+        {
+          "id": "s7.p3",
+          "textLen": 423,
+          "textSha": "8d9ed4ac32ef2ed1",
+          "type": "paragraph"
+        },
+        {
+          "id": "s7.p4",
+          "textLen": 1134,
+          "textSha": "6ae45f024f1f90f0",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s7",
+      "sections": [],
+      "title": "Re-build and Fine-tune Strategy"
+    },
+    {
+      "blocks": [],
+      "id": "s8",
+      "sections": [],
+      "title": "Experiments and Analysis"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s9.p1",
+          "textLen": 242,
+          "textSha": "317616afadc7b4c3",
+          "type": "paragraph"
+        },
+        {
+          "id": "s9.p2",
+          "textLen": 808,
+          "textSha": "1f95079be87573c0",
+          "type": "paragraph"
+        },
+        {
+          "id": "s9.p3",
+          "textLen": 304,
+          "textSha": "39902c9e0d9815b0",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s9",
+      "sections": [],
+      "title": "Datasets and Implementation Details"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s10.p1",
+          "textLen": 391,
+          "textSha": "171d5c883ef8067a",
+          "type": "paragraph"
+        },
+        {
+          "id": "s10.p2",
+          "textLen": 333,
+          "textSha": "479712c43033ac58",
+          "type": "paragraph"
+        },
+        {
+          "id": "s10.p3",
+          "textLen": 652,
+          "textSha": "ed1278d1940b76f0",
+          "type": "paragraph"
+        },
+        {
+          "id": "s10.p4",
+          "textLen": 501,
+          "textSha": "f4b65862258584a8",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s10",
+      "sections": [],
+      "title": "Codebook Quality"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s11.p1",
+          "textLen": 395,
+          "textSha": "ec28ef203ca9b917",
+          "type": "paragraph"
+        },
+        {
+          "id": "s11.p2",
+          "textLen": 454,
+          "textSha": "3e08a60842ec5f9a",
+          "type": "paragraph"
+        },
+        {
+          "id": "s11.p3",
+          "textLen": 442,
+          "textSha": "2bc4be8d1b050361",
+          "type": "paragraph"
+        },
+        {
+          "id": "s11.p4",
+          "textLen": 269,
+          "textSha": "9912bfd861ccf786",
+          "type": "paragraph"
+        },
+        {
+          "id": "s11.p5",
+          "textLen": 353,
+          "textSha": "10bc1ded4e85f19f",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s11",
+      "sections": [],
+      "title": "Generation Quality"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s12.p1",
+          "textLen": 549,
+          "textSha": "9d19ee839c3bb284",
+          "type": "paragraph"
+        },
+        {
+          "id": "s12.p2",
+          "textLen": 635,
+          "textSha": "fd5ad1342ee92ef0",
+          "type": "paragraph"
+        },
+        {
+          "anchorLabel": null,
+          "display": true,
+          "id": "s12.eq1",
+          "latexSha": null,
+          "type": "formula"
+        },
+        {
+          "id": "s12.p3",
+          "textLen": 943,
+          "textSha": "2e9e4c1303f85e27",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s12",
+      "sections": [],
+      "title": "Image Inpainting"
+    },
+    {
+      "blocks": [],
+      "id": "s13",
+      "sections": [],
+      "title": "Related Work"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s14.p1",
+          "textLen": 853,
+          "textSha": "69e079c30ead5075",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s14",
+      "sections": [],
+      "title": "Vector Quantised Variational Autoencoders"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s15.p1",
+          "textLen": 398,
+          "textSha": "12088403f51d4a05",
+          "type": "paragraph"
+        },
+        {
+          "id": "s15.p2",
+          "textLen": 743,
+          "textSha": "1b47982ed47880be",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s15",
+      "sections": [],
+      "title": "Diffusion Models"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s16.p1",
+          "textLen": 792,
+          "textSha": "00b9efa896ddf945",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s16",
+      "sections": [],
+      "title": "Conclusion"
+    },
+    {
+      "blocks": [
+        {
+          "id": "s17.p1",
+          "textLen": 259,
+          "textSha": "31f7b490dd628901",
+          "type": "paragraph"
+        }
+      ],
+      "id": "s17",
+      "sections": [],
+      "title": "Limitations"
+    },
+    {
+      "blocks": [
+        {
+          "anchorLabel": "Figure 1 .",
+          "assetRef": "assetId='2112.01799:v1:figure:0' type=<Type.figure: 'figure'> ordinal=0 caption='Figure 1. FID v.s. Operations and Parameters. The size of the blobs is proportional to the number of network parameters, the X-axis indicates FLOPs on a log scale and the Y-axis is the FID score.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "Figure 1. FID v.s. Operations and Parameters. The size of th",
+          "id": "s18.fig1",
+          "type": "figure"
+        },
+        {
+          "anchorLabel": "Figure 2 .",
+          "assetRef": "assetId='2112.01799:v1:figure:1' type=<Type.figure: 'figure'> ordinal=1 caption='Figure 2. The proposed VQ-DDM pipeline contains 2 stages: (1) Compress the image into discrete variables via discrete VAE. (2) Fit a prior distribution over discrete coding by a diffusion model. Black squares in the diffusion diagram illustrate states when the underlying distributions are uninformative, but which become progressively more specific during the reverse process. The bar chart at the bottom of the image represents the probability of a particular discrete variable being sampled.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "Figure 2. The proposed VQ-DDM pipeline contains 2 stages: (1",
+          "id": "s18.fig2",
+          "type": "figure"
+        },
+        {
+          "anchorLabel": "Table 1 .",
+          "caption": "FID between reconstructed images and original images on Cele",
+          "cols": 7,
+          "id": "s18.tbl1",
+          "rows": 9,
+          "type": "table"
+        },
+        {
+          "anchorLabel": "Figure 3 .",
+          "assetRef": "assetId='2112.01799:v1:figure:2' type=<Type.figure: 'figure'> ordinal=2 caption='Figure 3. Reconstruction images 384 \u00d7 384 from ImageNet based VQ-GAN and ReFiT' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "Figure 3. Reconstruction images 384 \u00d7 384 from ImageNet base",
+          "id": "s18.fig3",
+          "type": "figure"
+        },
+        {
+          "anchorLabel": "Figure 4 .",
+          "assetRef": "assetId='2112.01799:v1:figure:3' type=<Type.figure: 'figure'> ordinal=3 caption='Figure 4. Reconstruction images of CelebA HQ 256 \u00d7 256 from VQ-GAN and ReFiT.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "Figure 4. Reconstruction images of CelebA HQ 256 \u00d7 256 from ",
+          "id": "s18.fig4",
+          "type": "figure"
+        },
+        {
+          "anchorLabel": "Figure 5 .",
+          "assetRef": "assetId='2112.01799:v1:figure:4' type=<Type.figure: 'figure'> ordinal=4 caption='Figure 5. Steps and corresponding FID during the sampling. The text annotations are hours to sample 50k latent feature maps on 1 NVIDIA 2080Ti GPU' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "Figure 5. Steps and corresponding FID during the sampling. T",
+          "id": "s18.fig5",
+          "type": "figure"
+        },
+        {
+          "anchorLabel": "Figure 6 .",
+          "assetRef": "assetId='2112.01799:v1:figure:5' type=<Type.figure: 'figure'> ordinal=5 caption='Figure 6. Hours to sampling 50k latent codes by VQ-DDM and generating 50k images with VQ-DDM and DDPM' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "Figure 6. Hours to sampling 50k latent codes by VQ-DDM and g",
+          "id": "s18.fig6",
+          "type": "figure"
+        },
+        {
+          "anchorLabel": "9 Figure 7 .",
+          "assetRef": "assetId='2112.01799:v1:figure:6' type=<Type.figure: 'figure'> ordinal=6 caption='Figure 7. Samples from VQ-DDM models.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "Figure 7. Samples from VQ-DDM models.",
+          "id": "s18.fig7",
+          "type": "figure"
+        },
+        {
+          "anchorLabel": "Figure 8 .",
+          "assetRef": "assetId='2112.01799:v1:figure:7' type=<Type.figure: 'figure'> ordinal=7 caption='Figure 8. Completions with the arbitrary masks.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "Figure 8. Completions with the arbitrary masks.",
+          "id": "s18.fig8",
+          "type": "figure"
+        },
+        {
+          "anchorLabel": "Figure 9 .",
+          "assetRef": "assetId='2112.01799:v1:figure:8' type=<Type.figure: 'figure'> ordinal=8 caption='Figure 9. Additional samples on LSUN-Church.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "Figure 9. Additional samples on LSUN-Church.",
+          "id": "s18.fig9",
+          "type": "figure"
+        },
+        {
+          "anchorLabel": "Figure 10 .",
+          "assetRef": "assetId='2112.01799:v1:figure:9' type=<Type.figure: 'figure'> ordinal=9 caption='Figure 10. Additional samples on CelebA-HQ.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "Figure 10. Additional samples on CelebA-HQ.",
+          "id": "s18.fig10",
+          "type": "figure"
+        },
+        {
+          "anchorLabel": "Figure 12 .",
+          "assetRef": "assetId='2112.01799:v1:figure:10' type=<Type.figure: 'figure'> ordinal=10 caption='Figure 12. Nearest Neighbours for CelebA-HQ 256 \u00d7 256 model. The left column are the images generated by our model, and the remaining images are the nearest neighbors(with minimum LPIPS distance) from the training set.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "Figure 12. Nearest Neighbours for CelebA-HQ 256 \u00d7 256 model.",
+          "id": "s18.fig11",
+          "type": "figure"
+        }
+      ],
+      "id": "s18",
+      "sections": [],
+      "title": "\uadf8\ub9bc \ubc0f \ud45c"
+    }
+  ]
+}

@@ -1274,3 +1274,65 @@ def test_withdrawn_paper_skips_doc_model_build() -> None:
     assert decision is DedupDecision.CHANGED
     assert index.tombstones  # the withdrawal was tombstoned as usual
     assert builder.build_calls == 0
+
+
+def test_backfill_external_sources_counts_jobs_queued_before_a_mid_harvest_failure() -> None:
+    """A page failure part-way through must not erase the pages that already queued.
+
+    The source's paged fetch is a generator, so it aborts mid-iteration and the enqueue loop's
+    ``return queued`` never executes. The jobs are nonetheless in the queue. Reporting 0 for them
+    makes a partially-successful backfill read as a no-op — the operator re-runs a job that mostly
+    worked, and the queued metric permanently understates the corpus.
+    """
+    control = InMemoryControlPlaneStore()
+    queue = InMemoryQueue()
+    observability = type(
+        "Obs",
+        (),
+        {
+            "metrics": [],
+            "emit_metric": lambda self, name, value, tags=None: self.metrics.append(
+                (name, value, tags or {})
+            ),
+            "emit_log": lambda self, entry: None,
+            "emit_failure_signal": lambda self, job_id, stage, error: None,
+        },
+    )()
+
+    class _FailsAfterTwoPages:
+        def fetch_incremental(self, since, categories, until=None):
+            yield replace(_external_record(), source_id="oa-1")
+            yield replace(_external_record(), source_id="oa-2")
+            raise RetriableIngestionError(
+                "rate limited on page 3",
+                reason=FailureReason.RATE_LIMITED,
+                stage="openalex",
+            )
+
+        def fetch_pdf(self, record: SourcePaperRecord) -> bytes:
+            raise AssertionError("fetch_pdf should not be called")
+
+    service = RefreshOrchestrationService(
+        arxiv=FakeArxivSource([sample_metadata()]),
+        control_plane=control,
+        queue=queue,
+        observability=observability,
+        corpus_sources=CorpusSourceAdapterSet(
+            arxiv=FakeArxivSource([sample_metadata()]),
+            openalex=_FailsAfterTwoPages(),
+            grobid=_Grobid(),
+        ),
+        enabled_sources=(SourceName.ARXIV, SourceName.OPENALEX),
+    )
+
+    queued = service.backfill_external_sources(
+        datetime(2025, 1, 1, tzinfo=UTC), datetime(2025, 12, 31, tzinfo=UTC)
+    )
+
+    assert len(queue.jobs) == 2, "the two pre-failure records really were enqueued"
+    assert queued == 2, "partial progress was dropped on the way out"
+    reported = [
+        value for name, value, _ in observability.metrics
+        if name == "ingestion.backfill.external.queued"
+    ]
+    assert reported == [2.0]
