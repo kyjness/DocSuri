@@ -644,3 +644,69 @@ def test_a_table_with_no_parsable_rows_keeps_its_caption() -> None:
     assert tables[0].anchorLabel == "Table 4"
     assert tables[0].rows == []
     assert "Ablation over depth." in doc.fullText
+
+
+def test_svg_only_figure_keeps_its_block_for_a_page_crop() -> None:
+    """LaTeXML draws a TikZ/pgfplots plot as an inline <svg>, so the float has no <img> at all.
+    Requiring one dropped the figure together with its caption and number — yet the number is
+    exactly what the PDF page-crop path matches on, so the block is worth keeping."""
+    html = (
+        '<html><body><div class="ltx_document">'
+        '<section class="ltx_section"><h2>5 Experiments</h2>'
+        '<figure class="ltx_figure"><span class="ltx_inline-block">'
+        '<svg class="ltx_picture" height="10" width="10"></svg></span>'
+        '<figcaption class="ltx_caption">'
+        '<span class="ltx_tag">Figure 1: </span>Loss curves</figcaption>'
+        "</figure></section></div></body></html>"
+    )
+    specs: list = []
+    doc = parse_html_to_docmodel(
+        html, paper_id="2401.00014", version=1, title="T", abstract=None,
+        source_tier=SourceTier.ar5iv, parser_version="p", schema_version="1.0.0",
+        generated_at=_FIXED_TS, figure_specs=specs,
+    )
+    figures = [b.root for s in doc.sections for b in s.blocks if isinstance(b.root, FigureBlock)]
+    assert len(figures) == 1
+    assert figures[0].caption == "Loss curves"
+    assert figures[0].anchorLabel == "Figure 1"
+    assert specs[0].src == ""  # nothing to fetch from the e-print; the page-crop images it
+
+
+def test_captioned_float_holding_text_keeps_its_text_and_caption() -> None:
+    """Authors float prompt transcripts and boxed examples with \\begin{figure} + \\fbox, so the
+    float has a "Figure 2:" caption and no image at all. Requiring a graphic dropped the caption
+    and the whole transcript, putting it beyond search and beyond quoting."""
+    html = (
+        '<html><body><div class="ltx_document">'
+        '<section class="ltx_section"><h2>3 Prompts</h2>'
+        '<figure class="ltx_figure"><span class="ltx_inline-block ltx_framed">'
+        "System: You are roleplaying a participant in the card selection task."
+        "</span>"
+        '<figcaption class="ltx_caption">'
+        '<span class="ltx_tag">Figure 2: </span>The expert prompt.</figcaption>'
+        "</figure></section></div></body></html>"
+    )
+    doc = parse_html_to_docmodel(
+        html, paper_id="2401.00015", version=1, title="T", abstract=None,
+        source_tier=SourceTier.ar5iv, parser_version="p", schema_version="1.0.0",
+        generated_at=_FIXED_TS,
+    )
+    assert "Figure 2: The expert prompt." in doc.fullText
+    assert "You are roleplaying a participant" in doc.fullText
+
+
+def test_uncaptioned_logo_strip_is_still_dropped_by_the_text_float_path() -> None:
+    """The text-float recovery must not resurrect decoration: a float with images but no caption
+    has nothing to say and nothing that could image it."""
+    html = (
+        '<html><body><div class="ltx_document">'
+        '<section class="ltx_section"><h2>1 Intro</h2>'
+        '<figure class="ltx_figure"><img src="a.png"/><img src="b.png"/></figure>'
+        "</section></div></body></html>"
+    )
+    doc = parse_html_to_docmodel(
+        html, paper_id="2401.00016", version=1, title="T", abstract=None,
+        source_tier=SourceTier.ar5iv, parser_version="p", schema_version="1.0.0",
+        generated_at=_FIXED_TS,
+    )
+    assert [b for s in doc.sections for b in s.blocks if s.id != "s0"] == []

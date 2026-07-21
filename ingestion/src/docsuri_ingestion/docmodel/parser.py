@@ -415,7 +415,43 @@ def _figure_blocks(figure_el: Tag, sec_ctx: _SectionCtx, doc_ctx: _DocCtx) -> li
     if panels:
         return [b for b in (_figure_block(p, sec_ctx, doc_ctx) for p in panels) if b]
     block = _figure_block(figure_el, sec_ctx, doc_ctx)
-    return [block] if block else []
+    if block:
+        return [block]
+    return _text_float_blocks(figure_el, sec_ctx, doc_ctx)
+
+
+def _text_float_blocks(figure_el: Tag, sec_ctx: _SectionCtx, doc_ctx: _DocCtx) -> list[dict]:
+    """Content blocks for a captioned float that holds TEXT rather than a graphic.
+
+    Authors float prompt transcripts, dialogues and boxed examples with ``\\begin{figure}`` and a
+    ``\\fbox``, so LaTeXML emits a ``figure.ltx_figure`` with a "Figure 2:" caption and not one
+    image in it. Requiring a graphic dropped the float whole — caption and body alike — which on a
+    150-paper sample lost 139 floats totalling 217k characters across 57 papers, none of it
+    reachable by search or quotable by an agent.
+
+    The caption leads (it carries the number the body cross-references), then the float's own
+    content. A float that has images but yielded no block is decoration and stays dropped.
+    """
+    if figure_el.find_all("img"):
+        return []
+    figcaption = _own_figcaption(figure_el)
+    if figcaption is None:
+        return []
+    out: list[dict] = []
+    label, caption = _caption(figure_el)
+    if caption:
+        text = f"{label}: {caption}" if label else caption
+        out.append({"id": sec_ctx.next_id("paragraph"), "type": "paragraph", "text": text})
+    rest = [c for c in figure_el.children if isinstance(c, Tag) and c is not figcaption]
+    for child in rest:
+        out.extend(_blocks_from(child, sec_ctx, doc_ctx, skip_sections=True))
+    if len(out) <= 1:
+        # Nothing inside carried a paragraph tag (LaTeXML boxes plain runs in bare spans), so the
+        # float's own text is the only way its content survives at all.
+        body = " ".join(_inline_text(child) for child in rest).strip()
+        if body:
+            out.append({"id": sec_ctx.next_id("paragraph"), "type": "paragraph", "text": body})
+    return out
 
 
 def _numbered_figure_panels(figure_el: Tag) -> list[Tag]:
@@ -441,9 +477,14 @@ def _numbered_figure_label(figcaption: Tag | None) -> bool:
 
 def _figure_block(figure_el: Tag, sec_ctx: _SectionCtx, doc_ctx: _DocCtx) -> dict | None:
     imgs = figure_el.find_all("img")
-    if not imgs:
-        return None  # no graphic to reference
     label, caption = _caption(figure_el)
+    if not imgs and not (label and figure_el.find("svg") is not None):
+        return None  # no graphic to reference
+    # A numbered float whose graphic LaTeXML drew as an inline <svg> — a TikZ/pgfplots vector
+    # plot — has no <img> to point at, and requiring one dropped the figure with its caption and
+    # number attached (measured: 49 of 1337 captioned floats across a 150-paper sample, hitting 1
+    # paper in 10). The number is enough: a blank src sends the asset extractor to the PDF
+    # page-crop matched by caption number, which is what a multi-panel figure already relies on.
     if not label and not caption and len(imgs) > 1 and figure_el.find("figcaption") is None:
         # A float with several images and no caption ANYWHERE inside it is decoration (a funder/
         # logo strip), and nothing could ever image it: with no caption there is no number for a
@@ -469,7 +510,7 @@ def _figure_block(figure_el: Tag, sec_ctx: _SectionCtx, doc_ctx: _DocCtx) -> dic
         # Blank the src so the asset extractor falls back to a whole-figure PDF page-crop (matched
         # by caption number), which captures every panel as laid out. A single-image figure keeps
         # its src for the original-quality e-print graphic.
-        first = imgs[0]
+        first = imgs[0] if imgs else None
         src = first.get("src") if len(imgs) == 1 and isinstance(first, Tag) else None
         doc_ctx.figure_specs.append(
             FigureSpec(src=src if isinstance(src, str) else "", label=label)
@@ -666,7 +707,9 @@ def _caption(figure_el: Tag) -> tuple[str, str]:
     label = ""
     if tag is not None:
         label = _WS_RE.sub(" ", tag.get_text()).strip().rstrip(":").strip()
-        tag.extract()
+    # Read-only on purpose: ``_inline_text`` already skips ``ltx_tag``, so removing the span here
+    # bought nothing and made a second call return an empty label — which silently dropped the
+    # figure number when one float is inspected twice (graphic first, then text content).
     caption = _inline_text(figcaption)
     return label, caption
 
