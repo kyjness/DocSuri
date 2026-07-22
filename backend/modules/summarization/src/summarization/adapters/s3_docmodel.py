@@ -11,7 +11,7 @@ import json
 import logging
 from typing import Any
 
-from docsuri_shared.docmodel_contract import DOCMODEL_SCHEMA_VERSION
+from docsuri_shared.docmodel_contract import schema_is_readable
 from docsuri_shared.dtos import DocModel
 
 from ._paper_ref import bare_paper_id
@@ -100,5 +100,7 @@ def _is_servable_doc_model(payload: object) -> bool:
     return (
         generation is not None
         and generation >= _MIN_SERVABLE_PARSER_GENERATION
-        and provenance.get("schemaVersion") == DOCMODEL_SCHEMA_VERSION
+        # Compatible-range, not exact-match: an additive minor bump (e.g. 1.1.0 -> 1.2.0) must not
+        # blank every stored doc while the rebuild heals — same reasoning as the generation floor.
+        and schema_is_readable(provenance.get("schemaVersion"))
     )

@@ -200,6 +200,29 @@ def test_reader_treats_schema_version_mismatch_as_miss() -> None:
     assert reader.get_doc_model("2401.00001", 2) is None
 
 
+def test_reader_serves_an_earlier_minor_of_the_same_schema_major() -> None:
+    # The schema evolves additively within a major, so a doc stored before the latest minor bump
+    # (the entire stored corpus, on every bump) is still readable — refusing it would blank every
+    # doc-model view until a rebuild healed the corpus, which is the outcome the parser-generation
+    # floor above exists to avoid.
+    payload = _doc_model(version=2).model_dump(mode="json", exclude_none=True)
+    payload["meta"]["provenance"]["schemaVersion"] = "1.1.0"
+    s3 = _FakeS3({"doc-model/2401.00001/v2.json": json.dumps(payload).encode("utf-8")})
+    reader = S3DocModelReader(bucket="papers", client=s3)
+
+    assert reader.get_doc_model("2401.00001", 2) is not None
+
+
+def test_reader_refuses_a_schema_newer_than_it_understands() -> None:
+    # A NEWER minor may carry semantics this reader predates — fail closed, same as a new major.
+    payload = _doc_model(version=2).model_dump(mode="json", exclude_none=True)
+    payload["meta"]["provenance"]["schemaVersion"] = "1.99.0"
+    s3 = _FakeS3({"doc-model/2401.00001/v2.json": json.dumps(payload).encode("utf-8")})
+    reader = S3DocModelReader(bucket="papers", client=s3)
+
+    assert reader.get_doc_model("2401.00001", 2) is None
+
+
 def test_reader_rejects_native_html_source_tier() -> None:
     # native_html leaks raw TeX/pgf into fullText; the reader refuses it (→ rebuild) even when
     # the parser version and schema are current.
