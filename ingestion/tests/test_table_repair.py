@@ -87,6 +87,30 @@ def test_a_rebuild_that_reads_fewer_numbers_is_refused() -> None:
     assert _rows(doc)[1] == ["ADA", "0.696 ± 0.015 0.011 ± 0.000"]
 
 
+def test_verification_reads_the_extractors_own_region() -> None:
+    """The yardstick region is the rebuilt table's own box. Widening it (e.g. unioning GROBID's
+    box, which can shrink to the caption strip) would let a number printed outside the table vouch
+    for an invented cell — the exact fabrication the check exists to refuse."""
+    doc = _doc()
+    seen: list[tuple[float, float, float, float]] = []
+
+    def printed(page: int, bbox: tuple[float, float, float, float]) -> tuple[str, ...]:
+        seen.append(bbox)
+        return ("0.696", "0.015", "0.011", "0.000")
+
+    assert apply_repairs(doc, [_SPEC], [_REBUILT], printed) == 1
+    assert seen == [_REBUILT.bbox]  # not a union with _SPEC.bbox
+
+
+def test_a_malformed_row_does_not_crash_the_merge_check() -> None:
+    """A stray non-dict row is skipped; the dict rows still decide whether the table looks
+    merged (the scan runs on plain payload dicts, so shape is not guaranteed)."""
+    table = dict(_MERGED)
+    table["rows"] = ["stray", *_MERGED["rows"]]
+
+    assert tables_needing_repair(_doc(table), [_SPEC]) == [_SPEC]
+
+
 def test_an_unreadable_page_refuses_the_rebuild() -> None:
     """With no yardstick there is no verification, and an unverified rebuild is not applied."""
     doc = _doc()

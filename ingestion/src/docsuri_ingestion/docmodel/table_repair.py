@@ -71,10 +71,12 @@ def apply_repairs(
         rebuilt = _best_match(spec, tables)
         if rebuilt is None:
             continue
-        # GROBID's box often stops short of the table's last rows, so the yardstick spans BOTH
-        # readings of where the table is — otherwise rows it cropped away read as invented.
-        region = _union(spec.bbox, rebuilt.bbox)
-        if not _verified(rows, rebuilt.rows, printed(spec.page, region)):
+        # Verify against the region the rebuilt rows were actually READ from — the extractor's own
+        # table box. That box already covers every row it produced, so it is both complete and
+        # tight. Widening it (e.g. unioning GROBID's box, which often shrinks to the caption strip)
+        # would let a number printed just outside the table pass as "on the page" — the one thing
+        # verification must refuse (C-2).
+        if not _verified(rows, rebuilt.rows, printed(spec.page, rebuilt.bbox)):
             continue
         block["rows"] = [
             {"cells": [{"text": cell} for cell in row]} for row in rebuilt.rows if any(row)
@@ -88,8 +90,8 @@ def _looks_merged(rows: Sequence[Any]) -> bool:
     cells = [
         str(cell.get("text") or "")
         for row in rows
-        for cell in (row.get("cells") or [])
         if isinstance(row, dict)
+        for cell in (row.get("cells") or [])
     ]
     if not cells:
         return False
@@ -106,12 +108,6 @@ def _best_match(spec: AssetCropSpec, tables: Sequence[ExtractedTable]) -> Extrac
         if area > best_area:
             best, best_area = table, area
     return best
-
-
-def _union(
-    a: tuple[float, float, float, float], b: tuple[float, float, float, float]
-) -> tuple[float, float, float, float]:
-    return (min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3]))
 
 
 def _cell_numbers(text: str) -> list[str]:
