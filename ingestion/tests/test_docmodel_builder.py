@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 from docsuri_shared.docmodel_contract import DOCMODEL_PARSER_VERSION, DOCMODEL_SCHEMA_VERSION
 from docsuri_shared.dtos import DocModel, DocModelResultDTO, SourceTier, SourceUnavailableDTO
@@ -10,6 +11,7 @@ from docsuri_shared.dtos import DocModel, DocModelResultDTO, SourceTier, SourceU
 from docsuri_ingestion.adapters.local import sample_metadata
 from docsuri_ingestion.docmodel.builder import DocModelBuilder
 from docsuri_ingestion.docmodel.parser import parse_html_to_docmodel
+from docsuri_ingestion.domain.assets import ExtractedTable
 
 # A body long enough (non-abstract text ≥ the builder's completeness floor) to represent a
 # COMPLETE conversion — a truncated ar5iv conversion is exercised separately by _TRUNCATED_HTML.
@@ -99,6 +101,8 @@ def _builder(
     *,
     parser_version: str = DOCMODEL_PARSER_VERSION,
     schema_version: str = DOCMODEL_SCHEMA_VERSION,
+    table_extractor: object | None = None,
+    formula_reader: object | None = None,
 ) -> DocModelBuilder:
     return DocModelBuilder(
         source=source,
@@ -106,6 +110,8 @@ def _builder(
         clock=_FixedClock(),
         parser_version=parser_version,
         schema_version=schema_version,
+        table_extractor=table_extractor,
+        formula_reader=formula_reader,
     )
 
 
@@ -173,6 +179,71 @@ def test_build_from_tei_skips_crop_collection_on_cache_hit() -> None:
     result = builder.build_from_tei("src-1", 1, "T", "A", _TEI_FORMULA, "fb", crops=crops)
     assert result.cached is True
     assert crops == []
+
+
+_MERGED_TABLE_TEI = (
+    '<TEI xmlns="http://www.tei-c.org/ns/1.0"><text><body>'
+    "<div><head>Results</head><p>Prose body.</p></div>"
+    '<figure type="table" coords="3,100,100,300,100"><head>Table 1</head>'
+    "<figDesc>Merged by GROBID.</figDesc><table>"
+    "<row><cell>ADA</cell><cell>0.696 ± 0.015 0.011 ± 0.000</cell></row>"
+    "</table></figure></body></text></TEI>"
+)
+
+
+class _FakeTableExtractor:
+    def extract_tables(self, pdf: bytes, pages) -> list[ExtractedTable]:
+        return [
+            ExtractedTable(
+                page=3,
+                bbox=(100.0, 100.0, 400.0, 200.0),
+                rows=(("ADA", "0.696 ± 0.015", "0.011 ± 0.000"),),
+            )
+        ]
+
+
+def test_a_table_repair_reprojects_full_text(monkeypatch) -> None:
+    """Repaired cells must reach every representation: the blocks AND the root fullText, which
+    was projected before the repair ran and would otherwise keep the merged numbers."""
+    monkeypatch.setattr(
+        "docsuri_ingestion.docmodel.builder.printed_numbers",
+        lambda pdf: lambda page, bbox: ("0.696", "0.015", "0.011", "0.000"),
+    )
+    builder = _builder(_FakeSource(None), _FakeStore(), table_extractor=_FakeTableExtractor())
+
+    result = builder.build_from_tei(
+        "src-r", 1, "T", "A", _MERGED_TABLE_TEI, "fb", crops=[], pdf=b"%PDF-fake"
+    )
+
+    assert "ADA | 0.696 ± 0.015 | 0.011 ± 0.000" in result.docModel.fullText
+    assert "0.696 ± 0.015 0.011 ± 0.000" not in result.docModel.fullText
+
+
+def test_a_formula_ocr_read_reprojects_full_text(monkeypatch) -> None:
+    """``latexOcr`` exists to be searchable, so a filled formula must show up in fullText — the
+    parse-time projection predates the read and carries nothing for an image-only formula."""
+
+    def fake_crops(pdf, specs, *, paper_id, version):
+        return [
+            SimpleNamespace(meta=SimpleNamespace(asset_id=spec.asset_id), image=b"img")
+            for spec in specs
+        ]
+
+    monkeypatch.setattr("docsuri_ingestion.asset_extraction.crop_assets_from_specs", fake_crops)
+    reader = SimpleNamespace(read_latex=lambda image: r"E = mc^{2}")
+    builder = _builder(_FakeSource(None), _FakeStore(), formula_reader=reader)
+    # Prose alongside the formula: an image-only formula carries no body text, and a TEI without
+    # any would (correctly) degrade to the flat-text fallback before OCR could run.
+    tei = (
+        '<TEI xmlns="http://www.tei-c.org/ns/1.0"><text><body><div><head>M</head>'
+        "<p>Prose body.</p>"
+        '<formula coords="1,5,6,30,12"><label>(2)</label>x=y</formula>'
+        "</div></body></text></TEI>"
+    )
+
+    result = builder.build_from_tei("src-o", 1, "T", "A", tei, "fb", crops=[], pdf=b"%PDF-fake")
+
+    assert r"E = mc^{2}" in result.docModel.fullText
 
 
 def test_cache_hit_returns_cached_without_fetching() -> None:

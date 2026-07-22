@@ -256,6 +256,10 @@ class IngestionPipelineService:
             tei,
             text,
             source_tier=SourceTier.pdf,
+            # The crop specs are consumed inside the build (table repair / formula OCR need them
+            # to map blocks to page regions); without a list those passes silently skip, leaving
+            # uploads the only PDF path without the second readers.
+            crops=[],
             pdf=pdf,
         )
         self._observability.emit_metric(

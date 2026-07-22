@@ -20,6 +20,7 @@ from docsuri_shared.observability import emit_metric
 from docsuri_ingestion.docmodel.formula_ocr import apply_ocr, formula_crops
 from docsuri_ingestion.docmodel.macros import extract_macros
 from docsuri_ingestion.docmodel.parser import (
+    _project_full_text,
     block_text_parts,
     parse_html_to_docmodel,
     parse_text_to_docmodel,
@@ -323,6 +324,9 @@ class DocModelBuilder:
             repaired = apply_repairs(payload, crops, tables, printed_numbers(pdf))
             if not repaired:
                 return doc
+            # Rows changed, so the fullText projection made at parse time no longer matches the
+            # blocks — re-project it, or the root text would still carry GROBID's merged cells.
+            payload["fullText"] = _project_full_text(payload["sections"])
             emit_metric(self._observability, "ingestion.docmodel.tables_repaired", float(repaired))
             return DocModel.model_validate(payload)
         except Exception:  # noqa: BLE001 - a repair must never cost us the doc-model we have
@@ -355,6 +359,9 @@ class DocModelBuilder:
             filled = apply_ocr(payload, images, self._formula_reader.read_latex)
             if not filled:
                 return doc
+            # ``latexOcr`` is projected into fullText (it exists to be searchable), so the parse
+            # -time projection is stale the moment a formula is filled — re-project.
+            payload["fullText"] = _project_full_text(payload["sections"])
             emit_metric(self._observability, "ingestion.docmodel.formulas_read", float(filled))
             return DocModel.model_validate(payload)
         except Exception:  # noqa: BLE001 - a failed read must never cost us the doc-model
