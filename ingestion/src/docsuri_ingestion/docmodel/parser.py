@@ -24,7 +24,7 @@ the document-order ordinal per type — no pixels are re-extracted (re-extractio
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -799,6 +799,22 @@ def block_text_parts(block: Mapping[str, Any]) -> list[str]:
             )
         return parts
     return []
+
+
+def iter_blocks(doc: Mapping[str, Any], block_type: str) -> Iterator[dict]:
+    """Every block of ``block_type`` in a doc-model dict, depth-first through nested sections.
+
+    The single statement of how to walk the section tree for one kind of block — the PDF-path
+    repair and OCR passes both re-read specific block types after the build, and each had grown its
+    own identical walker.
+    """
+
+    def walk(container: Mapping[str, Any]) -> Iterator[dict]:
+        for section in container.get("sections") or []:
+            yield from (b for b in (section.get("blocks") or []) if b.get("type") == block_type)
+            yield from walk(section)
+
+    return walk(doc)
 
 
 def _project_full_text(sections: list[dict]) -> str:

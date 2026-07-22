@@ -20,9 +20,10 @@ from __future__ import annotations
 import io
 import re
 from collections import Counter
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
+from docsuri_ingestion.docmodel.parser import iter_blocks
 from docsuri_ingestion.domain.assets import AssetCropSpec, ExtractedTable
 
 # A number as a table reports one — never the digit inside an identifier like "HbA1c", which
@@ -41,7 +42,7 @@ def tables_needing_repair(doc: dict, crops: Sequence[AssetCropSpec]) -> list[Ass
     """The crop specs of tables whose TEI cells look merged — the pages worth re-reading."""
     by_asset = {spec.asset_id: spec for spec in crops}
     out: list[AssetCropSpec] = []
-    for block in _table_blocks(doc):
+    for block in iter_blocks(doc, "table"):
         ref = block.get("assetRef") or {}
         spec = by_asset.get(ref.get("assetId", ""))
         if spec is not None and _looks_merged(block.get("rows") or []):
@@ -61,7 +62,7 @@ def apply_repairs(
     rebuild is checked against."""
     by_asset = {spec.asset_id: spec for spec in crops}
     repaired = 0
-    for block in _table_blocks(doc):
+    for block in iter_blocks(doc, "table"):
         rows = block.get("rows") or []
         ref = block.get("assetRef") or {}
         spec = by_asset.get(ref.get("assetId", ""))
@@ -80,15 +81,6 @@ def apply_repairs(
         ]
         repaired += 1
     return repaired
-
-
-def _table_blocks(doc: dict) -> Iterable[dict]:
-    def walk(container: dict) -> Iterable[dict]:
-        for section in container.get("sections") or []:
-            yield from (b for b in (section.get("blocks") or []) if b.get("type") == "table")
-            yield from walk(section)
-
-    return walk(doc)
 
 
 def _looks_merged(rows: Sequence[Any]) -> bool:
@@ -166,21 +158,28 @@ def printed_numbers(pdf: bytes) -> PrintedNumbers:
     verification treats as "cannot be checked" and therefore refuses to repair.
     """
 
+    # The PDF is opened once, lazily, and reused across every table on the page — apply_repairs
+    # calls this per candidate table, and re-parsing the whole PDF each time is the one place this
+    # module does real repeated I/O. pdfplumber over BytesIO holds no OS handle, so the document is
+    # released with the closure when the repair pass ends.
+    pages: list = []
+
     def read(page_no: int, bbox: tuple[float, float, float, float]) -> tuple[str, ...]:
         try:
-            import pdfplumber
+            if not pages:
+                import pdfplumber
 
-            with pdfplumber.open(io.BytesIO(pdf)) as plumber:
-                if not 1 <= page_no <= len(plumber.pages):
-                    return ()
-                page = plumber.pages[page_no - 1]
-                region = (
-                    max(0.0, bbox[0]),
-                    max(0.0, bbox[1]),
-                    min(float(page.width), bbox[2]),
-                    min(float(page.height), bbox[3]),
-                )
-                return tuple(_NUMBER_RE.findall(page.crop(region).extract_text() or ""))
+                pages.extend(pdfplumber.open(io.BytesIO(pdf)).pages)
+            if not 1 <= page_no <= len(pages):
+                return ()
+            page = pages[page_no - 1]
+            region = (
+                max(0.0, bbox[0]),
+                max(0.0, bbox[1]),
+                min(float(page.width), bbox[2]),
+                min(float(page.height), bbox[3]),
+            )
+            return tuple(_NUMBER_RE.findall(page.crop(region).extract_text() or ""))
         except Exception:  # noqa: BLE001 - unreadable page -> no yardstick -> no repair
             return ()
 

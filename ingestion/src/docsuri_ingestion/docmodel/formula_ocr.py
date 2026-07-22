@@ -16,8 +16,9 @@ Pure given the crops and what the reader returned (P7).
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Sequence
 
+from docsuri_ingestion.docmodel.parser import iter_blocks
 from docsuri_ingestion.domain.assets import AssetCropSpec
 
 # A recovered string has to look like maths, not like a caption the model transcribed instead.
@@ -39,7 +40,7 @@ def apply_ocr(doc: dict, images: dict[str, bytes], read: ReadLatex) -> int:
     must never displace a source-accurate equation.
     """
     filled = 0
-    for block in _formula_blocks(doc):
+    for block in iter_blocks(doc, "formula"):
         if block.get("latex") or block.get("latexOcr"):
             continue
         ref = block.get("assetRef") or {}
@@ -52,15 +53,6 @@ def apply_ocr(doc: dict, images: dict[str, bytes], read: ReadLatex) -> int:
         block["latexOcr"] = latex
         filled += 1
     return filled
-
-
-def _formula_blocks(doc: dict) -> Iterable[dict]:
-    def walk(container: dict) -> Iterable[dict]:
-        for section in container.get("sections") or []:
-            yield from (b for b in (section.get("blocks") or []) if b.get("type") == "formula")
-            yield from walk(section)
-
-    return walk(doc)
 
 
 def _usable(latex: str | None) -> str | None:

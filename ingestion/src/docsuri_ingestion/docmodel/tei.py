@@ -223,22 +223,16 @@ def _formula_or_algorithm_blocks(
         if _is_listing(body)
     ]
     if not listings:
-        if _is_headless_listing(text):
-            # GROBID often promotes "Algorithm 1" out of the listing (into the section title, or a
-            # neighbouring float's caption), leaving numbered steps with no heading to split on.
-            # Measured on 40 PDFs, that is how every pseudocode listing but one arrived, so
-            # requiring the heading left them all as formula images: unsearchable and unquotable.
+        # A standalone <formula> is really a listing in two cases, both handled the same way — join
+        # the previous listing if one is open, else start a fresh block. (a) Headless: GROBID
+        # promoted "Algorithm 1" out of the listing (into the section title, or a neighbouring
+        # float's caption), leaving numbered steps with no heading to split on — measured on 40
+        # PDFs, that is how every pseudocode listing but one arrived. (b) In-algorithm-section: the
+        # whole section is one listing, so its fragments join one block.
+        if _is_headless_listing(text) or (in_algorithm_section and _is_listing(text)):
             host = _last_listing(section_blocks)
             if host is not None:
-                host["text"] = f"{host['text']} {text}".strip()
-                return []
-            return [_algorithm_block(formula, text, sec_ctx, doc_ctx)]
-        if in_algorithm_section and _is_listing(text):
-            # The whole section is one listing, so its fragments join one block — the first
-            # fragment's crop covers the float's head, and the rest would only mint stray images.
-            host = _last_listing(section_blocks)
-            if host is not None:
-                host["text"] = f"{host['text']} {text}".strip()
+                _append_to_listing(host, text)
                 return []
             return [_algorithm_block(formula, text, sec_ctx, doc_ctx)]
         # No "Algorithm N" heading followed by numbered steps — an equation that merely cites one
@@ -252,11 +246,16 @@ def _formula_or_algorithm_blocks(
         # the intervening fragments GROBID filed as paragraphs stay where they are.
         host = _last_listing(section_blocks)
         if host is not None and _ALGORITHM_STEP_RE.search(lead):
-            host["text"] = f"{host['text']} {lead}".strip()
+            _append_to_listing(host, lead)
         else:
             blocks.append({"id": sec_ctx.next_id("code"), "type": "code", "text": lead})
     blocks.extend(_algorithm_block(formula, listing, sec_ctx, doc_ctx) for listing in listings)
     return blocks
+
+
+def _append_to_listing(host: dict, text: str) -> None:
+    """Append a split-off fragment to the listing it belongs to, single-spaced."""
+    host["text"] = f"{host['text']} {text}".strip()
 
 
 def _last_listing(blocks: Sequence[dict]) -> dict | None:
