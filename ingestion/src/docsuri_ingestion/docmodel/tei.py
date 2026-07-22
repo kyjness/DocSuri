@@ -217,12 +217,8 @@ def _formula_or_algorithm_blocks(
     """
     text = _text(formula)
     parts = _ALGORITHM_SPLIT_RE.split(text)
-    listings = [
-        f"{label} {body.strip()}".strip()
-        for label, body in zip(parts[1::2], parts[2::2], strict=True)
-        if _is_listing(body)
-    ]
-    if not listings:
+    pairs = list(zip(parts[1::2], parts[2::2], strict=True))
+    if not any(_is_listing(body) for _, body in pairs):
         # A standalone <formula> is really a listing in two cases, both handled the same way — join
         # the previous listing if one is open, else start a fresh block. (a) Headless: GROBID
         # promoted "Algorithm 1" out of the listing (into the section title, or a neighbouring
@@ -249,7 +245,20 @@ def _formula_or_algorithm_blocks(
             _append_to_listing(host, lead)
         else:
             blocks.append({"id": sec_ctx.next_id("code"), "type": "code", "text": lead})
-    blocks.extend(_algorithm_block(formula, listing, sec_ctx, doc_ctx) for listing in listings)
+    # Walk the headings in document order. A "Algorithm N" whose body is a real listing becomes a
+    # code block; one that is only a cross-reference GROBID swept into the float ("Algorithm 2 for
+    # details") is still text the paper contains, so it is kept — joined to the listing it follows
+    # when there is one, else as its own block — rather than dropped.
+    for label, body in pairs:
+        segment = f"{label} {body.strip()}".strip()
+        if _is_listing(body):
+            blocks.append(_algorithm_block(formula, segment, sec_ctx, doc_ctx))
+        elif segment:
+            host = _last_listing(blocks) or _last_listing(section_blocks)
+            if host is not None:
+                _append_to_listing(host, segment)
+            else:
+                blocks.append({"id": sec_ctx.next_id("code"), "type": "code", "text": segment})
     return blocks
 
 
