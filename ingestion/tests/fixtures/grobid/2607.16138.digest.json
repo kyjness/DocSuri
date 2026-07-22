@@ -1,6 +1,6 @@
 {
-  "fullTextLen": 29905,
-  "fullTextSha": "da48c4e448c87cee",
+  "fullTextLen": 30655,
+  "fullTextSha": "cb8a3eaf4995839a",
   "sections": [
     {
       "blocks": [
@@ -231,11 +231,11 @@
           "type": "paragraph"
         },
         {
-          "anchorLabel": null,
-          "display": true,
-          "id": "s9.eq1",
-          "latexSha": null,
-          "type": "formula"
+          "id": "s9.code1",
+          "lines": 1,
+          "textLen": 196,
+          "textSha": "4e2c1dc42a7788cb",
+          "type": "code"
         },
         {
           "id": "s9.p6",
@@ -252,7 +252,7 @@
         {
           "anchorLabel": null,
           "display": true,
-          "id": "s9.eq2",
+          "id": "s9.eq1",
           "latexSha": null,
           "type": "formula"
         },
@@ -269,24 +269,17 @@
           "type": "paragraph"
         },
         {
-          "anchorLabel": null,
-          "display": true,
-          "id": "s9.eq3",
-          "latexSha": null,
-          "type": "formula"
+          "id": "s9.code2",
+          "lines": 1,
+          "textLen": 251,
+          "textSha": "1fc3e871b7afefdf",
+          "type": "code"
         },
         {
           "id": "s9.p10",
           "textLen": 13,
           "textSha": "7b1a46637d2e5957",
           "type": "paragraph"
-        },
-        {
-          "anchorLabel": null,
-          "display": true,
-          "id": "s9.eq4",
-          "latexSha": null,
-          "type": "formula"
         },
         {
           "id": "s9.p11",
@@ -302,24 +295,17 @@
     {
       "blocks": [
         {
-          "anchorLabel": null,
-          "display": true,
-          "id": "s10.eq1",
-          "latexSha": null,
-          "type": "formula"
+          "id": "s10.code1",
+          "lines": 1,
+          "textLen": 297,
+          "textSha": "db526f116b5cd4f8",
+          "type": "code"
         },
         {
           "id": "s10.p1",
           "textLen": 13,
           "textSha": "7b1a46637d2e5957",
           "type": "paragraph"
-        },
-        {
-          "anchorLabel": null,
-          "display": true,
-          "id": "s10.eq2",
-          "latexSha": null,
-          "type": "formula"
         },
         {
           "id": "s10.p2",
@@ -342,7 +328,7 @@
         {
           "anchorLabel": null,
           "display": true,
-          "id": "s10.eq3",
+          "id": "s10.eq1",
           "latexSha": null,
           "type": "formula"
         },
@@ -351,13 +337,6 @@
           "textLen": 56,
           "textSha": "94fcb5b9e96b05b1",
           "type": "paragraph"
-        },
-        {
-          "anchorLabel": null,
-          "display": true,
-          "id": "s10.eq4",
-          "latexSha": null,
-          "type": "formula"
         },
         {
           "id": "s10.p6",

@@ -24,7 +24,7 @@ the document-order ordinal per type — no pixels are re-extracted (re-extractio
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -60,6 +60,10 @@ _SECTION_CLASSES = {
     "ltx_appendix",
 }
 _HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
+# A figure float's own number as LaTeXML writes it in the caption's ltx_tag span ("Figure 7 :",
+# "Fig. 2:"). Only used to tell a numbered float apart from a "(a)"/"(b)" sub-panel mark — the
+# PDF-side caption rule lives in asset_extraction and reads a very different kind of text.
+_FIGURE_TAG_RE = re.compile(r"^(figure|fig\.?)\s*\d+", re.IGNORECASE)
 # Block-id type abbreviations (1-based ordinals per section): s3.p2, s3.tbl1, s3.eq2, ...
 _ABBREV = {
     "paragraph": "p",
@@ -324,8 +328,7 @@ def _blocks_from(
         block = _table_block(el, sec_ctx)
         return [block] if block else []
     if name == "figure" and "ltx_figure" in classes:
-        block = _figure_block(el, sec_ctx, doc_ctx)
-        return [block] if block else []
+        return _figure_blocks(el, sec_ctx, doc_ctx)
     if "ltx_equation" in classes or "ltx_eqn_table" in classes or "ltx_equationgroup" in classes:
         return _formula_blocks(el, sec_ctx)
     if name in {"ul", "ol"} and ("ltx_itemize" in classes or "ltx_enumerate" in classes):
@@ -334,7 +337,13 @@ def _blocks_from(
     if "ltx_listing" in classes or "ltx_verbatim" in classes:
         block = _code_block(el, sec_ctx)
         return [block] if block else []
-    if name == "p" and "ltx_p" in classes:
+    # A paragraph is normally <p class="ltx_p">, but inside a minipage / inline-sectional block
+    # (LaTeXML renders those into <span class="ltx_inline-sectional-block"> or a <foreignobject>)
+    # the SAME paragraph comes out as <span class="ltx_p"> — HTML forbids <p> there. Requiring the
+    # tag name dropped that text entirely, which is how a "Finding 1:"/"Assumption 1:" subsection
+    # ended up with a title and no blocks. A span inside a p.ltx_p is never reached: the paragraph
+    # branch returns without recursing, so the outermost paragraph still wins.
+    if name in {"p", "span"} and "ltx_p" in classes:
         block = _paragraph_block(el, sec_ctx)
         return [block] if block else []
     if skip_sections and _is_section(el):
@@ -394,13 +403,103 @@ def _table_block(figure_el: Tag, sec_ctx: _SectionCtx) -> dict | None:
     return block
 
 
+def _figure_blocks(figure_el: Tag, sec_ctx: _SectionCtx, doc_ctx: _DocCtx) -> list[dict]:
+    """The figure block(s) a LaTeXML float yields — usually one, but a float can hold several.
+
+    Two figures set side by side share one ``<figure>`` container, and each panel carries its OWN
+    numbered caption ("Figure 7 :", "Figure 8 :"). Treating the container as one figure dropped the
+    second one from the document entirely and left the survivor with no label, so it could not be
+    matched to a page-crop either. Panels captioned "(a)"/"(b)" are the other construct — real
+    sub-panels of ONE figure — and are left alone, as is any container with a caption of its own."""
+    panels = _numbered_figure_panels(figure_el)
+    if panels:
+        return [b for b in (_figure_block(p, sec_ctx, doc_ctx) for p in panels) if b]
+    block = _figure_block(figure_el, sec_ctx, doc_ctx)
+    if block:
+        return [block]
+    return _text_float_blocks(figure_el, sec_ctx, doc_ctx)
+
+
+def _text_float_blocks(figure_el: Tag, sec_ctx: _SectionCtx, doc_ctx: _DocCtx) -> list[dict]:
+    """Content blocks for a captioned float that holds TEXT rather than a graphic.
+
+    Authors float prompt transcripts, dialogues and boxed examples with ``\\begin{figure}`` and a
+    ``\\fbox``, so LaTeXML emits a ``figure.ltx_figure`` with a "Figure 2:" caption and not one
+    image in it. Requiring a graphic dropped the float whole — caption and body alike — which on a
+    150-paper sample lost 139 floats totalling 217k characters across 57 papers, none of it
+    reachable by search or quotable by an agent.
+
+    The caption leads (it carries the number the body cross-references), then the float's own
+    content. A float that has images but yielded no block is decoration and stays dropped.
+    """
+    if figure_el.find_all("img"):
+        return []
+    figcaption = _own_figcaption(figure_el)
+    if figcaption is None:
+        return []
+    out: list[dict] = []
+    label, caption = _caption(figure_el)
+    if caption:
+        text = f"{label}: {caption}" if label else caption
+        out.append({"id": sec_ctx.next_id("paragraph"), "type": "paragraph", "text": text})
+    rest = [c for c in figure_el.children if isinstance(c, Tag) and c is not figcaption]
+    for child in rest:
+        out.extend(_blocks_from(child, sec_ctx, doc_ctx, skip_sections=True))
+    if len(out) <= 1:
+        # Nothing inside carried a paragraph tag (LaTeXML boxes plain runs in bare spans), so the
+        # float's own text is the only way its content survives at all.
+        body = " ".join(_inline_text(child) for child in rest).strip()
+        if body:
+            out.append({"id": sec_ctx.next_id("paragraph"), "type": "paragraph", "text": body})
+    return out
+
+
+def _numbered_figure_panels(figure_el: Tag) -> list[Tag]:
+    """Panels of ``figure_el`` that are separate numbered figures rather than sub-panels. Pure."""
+    if _own_figcaption(figure_el) is not None:
+        return []  # the container captions itself, so its panels belong to it
+    panels = [
+        panel
+        for panel in figure_el.find_all("figure")
+        if _nearest_figure_ancestor(panel) is figure_el and panel.find_all("img")
+    ]
+    numbered = [p for p in panels if _numbered_figure_label(_own_figcaption(p))]
+    return numbered if len(numbered) == len(panels) else []
+
+
+def _numbered_figure_label(figcaption: Tag | None) -> bool:
+    """Whether a panel's caption tag reads "Figure 7" — a float number, not a "(a)" panel mark."""
+    if figcaption is None:
+        return False
+    tag = figcaption.find("span", class_="ltx_tag")
+    return tag is not None and bool(_FIGURE_TAG_RE.match(_WS_RE.sub(" ", tag.get_text()).strip()))
+
+
 def _figure_block(figure_el: Tag, sec_ctx: _SectionCtx, doc_ctx: _DocCtx) -> dict | None:
     imgs = figure_el.find_all("img")
-    if not imgs:
+    label, caption = _caption(figure_el)
+    if not imgs and not (label and figure_el.find("svg") is not None):
         return None  # no graphic to reference
+    # A numbered float whose graphic LaTeXML drew as an inline <svg> — a TikZ/pgfplots vector
+    # plot — has no <img> to point at, and requiring one dropped the figure with its caption and
+    # number attached (measured: 49 of 1337 captioned floats across a 150-paper sample, hitting 1
+    # paper in 10). The number is enough: a blank src sends the asset extractor to the PDF
+    # page-crop matched by caption number, which is what a multi-panel figure already relies on.
+    if not label and not caption and len(imgs) > 1 and figure_el.find("figcaption") is None:
+        # A float with several images and no caption ANYWHERE inside it is decoration (a funder/
+        # logo strip), and nothing could ever image it: with no caption there is no number for a
+        # page-crop, and a multi-image float carries no single e-print src. Emitting a block here
+        # only mints an assetRef that must dangle. A single uncaptioned image keeps its block —
+        # its src can still resolve against the e-print.
+        #
+        # The descendant check is what separates the two: measured on arXiv:2510.23156, LaTeXML
+        # wraps a numbered figure's panels in an outer float and leaves the "Figure 5:" caption in
+        # a SIBLING float, so the group has no caption of its own and looked exactly like a logo
+        # strip — dropping it deleted a real figure. A genuine group always captions its panels
+        # ("(a) PS", "TABLE III"); decoration captions nothing at any depth.
+        return None
     ordinal = doc_ctx.figure_ordinal
     doc_ctx.figure_ordinal += 1
-    label, caption = _caption(figure_el)
     # Record this figure's resolution hints at its ordinal so the asset extractor can align its
     # image to this block (the append order matches the ordinal increment, keeping
     # figure_specs[ordinal] == this block).
@@ -411,7 +510,7 @@ def _figure_block(figure_el: Tag, sec_ctx: _SectionCtx, doc_ctx: _DocCtx) -> dic
         # Blank the src so the asset extractor falls back to a whole-figure PDF page-crop (matched
         # by caption number), which captures every panel as laid out. A single-image figure keeps
         # its src for the original-quality e-print graphic.
-        first = imgs[0]
+        first = imgs[0] if imgs else None
         src = first.get("src") if len(imgs) == 1 and isinstance(first, Tag) else None
         doc_ctx.figure_specs.append(
             FigureSpec(src=src if isinstance(src, str) else "", label=label)
@@ -608,7 +707,9 @@ def _caption(figure_el: Tag) -> tuple[str, str]:
     label = ""
     if tag is not None:
         label = _WS_RE.sub(" ", tag.get_text()).strip().rstrip(":").strip()
-        tag.extract()
+    # Read-only on purpose: ``_inline_text`` already skips ``ltx_tag``, so removing the span here
+    # bought nothing and made a second call return an empty label — which silently dropped the
+    # figure number when one float is inspected twice (graphic first, then text content).
     caption = _inline_text(figcaption)
     return label, caption
 
@@ -684,7 +785,7 @@ def block_text_parts(block: Mapping[str, Any]) -> list[str]:
     if kind in ("paragraph", "code"):
         return [block.get("text") or ""]
     if kind == "formula":
-        return [block.get("latex") or ""]
+        return [block.get("latex") or block.get("latexOcr") or ""]
     if kind == "list":
         return [item.get("text") or "" for item in block.get("items") or []]
     if kind in ("figure", "table"):
@@ -698,6 +799,22 @@ def block_text_parts(block: Mapping[str, Any]) -> list[str]:
             )
         return parts
     return []
+
+
+def iter_blocks(doc: Mapping[str, Any], block_type: str) -> Iterator[dict]:
+    """Every block of ``block_type`` in a doc-model dict, depth-first through nested sections.
+
+    The single statement of how to walk the section tree for one kind of block — the PDF-path
+    repair and OCR passes both re-read specific block types after the build, and each had grown its
+    own identical walker.
+    """
+
+    def walk(container: Mapping[str, Any]) -> Iterator[dict]:
+        for section in container.get("sections") or []:
+            yield from (b for b in (section.get("blocks") or []) if b.get("type") == block_type)
+            yield from walk(section)
+
+    return walk(doc)
 
 
 def _project_full_text(sections: list[dict]) -> str:

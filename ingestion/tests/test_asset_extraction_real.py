@@ -233,6 +233,152 @@ def test_single_large_primitive_is_a_figure_but_a_thin_rule_is_not() -> None:
     assert AssetExtractor().extract(paper_id="p", version=1, pdf=thin, eprint=None) == ()
 
 
+def test_caption_without_a_delimiter_is_cropped_but_a_cross_reference_is_not() -> None:
+    """Some journals punctuate nothing: "Fig. 1 The configuration of …". Requiring a delimiter
+    lost every crop on such a paper. A lowercase continuation still marks a body sentence."""
+    pdf = _make_text_pdf(
+        [("Fig. 1 The configuration of the vehicle", 640)],
+        rects=[(100, 660, 290, 740), (310, 660, 500, 740)],
+    )
+    assets = AssetExtractor().extract(paper_id="p", version=1, pdf=pdf, eprint=None)
+    assert [a.meta.type for a in assets] == [AssetType.FIGURE]
+
+    cross_ref = _make_text_pdf(
+        [("Figure 1 shows the configuration of the vehicle", 640)],
+        rects=[(100, 660, 290, 740), (310, 660, 500, 740)],
+    )
+    assert AssetExtractor().extract(paper_id="p", version=1, pdf=cross_ref, eprint=None) == ()
+
+
+def _two_column_body(rows: int, *, top: float, step: float = 16) -> list[tuple]:
+    """Body text in two columns — the layout that makes ``extract_text_lines`` merge a row's two
+    columns into one line, and that a column-start caption is recognised against."""
+    lines: list[tuple] = []
+    for i in range(rows):
+        y = top - i * step
+        lines.append(("left column body text here", y, 72))
+        lines.append(("right column body text here", y, 330))
+    return lines
+
+
+def test_caption_in_the_right_column_of_a_merged_line_is_still_found() -> None:
+    """On a two-column page pdfplumber merges both columns of a row into ONE line, so the right
+    column's caption does not START it. The caption is recovered from its column-start x, and the
+    crop stays inside that column."""
+    pdf = _make_text_pdf(
+        _two_column_body(10, top=700)
+        + [("left column text continues", 540, 72), ("Figure 1: right column", 540, 330)],
+        rects=[(330, 560, 520, 660), (340, 570, 500, 640)],  # right-column plot, above the caption
+    )
+    assets = AssetExtractor().extract(paper_id="p", version=1, pdf=pdf, eprint=None)
+
+    assert [a.meta.type for a in assets] == [AssetType.FIGURE]
+    assert assets[0].meta.caption.startswith("Figure 1")
+    assert assets[0].meta.bbox[0] > 300, "the crop leaked into the left column"
+
+
+def test_caption_stops_at_the_next_column_and_does_not_absorb_it() -> None:
+    """A left-column caption merged with the neighbouring column's text must keep only its own
+    column: absorbing the other one stretched its x-span across the page, and the crop with it."""
+    pdf = _make_text_pdf(
+        _two_column_body(10, top=700)
+        + [("Table 1: left column results", 540, 72), ("Diagram label text", 540, 330)],
+        rects=[(72, 440, 250, 520), (72, 430, 250, 434)],  # the table's rules, below its caption
+    )
+    assets = AssetExtractor().extract(paper_id="p", version=1, pdf=pdf, eprint=None)
+
+    assert [a.meta.type for a in assets] == [AssetType.TABLE]
+    assert assets[0].meta.caption == "Table 1: left column results"
+    assert assets[0].meta.bbox[2] < 300, "the crop absorbed the neighbouring column"
+
+
+def test_a_stray_rule_far_from_the_caption_is_not_pulled_into_the_crop() -> None:
+    """A caption is the nearest one for everything on its side of the page, including a rule at the
+    far edge that belongs to nothing. Only the contiguous band around the caption is cropped."""
+    pdf = _make_text_pdf(
+        [("Table 1: results", 700)],
+        rects=[
+            (100, 640, 500, 660),  # the table's own rules, just below the caption
+            (100, 600, 500, 620),
+            (100, 80, 500, 84),  # a rule at the bottom of the page, unrelated
+        ],
+    )
+    assets = AssetExtractor().extract(paper_id="p", version=1, pdf=pdf, eprint=None)
+
+    assert [a.meta.type for a in assets] == [AssetType.TABLE]
+    # top-origin: the crop stops well above the stray rule (792 - 84 = 708).
+    assert assets[0].meta.bbox[3] < 400
+
+
+def test_table_crop_covers_rows_the_journal_did_not_rule() -> None:
+    """Most journals rule a table's header and its last row only, so the graphic span is a couple
+    of rules with the body between them. The crop grows over the rows that continue from it —
+    recognised as columnar text — and stops at the prose that follows."""
+    # Three columns per row: separate text runs, which is what makes the row read as columnar.
+    rows = [
+        cell
+        for i, y in ((i, 640 - i * 14) for i in range(6))
+        for cell in ((f"r{i}", y, 100), (f"0.5{i}", y, 200), ("yes", y, 300))
+    ]
+    pdf = _make_text_pdf(
+        [("Table 1: results", 700), *rows, ("Body prose resumes here after the table.", 480, 100)],
+        rects=[(100, 660, 400, 664), (100, 548, 400, 552)],  # header rule and last-row rule
+    )
+    assets = AssetExtractor().extract(paper_id="p", version=1, pdf=pdf, eprint=None)
+
+    assert [a.meta.type for a in assets] == [AssetType.TABLE]
+    bbox = assets[0].meta.bbox
+    # top-origin: covers the last row (792 - 570 = 222) but stops above the prose (792 - 480 = 312).
+    assert bbox[3] > 222
+    assert bbox[3] < 300
+
+
+def test_mid_sentence_cross_reference_is_not_read_as_a_column_caption() -> None:
+    """Recovering mid-line captions must not admit the body cross-references that sit INSIDE prose.
+    Single-column prose flows through the strip left of "Figure 1.", so it is not a column start."""
+    pdf = _make_text_pdf(
+        [
+            ("Body prose that runs the full width of this single column page", 700 - i * 16, 72)
+            for i in range(10)
+        ]
+        + [("Results are strongest here as shown in Figure 1. We now turn to costs", 520, 72)],
+        rects=[(100, 560, 500, 680)],  # a graphic the false caption would have claimed
+    )
+    assert AssetExtractor().extract(paper_id="p", version=1, pdf=pdf, eprint=None) == ()
+
+
+def test_table_captioned_under_its_table_is_cropped() -> None:
+    """Journals differ on where a table's caption goes; this one prints it UNDER the table, which a
+    below-the-caption-only rule dropped entirely."""
+    pdf = _make_text_pdf(
+        [("Table 1: caption printed under its table", 600)],
+        rects=[(100, 620, 500, 640), (100, 660, 500, 680)],  # table rules ABOVE the caption
+    )
+    assets = AssetExtractor().extract(paper_id="p", version=1, pdf=pdf, eprint=None)
+
+    assert [a.meta.type for a in assets] == [AssetType.TABLE]
+    # top-origin: the crop sits entirely above the caption line (792 - 600 = 192).
+    assert assets[0].meta.bbox[3] < 192
+
+
+def test_table_caption_takes_only_the_nearer_side() -> None:
+    """A table caption with primitives on BOTH sides keeps the nearer side only — a crop spanning
+    its own caption is wrong whichever way the paper prints it."""
+    pdf = _make_text_pdf(
+        [("Table 1: caption printed under its table", 600)],
+        rects=[
+            (100, 620, 500, 640),  # its own table, just above the caption
+            (100, 660, 500, 680),
+            (100, 200, 500, 220),  # a far-below graphic that must not join the crop
+            (100, 240, 500, 260),
+        ],
+    )
+    assets = AssetExtractor().extract(paper_id="p", version=1, pdf=pdf, eprint=None)
+
+    assert [a.meta.type for a in assets] == [AssetType.TABLE]
+    assert assets[0].meta.bbox[3] < 192  # top-origin: nothing from below the caption came along
+
+
 # ---------------------------------------------------------------------- structured path
 def test_structured_figures_from_eprint_tar() -> None:
     tar = _eprint_tar(

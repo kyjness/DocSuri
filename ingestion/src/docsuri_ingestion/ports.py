@@ -7,7 +7,7 @@ from typing import Any, Protocol, runtime_checkable
 from docsuri_shared.dtos import DocModel, SourceTier
 from docsuri_shared.events import NewArxivEvent
 
-from .domain.assets import AssetManifest, ExtractedAsset
+from .domain.assets import AssetManifest, ExtractedAsset, ExtractedTable
 from .domain.enums import DedupDecision
 from .domain.models import (
     CanonicalDedupState,
@@ -154,6 +154,29 @@ class GrobidPort(Protocol):
     """GROBID sidecar: PDF bytes -> raw TEI XML (structure for the doc-model parser)."""
 
     def extract_tei(self, pdf: bytes) -> str: ...
+
+
+@runtime_checkable
+class TableExtractorPort(Protocol):
+    """Re-read a table's cells from the PDF itself, for the tables GROBID reconstructs wrongly.
+
+    GROBID's TEI often merges a whole data row into one cell ("0.696 ± 0.015 0.011 ± 0.000 …"),
+    which is worse than useless downstream: U7's grounding reads those numbers as the paper's.
+    An extractor returns grids of cell text per page so the repair step can replace the cells it
+    can verify. Optional — without one configured the TEI cells stand as GROBID produced them."""
+
+    def extract_tables(self, pdf: bytes, pages: Sequence[int]) -> Sequence[ExtractedTable]: ...
+
+
+@runtime_checkable
+class FormulaReaderPort(Protocol):
+    """Read approximate LaTeX out of a formula's page-crop image (PDF/GROBID path).
+
+    The PDF path has no LaTeX to store, so an equation is a picture: faithful, but unsearchable
+    and unquotable. A reader recovers something close enough to index. Optional — without one the
+    equation stays image-only, exactly as before."""
+
+    def read_latex(self, image: bytes) -> str | None: ...
 
 
 @runtime_checkable

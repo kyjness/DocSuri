@@ -98,6 +98,13 @@ class IngestionSettings(BaseModel):
         default="ARXIV,SEMANTIC_SCHOLAR,OPENALEX", alias="DOCSURI_CORPUS_SOURCES"
     )
     grobid_url: str | None = Field(default=None, alias="DOCSURI_GROBID_URL")
+    # Second reading of the tables GROBID reconstructs wrongly. "auto" (default) uses it wherever
+    # the optional extra is installed; "off" disables it; "docling" demands it. Only the PDF path
+    # runs it, and a rebuilt table is kept only when every number verifies against the page.
+    table_extractor: str = Field(default="auto", alias="DOCSURI_TABLE_EXTRACTOR")
+    # OCR of the formula crops the PDF path produces — same auto/off/"pix2tex" contract. Recovered
+    # LaTeX is indexed, never rendered; see docmodel/formula_ocr.py.
+    formula_reader: str = Field(default="auto", alias="DOCSURI_FORMULA_READER")
     semantic_scholar_api_key: str | None = Field(
         default=None, alias="DOCSURI_SEMANTIC_SCHOLAR_API_KEY"
     )

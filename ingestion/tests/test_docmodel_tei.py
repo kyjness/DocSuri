@@ -225,3 +225,21 @@ def test_a_table_grobid_could_not_reconstruct_keeps_its_caption() -> None:
     assert tables[0].rows == []
     # The caption is what makes the table findable at all once its rows are gone.
     assert "Major challenges facing development." in doc.fullText
+
+
+def test_an_algorithm_mention_after_a_listing_is_not_dropped() -> None:
+    """One <formula> can carry a real listing AND a trailing "Algorithm N" cross-reference GROBID
+    swept into the same element. The listing becomes a code block; the mention is still text the
+    paper contains, so it is kept (joined to that listing) rather than silently vanishing."""
+    tei = (
+        f"<TEI {_NS}><text><body><div><head>Method</head>"
+        "<formula>Algorithm 1 Training 1: init 2: loop end for "
+        "Algorithm 2 gives the details</formula>"
+        "</div></body></text></TEI>"
+    )
+    doc = _parse(tei)
+    codes = [b.root for s in doc.sections for b in s.blocks if b.root.type == "code"]
+    assert len(codes) == 1
+    assert "1: init" in codes[0].text
+    assert "Algorithm 2 gives the details" in codes[0].text
+    assert "Algorithm 2 gives the details" in doc.fullText

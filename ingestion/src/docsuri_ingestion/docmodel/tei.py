@@ -13,12 +13,19 @@ What each TEI node maps to (and the honest fidelity limits of the PDF path):
         GROBID emits OCR'd formula text, not reliable LaTeX, so we do NOT store garbled LaTeX
         — the equation degrades to a page-crop image (TD-12, our 3a decision). Image bytes are
         populated by the coordinate crop pipeline; the parser only assigns the deterministic id.
+        When a formula reader is configured the builder later fills ``latexOcr`` from that crop —
+        searchable, never rendered (docmodel/formula_ocr.py).
   - ``<figure type="table"><table>``     -> TableBlock as DATA (rows/cells) — GROBID gives real
         table structure, so the structured rows stay the PRIMARY representation (D8). When the
         table also carries coordinates we ALSO attach a page-crop ``assetRef`` as a last-resort
         fallback (schema-sanctioned), so a later vision reader can re-read numbers GROBID's cell
         reconstruction may have garbled — the image never displaces the searchable data.
   - ``<figure>``                         -> FigureBlock (assetRef image, FR-17)
+  - an algorithm float                   -> CodeBlock with text AND its page crop: GROBID has no
+        algorithm concept, so it files a listing under ``<formula>`` (sometimes promoting the
+        float's heading to the section title). Unlike equation glyphs, listing text survives
+        extraction well enough to index, so the listing is searchable while the crop keeps a
+        faithful rendering.
 
 Figure/table position: GROBID groups ``<figure>`` elements (typically at body end), so their
 exact inline position is not in TEI order. Figures nested inside a ``<div>`` keep that section;
@@ -32,6 +39,7 @@ from __future__ import annotations
 
 import re
 import xml.etree.ElementTree as ET
+from collections.abc import Sequence
 from datetime import UTC, datetime
 
 from docsuri_shared.dtos import DocModel, SourceTier
@@ -48,6 +56,21 @@ from docsuri_ingestion.domain.errors import PermanentIngestionError
 from docsuri_ingestion.xmlsafe import safe_fromstring
 
 _WS_RE = re.compile(r"\s+")
+# An algorithm float's own heading inside a GROBID <formula>. Capturing keeps the heading with the
+# listing it opens, and splitting on every occurrence separates two listings GROBID ran together.
+_ALGORITHM_SPLIT_RE = re.compile(r"(Algorithm\s+\d+)")
+# A listing numbers its steps ("1:", "2:"); a sentence that merely cites an algorithm does not.
+_ALGORITHM_STEP_RE = re.compile(r"(?<!\d)\d+\s*:")
+_ALGORITHM_MIN_STEPS = 2
+_ALGORITHM_HEAD_RE = re.compile(r"^\s*Algorithm\s+\d+")
+# Without a heading, numbered steps alone would also match a numbered derivation, so the listing
+# has to speak pseudocode as well — and show more steps than the headed case needs.
+_HEADLESS_MIN_STEPS = 3
+_PSEUDOCODE_RE = re.compile(
+    r"\b(end\s+(?:for|while|if|procedure|function)|for\s+each|repeat|until"
+    r"|procedure|Require|Ensure|Input\s*:|Output\s*:)\b",
+    re.IGNORECASE,
+)
 
 
 def _local(tag: object) -> str:
@@ -127,7 +150,18 @@ def _parse_div(div: ET.Element, section_id: str, doc_ctx: _DocCtx) -> dict:
             if block:
                 blocks.append(block)
         elif name == "formula":
-            blocks.append(_formula_block(child, sec_ctx, doc_ctx))
+            blocks.extend(
+                _formula_or_algorithm_blocks(
+                    child,
+                    sec_ctx,
+                    doc_ctx,
+                    blocks,
+                    # GROBID sometimes promotes an algorithm float's heading to the section title
+                    # ("Algorithm 3 Improved step 4 of IKPLS"), leaving its steps in headless
+                    # formulas. Inside such a section a stepped formula IS the listing.
+                    in_algorithm_section=bool(_ALGORITHM_HEAD_RE.match(title)),
+                )
+            )
         elif name == "figure":
             block = _figure_or_table_block(child, sec_ctx, doc_ctx)
             if block:
@@ -162,6 +196,122 @@ def _paragraph_block(p: ET.Element, sec_ctx: _SectionCtx) -> dict | None:
     if not text:
         return None
     return {"id": sec_ctx.next_id("paragraph"), "type": "paragraph", "text": text}
+
+
+def _formula_or_algorithm_blocks(
+    formula: ET.Element,
+    sec_ctx: _SectionCtx,
+    doc_ctx: _DocCtx,
+    section_blocks: Sequence[dict] = (),
+    *,
+    in_algorithm_section: bool = False,
+) -> list[dict]:
+    """A ``<formula>`` -> formula image, or the algorithm listing(s) GROBID hid inside it.
+
+    GROBID has no notion of an algorithm float: it classifies one as ``<formula>`` and often
+    splits a single listing across several of them, so an algorithm was reachable only as a
+    picture — readable, but absent from search and from anything an agent can quote. Unlike
+    equation glyphs the listing's text survives extraction well enough to index ("Algorithm 1
+    Step 2 of IKPLS 1: if M ..."), so it becomes a CodeBlock that KEEPS the page crop: the text
+    is the searchable representation, the crop is what renders faithfully (TD-12).
+    """
+    text = _text(formula)
+    parts = _ALGORITHM_SPLIT_RE.split(text)
+    pairs = list(zip(parts[1::2], parts[2::2], strict=True))
+    if not any(_is_listing(body) for _, body in pairs):
+        # A standalone <formula> is really a listing in two cases, both handled the same way — join
+        # the previous listing if one is open, else start a fresh block. (a) Headless: GROBID
+        # promoted "Algorithm 1" out of the listing (into the section title, or a neighbouring
+        # float's caption), leaving numbered steps with no heading to split on — measured on 40
+        # PDFs, that is how every pseudocode listing but one arrived. (b) In-algorithm-section: the
+        # whole section is one listing, so its fragments join one block.
+        if _is_headless_listing(text) or (in_algorithm_section and _is_listing(text)):
+            host = _last_listing(section_blocks)
+            if host is not None:
+                _append_to_listing(host, text)
+                return []
+            return [_algorithm_block(formula, text, sec_ctx, doc_ctx)]
+        # No "Algorithm N" heading followed by numbered steps — an equation that merely cites one
+        # still belongs on the formula path, where it stays an image.
+        return [_formula_block(formula, sec_ctx, doc_ctx)]
+    blocks: list[dict] = []
+    lead = parts[0].strip()
+    if lead:
+        # GROBID splits one listing across several elements, so text before the first heading is
+        # the previous listing's tail. It rejoins that listing rather than starting a new block —
+        # the intervening fragments GROBID filed as paragraphs stay where they are.
+        host = _last_listing(section_blocks)
+        if host is not None and _ALGORITHM_STEP_RE.search(lead):
+            _append_to_listing(host, lead)
+        else:
+            blocks.append({"id": sec_ctx.next_id("code"), "type": "code", "text": lead})
+    # Walk the headings in document order. A "Algorithm N" whose body is a real listing becomes a
+    # code block; one that is only a cross-reference GROBID swept into the float ("Algorithm 2 for
+    # details") is still text the paper contains, so it is kept — joined to the listing it follows
+    # when there is one, else as its own block — rather than dropped.
+    for label, body in pairs:
+        segment = f"{label} {body.strip()}".strip()
+        if _is_listing(body):
+            blocks.append(_algorithm_block(formula, segment, sec_ctx, doc_ctx))
+        elif segment:
+            host = _last_listing(blocks) or _last_listing(section_blocks)
+            if host is not None:
+                _append_to_listing(host, segment)
+            else:
+                blocks.append({"id": sec_ctx.next_id("code"), "type": "code", "text": segment})
+    return blocks
+
+
+def _append_to_listing(host: dict, text: str) -> None:
+    """Append a split-off fragment to the listing it belongs to, single-spaced."""
+    host["text"] = f"{host['text']} {text}".strip()
+
+
+def _last_listing(blocks: Sequence[dict]) -> dict | None:
+    """The most recent algorithm listing in this section, or None. Pure."""
+    for block in reversed(blocks):
+        if block.get("type") == "code":
+            return block
+    return None
+
+
+def _is_listing(body: str) -> bool:
+    """Whether text after an "Algorithm N" heading is a numbered listing rather than a mention."""
+    return len(_ALGORITHM_STEP_RE.findall(body)) >= _ALGORITHM_MIN_STEPS
+
+
+def _is_headless_listing(text: str) -> bool:
+    """Whether a formula is pseudocode that lost its "Algorithm N" heading to GROBID.
+
+    Numbered steps alone are too weak a signal without the heading — a multi-line derivation
+    numbers its equations the same way — so control-flow vocabulary has to be there too, and more
+    steps are required than the headed case asks for. Both together do not occur in an equation.
+    """
+    return (
+        len(_ALGORITHM_STEP_RE.findall(text)) >= _HEADLESS_MIN_STEPS
+        and _PSEUDOCODE_RE.search(text) is not None
+    )
+
+
+def _algorithm_block(
+    formula: ET.Element, listing: str, sec_ctx: _SectionCtx, doc_ctx: _DocCtx
+) -> dict:
+    """One algorithm listing: searchable text plus the page crop of the float it came from."""
+    ordinal = doc_ctx.formula_ordinal
+    doc_ctx.formula_ordinal += 1
+    aid = asset_id(doc_ctx.paper_id, doc_ctx.version, AssetType.FORMULA, ordinal)
+    _record_crop(doc_ctx, formula, aid, AssetType.FORMULA, ordinal, "")
+    return {
+        "id": sec_ctx.next_id("code"),
+        "type": "code",
+        "text": listing,
+        "assetRef": {
+            "assetId": aid,
+            "type": "formula",
+            "ordinal": ordinal,
+            "sourceMode": "page-crop",
+        },
+    }
 
 
 def _formula_block(formula: ET.Element, sec_ctx: _SectionCtx, doc_ctx: _DocCtx) -> dict:

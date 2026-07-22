@@ -175,6 +175,27 @@ def test_paragraph_blocks_with_inline_math() -> None:
     assert paras[0].text == "We study \\(x^{2}\\) models."
 
 
+def test_paragraph_inside_a_minipage_is_a_span_and_is_still_kept() -> None:
+    """Inside a minipage / inline-sectional block LaTeXML emits the paragraph as
+    ``<span class="ltx_p">`` — HTML forbids ``<p>`` there. Requiring the tag name dropped that
+    text, leaving titled subsections ("Finding 1:", "Assumption 1:") with no blocks at all."""
+    html = """
+    <!DOCTYPE html><html><body><article class="ltx_document">
+     <section class="ltx_section" id="S1">
+      <h2 class="ltx_title ltx_title_section">Results</h2>
+      <section class="ltx_paragraph" id="S1.Px1">
+       <h5 class="ltx_title ltx_title_paragraph">Finding 1:</h5>
+       <span class="ltx_para"><span class="ltx_p">Page views declined slightly.</span></span>
+      </section>
+     </section>
+    </article></body></html>
+    """
+    doc = _parse(html)
+    finding = _body_sections(doc)[0].sections[0]
+    assert finding.title == "Finding 1:"
+    assert [b.root.text for b in finding.blocks] == ["Page views declined slightly."]
+
+
 def test_formula_block_latex_and_anchor() -> None:
     doc = _parse()
     formula = next(b for b in _blocks(_body_sections(doc)[0]) if isinstance(b, FormulaBlock))
@@ -250,6 +271,86 @@ def test_subfigure_uses_own_caption_not_first_panel() -> None:
     # Multi-panel: src is blanked so the asset extractor page-crops the WHOLE figure (all panels)
     # instead of imaging only the first sub-panel's e-print graphic.
     assert specs[0].src == ""
+
+
+def test_two_numbered_floats_sharing_one_container_stay_two_figures() -> None:
+    """Two figures set side by side share one <figure> container, each panel carrying its own
+    numbered caption. Reading the container as one figure dropped the second from the document and
+    left the first with no label, so it could not be matched to a page-crop either."""
+    panel = (
+        '<figure class="ltx_figure ltx_figure_panel"><img src="{src}"/>'
+        '<figcaption class="ltx_caption"><span class="ltx_tag">{tag} </span>{cap}</figcaption>'
+        "</figure>"
+    )
+    html = (
+        '<html><body><div class="ltx_document">'
+        '<section class="ltx_section"><h2>1 Results</h2>'
+        '<figure class="ltx_figure">'
+        + panel.format(src="left.png", tag="Figure 7 :", cap="Effect of batch size")
+        + panel.format(src="right.png", tag="Figure 8 :", cap="Effect of z loss")
+        + "</figure></section></div></body></html>"
+    )
+    specs: list = []
+    doc = parse_html_to_docmodel(
+        html, paper_id="2401.00011", version=1, title="T", abstract=None,
+        source_tier=SourceTier.ar5iv, parser_version="p", schema_version="1.0.0",
+        generated_at=_FIXED_TS, figure_specs=specs,
+    )
+    figures = [b.root for s in doc.sections for b in s.blocks if isinstance(b.root, FigureBlock)]
+    assert [f.anchorLabel for f in figures] == ["Figure 7", "Figure 8"]
+    assert [f.caption for f in figures] == ["Effect of batch size", "Effect of z loss"]
+    # Each panel is its own float, so each keeps its own e-print graphic rather than being blanked.
+    assert [(s.label, s.src) for s in specs] == [
+        ("Figure 7", "left.png"),
+        ("Figure 8", "right.png"),
+    ]
+
+
+def test_uncaptioned_logo_strip_makes_no_figure_block() -> None:
+    """A float with several images and NO caption is decoration (a funder/logo strip). Nothing
+    could ever image it — no caption number for a page-crop, no single src for the e-print — so
+    emitting a block only mints an assetRef that must dangle."""
+    html = (
+        '<html><body><div class="ltx_document">'
+        '<section class="ltx_section"><h2>1 Intro</h2>'
+        '<figure class="ltx_figure"><img src="funder_a.png"/><img src="funder_b.png"/></figure>'
+        "</section></div></body></html>"
+    )
+    specs: list = []
+    doc = parse_html_to_docmodel(
+        html, paper_id="2401.00012", version=1, title="T", abstract=None,
+        source_tier=SourceTier.ar5iv, parser_version="p", schema_version="1.0.0",
+        generated_at=_FIXED_TS, figure_specs=specs,
+    )
+    assert [b for s in doc.sections for b in s.blocks if isinstance(b.root, FigureBlock)] == []
+    assert specs == []
+
+
+def test_panel_group_whose_number_sits_in_a_sibling_float_is_kept() -> None:
+    """LaTeXML can wrap a numbered figure's panels in an outer float and leave the "Figure 5:"
+    caption in a sibling float (arXiv:2510.23156). The group then has no caption of its own and
+    reads exactly like a logo strip — but its panels are captioned, and dropping it deletes a real
+    figure, which is the one outcome the strip rule exists to avoid causing."""
+    html = (
+        '<html><body><div class="ltx_document">'
+        '<section class="ltx_section"><h2>1 Results</h2>'
+        '<figure class="ltx_figure">'
+        '<figure class="ltx_figure ltx_figure_panel"><img src="ps.png"/>'
+        '<figcaption class="ltx_caption"><span class="ltx_tag">(a) </span>PS</figcaption></figure>'
+        '<figure class="ltx_figure ltx_figure_panel"><img src="loso.png"/>'
+        '<figcaption class="ltx_caption"><span class="ltx_tag">(b) </span>LOSO</figcaption>'
+        "</figure>"
+        '</figure>'
+        "</section></div></body></html>"
+    )
+    specs: list = []
+    doc = parse_html_to_docmodel(
+        html, paper_id="2401.00013", version=1, title="T", abstract=None,
+        source_tier=SourceTier.ar5iv, parser_version="p", schema_version="1.0.0",
+        generated_at=_FIXED_TS, figure_specs=specs,
+    )
+    figures = [b for s in doc.sections for b in s.blocks if isinstance(b.root, FigureBlock)]
+    assert len(figures) == 1
 
 
 def test_single_image_figure_keeps_eprint_src() -> None:
@@ -543,3 +644,69 @@ def test_a_table_with_no_parsable_rows_keeps_its_caption() -> None:
     assert tables[0].anchorLabel == "Table 4"
     assert tables[0].rows == []
     assert "Ablation over depth." in doc.fullText
+
+
+def test_svg_only_figure_keeps_its_block_for_a_page_crop() -> None:
+    """LaTeXML draws a TikZ/pgfplots plot as an inline <svg>, so the float has no <img> at all.
+    Requiring one dropped the figure together with its caption and number — yet the number is
+    exactly what the PDF page-crop path matches on, so the block is worth keeping."""
+    html = (
+        '<html><body><div class="ltx_document">'
+        '<section class="ltx_section"><h2>5 Experiments</h2>'
+        '<figure class="ltx_figure"><span class="ltx_inline-block">'
+        '<svg class="ltx_picture" height="10" width="10"></svg></span>'
+        '<figcaption class="ltx_caption">'
+        '<span class="ltx_tag">Figure 1: </span>Loss curves</figcaption>'
+        "</figure></section></div></body></html>"
+    )
+    specs: list = []
+    doc = parse_html_to_docmodel(
+        html, paper_id="2401.00014", version=1, title="T", abstract=None,
+        source_tier=SourceTier.ar5iv, parser_version="p", schema_version="1.0.0",
+        generated_at=_FIXED_TS, figure_specs=specs,
+    )
+    figures = [b.root for s in doc.sections for b in s.blocks if isinstance(b.root, FigureBlock)]
+    assert len(figures) == 1
+    assert figures[0].caption == "Loss curves"
+    assert figures[0].anchorLabel == "Figure 1"
+    assert specs[0].src == ""  # nothing to fetch from the e-print; the page-crop images it
+
+
+def test_captioned_float_holding_text_keeps_its_text_and_caption() -> None:
+    """Authors float prompt transcripts and boxed examples with \\begin{figure} + \\fbox, so the
+    float has a "Figure 2:" caption and no image at all. Requiring a graphic dropped the caption
+    and the whole transcript, putting it beyond search and beyond quoting."""
+    html = (
+        '<html><body><div class="ltx_document">'
+        '<section class="ltx_section"><h2>3 Prompts</h2>'
+        '<figure class="ltx_figure"><span class="ltx_inline-block ltx_framed">'
+        "System: You are roleplaying a participant in the card selection task."
+        "</span>"
+        '<figcaption class="ltx_caption">'
+        '<span class="ltx_tag">Figure 2: </span>The expert prompt.</figcaption>'
+        "</figure></section></div></body></html>"
+    )
+    doc = parse_html_to_docmodel(
+        html, paper_id="2401.00015", version=1, title="T", abstract=None,
+        source_tier=SourceTier.ar5iv, parser_version="p", schema_version="1.0.0",
+        generated_at=_FIXED_TS,
+    )
+    assert "Figure 2: The expert prompt." in doc.fullText
+    assert "You are roleplaying a participant" in doc.fullText
+
+
+def test_uncaptioned_logo_strip_is_still_dropped_by_the_text_float_path() -> None:
+    """The text-float recovery must not resurrect decoration: a float with images but no caption
+    has nothing to say and nothing that could image it."""
+    html = (
+        '<html><body><div class="ltx_document">'
+        '<section class="ltx_section"><h2>1 Intro</h2>'
+        '<figure class="ltx_figure"><img src="a.png"/><img src="b.png"/></figure>'
+        "</section></div></body></html>"
+    )
+    doc = parse_html_to_docmodel(
+        html, paper_id="2401.00016", version=1, title="T", abstract=None,
+        source_tier=SourceTier.ar5iv, parser_version="p", schema_version="1.0.0",
+        generated_at=_FIXED_TS,
+    )
+    assert [b for s in doc.sections for b in s.blocks if s.id != "s0"] == []

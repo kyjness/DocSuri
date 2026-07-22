@@ -34,6 +34,12 @@ assets = [
     "pypdfium2>=4.30,<5",
     "Pillow>=12.2,<13",
 ]
+tables = [
+    "docling>=2.0",
+]
+formulas = [
+    "pix2tex>=0.1.4",
+]
 
 [dependency-groups]
 dev = [

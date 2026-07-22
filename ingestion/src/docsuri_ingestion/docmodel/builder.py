@@ -17,11 +17,18 @@ from docsuri_shared.docmodel_contract import DOCMODEL_PARSER_VERSION, DOCMODEL_S
 from docsuri_shared.dtos import DocModel, DocModelResultDTO, SourceTier, SourceUnavailableDTO
 from docsuri_shared.observability import emit_metric
 
+from docsuri_ingestion.docmodel.formula_ocr import apply_ocr, formula_crops
 from docsuri_ingestion.docmodel.macros import extract_macros
 from docsuri_ingestion.docmodel.parser import (
+    _project_full_text,
     block_text_parts,
     parse_html_to_docmodel,
     parse_text_to_docmodel,
+)
+from docsuri_ingestion.docmodel.table_repair import (
+    apply_repairs,
+    printed_numbers,
+    tables_needing_repair,
 )
 from docsuri_ingestion.docmodel.tei import parse_tei_to_docmodel
 from docsuri_ingestion.domain.assets import AssetCropSpec, FigureSpec
@@ -31,7 +38,9 @@ from docsuri_ingestion.ports import (
     DocModelSourcePort,
     DocModelStorePort,
     EprintSourcePort,
+    FormulaReaderPort,
     SystemClock,
+    TableExtractorPort,
 )
 
 # Bumping PARSER_VERSION invalidates cached doc-models (provenance.parserVersion, BR-30/TD-16).
@@ -110,6 +119,8 @@ class DocModelBuilder:
         source: DocModelSourcePort,
         store: DocModelStorePort,
         eprint_source: EprintSourcePort | None = None,
+        table_extractor: TableExtractorPort | None = None,
+        formula_reader: FormulaReaderPort | None = None,
         observability: MetricSink | None = None,
         clock: ClockPort | None = None,
         parser_version: str = PARSER_VERSION,
@@ -118,6 +129,8 @@ class DocModelBuilder:
         self._source = source
         self._store = store
         self._eprint_source = eprint_source
+        self._table_extractor = table_extractor
+        self._formula_reader = formula_reader
         self._observability = observability
         self._clock = clock or SystemClock()
         self._parser_version = parser_version
@@ -246,6 +259,7 @@ class DocModelBuilder:
         *,
         source_tier: SourceTier = SourceTier.pdf,
         crops: list[AssetCropSpec] | None = None,
+        pdf: bytes | None = None,
     ) -> DocModelResultDTO:
         """Structured doc-model from GROBID TEI for non-arXiv sources (sections/tables/figures).
 
@@ -286,8 +300,73 @@ class DocModelBuilder:
             return self.build_from_paper(
                 paper_id, version, title, abstract, fallback_text, source_tier=source_tier
             )
+        doc = self._repair_tables(doc, pdf, crops)
+        doc = self._read_formulas(doc, pdf, crops)
         self._store.put(doc)
         return DocModelResultDTO(status="ok", cached=False, docModel=doc)
+
+    def _repair_tables(
+        self, doc: DocModel, pdf: bytes | None, crops: list[AssetCropSpec] | None
+    ) -> DocModel:
+        """Re-read the tables GROBID merged into single cells, when an extractor is configured.
+
+        Best-effort in the strict sense: any failure, and every table whose rebuild cannot be
+        verified against the TEI numbers, leaves the doc-model exactly as parsed (BR-27).
+        """
+        if self._table_extractor is None or not pdf or not crops:
+            return doc
+        try:
+            payload = doc.model_dump(mode="json")
+            suspect = tables_needing_repair(payload, crops)
+            if not suspect:
+                return doc
+            tables = self._table_extractor.extract_tables(pdf, [s.page for s in suspect])
+            repaired = apply_repairs(payload, crops, tables, printed_numbers(pdf))
+            if not repaired:
+                return doc
+            # Rows changed, so the fullText projection made at parse time no longer matches the
+            # blocks — re-project it, or the root text would still carry GROBID's merged cells.
+            payload["fullText"] = _project_full_text(payload["sections"])
+            emit_metric(self._observability, "ingestion.docmodel.tables_repaired", float(repaired))
+            return DocModel.model_validate(payload)
+        except Exception:  # noqa: BLE001 - a repair must never cost us the doc-model we have
+            emit_metric(self._observability, "ingestion.docmodel.table_repair_failed", 1.0)
+            return doc
+
+    def _read_formulas(
+        self, doc: DocModel, pdf: bytes | None, crops: list[AssetCropSpec] | None
+    ) -> DocModel:
+        """Recover searchable LaTeX from the formula crops, when a reader is configured.
+
+        The crops are rendered here rather than waited for: the asset step runs later and may not
+        run at all. Best-effort — any failure leaves the image-only formulas untouched (BR-27).
+        """
+        if self._formula_reader is None or not pdf or not crops:
+            return doc
+        try:
+            from docsuri_ingestion.asset_extraction import crop_assets_from_specs
+
+            specs = formula_crops(crops)
+            if not specs:
+                return doc
+            images = {
+                asset.meta.asset_id: asset.image
+                for asset in crop_assets_from_specs(
+                    pdf, specs, paper_id=doc.meta.paperId, version=doc.meta.version
+                )
+            }
+            payload = doc.model_dump(mode="json")
+            filled = apply_ocr(payload, images, self._formula_reader.read_latex)
+            if not filled:
+                return doc
+            # ``latexOcr`` is projected into fullText (it exists to be searchable), so the parse
+            # -time projection is stale the moment a formula is filled — re-project.
+            payload["fullText"] = _project_full_text(payload["sections"])
+            emit_metric(self._observability, "ingestion.docmodel.formulas_read", float(filled))
+            return DocModel.model_validate(payload)
+        except Exception:  # noqa: BLE001 - a failed read must never cost us the doc-model
+            emit_metric(self._observability, "ingestion.docmodel.formula_read_failed", 1.0)
+            return doc
 
     def invalidate(self, paper_id: str) -> None:
         """Drop every cached doc-model version for a paper (version change / tombstone)."""

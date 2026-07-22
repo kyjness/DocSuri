@@ -34,8 +34,33 @@ from __future__ import annotations
 # page-crop asset ids shift with them. The same rebuild also re-renders figure page-crops, which
 # now recover the vector graphic GROBID reports no <graphic> for — cached doc-models otherwise
 # keep both the missing caption and the caption-only figure images.
-DOCMODEL_PARSER_VERSION = "docmodel-parser@8"
+# @9: one generation covering a completeness pass over both paths — every item below changes
+# stored output (block counts, ordinals, or fullText), so cached doc-models and their crops must
+# rebuild.
+# - HTML path: a paragraph LaTeXML emitted as ``<span class="ltx_p">`` (what it does inside a
+#   minipage / inline-sectional block, where HTML forbids <p>) is kept instead of dropped —
+#   measured on real papers that silently lost whole "Finding N:"/"Assumption N:" subsections
+#   (34 body paragraphs on arXiv:2503.02879, 18 on arXiv:2505.19488).
+# - HTML path: two figures set side by side share one <figure> container with a numbered caption
+#   on each panel; that container now yields one block per panel instead of one block total
+#   (which dropped the second figure and left the first unlabelled, hence unmatchable to a
+#   page-crop). A caption-less float holding several images — a funder logo strip — yields no
+#   block at all, since nothing can ever image it.
+# - PDF path: captions are read one column segment at a time, so a caption the two-column merge
+#   buried mid-line is found, and a table captioned ABOVE its rows is cropped; a table's crop
+#   grows over its unruled rows instead of stopping at the ruled band.
+# - PDF path: algorithm listings become CodeBlocks carrying extracted text AND their crop. GROBID
+#   has no algorithm concept — it files a listing as <formula> elements — so a listing used to be
+#   reachable only as an image: readable, but absent from search and unquotable.
+# - PDF path: formulas can carry `latexOcr`, LaTeX read back out of their page crop, indexed for
+#   search and never rendered; and a table GROBID merged into unusable cells can be re-read from
+#   the page when every rebuilt number verifies against the printed text.
+DOCMODEL_PARSER_VERSION = "docmodel-parser@9"
 # 1.1.0: additive optional meta.macros (consumers ignore if unset).
-DOCMODEL_SCHEMA_VERSION = "1.1.0"
+# 1.2.0: two additive optional fields for the PDF path, both keeping an approximation searchable
+# without letting it become what the reader sees. CodeBlock.assetRef — a listing the path could
+# only approximate as text also carries its page crop. FormulaBlock.latexOcr — an equation that
+# exists only as pixels, searchable but never a render source (the crop stays what is displayed).
+DOCMODEL_SCHEMA_VERSION = "1.2.0"
 
 __all__ = ["DOCMODEL_PARSER_VERSION", "DOCMODEL_SCHEMA_VERSION"]

@@ -539,6 +539,17 @@ def _tei_blocks(paper_id: str):
     return doc, [b.root for s in walk(doc.sections) for b in s.blocks]
 
 
+def _section_of(doc, block_id: str):
+    """The section holding ``block_id`` — GROBID sometimes puts a listing's heading there."""
+
+    def walk(sections):
+        for section in sections:
+            yield section
+            yield from walk(section.sections or [])
+
+    return next(s for s in walk(doc.sections) if any(b.root.id == block_id for b in s.blocks))
+
+
 @pytest.mark.parametrize("paper_id", [FORMULA_PAPER, "2112.01799"])
 def test_tei_display_formulas_become_image_backed_blocks(paper_id: str) -> None:
     """On the PDF path a formula is an IMAGE, deliberately, and carries no LaTeX (TD-12/3a).
@@ -586,7 +597,7 @@ def test_tei_formula_crops_actually_render_from_the_real_pdf() -> None:
     )
     # One spec is deliberately refused: GROBID made a formula element out of a stray ")" and its
     # 4.4x9.6pt region cannot hold an equation. Everything else must render.
-    refused = {f"{FORMULA_PAPER}:v1:formula:25"}
+    refused = {f"{FORMULA_PAPER}:v1:formula:22"}
     rendered = {a.meta.asset_id for a in assets}
     assert {s.asset_id for s in specs} - rendered == refused, (
         f"unexpected crops missing: {sorted({s.asset_id for s in specs} - rendered - refused)}"
@@ -600,25 +611,36 @@ def test_tei_formula_crops_actually_render_from_the_real_pdf() -> None:
         assert y1 - y0 >= 8.0, f"{asset.meta.asset_id}: {y1 - y0:.1f}pt tall, likely an empty strip"
 
 
-def test_grobid_files_algorithm_floats_under_formulas_not_code() -> None:
-    """Observed GROBID behaviour, pinned so a parser change cannot silently move it.
+def test_algorithm_floats_grobid_filed_as_formulas_become_searchable_listings() -> None:
+    """GROBID has no algorithm concept: it labels an ``algorithm`` float a ``<formula>`` and often
+    splits one listing across several of them, so the pseudocode used to arrive as a page-crop
+    image like any equation — readable, but invisible to search and unquotable by an agent.
 
-    GROBID has no algorithm concept: it labels an ``algorithm`` float a ``<formula>``, so the
-    pseudocode arrives as a page-crop image like any equation (verified by eye — the crop of
-    2607.16138's formula:3 is the whole "Algorithm 1 Step 2 of IKPLS" listing). It also splits one
-    listing across several formula elements. Consequences worth stating: on this path an algorithm
-    is READABLE but not SEARCHABLE, and there are no ``code`` blocks. The ar5iv path is where
-    listings keep their text.
+    Unlike equation glyphs the listing's text survives extraction well enough to index, so each
+    listing becomes a code block that KEEPS its crop: the text is searchable, the image still
+    renders faithfully. This paper carries two listings, and GROBID hands the tail of the first
+    one over inside the second float — that tail must rejoin the listing it belongs to.
     """
     doc, blocks = _tei_blocks(FORMULA_PAPER)
 
-    assert not [b for b in blocks if b.type == "code"], "GROBID grew a code block — recheck this"
-    # The listing's text still reaches fullText via the surrounding paragraph flow, but as prose.
-    assert "Algorithm 1" in doc.fullText
-    formula_ids = {b.assetRef.assetId for b in blocks if b.type == "formula" and b.assetRef}
-    assert f"{FORMULA_PAPER}:v1:formula:3" in formula_ids, (
-        "the Algorithm 1 float no longer lands on formula ordinal 3 — re-verify the crop by eye"
-    )
+    listings = [b for b in blocks if b.type == "code"]
+    assert [b.text[:11] for b in listings] == ["Algorithm 1", "Algorithm 2", "1: if algor"]
+    assert "end if 12: end if 13:" in listings[0].text, "the split-off tail did not rejoin"
+    # The third listing is the one GROBID filed as a SECTION titled "Algorithm 3 …", leaving its
+    # steps in headless formulas; those fragments join one block rather than becoming three.
+    assert _section_of(doc, listings[2].id).title.startswith("Algorithm 3")
+    assert "15:" in listings[2].text
+    # A continuation fragment ("4: else … 7: end if …") carries no heading of its own, so it used
+    # to become a formula image and take an ordinal with it. It now rejoins the listing it belongs
+    # to, which is why the last crop sits one ordinal earlier than the headed listings suggest.
+    assert "4: else" in listings[1].text
+    assert [b.assetRef.assetId for b in listings] == [
+        f"{FORMULA_PAPER}:v1:formula:3",  # verified by eye: the "Algorithm 1 Step 2" crop
+        f"{FORMULA_PAPER}:v1:formula:5",
+        f"{FORMULA_PAPER}:v1:formula:6",
+    ]
+    # Searchable now: the listing text reaches fullText as its own block, not as caption prose.
+    assert "Algorithm 1 Step 2 of IKPLS" in doc.fullText
 
 
 def test_recovery_ignores_decorative_vector_glyphs() -> None:
@@ -720,23 +742,21 @@ def test_eprint_preamble_macros_are_recovered_from_the_real_source() -> None:
     assert macros == {"\\proposed": "{AutoPrognosis}", "\\proposedf": "{AutoPrognosis 2.0}"}
 
 
-def test_hybrid_extraction_leaves_two_known_gaps_on_this_paper() -> None:
-    """The full ar5iv + e-print + PDF resolution on real inputs, gaps and all.
+def test_hybrid_extraction_images_every_figure_and_table_on_this_paper() -> None:
+    """The full ar5iv + e-print + PDF resolution on real inputs — every figure and table imaged.
 
-    Both gaps are in the caption-anchored PDF scan and both are layout assumptions this paper
-    breaks, so they are recorded rather than hidden:
+    This paper is the reason the caption scan cannot assume a tidy layout, and no synthetic PDF
+    reproduces either trap:
 
-    * **Figure 3 gets no image.** Its caption sits in the right column of a two-column page, and
-      ``extract_text_lines`` merges the columns into one line that no longer STARTS with
-      "Figure 3:", so the caption is never detected. Its FigureBlock keeps an assetRef pointing at
-      an asset that was never produced.
-    * **Tables 1, 2 and 4 get no crop.** ``_assign_graphics`` assumes a table's content sits BELOW
-      its caption; this paper prints table captions underneath their tables, so every primitive
-      lands on the "wrong" side and the caption is read as a body cross-reference. Harmless here —
-      on the ar5iv path a table is row DATA and the crop is only a fallback (D8/TD-12) — but the
-      same assumption governs PDF-only papers, where it is the whole table.
+    * **Two-column pages merge their captions.** ``extract_text_lines`` joins both columns at the
+      same height into one line, so the right column's captions (Figure 3, Figure 4, Table 4) do
+      not START their line. They are recovered by their column-start x, while the body
+      cross-references on the same pages ("… is provided in Figure 1.") stay rejected.
+    * **Table captions are printed on both sides.** Tables 1 and 2 are captioned UNDER the table,
+      Tables 3, 5 and 6 above it. A one-sided rule loses whichever half it does not expect.
 
-    Tighten this test when either is fixed; do not delete it.
+    The Figure 4 recovery also keeps its page-16 graphic off the Table 5 crop, which used to
+    swallow it — hence the bbox assertion below.
     """
     pytest.importorskip("pdfplumber")
     pytest.importorskip("PIL")
@@ -752,11 +772,21 @@ def test_hybrid_extraction_leaves_two_known_gaps_on_this_paper() -> None:
     by_mode = {a.meta.asset_id: a.meta.source_mode.value for a in assets}
 
     assert by_mode == {
-        f"{EPRINT_PAPER}:v1:figure:0": "page-crop",  # Figure 1, caption found
+        f"{EPRINT_PAPER}:v1:figure:0": "page-crop",  # Figure 1
         f"{EPRINT_PAPER}:v1:figure:1": "page-crop",  # Figure 2
+        f"{EPRINT_PAPER}:v1:figure:2": "page-crop",  # Figure 3 — right column of a merged line
         f"{EPRINT_PAPER}:v1:figure:3": "structured",  # author raster, original quality
         f"{EPRINT_PAPER}:v1:figure:4": "structured",
-        f"{EPRINT_PAPER}:v1:table:0": "page-crop",  # Tables 3, 5, 6 — captions printed above
-        f"{EPRINT_PAPER}:v1:table:1": "page-crop",
-        f"{EPRINT_PAPER}:v1:table:2": "page-crop",
-    }, "the known gaps moved — if one closed, tighten this test rather than re-recording it"
+        f"{EPRINT_PAPER}:v1:table:0": "page-crop",  # Table 1 — caption printed under the table
+        f"{EPRINT_PAPER}:v1:table:1": "page-crop",  # Table 2 — likewise
+        f"{EPRINT_PAPER}:v1:table:2": "page-crop",  # Table 3
+        f"{EPRINT_PAPER}:v1:table:3": "page-crop",  # Table 4 — right column of a merged line
+        f"{EPRINT_PAPER}:v1:table:4": "page-crop",  # Table 5
+        f"{EPRINT_PAPER}:v1:table:5": "page-crop",  # Table 6
+    }, "every figure and table on this paper must be imaged — do not re-record a regression here"
+
+    table5 = next(a for a in assets if a.meta.asset_id == f"{EPRINT_PAPER}:v1:table:4")
+    assert table5.meta.page_ref == 16
+    assert table5.meta.bbox[3] < 300, (
+        "the Table 5 crop reaches down into Figure 4's graphic again (page 16, top 345-543)"
+    )

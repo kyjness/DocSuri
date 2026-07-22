@@ -108,9 +108,17 @@ def test_a_page_with_no_graphics_leaves_the_caption_crop_untouched() -> None:
         ("  table 10: latency ", AssetType.TABLE),
         ("Table 6 shows that, surprisingly, LoRA", None),  # body sentence, NOT a caption
         ("As shown in Figure", None),  # no number
-        ("Figure 1 overview", None),  # no caption delimiter after the number
         ("Section 2", None),
         ("", None),
+        # Journal styles that punctuate nothing: a CAPITAL after the number opens a caption
+        # sentence, a lowercase word makes it a body cross-reference.
+        ("Fig. 1 The configuration of the vehicle", AssetType.FIGURE),
+        ("Table 1 Regression coefficients", AssetType.TABLE),
+        ("Figure 3 Swap task diagram", AssetType.FIGURE),
+        ("Figure 1 overview", None),
+        ("Figure 5 shows rolling estimators", None),
+        ("Figure 4 leads into the study", None),
+        ("Figure 1(a), the layer-wise averages", None),
     ],
 )
 def test_caption_kind(text: str, expected: AssetType | None) -> None:

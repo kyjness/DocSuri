@@ -421,6 +421,48 @@ def test_build_user_doc_model_uses_grobid_when_configured(monkeypatch) -> None:
     assert any(section.title == "Method" for section in result.docModel.sections)
 
 
+def test_build_user_doc_model_passes_the_crop_channel(monkeypatch) -> None:
+    """Table repair and formula OCR map blocks to page regions through the crop-spec list; a
+    caller that omits it silently turns both second readers off. The upload path must supply it
+    along with the PDF — it is the only PDF path a user document ever takes."""
+    monkeypatch.setattr(application_module, "pdf_to_text", lambda pdf: "INTRODUCTION\nBody text.")
+    inner = _builder(_FakeSource(None), _FakeStore(cached=None))
+    seen: dict = {}
+
+    class _RecordingBuilder:
+        def build_from_tei(self, *args, **kwargs):
+            seen.update(kwargs)
+            return inner.build_from_tei(*args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(inner, name)
+
+    class _FakeGrobid:
+        def extract_tei(self, pdf: bytes) -> str:
+            return _USERDOC_TEI
+
+    pipeline, _, _, _, _ = build_test_pipeline(
+        doc_model_builder=_RecordingBuilder(),
+        user_document_source=_FakeUserDocumentSource(),
+        grobid=_FakeGrobid(),
+    )
+    job = IngestionJob(
+        job_id=_USERDOC_JOB_ID,
+        kind=JobKind.BUILD_USER_DOC_MODEL,
+        paper_id=_USERDOC_PAPER_ID,
+        version=1,
+        object_key="uploads/acct-1/job-1/scan.pdf",
+        module="novelty",
+        owner_id="acct-1",
+        record_ref=_USERDOC_RECORD_REF,
+    )
+
+    pipeline.build_user_doc_model(job)
+
+    assert isinstance(seen.get("crops"), list)  # the repair/OCR passes receive the channel
+    assert seen.get("pdf")  # and the same bytes GROBID read
+
+
 def test_build_user_doc_model_degrades_when_grobid_returns_empty_body(
     monkeypatch,
 ) -> None:

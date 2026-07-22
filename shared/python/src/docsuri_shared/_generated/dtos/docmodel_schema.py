@@ -124,20 +124,6 @@ class ListItem(BaseModel):
     )
 
 
-class CodeBlock(BaseModel):
-    """
-    A verbatim/code/algorithm block (rendered monospace, not interpreted).
-    """
-
-    model_config = ConfigDict(
-        extra='forbid',
-    )
-    id: str = Field(..., description='Deterministic block id, e.g. "s3.code1".')
-    type: Literal['code']
-    text: str = Field(..., description='Verbatim text.')
-    language: str | None = Field(None, description='Optional language hint.')
-
-
 class Type(StrEnum):
     """
     Asset kind. "formula" is a page-crop equation image used only as the FormulaBlock fallback when no LaTeX is recoverable (PDF/GROBID path). Trace: FR-17, TD-12.
@@ -238,6 +224,10 @@ class FormulaBlock(BaseModel):
         None,
         description='Page-crop image fallback for a formula with no recoverable LaTeX (PDF/GROBID path). assetRef.type is "formula". Display-only — not indexed for search. Trace: FR-17, TD-12.',
     )
+    latexOcr: str | None = Field(
+        None,
+        description="Approximate LaTeX read back OUT of the page-crop image by an OCR model, on the PDF/GROBID path where no real LaTeX exists. Indexed for search and readable by agents, but NEVER a render source — the crop stays what is displayed, because a mis-read equation must not be shown as the paper's. Trace: TD-12.",
+    )
     display: bool | None = Field(
         None,
         description='Always true for a FormulaBlock (display/block equation); present for renderer clarity.',
@@ -285,6 +275,24 @@ class ListBlock(BaseModel):
     type: Literal['list']
     ordered: bool = Field(..., description='True for an ordered (numbered) list.')
     items: list[ListItem]
+
+
+class CodeBlock(BaseModel):
+    """
+    A verbatim/code/algorithm block (rendered monospace, not interpreted).
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    id: str = Field(..., description='Deterministic block id, e.g. "s3.code1".')
+    type: Literal['code']
+    text: str = Field(..., description='Verbatim text.')
+    language: str | None = Field(None, description='Optional language hint.')
+    assetRef: AssetRef | None = Field(
+        None,
+        description='Page-crop image of the listing, on the PDF/GROBID path where the extracted text is an approximation. `text` stays the searchable representation; the crop is what renders faithfully. Trace: TD-12.',
+    )
 
 
 class DocModelMeta(BaseModel):

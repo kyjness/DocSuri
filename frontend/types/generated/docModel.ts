@@ -58,6 +58,11 @@ export interface DocFormulaBlock {
   type: 'formula';
   latex?: string;
   assetRef?: DocAssetRef;
+  /**
+   * Approximate LaTeX recovered from the crop image on the PDF path. Indexed for search and
+   * readable by agents, but never rendered — the crop is what the reader sees.
+   */
+  latexOcr?: string;
   display?: boolean;
   anchorLabel?: string;
 }
@@ -82,11 +87,16 @@ export interface DocListBlock {
   items: DocListItem[];
 }
 
+/**
+ * A verbatim/code/algorithm listing. On the PDF/GROBID path the extracted `text` is an
+ * approximation, so the listing also carries its page-crop image in `assetRef`.
+ */
 export interface DocCodeBlock {
   id: string;
   type: 'code';
   text: string;
   language?: string;
+  assetRef?: DocAssetRef;
 }
 
 export type DocBlock =

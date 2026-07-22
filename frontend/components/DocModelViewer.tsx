@@ -570,12 +570,38 @@ function BlockView({
           ))}
         </ul>
       );
-    case 'code':
+    case 'code': {
+      // On the PDF/GROBID path a listing's text is an approximation of a picture, so it also
+      // carries a page crop. Show the crop — it renders faithfully — and keep the text underneath
+      // for copying and for screen readers. Listings from HTML sources have no crop and are text.
+      const asset = block.assetRef ? assetsById.get(block.assetRef.assetId) : undefined;
+      if (asset?.url) {
+        return (
+          <figure className={`${cls} ${styles.figure}`} data-block={block.id} tabIndex={-1}>
+            <Zoomable
+              onZoom={() =>
+                // eslint-disable-next-line @next/next/no-img-element -- signed S3 url
+                onZoom(<img src={asset.url} alt={block.text} className={styles.zoomImg} />)
+              }
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element -- signed S3 url */}
+              <img src={asset.url} alt={block.text} loading="lazy" />
+            </Zoomable>
+            <details className={styles.code}>
+              <summary>텍스트로 보기</summary>
+              <pre>
+                <code>{block.text}</code>
+              </pre>
+            </details>
+          </figure>
+        );
+      }
       return (
         <pre className={`${cls} ${styles.code}`} data-block={block.id} tabIndex={-1}>
           <code>{block.text}</code>
         </pre>
       );
+    }
   }
 }
 
