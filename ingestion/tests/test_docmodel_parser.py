@@ -353,6 +353,89 @@ def test_panel_group_whose_number_sits_in_a_sibling_float_is_kept() -> None:
     assert len(figures) == 1
 
 
+def test_mixed_float_decomposes_into_table_and_figure() -> None:
+    """One caption-less ltx_figure can pack a TABLE minipage, a panel group and the group's
+    caption-only "Figure 5" float (arXiv:2510.23156, S4.SS2.fig3). Read as a single figure it
+    became one unlabeled block: the table's rows and caption vanished and the figure number was
+    lost, so its page-crop could never be matched. The float must decompose into flat siblings.
+    The table minipage's caption tag carries class ltx_tag_figure — LaTeXML mislabels it, so the
+    tag TEXT ("TABLE III") is the signal."""
+    html = (
+        '<html><body><div class="ltx_document">'
+        '<section class="ltx_section"><h2>4 Results</h2>'
+        '<figure class="ltx_figure">'
+        '<figure class="ltx_figure ltx_minipage">'
+        '<figcaption class="ltx_caption"><span class="ltx_tag ltx_tag_figure">TABLE III: </span>'
+        "Selected model configurations.</figcaption>"
+        '<table class="ltx_tabular">'
+        '<tr class="ltx_tr"><th class="ltx_th">Model</th>'
+        '<th class="ltx_th"><table class="ltx_tabular">'
+        '<tr class="ltx_tr"><td class="ltx_td">Acc</td></tr>'
+        '<tr class="ltx_tr"><td class="ltx_td">up</td></tr></table></th></tr>'
+        '<tr class="ltx_tr"><td class="ltx_td">CNN</td><td class="ltx_td">0.91</td></tr>'
+        "</table></figure>"
+        '<figure class="ltx_figure ltx_minipage">'
+        '<figure class="ltx_figure ltx_figure_panel"><img src="x6.png"/>'
+        '<figcaption class="ltx_caption"><span class="ltx_tag">(a) </span>PS</figcaption></figure>'
+        '<figure class="ltx_figure"><img src="x8.png"/>'  # sf3 carries no ltx_figure_panel class
+        '<figcaption class="ltx_caption"><span class="ltx_tag">(c) </span>LOSO</figcaption>'
+        "</figure>"
+        '<figure class="ltx_figure"><figcaption class="ltx_caption">'
+        '<span class="ltx_tag">Figure 5: </span>Confusion matrices.</figcaption></figure>'
+        "</figure>"
+        "</figure></section></div></body></html>"
+    )
+    specs: list = []
+    doc = parse_html_to_docmodel(
+        html, paper_id="2510.23156", version=2, title="T", abstract=None,
+        source_tier=SourceTier.ar5iv, parser_version="p", schema_version="1.0.0",
+        generated_at=_FIXED_TS, figure_specs=specs,
+    )
+    section = doc.sections[-1]
+    typed = [b.root for b in section.blocks]
+    assert [type(b) for b in typed] == [TableBlock, FigureBlock]
+    table, figure = typed
+    assert table.anchorLabel == "TABLE III"
+    assert "Selected model configurations." in (table.caption or "")
+    assert len(table.rows) == 2  # header + data — nested header mini-table stays filtered
+    assert "Acc" in table.rows[0].cells[1].text
+    assert figure.anchorLabel == "Figure 5"
+    assert figure.caption == "Confusion matrices."
+    assert [(s.src, s.label) for s in specs] == [("", "Figure 5")]  # multi-panel: src blanked
+    assert doc.fullText.count("Confusion matrices.") == 1  # adopted caption is not re-emitted
+
+
+def test_panel_group_adopts_caption_from_caption_only_sibling_float() -> None:
+    """The detached "Figure 5:" caption float inside a caption-less panel group must become the
+    group's anchorLabel/caption — with an empty label the FigureSpec could never be matched to
+    its page-crop, and the figure asset went missing (arXiv:2510.23156, figure:4)."""
+    html = (
+        '<html><body><div class="ltx_document">'
+        '<section class="ltx_section"><h2>1 Results</h2>'
+        '<figure class="ltx_figure">'
+        '<figure class="ltx_figure ltx_figure_panel"><img src="ps.png"/>'
+        '<figcaption class="ltx_caption"><span class="ltx_tag">(a) </span>PS</figcaption></figure>'
+        '<figure class="ltx_figure ltx_figure_panel"><img src="loso.png"/>'
+        '<figcaption class="ltx_caption"><span class="ltx_tag">(b) </span>LOSO</figcaption>'
+        "</figure>"
+        '<figure class="ltx_figure"><figcaption class="ltx_caption">'
+        '<span class="ltx_tag">Figure 5: </span>Confusion matrices.</figcaption></figure>'
+        "</figure>"
+        "</section></div></body></html>"
+    )
+    specs: list = []
+    doc = parse_html_to_docmodel(
+        html, paper_id="2510.23156", version=2, title="T", abstract=None,
+        source_tier=SourceTier.ar5iv, parser_version="p", schema_version="1.0.0",
+        generated_at=_FIXED_TS, figure_specs=specs,
+    )
+    figures = [b.root for s in doc.sections for b in s.blocks if isinstance(b.root, FigureBlock)]
+    assert len(figures) == 1
+    assert figures[0].anchorLabel == "Figure 5"
+    assert figures[0].caption == "Confusion matrices."
+    assert [(s.src, s.label) for s in specs] == [("", "Figure 5")]
+
+
 def test_single_image_figure_keeps_eprint_src() -> None:
     """A single-image figure keeps its <img src> so the asset extractor images the
     original-quality e-print graphic (the blank-src page-crop path is multi-panel only)."""
@@ -644,6 +727,53 @@ def test_a_table_with_no_parsable_rows_keeps_its_caption() -> None:
     assert tables[0].anchorLabel == "Table 4"
     assert tables[0].rows == []
     assert "Ablation over depth." in doc.fullText
+
+
+def test_span_tabular_table_reads_rows() -> None:
+    """LaTeXML renders a scaled tabular (resizebox) as <span class="ltx_tabular"> with span rows
+    and cells — no <table> element at all. A <table>-only reader produced a 0-row TableBlock for
+    the whole float (arXiv:2510.23156, TABLE IV, 26 rows lost). Row/col spans there are CLASSES
+    (ltx_rowspan_2), not attributes."""
+    html = (
+        "<html><body><section><h2>Results</h2>"
+        '<figure class="ltx_table">'
+        '<figcaption class="ltx_caption"><span class="ltx_tag ltx_tag_table">TABLE IV: </span>'
+        "Test accuracies.</figcaption>"
+        '<span class="ltx_tabular"><span class="ltx_tbody">'
+        '<span class="ltx_tr">'
+        '<span class="ltx_td ltx_rowspan ltx_rowspan_2">Bits</span>'
+        '<span class="ltx_td ltx_colspan ltx_colspan_2">Accuracy</span></span>'
+        '<span class="ltx_tr"><span class="ltx_td">8</span>'
+        '<span class="ltx_td">0.93 <span class="ltx_tabular"><span class="ltx_tr">'
+        '<span class="ltx_td">mini</span></span></span></span></span>'
+        "</span></span></figure>"
+        "</section></body></html>"
+    )
+    doc = _parse(html)
+    table = next(b for s in doc.sections for b in _blocks(s) if isinstance(b, TableBlock))
+    assert table.anchorLabel == "TABLE IV"
+    assert len(table.rows) == 2  # top-level rows only — the nested mini-tabular row is filtered
+    assert table.rows[0].cells[0].rowspan == 2
+    assert table.rows[0].cells[1].colspan == 2
+    assert "mini" in table.rows[1].cells[1].text  # nested content flattened into its parent cell
+
+
+def test_table_merges_stacked_top_level_tabulars() -> None:
+    """A float stacking several top-level tabulars (side-by-side subtables) kept only the first —
+    every later subtable's rows were silently dropped. They concatenate in document order."""
+    html = (
+        "<html><body><section><h2>Results</h2>"
+        '<figure class="ltx_table">'
+        '<figcaption class="ltx_caption"><span class="ltx_tag">Table 7: </span>Split.</figcaption>'
+        '<table class="ltx_tabular"><tr class="ltx_tr"><td class="ltx_td">a</td></tr>'
+        '<tr class="ltx_tr"><td class="ltx_td">b</td></tr></table>'
+        '<table class="ltx_tabular"><tr class="ltx_tr"><td class="ltx_td">c</td></tr></table>'
+        "</figure>"
+        "</section></body></html>"
+    )
+    doc = _parse(html)
+    table = next(b for s in doc.sections for b in _blocks(s) if isinstance(b, TableBlock))
+    assert [r.cells[0].text for r in table.rows] == ["a", "b", "c"]
 
 
 def test_svg_only_figure_keeps_its_block_for_a_page_crop() -> None:
