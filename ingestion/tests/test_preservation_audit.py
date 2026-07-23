@@ -119,19 +119,19 @@ def test_short_caption_is_not_judged() -> None:
 
 
 def test_caption_text_dropped_flags_content_loss() -> None:
-    sig = {"caption_text_dropped": 2, "doc_empty_tables": 0,
+    sig = {"caption_text_dropped": 2, "empty_tables": 0,
            "doc_figures_no_assetref": 0, "coverage": 0.9}
     assert "caption_text_dropped" in pa._violations(sig)
 
 
 def test_healthy_signals_produce_no_violations() -> None:
-    sig = {"caption_text_dropped": 0, "doc_empty_tables": 0,
+    sig = {"caption_text_dropped": 0, "empty_tables": 0,
            "doc_figures_no_assetref": 0, "coverage": 0.82}
     assert pa._violations(sig) == []
 
 
 def test_empty_table_and_missing_assetref_and_low_coverage_flag() -> None:
-    sig = {"caption_text_dropped": 0, "doc_empty_tables": 1,
+    sig = {"caption_text_dropped": 0, "empty_tables": 1,
            "doc_figures_no_assetref": 1, "coverage": 0.30}
     v = pa._violations(sig)
     assert {"empty_table", "figure_missing_assetref", "coverage_low"} <= set(v)

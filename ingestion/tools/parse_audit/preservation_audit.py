@@ -138,20 +138,14 @@ def _source_signals(soup: BeautifulSoup) -> dict:
 
 
 def _docmodel_signals(doc: dict) -> dict:
-    """Count what the parsed doc-model actually landed, per block type."""
+    """The one doc-side signal ``counts()`` does not yield and ``_violations`` consumes: figures
+    the parser landed without an asset reference. Block-kind tallies (``kinds``) and the empty-table
+    count come from ``counts()``, merged alongside in ``_audit_one`` — not re-derived here."""
     blocks = [b for s in walk_sections(doc) for b in (s.get("blocks") or [])]
-    by_type: Counter[str] = Counter(b.get("type") for b in blocks)
-    figures = [b for b in blocks if b.get("type") == "figure"]
-    tables = [b for b in blocks if b.get("type") == "table"]
     return {
-        "doc_tables": by_type.get("table", 0),
-        "doc_figures": by_type.get("figure", 0),
-        "doc_lists": by_type.get("list", 0),
-        "doc_code": by_type.get("code", 0),
-        "doc_formulas": by_type.get("formula", 0),
-        "doc_tables_with_caption": sum(1 for b in tables if b.get("caption")),
-        "doc_empty_tables": sum(1 for b in tables if not (b.get("rows") or [])),
-        "doc_figures_no_assetref": sum(1 for b in figures if not b.get("assetRef")),
+        "doc_figures_no_assetref": sum(
+            1 for b in blocks if b.get("type") == "figure" and not b.get("assetRef")
+        ),
     }
 
 
@@ -198,8 +192,8 @@ def _violations(sig: dict) -> list[str]:
     if sig["caption_text_dropped"]:
         v.append("caption_text_dropped")
     # A table block emptied of its rows (caption may survive; rows absent in source — mostly the
-    # BR-S3 empty-table-with-caption preservation, reported for drill-down).
-    if sig["doc_empty_tables"]:
+    # BR-S3 empty-table-with-caption preservation, reported for drill-down). Count from counts().
+    if sig["empty_tables"]:
         v.append("empty_table")
     # Structural: a figure block that never got an asset reference.
     if sig["doc_figures_no_assetref"]:
