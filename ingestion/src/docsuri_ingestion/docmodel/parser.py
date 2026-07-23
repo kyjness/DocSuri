@@ -559,17 +559,23 @@ def _mixed_float_blocks(
     DocModel has no container block, so the float decomposes into flat sibling blocks, children
     walked in document order. Returns None when this is not such a float.
 
+    The table float need not be a DIRECT child: LaTeXML wraps a grid of numbered table panels in a
+    ``div.ltx_flex_figure`` under the caption-less outer (arXiv:2510.12615 packs 41 significance
+    tables this way), so the trigger scans descendants while the walk still recurses per direct
+    child — the wrapper is dispatched by ``_blocks_from``, which reaches each nested table panel.
+
     Known trade-off: a bare ``<img>`` sitting DIRECTLY under the outer (not wrapped in a child
     figure/paragraph) is dropped by the per-child dispatch — LaTeXML always wraps a float's
     graphics, so that shape has not been observed; collecting strays would need a synthetic
     figure block with no caption to ever label it."""
     if _own_figcaption(figure_el) is not None:
         return None  # the container captions itself — subfigure semantics, not a mixed float
-    children = [c for c in figure_el.children if isinstance(c, Tag)]
-    if not any(_is_table_float(c) for c in children):
-        return None
+    if figure_el.find(_is_table_float) is None:
+        return None  # no table float anywhere inside — not a mixed float
     out: list[dict] = []
-    for child in children:
+    for child in figure_el.children:
+        if not isinstance(child, Tag):
+            continue
         if _is_table_float(child):
             block = _table_block(child, sec_ctx)
             if block:

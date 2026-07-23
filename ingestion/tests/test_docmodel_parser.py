@@ -499,6 +499,38 @@ def test_declared_table_float_inside_figure_outer_decomposes_too() -> None:
     assert typed[1].anchorLabel == "Figure 3"
 
 
+def test_table_panels_wrapped_in_flex_figure_are_all_recovered() -> None:
+    """A grid of numbered table panels LaTeXML wraps in a div.ltx_flex_figure under a caption-less
+    ltx_figure outer: the table floats are not DIRECT children, so a direct-child-only trigger
+    dropped every panel (measured: 41 significance tables on arXiv:2510.12615). The trigger scans
+    descendants, and each nested panel is recovered as its own captioned TableBlock."""
+    panel = (
+        '<figure class="ltx_table ltx_figure_panel">'
+        '<figcaption class="ltx_caption"><span class="ltx_tag ltx_tag_table">{tag} </span>'
+        "{cap}</figcaption>"
+        '<table class="ltx_tabular"><tr class="ltx_tr"><td class="ltx_td">{cell}</td></tr></table>'
+        "</figure>"
+    )
+    html = (
+        '<html><body><div class="ltx_document">'
+        '<section class="ltx_section"><h2>1 Results</h2>'
+        '<figure class="ltx_figure"><div class="ltx_flex_figure">'
+        + panel.format(tag="Table 1:", cap="First panel results", cell="a")
+        + panel.format(tag="Table 2:", cap="Second panel results", cell="b")
+        + "</div></figure></section></div></body></html>"
+    )
+    doc = parse_html_to_docmodel(
+        html, paper_id="2401.00015", version=1, title="T", abstract=None,
+        source_tier=SourceTier.ar5iv, parser_version="p", schema_version="1.0.0",
+        generated_at=_FIXED_TS,
+    )
+    tables = [b.root for s in doc.sections for b in s.blocks if isinstance(b.root, TableBlock)]
+    assert [(t.anchorLabel, t.caption) for t in tables] == [
+        ("Table 1", "First panel results"),
+        ("Table 2", "Second panel results"),
+    ]
+
+
 def test_panel_group_adopts_caption_from_caption_only_sibling_float() -> None:
     """The detached "Figure 5:" caption float inside a caption-less panel group must become the
     group's anchorLabel/caption — with an empty label the FigureSpec could never be matched to
