@@ -531,6 +531,39 @@ def test_table_panels_wrapped_in_flex_figure_are_all_recovered() -> None:
     ]
 
 
+def test_table_grid_under_ltx_table_outer_with_figure_disguise_panels() -> None:
+    """The residual shape after the flex-figure fix: the OUTER is a caption-less figure.ltx_table,
+    and each panel is a figure.ltx_figure (a \\captionof{table} minipage — a table wearing the
+    figure class) with a "Table N" caption. The ltx_table outer used to route to _table_block,
+    merging every panel's rows into one block and losing the per-panel captions (arXiv:2503.00753
+    "Table 1..4"). Decompose first, and route each panel by role (a disguise -> TableBlock)."""
+    panel = (
+        '<figure class="ltx_figure ltx_figure_panel">'
+        '<figcaption class="ltx_caption"><span class="ltx_tag ltx_tag_table">{tag} </span>'
+        "{cap}</figcaption>"
+        '<table class="ltx_tabular"><tr class="ltx_tr"><td class="ltx_td">{cell}</td></tr></table>'
+        "</figure>"
+    )
+    html = (
+        '<html><body><div class="ltx_document">'
+        '<section class="ltx_section"><h2>1 Results</h2>'
+        '<figure class="ltx_table"><div class="ltx_flex_figure ltx_flex_table">'
+        + panel.format(tag="Table 1:", cap="Impact of embeddings", cell="a")
+        + panel.format(tag="Table 2:", cap="Fine-tuning results", cell="b")
+        + "</div></figure></section></div></body></html>"
+    )
+    doc = parse_html_to_docmodel(
+        html, paper_id="2503.00753", version=1, title="T", abstract=None,
+        source_tier=SourceTier.ar5iv, parser_version="p", schema_version="1.0.0",
+        generated_at=_FIXED_TS,
+    )
+    tables = [b.root for s in doc.sections for b in s.blocks if isinstance(b.root, TableBlock)]
+    assert [(t.anchorLabel, t.caption) for t in tables] == [
+        ("Table 1", "Impact of embeddings"),
+        ("Table 2", "Fine-tuning results"),
+    ]
+
+
 def test_panel_group_adopts_caption_from_caption_only_sibling_float() -> None:
     """The detached "Figure 5:" caption float inside a caption-less panel group must become the
     group's anchorLabel/caption — with an empty label the FigureSpec could never be matched to

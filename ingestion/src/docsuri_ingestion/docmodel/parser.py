@@ -359,11 +359,24 @@ def _blocks_from(
     classes = _classes(el)
     name = el.name
 
+    if _is_figure_container(el):
+        # A caption-less outer packed with panels (a grid of numbered tables, or a table sharing
+        # the float with other content) decomposes into one block per panel first — regardless of
+        # container type or how deeply LaTeXML wrapped the panels.
+        mixed = _mixed_float_blocks(el, sec_ctx, doc_ctx)
+        if mixed is not None:
+            return mixed
+        # A single table: a declared figure.ltx_table, OR a figure.ltx_figure holding a tabular with
+        # a "Table N" caption (a \captionof{table} minipage). Routing on role, not class, keeps that
+        # disguise from falling to the figure path and losing its rows.
+        if _is_table_float(el):
+            block = _table_block(el, sec_ctx)
+            return [block] if block else []
+    if name == "figure" and "ltx_figure" in classes:
+        return _figure_blocks(el, sec_ctx, doc_ctx)
     if name == "figure" and "ltx_table" in classes:
         block = _table_block(el, sec_ctx)
         return [block] if block else []
-    if name == "figure" and "ltx_figure" in classes:
-        return _figure_blocks(el, sec_ctx, doc_ctx)
     if "ltx_equation" in classes or "ltx_eqn_table" in classes or "ltx_equationgroup" in classes:
         return _formula_blocks(el, sec_ctx)
     if name in {"ul", "ol"} and ("ltx_itemize" in classes or "ltx_enumerate" in classes):
@@ -560,9 +573,11 @@ def _mixed_float_blocks(
     walked in document order. Returns None when this is not such a float.
 
     The table float need not be a DIRECT child: LaTeXML wraps a grid of numbered table panels in a
-    ``div.ltx_flex_figure`` under the caption-less outer (arXiv:2510.12615 packs 41 significance
-    tables this way), so the trigger scans descendants while the walk still recurses per direct
-    child — the wrapper is dispatched by ``_blocks_from``, which reaches each nested table panel.
+    ``div.ltx_flex_figure`` under the caption-less outer (arXiv:2510.12615 packs 104 significance
+    tables this way, nested), so the trigger scans descendants while the walk recurses per direct
+    child — the wrapper is dispatched by ``_blocks_from``, which reaches each nested table panel and
+    routes it to ``_table_block`` (a nested caption-less sub-grid recurses through this same path,
+    each panel reached exactly once by the tree walk).
 
     Known trade-off: a bare ``<img>`` sitting DIRECTLY under the outer (not wrapped in a child
     figure/paragraph) is dropped by the per-child dispatch — LaTeXML always wraps a float's
