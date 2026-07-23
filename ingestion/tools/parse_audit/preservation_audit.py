@@ -154,28 +154,55 @@ def _docmodel_signals(doc: dict) -> dict:
     }
 
 
-def _violations(sig: dict) -> list[str]:
-    """Defect types this paper exhibits — a source signal that no block accounts for.
+# >=4 consecutive plain lowercase-alpha words
+_ALPHA_RUN_RE = re.compile(r"[a-z]+(?:\s+[a-z]+){3,}")
 
-    Comparisons are ``source > doc`` shortfalls (loss), kept conservative so parser-intended merges
-    (multi-panel figures, sub-tabulars in one float) do not read as loss. Each returned string is a
-    defect TYPE; the caller tallies papers per type.
+
+def _longest_plain_run(text: str) -> str:
+    """The longest run of >=4 plain lowercase-alpha words — a caption fingerprint robust to inline
+    math and whitespace. A math-only caption yields only short runs and is left unjudged (== "")."""
+    return max(_ALPHA_RUN_RE.findall(text.lower()), key=len, default="")
+
+
+def _caption_text_dropped(soup: BeautifulSoup, full_text: str) -> int:
+    """Numbered figure/table captions whose text did NOT reach fullText — real content loss.
+
+    Content-based, not block-count: a float the parser keeps as a paragraph rather than a figure
+    block still preserves its caption, so what matters is whether the words survive, not the block
+    type. Matching is whitespace-stripped (the parser's inline-text normalization differs from
+    BeautifulSoup's ``get_text``) and keyed on the caption's longest plain-alpha run, so a
+    math-heavy caption with no long plain run is skipped rather than falsely flagged."""
+    ft = re.sub(r"\s+", "", full_text).lower()
+    dropped = 0
+    for caption in soup.find_all(class_="ltx_caption"):
+        tag = caption.find("span", class_="ltx_tag")
+        text = tag.get_text() if tag is not None else ""
+        if not (_FIG_CAPTION_RE.match(text) or _TABLE_CAPTION_RE.match(text)):
+            continue
+        run = _longest_plain_run(caption.get_text(" ", strip=True))
+        if len(run) < 20:
+            continue  # too little plain text to judge reliably
+        if re.sub(r"\s+", "", run) not in ft:
+            dropped += 1
+    return dropped
+
+
+def _violations(sig: dict) -> list[str]:
+    """Defect types this paper exhibits. Each returned string is a TYPE; the caller tallies papers.
+
+    The caption check is CONTENT-based (does the caption's plain text reach fullText), not
+    block-count. Block-type-only signals (figure/table/list/code block counts) were dropped: a
+    captioned float the parser keeps as a paragraph, or an inline ``\\verb`` folded into text, still
+    delivers its content to fullText — the preservation contract — so counting blocks over-flagged.
+    Gross text loss is caught by coverage; specific caption loss by ``caption_text_dropped``.
     """
     v: list[str] = []
-    # Numbered floats — the reliable 1:1 signal: a "Figure N"/"TABLE III" caption in the source with
-    # no block to carry it. This is the class every past caption-loss defect fell into.
-    if sig["src_fig_captions"] > sig["doc_figures"]:
-        v.append("figure_caption_shortfall")
-    if sig["src_table_captions"] > sig["doc_tables_with_caption"]:
-        v.append("table_caption_shortfall")
-    # A table block emptied of its rows (caption may survive; rows lost).
+    if sig["caption_text_dropped"]:
+        v.append("caption_text_dropped")
+    # A table block emptied of its rows (caption may survive; rows absent in source — mostly the
+    # BR-S3 empty-table-with-caption preservation, reported for drill-down).
     if sig["doc_empty_tables"]:
         v.append("empty_table")
-    # Lists / listings: top-level source count vs blocks (nested folded out in _top_level).
-    if sig["src_lists"] > sig["doc_lists"]:
-        v.append("list_shortfall")
-    if sig["src_listings"] > sig["doc_code"]:
-        v.append("code_shortfall")
     # Structural: a figure block that never got an asset reference.
     if sig["doc_figures_no_assetref"]:
         v.append("figure_missing_assetref")
@@ -196,7 +223,7 @@ def _audit_one(paper_id: str, version: int, html: str) -> dict:
             "violations": [],
             "signals": {},
         }
-    doc = parse_html_to_docmodel(
+    model = parse_html_to_docmodel(
         html,
         paper_id=paper_id,
         version=version,
@@ -206,12 +233,14 @@ def _audit_one(paper_id: str, version: int, html: str) -> dict:
         parser_version="audit",
         schema_version="audit",
         generated_at=_TS,
-    ).model_dump(mode="json")
+    )
+    doc = model.model_dump(mode="json")
     sig = {**_source_signals(soup), **_docmodel_signals(doc)}
     sig.update(counts(doc))
     source_chars = len(html_to_text(html))
     sig["source_chars"] = source_chars
     sig["coverage"] = round(sig["body_chars"] / source_chars, 4) if source_chars else None
+    sig["caption_text_dropped"] = _caption_text_dropped(soup, model.fullText)
     return {
         "paper_id": paper_id,
         "version": version,

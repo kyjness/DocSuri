@@ -82,53 +82,47 @@ def test_nested_list_counts_once() -> None:
     assert sig["src_lists"] == 1  # the nested list is part of its parent
 
 
-def test_figure_caption_shortfall_flags_a_lost_numbered_figure() -> None:
-    sig = {
-        "src_fig_captions": 5,
-        "doc_figures": 4,
-        "src_table_captions": 0,
-        "doc_tables_with_caption": 0,
-        "doc_empty_tables": 0,
-        "src_lists": 0,
-        "doc_lists": 0,
-        "src_listings": 0,
-        "doc_code": 0,
-        "doc_figures_no_assetref": 0,
-        "coverage": 0.9,
-    }
-    assert "figure_caption_shortfall" in pa._violations(sig)
+def test_caption_text_present_in_full_text_is_not_dropped() -> None:
+    html = (
+        '<figcaption class="ltx_caption"><span class="ltx_tag">Figure 1:</span>'
+        " we visualize edits made by our model on real user requests</figcaption>"
+    )
+    # parser normalization glues tokens differently, so matching must be whitespace-insensitive.
+    full_text = "Figure 1 we  visualize edits made by our model on real user requests. Body."
+    assert pa._caption_text_dropped(_soup(html), full_text) == 0
+
+
+def test_caption_text_absent_from_full_text_is_dropped() -> None:
+    html = (
+        '<figcaption class="ltx_caption"><span class="ltx_tag">Figure 1:</span>'
+        " we visualize edits made by our model on real user requests</figcaption>"
+    )
+    assert pa._caption_text_dropped(_soup(html), "Unrelated body text only.") == 1
+
+
+def test_math_only_caption_is_not_judged() -> None:
+    # No run of >=4 plain words, so it cannot be reliably matched and must not be flagged.
+    html = (
+        '<figcaption class="ltx_caption"><span class="ltx_tag">Figure 1:</span>'
+        " G_{I} and G_{L} for X = Z</figcaption>"
+    )
+    assert pa._caption_text_dropped(_soup(html), "no math here") == 0
+
+
+def test_caption_text_dropped_flags_content_loss() -> None:
+    sig = {"caption_text_dropped": 2, "doc_empty_tables": 0,
+           "doc_figures_no_assetref": 0, "coverage": 0.9}
+    assert "caption_text_dropped" in pa._violations(sig)
 
 
 def test_healthy_signals_produce_no_violations() -> None:
-    sig = {
-        "src_fig_captions": 3,
-        "doc_figures": 3,
-        "src_table_captions": 2,
-        "doc_tables_with_caption": 2,
-        "doc_empty_tables": 0,
-        "src_lists": 4,
-        "doc_lists": 4,
-        "src_listings": 1,
-        "doc_code": 1,
-        "doc_figures_no_assetref": 0,
-        "coverage": 0.82,
-    }
+    sig = {"caption_text_dropped": 0, "doc_empty_tables": 0,
+           "doc_figures_no_assetref": 0, "coverage": 0.82}
     assert pa._violations(sig) == []
 
 
 def test_empty_table_and_missing_assetref_and_low_coverage_flag() -> None:
-    sig = {
-        "src_fig_captions": 0,
-        "doc_figures": 1,
-        "src_table_captions": 0,
-        "doc_tables_with_caption": 0,
-        "doc_empty_tables": 1,
-        "src_lists": 0,
-        "doc_lists": 0,
-        "src_listings": 0,
-        "doc_code": 0,
-        "doc_figures_no_assetref": 1,
-        "coverage": 0.30,
-    }
+    sig = {"caption_text_dropped": 0, "doc_empty_tables": 1,
+           "doc_figures_no_assetref": 1, "coverage": 0.30}
     v = pa._violations(sig)
     assert {"empty_table", "figure_missing_assetref", "coverage_low"} <= set(v)
