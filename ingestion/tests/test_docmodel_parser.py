@@ -390,6 +390,71 @@ def test_uncaptioned_float_outside_section_is_not_recovered() -> None:
     assert body[0].title == "1 Intro"  # no lead section was inserted
 
 
+def test_captioned_float_after_a_section_lands_after_it_not_at_the_front() -> None:
+    """A supplementary float LaTeXML hoisted below the last section is recovered at its true
+    position — a trailing synthetic section AFTER the body — not pulled to the document front, where
+    its reading order and figure ordinal would run ahead of the body it actually follows."""
+    html = (
+        '<html><body><div class="ltx_document">'
+        '<section class="ltx_section"><h2>1 Intro</h2>'
+        '<div class="ltx_para"><p class="ltx_p">Body text.</p></div></section>'
+        '<figure class="ltx_figure"><img src="trailing.png"/>'
+        '<figcaption class="ltx_caption"><span class="ltx_tag">Figure 1: </span>'
+        "Trailing float</figcaption></figure>"
+        "</div></body></html>"
+    )
+    specs: list = []
+    doc = _parse_custom(html, specs)
+    body = _body_sections(doc)
+    assert [s.id for s in body] == ["s1", "s2"]
+    assert body[0].title == "1 Intro"  # body leads
+    assert not body[1].title  # the trailing float sits in a titleless section after it
+    figures = [b.root for b in body[1].blocks if isinstance(b.root, FigureBlock)]
+    assert [(f.anchorLabel, f.caption) for f in figures] == [("Figure 1", "Trailing float")]
+
+
+def test_captioned_float_between_two_sections_lands_between_them() -> None:
+    """A float hoisted out of any section but sitting between two sections is recovered into a
+    synthetic section at that position, so it reads between the two — not at the front or end."""
+    html = (
+        '<html><body><div class="ltx_document">'
+        '<section class="ltx_section"><h2>1 Intro</h2>'
+        '<div class="ltx_para"><p class="ltx_p">First.</p></div></section>'
+        '<figure class="ltx_table"><table class="ltx_tabular"><tbody><tr>'
+        '<td class="ltx_td">v</td></tr></tbody></table>'
+        '<figcaption class="ltx_caption"><span class="ltx_tag">Table 1: </span>'
+        "Middle table</figcaption></figure>"
+        '<section class="ltx_section"><h2>2 Method</h2>'
+        '<div class="ltx_para"><p class="ltx_p">Second.</p></div></section>'
+        "</div></body></html>"
+    )
+    doc = _parse_custom(html)
+    body = _body_sections(doc)
+    assert [s.id for s in body] == ["s1", "s2", "s3"]
+    assert [s.title for s in body] == ["1 Intro", "", "2 Method"]
+    assert "Middle table" in doc.fullText
+
+
+def test_float_captioned_only_by_a_nested_subpanel_outside_section_is_not_recovered() -> None:
+    """A caption-less outer float above the first section whose only caption belongs to a nested
+    sub-panel ("(a)") has no number of its OWN — recovering it via a descendant caption would mint
+    an unlabelled figure. Requiring the float's own figcaption leaves it dropped, and the body keeps
+    its s1.. numbering."""
+    html = (
+        '<html><body><div class="ltx_document">'
+        '<figure class="ltx_figure"><figure class="ltx_figure"><img src="a.png"/>'
+        '<figcaption class="ltx_caption"><span class="ltx_tag">(a)</span>'
+        "panel a</figcaption></figure></figure>"
+        '<section class="ltx_section"><h2>1 Intro</h2>'
+        '<div class="ltx_para"><p class="ltx_p">Body text.</p></div></section>'
+        "</div></body></html>"
+    )
+    doc = _parse_custom(html)
+    body = _body_sections(doc)
+    assert [s.id for s in body] == ["s1"]
+    assert body[0].title == "1 Intro"  # no lead section was inserted
+
+
 def test_panel_group_whose_number_sits_in_a_sibling_float_is_kept() -> None:
     """LaTeXML can wrap a numbered figure's panels in an outer float and leave the "Figure 5:"
     caption in a sibling float (arXiv:2510.23156). The group then has no caption of its own and
