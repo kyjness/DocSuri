@@ -90,6 +90,10 @@ services:
       S3PROXY_AUTHORIZATION: aws-v2-or-v4
       S3PROXY_IDENTITY: docsuri
       S3PROXY_CREDENTIAL: docsuri-local
+      # U1's S3 writers always request SSE (s3_put encrypts unconditionally by design); the
+      # filesystem backend cannot honour it and would fail every PUT with NotImplemented.
+      # Ignoring the header locally keeps the production writers untouched.
+      S3PROXY_IGNORE_UNKNOWN_HEADERS: "true"
       JCLOUDS_PROVIDER: filesystem
       JCLOUDS_FILESYSTEM_BASEDIR: /data
     ports:
