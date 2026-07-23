@@ -250,6 +250,19 @@ def test_normalizer_reencodes_to_webp_and_downscales() -> None:
         assert max(img.size) == 64  # downscaled to the cap
 
 
+def test_normalizer_flattens_transparency_onto_white() -> None:
+    """A plot saved with a transparent background must not come out black: convert("RGB") alone
+    leaves transparent pixels at their (black) RGB values, hiding the plot's own dark labels."""
+    Image = pytest.importorskip("PIL.Image")
+    buf = io.BytesIO()
+    Image.new("RGBA", (40, 40), (0, 0, 0, 0)).save(buf, format="PNG")  # fully transparent
+    out = ImageNormalizer().normalize(buf.getvalue())
+    assert out is not None
+    with Image.open(io.BytesIO(out)) as img:
+        r, g, b = img.convert("RGB").getpixel((20, 20))
+        assert (r, g, b) >= (250, 250, 250)  # white page, not black
+
+
 def test_normalizer_rejects_decompression_bomb() -> None:
     pytest.importorskip("PIL")
     # 100x100 = 10_000 px > max_pixels(100) → rejected.

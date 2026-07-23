@@ -197,7 +197,18 @@ class ImageNormalizer:
                 width, height = img.size
                 if width * height > self._max_pixels:  # decompression-bomb guard
                     return None
-                img = img.convert("RGB")
+                # Transparency is flattened onto WHITE, the page a paper figure is set on. A bare
+                # convert("RGB") leaves transparent pixels at their (usually black) RGB values, so
+                # a plot saved with a transparent background rendered as solid black around its
+                # axes — with its own black labels invisible inside it.
+                if img.mode in ("RGBA", "LA") or (
+                    img.mode == "P" and "transparency" in img.info
+                ):
+                    rgba = img.convert("RGBA")
+                    img = Image.new("RGB", rgba.size, (255, 255, 255))
+                    img.paste(rgba, mask=rgba.getchannel("A"))
+                else:
+                    img = img.convert("RGB")
                 longest = max(width, height)
                 if longest > self._max_side:
                     scale = self._max_side / longest
