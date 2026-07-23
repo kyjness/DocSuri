@@ -37,6 +37,7 @@ from _common import counts, walk_sections
 from bs4 import BeautifulSoup, Tag
 from docsuri_shared.dtos import SourceTier
 
+from docsuri_ingestion.docmodel.parser import _caption as _parser_caption
 from docsuri_ingestion.docmodel.parser import parse_html_to_docmodel
 from docsuri_ingestion.full_text_extraction import html_to_text
 
@@ -154,14 +155,8 @@ def _docmodel_signals(doc: dict) -> dict:
     }
 
 
-# >=4 consecutive plain lowercase-alpha words
-_ALPHA_RUN_RE = re.compile(r"[a-z]+(?:\s+[a-z]+){3,}")
-
-
-def _longest_plain_run(text: str) -> str:
-    """The longest run of >=4 plain lowercase-alpha words — a caption fingerprint robust to inline
-    math and whitespace. A math-only caption yields only short runs and is left unjudged (== "")."""
-    return max(_ALPHA_RUN_RE.findall(text.lower()), key=len, default="")
+def _strip_ws(text: str) -> str:
+    return re.sub(r"\s+", "", text).lower()
 
 
 def _caption_text_dropped(soup: BeautifulSoup, full_text: str) -> int:
@@ -169,20 +164,23 @@ def _caption_text_dropped(soup: BeautifulSoup, full_text: str) -> int:
 
     Content-based, not block-count: a float the parser keeps as a paragraph rather than a figure
     block still preserves its caption, so what matters is whether the words survive, not the block
-    type. Matching is whitespace-stripped (the parser's inline-text normalization differs from
-    BeautifulSoup's ``get_text``) and keyed on the caption's longest plain-alpha run, so a
-    math-heavy caption with no long plain run is skipped rather than falsely flagged."""
-    ft = re.sub(r"\s+", "", full_text).lower()
+    type. The caption is read with the parser's OWN extraction (``_caption``) so it is normalized
+    exactly as the fullText projection does (inline math as ``\\(..\\)``, glued whitespace);
+    matching whitespace-stripped then makes a preserved caption an exact substring of fullText and a
+    dropped one absent — the get_text-vs-parser rendering mismatch that fooled a plain-text probe is
+    gone. Only numbered floats are judged (a ``(a)``/``(b)`` sub-panel folds into its parent)."""
+    ft = _strip_ws(full_text)
     dropped = 0
-    for caption in soup.find_all(class_="ltx_caption"):
-        tag = caption.find("span", class_="ltx_tag")
-        text = tag.get_text() if tag is not None else ""
-        if not (_FIG_CAPTION_RE.match(text) or _TABLE_CAPTION_RE.match(text)):
+    for fl in soup.find_all("figure"):
+        if not ({"ltx_figure", "ltx_table"} & _classes(fl)):
             continue
-        run = _longest_plain_run(caption.get_text(" ", strip=True))
-        if len(run) < 20:
-            continue  # too little plain text to judge reliably
-        if re.sub(r"\s+", "", run) not in ft:
+        label, caption = _parser_caption(fl)
+        if not (_FIG_CAPTION_RE.match(label) or _TABLE_CAPTION_RE.match(label)):
+            continue
+        probe = _strip_ws(caption)[:60]
+        if len(probe) < 20:
+            continue  # too little caption text to judge reliably
+        if probe not in ft:
             dropped += 1
     return dropped
 

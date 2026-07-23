@@ -82,31 +82,40 @@ def test_nested_list_counts_once() -> None:
     assert sig["src_lists"] == 1  # the nested list is part of its parent
 
 
+_FIG = (
+    '<figure class="ltx_figure"><figcaption class="ltx_caption">'
+    '<span class="ltx_tag">Figure 1:</span> {body}</figcaption></figure>'
+)
+
+
 def test_caption_text_present_in_full_text_is_not_dropped() -> None:
-    html = (
-        '<figcaption class="ltx_caption"><span class="ltx_tag">Figure 1:</span>'
-        " we visualize edits made by our model on real user requests</figcaption>"
-    )
-    # parser normalization glues tokens differently, so matching must be whitespace-insensitive.
-    full_text = "Figure 1 we  visualize edits made by our model on real user requests. Body."
+    html = _FIG.format(body="we visualize edits made by our model on real user requests")
+    # fullText glues the label prefix; whitespace-insensitive matching still finds the caption.
+    full_text = "Figure 1 we visualize edits made by our model on real user requests. Body."
     assert pa._caption_text_dropped(_soup(html), full_text) == 0
 
 
 def test_caption_text_absent_from_full_text_is_dropped() -> None:
-    html = (
-        '<figcaption class="ltx_caption"><span class="ltx_tag">Figure 1:</span>'
-        " we visualize edits made by our model on real user requests</figcaption>"
-    )
+    html = _FIG.format(body="we visualize edits made by our model on real user requests")
     assert pa._caption_text_dropped(_soup(html), "Unrelated body text only.") == 1
 
 
-def test_math_only_caption_is_not_judged() -> None:
-    # No run of >=4 plain words, so it cannot be reliably matched and must not be flagged.
+def test_caption_with_inline_math_matches_via_parser_normalization() -> None:
+    # get_text renders <math> as "sigma"; the parser renders it \(\sigma\). Reading the caption
+    # with the parser's own extraction makes both sides \(\sigma\), so a present caption is kept.
     html = (
-        '<figcaption class="ltx_caption"><span class="ltx_tag">Figure 1:</span>'
-        " G_{I} and G_{L} for X = Z</figcaption>"
+        '<figure class="ltx_figure"><figcaption class="ltx_caption">'
+        '<span class="ltx_tag">Figure 1:</span> '
+        '<math alttext="\\sigma">sigma</math> represents the noisy portion of the training set'
+        "</figcaption></figure>"
     )
-    assert pa._caption_text_dropped(_soup(html), "no math here") == 0
+    full_text = "Figure 1 \\(\\sigma\\) represents the noisy portion of the training set."
+    assert pa._caption_text_dropped(_soup(html), full_text) == 0
+
+
+def test_short_caption_is_not_judged() -> None:
+    html = _FIG.format(body="A plot.")  # under 20 chars — too little to match reliably
+    assert pa._caption_text_dropped(_soup(html), "unrelated") == 0
 
 
 def test_caption_text_dropped_flags_content_loss() -> None:
