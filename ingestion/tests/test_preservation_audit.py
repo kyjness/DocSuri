@@ -23,6 +23,30 @@ def _soup(html: str) -> BeautifulSoup:
     return BeautifulSoup(html, "lxml")
 
 
+def test_fatal_conversion_notice_is_source_unavailable() -> None:
+    # ar5iv left its own failure notice as the only body — the paper has no HTML to preserve.
+    html = """
+    <article class="ltx_document"><p class="ltx_p">Conversion to HTML had a Fatal error
+    and exited abruptly. This document may be truncated or damaged.</p></article>
+    """
+    assert pa._source_unavailable(_soup(html), html) is True
+
+
+def test_metadata_shell_without_ltx_document_is_source_unavailable() -> None:
+    # A real title but a JS/footer body and no LaTeXML content — ar5iv could not build the paper.
+    html = '<title>[2505.08489] A Real Paper Title</title><div class="flex-wrap-footer"></div>'
+    assert pa._source_unavailable(_soup(html), html) is True
+
+
+def test_real_paper_with_sections_is_available() -> None:
+    html = """
+    <article class="ltx_document">
+      <section class="ltx_section"><p class="ltx_p">Real body text here.</p></section>
+    </article>
+    """
+    assert pa._source_unavailable(_soup(html), html) is False
+
+
 def test_numbered_captions_counted_by_type_panels_ignored() -> None:
     html = """
     <figcaption class="ltx_caption"><span class="ltx_tag">Figure 1:</span> a plot</figcaption>

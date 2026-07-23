@@ -59,10 +59,29 @@ _TABLE_CAPTION_RE = re.compile(r"^\s*table\b", re.IGNORECASE)
 # so counting them would inflate the expected block count and cry loss where there is none.
 _PANEL_MARK_RE = re.compile(r"^\s*\(?[a-z]\)?\s*$", re.IGNORECASE)
 
+# LaTeXML's own failure notice, left as the document's only paragraph when the conversion aborts.
+_FATAL_CONVERSION = "Conversion to HTML had a Fatal error"
+
 
 def _classes(node: Tag) -> set[str]:
     value = node.get("class")
     return set(value) if value else set()
+
+
+def _source_unavailable(soup: BeautifulSoup, html: str) -> bool:
+    """Whether the fetched page carries no ar5iv content to preserve — so any "loss" is the
+    source's, not the parser's, and the paper must not count as a defect.
+
+    Two shapes on arXiv papers ar5iv could not build (they fall to the PDF/GROBID path in real
+    ingestion, never the HTML parser): a LaTeXML fatal-conversion notice as the only body, and a
+    metadata-only shell with no ``ltx_document`` and no sections (real title, JS/footer body). A
+    genuine paper always has an ``ltx_document`` with sections, so this cannot mask real loss.
+    """
+    if _FATAL_CONVERSION in html:
+        return True
+    if soup.find(class_="ltx_document") is None and not soup.find_all(class_="ltx_section"):
+        return True
+    return False
 
 
 def _standalone(nodes: list[Tag], forbidden: set[str]) -> int:
@@ -167,6 +186,16 @@ def _violations(sig: dict) -> list[str]:
 
 
 def _audit_one(paper_id: str, version: int, html: str) -> dict:
+    soup = BeautifulSoup(html or "", "lxml")
+    if _source_unavailable(soup, html):
+        # No ar5iv content to preserve — record it, but it is not a parser defect.
+        return {
+            "paper_id": paper_id,
+            "version": version,
+            "source_unavailable": True,
+            "violations": [],
+            "signals": {},
+        }
     doc = parse_html_to_docmodel(
         html,
         paper_id=paper_id,
@@ -178,7 +207,7 @@ def _audit_one(paper_id: str, version: int, html: str) -> dict:
         schema_version="audit",
         generated_at=_TS,
     ).model_dump(mode="json")
-    sig = {**_source_signals(BeautifulSoup(html or "", "lxml")), **_docmodel_signals(doc)}
+    sig = {**_source_signals(soup), **_docmodel_signals(doc)}
     sig.update(counts(doc))
     source_chars = len(html_to_text(html))
     sig["source_chars"] = source_chars
@@ -201,6 +230,7 @@ def main() -> None:
     by_type: Counter[str] = Counter()
     papers = 0
     errors = 0
+    unavailable = 0
     with args.out.open("w", encoding="utf-8") as fh:
         for i, target in enumerate(targets, start=1):
             key = f"{target['paper_id']}v{target['version']}"
@@ -213,17 +243,25 @@ def main() -> None:
                 error = f"{type(exc).__name__}: {exc}"
                 row = {**target, "error": error, "violations": ["parse_error"]}
                 errors += 1
+            papers += 1
+            if row.get("source_unavailable"):
+                unavailable += 1
             for kind in row["violations"]:
                 by_type[kind] += 1
-            papers += 1
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
             if i % 50 == 0 or "error" in row:
                 print(f"[{i}/{len(targets)}] {key} {row.get('error', '')}", flush=True)
 
+    # Violation rates are over papers that actually carry ar5iv content — a source ar5iv could not
+    # build is out of the HTML parser's remit (real ingestion sends it down the PDF/GROBID path).
+    available = papers - unavailable
     print(f"\nwrote {args.out}  ({papers} papers, {errors} parse errors)")
-    print("\n=== defect types by frequency (papers affected) ===")
+    print(f"source_unavailable (ar5iv build failures, excluded): {unavailable}")
+    print(f"audited (has ar5iv content): {available}")
+    print("\n=== defect types by frequency (papers affected, of audited) ===")
     for kind, n in by_type.most_common():
-        print(f"  {kind:28s} {n:5d}  ({n / papers:.1%})")
+        pct = f"{n / available:.1%}" if available else "n/a"
+        print(f"  {kind:28s} {n:5d}  ({pct})")
     if not by_type:
         print("  (none — every source signal accounted for)")
 
