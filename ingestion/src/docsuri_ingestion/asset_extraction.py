@@ -49,6 +49,9 @@ from .domain.enums import AssetSourceMode, AssetType
 # paper). Roman is uppercase-only (``(?-i:…)`` again): under IGNORECASE the letter class would sit
 # inside ordinary lowercase words ("in", "vi", "mix"). The follower guard applies unchanged, so
 # "Table I shows …" stays a cross-reference and "TABLE IV RESULTS …" is still a caption.
+# A LETTER-labelled appendix float ("Table C:") also matches, reading C as roman 100 — accepted:
+# table ordinals are positional (the number is unused), and a figure's label and caption resolve
+# to the SAME value, so the label↔crop match still pairs correctly.
 _CAPTION_BODY = (
     r"(figure|fig\.?|table)\s*(\d+|(?-i:[IVXLCDM]+))(?:\s*[:.—]|\s+(?=(?-i:[A-Z]))|\s*$)"
 )

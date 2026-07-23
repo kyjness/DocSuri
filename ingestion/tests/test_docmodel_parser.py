@@ -405,6 +405,36 @@ def test_mixed_float_decomposes_into_table_and_figure() -> None:
     assert doc.fullText.count("Confusion matrices.") == 1  # adopted caption is not re-emitted
 
 
+def test_declared_table_float_inside_figure_outer_decomposes_too() -> None:
+    """The decomposition also fires when the table child is a DECLARED ``figure.ltx_table`` (not
+    a mislabelled minipage): a caption-less ltx_figure outer sharing a table float and a captioned
+    figure must yield one TableBlock and one FigureBlock, not one unlabeled figure."""
+    html = (
+        '<html><body><div class="ltx_document">'
+        '<section class="ltx_section"><h2>1 Results</h2>'
+        '<figure class="ltx_figure">'
+        '<figure class="ltx_table">'
+        '<figcaption class="ltx_caption"><span class="ltx_tag ltx_tag_table">Table 2: </span>'
+        "Latency.</figcaption>"
+        '<table class="ltx_tabular"><tr class="ltx_tr"><td class="ltx_td">1ms</td></tr></table>'
+        "</figure>"
+        '<figure class="ltx_figure"><img src="plot.png"/>'
+        '<figcaption class="ltx_caption"><span class="ltx_tag">Figure 3: </span>A plot'
+        "</figcaption></figure>"
+        "</figure>"
+        "</section></div></body></html>"
+    )
+    doc = parse_html_to_docmodel(
+        html, paper_id="2401.00014", version=1, title="T", abstract=None,
+        source_tier=SourceTier.ar5iv, parser_version="p", schema_version="1.0.0",
+        generated_at=_FIXED_TS,
+    )
+    typed = [b.root for s in doc.sections for b in s.blocks]
+    assert [type(b) for b in typed] == [TableBlock, FigureBlock]
+    assert typed[0].anchorLabel == "Table 2"
+    assert typed[1].anchorLabel == "Figure 3"
+
+
 def test_panel_group_adopts_caption_from_caption_only_sibling_float() -> None:
     """The detached "Figure 5:" caption float inside a caption-less panel group must become the
     group's anchorLabel/caption — with an empty label the FigureSpec could never be matched to
@@ -745,7 +775,8 @@ def test_span_tabular_table_reads_rows() -> None:
         '<span class="ltx_td ltx_colspan ltx_colspan_2">Accuracy</span></span>'
         '<span class="ltx_tr"><span class="ltx_td">8</span>'
         '<span class="ltx_td">0.93 <span class="ltx_tabular"><span class="ltx_tr">'
-        '<span class="ltx_td">mini</span></span></span></span></span>'
+        '<span class="ltx_td">mini</span></span></span></span>'
+        '<span class="ltx_td ltx_colspan ltx_colspan_x">n/a</span></span>'
         "</span></span></figure>"
         "</section></body></html>"
     )
@@ -756,6 +787,7 @@ def test_span_tabular_table_reads_rows() -> None:
     assert table.rows[0].cells[0].rowspan == 2
     assert table.rows[0].cells[1].colspan == 2
     assert "mini" in table.rows[1].cells[1].text  # nested content flattened into its parent cell
+    assert table.rows[1].cells[2].colspan is None  # garbage span class (ltx_colspan_x) -> default
 
 
 def test_table_merges_stacked_top_level_tabulars() -> None:

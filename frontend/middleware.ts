@@ -30,7 +30,17 @@ function buildScriptSrc(nonce: string): string {
 
 // Solo-local S3 substitute (s3proxy): presigned asset URLs point at this origin instead of AWS.
 // Only the local profile (.env) sets it — absent in prod, so the allowance never widens there.
-const LOCAL_S3_ORIGIN = process.env.AWS_ENDPOINT_URL_S3;
+// Normalized through URL(): only a parseable origin can enter the header, so a malformed value
+// cannot smuggle extra CSP sources or directives.
+const LOCAL_S3_ORIGIN = (() => {
+  const raw = process.env.AWS_ENDPOINT_URL_S3;
+  if (!raw) return undefined;
+  try {
+    return new URL(raw).origin;
+  } catch {
+    return undefined;
+  }
+})();
 
 function buildImgSrc(): string {
   return [

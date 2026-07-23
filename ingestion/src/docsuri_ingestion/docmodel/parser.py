@@ -526,7 +526,12 @@ def _mixed_float_blocks(
     into ONE ``ltx_figure`` (arXiv:2510.23156, S4.SS2.fig3). Reading that as a single figure
     block silently dropped the table's rows and caption, and left the figure unlabeled. The
     DocModel has no container block, so the float decomposes into flat sibling blocks, children
-    walked in document order. Returns None when this is not such a float."""
+    walked in document order. Returns None when this is not such a float.
+
+    Known trade-off: a bare ``<img>`` sitting DIRECTLY under the outer (not wrapped in a child
+    figure/paragraph) is dropped by the per-child dispatch — LaTeXML always wraps a float's
+    graphics, so that shape has not been observed; collecting strays would need a synthetic
+    figure block with no caption to ever label it."""
     if _own_figcaption(figure_el) is not None:
         return None  # the container captions itself — subfigure semantics, not a mixed float
     children = [c for c in figure_el.children if isinstance(c, Tag)]
