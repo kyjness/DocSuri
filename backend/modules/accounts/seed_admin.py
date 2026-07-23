@@ -69,6 +69,10 @@ def main() -> int:
     if not email or not password or not database_url:
         logger.error("DOCSURI_ADMIN_EMAIL · DOCSURI_ADMIN_PASSWORD · DATABASE_URL 환경변수가 모두 필요합니다.")
         return 2
+    # Bare `postgresql://` makes SQLAlchemy reach for psycopg2 (not installed); this project
+    # ships psycopg 3, so pin the driver explicitly — mirrors the app engine (backend/db.py).
+    if database_url.startswith("postgresql://"):
+        database_url = "postgresql+psycopg://" + database_url[len("postgresql://") :]
     engine = create_engine(database_url)
     # N5: create_all은 ORM 모델에서 테이블을 만들어 SQL 마이그레이션과 드리프트할 수 있다(프로덕션은
     # 마이그레이션이 선행). 로컬/초기 부트스트랩(ENV=local) 또는 명시 opt-in일 때만 수행한다.
