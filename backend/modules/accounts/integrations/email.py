@@ -207,6 +207,17 @@ class EmailClientInterface(ABC):
         return await self._send(email, subject, text, html)
 
 
+def _console_is_the_mailbox() -> bool:
+    """콘솔 출력이 곧 로컬 메일함인 상황인지 — ``get_email_client``의 Mock 배선 게이트와 동일 조건.
+
+    MockEmailClient가 (배선 실수 등으로) 비로컬 환경에서 살아 있어도 bearer 토큰이 로그에
+    남지 않도록, 출력 직전에 같은 게이트를 한 번 더 확인한다(심층 방어)."""
+    return (
+        os.getenv("SES_MOCK", "false").lower() == "true"
+        or os.getenv("ENV", "local").lower() == "local"
+    )
+
+
 class MockEmailClient(EmailClientInterface):
     """로컬 테스트를 위해 실제 이메일을 발송하지 않고 터미널 콘솔에 출력하는 Mock 이메일 클라이언트"""
 
@@ -217,20 +228,29 @@ class MockEmailClient(EmailClientInterface):
 
     async def send_verification_email(self, email: str, token: str, signup_link: str) -> bool:
         self.last_verification_token = token
+        # 이 클라이언트는 로컬(ENV=local·SES_MOCK)에서만 배선된다 — 콘솔이 곧 메일함이므로
+        # 링크를 그대로 출력해야 가입→인증 플로우를 로컬에서 완주할 수 있다. 토큰은 DB에
+        # 해시로만 저장되니(SEC-BR-1) 여기 말고는 원문을 얻을 곳이 없다.
         logger.info("================ [MOCK EMAIL DELIVERY] ================")
-        logger.info("To: [redacted]")
-        logger.info("Subject: DocSuri 이메일 인증 안내")
-        logger.info("Verification token captured in MockEmailClient.last_verification_token.")
-        logger.info("Verification link omitted from logs because it contains a bearer token.")
+        if _console_is_the_mailbox():
+            logger.info(f"To: {email}")
+            logger.info("Subject: DocSuri 이메일 인증 안내")
+            logger.info(f"Verification link: {signup_link}?token={token}")
+        else:
+            logger.info("To: [redacted]")
+            logger.info("Link omitted: non-local run — the bearer token stays out of logs.")
         logger.info("=========================================================")
         return True
 
     async def send_password_reset_email(self, email: str, token: str, reset_link: str) -> bool:
         self.last_password_reset_token = token
         logger.info("================ [MOCK PASSWORD RESET EMAIL] ================")
-        logger.info("To: [redacted]")
-        logger.info("Reset token captured in MockEmailClient.last_password_reset_token.")
-        logger.info("Reset link omitted from logs because it contains a bearer token.")
+        if _console_is_the_mailbox():
+            logger.info(f"To: {email}")
+            logger.info(f"Reset link: {reset_link}?token={token}")
+        else:
+            logger.info("To: [redacted]")
+            logger.info("Link omitted: non-local run — the bearer token stays out of logs.")
         logger.info("=============================================================")
         return True
 

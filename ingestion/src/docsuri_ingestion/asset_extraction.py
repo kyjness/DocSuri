@@ -43,10 +43,26 @@ from .domain.enums import AssetSourceMode, AssetType
 # for a caption that a two-column merge buried mid-line) so the two can never drift apart.
 # ``(?-i:…)`` because the whole pattern is IGNORECASE, under which a bare [A-Z] also matches
 # lowercase — which would have let every "Table 6 shows that …" back in.
-_CAPTION_BODY = r"(figure|fig\.?|table)\s*(\d+)(?:\s*[:.—]|\s+(?=(?-i:[A-Z]))|\s*$)"
+#
+# The number is arabic OR an uppercase roman numeral — IEEE style numbers its tables "TABLE IV"
+# (measured on arXiv:2510.23156, where digit-only matching produced zero table crops for the whole
+# paper). Roman is uppercase-only (``(?-i:…)`` again): under IGNORECASE the letter class would sit
+# inside ordinary lowercase words ("in", "vi", "mix"). The follower guard applies unchanged, so
+# "Table I shows …" stays a cross-reference and "TABLE IV RESULTS …" is still a caption.
+# A LETTER-labelled appendix float ("Table C:") also matches, reading C as roman 100 — accepted:
+# table ordinals are positional (the number is unused), and a figure's label and caption resolve
+# to the SAME value, so the label↔crop match still pairs correctly.
+_CAPTION_BODY = (
+    r"(figure|fig\.?|table)\s*(\d+|(?-i:[IVXLCDM]+))(?:\s*[:.—]|\s+(?=(?-i:[A-Z]))|\s*$)"
+)
 _CAPTION_RE = re.compile(r"^\s*" + _CAPTION_BODY, re.IGNORECASE)
 _CAPTION_ANYWHERE_RE = re.compile(_CAPTION_BODY, re.IGNORECASE)
 _LABEL_NUM_RE = re.compile(r"(\d+)")
+# Roman fallback for anchor labels ("TABLE III") — keyword-prefixed so a roman-lettered word in a
+# label can never be misread as a number.
+_LABEL_ROMAN_RE = re.compile(r"(?:figure|fig\.?|table)\s*((?-i:[IVXLCDM]+))\b", re.IGNORECASE)
+
+_ROMAN_VALUES = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100, "D": 500, "M": 1000}
 
 _ASSETS_EXTRA_MISSING = "multimodal assets extra not installed (pip install .[assets])"
 
@@ -65,10 +81,37 @@ def _member_stem(name: str) -> str:
     return base.rsplit(".", 1)[0].lower()
 
 
+def _roman_to_int(token: str) -> int | None:
+    """Value of an uppercase roman numeral ('IV' -> 4), or None. Pure.
+
+    Lenient about canonical form ('IIII' -> 4): both call sites reach here only through a
+    keyword-prefixed regex ("TABLE …"), so a non-canonical token is a styling quirk, not noise."""
+    total = 0
+    prev = 0
+    for char in reversed(token):
+        value = _ROMAN_VALUES.get(char)
+        if value is None:
+            return None
+        total += value if value >= prev else -value
+        prev = max(prev, value)
+    return total or None
+
+
+def _caption_number(token: str) -> int | None:
+    """The number a caption regex captured — arabic ('3') or roman ('IV'). Pure."""
+    return int(token) if token.isdigit() else _roman_to_int(token)
+
+
 def _label_number(label: str) -> int | None:
-    """First integer in a figure anchor label ('Figure 3' -> 3), or None. Pure."""
+    """First number in a figure anchor label ('Figure 3' / 'TABLE III' -> 3), or None. Pure.
+
+    Digits take priority — every label observed until roman support was added is digit-styled, so
+    those keep resolving exactly as before ('Figure 12b' -> 12)."""
     match = _LABEL_NUM_RE.search(label or "")
-    return int(match.group(1)) if match else None
+    if match:
+        return int(match.group(1))
+    roman = _LABEL_ROMAN_RE.search(label or "")
+    return _roman_to_int(roman.group(1)) if roman else None
 
 
 def caption_kind(text: str) -> AssetType | None:
@@ -83,7 +126,10 @@ def caption_kind_and_number(text: str) -> tuple[AssetType, int] | None:
     if not match:
         return None
     kind = AssetType.TABLE if match.group(1).lower().startswith("table") else AssetType.FIGURE
-    return kind, int(match.group(2))
+    number = _caption_number(match.group(2))
+    if number is None:
+        return None
+    return kind, number
 
 
 def finalize_assets(
@@ -154,7 +200,18 @@ class ImageNormalizer:
                 width, height = img.size
                 if width * height > self._max_pixels:  # decompression-bomb guard
                     return None
-                img = img.convert("RGB")
+                # Transparency is flattened onto WHITE, the page a paper figure is set on. A bare
+                # convert("RGB") leaves transparent pixels at their (usually black) RGB values, so
+                # a plot saved with a transparent background rendered as solid black around its
+                # axes — with its own black labels invisible inside it.
+                if img.mode in ("RGBA", "LA") or (
+                    img.mode == "P" and "transparency" in img.info
+                ):
+                    rgba = img.convert("RGBA")
+                    img = Image.new("RGB", rgba.size, (255, 255, 255))
+                    img.paste(rgba, mask=rgba.getchannel("A"))
+                else:
+                    img = img.convert("RGB")
                 longest = max(width, height)
                 if longest > self._max_side:
                     scale = self._max_side / longest

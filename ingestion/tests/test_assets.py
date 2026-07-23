@@ -119,6 +119,13 @@ def test_a_page_with_no_graphics_leaves_the_caption_crop_untouched() -> None:
         ("Figure 5 shows rolling estimators", None),
         ("Figure 4 leads into the study", None),
         ("Figure 1(a), the layer-wise averages", None),
+        # IEEE style numbers tables with uppercase roman numerals — digit-only matching produced
+        # zero table crops for a whole paper (arXiv:2510.23156). The follower guard still applies.
+        ("TABLE IV: Test accuracies of the quantized models", AssetType.TABLE),
+        ("TABLE IV RESULTS UNDER ALL SPLITS", AssetType.TABLE),
+        ("Fig. VII. Confusion matrices", AssetType.FIGURE),
+        ("Table I shows the results", None),  # cross-reference, lowercase follower
+        ("In all, IV drips were used", None),  # roman letters without the keyword prefix
     ],
 )
 def test_caption_kind(text: str, expected: AssetType | None) -> None:
@@ -131,6 +138,22 @@ def test_caption_kind_and_number() -> None:
     assert caption_kind_and_number("Figure 3: subspace similarity") == (AssetType.FIGURE, 3)
     assert caption_kind_and_number("Table12:hyperparameters") == (AssetType.TABLE, 12)
     assert caption_kind_and_number("Table 6 shows that") is None
+    assert caption_kind_and_number("TABLE III: Selected model configurations") == (
+        AssetType.TABLE,
+        3,
+    )
+    assert caption_kind_and_number("TABLE IX — ablations") == (AssetType.TABLE, 9)
+
+
+def test_label_number_reads_roman_after_keyword() -> None:
+    """Anchor labels resolve roman numbers too ('TABLE III' -> 3), digits keeping priority."""
+    from docsuri_ingestion.asset_extraction import _label_number
+
+    assert _label_number("TABLE III") == 3
+    assert _label_number("Figure 3") == 3
+    assert _label_number("Figure 12b") == 12  # digit priority — pre-roman behavior unchanged
+    assert _label_number("MIX") is None  # roman letters without the keyword prefix
+    assert _label_number("") is None
 
 
 # ---------------------------------------------------------------- finalize_assets (P7)
@@ -225,6 +248,19 @@ def test_normalizer_reencodes_to_webp_and_downscales() -> None:
 
     with Image.open(io.BytesIO(out)) as img:
         assert max(img.size) == 64  # downscaled to the cap
+
+
+def test_normalizer_flattens_transparency_onto_white() -> None:
+    """A plot saved with a transparent background must not come out black: convert("RGB") alone
+    leaves transparent pixels at their (black) RGB values, hiding the plot's own dark labels."""
+    Image = pytest.importorskip("PIL.Image")
+    buf = io.BytesIO()
+    Image.new("RGBA", (40, 40), (0, 0, 0, 0)).save(buf, format="PNG")  # fully transparent
+    out = ImageNormalizer().normalize(buf.getvalue())
+    assert out is not None
+    with Image.open(io.BytesIO(out)) as img:
+        r, g, b = img.convert("RGB").getpixel((20, 20))
+        assert (r, g, b) >= (250, 250, 250)  # white page, not black
 
 
 def test_normalizer_rejects_decompression_bomb() -> None:

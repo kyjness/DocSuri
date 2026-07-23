@@ -64,6 +64,10 @@ _HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
 # "Fig. 2:"). Only used to tell a numbered float apart from a "(a)"/"(b)" sub-panel mark — the
 # PDF-side caption rule lives in asset_extraction and reads a very different kind of text.
 _FIGURE_TAG_RE = re.compile(r"^(figure|fig\.?)\s*\d+", re.IGNORECASE)
+# A table float's caption tag ("TABLE III: "). Matched on the tag's TEXT, not its class — LaTeXML
+# labels a table minipage inside an ltx_figure outer with ltx_tag_figure (observed on
+# arXiv:2510.23156), so the class is not a reliable signal there. \b rejects "TABLEAU".
+_TABLE_TAG_RE = re.compile(r"^table\b", re.IGNORECASE)
 # Block-id type abbreviations (1-based ordinals per section): s3.p2, s3.tbl1, s3.eq2, ...
 _ABBREV = {
     "paragraph": "p",
@@ -363,32 +367,97 @@ def _paragraph_block(p: Tag, sec_ctx: _SectionCtx) -> dict | None:
     return {"id": sec_ctx.next_id("paragraph"), "type": "paragraph", "text": text}
 
 
-def _table_block(figure_el: Tag, sec_ctx: _SectionCtx) -> dict | None:
-    table = figure_el.find("table", class_="ltx_tabular")
+def _is_tabular(node: Tag) -> bool:
+    """Whether ``node`` is a tabular root — ``<table class="ltx_tabular">`` or its span twin.
+
+    LaTeXML renders a scaled tabular (``\\resizebox``/``ltx_transformed_outer``) as
+    ``<span class="ltx_tabular">`` with span rows and cells instead of a ``<table>`` — measured on
+    arXiv:2510.23156, whose TABLE IV came out with zero rows under a ``<table>``-only reader."""
+    return node.name in {"table", "span"} and "ltx_tabular" in _classes(node)
+
+
+def _tabular_roots(figure_el: Tag) -> list[Tag]:
+    """Top-level tabulars of a float, in document order — nested mini-tables stay excluded."""
+    return [t for t in figure_el.find_all(_is_tabular) if t.find_parent(_is_tabular) is None]
+
+
+def _table_cell(cell: Tag, *, is_header: bool, colspan: int, rowspan: int) -> dict:
+    cell_dict: dict = {"text": _inline_text(cell)}
+    if is_header:
+        cell_dict["isHeader"] = True
+    if colspan > 1:
+        cell_dict["colspan"] = colspan
+    if rowspan > 1:
+        cell_dict["rowspan"] = rowspan
+    return cell_dict
+
+
+def _class_span(cell: Tag, kind: str) -> int:
+    """Span count a span-form cell carries as a CLASS (``ltx_colspan_2``), not an attribute."""
+    prefix = f"ltx_{kind}_"
+    for cls in _classes(cell):
+        if cls.startswith(prefix):
+            try:
+                return int(cls[len(prefix) :])
+            except ValueError:
+                return 1
+    return 1
+
+
+def _tabular_rows(tabular: Tag) -> list[dict]:
+    """Rows of one tabular root, table form or span form."""
     rows: list[dict] = []
-    for tr in table.find_all("tr") if table is not None else ():
-        # A stacked/rotated column header can itself be a NESTED <table> (LaTeXML renders a
-        # two-line "Name / ↑" header as a mini table inside the header cell). find_all("tr")
-        # descends into those and would pull their rows up as phantom single-cell main rows
-        # (the observed "column headers spill into the first column" breakage). Keep only rows
-        # whose nearest ancestor table is THIS one — the nested content already lives in the
-        # parent header cell's flattened text.
-        if tr.find_parent("table") is not table:
+    if tabular.name == "table":
+        for tr in tabular.find_all("tr"):
+            # A stacked/rotated column header can itself be a NESTED <table> (LaTeXML renders a
+            # two-line "Name / ↑" header as a mini table inside the header cell). find_all("tr")
+            # descends into those and would pull their rows up as phantom single-cell main rows
+            # (the observed "column headers spill into the first column" breakage). Keep only rows
+            # whose nearest ancestor table is THIS one — the nested content already lives in the
+            # parent header cell's flattened text.
+            if tr.find_parent("table") is not tabular:
+                continue
+            cells = []
+            in_thead = tr.find_parent("thead") is not None
+            for cell in tr.find_all(["td", "th"], recursive=False):
+                is_header = cell.name == "th" or "ltx_th" in _classes(cell) or in_thead
+                cells.append(
+                    _table_cell(
+                        cell,
+                        is_header=is_header,
+                        colspan=_int_attr(cell, "colspan"),
+                        rowspan=_int_attr(cell, "rowspan"),
+                    )
+                )
+            rows.append({"cells": cells})
+        return rows
+    # Span form: rows are <span class="ltx_tr">; the nested-mini-table filter mirrors the table
+    # branch (a nested span tabular's text is already flattened into its parent cell).
+    for tr in tabular.find_all("span", class_="ltx_tr"):
+        if tr.find_parent(_is_tabular) is not tabular:
             continue
         cells = []
-        in_thead = tr.find_parent("thead") is not None
-        for cell in tr.find_all(["td", "th"], recursive=False):
-            cell_dict: dict = {"text": _inline_text(cell)}
-            if cell.name == "th" or "ltx_th" in _classes(cell) or in_thead:
-                cell_dict["isHeader"] = True
-            colspan = _int_attr(cell, "colspan")
-            rowspan = _int_attr(cell, "rowspan")
-            if colspan > 1:
-                cell_dict["colspan"] = colspan
-            if rowspan > 1:
-                cell_dict["rowspan"] = rowspan
-            cells.append(cell_dict)
+        in_thead = tr.find_parent("span", class_="ltx_thead") is not None
+        for cell in tr.find_all("span", class_=["ltx_td", "ltx_th"], recursive=False):
+            is_header = "ltx_th" in _classes(cell) or in_thead
+            cells.append(
+                _table_cell(
+                    cell,
+                    is_header=is_header,
+                    colspan=_class_span(cell, "colspan"),
+                    rowspan=_class_span(cell, "rowspan"),
+                )
+            )
         rows.append({"cells": cells})
+    return rows
+
+
+def _table_block(figure_el: Tag, sec_ctx: _SectionCtx) -> dict | None:
+    # Read every top-level tabular, not just the first: side-by-side subtables stacked in one
+    # float concatenate in document order.
+    rows: list[dict] = []
+    for tabular in _tabular_roots(figure_el):
+        rows.extend(_tabular_rows(tabular))
     # Empty rows are kept, not dropped — same contract as the TEI path: a table body this parser
     # cannot model must not take the caption down with it (BR-S3 preserves captions). Only a
     # table with neither rows nor a caption carries nothing and is still discarded.
@@ -411,6 +480,9 @@ def _figure_blocks(figure_el: Tag, sec_ctx: _SectionCtx, doc_ctx: _DocCtx) -> li
     second one from the document entirely and left the survivor with no label, so it could not be
     matched to a page-crop either. Panels captioned "(a)"/"(b)" are the other construct — real
     sub-panels of ONE figure — and are left alone, as is any container with a caption of its own."""
+    mixed = _mixed_float_blocks(figure_el, sec_ctx, doc_ctx)
+    if mixed is not None:
+        return mixed
     panels = _numbered_figure_panels(figure_el)
     if panels:
         return [b for b in (_figure_block(p, sec_ctx, doc_ctx) for p in panels) if b]
@@ -418,6 +490,62 @@ def _figure_blocks(figure_el: Tag, sec_ctx: _SectionCtx, doc_ctx: _DocCtx) -> li
     if block:
         return [block]
     return _text_float_blocks(figure_el, sec_ctx, doc_ctx)
+
+
+def _is_table_float(node: Tag) -> bool:
+    """Whether a float child is a table float — declared (``ltx_table``) or in disguise.
+
+    A ``\\captionof{table}`` minipage inside a figure environment comes out as
+    ``figure.ltx_figure`` holding tabulars and a "TABLE III"-tagged caption, with no graphic
+    (arXiv:2510.23156). The caption tag TEXT is the deciding signal (see ``_TABLE_TAG_RE``);
+    requiring it keeps a "Figure N"-captioned tabular-only minipage a figure, as today."""
+    if node.name != "figure":
+        return False
+    classes = _classes(node)
+    if "ltx_table" in classes:
+        return True
+    if "ltx_figure" not in classes:
+        return False
+    if node.find("img") is not None or node.find("svg") is not None:
+        return False
+    if node.find(_is_tabular) is None:
+        return False
+    figcaption = _own_figcaption(node)
+    if figcaption is None:
+        return False
+    tag = figcaption.find("span", class_="ltx_tag")
+    return tag is not None and bool(_TABLE_TAG_RE.match(_WS_RE.sub(" ", tag.get_text()).strip()))
+
+
+def _mixed_float_blocks(
+    figure_el: Tag, sec_ctx: _SectionCtx, doc_ctx: _DocCtx
+) -> list[dict] | None:
+    """Decompose a mixed float — a caption-less outer holding a table float among its children.
+
+    LaTeXML can pack a TABLE minipage, an image panel group and the group's caption-only float
+    into ONE ``ltx_figure`` (arXiv:2510.23156, S4.SS2.fig3). Reading that as a single figure
+    block silently dropped the table's rows and caption, and left the figure unlabeled. The
+    DocModel has no container block, so the float decomposes into flat sibling blocks, children
+    walked in document order. Returns None when this is not such a float.
+
+    Known trade-off: a bare ``<img>`` sitting DIRECTLY under the outer (not wrapped in a child
+    figure/paragraph) is dropped by the per-child dispatch — LaTeXML always wraps a float's
+    graphics, so that shape has not been observed; collecting strays would need a synthetic
+    figure block with no caption to ever label it."""
+    if _own_figcaption(figure_el) is not None:
+        return None  # the container captions itself — subfigure semantics, not a mixed float
+    children = [c for c in figure_el.children if isinstance(c, Tag)]
+    if not any(_is_table_float(c) for c in children):
+        return None
+    out: list[dict] = []
+    for child in children:
+        if _is_table_float(child):
+            block = _table_block(child, sec_ctx)
+            if block:
+                out.append(block)
+        else:
+            out.extend(_blocks_from(child, sec_ctx, doc_ctx, skip_sections=True))
+    return out
 
 
 def _text_float_blocks(figure_el: Tag, sec_ctx: _SectionCtx, doc_ctx: _DocCtx) -> list[dict]:
@@ -467,6 +595,28 @@ def _numbered_figure_panels(figure_el: Tag) -> list[Tag]:
     return numbered if len(numbered) == len(panels) else []
 
 
+def _caption_only_float(node: Tag) -> bool:
+    """Whether a figure holds nothing but its own caption — LaTeXML's detached-caption shape."""
+    children = [c for c in node.children if isinstance(c, Tag)]
+    return len(children) == 1 and children[0] is _own_figcaption(node)
+
+
+def _adopted_caption_float(figure_el: Tag) -> Tag | None:
+    """The single caption-only descendant float whose number names this caption-less group.
+
+    LaTeXML can leave a panel group's "Figure 5:" caption in a SIBLING float inside the group
+    (arXiv:2510.23156, S4.F5) — the group then had no label at all, so its page-crop could never
+    be matched and the figure asset went missing. Adopt only when exactly ONE numbered
+    caption-only float exists: two would mean two figures sharing panels, which one block cannot
+    represent, so the current unlabeled behavior stands."""
+    candidates = [
+        node
+        for node in figure_el.find_all("figure")
+        if _caption_only_float(node) and _numbered_figure_label(_own_figcaption(node))
+    ]
+    return candidates[0] if len(candidates) == 1 else None
+
+
 def _numbered_figure_label(figcaption: Tag | None) -> bool:
     """Whether a panel's caption tag reads "Figure 7" — a float number, not a "(a)" panel mark."""
     if figcaption is None:
@@ -478,6 +628,13 @@ def _numbered_figure_label(figcaption: Tag | None) -> bool:
 def _figure_block(figure_el: Tag, sec_ctx: _SectionCtx, doc_ctx: _DocCtx) -> dict | None:
     imgs = figure_el.find_all("img")
     label, caption = _caption(figure_el)
+    if not label and not caption:
+        # The float's number may live in a detached caption-only float inside it (see
+        # _adopted_caption_float) — adopt it so the group gets its anchorLabel and its
+        # page-crop can be matched by number.
+        adopted = _adopted_caption_float(figure_el)
+        if adopted is not None:
+            label, caption = _caption(adopted)
     if not imgs and not (label and figure_el.find("svg") is not None):
         return None  # no graphic to reference
     # A numbered float whose graphic LaTeXML drew as an inline <svg> — a TikZ/pgfplots vector

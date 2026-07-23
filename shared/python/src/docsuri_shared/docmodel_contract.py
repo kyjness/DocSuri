@@ -63,4 +63,25 @@ DOCMODEL_PARSER_VERSION = "docmodel-parser@9"
 # exists only as pixels, searchable but never a render source (the crop stays what is displayed).
 DOCMODEL_SCHEMA_VERSION = "1.2.0"
 
-__all__ = ["DOCMODEL_PARSER_VERSION", "DOCMODEL_SCHEMA_VERSION"]
+
+def schema_is_readable(stored: object) -> bool:
+    """Whether a stored doc-model's ``schemaVersion`` is readable under the CURRENT schema.
+
+    The schema evolves additively within a major (a minor bump only adds optional fields), so a
+    reader understands every EARLIER minor of its own major — requiring exact equality instead
+    would blank the whole stored corpus at each additive bump, which is precisely the outcome the
+    parser-generation floor exists to avoid. A different major is a breaking shape, and a NEWER
+    minor may carry semantics this reader predates; both are refused (fail-closed), as is anything
+    that does not parse as ``major.minor.patch``.
+    """
+    if not isinstance(stored, str):
+        return False
+    try:
+        s_major, s_minor, s_patch = (int(part) for part in stored.split("."))
+        c_major, c_minor, c_patch = (int(part) for part in DOCMODEL_SCHEMA_VERSION.split("."))
+    except ValueError:
+        return False
+    return s_major == c_major and (s_minor, s_patch) <= (c_minor, c_patch)
+
+
+__all__ = ["DOCMODEL_PARSER_VERSION", "DOCMODEL_SCHEMA_VERSION", "schema_is_readable"]

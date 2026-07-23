@@ -28,6 +28,30 @@ function buildScriptSrc(nonce: string): string {
     : ["'self'", `'nonce-${nonce}'`, ...RECAPTCHA_SCRIPT_HOSTS].join(' ');
 }
 
+// Solo-local S3 substitute (s3proxy): presigned asset URLs point at this origin instead of AWS.
+// Only the local profile (.env) sets it — absent in prod, so the allowance never widens there.
+// Normalized through URL(): only a parseable origin can enter the header, so a malformed value
+// cannot smuggle extra CSP sources or directives.
+const LOCAL_S3_ORIGIN = (() => {
+  const raw = process.env.AWS_ENDPOINT_URL_S3;
+  if (!raw) return undefined;
+  try {
+    return new URL(raw).origin;
+  } catch {
+    return undefined;
+  }
+})();
+
+function buildImgSrc(): string {
+  return [
+    "'self'",
+    'data:',
+    'https://*.s3.ap-northeast-2.amazonaws.com',
+    'https://s3.ap-northeast-2.amazonaws.com',
+    ...(LOCAL_S3_ORIGIN ? [LOCAL_S3_ORIGIN] : []),
+  ].join(' ');
+}
+
 function buildCsp(nonce: string): string {
   return [
     "default-src 'self'",
@@ -36,7 +60,7 @@ function buildCsp(nonce: string): string {
     "style-src 'self' 'unsafe-inline'",
     // Figure/table images are short-lived presigned S3 GET URLs (SEC-9): the object host must be
     // whitelisted or the browser blocks them (broken-image icons). Scoped to the region's S3 hosts.
-    "img-src 'self' data: https://*.s3.ap-northeast-2.amazonaws.com https://s3.ap-northeast-2.amazonaws.com",
+    `img-src ${buildImgSrc()}`,
     "connect-src 'self' https://www.google.com/recaptcha/",
     "frame-src 'self' https://www.google.com/recaptcha/",
     "object-src 'none'",
