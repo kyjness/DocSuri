@@ -48,6 +48,10 @@ dev = [
     # these so the suite is reproducible (previously installed ad-hoc — rebaseline gap).
     "hypothesis>=6.100",
     "pytest-asyncio>=0.23",
+    # uvicorn --reload backend: without this uvicorn falls back to StatReload, which
+    # stat-polls every file under --reload-dir (including .venv) and burns ~30% of a
+    # core at idle. watchfiles is inotify-based — near-zero steady-state CPU.
+    "watchfiles>=1.2.0",
 ]
 
 # In-repo path sources. discovery + ops are on develop (PRs #48, #45), so the app-shell

@@ -19,6 +19,11 @@ start_backend() {
   mkdir -p .dev-logs
   # Watch only backend code — watching the repo root makes the watcher see its own
   # log file under .dev-logs/ (feedback spam) and the whole frontend tree.
+  # FORCE_POLLING=false: watchfiles sees a WSL kernel and defaults to stat-polling
+  # (inotify can't cross /mnt/c 9p mounts) — but this repo lives on ext4, where
+  # inotify works. Polling stat-scans backend/.venv nonstop and burns ~30% of a
+  # core at idle (fan noise); with inotify the watcher idles at ~0%.
+  WATCHFILES_FORCE_POLLING=false \
   uv run --project backend uvicorn backend.main:app --reload --port 8000 \
     --reload-dir backend --reload-dir shared/python 2>&1 \
     | tee ".dev-logs/backend-$(date +%Y%m%d-%H%M%S).log" &
