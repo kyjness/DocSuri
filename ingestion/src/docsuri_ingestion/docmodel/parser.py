@@ -144,8 +144,20 @@ def parse_html_to_docmodel(
     top_sections = _top_level_sections(root)
     if top_sections:
         top_sections = _drop_duplicate_abstract_elements(top_sections, abstract)
-        sections = [
-            _parse_section(el, f"s{i}", doc_ctx) for i, el in enumerate(top_sections, start=1)
+        sections: list[dict] = []
+        # A float LaTeXML hoisted outside every section is walked here, ahead of the body it
+        # precedes in the document, so its figure ordinal and caption survive (see
+        # _orphan_captioned_floats). Absent such floats the body still numbers s1..sN unchanged.
+        lead_ctx = _SectionCtx(section_id="s1")
+        lead_blocks: list[dict] = []
+        for orphan in _orphan_captioned_floats(root):
+            lead_blocks.extend(_blocks_from(orphan, lead_ctx, doc_ctx, skip_sections=True))
+        if lead_blocks:
+            sections.append({"id": "s1", "title": "", "blocks": lead_blocks})
+        offset = len(sections)
+        sections += [
+            _parse_section(el, f"s{offset + i}", doc_ctx)
+            for i, el in enumerate(top_sections, start=1)
         ]
     else:
         # No LaTeXML sectioning (e.g. a short note): fold all body content into one
@@ -229,6 +241,25 @@ def _nearest_section_ancestor(node: Tag) -> Tag | None:
 def _top_level_sections(root: Tag) -> list[Tag]:
     """Sections under ``root`` with no section ancestor (LaTeXML may wrap them in divs)."""
     return [s for s in root.find_all(_is_section) if _nearest_section_ancestor(s) is None]
+
+
+def _orphan_captioned_floats(root: Tag) -> list[Tag]:
+    """Captioned figure/table floats that sit outside every section — content the section-only walk
+    would otherwise drop whole.
+
+    LaTeXML hoists a teaser figure or a wide table above the first ``ltx_section``, directly under
+    ``ltx_document``; because sections are the only thing walked, such a float lost its caption and
+    body entirely (measured: ~40 numbered captions across 34 of 466 sampled ar5iv papers). Recover
+    only TOP-LEVEL floats (a nested sub-panel belongs to its parent) that carry a caption of their
+    own — an uncaptioned stray is decoration with no number anything could reference."""
+    return [
+        el
+        for el in root.find_all("figure")
+        if ({"ltx_figure", "ltx_table"} & _classes(el))
+        and _nearest_section_ancestor(el) is None
+        and el.find_parent("figure") is None
+        and el.find(class_="ltx_caption") is not None
+    ]
 
 
 def _child_sections(section_el: Tag) -> list[Tag]:

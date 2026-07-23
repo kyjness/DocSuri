@@ -326,6 +326,70 @@ def test_uncaptioned_logo_strip_makes_no_figure_block() -> None:
     assert specs == []
 
 
+def _parse_custom(html: str, specs: list | None = None):
+    return parse_html_to_docmodel(
+        html, paper_id="2401.00099", version=1, title="T", abstract=None,
+        source_tier=SourceTier.ar5iv, parser_version="p", schema_version="1.0.0",
+        generated_at=_FIXED_TS, figure_specs=specs if specs is not None else [],
+    )
+
+
+def test_captioned_figure_outside_any_section_is_recovered() -> None:
+    """LaTeXML hoists a teaser figure above the first section, directly under ltx_document. The
+    section-only walk dropped it whole — caption, number and graphic — so it is collected into a
+    lead section ahead of the body it precedes, and the body sections number after it."""
+    html = (
+        '<html><body><div class="ltx_document">'
+        '<figure class="ltx_figure"><img src="teaser.png"/>'
+        '<figcaption class="ltx_caption"><span class="ltx_tag">Figure 1: </span>'
+        "Teaser overview</figcaption></figure>"
+        '<section class="ltx_section"><h2>1 Intro</h2>'
+        '<div class="ltx_para"><p class="ltx_p">Body text.</p></div></section>'
+        "</div></body></html>"
+    )
+    specs: list = []
+    doc = _parse_custom(html, specs)
+    figures = [b.root for s in doc.sections for b in s.blocks if isinstance(b.root, FigureBlock)]
+    assert [(f.anchorLabel, f.caption) for f in figures] == [("Figure 1", "Teaser overview")]
+    assert [s.label for s in specs] == ["Figure 1"]
+    # the recovered float leads; the body section follows it
+    body = _body_sections(doc)
+    assert body[0].id == "s1" and not body[0].title  # lead section holding the teaser
+    assert body[1].id == "s2" and body[1].title == "1 Intro"
+
+
+def test_caption_of_graphicless_float_outside_section_reaches_full_text() -> None:
+    """An orphan float whose \\includegraphics LaTeXML could not render (no <img>) still carries a
+    caption; recovering it preserves that text even though no figure block/assetRef is minted."""
+    html = (
+        '<html><body><div class="ltx_document">'
+        '<figure class="ltx_figure">'
+        '<figcaption class="ltx_caption"><span class="ltx_tag">Figure 1: </span>'
+        "We visualize edits made by our model</figcaption></figure>"
+        '<section class="ltx_section"><h2>1 Intro</h2>'
+        '<div class="ltx_para"><p class="ltx_p">Body text.</p></div></section>'
+        "</div></body></html>"
+    )
+    doc = _parse_custom(html)
+    assert "We visualize edits made by our model" in doc.fullText
+
+
+def test_uncaptioned_float_outside_section_is_not_recovered() -> None:
+    """A stray image with no caption of its own outside every section is decoration — there is no
+    number to reference it, so it is left dropped and the body keeps its s1.. numbering."""
+    html = (
+        '<html><body><div class="ltx_document">'
+        '<figure class="ltx_figure"><img src="logo.png"/></figure>'
+        '<section class="ltx_section"><h2>1 Intro</h2>'
+        '<div class="ltx_para"><p class="ltx_p">Body text.</p></div></section>'
+        "</div></body></html>"
+    )
+    doc = _parse_custom(html)
+    body = _body_sections(doc)
+    assert [s.id for s in body] == ["s1"]
+    assert body[0].title == "1 Intro"  # no lead section was inserted
+
+
 def test_panel_group_whose_number_sits_in_a_sibling_float_is_kept() -> None:
     """LaTeXML can wrap a numbered figure's panels in an outer float and leave the "Figure 5:"
     caption in a sibling float (arXiv:2510.23156). The group then has no caption of its own and

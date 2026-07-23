@@ -55,7 +55,13 @@ from __future__ import annotations
 # - PDF path: formulas can carry `latexOcr`, LaTeX read back out of their page crop, indexed for
 #   search and never rendered; and a table GROBID merged into unusable cells can be re-read from
 #   the page when every rebuilt number verifies against the printed text.
-DOCMODEL_PARSER_VERSION = "docmodel-parser@9"
+# @10: HTML path — a captioned figure/table float LaTeXML hoisted above the first section (a teaser
+# figure or wide table living directly under ltx_document, outside every <section>) is recovered
+# into a lead section instead of being dropped whole. The section-only walk had lost its caption,
+# number and body entirely (measured: ~40 numbered captions across 34 of 466 sampled ar5iv papers).
+# That adds blocks and a lead section ahead of the body, so block ids, figure ordinals and fullText
+# all shift — cached doc-models and their crops must rebuild.
+DOCMODEL_PARSER_VERSION = "docmodel-parser@10"
 # 1.1.0: additive optional meta.macros (consumers ignore if unset).
 # 1.2.0: two additive optional fields for the PDF path, both keeping an approximation searchable
 # without letting it become what the reader sees. CodeBlock.assetRef — a listing the path could
