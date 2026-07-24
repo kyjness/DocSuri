@@ -1,14 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { SummaryView } from '@/components/SummaryView';
-import type { SummaryVM, AnchorVM } from '@/types/generated';
+import type { SummaryVM, AnchorVM, SummaryFieldName } from '@/types/generated';
 
 // Several claims in one field routinely cite the SAME source; the backend canonicalizes them to one
 // label, so a naive 1:1 render shows identical repeated "출처: <label>" chips. SummaryView must
 // collapse duplicates to one chip per (field, label). This also heals summaries cached before the
 // backend de-dup shipped, whose stored anchors are immutable in S3.
 
-function anchor(field: string, label: string, span: string): AnchorVM {
+function anchor(field: SummaryFieldName, label: string, span: string): AnchorVM {
   return { field, label, span, target: 'section' };
 }
 

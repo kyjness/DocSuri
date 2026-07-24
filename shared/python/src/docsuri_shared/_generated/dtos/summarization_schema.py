@@ -78,6 +78,19 @@ class AnchorTarget(StrEnum):
     figure = 'figure'
 
 
+class AnchorField(StrEnum):
+    """
+    The SummaryDraft field a grounding anchor belongs to — the anchor's own summary dimension, never a section title (that is Anchor.label). Consumers select an anchor's chip by matching this against the field name, so an off-list value renders nothing. Trace: FR-12.
+    """
+
+    tldr = 'tldr'
+    contributions = 'contributions'
+    method = 'method'
+    results = 'results'
+    limitations = 'limitations'
+    reproducibility = 'reproducibility'
+
+
 class Anchor(BaseModel):
     """
     A structured citation anchor mapping a claim back to source paper evidence (FR-12/US-S3).
@@ -86,16 +99,18 @@ class Anchor(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
-    field: str = Field(
-        ..., description='The summary field name this anchor belongs to. Trace: FR-12.'
-    )
+    field: AnchorField
     target: AnchorTarget
     span: str = Field(
         ..., description='The exact source quote or text span. Trace: FR-12.'
     )
     label: str = Field(
         ...,
-        description="Derived section, table, or figure label (e.g. 'Section 3.1'). Trace: FR-12.",
+        description="Display text for the resolved location (e.g. 'Section 3.1', 'Table 2') — what the source chip reads. Consumers jump by blockId; this is shown, not matched. Trace: FR-12.",
+    )
+    blockId: str | None = Field(
+        None,
+        description="The doc-model Section/Block id the grounding gate resolved this anchor to (e.g. 's3', 's3.tbl1') — the deterministic anchor handle of docmodel.md §3. Consumers scroll/highlight by this id instead of re-matching label text. Empty when the anchor was kept without resolving to a structured location (a caption-only float, or a source with no doc-model structure), where consumers fall back to label. Trace: FR-12, docmodel.md §3.",
     )
 
 

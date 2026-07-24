@@ -19,7 +19,12 @@ from .models import Persona, Scope, SummaryCacheKey, SummaryRequest, Task
 # Prompt template version — bump to invalidate all derived objects (key changes).
 # p2: summary prompt now enforces Korean output for the prose fields (BR-S1 — the prompt is part
 # of the artifact identity, so cached English-language summaries must not keep serving).
-PROMPT_VER = "p2"
+# p3: anchors[].field is enum-constrained to the summary field names and the prompt says so. Cached
+# summaries hold anchors whose field carries a SECTION TITLE instead, which the reader drops when it
+# matches anchors to fields — they must regenerate rather than keep serving chip-less summaries.
+# p4: anchors carry blockId, the doc-model id the reader jumps by. Summaries cached without it
+# would keep serving anchors the reader can only locate by re-matching label text.
+PROMPT_VER = "p4"
 # Translate base FORMAT version — appended to the translate key only, so it invalidates translate
 # artifacts WITHOUT needlessly regenerating summaries. Bump when the cached translate base changes
 # shape. ``m1`` = masked standard-term tokens rendered at serve (BR-S4): older token-free bases

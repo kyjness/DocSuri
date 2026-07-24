@@ -28,6 +28,10 @@ const EVIDENCE_GATEWAY_TIMEOUT_MS = 90000;
 // fail-closed/soft 하므로, 이 홉은 그보다 길게 잡아 완료된 응답을 버리지 않는다.
 // (CloudFront origin 타임아웃 30초가 실질 상한이라 그 이상은 의미 없음.)
 const SEARCH_GATEWAY_TIMEOUT_MS = 30000;
+// 요약/번역도 같은 클래스 — LLM 호출 1~2회라 기본 10초 홉이 백엔드 완료 직전에 끊어 504를
+// 만든다. 긴 입력은 백그라운드 잡으로 빠져 pending→폴링을 타므로 이 홉은 인라인 대역만
+// 덮으면 되고, ApiClient의 SUMMARIZE_TIMEOUT_MS와 같은 값이어야 한 쪽만 먼저 끊기지 않는다.
+const SUMMARIZE_GATEWAY_TIMEOUT_MS = 30000;
 
 function isEvidenceHeavyPath(upstreamPath: string): boolean {
   return (
@@ -39,9 +43,14 @@ function isSearchPath(upstreamPath: string): boolean {
   return upstreamPath.startsWith('/api/search');
 }
 
+function isSummarizePath(upstreamPath: string): boolean {
+  return upstreamPath.startsWith('/api/summarize');
+}
+
 function gatewayTimeoutMs(upstreamPath: string): number | undefined {
   if (isEvidenceHeavyPath(upstreamPath)) return EVIDENCE_GATEWAY_TIMEOUT_MS;
   if (isSearchPath(upstreamPath)) return SEARCH_GATEWAY_TIMEOUT_MS;
+  if (isSummarizePath(upstreamPath)) return SUMMARIZE_GATEWAY_TIMEOUT_MS;
   return undefined;
 }
 

@@ -21,6 +21,7 @@ from typing import Any
 from uuid import uuid4
 
 from ..domain.models import SummaryRequest
+from .summary_job_dedup import prune_inflight, summary_job_dedup_key
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +48,8 @@ class SqsSummaryJobQueue:
 
     def enqueue(self, request: SummaryRequest, user_id: str) -> None:
         now = time.monotonic()
-        self._prune(now)
-        key = self._dedup_key(request, user_id)
+        self._inflight = prune_inflight(self._inflight, now)
+        key = summary_job_dedup_key(request, user_id)
         expiry = self._inflight.get(key)
         if expiry is not None and expiry > now:
             return  # already enqueued recently on this instance — skip (dedup)
@@ -73,22 +74,3 @@ class SqsSummaryJobQueue:
             "scope": request.scope.value,
             "abstract": request.abstract,
         }
-
-    @staticmethod
-    def _dedup_key(request: SummaryRequest, user_id: str) -> str:
-        return "|".join(
-            [
-                user_id,
-                request.paper_id,
-                str(request.version),
-                request.task.value,
-                request.persona.value,
-                request.scope.value,
-                request.target_lang.value,
-            ]
-        )
-
-    def _prune(self, now: float) -> None:
-        if len(self._inflight) < 256:
-            return
-        self._inflight = {k: v for k, v in self._inflight.items() if v > now}

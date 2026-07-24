@@ -55,12 +55,24 @@ def request_from_payload(payload: dict) -> tuple[SummaryRequest, str]:
     return request, str(payload["userId"])
 
 
+def run_job(
+    orchestrator: SummarizationOrchestrationService, request: SummaryRequest, user_id: str
+) -> None:
+    """Run one enqueued job to completion on the caller's thread.
+
+    ``allow_enqueue=False`` is what makes this a job rather than a request: with it left on, the
+    orchestrator would see the same long input and enqueue the job again, forever. The result
+    reaches the client through the store write-through, so nothing is returned. Shared with the
+    in-process ``LocalSummaryJobQueue`` so both queue adapters execute a job identically."""
+    ctx = RequestContext(auth_session=AuthSession(user_id=user_id), request_id="")
+    orchestrator.run(request, ctx, allow_enqueue=False)
+
+
 def process_job(orchestrator: SummarizationOrchestrationService, payload: dict) -> None:
     """Run one long-summary job inline. The result write-throughs to the store (idempotent — a
     cache hit short-circuits, so a duplicate delivery is cheap)."""
     request, user_id = request_from_payload(payload)
-    ctx = RequestContext(auth_session=AuthSession(user_id=user_id), request_id="")
-    orchestrator.run(request, ctx, allow_enqueue=False)
+    run_job(orchestrator, request, user_id)
 
 
 def run_worker(

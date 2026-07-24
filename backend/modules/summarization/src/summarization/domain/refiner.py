@@ -15,7 +15,7 @@ import re
 
 from docsuri_shared.dtos import DocModel
 
-from .models import RefinedSource, Section, SourceText, Table
+from .models import Figure, RefinedSource, Section, SourceText, Table
 from .token_estimate import estimate_tokens
 
 # A references/bibliography heading ends the body (everything after is noise).
@@ -102,6 +102,7 @@ class InputRefiner:
         parts: list[str] = []
         sections: list[Section] = []
         tables: list[Table] = []
+        figures: list[Figure] = []
         captions: list[str] = []
         formulas: list[str] = []
         pos = 0
@@ -124,7 +125,11 @@ class InputRefiner:
                 # Emit the abstract's text for the prompt, but keep it out of the anchor index so
                 # the grounding gate resolves no citation to a section the reader can't scroll to.
                 if getattr(dsec, "id", "") != _ABSTRACT_SECTION_ID:
-                    sections.append(Section(label=title, start=start, end=pos))
+                    sections.append(
+                        Section(
+                            label=title, start=start, end=pos, anchor=getattr(dsec, "id", "")
+                        )
+                    )
                 emit("\n\n")
             for block in getattr(dsec, "blocks", []):
                 _emit_block(block.root)
@@ -154,6 +159,7 @@ class InputRefiner:
                 label = _clean(b.anchorLabel or "")
                 caption = _clean(b.caption or "")
                 line = f"{label}: {caption}".strip(": ").strip()
+                figures.append(Figure(label=label, anchor=b.id))
                 if caption:
                     captions.append(line or caption)
                 if line:
@@ -173,6 +179,7 @@ class InputRefiner:
             body=body,
             sections=tuple(sections),
             tables=tuple(tables),
+            figures=tuple(figures),
             captions=tuple(captions),
             formulas=tuple(formulas),
             token_count=estimate_tokens(body),

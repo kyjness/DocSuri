@@ -15,6 +15,8 @@ from summarization.domain.models import (
     TranslationSegment,
 )
 from summarization.prompts.templates import (
+    _SUMMARY_FIELDS,
+    SUMMARY_TOOL,
     _glossary_block,
     build_summary_prompt,
     build_translate_segments_prompt,
@@ -124,6 +126,24 @@ def test_summary_prompt_requests_latex_delimited_math_without_inventing() -> Non
     system, _user = build_summary_prompt(refined, req, _GLOSSARY)
     assert "$" in system and "LaTeX" in system
     assert "만들지 말고" in system  # no invented formulas (hallucination guard)
+
+
+def test_summary_anchor_field_is_constrained_to_the_summary_field_names() -> None:
+    # An anchor's ``field`` says WHICH summary field it grounds; the reader picks a claim's chips
+    # by matching it, so an off-list value renders nothing. Left as a free string the model filled
+    # it with a section title ("Introduction") — the section title belongs in ``label`` — and every
+    # chip silently disappeared. The enum and the tool's own field list share one constant so they
+    # cannot drift apart, and the prompt names the rule too (a schema alone left it to guesswork).
+    anchor_props = SUMMARY_TOOL["input_schema"]["properties"]["anchors"]["items"]["properties"]
+    assert anchor_props["field"]["enum"] == _SUMMARY_FIELDS
+    assert SUMMARY_TOOL["input_schema"]["required"] == [*_SUMMARY_FIELDS, "anchors"]
+
+    refined = RefinedSource(body="We report 95.3% accuracy in Section 4.")
+    req = SummaryRequest(paper_id="p", version=1, task=Task.SUMMARY, persona=Persona.EXPERT)
+    system, _user = build_summary_prompt(refined, req, _GLOSSARY)
+    for name in _SUMMARY_FIELDS:
+        assert name in system
+    assert "섹션 제목을 field에 쓰지 마라" in system
 
 
 def test_translate_segment_delimiter_breakout_is_neutralized() -> None:

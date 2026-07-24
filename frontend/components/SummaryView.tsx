@@ -1,4 +1,4 @@
-import type { SummaryVM, AnchorVM } from '@/types/generated';
+import type { SummaryVM, AnchorVM, SummaryFieldName } from '@/types/generated';
 import { renderInlineRich, renderRichText } from '@/lib/renderMath';
 import styles from './SummaryView.module.css';
 
@@ -24,7 +24,10 @@ function AnchorChips({
   anchors,
   onAnchor,
 }: {
-  field: string;
+  // Typed to the anchor's own field union, so a chip can never be requested for a name the
+  // backend cannot emit — the mismatch that silently rendered zero chips when the model filled
+  // `field` with a section title instead of a summary field name.
+  field: SummaryFieldName;
   anchors: AnchorVM[];
   onAnchor?: (a: AnchorVM) => void;
 }) {

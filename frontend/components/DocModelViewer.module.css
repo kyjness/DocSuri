@@ -19,6 +19,25 @@
   color: var(--color-accent);
 }
 
+/* Figure/table manifest failed to load. The body still reads, so this is an inline notice with a
+   retry rather than a blocking error — muted enough not to compete with the paper text. */
+.assetsNotice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.8125rem;
+  color: var(--color-text-muted);
+}
+
+.assetsNotice button {
+  min-height: 2.75rem; /* touch target (phone-first) */
+  padding: 0 0.5rem;
+  color: var(--color-accent);
+  text-decoration: underline;
+}
+
 /* Paper title atop the full-text (전문) view — the rich view shows the whole paper.
    margin-bottom separates the title from the table of contents that follows. */
 .paperTitle {
@@ -27,7 +46,8 @@
   font-weight: 700;
   line-height: 1.4;
   color: var(--color-text);
-  word-break: break-word;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
 }
 
 /* Table of contents (not boxed) — sized like body text for readability. */
@@ -72,7 +92,11 @@
   font-size: 0.9375rem;
   line-height: 1.75;
   color: var(--color-text);
-  word-break: break-word;
+  /* Korean wraps at 어절 boundaries, not mid-word; a long unbreakable token still wraps.
+     This body also renders the Korean structured translation, so it must read correctly in
+     both languages (keep-all is a no-op for English). */
+  word-break: keep-all;
+  overflow-wrap: anywhere;
 }
 
 .section {
@@ -130,6 +154,16 @@
 .formulaInner :global(mjx-container[display='true']) {
   text-align: left;
   margin: 0;
+}
+
+/* MathJax clamps every svg to max-width:100% so a long INLINE expression cannot push the page
+   sideways. Inside this scroll container that clamp is actively wrong: rather than letting the box
+   scroll, it scaled a wide equation down to fit — measured on a phone at 332px for an 834px
+   equation, 40% of natural size, which puts the glyphs near 6px and the subscripts below that.
+   Release it here so the equation keeps its size and .formulaInner does the job it exists for.
+   Inline math elsewhere keeps the clamp. */
+.formulaInner :global(mjx-container[display='true'] svg) {
+  max-width: none;
 }
 
 .eqno {

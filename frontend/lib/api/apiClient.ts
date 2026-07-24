@@ -97,6 +97,12 @@ const EVIDENCE_TURN_TIMEOUT_MS = 90_000;
 // 무의미하게 만든다. 두 레이어를 함께 올린다(QA 2026-07-10 F1). 워밍된 검색은 <1초라 P50
 // 체감은 그대로.
 const SEARCH_TIMEOUT_MS = 30_000;
+// 요약/번역 콜드 패스는 LLM 호출 1~2회(근거 검증 실패 시 재생성)라 정상 완료가 기본 10초를
+// 넘나든다 — 같은 논문이 될 때와 안 될 때가 갈리고, 끊긴 뒤 재시도하면 백엔드가 이미 캐시에
+// 써둔 결과가 즉시 나오던 증상(evidence·검색과 같은 클래스). 긴 입력은 백그라운드 잡으로
+// 빠져 pending→폴링을 타므로 이 홉이 덮을 것은 인라인 대역뿐이고, CloudFront origin 30초가
+// 실질 상한이라 그에 맞춘다. BFF 홉(SUMMARIZE_GATEWAY_TIMEOUT_MS)과 함께 움직여야 한다.
+const SUMMARIZE_TIMEOUT_MS = 30_000;
 
 type BackendResearchJob = {
   jobId: string;
@@ -432,6 +438,7 @@ export class ApiClient {
       idempotent: true,
       // dedup yes (BR-U5-18), retry no — a cost-bearing LLM POST must never double-bill (P-R1, NFR-C1).
       retryable: false,
+      timeoutMs: SUMMARIZE_TIMEOUT_MS,
     });
     if (res.status === 200 || res.status === 400) {
       return classifySummarizeResponse(res.body);

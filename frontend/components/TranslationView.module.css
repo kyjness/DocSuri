@@ -11,7 +11,8 @@
   font-weight: 700;
   line-height: 1.4;
   color: var(--color-text);
-  word-break: break-word;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
 }
 
 /* Personal-glossary section (전문 번역 only) — titled like the body lists, with a gap
@@ -92,5 +93,7 @@
   line-height: 1.7;
   color: var(--color-text);
   white-space: pre-wrap;
-  word-break: break-word;
+  /* Korean translation prose: wrap at 어절 boundaries, never mid-word. */
+  word-break: keep-all;
+  overflow-wrap: anywhere;
 }

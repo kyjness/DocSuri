@@ -14,9 +14,20 @@ pnpm install
 pnpm dev            # http://localhost:3000  (runs fully on MockTransport — no backend needed)
 pnpm test           # Vitest + Testing Library (48 tests)
 pnpm build          # Next.js production build (standalone)
-pnpm e2e            # Playwright hero-flow E2E (phone viewport)
+pnpm e2e            # Playwright E2E (phone viewport)
 pnpm gen:types      # refresh the schema drift-dump under types/.schema-raw/
 ```
+
+First `pnpm e2e` on a machine needs the browsers and their system libraries:
+
+```bash
+pnpm exec playwright install
+sudo pnpm exec playwright install-deps
+sudo apt-get install -y libwebpmux3   # Ubuntu 24.04: missing from playwright's own list
+```
+
+`install-deps` needs a shell where `pnpm` is on `sudo`'s PATH; otherwise run the `apt-get` line
+it prints. A launch failing on one missing `.so` means only that library is absent, not the set.
 
 ## Configuration (mock ↔ real)
 
@@ -25,6 +36,10 @@ pnpm gen:types      # refresh the schema drift-dump under types/.schema-raw/
 | _(none)_ | — | **Mock-first default:** client uses in-browser `MockTransport`. No backend needed. |
 | `NEXT_PUBLIC_DOCSURI_REAL_API=1` | client (build-time) | Client routes calls through the same-origin BFF (`RouteHandlerTransport` → `/bff/*`). |
 | `DOCSURI_GATEWAY_URL=https://…` | **server-only** | The BFF forwards to the real U6 gateway (`HttpTransport`); the httpOnly session cookie and the URL stay server-side (SEC-3/12). Unset ⇒ the BFF serves mock. |
+
+The E2E suite is written against the mock transport and starts no backend, so `playwright.config.ts`
+pins both vars empty for the server it launches — otherwise a local `.env.local` (the solo-local one
+points at a gateway on `:8000`) would be read by that build and every spec would fail.
 
 Real path: browser → same-origin `/bff/*` (cookie auto-attached) → server `HttpTransport` → U6 gateway. The token never enters client JS.
 

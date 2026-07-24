@@ -23,13 +23,34 @@ export interface SummarizeRequest {
   abstract?: string;
 }
 
+/** The summary field an anchor belongs to — its own summary dimension, never a section title
+ * (that is AnchorVM.label). Chips are selected by matching this, so an off-list value renders
+ * nothing. Mirrors `AnchorField` in the schema. */
+export type SummaryFieldName =
+  | 'tldr'
+  | 'contributions'
+  | 'method'
+  | 'results'
+  | 'limitations'
+  | 'reproducibility';
+
 /** Per-claim grounding anchor (§3). Drives "출처 보기" → full-text highlight (Q5=C). */
 export interface AnchorVM {
-  field: string;
+  field: SummaryFieldName;
   target: 'section' | 'table' | 'figure';
   span: string;
+  /** Display text for the resolved location — what the chip reads. Shown, not matched. */
   label: string;
+  /** The doc-model Section/Block id this anchor resolved to ("s3", "s3.tbl1") — the viewer
+   * scrolls/highlights by this. Absent on an anchor that resolved to no structured location,
+   * and on summaries cached before ids shipped, where the viewer falls back to `label`. */
+  blockId?: string;
 }
+
+/** What the full-text viewer needs to locate an anchor: the id it jumps to, the label it falls
+ * back to, and the span it shows. It reads neither `field` nor `target`. A deep link carries
+ * only these, so requiring a whole AnchorVM there would force fabricating the other two. */
+export type AnchorTargetVM = Pick<AnchorVM, 'label' | 'span' | 'blockId'>;
 
 export interface ReproducibilityVM {
   code: string;

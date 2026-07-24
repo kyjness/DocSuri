@@ -132,6 +132,53 @@ def _draft_with_anchor(anchor: Anchor) -> SummaryDraft:
     )
 
 
+def test_resolved_anchor_reports_the_doc_model_block_id() -> None:
+    """A kept anchor carries the doc-model id of what it resolved to, not just the label text it
+    matched on (docmodel.md §3). The reader jumps by that id, so it must be the location's own
+    handle: a section anchor reports the section id, a table anchor the table's block id."""
+    from summarization.domain.models import Figure, RefinedSource, Section, Table
+
+    refined = RefinedSource(
+        body="b",
+        sections=(Section("Security Analysis", 0, 1, anchor="s3"),),
+        tables=(Table(label="Table 1", rows=(), anchor="s2.tbl1"),),
+        figures=(Figure(label="Figure 2", anchor="s2.fig1"),),
+    )
+
+    def kept_for(anchor: Anchor) -> Anchor:
+        verdict = GroundingValidator().validate(
+            GroundingInput(draft=_draft_with_anchor(anchor), refined=refined)
+        )
+        (kept,) = verdict.kept_anchors
+        return kept
+
+    section = kept_for(Anchor("method", AnchorTarget.SECTION, span="", label="Security Analysis"))
+    assert (section.label, section.block_id) == ("Security Analysis", "s3")
+    table = kept_for(Anchor("results", AnchorTarget.TABLE, span="", label="Table 1"))
+    assert (table.label, table.block_id) == ("Table 1", "s2.tbl1")
+    figure = kept_for(Anchor("results", AnchorTarget.FIGURE, span="", label="Figure 2"))
+    assert (figure.label, figure.block_id) == ("Figure 2", "s2.fig1")
+
+
+def test_caption_only_float_resolves_without_a_block_id() -> None:
+    """A legacy plain-text source has no structured floats — its "Table 1" exists only as caption
+    text, so there is no id to report. The anchor still resolves and renders; it just cannot be
+    jumped to by id, which the reader handles by falling back to the label."""
+    from summarization.domain.models import RefinedSource
+
+    refined = RefinedSource(body="b", captions=("Table 1: acc.",))
+    verdict = GroundingValidator().validate(
+        GroundingInput(
+            draft=_draft_with_anchor(
+                Anchor("results", AnchorTarget.TABLE, span="", label="Table 1")
+            ),
+            refined=refined,
+        )
+    )
+    (kept,) = verdict.kept_anchors
+    assert (kept.label, kept.block_id) == ("Table 1", "")
+
+
 def test_anchor_resolves_by_label_location_field() -> None:
     # New prompt contract: the model puts the exact source location in ``label`` (target is the
     # coarse enum). The anchor resolves via ``label`` even when target_hint is just "section".

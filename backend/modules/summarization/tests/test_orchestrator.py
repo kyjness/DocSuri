@@ -98,6 +98,48 @@ def test_grounding_failure_abstains_after_retry() -> None:
     assert llm._calls == 2  # one retry (BR-S7)
 
 
+def _bad_draft() -> SummaryDraft:
+    # A draft whose numeric claim resolves to no source location — the deterministic grounding gate
+    # abstains on it (insufficient_grounding) after the one retry.
+    return SummaryDraft(
+        tldr="x", contributions=("c",), method="m", results="achieves 42.7% accuracy",
+        limitations="l", reproducibility={"code": "", "data": ""},
+        anchors=(Anchor("results", AnchorTarget.TABLE, span="42.7% on nowhere"),),
+    )
+
+
+def test_worker_path_abstain_is_cached_so_the_poll_stops_regenerating() -> None:
+    # On the async worker path (allow_enqueue=False) the client only ever learns the outcome via
+    # the cache — PendingDTO carries no job id. An uncached abstain would make every poll re-enqueue
+    # a fresh full generation (~150s of billed regenerations ending in a timeout). Cache it
+    # hot-tier-only so the next poll returns the abstain and stops — no regeneration.
+    store = StubStore()
+    llm = StubLlm(draft=_bad_draft())
+    orch = make_orchestrator(store=store, llm=llm)
+
+    first = orch.run(_req(), _ctx(), allow_enqueue=False)  # the worker running the enqueued job
+    assert isinstance(first, AbstainDTO)
+    assert first.reason == "insufficient_grounding"
+    assert store.transient_puts == 1  # abstain cached hot-tier only...
+    assert store.puts == 0  # ...never a permanent S3 write
+
+    calls_after_generation = llm._calls
+    second = orch.run(_req(), _ctx())  # the client's next poll
+    assert isinstance(second, AbstainDTO)
+    assert second.reason == "insufficient_grounding"
+    assert llm._calls == calls_after_generation  # served from cache — no re-generation
+
+
+def test_inline_path_abstain_is_not_cached() -> None:
+    # The inline request path returns the abstain directly to the caller (no poll to satisfy), so it
+    # must NOT cache — caching would change retry semantics for the common small-paper case.
+    store = StubStore()
+    orch = make_orchestrator(store=store, llm=StubLlm(draft=_bad_draft()))
+    result = orch.run(_req(), _ctx())  # allow_enqueue defaults True (inline)
+    assert isinstance(result, AbstainDTO)
+    assert store.transient_puts == 0
+
+
 def test_llm_outage_then_recovery() -> None:
     llm = StubLlm(raise_n=1)  # first call raises, retry succeeds
     orch = make_orchestrator(llm=llm)

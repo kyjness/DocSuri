@@ -62,6 +62,17 @@ def _doc() -> DocModel:
                             ],
                         },
                         {"id": "s1.eq1", "type": "formula", "latex": "E=mc^2", "display": True},
+                        {
+                            "id": "s1.fig1",
+                            "type": "figure",
+                            "anchorLabel": "Figure 1",
+                            "caption": "Overview.",
+                            "assetRef": {
+                                "assetId": "2401.00001:v1:figure:1",
+                                "type": "figure",
+                                "ordinal": 1,
+                            },
+                        },
                     ],
                     "sections": [
                         {
@@ -102,6 +113,19 @@ def test_refine_doc_model_collects_sections_formulas_captions() -> None:
     assert refined.formulas == ("E=mc^2",)
     assert any("Scores." in c for c in refined.captions)
     assert "Sub finding." in refined.body  # nested subsection content included
+
+
+def test_refine_doc_model_carries_the_deterministic_ids_anchors_resolve_to() -> None:
+    """Sections and figures keep their doc-model id, the handle a resolved anchor reports so the
+    reader jumps by id instead of re-matching the label text (docmodel.md §3). Tables already
+    carried theirs; without the section/figure ids an anchor could name a location it had no way
+    to identify."""
+    refined = InputRefiner().refine_doc_model(_doc())
+    assert [(s.label, s.anchor) for s in refined.sections] == [
+        ("Results", "s1"),
+        ("Ablation", "s1.1"),
+    ]
+    assert [(f.label, f.anchor) for f in refined.figures] == [("Figure 1", "s1.fig1")]
 
 
 def test_refine_doc_model_excludes_abstract_from_anchor_index() -> None:

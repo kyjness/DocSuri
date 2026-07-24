@@ -176,6 +176,79 @@ describe('DocModelViewer', () => {
     expect((block as HTMLElement).className).toContain('active');
   });
 
+  it('jumps by the anchor blockId, ignoring a label that points elsewhere', async () => {
+    // The backend resolves the anchor against the doc-model and reports the id it landed on, so
+    // the id is the target. Pairing it with a label that WOULD match a different block proves the
+    // viewer stopped re-deriving the destination from label text.
+    const anchor = {
+      field: 'results' as const,
+      target: 'table' as const,
+      span: 'per-layer complexity',
+      label: 'Model Architecture',
+      blockId: 's3.2.tbl1',
+    };
+    render(<DocModelViewer paperId="2401.00001" version={1} anchor={anchor} />);
+    await screen.findByRole('heading', { name: 'Why Self-Attention' });
+
+    const block = document.querySelector('[data-block="s3.2.tbl1"]');
+    await waitFor(() => expect(document.activeElement).toBe(block));
+    expect((block as HTMLElement).className).toContain('active');
+    // The section the label names must NOT be highlighted — the id won.
+    const heading = screen.getByRole('heading', { name: 'Model Architecture' });
+    expect(heading.className).not.toContain('active');
+  });
+
+  it('jumps to a section by its id when the anchor carries one', async () => {
+    const anchor = {
+      field: 'method' as const,
+      target: 'section' as const,
+      span: 'scaled dot-product attention',
+      label: 'Model Architecture',
+      blockId: 's3',
+    };
+    render(<DocModelViewer paperId="2401.00001" version={1} anchor={anchor} />);
+    const heading = await screen.findByRole('heading', { name: 'Model Architecture' });
+    await waitFor(() => expect(document.activeElement).toBe(document.getElementById('dm-s3')));
+    expect(heading.className).toContain('active');
+  });
+
+  it('falls back to the label when the anchor blockId no longer exists in the doc-model', async () => {
+    // A summary served stale under an older parser generation can carry a blockId the rebuilt
+    // doc-model renumbered away. The viewer must not dead-end on the missing id — it falls back to
+    // the label and still jumps + highlights, instead of scrolling nowhere (the source chip staying
+    // a live action). The id wins only when it actually resolves; here it doesn't.
+    const anchor = {
+      field: 'method' as const,
+      target: 'section' as const,
+      span: 'scaled dot-product attention',
+      label: 'Model Architecture',
+      blockId: 's99.tbl7', // absent from the fixture doc-model
+    };
+    render(<DocModelViewer paperId="2401.00001" version={1} anchor={anchor} />);
+    const heading = await screen.findByRole('heading', { name: 'Model Architecture' });
+    await waitFor(() => expect(document.activeElement).toBe(document.getElementById('dm-s3')));
+    expect(heading.className).toContain('active');
+  });
+
+  it('swaps a figure whose image fails to load for a placeholder, not a broken icon', async () => {
+    // Asset urls are short-lived signed urls: past expiry (or on a 403) the <img> errors and the
+    // browser shows its broken-image glyph with nothing explaining it. Firing the error must leave
+    // a labelled placeholder in the slot instead.
+    render(<DocModelViewer paperId="2401.00001" version={1} anchor={null} />);
+    const img = await waitFor(() => {
+      const el = screen.getAllByRole('img').find((e) => e.tagName === 'IMG');
+      expect(el).toBeTruthy();
+      return el as HTMLImageElement;
+    });
+
+    fireEvent.error(img);
+
+    await waitFor(() => {
+      expect(screen.getAllByRole('img').some((e) => e.tagName === 'IMG')).toBe(false);
+    });
+    expect(screen.getByLabelText('그림을 표시할 수 없습니다')).toBeTruthy();
+  });
+
   it('moves focus to the target section when a TOC link is activated (D3)', async () => {
     render(<DocModelViewer paperId="2401.00001" version={1} anchor={null} />);
     await screen.findByRole('heading', { name: 'Model Architecture' });

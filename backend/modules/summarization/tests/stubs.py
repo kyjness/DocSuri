@@ -173,12 +173,19 @@ class StubLlm:
 class StubStore:
     data: dict[str, dict] = field(default_factory=dict)
     puts: int = 0
+    transient_puts: int = 0
 
     def get(self, key: SummaryCacheKey) -> dict | None:
         return self.data.get(key.object_path())
 
     def put(self, key: SummaryCacheKey, payload: dict) -> None:
         self.puts += 1
+        self.data[key.object_path()] = payload
+
+    def put_transient(self, key: SummaryCacheKey, payload: dict, *, ttl_seconds: int) -> None:
+        # No TTL/tier distinction in the stub — the next get finds it, which is exactly the
+        # poll-hands-back-the-abstain behaviour the real hot-tier write produces.
+        self.transient_puts += 1
         self.data[key.object_path()] = payload
 
 
