@@ -65,6 +65,12 @@ class SummarizationSettings:
     # a background job on the MAP_REDUCE band and returns ``pending`` (the summarization worker
     # produces the result). When unset, map-reduce runs inline on the request (timeout risk).
     summary_job_queue_url: str | None = None
+    # In-process background job runner, for a single-process deploy with no SQS. Same effect as
+    # the queue above — long generations return ``pending`` and the client polls — but the job
+    # runs on a thread here instead of a separate worker. Without either, a long generation runs
+    # inline and outlives the client's deadline. OFF by default; a real deploy uses the queue.
+    local_summary_worker_enabled: bool = False
+    local_summary_worker_threads: int = 1
     # LLM provider: "bedrock" (team AWS deploy) | "openai" (solo-local, personal key).
     llm_provider: str = "bedrock"
 
@@ -109,4 +115,6 @@ class SummarizationSettings:
             docmodel_build_queue_url=os.environ.get("DOCSURI_DOCMODEL_BUILD_QUEUE_URL"),
             map_reduce_enabled=env_flag("DOCSURI_MAP_REDUCE_ENABLED"),
             summary_job_queue_url=os.environ.get("DOCSURI_SUMMARY_JOB_QUEUE_URL"),
+            local_summary_worker_enabled=env_flag("DOCSURI_LOCAL_SUMMARY_WORKER"),
+            local_summary_worker_threads=env_int("DOCSURI_LOCAL_SUMMARY_WORKERS", 1),
         )

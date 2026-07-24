@@ -142,6 +142,19 @@ def build_real_orchestrator(
                 region_name=settings.region_name,
             )
 
+    # In-process fallback for a deploy with no SQS. Deliberately outside the map-reduce gate
+    # above: the orchestrator also dispatches large single-call inputs (> 6K tokens), which need a
+    # queue but no map-reduce summarizer, so requiring both would leave those running inline —
+    # the very case that outlives the client's deadline. Bound to the orchestrator below.
+    local_summary_queue = None
+    if summary_job_queue is None and settings.local_summary_worker_enabled:
+        from .adapters.local_summary_job import LocalSummaryJobQueue
+
+        local_summary_queue = LocalSummaryJobQueue(
+            max_workers=settings.local_summary_worker_threads
+        )
+        summary_job_queue = local_summary_queue
+
     # Document-fidelity grounding gate (BR-S7). Built once so it can be both injected into the
     # orchestrator (the call seam) and registered in the shared grounding catalog (governance).
     grounding = GroundingValidator()
@@ -168,6 +181,10 @@ def build_real_orchestrator(
         # Structured translation (BR-S18) drives the translate path; reuses the same LLM gateway.
         structured_translator=StructuredTranslator(llm),
     )
+    if local_summary_queue is not None:
+        # Close the cycle: the queue runs its jobs through the orchestrator that owns it, so both
+        # sides see the same store and a finished job lands on the key the client is polling.
+        local_summary_queue.bind(orchestrator)
     return SummarizationBundle(
         orchestrator=orchestrator,
         settings=settings,
