@@ -106,6 +106,28 @@ services:
       timeout: 3s
       retries: 10
 
+  # u1 ingestion parser (TEI) for the PDF/GROBID tier AND all non-arXiv sources — S2/OpenAlex have
+  # no ar5iv HTML, so GROBID TEI is their only structure parser. Dormant while the local stack only
+  # SERVES the pre-built doc-model mirror (no live parsing), which is why it is behind an OPT-IN
+  # profile: default `up` skips this multi-GB, memory-heavy image. Bring it up only when you
+  # (re-)ingest locally, and set DOCSURI_GROBID_URL=http://localhost:8070 to wire it:
+  #   docker compose -f backend/docker-compose.yml --profile ingest up -d grobid
+  # NOTE: 0.8.0 mangles multi-row-header table cells (solo-local-migration.md §7) — swap for
+  # Docling if table-cell accuracy is required.
+  grobid:
+    container_name: docsuri-grobid
+    image: grobid/grobid:0.8.0
+    profiles: ["ingest"]
+    ports:
+      - "8070:8070"
+    # Model load takes a while; a port-open check (bash builtin, no curl in the image) is a fine
+    # readiness proxy.
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8070 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
 volumes:
   docsuri-pgdata:
   docsuri-osdata:
