@@ -79,6 +79,11 @@ class SummaryStorePort(Protocol):
         """Write-through: S3 permanent + Redis hot (immutable key, INV-5)."""
         ...
 
+    def put_transient(self, key: SummaryCacheKey, payload: dict, *, ttl_seconds: int) -> None:
+        """Hot-tier-only write with a short TTL (NOT persisted to S3). Delivers a polled abstain to
+        the next poll, then self-expires so a later retry re-evaluates (BR-S8 async path)."""
+        ...
+
 
 @runtime_checkable
 class FullTextSourcePort(Protocol):

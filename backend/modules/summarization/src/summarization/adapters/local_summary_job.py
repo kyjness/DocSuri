@@ -27,7 +27,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
 
 from ..domain.models import SummaryRequest
-from .summary_job_dedup import summary_job_dedup_key
+from .summary_job_dedup import prune_inflight, summary_job_dedup_key
 
 if TYPE_CHECKING:  # pragma: no cover — import cycle: the orchestrator constructs this adapter.
     from ..service.orchestrator import SummarizationOrchestrationService
@@ -41,17 +41,22 @@ _DEFAULT_DEDUP_TTL_SECONDS = 900
 
 
 class LocalSummaryJobQueue:
-    def __init__(
-        self, *, max_workers: int = 1, dedup_ttl_seconds: int = _DEFAULT_DEDUP_TTL_SECONDS
-    ) -> None:
-        self._executor = ThreadPoolExecutor(
-            max_workers=max(1, max_workers), thread_name_prefix="summary-job"
-        )
+    def __init__(self, *, dedup_ttl_seconds: int = _DEFAULT_DEDUP_TTL_SECONDS) -> None:
+        # A single worker thread. The queue exists to lift the long generation OFF the request
+        # thread (so the API can answer ``pending``), not to run generations in parallel — one
+        # background thread does that. Running several at once would call the one shared
+        # orchestrator concurrently from multiple pool threads, a concurrency the deployed
+        # separate-process worker never exercised and whose safety is unaudited; so it stays 1.
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="summary-job")
         self._ttl = dedup_ttl_seconds
-        # Both request threads (enqueue) and pool threads (release) touch this, unlike the SQS
+        # Both request threads (enqueue) and pool threads (release) touch these, unlike the SQS
         # adapter where only the request path does — hence the lock.
         self._lock = threading.Lock()
         self._inflight: dict[str, float] = {}
+        # Keys whose job is currently executing. Treated as claimed by enqueue regardless of the
+        # expiry backstop, so a generation that outlives the TTL is not double-run by a concurrent
+        # poll (the expiry alone would have lapsed).
+        self._running: set[str] = set()
         self._orchestrator: SummarizationOrchestrationService | None = None
 
     def bind(self, orchestrator: SummarizationOrchestrationService) -> None:
@@ -75,11 +80,13 @@ class LocalSummaryJobQueue:
         key = summary_job_dedup_key(request, user_id)
         now = time.monotonic()
         # Claim the key before submitting: a poll arriving while the job is still queued must see
-        # it as taken, or the pool would hold several generations of the same artifact.
+        # it as taken, or the pool would hold several generations of the same artifact. A job that
+        # runs past its TTL backstop is still claimed via ``_running`` — the expiry alone would have
+        # lapsed and let a concurrent poll double-run the same billed generation.
         with self._lock:
-            self._prune(now)
+            self._inflight = prune_inflight(self._inflight, now)
             expiry = self._inflight.get(key)
-            if expiry is not None and expiry > now:
+            if key in self._running or (expiry is not None and expiry > now):
                 return
             self._inflight[key] = now + self._ttl
         try:
@@ -95,11 +102,14 @@ class LocalSummaryJobQueue:
         request: SummaryRequest,
         user_id: str,
     ) -> None:
-        from ..worker import run_job  # local import — worker imports the orchestrator type
-
+        with self._lock:
+            self._running.add(key)
         try:
+            from ..worker import run_job  # local import — worker imports the orchestrator type
+
             run_job(orchestrator, request, user_id)
-        except Exception:  # noqa: BLE001 — a failed job must not kill the pool thread.
+        except Exception:  # noqa: BLE001 — a failed job (or a failed import) must not kill the
+            # pool thread, and the finally below must still release the claim either way.
             logger.exception("local summary job failed for %s/%s", request.paper_id, user_id)
         finally:
             # Release on failure too: the client is still polling, and holding the key would make
@@ -109,9 +119,4 @@ class LocalSummaryJobQueue:
     def _release(self, key: str) -> None:
         with self._lock:
             self._inflight.pop(key, None)
-
-    def _prune(self, now: float) -> None:
-        """Drop expired claims. Caller holds the lock."""
-        if len(self._inflight) < 256:
-            return
-        self._inflight = {k: v for k, v in self._inflight.items() if v > now}
+            self._running.discard(key)

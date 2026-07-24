@@ -81,6 +81,10 @@ def _source_doc_parser(source: SourceText) -> str:
     return ver or DOCMODEL_PARSER_VERSION
 # Client poll backoff hint after a long summary was enqueued as a background job (BR-S6/BR-S8).
 _SUMMARY_POLL_BACKOFF_MS = 3000
+# How long a worker-path abstain is cached (hot-tier only) so the polling client receives it and
+# stops re-enqueuing. Short on purpose: a transient abstain (LLM circuit) self-heals on retry once
+# it expires, while a deterministic one (insufficient_grounding) simply re-derives the same result.
+_ABSTAIN_CACHE_TTL_SECONDS = 120
 # Generation above this input size is dispatched to the async job (pending → poll) instead of
 # running inline: a full-paper summary is one big LLM call and a full translation is several
 # output-bounded chunks — both take tens of seconds, well past the sync client/gateway budget (the
@@ -274,25 +278,45 @@ class SummarizationOrchestrationService:
         # band the summary is produced by the map-reduce summarizer (chunk→map→reduce); grounding
         # still validates the unified draft against the FULL refined body.
         if request.task == Task.TRANSLATE:
-            response = self._run_translate(request, source, refined, glossary, key)
+            response = self._run_translate(request, source, refined, glossary, key, allow_enqueue)
         else:
             summarizer = self._map_reduce if route == LengthRoute.MAP_REDUCE else self._llm
-            response = self._run_summary(request, source, refined, glossary, key, summarizer)
+            response = self._run_summary(
+                request, source, refined, glossary, key, summarizer, allow_enqueue
+            )
         return response
 
-    def _serve_cached(self, cached: object, request, glossary) -> _PayloadResult:
+    def _serve_cached(self, cached: object, request, glossary) -> SummaryResponse:
         # Shared cache-hit handler (fast pre-select read + actual-generation re-check). Translate
         # caches the shared base; apply the user's weak-term overlay + kept-term cleanup on read
         # (no-op when the user has no weak terms). Summary has no post-substitution — served as-is.
         self._emit("u7.cache.hit", 1.0, request)
+        if isinstance(cached, dict) and cached.get("status") == "abstain":
+            # A polled abstain cached by the worker path (_abstain → put_transient). Return it as
+            # the abstain it is — not a payload — so the poll ends on the real reason instead of
+            # re-enqueuing another full generation.
+            return AbstainDTO(reason=str(cached.get("reason", "")))
         if request.task == Task.TRANSLATE:
             # Render the shared base for this viewer: restore masked standard-term tokens to their
             # effective rendering (+josa), apply weak terms, rebuild standardGlossary/keptTerms.
             cached = self._assembler.render_translation(cached, glossary)
         return _PayloadResult(cached, cached=True)
 
+    def _abstain(self, key: object, reason: str, allow_enqueue: bool) -> AbstainDTO:
+        # On the worker path (allow_enqueue=False) the client is polling and only ever learns the
+        # outcome through the cache — there is no job-id channel. Cache the abstain briefly so the
+        # next poll returns it and stops, instead of re-enqueuing a fresh full generation every
+        # poll (~150s of billed regenerations ending in a generic timeout). Hot-tier-only + short
+        # TTL, so a transient abstain self-heals on retry. The inline path returns it directly.
+        dto = AbstainDTO(reason=reason)
+        if not allow_enqueue:
+            self._store.put_transient(key, dto.to_dict(), ttl_seconds=_ABSTAIN_CACHE_TTL_SECONDS)
+        return dto
+
     # --- summary path --------------------------------------------------------
-    def _run_summary(self, request, source, refined, glossary, key, summarizer) -> SummaryResponse:
+    def _run_summary(
+        self, request, source, refined, glossary, key, summarizer, allow_enqueue: bool = True
+    ) -> SummaryResponse:
         # ``summarizer`` is the single-call LLM gateway or the map-reduce summarizer (same
         # ``summarize(refined, request, glossary)`` contract) chosen by the length route.
         for attempt in (1, 2):
@@ -301,7 +325,7 @@ class SummarizationOrchestrationService:
             except LlmUnavailable:
                 if attempt == 2:
                     self._emit("u7.llm.unavailable", 1.0, request)
-                    return AbstainDTO(reason="generation_unavailable")
+                    return self._abstain(key, "generation_unavailable", allow_enqueue)
                 continue
             verdict = self._grounding.validate(GroundingInput(draft=draft, refined=refined))
             self._emit("u7.grounding", 1.0, request, verdict=verdict.outcome)
@@ -316,18 +340,21 @@ class SummarizationOrchestrationService:
                 self._emit("u7.summary.ok", 1.0, request)
                 return result
             if attempt == 2:
-                return AbstainDTO(reason="insufficient_grounding")
-        return AbstainDTO(reason="insufficient_grounding")  # unreachable; satisfies type checker
+                return self._abstain(key, "insufficient_grounding", allow_enqueue)
+        # unreachable; satisfies type checker
+        return self._abstain(key, "insufficient_grounding", allow_enqueue)
 
     # --- translate path ------------------------------------------------------
-    def _run_translate(self, request, source, refined, glossary, key) -> SummaryResponse:
+    def _run_translate(
+        self, request, source, refined, glossary, key, allow_enqueue: bool = True
+    ) -> SummaryResponse:
         # Structured translation (BR-S18): translate the doc-model into a 'translated doc-model'
         # (same structure, Korean text). The translator chunks internally (map-only) for long
         # inputs. When the source is not a structured doc-model (scope=abstract, or full-text
         # fell back to abstract/legacy .txt), wrap the refined body in a one-paragraph doc-model
         # so the output contract is uniform.
         if self._translator is None:
-            return AbstainDTO(reason="generation_unavailable")
+            return self._abstain(key, "generation_unavailable", allow_enqueue)
         doc = source.doc_model or _wrap_plain_doc(refined.body, request)
         for attempt in (1, 2):
             try:
@@ -343,7 +370,7 @@ class SummarizationOrchestrationService:
                         request.paper_id, request.version, request.scope,
                     )
                     self._emit("u7.llm.unavailable", 1.0, request)
-                    return AbstainDTO(reason="generation_unavailable")
+                    return self._abstain(key, "generation_unavailable", allow_enqueue)
                 continue
             if not _has_translated_text(draft, doc):
                 if attempt == 2:
@@ -356,7 +383,7 @@ class SummarizationOrchestrationService:
                         request.paper_id, request.version, request.scope, attempt,
                     )
                     self._emit("u7.translate.empty", 1.0, request)
-                    return AbstainDTO(reason="empty_translation")
+                    return self._abstain(key, "empty_translation", allow_enqueue)
                 continue
             # Assemble + cache the SHARED base. The base carries masked standard-term tokens; it is
             # user-agnostic (no override baked in), so every user shares it and a term edit reflects
@@ -369,7 +396,7 @@ class SummarizationOrchestrationService:
             # Render for this requester (restore tokens → effective rendering, weak overlay,
             # standardGlossary/keptTerms) so the first requester also sees their own overrides.
             return _PayloadResult(self._assembler.render_translation(base, glossary))
-        return AbstainDTO(reason="empty_translation")
+        return self._abstain(key, "empty_translation", allow_enqueue)
 
     # --- personal glossary (Q8 / §9.1) ---------------------------------------
     def list_glossary_terms(self, user_id: str) -> list[dict]:

@@ -29,3 +29,15 @@ def summary_job_dedup_key(request: SummaryRequest, user_id: str) -> str:
             request.target_lang.value,
         ]
     )
+
+
+# Both adapters hold their live claims in a ``dict[key, expiry]`` and compact it the same way, so
+# the bound and the sweep live here too. Cheap no-op until the map actually grows, so a client's
+# rapid re-enqueues don't rebuild it on every call.
+_PRUNE_THRESHOLD = 256
+
+
+def prune_inflight(inflight: dict[str, float], now: float) -> dict[str, float]:
+    if len(inflight) < _PRUNE_THRESHOLD:
+        return inflight
+    return {k: v for k, v in inflight.items() if v > now}

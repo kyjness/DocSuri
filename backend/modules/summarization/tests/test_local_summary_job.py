@@ -10,6 +10,7 @@ release its dedup claim so the still-polling client can trigger another attempt.
 from __future__ import annotations
 
 import threading
+import time
 
 from summarization.adapters.local_summary_job import LocalSummaryJobQueue
 from summarization.domain.models import Persona, Scope, SummaryRequest, Task
@@ -70,6 +71,30 @@ def test_repeat_while_running_collapses_but_another_user_still_runs() -> None:
     orch.release.set()
     q._executor.shutdown(wait=True)
     assert sorted(u for _, u, _ in orch.runs) == ["u1", "u2"]
+
+
+def test_job_running_past_its_ttl_is_not_double_run() -> None:
+    # A generation that outlives the dedup TTL keeps its claim via _running: a poll arriving while
+    # it is still executing collapses instead of starting a SECOND billed generation. ttl=0 makes
+    # the expiry lapse immediately, standing in for a job that ran longer than the backstop.
+    orch = _Orch()  # blocks in run() until release is set
+    q = LocalSummaryJobQueue(dedup_ttl_seconds=0)
+    q.bind(orch)
+    q.enqueue(_req(), "u1")
+    # Wait until the job is actually executing (its key is in _running) — its TTL already lapsed.
+    running = False
+    for _ in range(200):
+        with q._lock:
+            running = bool(q._running)
+        if running:
+            break
+        time.sleep(0.005)
+    assert running, "job never started running"
+
+    q.enqueue(_req(), "u1")  # same key, still running → must collapse despite the lapsed TTL
+    orch.release.set()
+    q._executor.shutdown(wait=True)
+    assert len(orch.runs) == 1  # not double-run
 
 
 def test_failed_job_releases_its_claim_so_the_client_can_retry() -> None:

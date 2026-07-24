@@ -65,6 +65,19 @@ class S3RedisSummaryStore:
         )
         self._backfill_hot(key.redis_key(), payload)
 
+    def put_transient(self, key: SummaryCacheKey, payload: dict, *, ttl_seconds: int) -> None:
+        # Hot-tier-only write with a short TTL — deliberately NOT persisted to S3. Hands a polled
+        # abstain back to the client on the next poll, then self-expires so a later retry
+        # re-evaluates (never pins a possibly-transient abstain permanently). No-op without Redis —
+        # degrades to the pre-existing behaviour (the poll keeps re-enqueuing), so no regression.
+        if self._redis is None:
+            return
+        try:
+            data = json.dumps(payload, ensure_ascii=False)
+            self._redis.set(key.redis_key(), data, ex=ttl_seconds)
+        except Exception:  # noqa: BLE001, S110 — hot-tier write is best-effort
+            pass
+
     def _backfill_hot(self, redis_key: str, payload: dict) -> None:
         if self._redis is None:
             return

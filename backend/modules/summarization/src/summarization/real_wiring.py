@@ -150,9 +150,7 @@ def build_real_orchestrator(
     if summary_job_queue is None and settings.local_summary_worker_enabled:
         from .adapters.local_summary_job import LocalSummaryJobQueue
 
-        local_summary_queue = LocalSummaryJobQueue(
-            max_workers=settings.local_summary_worker_threads
-        )
+        local_summary_queue = LocalSummaryJobQueue()
         summary_job_queue = local_summary_queue
 
     # Document-fidelity grounding gate (BR-S7). Built once so it can be both injected into the

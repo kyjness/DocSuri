@@ -70,7 +70,6 @@ class SummarizationSettings:
     # runs on a thread here instead of a separate worker. Without either, a long generation runs
     # inline and outlives the client's deadline. OFF by default; a real deploy uses the queue.
     local_summary_worker_enabled: bool = False
-    local_summary_worker_threads: int = 1
     # LLM provider: "bedrock" (team AWS deploy) | "openai" (solo-local, personal key).
     llm_provider: str = "bedrock"
 
@@ -116,5 +115,4 @@ class SummarizationSettings:
             map_reduce_enabled=env_flag("DOCSURI_MAP_REDUCE_ENABLED"),
             summary_job_queue_url=os.environ.get("DOCSURI_SUMMARY_JOB_QUEUE_URL"),
             local_summary_worker_enabled=env_flag("DOCSURI_LOCAL_SUMMARY_WORKER"),
-            local_summary_worker_threads=env_int("DOCSURI_LOCAL_SUMMARY_WORKERS", 1),
         )
