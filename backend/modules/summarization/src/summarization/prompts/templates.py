@@ -78,6 +78,17 @@ _PERSONA_RULES = {
     ),
 }
 
+# §3 요약 항목 이름. 도구 스키마의 최상위 필드이자 각 앵커가 가리키는 항목(anchors[].field)의 허용값
+# 이기도 하므로 한 곳에서 정의해 둘이 갈라지지 않게 한다 — 프론트는 이 이름으로 앵커 칩을 고른다.
+_SUMMARY_FIELDS = [
+    "tldr",
+    "contributions",
+    "method",
+    "results",
+    "limitations",
+    "reproducibility",
+]
+
 # Output contract as Bedrock tool (structured output). The model is forced to CALL these tools
 # (tool_choice), so it returns a schema-shaped ``input`` dict directly — no free-text JSON to
 # escape/parse. This is the single source of truth for the §3 summary / BR-S18 translate shape;
@@ -106,7 +117,14 @@ SUMMARY_TOOL = {
                 "items": {
                     "type": "object",
                     "properties": {
-                        "field": {"type": "string"},
+                        # 이 앵커가 어느 요약 항목의 근거인지. 자유 문자열로 두면 경량 모델이 여기에
+                        # 항목명 대신 섹션명("Introduction")을 채우고, 프론트가 항목명으로 정확
+                        # 매칭해 칩을 고르므로 앵커가 전부 드롭된다. 섹션 제목은 label의 몫이다.
+                        "field": {
+                            "type": "string",
+                            "enum": _SUMMARY_FIELDS,
+                            "description": "이 앵커가 근거로 대는 요약 항목명(섹션 제목이 아니다)",
+                        },
                         "target": {
                             "type": "string",
                             "enum": ["section", "table", "figure"],
@@ -124,15 +142,7 @@ SUMMARY_TOOL = {
                 },
             },
         },
-        "required": [
-            "tldr",
-            "contributions",
-            "method",
-            "results",
-            "limitations",
-            "reproducibility",
-            "anchors",
-        ],
+        "required": [*_SUMMARY_FIELDS, "anchors"],
     },
 }
 
@@ -197,7 +207,9 @@ def build_summary_prompt(
         # 사례가 있다. anchors의 label은 아래 별도 규칙(원문 표기 그대로)이 우선한다.
         "- tldr·contributions·method·results·limitations·reproducibility는 반드시 한국어로"
         " 작성하라. 단, 용어집의 미번역 유지 용어·모델/데이터셋/지표 이름·수식은 원어를 유지한다.\n"
-        "- 각 주장에 근거 위치를 anchors에 부기하라. label에는 **원문에 실제로 있는** 섹션 제목을"
+        "- 각 주장에 근거 위치를 anchors에 부기하라. field에는 그 근거가 뒷받침하는 **요약 항목명**"
+        f"({'·'.join(_SUMMARY_FIELDS)} 중 하나)을 쓴다 — 섹션 제목을 field에 쓰지 마라."
+        " label에는 **원문에 실제로 있는** 섹션 제목을"
         " 원문 표기 그대로(번역·창작 금지) 또는 'Figure N'/'Table N'을 쓰고, target은 그 종류"
         "(section/table/figure), span은 근거가 된 짧은 원문 인용으로 한다.\n"
         "- 초록에 잘 안 나오는 결과 수치·한계·재현성을 본문/표에서 끌어내라.\n"

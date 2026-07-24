@@ -13,7 +13,7 @@
 // (KaTeX stylesheet is pulled in by the renderMath import below.)
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type {
-  AnchorVM,
+  AnchorTargetVM,
   AssetRef,
   DocBlock,
   DocModel,
@@ -33,7 +33,7 @@ interface DocModelViewerProps {
   paperId: string;
   version: number;
   /** Summary source anchor to scroll to / highlight, if any (matched by label). */
-  anchor?: AnchorVM | null;
+  anchor?: AnchorTargetVM | null;
   arxivUrl?: string;
   /** Skip the paper-title <h1> — used when embedded inline under a page that already shows
    *  the title (the desktop detail view), to avoid a duplicate heading. */
@@ -178,7 +178,7 @@ export function DocModelBody({
 }: {
   docModel: DocModel;
   assetsById: Map<string, AssetRef>;
-  anchor?: AnchorVM | null;
+  anchor?: AnchorTargetVM | null;
 }) {
   // Tap-to-enlarge: figures/tables/formulas are shown fit-to-width inline and open a
   // scaled-to-fit overlay centred in the viewport (no scrollbars).
@@ -422,7 +422,7 @@ function SectionView({
   section: DocSection;
   depth: number;
   assetsById: Map<string, AssetRef>;
-  anchor?: AnchorVM | null;
+  anchor?: AnchorTargetVM | null;
   onZoom: (node: React.ReactNode) => void;
   macros?: MathMacros;
 }) {
@@ -704,7 +704,7 @@ function flattenToc(sections: DocSection[], depth = 1, out: TocEntry[] = []): To
   return out;
 }
 
-function isActive(block: DocBlock, anchor?: AnchorVM | null): boolean {
+function isActive(block: DocBlock, anchor?: AnchorTargetVM | null): boolean {
   if (!anchor) return false;
   const label = 'anchorLabel' in block ? block.anchorLabel : undefined;
   return Boolean(label && anchor.label && label === anchor.label);
@@ -719,7 +719,7 @@ function sectionMatchesLabel(section: DocSection, label: string): boolean {
 
 // A section anchor's canonical label is the section title (no block anchorLabel matches), so the
 // heading — the thing the anchor points at — carries the highlight, mirroring the per-block one.
-function isSectionActive(section: DocSection, anchor?: AnchorVM | null): boolean {
+function isSectionActive(section: DocSection, anchor?: AnchorTargetVM | null): boolean {
   return Boolean(anchor?.label && sectionMatchesLabel(section, anchor.label));
 }
 

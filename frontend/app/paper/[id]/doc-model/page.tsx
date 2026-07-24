@@ -4,7 +4,7 @@ import { RouteGuard } from '@/components/RouteGuard';
 import { AppHeader } from '@/components/AppHeader';
 import { DocModelViewer } from '@/components/DocModelViewer';
 import { arxivVersion } from '@/lib/arxivVersion';
-import type { AnchorVM } from '@/types/generated';
+import type { AnchorTargetVM } from '@/types/generated';
 
 // Doc-model rich-view route /paper/[id]/doc-model (D4, FD §2.10) — a full-screen in-app route
 // reached from the detail page's 본문 action. The header's ← goes to a FIXED destination (the
@@ -30,7 +30,7 @@ export default async function DocModelPage({
 
   const label = typeof sp.anchorLabel === 'string' ? sp.anchorLabel : undefined;
   const span = typeof sp.anchorSpan === 'string' ? sp.anchorSpan : '';
-  const anchor: AnchorVM | null = label ? { field: '', target: 'section', span, label } : null;
+  const anchor: AnchorTargetVM | null = label ? { span, label } : null;
 
   // Preserve ?version/?anchorLabel/?anchorSpan across a login round-trip (E6, BR-U5-15) — a
   // query-less redirectTo used to drop them, landing the user back on the doc-model page but

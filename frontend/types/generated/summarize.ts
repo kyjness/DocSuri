@@ -23,13 +23,29 @@ export interface SummarizeRequest {
   abstract?: string;
 }
 
+/** The summary field an anchor belongs to — its own summary dimension, never a section title
+ * (that is AnchorVM.label). Chips are selected by matching this, so an off-list value renders
+ * nothing. Mirrors `AnchorField` in the schema. */
+export type SummaryFieldName =
+  | 'tldr'
+  | 'contributions'
+  | 'method'
+  | 'results'
+  | 'limitations'
+  | 'reproducibility';
+
 /** Per-claim grounding anchor (§3). Drives "출처 보기" → full-text highlight (Q5=C). */
 export interface AnchorVM {
-  field: string;
+  field: SummaryFieldName;
   target: 'section' | 'table' | 'figure';
   span: string;
   label: string;
 }
+
+/** What the full-text viewer needs to locate an anchor: it jumps by label and shows the span,
+ * and reads neither `field` nor `target`. A deep link (?anchorLabel) carries only these, so
+ * requiring a whole AnchorVM there would force fabricating the other two. */
+export type AnchorTargetVM = Pick<AnchorVM, 'label' | 'span'>;
 
 export interface ReproducibilityVM {
   code: string;

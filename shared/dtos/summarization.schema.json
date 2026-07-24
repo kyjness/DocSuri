@@ -67,14 +67,18 @@
       "enum": ["section", "table", "figure"],
       "description": "Target type for a grounding anchor reference. Trace: FR-12."
     },
+    "AnchorField": {
+      "type": "string",
+      "enum": ["tldr", "contributions", "method", "results", "limitations", "reproducibility"],
+      "description": "The SummaryDraft field a grounding anchor belongs to — the anchor's own summary dimension, never a section title (that is Anchor.label). Consumers select an anchor's chip by matching this against the field name, so an off-list value renders nothing. Trace: FR-12."
+    },
     "Anchor": {
       "type": "object",
       "title": "Anchor",
       "description": "A structured citation anchor mapping a claim back to source paper evidence (FR-12/US-S3).",
       "properties": {
         "field": {
-          "type": "string",
-          "description": "The summary field name this anchor belongs to. Trace: FR-12."
+          "$ref": "#/$defs/AnchorField"
         },
         "target": {
           "$ref": "#/$defs/AnchorTarget"
