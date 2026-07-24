@@ -187,7 +187,6 @@ class Figure:
     STRING, and an anchor resolved to it could not report where it landed."""
 
     label: str
-    caption: str = ""
     anchor: str = ""
 
 

@@ -159,7 +159,7 @@ class InputRefiner:
                 label = _clean(b.anchorLabel or "")
                 caption = _clean(b.caption or "")
                 line = f"{label}: {caption}".strip(": ").strip()
-                figures.append(Figure(label=label, caption=caption, anchor=b.id))
+                figures.append(Figure(label=label, anchor=b.id))
                 if caption:
                     captions.append(line or caption)
                 if line:
