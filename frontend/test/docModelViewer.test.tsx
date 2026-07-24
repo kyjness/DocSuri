@@ -212,6 +212,24 @@ describe('DocModelViewer', () => {
     expect(heading.className).toContain('active');
   });
 
+  it('falls back to the label when the anchor blockId no longer exists in the doc-model', async () => {
+    // A summary served stale under an older parser generation can carry a blockId the rebuilt
+    // doc-model renumbered away. The viewer must not dead-end on the missing id — it falls back to
+    // the label and still jumps + highlights, instead of scrolling nowhere (the source chip staying
+    // a live action). The id wins only when it actually resolves; here it doesn't.
+    const anchor = {
+      field: 'method' as const,
+      target: 'section' as const,
+      span: 'scaled dot-product attention',
+      label: 'Model Architecture',
+      blockId: 's99.tbl7', // absent from the fixture doc-model
+    };
+    render(<DocModelViewer paperId="2401.00001" version={1} anchor={anchor} />);
+    const heading = await screen.findByRole('heading', { name: 'Model Architecture' });
+    await waitFor(() => expect(document.activeElement).toBe(document.getElementById('dm-s3')));
+    expect(heading.className).toContain('active');
+  });
+
   it('swaps a figure whose image fails to load for a placeholder, not a broken icon', async () => {
     // Asset urls are short-lived signed urls: past expiry (or on a 403) the <img> errors and the
     // browser shows its broken-image glyph with nothing explaining it. Firing the error must leave

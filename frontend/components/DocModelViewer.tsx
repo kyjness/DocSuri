@@ -79,15 +79,17 @@ export function DocModelViewer({
   // Scroll to + highlight the target (asset block or section) matching the selected anchor.
   useEffect(() => {
     if (!docModel || !anchor || !containerRef.current) return;
-    const t = resolveAnchorTarget(docModel, anchor);
-    if (!t) return;
-    const el =
-      t.kind === 'block'
-        ? containerRef.current.querySelector<HTMLElement>(`[data-block="${CSS.escape(t.id)}"]`)
-        : containerRef.current.querySelector<HTMLElement>(`#dm-${CSS.escape(t.id)}`);
+    const id = resolveAnchorId(docModel, anchor);
+    if (!id) return;
+    const root = containerRef.current;
+    // Block ids and section ids share no values and render to distinct attributes (data-block vs
+    // the dm- element id), so trying the block selector first tells the two apart from the DOM —
+    // no need to classify the id by how it is spelled.
+    const blockEl = root.querySelector<HTMLElement>(`[data-block="${CSS.escape(id)}"]`);
+    const el = blockEl ?? root.querySelector<HTMLElement>(`#dm-${CSS.escape(id)}`);
     if (!el) return;
     // Sections read best jumped to their top (like the TOC); asset blocks center in view.
-    el.scrollIntoView({ block: t.kind === 'section' ? 'start' : 'center', behavior: 'smooth' });
+    el.scrollIntoView({ block: blockEl ? 'center' : 'start', behavior: 'smooth' });
     // Move focus (and SR reading position) to the jumped-to element, not just the scroll
     // position (D3, BR-U5-15) — every block root and section carries tabIndex={-1} for this.
     el.focus({ preventScroll: true });
@@ -207,6 +209,13 @@ export function DocModelBody({
   // TOC to avoid duplication. U1 emits the abstract as a dedicated section with id "s0" (real
   // content sections start at "s1"), so dropping "s0" removes only the abstract.
   const sections = docModel.sections.filter((s) => s.id !== 's0');
+  // Resolve the anchor to ONE doc-model id up front, so scroll and highlight point at the same
+  // node. resolveAnchorId prefers the server-supplied blockId (when it still exists here) and
+  // otherwise falls back to label matching — the highlight then keys off that single id.
+  const activeId = useMemo(
+    () => (anchor ? resolveAnchorId(docModel, anchor) : null),
+    [docModel, anchor],
+  );
   return (
     <div className={styles.root} data-testid="docmodel-viewer">
       <DocTOC sections={sections} macros={macros} />
@@ -217,7 +226,7 @@ export function DocModelBody({
             section={s}
             depth={1}
             assetsById={assetsById}
-            anchor={anchor}
+            activeId={activeId}
             onZoom={setZoom}
             macros={macros}
           />
@@ -432,21 +441,23 @@ function SectionView({
   section,
   depth,
   assetsById,
-  anchor,
+  activeId,
   onZoom,
   macros,
 }: {
   section: DocSection;
   depth: number;
   assetsById: Map<string, AssetRef>;
-  anchor?: AnchorTargetVM | null;
+  /** The single doc-model id the anchor resolved to (block or section), or null. */
+  activeId?: string | null;
   onZoom: (node: React.ReactNode) => void;
   macros?: MathMacros;
 }) {
   const Heading = `h${Math.min(depth + 1, 6)}` as keyof React.JSX.IntrinsicElements;
-  const headingCls = isSectionActive(section, anchor)
-    ? `${styles.heading} ${styles.active}`
-    : styles.heading;
+  // The heading — the thing a section anchor points at — carries the highlight when its id is the
+  // resolved target. Two subsections sharing a title stay distinguishable (the id is unique).
+  const headingCls =
+    section.id === activeId ? `${styles.heading} ${styles.active}` : styles.heading;
   return (
     // tabIndex=-1 (D3, BR-U5-15): programmatically focusable so a TOC/anchor jump moves keyboard/SR
     // focus here too, not just the viewport scroll position.
@@ -459,7 +470,7 @@ function SectionView({
           key={b.id}
           block={b}
           assetsById={assetsById}
-          active={isActive(b, anchor)}
+          active={b.id === activeId}
           onZoom={onZoom}
           macros={macros}
         />
@@ -470,7 +481,7 @@ function SectionView({
           section={s}
           depth={depth + 1}
           assetsById={assetsById}
-          anchor={anchor}
+          activeId={activeId}
           onZoom={onZoom}
           macros={macros}
         />
@@ -520,15 +531,7 @@ function BlockView({
         // still resolves — only the render source is missing, not the equation.
         return (
           <div className={`${cls} ${styles.formula}`} data-block={block.id} tabIndex={-1}>
-            {/* role="img" so the label is honored on a bare <span> (generic role) — aria-label
-                alone is unreliable there (D5, BR-U5-21, NFR-U5-U2). */}
-            <span
-              role="img"
-              className={styles.formulaPlaceholder}
-              aria-label="수식을 표시할 수 없습니다"
-            >
-              [수식]
-            </span>
+            <AssetPlaceholder label="수식" />
             {block.anchorLabel ? <span className={styles.eqno}>{block.anchorLabel}</span> : null}
           </div>
         );
@@ -572,9 +575,7 @@ function BlockView({
             // the fetch failed. Hold the slot the way the formula block does: dropping to a bare
             // caption leaves the reader with a caption for a figure that is not there, and makes
             // the page jump when the parallel assets fetch lands.
-            <span role="img" className={styles.formulaPlaceholder} aria-label="그림을 표시할 수 없습니다">
-              [그림]
-            </span>
+            <AssetPlaceholder label="그림" />
           )}
           {caption(block.anchorLabel, block.caption, macros)}
         </figure>
@@ -736,35 +737,52 @@ function flattenToc(sections: DocSection[], depth = 1, out: TocEntry[] = []): To
   return out;
 }
 
-// Highlight what the anchor resolved to. An id identifies the block outright — which also
-// distinguishes two blocks that print the SAME anchorLabel, something the label rule cannot do.
-// Without an id (caption-only float, or a summary cached before ids shipped) fall back to it.
-function isActive(block: DocBlock, anchor?: AnchorTargetVM | null): boolean {
-  if (!anchor) return false;
-  if (anchor.blockId) return block.id === anchor.blockId;
-  const label = 'anchorLabel' in block ? block.anchorLabel : undefined;
-  return Boolean(label && anchor.label && label === anchor.label);
-}
-
-// The single source of truth for the section-anchor match rule (label ⇔ section title). Used both
-// to pick the scroll target (resolveAnchorTarget) and to highlight the heading (isSectionActive),
-// so the two can never drift apart. Only reached for an anchor that carries no id.
+// The single source of truth for the section-anchor match rule (label ⇔ section title). Used by
+// resolveAnchorId when an anchor carries no usable id, so the scroll target and the heading
+// highlight (both keyed off the resolved id) can never drift apart.
 function sectionMatchesLabel(section: DocSection, label: string): boolean {
   return Boolean(section.title && label && section.title.trim() === label.trim());
 }
 
-// A section anchor points at the section itself (no block anchorLabel matches), so the heading —
-// the thing the anchor points at — carries the highlight, mirroring the per-block one. Two
-// subsections sharing a title ("Results") stay distinguishable once the anchor carries an id.
-function isSectionActive(section: DocSection, anchor?: AnchorTargetVM | null): boolean {
-  if (anchor?.blockId) return section.id === anchor.blockId;
-  return Boolean(anchor?.label && sectionMatchesLabel(section, anchor.label));
+// Does any block or section in the doc carry this id? Guards the server-supplied blockId: a summary
+// served stale under an older parser generation can name an id the rebuilt doc no longer has.
+function docHasId(sections: DocSection[], id: string): boolean {
+  return sections.some(
+    (s) =>
+      s.id === id ||
+      s.blocks.some((b) => b.id === id) ||
+      (s.sections ? docHasId(s.sections, id) : false),
+  );
+}
+
+// Korean object particle: 을 after a final consonant (받침), 를 after a vowel. The label varies
+// ("수식"/"그림"/"코드 이미지"/"표 이미지"), so the particle must agree with its last syllable — a
+// fixed 을 reads as ungrammatical Korean for the vowel-ending 이미지 labels.
+function objectParticle(word: string): string {
+  const last = word.charCodeAt(word.length - 1);
+  const isHangulSyllable = last >= 0xac00 && last <= 0xd7a3;
+  const hasFinalConsonant = isHangulSyllable && (last - 0xac00) % 28 !== 0;
+  return hasFinalConsonant ? '을' : '를';
+}
+
+// The labelled fallback shared by every missing-asset slot — a failed <img>, or a figure/formula
+// whose crop is still building or env-gated. role="img" so the label is honored on a bare <span>
+// (generic role); aria-label alone is unreliable there (D5, BR-U5-21, NFR-U5-U2).
+function AssetPlaceholder({ label }: { label: string }) {
+  return (
+    <span
+      role="img"
+      className={styles.formulaPlaceholder}
+      aria-label={`${label}${objectParticle(label)} 표시할 수 없습니다`}
+    >
+      [{label}]
+    </span>
+  );
 }
 
 /** An asset image that degrades to a labelled placeholder instead of the browser's broken-image
  * glyph. Asset urls are short-lived signed urls, so a reader who leaves the paper open past
- * expiry — or hits a 403 — would otherwise be left with a broken icon and nothing explaining it.
- * The placeholder mirrors the formula block's, which already handles its own missing render. */
+ * expiry — or hits a 403 — would otherwise be left with a broken icon and nothing explaining it. */
 function AssetImage({
   src,
   alt,
@@ -780,57 +798,46 @@ function AssetImage({
   // A refreshed signed url is a new chance to load; without this the block would stay broken
   // for the rest of the mount.
   useEffect(() => setFailed(false), [src]);
-  if (failed) {
-    // role="img" so the label is honored on a bare <span> (generic role), as in the formula
-    // placeholder (D5, BR-U5-21, NFR-U5-U2).
-    return (
-      <span role="img" className={styles.formulaPlaceholder} aria-label={`${label}을 표시할 수 없습니다`}>
-        [{label}]
-      </span>
-    );
-  }
+  if (failed) return <AssetPlaceholder label={label} />;
   return (
     // eslint-disable-next-line @next/next/no-img-element -- signed S3 url, not a static asset
     <img src={src} alt={alt} className={className} loading="lazy" onError={() => setFailed(true)} />
   );
 }
 
-type AnchorTarget = { kind: 'block'; id: string } | { kind: 'section'; id: string };
-
-// Resolve a summary anchor to a scroll target. The backend's grounding gate already resolved the
-// anchor against the doc-model and reports the id it landed on, so an id anchor needs no search
-// here — only the kind, to pick the element and the scroll alignment. Section ids are "s3"/"s3.2";
-// a block id extends its section's with a type suffix ("s3.tbl1"), so a trailing letter run tells
-// the two apart without walking the tree.
+// Resolve a summary anchor to the id of the block or section it points at; the caller finds that
+// id in the DOM and derives whether it is a block or a section from which element carries it. The
+// backend's grounding gate already resolved the anchor against the doc-model and reports the id it
+// landed on, so an id anchor wins — but ONLY if that id still exists here. A summary served stale
+// under an older parser generation can name an id the rebuilt doc renumbered or dropped; rather
+// than dead-ending, fall back to label matching so the chip still jumps somewhere sensible.
 //
-// An anchor carries no id when the gate resolved it to a caption-only float (no block behind it),
-// or when it comes from a summary cached before ids shipped — those still match by label, the way
+// An anchor also carries no id when the gate resolved it to a caption-only float (no block behind
+// it), or when it comes from a summary cached before ids shipped — those match by label the way
 // every anchor did before: asset anchors ("Table 1"/"Figure 2"/"(1)") against a block's
 // anchorLabel, section anchors against the section title, block winning as the more specific.
-const BLOCK_ID_SUFFIX_RE = /\.[a-z]+\d+$/;
-
-function resolveAnchorTarget(doc: DocModel, anchor: AnchorTargetVM): AnchorTarget | null {
+function resolveAnchorId(doc: DocModel, anchor: AnchorTargetVM): string | null {
   const id = anchor.blockId?.trim();
-  if (id) return { kind: BLOCK_ID_SUFFIX_RE.test(id) ? 'block' : 'section', id };
+  if (id && docHasId(doc.sections, id)) return id;
 
   const needle = (anchor.label ?? '').trim();
   if (!needle) return null;
-  const walkBlocks = (sections: DocSection[]): AnchorTarget | null => {
+  const walkBlocks = (sections: DocSection[]): string | null => {
     for (const s of sections) {
       for (const b of s.blocks) {
         const l = 'anchorLabel' in b ? b.anchorLabel : undefined;
-        if (l && l.trim() === needle) return { kind: 'block', id: b.id };
+        if (l && l.trim() === needle) return b.id;
       }
       const nested = s.sections ? walkBlocks(s.sections) : null;
       if (nested) return nested;
     }
     return null;
   };
-  const block = walkBlocks(doc.sections);
-  if (block) return block;
-  const walkSections = (sections: DocSection[]): AnchorTarget | null => {
+  const blockId = walkBlocks(doc.sections);
+  if (blockId) return blockId;
+  const walkSections = (sections: DocSection[]): string | null => {
     for (const s of sections) {
-      if (sectionMatchesLabel(s, needle)) return { kind: 'section', id: s.id };
+      if (sectionMatchesLabel(s, needle)) return s.id;
       const nested = s.sections ? walkSections(s.sections) : null;
       if (nested) return nested;
     }
