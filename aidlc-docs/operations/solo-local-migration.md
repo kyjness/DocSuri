@@ -141,6 +141,31 @@ cd frontend && pnpm run dev                              # http://localhost:3000
   - gpt-4o-mini가 요약을 영어로 출력하는 사례 → 프롬프트 한국어 강제 보강 또는 summary
     모델 상향(`DOCSURI_SUMMARY_MODEL_ID=gpt-4o`)으로 해결 가능.
 
+## 6.1 로컬 피처 플래그 & 본질적 제한 (2026-07-24 진단)
+
+전환 검증(§6)은 search·papers·summary 경로만 다뤘다. 나머지 유닛은 **롤아웃 게이트가 기본 off**라 로컬
+`.env`에서 명시적으로 켜야 동작한다. 안 켜면 라우터 전체가 **404**(인증 앞단 dependency가 먼저 raise) —
+"AWS→로컬 전환으로 깨졌다"로 오인하기 쉬우나 회귀가 아니라 미활성이다.
+
+**로컬에서 켜야 하는 플래그(`.env`):**
+
+| 플래그 | 유닛 | 안 켜면 | 비고 |
+|---|---|---|---|
+| `PERSONALIZATION_ENABLED=1` | u9 | `/api/personalization/*` 전체 404 (events·settings·recently-viewed) | 프론트는 events를 best-effort로 삼켜 화면 비치명적 |
+| `CITATION_GRAPH_ENABLED=1` | u8 | `/api/papers/{id}/citation-tree` 404 | 아래 참조 |
+| `DOCSURI_SUMMARY_MODEL_ID=gpt-4o` | u7 | 기본 gpt-4o-mini — 요약 영어 출력·앵커 빈약 | 품질 레버(선택) |
+
+**로컬에서 본질적으로 제한되는 것:**
+
+- **citation-tree**: 로컬 코퍼스가 아니라 **Semantic Scholar 라이브 API**(`/paper/{id}/references`) 호출 +
+  Redis 캐시. 로컬 엣지 인제스트 불필요하나, S2 **익명 rate-limit**이 간헐 실패 요인(키 없으면 429).
+- **요약 출처앵커**: OpenAI 어댑터도 Bedrock과 동일 forced-tool 스키마로 앵커를 방출한다(구조적 문제 아님).
+  앵커가 안 보이면 하류 SOFT-drop — gpt-4o-mini 품질 또는 구 파서 세대 저장분의 라벨 resolve 실패. **번역은
+  설계상 grounding-free = 앵커 없음이 정상**(`TranslationView.tsx`).
+- **evidence(u11) 모듈**: 로컬 마운트 실패(`TypeError: NoneType not iterable`). `evidence/real_wiring.py`가
+  Bedrock Cohere 임베더를 `model_id=None`으로 생성(`bedrock_embedding.py "-v3" in model_id`). discovery는
+  OpenAI 임베더로 전환됐으나 evidence real_wiring은 Bedrock 전용 → **u11 별도 수리 대상**(로컬 미대응).
+
 ## 7. 미룬 결정 (deferred)
 
 | 결정 | 보류 사유 | 재검토 시점 |
