@@ -9,3 +9,6 @@ playwright-report/
 test-results/
 coverage/
 types/.schema-raw/
+
+# real-stack e2e session state (local only)
+e2e-real/.auth/

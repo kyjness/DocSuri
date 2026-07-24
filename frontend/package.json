@@ -12,7 +12,9 @@
     "gen:types": "node scripts/gen-types.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "e2e:real": "playwright test -c playwright.real.config.ts",
+    "audit:math": "node --max-old-space-size=4096 scripts/audit-math-render.mjs"
   },
   "dependencies": {
     "mathjax-full": "^3.2.2",
