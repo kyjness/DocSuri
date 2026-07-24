@@ -55,7 +55,22 @@ from __future__ import annotations
 # - PDF path: formulas can carry `latexOcr`, LaTeX read back out of their page crop, indexed for
 #   search and never rendered; and a table GROBID merged into unusable cells can be re-read from
 #   the page when every rebuilt number verifies against the printed text.
-DOCMODEL_PARSER_VERSION = "docmodel-parser@9"
+# @10: one generation covering an HTML-path completeness pass — each item below changes stored
+# output (block counts, ids, ordinals, or fullText), so cached doc-models and their crops rebuild.
+# - A captioned figure/table float LaTeXML hoisted out of every <section> (a teaser above the first,
+#   a supplementary table below the last, or a wide float between two, living directly under
+#   ltx_document) is recovered into a synthetic titleless section at its true document position
+#   instead of being dropped whole. The section-only walk had lost its caption, number and body
+#   entirely (measured: ~40 numbered captions across 34 of 466 sampled ar5iv papers). That adds
+#   sections and blocks, so block ids, figure ordinals and fullText all shift.
+# - Float dispatch now routes by ROLE, not class: a tabular-bearing "Table N" minipage LaTeXML
+#   emitted as figure.ltx_figure (a \captionof{table} disguise) is read as a table, keeping its rows
+#   and caption instead of falling to the figure path.
+# - A caption-less outer that wraps a grid of numbered table panels in a div.ltx_flex_figure now
+#   decomposes into one block per panel (the mixed-float trigger scans descendants, not just direct
+#   children — arXiv:2510.12615 packs 104 tables this way), where the panels' rows and captions were
+#   previously merged or dropped.
+DOCMODEL_PARSER_VERSION = "docmodel-parser@10"
 # 1.1.0: additive optional meta.macros (consumers ignore if unset).
 # 1.2.0: two additive optional fields for the PDF path, both keeping an approximation searchable
 # without letting it become what the reader sees. CodeBlock.assetRef — a listing the path could

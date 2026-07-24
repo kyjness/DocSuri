@@ -144,9 +144,7 @@ def parse_html_to_docmodel(
     top_sections = _top_level_sections(root)
     if top_sections:
         top_sections = _drop_duplicate_abstract_elements(top_sections, abstract)
-        sections = [
-            _parse_section(el, f"s{i}", doc_ctx) for i, el in enumerate(top_sections, start=1)
-        ]
+        sections = _sections_with_orphan_floats(root, top_sections, doc_ctx)
     else:
         # No LaTeXML sectioning (e.g. a short note): fold all body content into one
         # span-only section so the doc-model is still well-formed (BR-S3 fallback).
@@ -229,6 +227,67 @@ def _nearest_section_ancestor(node: Tag) -> Tag | None:
 def _top_level_sections(root: Tag) -> list[Tag]:
     """Sections under ``root`` with no section ancestor (LaTeXML may wrap them in divs)."""
     return [s for s in root.find_all(_is_section) if _nearest_section_ancestor(s) is None]
+
+
+def _sections_with_orphan_floats(
+    root: Tag, top_sections: list[Tag], doc_ctx: _DocCtx
+) -> list[dict]:
+    """Body sections with hoisted orphan floats re-inserted at their true document position.
+
+    Walks the top-level sections and the orphan captioned floats (see ``_orphan_captioned_floats``)
+    in document order: each run of consecutive orphans becomes a synthetic titleless section, and
+    body sections follow in the same running s1..sN sequence. Processing in document order keeps
+    figure ordinals monotonic, so a teaser leads, a supplementary float trails, and a float between
+    two sections lands between them — none is pulled to the document front. An orphan run yielding
+    no blocks claims no id, so numbering has no gaps. Absent orphans, this is s1..sN unchanged."""
+    top_ids = {id(s) for s in top_sections}
+    orphan_ids = {id(f) for f in _orphan_captioned_floats(root)}
+    sections: list[dict] = []
+    pending: list[Tag] = []
+
+    def flush_orphans() -> None:
+        if not pending:
+            return
+        sid = f"s{len(sections) + 1}"
+        ctx = _SectionCtx(section_id=sid)
+        blocks: list[dict] = []
+        for fl in pending:
+            blocks.extend(_blocks_from(fl, ctx, doc_ctx, skip_sections=True))
+        pending.clear()
+        if blocks:
+            sections.append({"id": sid, "title": "", "blocks": blocks})
+
+    for node in root.find_all(["section", "figure"]):
+        if id(node) in orphan_ids:
+            pending.append(node)
+        elif id(node) in top_ids:
+            flush_orphans()
+            sections.append(_parse_section(node, f"s{len(sections) + 1}", doc_ctx))
+    flush_orphans()
+    return sections
+
+
+def _orphan_captioned_floats(root: Tag) -> list[Tag]:
+    """Captioned figure/table floats that sit outside every section — content the section-only walk
+    would otherwise drop whole. Returned in document order.
+
+    LaTeXML lifts a teaser figure above the first section, a supplementary table below the last, or
+    a wide float between two sections up to ``ltx_document`` level, outside every ``ltx_section``;
+    because sections are the only thing walked, such a float lost its caption, number and body
+    entirely (measured: ~40 numbered captions across 34 of 466 sampled ar5iv papers). The caller
+    re-inserts each at its true document position (a run of them becomes a synthetic titleless
+    section) so reading order and figure ordinals stay right — a trailing appendix float must NOT be
+    pulled to the document front. Recover only TOP-LEVEL floats (a nested sub-panel belongs to its
+    parent) that carry a caption of their OWN (``_own_figcaption``) — a strip of "(a)/(b)" sub-panel
+    marks with no numbered caption of its own is decoration nothing could reference."""
+    return [
+        el
+        for el in root.find_all("figure")
+        if _is_figure_container(el)
+        and _nearest_section_ancestor(el) is None
+        and el.find_parent("figure") is None
+        and _own_figcaption(el) is not None
+    ]
 
 
 def _child_sections(section_el: Tag) -> list[Tag]:
@@ -328,10 +387,19 @@ def _blocks_from(
     classes = _classes(el)
     name = el.name
 
-    if name == "figure" and "ltx_table" in classes:
-        block = _table_block(el, sec_ctx)
-        return [block] if block else []
-    if name == "figure" and "ltx_figure" in classes:
+    if _is_figure_container(el):
+        # A caption-less outer packed with panels (a grid of numbered tables, or a table sharing
+        # the float with other content) decomposes into one block per panel first — regardless of
+        # container type or how deeply LaTeXML wrapped the panels.
+        mixed = _mixed_float_blocks(el, sec_ctx, doc_ctx)
+        if mixed is not None:
+            return mixed
+        # A single table: a declared figure.ltx_table, OR a figure.ltx_figure holding a tabular with
+        # a "Table N" caption (a \captionof{table} minipage). Routing on role, not class, keeps that
+        # disguise from falling to the figure path and losing its rows.
+        if _is_table_float(el):
+            block = _table_block(el, sec_ctx)
+            return [block] if block else []
         return _figure_blocks(el, sec_ctx, doc_ctx)
     if "ltx_equation" in classes or "ltx_eqn_table" in classes or "ltx_equationgroup" in classes:
         return _formula_blocks(el, sec_ctx)
@@ -479,10 +547,10 @@ def _figure_blocks(figure_el: Tag, sec_ctx: _SectionCtx, doc_ctx: _DocCtx) -> li
     numbered caption ("Figure 7 :", "Figure 8 :"). Treating the container as one figure dropped the
     second one from the document entirely and left the survivor with no label, so it could not be
     matched to a page-crop either. Panels captioned "(a)"/"(b)" are the other construct — real
-    sub-panels of ONE figure — and are left alone, as is any container with a caption of its own."""
-    mixed = _mixed_float_blocks(figure_el, sec_ctx, doc_ctx)
-    if mixed is not None:
-        return mixed
+    sub-panels of ONE figure — and are left alone, as is any container with a caption of its own.
+
+    Reached only from ``_blocks_from`` after ``_mixed_float_blocks`` already returned None, so a
+    caption-less panel grid never arrives here — this is the single-figure / numbered-panel case."""
     panels = _numbered_figure_panels(figure_el)
     if panels:
         return [b for b in (_figure_block(p, sec_ctx, doc_ctx) for p in panels) if b]
@@ -528,17 +596,25 @@ def _mixed_float_blocks(
     DocModel has no container block, so the float decomposes into flat sibling blocks, children
     walked in document order. Returns None when this is not such a float.
 
+    The table float need not be a DIRECT child: LaTeXML wraps a grid of numbered table panels in a
+    ``div.ltx_flex_figure`` under the caption-less outer (arXiv:2510.12615 packs 104 significance
+    tables this way, nested), so the trigger scans descendants while the walk recurses per direct
+    child — the wrapper is dispatched by ``_blocks_from``, which reaches each nested table panel and
+    routes it to ``_table_block`` (a nested caption-less sub-grid recurses through this same path,
+    each panel reached exactly once by the tree walk).
+
     Known trade-off: a bare ``<img>`` sitting DIRECTLY under the outer (not wrapped in a child
     figure/paragraph) is dropped by the per-child dispatch — LaTeXML always wraps a float's
     graphics, so that shape has not been observed; collecting strays would need a synthetic
     figure block with no caption to ever label it."""
     if _own_figcaption(figure_el) is not None:
         return None  # the container captions itself — subfigure semantics, not a mixed float
-    children = [c for c in figure_el.children if isinstance(c, Tag)]
-    if not any(_is_table_float(c) for c in children):
-        return None
+    if figure_el.find(_is_table_float) is None:
+        return None  # no table float anywhere inside — not a mixed float
     out: list[dict] = []
-    for child in children:
+    for child in figure_el.children:
+        if not isinstance(child, Tag):
+            continue
         if _is_table_float(child):
             block = _table_block(child, sec_ctx)
             if block:

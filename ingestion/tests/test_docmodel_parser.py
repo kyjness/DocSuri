@@ -326,6 +326,135 @@ def test_uncaptioned_logo_strip_makes_no_figure_block() -> None:
     assert specs == []
 
 
+def _parse_custom(html: str, specs: list | None = None):
+    return parse_html_to_docmodel(
+        html, paper_id="2401.00099", version=1, title="T", abstract=None,
+        source_tier=SourceTier.ar5iv, parser_version="p", schema_version="1.0.0",
+        generated_at=_FIXED_TS, figure_specs=specs if specs is not None else [],
+    )
+
+
+def test_captioned_figure_outside_any_section_is_recovered() -> None:
+    """LaTeXML hoists a teaser figure above the first section, directly under ltx_document. The
+    section-only walk dropped it whole — caption, number and graphic — so it is collected into a
+    lead section ahead of the body it precedes, and the body sections number after it."""
+    html = (
+        '<html><body><div class="ltx_document">'
+        '<figure class="ltx_figure"><img src="teaser.png"/>'
+        '<figcaption class="ltx_caption"><span class="ltx_tag">Figure 1: </span>'
+        "Teaser overview</figcaption></figure>"
+        '<section class="ltx_section"><h2>1 Intro</h2>'
+        '<div class="ltx_para"><p class="ltx_p">Body text.</p></div></section>'
+        "</div></body></html>"
+    )
+    specs: list = []
+    doc = _parse_custom(html, specs)
+    figures = [b.root for s in doc.sections for b in s.blocks if isinstance(b.root, FigureBlock)]
+    assert [(f.anchorLabel, f.caption) for f in figures] == [("Figure 1", "Teaser overview")]
+    assert [s.label for s in specs] == ["Figure 1"]
+    # the recovered float leads; the body section follows it
+    body = _body_sections(doc)
+    assert body[0].id == "s1" and not body[0].title  # lead section holding the teaser
+    assert body[1].id == "s2" and body[1].title == "1 Intro"
+
+
+def test_caption_of_graphicless_float_outside_section_reaches_full_text() -> None:
+    """An orphan float whose \\includegraphics LaTeXML could not render (no <img>) still carries a
+    caption; recovering it preserves that text even though no figure block/assetRef is minted."""
+    html = (
+        '<html><body><div class="ltx_document">'
+        '<figure class="ltx_figure">'
+        '<figcaption class="ltx_caption"><span class="ltx_tag">Figure 1: </span>'
+        "We visualize edits made by our model</figcaption></figure>"
+        '<section class="ltx_section"><h2>1 Intro</h2>'
+        '<div class="ltx_para"><p class="ltx_p">Body text.</p></div></section>'
+        "</div></body></html>"
+    )
+    doc = _parse_custom(html)
+    assert "We visualize edits made by our model" in doc.fullText
+
+
+def test_uncaptioned_float_outside_section_is_not_recovered() -> None:
+    """A stray image with no caption of its own outside every section is decoration — there is no
+    number to reference it, so it is left dropped and the body keeps its s1.. numbering."""
+    html = (
+        '<html><body><div class="ltx_document">'
+        '<figure class="ltx_figure"><img src="logo.png"/></figure>'
+        '<section class="ltx_section"><h2>1 Intro</h2>'
+        '<div class="ltx_para"><p class="ltx_p">Body text.</p></div></section>'
+        "</div></body></html>"
+    )
+    doc = _parse_custom(html)
+    body = _body_sections(doc)
+    assert [s.id for s in body] == ["s1"]
+    assert body[0].title == "1 Intro"  # no lead section was inserted
+
+
+def test_captioned_float_after_a_section_lands_after_it_not_at_the_front() -> None:
+    """A supplementary float LaTeXML hoisted below the last section is recovered at its true
+    position — a trailing synthetic section AFTER the body — not pulled to the document front, where
+    its reading order and figure ordinal would run ahead of the body it actually follows."""
+    html = (
+        '<html><body><div class="ltx_document">'
+        '<section class="ltx_section"><h2>1 Intro</h2>'
+        '<div class="ltx_para"><p class="ltx_p">Body text.</p></div></section>'
+        '<figure class="ltx_figure"><img src="trailing.png"/>'
+        '<figcaption class="ltx_caption"><span class="ltx_tag">Figure 1: </span>'
+        "Trailing float</figcaption></figure>"
+        "</div></body></html>"
+    )
+    specs: list = []
+    doc = _parse_custom(html, specs)
+    body = _body_sections(doc)
+    assert [s.id for s in body] == ["s1", "s2"]
+    assert body[0].title == "1 Intro"  # body leads
+    assert not body[1].title  # the trailing float sits in a titleless section after it
+    figures = [b.root for b in body[1].blocks if isinstance(b.root, FigureBlock)]
+    assert [(f.anchorLabel, f.caption) for f in figures] == [("Figure 1", "Trailing float")]
+
+
+def test_captioned_float_between_two_sections_lands_between_them() -> None:
+    """A float hoisted out of any section but sitting between two sections is recovered into a
+    synthetic section at that position, so it reads between the two — not at the front or end."""
+    html = (
+        '<html><body><div class="ltx_document">'
+        '<section class="ltx_section"><h2>1 Intro</h2>'
+        '<div class="ltx_para"><p class="ltx_p">First.</p></div></section>'
+        '<figure class="ltx_table"><table class="ltx_tabular"><tbody><tr>'
+        '<td class="ltx_td">v</td></tr></tbody></table>'
+        '<figcaption class="ltx_caption"><span class="ltx_tag">Table 1: </span>'
+        "Middle table</figcaption></figure>"
+        '<section class="ltx_section"><h2>2 Method</h2>'
+        '<div class="ltx_para"><p class="ltx_p">Second.</p></div></section>'
+        "</div></body></html>"
+    )
+    doc = _parse_custom(html)
+    body = _body_sections(doc)
+    assert [s.id for s in body] == ["s1", "s2", "s3"]
+    assert [s.title for s in body] == ["1 Intro", "", "2 Method"]
+    assert "Middle table" in doc.fullText
+
+
+def test_float_captioned_only_by_a_nested_subpanel_outside_section_is_not_recovered() -> None:
+    """A caption-less outer float above the first section whose only caption belongs to a nested
+    sub-panel ("(a)") has no number of its OWN — recovering it via a descendant caption would mint
+    an unlabelled figure. Requiring the float's own figcaption leaves it dropped, and the body keeps
+    its s1.. numbering."""
+    html = (
+        '<html><body><div class="ltx_document">'
+        '<figure class="ltx_figure"><figure class="ltx_figure"><img src="a.png"/>'
+        '<figcaption class="ltx_caption"><span class="ltx_tag">(a)</span>'
+        "panel a</figcaption></figure></figure>"
+        '<section class="ltx_section"><h2>1 Intro</h2>'
+        '<div class="ltx_para"><p class="ltx_p">Body text.</p></div></section>'
+        "</div></body></html>"
+    )
+    doc = _parse_custom(html)
+    body = _body_sections(doc)
+    assert [s.id for s in body] == ["s1"]
+    assert body[0].title == "1 Intro"  # no lead section was inserted
+
+
 def test_panel_group_whose_number_sits_in_a_sibling_float_is_kept() -> None:
     """LaTeXML can wrap a numbered figure's panels in an outer float and leave the "Figure 5:"
     caption in a sibling float (arXiv:2510.23156). The group then has no caption of its own and
@@ -433,6 +562,71 @@ def test_declared_table_float_inside_figure_outer_decomposes_too() -> None:
     assert [type(b) for b in typed] == [TableBlock, FigureBlock]
     assert typed[0].anchorLabel == "Table 2"
     assert typed[1].anchorLabel == "Figure 3"
+
+
+def test_table_panels_wrapped_in_flex_figure_are_all_recovered() -> None:
+    """A grid of numbered table panels LaTeXML wraps in a div.ltx_flex_figure under a caption-less
+    ltx_figure outer: the table floats are not DIRECT children, so a direct-child-only trigger
+    dropped every panel (measured: 41 significance tables on arXiv:2510.12615). The trigger scans
+    descendants, and each nested panel is recovered as its own captioned TableBlock."""
+    panel = (
+        '<figure class="ltx_table ltx_figure_panel">'
+        '<figcaption class="ltx_caption"><span class="ltx_tag ltx_tag_table">{tag} </span>'
+        "{cap}</figcaption>"
+        '<table class="ltx_tabular"><tr class="ltx_tr"><td class="ltx_td">{cell}</td></tr></table>'
+        "</figure>"
+    )
+    html = (
+        '<html><body><div class="ltx_document">'
+        '<section class="ltx_section"><h2>1 Results</h2>'
+        '<figure class="ltx_figure"><div class="ltx_flex_figure">'
+        + panel.format(tag="Table 1:", cap="First panel results", cell="a")
+        + panel.format(tag="Table 2:", cap="Second panel results", cell="b")
+        + "</div></figure></section></div></body></html>"
+    )
+    doc = parse_html_to_docmodel(
+        html, paper_id="2401.00015", version=1, title="T", abstract=None,
+        source_tier=SourceTier.ar5iv, parser_version="p", schema_version="1.0.0",
+        generated_at=_FIXED_TS,
+    )
+    tables = [b.root for s in doc.sections for b in s.blocks if isinstance(b.root, TableBlock)]
+    assert [(t.anchorLabel, t.caption) for t in tables] == [
+        ("Table 1", "First panel results"),
+        ("Table 2", "Second panel results"),
+    ]
+
+
+def test_table_grid_under_ltx_table_outer_with_figure_disguise_panels() -> None:
+    """The residual shape after the flex-figure fix: the OUTER is a caption-less figure.ltx_table,
+    and each panel is a figure.ltx_figure (a \\captionof{table} minipage — a table wearing the
+    figure class) with a "Table N" caption. The ltx_table outer used to route to _table_block,
+    merging every panel's rows into one block and losing the per-panel captions (arXiv:2503.00753
+    "Table 1..4"). Decompose first, and route each panel by role (a disguise -> TableBlock)."""
+    panel = (
+        '<figure class="ltx_figure ltx_figure_panel">'
+        '<figcaption class="ltx_caption"><span class="ltx_tag ltx_tag_table">{tag} </span>'
+        "{cap}</figcaption>"
+        '<table class="ltx_tabular"><tr class="ltx_tr"><td class="ltx_td">{cell}</td></tr></table>'
+        "</figure>"
+    )
+    html = (
+        '<html><body><div class="ltx_document">'
+        '<section class="ltx_section"><h2>1 Results</h2>'
+        '<figure class="ltx_table"><div class="ltx_flex_figure ltx_flex_table">'
+        + panel.format(tag="Table 1:", cap="Impact of embeddings", cell="a")
+        + panel.format(tag="Table 2:", cap="Fine-tuning results", cell="b")
+        + "</div></figure></section></div></body></html>"
+    )
+    doc = parse_html_to_docmodel(
+        html, paper_id="2503.00753", version=1, title="T", abstract=None,
+        source_tier=SourceTier.ar5iv, parser_version="p", schema_version="1.0.0",
+        generated_at=_FIXED_TS,
+    )
+    tables = [b.root for s in doc.sections for b in s.blocks if isinstance(b.root, TableBlock)]
+    assert [(t.anchorLabel, t.caption) for t in tables] == [
+        ("Table 1", "Impact of embeddings"),
+        ("Table 2", "Fine-tuning results"),
+    ]
 
 
 def test_panel_group_adopts_caption_from_caption_only_sibling_float() -> None:
