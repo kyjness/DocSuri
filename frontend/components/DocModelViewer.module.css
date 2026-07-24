@@ -156,6 +156,16 @@
   margin: 0;
 }
 
+/* MathJax clamps every svg to max-width:100% so a long INLINE expression cannot push the page
+   sideways. Inside this scroll container that clamp is actively wrong: rather than letting the box
+   scroll, it scaled a wide equation down to fit — measured on a phone at 332px for an 834px
+   equation, 40% of natural size, which puts the glyphs near 6px and the subscripts below that.
+   Release it here so the equation keeps its size and .formulaInner does the job it exists for.
+   Inline math elsewhere keeps the clamp. */
+.formulaInner :global(mjx-container[display='true'] svg) {
+  max-width: none;
+}
+
 .eqno {
   flex: 0 0 auto;
   margin-inline-start: auto;

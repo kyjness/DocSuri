@@ -201,7 +201,7 @@ export const fullTranslationResponse: TranslationOkDTO = {
               id: 's3.eq1',
               type: 'formula',
               latex:
-                '\\mathrm{Attention}(Q,K,V)=\\mathrm{softmax}\\left(\\frac{QK^{T}}{\\sqrt{d_{k}}}\\right)V',
+                '\\mathrm{MultiHead}(Q,K,V)=\\mathrm{Concat}(\\mathrm{head}_{1},\\ldots,\\mathrm{head}_{h})W^{O}\\quad\\text{where}\\quad\\mathrm{head}_{i}=\\mathrm{Attention}(QW_{i}^{Q},KW_{i}^{K},VW_{i}^{V})',
               display: true,
               anchorLabel: '(1)',
             },
@@ -235,8 +235,11 @@ export const fullTranslationResponse: TranslationOkDTO = {
                     {
                       cells: [
                         { text: '층 종류', isHeader: true },
-                        { text: '복잡도', isHeader: true },
-                        { text: '경로 길이', isHeader: true },
+                        { text: '층별 복잡도', isHeader: true },
+                        { text: '순차 연산', isHeader: true },
+                        { text: '최대 경로 길이', isHeader: true },
+                        { text: '학습 처리량', isHeader: true },
+                        { text: '메모리 사용량', isHeader: true },
                       ],
                     },
                     {
@@ -244,12 +247,18 @@ export const fullTranslationResponse: TranslationOkDTO = {
                         { text: 'Self-Attention' },
                         { text: '\\(O(n^{2}\\cdot d)\\)' },
                         { text: '\\(O(1)\\)' },
+                        { text: '\\(O(1)\\)' },
+                        { text: '12.5k tok/s' },
+                        { text: '\\(O(n^{2})\\)' },
                       ],
                     },
                     {
                       cells: [
                         { text: 'Recurrent' },
                         { text: '\\(O(n\\cdot d^{2})\\)' },
+                        { text: '\\(O(n)\\)' },
+                        { text: '\\(O(n)\\)' },
+                        { text: '3.1k tok/s' },
                         { text: '\\(O(n)\\)' },
                       ],
                     },
@@ -441,7 +450,7 @@ export const docModelResponse: DocModelOkDTO = {
             id: 's3.eq1',
             type: 'formula',
             latex:
-              '\\mathrm{Attention}(Q,K,V)=\\mathrm{softmax}\\left(\\frac{QK^{T}}{\\sqrt{d_{k}}}\\right)V',
+              '\\mathrm{MultiHead}(Q,K,V)=\\mathrm{Concat}(\\mathrm{head}_{1},\\ldots,\\mathrm{head}_{h})W^{O}\\quad\\text{where}\\quad\\mathrm{head}_{i}=\\mathrm{Attention}(QW_{i}^{Q},KW_{i}^{K},VW_{i}^{V})',
             display: true,
             anchorLabel: '(1)',
           },
@@ -476,8 +485,11 @@ export const docModelResponse: DocModelOkDTO = {
                   {
                     cells: [
                       { text: 'Layer Type', isHeader: true },
-                      { text: 'Complexity', isHeader: true },
-                      { text: 'Path Length', isHeader: true },
+                      { text: 'Complexity per Layer', isHeader: true },
+                      { text: 'Sequential Operations', isHeader: true },
+                      { text: 'Maximum Path Length', isHeader: true },
+                      { text: 'Training Throughput', isHeader: true },
+                      { text: 'Memory Footprint', isHeader: true },
                     ],
                   },
                   {
@@ -485,12 +497,18 @@ export const docModelResponse: DocModelOkDTO = {
                       { text: 'Self-Attention' },
                       { text: '\\(O(n^{2}\\cdot d)\\)' },
                       { text: '\\(O(1)\\)' },
+                      { text: '\\(O(1)\\)' },
+                      { text: '12.5k tok/s' },
+                      { text: '\\(O(n^{2})\\)' },
                     ],
                   },
                   {
                     cells: [
                       { text: 'Recurrent' },
                       { text: '\\(O(n\\cdot d^{2})\\)' },
+                      { text: '\\(O(n)\\)' },
+                      { text: '\\(O(n)\\)' },
+                      { text: '3.1k tok/s' },
                       { text: '\\(O(n)\\)' },
                     ],
                   },
