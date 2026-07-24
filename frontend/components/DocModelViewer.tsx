@@ -6,11 +6,11 @@
 // url-free). OA-license-gated: license_unavailable → arXiv link-out. External text is
 // escaped by React (BR-SF-9). Replaces the legacy plain-text full-text viewer.
 //
-// NOTE: a summary anchor is matched by its label — asset anchors ("Table 1"/"Figure 2"/"(1)")
-// to a block's anchorLabel, and section anchors to the section title (scrolling to the section
-// element, the way the TOC jump does). The AnchorVM still carries a label, not a doc-model id —
-// the id-based anchor contract is a follow-up. Span-precise inline highlight is a follow-up.
-// (KaTeX stylesheet is pulled in by the renderMath import below.)
+// NOTE: a summary anchor carries the doc-model id its grounding gate resolved to, so it scrolls
+// straight to that block/section. An anchor with no id (a caption-only float, or a summary cached
+// before ids shipped) still matches by label — asset anchors ("Table 1"/"Figure 2"/"(1)") to a
+// block's anchorLabel, section anchors to the section title. Span-precise inline highlight is a
+// follow-up. (The math stylesheet is pulled in by the renderMath import below.)
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type {
   AnchorTargetVM,
@@ -63,6 +63,15 @@ export function DocModelViewer({
     }
     return map;
   }, [assetState]);
+
+  // The assets fetch produces a user-facing message when it fails, but only the 'assets' outcome
+  // was ever read — so the message was built and thrown away, and a failed manifest looked
+  // identical to a paper with no figures. The body still reads fine without them, so this is a
+  // notice with a retry, not a blocking error state.
+  const assetsError =
+    assetState.status === 'done' && assetState.outcome.kind === 'error'
+      ? assetState.outcome.message
+      : null;
 
   const docModel =
     state.status === 'done' && state.outcome.kind === 'page' ? state.outcome.docModel : null;
@@ -159,6 +168,14 @@ export function DocModelViewer({
             <h1 className={styles.paperTitle} data-testid="docmodel-title">
               {renderInlineMath(outcome.docModel.meta.title, outcome.docModel.meta.macros)}
             </h1>
+          ) : null}
+          {assetsError ? (
+            <p className={styles.assetsNotice} role="status" data-testid="docmodel-assets-error">
+              {assetsError}
+              <button type="button" onClick={() => void loadAssets(paperId, version)}>
+                다시 시도
+              </button>
+            </p>
           ) : null}
           <DocModelBody docModel={outcome.docModel} assetsById={assetsById} anchor={anchor} />
           {/* 완독 sentinel (#346): reaching it = read to the end. Empty/hidden — layout-neutral. */}
@@ -493,8 +510,7 @@ function BlockView({
       } else if (asset?.url) {
         const alt = block.anchorLabel ?? '수식';
         inner = (
-          // eslint-disable-next-line @next/next/no-img-element -- signed S3 url, not a static asset
-          <img src={asset.url} alt={alt} loading="lazy" />
+          <AssetImage src={asset.url} alt={alt} label="수식" />
         );
       }
       if (inner === null) {
@@ -544,14 +560,22 @@ function BlockView({
           {asset?.url ? (
             <Zoomable
               onZoom={() =>
-                // eslint-disable-next-line @next/next/no-img-element -- signed S3 url
-                onZoom(<img src={asset.url} alt={alt} className={styles.zoomImg} />)
+                onZoom(
+                  <AssetImage src={asset.url} alt={alt} label="그림" className={styles.zoomImg} />,
+                )
               }
             >
-              {/* eslint-disable-next-line @next/next/no-img-element -- signed S3 url, not a static asset */}
-              <img src={asset.url} alt={alt} loading="lazy" />
+              <AssetImage src={asset.url} alt={alt} label="그림" />
             </Zoomable>
-          ) : null}
+          ) : (
+            // No asset yet — the manifest is still loading, the crop is env-gated/best-effort, or
+            // the fetch failed. Hold the slot the way the formula block does: dropping to a bare
+            // caption leaves the reader with a caption for a figure that is not there, and makes
+            // the page jump when the parallel assets fetch lands.
+            <span role="img" className={styles.formulaPlaceholder} aria-label="그림을 표시할 수 없습니다">
+              [그림]
+            </span>
+          )}
           {caption(block.anchorLabel, block.caption, macros)}
         </figure>
       );
@@ -580,12 +604,17 @@ function BlockView({
           <figure className={`${cls} ${styles.figure}`} data-block={block.id} tabIndex={-1}>
             <Zoomable
               onZoom={() =>
-                // eslint-disable-next-line @next/next/no-img-element -- signed S3 url
-                onZoom(<img src={asset.url} alt={block.text} className={styles.zoomImg} />)
+                onZoom(
+                  <AssetImage
+                    src={asset.url}
+                    alt={block.text}
+                    label="코드 이미지"
+                    className={styles.zoomImg}
+                  />,
+                )
               }
             >
-              {/* eslint-disable-next-line @next/next/no-img-element -- signed S3 url */}
-              <img src={asset.url} alt={block.text} loading="lazy" />
+              <AssetImage src={asset.url} alt={block.text} label="코드 이미지" />
             </Zoomable>
             <details className={styles.code}>
               <summary>텍스트로 보기</summary>
@@ -629,8 +658,11 @@ function TableBlockView({
   const showImage = (override ?? !hasRows) && Boolean(asset?.url);
   const image =
     asset?.url != null ? (
-      // eslint-disable-next-line @next/next/no-img-element -- signed S3 url, not a static asset
-      <img src={asset.url} alt={block.anchorLabel ?? '표 원본 이미지'} loading="lazy" />
+      <AssetImage
+        src={asset.url}
+        alt={block.anchorLabel ?? '표 원본 이미지'}
+        label="표 이미지"
+      />
     ) : null;
   const table = (
     <table className={styles.table}>
@@ -727,6 +759,40 @@ function sectionMatchesLabel(section: DocSection, label: string): boolean {
 function isSectionActive(section: DocSection, anchor?: AnchorTargetVM | null): boolean {
   if (anchor?.blockId) return section.id === anchor.blockId;
   return Boolean(anchor?.label && sectionMatchesLabel(section, anchor.label));
+}
+
+/** An asset image that degrades to a labelled placeholder instead of the browser's broken-image
+ * glyph. Asset urls are short-lived signed urls, so a reader who leaves the paper open past
+ * expiry — or hits a 403 — would otherwise be left with a broken icon and nothing explaining it.
+ * The placeholder mirrors the formula block's, which already handles its own missing render. */
+function AssetImage({
+  src,
+  alt,
+  label,
+  className,
+}: {
+  src: string;
+  alt: string;
+  label: string;
+  className?: string;
+}) {
+  const [failed, setFailed] = useState(false);
+  // A refreshed signed url is a new chance to load; without this the block would stay broken
+  // for the rest of the mount.
+  useEffect(() => setFailed(false), [src]);
+  if (failed) {
+    // role="img" so the label is honored on a bare <span> (generic role), as in the formula
+    // placeholder (D5, BR-U5-21, NFR-U5-U2).
+    return (
+      <span role="img" className={styles.formulaPlaceholder} aria-label={`${label}을 표시할 수 없습니다`}>
+        [{label}]
+      </span>
+    );
+  }
+  return (
+    // eslint-disable-next-line @next/next/no-img-element -- signed S3 url, not a static asset
+    <img src={src} alt={alt} className={className} loading="lazy" onError={() => setFailed(true)} />
+  );
 }
 
 type AnchorTarget = { kind: 'block'; id: string } | { kind: 'section'; id: string };

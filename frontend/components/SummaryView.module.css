@@ -23,7 +23,9 @@
   line-height: 1.6;
   color: var(--color-text);
   white-space: pre-wrap;
-  word-break: break-word;
+  /* Korean summary prose: wrap at 어절 boundaries, never mid-word. */
+  word-break: keep-all;
+  overflow-wrap: anywhere;
 }
 
 /* Block content produced by renderRichText (method/results/limitations): paragraphs + bullet
@@ -45,7 +47,8 @@
 }
 
 .body li {
-  word-break: break-word;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
 }
 
 .list {

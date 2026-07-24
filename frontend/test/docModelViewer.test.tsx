@@ -212,6 +212,25 @@ describe('DocModelViewer', () => {
     expect(heading.className).toContain('active');
   });
 
+  it('swaps a figure whose image fails to load for a placeholder, not a broken icon', async () => {
+    // Asset urls are short-lived signed urls: past expiry (or on a 403) the <img> errors and the
+    // browser shows its broken-image glyph with nothing explaining it. Firing the error must leave
+    // a labelled placeholder in the slot instead.
+    render(<DocModelViewer paperId="2401.00001" version={1} anchor={null} />);
+    const img = await waitFor(() => {
+      const el = screen.getAllByRole('img').find((e) => e.tagName === 'IMG');
+      expect(el).toBeTruthy();
+      return el as HTMLImageElement;
+    });
+
+    fireEvent.error(img);
+
+    await waitFor(() => {
+      expect(screen.getAllByRole('img').some((e) => e.tagName === 'IMG')).toBe(false);
+    });
+    expect(screen.getByLabelText('그림을 표시할 수 없습니다')).toBeTruthy();
+  });
+
   it('moves focus to the target section when a TOC link is activated (D3)', async () => {
     render(<DocModelViewer paperId="2401.00001" version={1} anchor={null} />);
     await screen.findByRole('heading', { name: 'Model Architecture' });
