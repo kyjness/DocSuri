@@ -166,6 +166,17 @@ cd frontend && pnpm run dev                              # http://localhost:3000
   Bedrock Cohere 임베더를 `model_id=None`으로 생성(`bedrock_embedding.py "-v3" in model_id`). discovery는
   OpenAI 임베더로 전환됐으나 evidence real_wiring은 Bedrock 전용 → **u11 별도 수리 대상**(로컬 미대응).
 
+**로컬 준비성 점검 도구 (`tools/local/smoke.py`)**: 비-에이전트 표면을 in-process ASGI로 로컬 인프라에 태워
+전수 점검(실 세션 인증, 모듈별 대표 플로우, ok/degraded/fail/skip 분류). 리팩토링마다 재실행하는 회귀 방지.
+```bash
+set -a; source .env; set +a
+backend/.venv/bin/python tools/local/smoke.py             # 무료 표면
+backend/.venv/bin/python tools/local/smoke.py --with-llm  # + 유료 소수(OpenAI·S2)
+```
+**2026-07-24 실행 결과: 20/20 ok** (degraded·fail 0) — search 20건(실경로)·doc-model 10섹션·요약 앵커 3개
+(@10 논문)·번역 200·citation 30 edges. "앵커 안뜸"은 파이프라인 결함이 아니라 **구세대(`version=1`) 저장분**에서
+라벨 resolve 실패로 드롭된 것 확인. `ops` 403은 USER authz 정상, `orcid-profile` 404는 미연동 정상.
+
 ## 7. 미룬 결정 (deferred)
 
 | 결정 | 보류 사유 | 재검토 시점 |
