@@ -17,7 +17,7 @@ grounding only*. Deterministic checks ONLY; no LLM-judge (Q15):
 from __future__ import annotations
 
 import re
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from .models import Anchor, AnchorVerdict, GroundingInput, RefinedSource, Violation
 
@@ -58,37 +58,56 @@ def _contiguous(needle: list[str], hay: list[str]) -> bool:
     return 0 < n <= len(hay) and any(hay[i : i + n] == needle for i in range(len(hay) - n + 1))
 
 
-def _structural_index(refined: RefinedSource) -> list[tuple[str, list[str]]]:
-    """(canonical label, key tokens) for every citable doc-model location, most specific first
-    (figures/tables before sections) so a compound target resolves to the precise block."""
-    index: list[tuple[str, list[str]]] = []
+@dataclass(frozen=True, slots=True)
+class _Location:
+    """A citable doc-model location: the canonical label to display, the tokens an anchor is
+    matched on, and ``block_id`` — the deterministic doc-model handle the reader jumps by
+    (docmodel.md §3). ``block_id`` is "" only for a caption-derived entry, whose id lives
+    nowhere but the caption string."""
+
+    canonical: str
+    key: list[str]
+    block_id: str
+
+
+def _structural_index(refined: RefinedSource) -> list[_Location]:
+    """Every citable doc-model location, most specific first (figures/tables before sections) so a
+    compound target resolves to the precise block. Structured tables/figures come before the
+    caption-derived entries so that when both describe the same float, the one carrying a
+    doc-model id wins the de-dup."""
+    index: list[_Location] = []
     seen: set[tuple[str, ...]] = set()
 
-    def add(canonical: str, raw_key: str) -> None:
+    def add(canonical: str, raw_key: str, block_id: str = "") -> None:
         toks = _label_tokens(raw_key)
         sig = tuple(toks)
         if toks and sig not in seen:
             seen.add(sig)
-            index.append((canonical, toks))
+            index.append(_Location(canonical, toks, block_id))
 
-    # Figure / Table labels — from caption prefixes ("Figure 1: …") + structured tables.
+    # Structured floats first — these carry the doc-model block id.
+    for tbl in refined.tables:
+        if tbl.label:
+            add(tbl.label, tbl.label, tbl.anchor)
+    for fig in refined.figures:
+        if fig.label:
+            add(fig.label, fig.label, fig.anchor)
+    # Caption-derived fallback ("Figure 1: …") — covers a legacy plain-text source that has no
+    # structured floats at all. De-duped away when the structured entry above already added it.
     for cap in refined.captions:
         m = _FIGTBL_RE.match(cap.strip())
         if m:
             kind = "Table" if m.group(1).lower().startswith("tab") else "Figure"
             add(f"{kind} {m.group(2)}", f"{kind} {m.group(2)}")
-    for tbl in refined.tables:
-        if tbl.label:
-            add(tbl.label, tbl.label)
     # Section titles.
     for sec in refined.sections:
         if sec.label:
-            add(sec.label, sec.label)
+            add(sec.label, sec.label, sec.anchor)
     return index
 
 
-def _resolve_location(anchor: Anchor, index: list[tuple[str, list[str]]]) -> str | None:
-    """Canonical doc-model label the anchor points at, or None if it resolves to nothing real.
+def _resolve_location(anchor: Anchor, index: list[_Location]) -> _Location | None:
+    """The doc-model location the anchor points at, or None if it resolves to nothing real.
     Resolves against ``label`` (the prompt's location field) OR ``target_hint`` (raw ``target``);
     a location's key tokens must appear as a consecutive run in one of them."""
     hint = _label_tokens(anchor.target_hint)
@@ -97,19 +116,20 @@ def _resolve_location(anchor: Anchor, index: list[tuple[str, list[str]]]) -> str
         return None
     # Exact token match first — prefer the precise block over a shorter sub-phrase (so
     # "Additional Experimental Results" resolves to itself, not to "Experimental Results").
-    for canonical, key in index:
-        if key == hint or key == lbl:
-            return canonical
+    for loc in index:
+        if loc.key == hint or loc.key == lbl:
+            return loc
     # Contiguous fallback: pick the LONGEST (most specific) matching key, not the first (#352).
     # A short generic title (e.g. "Method") that happens to be a sub-run of the anchor's label
     # must not win over a longer, more specific title that also matches. Index order
     # (most-specific-first) breaks length ties — only a strictly longer key replaces the best.
-    best_canonical: str | None = None
-    best_len = 0
-    for canonical, key in index:
-        if len(key) > best_len and (_contiguous(key, hint) or _contiguous(key, lbl)):
-            best_canonical, best_len = canonical, len(key)
-    return best_canonical
+    best: _Location | None = None
+    for loc in index:
+        if (best is None or len(loc.key) > len(best.key)) and (
+            _contiguous(loc.key, hint) or _contiguous(loc.key, lbl)
+        ):
+            best = loc
+    return best
 
 
 # Numeric grounding is fraction-based: abstain only when MORE than this share of a draft's result
@@ -219,9 +239,9 @@ class GroundingValidator:
             kept = list(draft.anchors)
         else:
             for a in draft.anchors:
-                canonical = _resolve_location(a, index)
-                if canonical is not None:
-                    kept.append(replace(a, label=canonical))
+                loc = _resolve_location(a, index)
+                if loc is not None:
+                    kept.append(replace(a, label=loc.canonical, block_id=loc.block_id))
                 else:
                     soft.append(Violation("anchor_missing", a.field_name))
 

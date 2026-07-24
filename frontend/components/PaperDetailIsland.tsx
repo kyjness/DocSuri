@@ -95,8 +95,11 @@ export function PaperDetailIsland({ paperId, version, arxivUrl }: PaperDetailIsl
       setInlineAnchor(anchor ?? null);
       return;
     }
-    // Phone: open the full-screen doc-model route scrolled to the matching block.
+    // Phone: open the full-screen doc-model route scrolled to the matching block. anchorId is the
+    // doc-model id the backend resolved to; anchorLabel rides along because the viewer still needs
+    // it to locate an anchor that carries no id (and to keep older links working).
     const sp = new URLSearchParams({ version: String(version) });
+    if (anchor?.blockId) sp.set('anchorId', anchor.blockId);
     if (anchor?.label) {
       sp.set('anchorLabel', anchor.label);
       if (anchor.span) sp.set('anchorSpan', anchor.span);

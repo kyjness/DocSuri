@@ -30,7 +30,8 @@ export default async function DocModelPage({
 
   const label = typeof sp.anchorLabel === 'string' ? sp.anchorLabel : undefined;
   const span = typeof sp.anchorSpan === 'string' ? sp.anchorSpan : '';
-  const anchor: AnchorTargetVM | null = label ? { span, label } : null;
+  const blockId = typeof sp.anchorId === 'string' ? sp.anchorId : undefined;
+  const anchor: AnchorTargetVM | null = label || blockId ? { span, label: label ?? '', blockId } : null;
 
   // Preserve ?version/?anchorLabel/?anchorSpan across a login round-trip (E6, BR-U5-15) — a
   // query-less redirectTo used to drop them, landing the user back on the doc-model page but

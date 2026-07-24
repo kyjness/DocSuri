@@ -70,7 +70,7 @@ export function DocModelViewer({
   // Scroll to + highlight the target (asset block or section) matching the selected anchor.
   useEffect(() => {
     if (!docModel || !anchor || !containerRef.current) return;
-    const t = resolveAnchorTarget(docModel, anchor.label);
+    const t = resolveAnchorTarget(docModel, anchor);
     if (!t) return;
     const el =
       t.kind === 'block'
@@ -704,36 +704,50 @@ function flattenToc(sections: DocSection[], depth = 1, out: TocEntry[] = []): To
   return out;
 }
 
+// Highlight what the anchor resolved to. An id identifies the block outright — which also
+// distinguishes two blocks that print the SAME anchorLabel, something the label rule cannot do.
+// Without an id (caption-only float, or a summary cached before ids shipped) fall back to it.
 function isActive(block: DocBlock, anchor?: AnchorTargetVM | null): boolean {
   if (!anchor) return false;
+  if (anchor.blockId) return block.id === anchor.blockId;
   const label = 'anchorLabel' in block ? block.anchorLabel : undefined;
   return Boolean(label && anchor.label && label === anchor.label);
 }
 
 // The single source of truth for the section-anchor match rule (label ⇔ section title). Used both
 // to pick the scroll target (resolveAnchorTarget) and to highlight the heading (isSectionActive),
-// so the two can never drift apart.
+// so the two can never drift apart. Only reached for an anchor that carries no id.
 function sectionMatchesLabel(section: DocSection, label: string): boolean {
   return Boolean(section.title && label && section.title.trim() === label.trim());
 }
 
-// A section anchor's canonical label is the section title (no block anchorLabel matches), so the
-// heading — the thing the anchor points at — carries the highlight, mirroring the per-block one.
+// A section anchor points at the section itself (no block anchorLabel matches), so the heading —
+// the thing the anchor points at — carries the highlight, mirroring the per-block one. Two
+// subsections sharing a title ("Results") stay distinguishable once the anchor carries an id.
 function isSectionActive(section: DocSection, anchor?: AnchorTargetVM | null): boolean {
+  if (anchor?.blockId) return section.id === anchor.blockId;
   return Boolean(anchor?.label && sectionMatchesLabel(section, anchor.label));
 }
 
 type AnchorTarget = { kind: 'block'; id: string } | { kind: 'section'; id: string };
 
-// Resolve a summary anchor's label to a scroll target. Two anchor kinds survive the backend
-// grounding gate: asset anchors ("Table 1"/"Figure 2"/"(1)") that map to a block's anchorLabel,
-// and section anchors whose canonical label is the section title itself ("Model Architecture").
-// Only tables/figures/formulas carry anchorLabel, so a section anchor has no matching block — it
-// falls back to the section element (dm-{id}), the same target the TOC jump uses. An asset-block
-// match wins over a section match (more specific). Labels are trimmed before compare; the backend
-// rewrites the label to the doc-model's own canonical text, so (trimmed) equality is the contract.
-function resolveAnchorTarget(doc: DocModel, label: string): AnchorTarget | null {
-  const needle = (label ?? '').trim();
+// Resolve a summary anchor to a scroll target. The backend's grounding gate already resolved the
+// anchor against the doc-model and reports the id it landed on, so an id anchor needs no search
+// here — only the kind, to pick the element and the scroll alignment. Section ids are "s3"/"s3.2";
+// a block id extends its section's with a type suffix ("s3.tbl1"), so a trailing letter run tells
+// the two apart without walking the tree.
+//
+// An anchor carries no id when the gate resolved it to a caption-only float (no block behind it),
+// or when it comes from a summary cached before ids shipped — those still match by label, the way
+// every anchor did before: asset anchors ("Table 1"/"Figure 2"/"(1)") against a block's
+// anchorLabel, section anchors against the section title, block winning as the more specific.
+const BLOCK_ID_SUFFIX_RE = /\.[a-z]+\d+$/;
+
+function resolveAnchorTarget(doc: DocModel, anchor: AnchorTargetVM): AnchorTarget | null {
+  const id = anchor.blockId?.trim();
+  if (id) return { kind: BLOCK_ID_SUFFIX_RE.test(id) ? 'block' : 'section', id };
+
+  const needle = (anchor.label ?? '').trim();
   if (!needle) return null;
   const walkBlocks = (sections: DocSection[]): AnchorTarget | null => {
     for (const s of sections) {

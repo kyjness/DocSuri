@@ -158,6 +158,11 @@ class Section:
     label: str  # "" when only a span could be derived (Q6 span-only degrade)
     start: int
     end: int
+    # The doc-model section id ("s3", "s3.2") this projection came from — the deterministic
+    # anchor handle docmodel.md §3 mandates. Carried so a resolved anchor can name a location
+    # by id instead of by the label text it was matched on. "" for a span-only degrade, which
+    # has no doc-model section behind it.
+    anchor: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,10 +180,23 @@ class Table:
 
 
 @dataclass(frozen=True, slots=True)
+class Figure:
+    """A doc-model figure projected for grounding. A figure contributes no text to summarize, so
+    unlike ``Table`` it carries no body — only the labels a citation can name ("Figure 3") and
+    ``anchor``, its doc-model block id. Without this the figure's id lives only inside a caption
+    STRING, and an anchor resolved to it could not report where it landed."""
+
+    label: str
+    caption: str = ""
+    anchor: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class RefinedSource:
     body: str
     sections: tuple[Section, ...] = ()
     tables: tuple[Table, ...] = ()  # doc-model structured tables — data visible to LLM (D8)
+    figures: tuple[Figure, ...] = ()  # doc-model figures — label/id only, for anchor resolution
     captions: tuple[str, ...] = ()  # Table/Figure captions — preserved (Q2)
     formulas: tuple[str, ...] = ()  # LaTeX — preserved, never translated
     preserved: tuple[str, ...] = ()  # Appendix, Supplementary Results, etc. (Step 36)
@@ -207,6 +225,11 @@ class Anchor:
     target: AnchorTarget
     span: str
     label: str = ""  # "" when section derivation failed → span-only (Q6)
+    # The doc-model Section/Block id the grounding gate resolved this anchor to ("s3",
+    # "s3.tbl1") — the deterministic handle docmodel.md §3 mandates, filled in by ``validate``.
+    # Readers jump by this instead of re-matching ``label`` text; ``label`` stays for display.
+    # "" when the anchor was kept without resolving (the empty-index escape hatch).
+    block_id: str = ""
     # Raw location string the LLM emits in its ``target`` field (e.g. "Section: Method",
     # "Figure 1", "Table 1, Table 2 / Appendix B"). The grounding gate resolves THIS against
     # the doc-model's real sections/tables/figures (BR-S7); ``label`` is then rewritten to the
@@ -325,6 +348,7 @@ class SummaryResultDTO:
                         "target": str(a.target),
                         "span": a.span,
                         "label": a.label,
+                        "blockId": a.block_id,
                     }
                     for a in s.anchors
                 ],

@@ -39,13 +39,18 @@ export interface AnchorVM {
   field: SummaryFieldName;
   target: 'section' | 'table' | 'figure';
   span: string;
+  /** Display text for the resolved location — what the chip reads. Shown, not matched. */
   label: string;
+  /** The doc-model Section/Block id this anchor resolved to ("s3", "s3.tbl1") — the viewer
+   * scrolls/highlights by this. Absent on an anchor that resolved to no structured location,
+   * and on summaries cached before ids shipped, where the viewer falls back to `label`. */
+  blockId?: string;
 }
 
-/** What the full-text viewer needs to locate an anchor: it jumps by label and shows the span,
- * and reads neither `field` nor `target`. A deep link (?anchorLabel) carries only these, so
- * requiring a whole AnchorVM there would force fabricating the other two. */
-export type AnchorTargetVM = Pick<AnchorVM, 'label' | 'span'>;
+/** What the full-text viewer needs to locate an anchor: the id it jumps to, the label it falls
+ * back to, and the span it shows. It reads neither `field` nor `target`. A deep link carries
+ * only these, so requiring a whole AnchorVM there would force fabricating the other two. */
+export type AnchorTargetVM = Pick<AnchorVM, 'label' | 'span' | 'blockId'>;
 
 export interface ReproducibilityVM {
   code: string;

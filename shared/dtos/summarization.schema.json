@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://docsuri.dev/shared/dtos/summarization.schema.json",
-  "$comment": "ANCHOR MODEL CONFLICT (unresolved) — 2026-06-30, aidlc-suite-review PR #280. FROZEN docmodel.md §3 mandates deterministic Section/Block id anchors, but this deployed U7 summarization schema emits the legacy { target ∈ enum{section,table,figure}, quote-span (Anchor.span), regex-label (Anchor.label) } model (U7: 백엔드 무변경 / backend unchanged), and evidence-formation-port.md §3.6 assumes id-based anchors. Until an explicit decision aligns these (either U7/this schema migrate to id anchors, or docmodel.md §3 is formally amended/un-frozen), the novelty/evidence agent's anchor-reality verification cannot rely on id anchors. Resolution owner: TBD. Cross-refs: docmodel.md §3, this file's AnchorTarget/Anchor $defs, aidlc-docs/construction/u7-summarization/functional-design/domain-entities.md (Anchor), aidlc-docs/construction/shared/evidence-formation-port.md §3.6. This $comment is advisory only and changes no field schema.",
+  "$comment": "ANCHOR MODEL — id anchors landed additively (2026-07-24), closing the identity half of the conflict raised 2026-06-30 (aidlc-suite-review PR #280). Anchor now carries blockId, the doc-model Section/Block id docmodel.md §3 mandates, resolved server-side by U7's grounding gate; consumers jump by that id and evidence-formation-port.md §3.6's anchor-reality verification can rely on it. Additive per docmodel.md §6 (backward compatible, no schemaVersion bump): target/span/label keep their meanings, label demoted to display-only as §3 prescribes. STILL OPEN: (a) the model authors label and the SERVER resolves it, so precision is the section (or captioned float) it matched, not an arbitrary paragraph — having the model cite ids directly is deferred and would change only the prompt + grounding; (b) span stays a quote string, not §3's [start,end] block offsets, so span-precise highlight is still a follow-up. Prior art: requirements.md FR-12 / gate Q4=A (2026-06-29) deferred block-id anchors to phase 4 with the evidence contract — this is that deferral landing. Cross-refs: docmodel.md §3/§6, aidlc-docs/construction/u7-summarization/functional-design/domain-entities.md (Anchor), aidlc-docs/construction/shared/evidence-formation-port.md §3.6. This $comment is advisory only and changes no field schema.",
   "title": "SummaryResponse",
   "description": "U7 Summarization DTO contract. The ROOT schema describes SummaryResponse — the union (oneOf) returned by on-demand actions (FR-12/13/14) and branched by U5 ApiClient to surface status. All named DTOs (SummaryRequest, SummaryResultDTO, SummaryDraft, Anchor, TranslationDraft, PendingDTO, AbstainDTO, CostDegradedDTO, SourceUnavailableDTO) are defined in $defs for type generation.",
   "oneOf": [
@@ -89,7 +89,11 @@
         },
         "label": {
           "type": "string",
-          "description": "Derived section, table, or figure label (e.g. 'Section 3.1'). Trace: FR-12."
+          "description": "Display text for the resolved location (e.g. 'Section 3.1', 'Table 2') — what the source chip reads. Consumers jump by blockId; this is shown, not matched. Trace: FR-12."
+        },
+        "blockId": {
+          "type": "string",
+          "description": "The doc-model Section/Block id the grounding gate resolved this anchor to (e.g. 's3', 's3.tbl1') — the deterministic anchor handle of docmodel.md §3. Consumers scroll/highlight by this id instead of re-matching label text. Empty when the anchor was kept without resolving to a structured location (a caption-only float, or a source with no doc-model structure), where consumers fall back to label. Trace: FR-12, docmodel.md §3."
         }
       },
       "required": ["field", "target", "span", "label"],

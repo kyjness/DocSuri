@@ -106,7 +106,11 @@ class Anchor(BaseModel):
     )
     label: str = Field(
         ...,
-        description="Derived section, table, or figure label (e.g. 'Section 3.1'). Trace: FR-12.",
+        description="Display text for the resolved location (e.g. 'Section 3.1', 'Table 2') — what the source chip reads. Consumers jump by blockId; this is shown, not matched. Trace: FR-12.",
+    )
+    blockId: str | None = Field(
+        None,
+        description="The doc-model Section/Block id the grounding gate resolved this anchor to (e.g. 's3', 's3.tbl1') — the deterministic anchor handle of docmodel.md §3. Consumers scroll/highlight by this id instead of re-matching label text. Empty when the anchor was kept without resolving to a structured location (a caption-only float, or a source with no doc-model structure), where consumers fall back to label. Trace: FR-12, docmodel.md §3.",
     )
 
 

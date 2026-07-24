@@ -176,6 +176,42 @@ describe('DocModelViewer', () => {
     expect((block as HTMLElement).className).toContain('active');
   });
 
+  it('jumps by the anchor blockId, ignoring a label that points elsewhere', async () => {
+    // The backend resolves the anchor against the doc-model and reports the id it landed on, so
+    // the id is the target. Pairing it with a label that WOULD match a different block proves the
+    // viewer stopped re-deriving the destination from label text.
+    const anchor = {
+      field: 'results' as const,
+      target: 'table' as const,
+      span: 'per-layer complexity',
+      label: 'Model Architecture',
+      blockId: 's3.2.tbl1',
+    };
+    render(<DocModelViewer paperId="2401.00001" version={1} anchor={anchor} />);
+    await screen.findByRole('heading', { name: 'Why Self-Attention' });
+
+    const block = document.querySelector('[data-block="s3.2.tbl1"]');
+    await waitFor(() => expect(document.activeElement).toBe(block));
+    expect((block as HTMLElement).className).toContain('active');
+    // The section the label names must NOT be highlighted — the id won.
+    const heading = screen.getByRole('heading', { name: 'Model Architecture' });
+    expect(heading.className).not.toContain('active');
+  });
+
+  it('jumps to a section by its id when the anchor carries one', async () => {
+    const anchor = {
+      field: 'method' as const,
+      target: 'section' as const,
+      span: 'scaled dot-product attention',
+      label: 'Model Architecture',
+      blockId: 's3',
+    };
+    render(<DocModelViewer paperId="2401.00001" version={1} anchor={anchor} />);
+    const heading = await screen.findByRole('heading', { name: 'Model Architecture' });
+    await waitFor(() => expect(document.activeElement).toBe(document.getElementById('dm-s3')));
+    expect(heading.className).toContain('active');
+  });
+
   it('moves focus to the target section when a TOC link is activated (D3)', async () => {
     render(<DocModelViewer paperId="2401.00001" version={1} anchor={null} />);
     await screen.findByRole('heading', { name: 'Model Architecture' });

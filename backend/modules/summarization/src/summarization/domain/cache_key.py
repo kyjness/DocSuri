@@ -22,7 +22,9 @@ from .models import Persona, Scope, SummaryCacheKey, SummaryRequest, Task
 # p3: anchors[].field is enum-constrained to the summary field names and the prompt says so. Cached
 # summaries hold anchors whose field carries a SECTION TITLE instead, which the reader drops when it
 # matches anchors to fields — they must regenerate rather than keep serving chip-less summaries.
-PROMPT_VER = "p3"
+# p4: anchors carry blockId, the doc-model id the reader jumps by. Summaries cached without it
+# would keep serving anchors the reader can only locate by re-matching label text.
+PROMPT_VER = "p4"
 # Translate base FORMAT version — appended to the translate key only, so it invalidates translate
 # artifacts WITHOUT needlessly regenerating summaries. Bump when the cached translate base changes
 # shape. ``m1`` = masked standard-term tokens rendered at serve (BR-S4): older token-free bases
