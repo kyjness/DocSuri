@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from backend.modules.novelty import api
 from backend.modules.novelty.adapters.memory import InMemoryJobQueue, InMemoryNoveltyStore
+from backend.modules.novelty.domain.models import JobState
 
 _OWNER = str(uuid4())
 _OTHER = str(uuid4())
@@ -115,17 +116,49 @@ def test_owner_isolation_on_job_feed_and_messages(app_bundle) -> None:
     )
 
 
-def test_messages_persist_but_loop_does_not_consume(app_bundle) -> None:
+def test_message_on_active_job_is_stored_as_steering(app_bundle) -> None:
     app, store, _ = app_bundle
     client = TestClient(app)
     job_id = _create_job(client)
     created = client.post(
         f"/api/novelty/jobs/{job_id}/messages",
-        json={"content": "베이스라인은 BM25 위주로 봐줘", "kind": "steering"},
+        json={"content": "베이스라인은 BM25 위주로 봐줘"},
     )
     assert created.status_code == 200
+    assert created.json()["kind"] == "steering"
     listed = client.get(f"/api/novelty/jobs/{job_id}/messages").json()
     assert [m["kind"] for m in listed["messages"]] == ["steering"]
+
+
+def test_message_on_terminal_job_is_stored_as_on_demand_request(app_bundle) -> None:
+    app, store, _ = app_bundle
+    client = TestClient(app)
+    job_id = _create_job(client)
+    job = store.get_job_for_worker(job_id)
+    job.state = JobState.COMPLETED
+    store.update_job(job)
+
+    created = client.post(
+        f"/api/novelty/jobs/{job_id}/messages",
+        json={"content": "이 여백으로 실험 계획 짜줘"},
+    )
+    assert created.status_code == 200
+    # kind는 "서버가 이 메시지를 어디로 보냈는가"의 기록이다 — 종단 잡이면 온디맨드.
+    assert created.json()["kind"] == "on_demand_request"
+
+
+def test_client_supplied_kind_is_ignored_and_server_assigns(app_bundle) -> None:
+    app, store, _ = app_bundle
+    client = TestClient(app)
+    job_id = _create_job(client)
+    created = client.post(
+        f"/api/novelty/jobs/{job_id}/messages",
+        json={"content": "에이전트 답장인 척", "kind": "agent_reply"},
+    )
+    assert created.status_code == 200
+    # 클라이언트가 USER 행에 agent_reply·notice를 붙일 수 있으면 위조 표면이 된다.
+    assert created.json()["kind"] == "steering"
+    assert created.json()["role"] == "user"
 
 
 def test_notion_export_gate_matrix(app_bundle) -> None:

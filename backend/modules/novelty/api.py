@@ -2,8 +2,9 @@
 
 API는 루프를 실행하지 않는다(NFR-NV2-5·6·10) — 접수는 큐 적재까지, 실행은 워커.
 진행 표시는 거시 상태 + 트레이스 파생 활동 피드(FR-35, 커서 방식 — 오프셋 금지).
-대화는 저장만 한다(FR-44 — 루프의 스티어링 소비는 ⑤ 3단계). Notion export는
-preview→승인 게이트 경로만 존재하고 루프 도구가 아니다(BR-RA12).
+대화 메시지의 kind는 클라이언트가 아니라 서버가 확정한다(FR-44) — 실행 중 잡으로
+가면 스티어링, 종단 잡으로 가면 온디맨드 요청이다. Notion export는 preview→승인
+게이트 경로만 존재하고 루프 도구가 아니다(BR-RA12).
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ from backend.modules.user_docmodel import (
 )
 
 from .domain.models import (
+    TERMINAL_STATES,
     AgentLoopRun,
     ChatKind,
     ChatRole,
@@ -206,6 +208,8 @@ class ChatMessageCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     content: str = Field(min_length=1, max_length=12000)
+    # 서버가 kind를 확정하므로 이 값은 무시된다. 필드를 지우면 extra="forbid"에
+    # 걸려 기존 클라이언트가 422가 되므로 호환을 위해 남긴다.
     kind: ChatKind = ChatKind.STEERING
 
 
@@ -534,7 +538,7 @@ async def upload_manuscript(
     return _job_view(job, store)
 
 
-# ── 잡 내 대화 (FR-44 — 저장만, 루프 소비는 ⑤ 3단계) ──
+# ── 잡 내 대화 (FR-44) ──
 
 
 @router.get("/jobs/{job_id}/messages", response_model=ChatMessageListResponse)
@@ -572,11 +576,18 @@ async def add_message(
     job = store.get_job(principal.user_id, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")
+    # kind는 서버가 확정한다 — 클라이언트가 USER 역할 행에 agent_reply·notice
+    # 라벨을 붙일 수 있으면 kind로 렌더링하는 순간 위조 표면이 된다. 값의 의미는
+    # "서버가 이 메시지를 어디로 보냈는가"이고, 실제 결과(산출물 생성 여부)는
+    # 에이전트 답장의 resulting_artifact_ref가 담는다(BLM §5.5).
+    kind = (
+        ChatKind.ON_DEMAND_REQUEST if job.state in TERMINAL_STATES else ChatKind.STEERING
+    )
     message = NoveltyChatMessage(
         job_id=job_id,
         owner_id=principal.user_id,
         role=ChatRole.USER,
-        kind=dto.kind,
+        kind=kind,
         content=dto.content,
     )
     store.append_message(message)
