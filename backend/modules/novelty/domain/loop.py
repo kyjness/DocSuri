@@ -30,6 +30,8 @@ from .agent_step import (
     AgentDeps,
     StepResult,
     TraceUnavailable,
+    append_agent_message,
+    build_observation,
     drain_steering,
     execute_step,
     persist_progress,
@@ -38,12 +40,9 @@ from .agent_step import (
 from .models import (
     REQUIRED_ARTIFACT_KINDS,
     ArtifactKind,
-    ChatKind,
-    ChatRole,
     InputType,
     InvalidTransitionError,
     JobState,
-    NoveltyChatMessage,
     NoveltyJob,
     TerminationReason,
     utc_now,
@@ -115,21 +114,10 @@ def _notice_unconsumed_steering(
     """
     if drain_steering(job, deps, context) == 0:
         return
-    try:
-        deps.store.append_message(
-            NoveltyChatMessage(
-                job_id=job.job_id,
-                owner_id=job.owner_id,
-                role=ChatRole.AGENT,
-                kind=ChatKind.NOTICE,
-                content=(
-                    "조사가 종료된 뒤 도착한 메시지입니다 — 다시 보내주시면 "
-                    "이어서 답변해 드릴게요."
-                ),
-            )
-        )
-    except Exception:  # noqa: BLE001 — 안내 실패가 종단 결과를 바꾸지 않는다
-        log.warning("novelty loop: late-steering notice failed for job %s", job.job_id)
+    append_agent_message(
+        deps.store, job,
+        "조사가 종료된 뒤 도착한 메시지입니다 — 다시 보내주시면 이어서 답변해 드릴게요.",
+    )
 
 
 def _drive(job: NoveltyJob, deps: AgentDeps, context: AgentContext) -> LoopOutcome:
@@ -203,21 +191,9 @@ def _forced_form_evidence(
 
 
 def _observe(job: NoveltyJob, context: AgentContext) -> LoopObservation:
-    budget = job.loop_run.budget  # type: ignore[union-attr]
-    consumed = budget.consumed
-    observation = LoopObservation(
-        topic=job.request.topic,
-        input_type=job.request.input_type.value,
-        recent_results=tuple(context.recent_results),
-        saved_artifact_kinds=frozenset(kind.value for kind in context.saved_kinds),
-        missing_required_kinds=frozenset(_missing_kinds(context)),
-        iterations_left=budget.max_iterations - consumed.iterations,
-        tool_calls_left=budget.max_tool_calls_total - consumed.tool_calls_total,
-        cost_left_usd=max(budget.token_cost_limit_usd - consumed.cost_usd, 0.0),
-        notes=tuple(context.notes[-4:]),
-        steering=tuple(context.steering),
+    return build_observation(
+        job, context, missing_required=frozenset(_missing_kinds(context))
     )
-    return observation
 
 
 def _exposed_tools(deps: AgentDeps) -> tuple[ToolSpec, ...]:

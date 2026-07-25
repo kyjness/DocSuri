@@ -156,7 +156,8 @@ class TestNoveltyStoreContract:
             payload={"items": [1, 2]},
         )
         assert second.artifact_id != first.artifact_id
-        store.save_artifact(second)
+        # 반환값이 참조의 단일 진실 — 저장 직후 재조회 없이 답장에 걸 수 있어야 한다.
+        assert store.save_artifact(second) == first.artifact_id
         stored = store.list_artifacts(job.owner_id, job.job_id)[0]
         assert stored.artifact_id == first.artifact_id
         assert stored.payload == {"items": [1, 2]}
@@ -183,6 +184,22 @@ class TestNoveltyStoreContract:
             store.list_messages(_OTHER_OWNER, job.job_id, after=page[-1].message_id, limit=5)
             == []
         )
+
+    def test_get_message_point_lookup_owner_scoped(self, store) -> None:
+        """온디맨드 턴의 대상 메시지 조회 — 대화 길이와 무관한 단건 조회여야 하고,
+        비소유자·다른 잡·미존재는 모두 None(존재 비노출)."""
+        job = _job()
+        store.create_job(job)
+        message = NoveltyChatMessage(
+            job_id=job.job_id, owner_id=job.owner_id, role=ChatRole.USER,
+            kind=ChatKind.ON_DEMAND_REQUEST, content="실험 계획 짜줘",
+        )
+        store.append_message(message)
+        found = store.get_message(job.owner_id, job.job_id, message.message_id)
+        assert found is not None and found.content == "실험 계획 짜줘"
+        assert store.get_message(_OTHER_OWNER, job.job_id, message.message_id) is None
+        assert store.get_message(job.owner_id, "other-job", message.message_id) is None
+        assert store.get_message(job.owner_id, job.job_id, "missing") is None
 
     def test_delete_job_cascades_everything(self, store) -> None:
         job = _job()

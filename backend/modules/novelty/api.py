@@ -32,7 +32,9 @@ from backend.modules.user_docmodel import (
     user_docmodel_ref,
 )
 
+from .domain.agent_step import ON_DEMAND_UNAVAILABLE_NOTICE, append_agent_message
 from .domain.models import (
+    ON_DEMAND_ELIGIBLE_STATES,
     TERMINAL_STATES,
     AgentLoopRun,
     ChatKind,
@@ -55,9 +57,6 @@ from .security import decrypt_secret, encrypt_secret
 from .settings import NoveltySettings
 
 log = logging.getLogger("docsuri.novelty.api")
-
-# 온디맨드 턴 대상(BLM §5.1) — 실패·취소 잡은 근거가 될 산출물이 없다.
-_ON_DEMAND_STATES = frozenset({JobState.COMPLETED, JobState.PARTIAL})
 
 
 def _feature_enabled() -> None:
@@ -588,7 +587,7 @@ async def add_message(
     # "서버가 이 메시지를 어디로 보냈는가"이고, 실제 결과(산출물 생성 여부)는
     # 에이전트 답장의 resulting_artifact_ref가 담는다(BLM §5.5).
     terminal = job.state in TERMINAL_STATES
-    on_demand = job.state in _ON_DEMAND_STATES
+    on_demand = job.state in ON_DEMAND_ELIGIBLE_STATES
     if on_demand:
         # 온디맨드 턴만 LLM 지출을 유발한다 — 가드를 라우트 의존성이 아니라 여기서
         # 부른다. 라우트에 걸면 큐 장애 시 스티어링(행 하나 쓰기)까지 503이 된다.
@@ -608,9 +607,7 @@ async def add_message(
     elif terminal:
         # 실패·취소 잡은 근거가 될 산출물이 없다(BLM §5.1) — 워커를 깨우지 않고
         # 즉시 안내한다. 조용히 삼키지 않는다.
-        _append_notice(
-            store, job, "이 조사에서는 추가 생성을 할 수 없어요. 새 조사로 이어가 주세요."
-        )
+        append_agent_message(store, job, ON_DEMAND_UNAVAILABLE_NOTICE)
     return _message_dto(message)
 
 
@@ -622,26 +619,9 @@ def _enqueue_turn(
     try:
         queue.enqueue(job.job_id, job.owner_id, kind=KIND_TURN, message_id=message.message_id)
     except Exception as exc:  # noqa: BLE001 — 적재 실패는 안내로 수렴, 잡 상태 불변
-        _append_notice(
-            store, job, "요청을 접수하지 못했어요. 잠시 후 다시 시도해 주세요."
-        )
+        append_agent_message(store, job, "요청을 접수하지 못했어요. 잠시 후 다시 시도해 주세요.")
         raise HTTPException(status_code=503, detail={"error": "dispatch_failed"}) from exc
     _emit_metric(_observability(request), "novelty.turn_requested")
-
-
-def _append_notice(store: NoveltyStorePort, job: NoveltyJob, content: str) -> None:
-    try:
-        store.append_message(
-            NoveltyChatMessage(
-                job_id=job.job_id,
-                owner_id=job.owner_id,
-                role=ChatRole.AGENT,
-                kind=ChatKind.NOTICE,
-                content=content,
-            )
-        )
-    except Exception:  # noqa: BLE001 — 안내 실패가 요청 자체를 깨지 않는다
-        log.warning("novelty api: notice persist failed for job %s", job.job_id)
 
 
 # ── Notion export (루프 밖 — preview→승인 게이트, BR-NV17/RA12) ──

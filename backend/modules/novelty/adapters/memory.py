@@ -143,7 +143,7 @@ class InMemoryNoveltyStore:
         return [job.model_copy(deep=True) for job in stale[:limit]]
 
     # ── 산출물 ──
-    def save_artifact(self, record: ArtifactRecord) -> None:
+    def save_artifact(self, record: ArtifactRecord) -> str:
         # 종류별 최신 검증본만 유지(domain-entities: artifacts 참조 목록).
         # 같은 (job_id, kind) 슬롯 재저장은 기존 artifact_id를 승계한다 — SQL 어댑터의
         # upsert와 같은 정체성 규칙이어야 산출물을 id로 참조하는 경로가 어댑터에 따라
@@ -154,6 +154,7 @@ class InMemoryNoveltyStore:
         if existing is not None:
             stored.artifact_id = existing.artifact_id
         self._artifacts[key] = stored
+        return stored.artifact_id
 
     def list_artifacts(self, owner_id: str, job_id: str) -> list[ArtifactRecord]:
         job = self._jobs.get(job_id)
@@ -186,6 +187,15 @@ class InMemoryNoveltyStore:
     # ── 대화 ──
     def append_message(self, message: NoveltyChatMessage) -> None:
         self._messages.setdefault(message.job_id, []).append(message.model_copy(deep=True))
+
+    def get_message(
+        self, owner_id: str, job_id: str, message_id: str
+    ) -> NoveltyChatMessage | None:
+        # 비소유자·미존재 모두 None — 존재를 노출하지 않는다.
+        for message in self._messages.get(job_id, []):
+            if message.message_id == message_id and message.owner_id == owner_id:
+                return message.model_copy(deep=True)
+        return None
 
     def list_messages(
         self, owner_id: str, job_id: str, *, after: str | None, limit: int

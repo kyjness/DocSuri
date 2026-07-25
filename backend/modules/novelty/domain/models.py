@@ -29,6 +29,7 @@ from docsuri_shared._generated.dtos.evidence_schema import (
 
 __all__ = [
     "ALLOWED_TRANSITIONS",
+    "ON_DEMAND_ELIGIBLE_STATES",
     "REQUIRED_ARTIFACT_KINDS",
     "TERMINAL_STATES",
     "AgentLoopRun",
@@ -171,6 +172,11 @@ REQUIRED_ARTIFACT_KINDS = frozenset(
 TERMINAL_STATES = frozenset(
     {JobState.COMPLETED, JobState.PARTIAL, JobState.FAILED, JobState.CANCELLED}
 )
+
+# 온디맨드 대화 턴 대상(BLM §5.1) — "완료/부분 완료"만이다. 실패·취소 잡은 근거가
+# 될 산출물이 없거나 loop_run조차 없을 수 있다. API의 접수 분기와 워커의 실행
+# 분기가 같은 규칙을 봐야 하므로 여기 한 곳에만 정의한다.
+ON_DEMAND_ELIGIBLE_STATES = frozenset({JobState.COMPLETED, JobState.PARTIAL})
 
 # Progress State Rules(business-rules.md). received -> cancelled는 워커 픽업 전
 # 협조적 취소 경로로 허용한다(취소 신호는 어느 활성 상태에서든 수신 가능).

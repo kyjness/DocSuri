@@ -18,7 +18,12 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from ..ports.llm import ToolCallingLlmPort, ToolCallProposal, ToolResultView
+from ..ports.llm import (
+    LoopObservation,
+    ToolCallingLlmPort,
+    ToolCallProposal,
+    ToolResultView,
+)
 from ..ports.store import NoveltyStorePort
 from ..ports.tools import (
     TOOL_FORM_EVIDENCE,
@@ -33,7 +38,9 @@ from .gate import GateRejectionReason, evaluate_artifact
 from .models import (
     ArtifactKind,
     ArtifactRecord,
+    ChatKind,
     ChatRole,
+    NoveltyChatMessage,
     NoveltyJob,
     ToolCallRecord,
     ToolOutcome,
@@ -41,11 +48,14 @@ from .models import (
 )
 
 __all__ = [
+    "ON_DEMAND_UNAVAILABLE_NOTICE",
     "SAVE_ARTIFACT_SPEC",
     "AgentContext",
     "AgentDeps",
     "StepResult",
     "TraceUnavailable",
+    "append_agent_message",
+    "build_observation",
     "collect_record_refs",
     "drain_steering",
     "execute_save",
@@ -86,6 +96,10 @@ STEERING_WINDOW = 3
 STEERING_MAX_CHARS = 400
 STEERING_FETCH_LIMIT = 20
 
+# 같은 판정(온디맨드 불가)을 API와 워커가 서로 다른 시점에 내릴 수 있다 —
+# 사용자에게는 같은 문구여야 하므로 여기 한 곳에만 둔다.
+ON_DEMAND_UNAVAILABLE_NOTICE = "이 조사에서는 추가 생성을 할 수 없어요. 새 조사로 이어가 주세요."
+
 
 @dataclass(slots=True)
 class AgentDeps:
@@ -107,6 +121,9 @@ class AgentContext:
     result_seq: int = 0  # 관찰 뷰 순번 — 윈도우 절단과 무관하게 단조 증가
     steering: list[str] = field(default_factory=list)  # 사용자 지시 롤링 윈도우
     steering_cursor: str | None = None  # 마지막으로 읽은 대화 메시지
+    # 이번 실행에서 마지막으로 게이트를 통과한 저장 — 대화 턴이 답장에 산출물
+    # 참조를 걸 때 쓴다(재저장도 저장이다 — saved_kinds 차집합으로는 놓친다).
+    last_saved: tuple[ArtifactKind, str] | None = None
 
 
 class StepResult(str, Enum):
@@ -120,16 +137,23 @@ class TraceUnavailable(Exception):
     """트레이스 기록 불가 지속 — 실행을 계속하지 않는다(NFR-NV2-13)."""
 
 
-def seed_context(job: NoveltyJob, deps: AgentDeps) -> AgentContext:
+def seed_context(
+    job: NoveltyJob, deps: AgentDeps, *, artifacts: list[ArtifactRecord] | None = None
+) -> AgentContext:
     """저장된 산출물과 그 출처 핸들, 원고 recordRef, 대화 스티어링을 복원한다.
 
     재전달 복원(코드 리뷰 반영): crash 후 재실행이 작업·예산을 이중 소진하지 않고,
     저장소가 완성 판정의 단일 진실로 남는다(BR-RA1). 온디맨드 턴도 같은 함수를
     쓴다 — 그래서 턴이 인용할 수 있는 출처는 이미 저장된 산출물에 근거가 있거나
     이번 턴 도구 호출로 새로 얻은 것뿐이고, BR-RA6이 추가 코드 없이 성립한다.
+
+    `artifacts`: 호출자가 같은 목록을 다른 용도로도 쓸 때(턴의 근거 시드) 조회를
+    한 번으로 줄이는 주입점 — 미지정이면 여기서 읽는다.
     """
     context = AgentContext()
-    for record in deps.store.list_artifacts(job.owner_id, job.job_id):
+    if artifacts is None:
+        artifacts = deps.store.list_artifacts(job.owner_id, job.job_id)
+    for record in artifacts:
         context.saved_kinds.add(record.kind)
         collect_record_refs(record.payload, context.known_record_refs)
     manuscript = job.request.manuscript_ref
@@ -202,6 +226,60 @@ def drain_steering(job: NoveltyJob, deps: AgentDeps, context: AgentContext) -> i
     context.notes.append(f"사용자 스티어링 {len(fresh)}건 수신 — 사용자 지시 구획 참조")
     log.info("novelty agent: job %s consumed %d steering message(s)", job.job_id, len(fresh))
     return len(fresh)
+
+
+def build_observation(
+    job: NoveltyJob,
+    context: AgentContext,
+    *,
+    missing_required: frozenset[str] = frozenset(),
+    mode: str = "loop",
+    request: str | None = None,
+) -> LoopObservation:
+    """관찰 조립의 단일 정의 — 루프와 대화 턴이 의도한 차이(mode·request·필수 세트)만
+    인자로 밝히고, 예산 잔량 계산·노트 윈도우 등 나머지는 여기서 한 번만 유지한다."""
+    budget = job.loop_run.budget  # type: ignore[union-attr]
+    consumed = budget.consumed
+    return LoopObservation(
+        topic=job.request.topic,
+        input_type=job.request.input_type.value,
+        recent_results=tuple(context.recent_results),
+        saved_artifact_kinds=frozenset(kind.value for kind in context.saved_kinds),
+        missing_required_kinds=missing_required,
+        iterations_left=budget.max_iterations - consumed.iterations,
+        tool_calls_left=budget.max_tool_calls_total - consumed.tool_calls_total,
+        cost_left_usd=max(budget.token_cost_limit_usd - consumed.cost_usd, 0.0),
+        notes=tuple(context.notes[-4:]),
+        steering=tuple(context.steering),
+        mode=mode,
+        request=request,
+    )
+
+
+def append_agent_message(
+    store: NoveltyStorePort,
+    job: NoveltyJob,
+    content: str,
+    *,
+    kind: ChatKind = ChatKind.NOTICE,
+    resulting_artifact_ref: str | None = None,
+) -> None:
+    """에이전트 명의의 대화 메시지를 best-effort로 남긴다 — 침묵 종료 금지의 공용 경로.
+
+    저장 실패가 호출자의 흐름(요청 응답·종단 기록·턴 결과)을 깨지 않는다."""
+    try:
+        store.append_message(
+            NoveltyChatMessage(
+                job_id=job.job_id,
+                owner_id=job.owner_id,
+                role=ChatRole.AGENT,
+                kind=kind,
+                content=content[:12000],
+                resulting_artifact_ref=resulting_artifact_ref,
+            )
+        )
+    except Exception:  # noqa: BLE001 — 안내 실패가 호출자를 막지 않는다
+        log.warning("novelty agent: chat message persist failed for job %s", job.job_id)
 
 
 def persist_progress(job: NoveltyJob, deps: AgentDeps) -> None:
@@ -327,10 +405,11 @@ def execute_save(
             result_summary=f"save rejected: {rejection.reason.value}",
             gate_rejection_code=rejection.reason.value,
         )
-    deps.store.save_artifact(
+    artifact_id = deps.store.save_artifact(
         ArtifactRecord(job_id=job.job_id, owner_id=job.owner_id, kind=kind, payload=payload)
     )
     context.saved_kinds.add(kind)
+    context.last_saved = (kind, artifact_id)
     return ToolResult(
         ok=True,
         content={"saved": kind.value},
@@ -359,13 +438,14 @@ def auto_save_evidence(
             "save_artifact(evidence)로 저장하라"
         )
         return f"evidence auto-save rejected: {rejection.reason.value}"
-    deps.store.save_artifact(
+    artifact_id = deps.store.save_artifact(
         ArtifactRecord(
             job_id=job.job_id, owner_id=job.owner_id,
             kind=ArtifactKind.EVIDENCE, payload=snapshot,
         )
     )
     context.saved_kinds.add(ArtifactKind.EVIDENCE)
+    context.last_saved = (ArtifactKind.EVIDENCE, artifact_id)
     return "evidence saved"
 
 

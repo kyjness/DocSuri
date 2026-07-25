@@ -25,11 +25,12 @@ from typing import Any
 # 계측 방출은 공유 best-effort 헬퍼(포트 시그니처 강제) — 유닛 사본 금지.
 from docsuri_shared.observability import emit_metric as _emit
 
+from .domain.agent_step import ON_DEMAND_UNAVAILABLE_NOTICE, append_agent_message
 from .domain.loop import LoopDeps, run_loop
 from .domain.models import (
+    ON_DEMAND_ELIGIBLE_STATES,
     TERMINAL_STATES,
     AgentLoopRun,
-    ChatKind,
     ChatRole,
     JobState,
     NoveltyChatMessage,
@@ -49,8 +50,6 @@ log = logging.getLogger("docsuri.novelty.worker")
 _CONSUME_TIMEOUT_S = 5.0
 _STALE_SWEEP_EVERY_N_IDLE = 12  # 유휴 consume 12회(~1분)마다 스윕
 _CONTENTION_BACKOFF_MAX_S = 30.0  # 잠금 경합 재시도 상한(잠금 TTL보다 짧게 유지)
-# 온디맨드 턴 대상(BLM §5.1) — 실패·취소 잡은 근거가 될 산출물이 없다.
-_TURN_ELIGIBLE_STATES = frozenset({JobState.COMPLETED, JobState.PARTIAL})
 
 
 @dataclass(slots=True)
@@ -97,17 +96,8 @@ def process_message(deps: WorkerDeps, message: QueuedJob) -> None:
     if job.state in TERMINAL_STATES:
         deps.queue.ack(message)
         return
-    if not deps.queue.acquire(message.job_id, deps.settings.lock_ttl_seconds):
-        # 다른 워커가 실행 중 — 메시지를 큐로 되돌린다. ack 생략만으로는 부족하다:
-        # redis 구현은 소비 시점에 processing 리스트로 옮기므로 되돌리지 않으면
-        # 워커 재시작(recover_processing)까지 방치된다. nack은 큐 끝으로 넣으므로
-        # 다른 메시지가 있으면 그쪽이 먼저 처리되고, 같은 메시지만 남아 반복 경합할
-        # 때는 아래 백오프가 핫루프를 막는다.
-        deps.queue.nack(message)
-        deps._contention_count += 1
-        deps.sleep(min(2.0 ** (deps._contention_count - 1), _CONTENTION_BACKOFF_MAX_S))
+    if not _acquire_or_backoff(deps, message):
         return
-    deps._contention_count = 0
     try:
         if job.cancel_requested:
             _finalize_cancelled(store, job)
@@ -136,8 +126,8 @@ def _process_turn(deps: WorkerDeps, message: QueuedJob, job: NoveltyJob) -> None
     store = deps.store
     # BLM §5.1은 "완료/부분 완료"의 잡만 대상으로 한다. 실패·취소 잡은 산출물이
     # 없거나 loop_run조차 없을 수 있어 근거 있는 생성이 성립하지 않는다.
-    if job.state not in _TURN_ELIGIBLE_STATES or job.loop_run is None:
-        _notice(store, job, "이 조사에서는 추가 생성을 할 수 없어요. 새 조사로 이어가 주세요.")
+    if job.state not in ON_DEMAND_ELIGIBLE_STATES or job.loop_run is None:
+        append_agent_message(store, job, ON_DEMAND_UNAVAILABLE_NOTICE)
         deps.queue.ack(message)
         return
     request = _turn_request(store, job, message)
@@ -145,12 +135,8 @@ def _process_turn(deps: WorkerDeps, message: QueuedJob, job: NoveltyJob) -> None
         # 대상 메시지가 없거나 이미 답장이 있다 — 재전달분이므로 조용히 흡수한다.
         deps.queue.ack(message)
         return
-    if not deps.queue.acquire(message.job_id, deps.settings.lock_ttl_seconds):
-        deps.queue.nack(message)
-        deps._contention_count += 1
-        deps.sleep(min(2.0 ** (deps._contention_count - 1), _CONTENTION_BACKOFF_MAX_S))
+    if not _acquire_or_backoff(deps, message):
         return
-    deps._contention_count = 0
     try:
         with _LeaseHeartbeat(deps.queue, message.job_id, deps.settings.lock_ttl_seconds):
             outcome = run_turn(
@@ -166,10 +152,27 @@ def _process_turn(deps: WorkerDeps, message: QueuedJob, job: NoveltyJob) -> None
         deps.queue.ack(message)
     except Exception:  # noqa: BLE001 — 턴 하나의 실패가 워커를 죽이지 않는다
         log.exception("novelty worker: turn for job %s crashed", message.job_id)
-        _notice(store, job, "요청을 처리하는 중 문제가 생겼어요. 다시 시도해 주세요.")
+        append_agent_message(store, job, "요청을 처리하는 중 문제가 생겼어요. 다시 시도해 주세요.")
         deps.queue.ack(message)
     finally:
         deps.queue.release(message.job_id)
+
+
+def _acquire_or_backoff(deps: WorkerDeps, message: QueuedJob) -> bool:
+    """실행 잠금을 시도하고, 경합이면 nack 후 백오프한다 — loop·turn 공용 정책.
+
+    ack 생략만으로는 부족하다: redis 구현은 소비 시점에 processing 리스트로 옮기므로
+    되돌리지 않으면 워커 재시작(recover_processing)까지 방치된다. nack은 큐 끝으로
+    넣으므로 다른 메시지가 있으면 그쪽이 먼저 처리되고, 같은 메시지만 남아 반복
+    경합할 때는 지수 백오프가 핫루프를 막는다(상한은 잠금 TTL보다 짧게).
+    """
+    if deps.queue.acquire(message.job_id, deps.settings.lock_ttl_seconds):
+        deps._contention_count = 0
+        return True
+    deps.queue.nack(message)
+    deps._contention_count += 1
+    deps.sleep(min(2.0 ** (deps._contention_count - 1), _CONTENTION_BACKOFF_MAX_S))
+    return False
 
 
 def _turn_request(
@@ -183,32 +186,16 @@ def _turn_request(
     """
     if message.message_id is None:
         return None
+    target = store.get_message(job.owner_id, job.job_id, message.message_id)
+    if target is None:
+        return None  # 대상 메시지가 사라졌다(잡 삭제 경합)
     try:
         after = store.list_messages(job.owner_id, job.job_id, after=message.message_id, limit=5)
     except KeyError:
-        return None  # 대상 메시지가 사라졌다(잡 삭제 경합)
+        return None
     if any(item.role is ChatRole.AGENT for item in after):
         return None
-    for item in store.list_messages(job.owner_id, job.job_id, after=None, limit=200):
-        if item.message_id == message.message_id:
-            return item
-    return None
-
-
-def _notice(store: NoveltyStorePort, job: NoveltyJob, content: str) -> None:
-    """사용자에게 사유를 남긴다 — 침묵하고 끝내지 않는다."""
-    try:
-        store.append_message(
-            NoveltyChatMessage(
-                job_id=job.job_id,
-                owner_id=job.owner_id,
-                role=ChatRole.AGENT,
-                kind=ChatKind.NOTICE,
-                content=content,
-            )
-        )
-    except Exception:  # noqa: BLE001 — 안내 실패가 워커를 막지 않는다
-        log.warning("novelty worker: notice persist failed for job %s", job.job_id)
+    return target
 
 
 def sweep_stale_jobs(deps: WorkerDeps) -> int:

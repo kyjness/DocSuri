@@ -275,7 +275,7 @@ class SqlNoveltyStore:
             return [_job_model(row) for row in rows]
 
     # ── 산출물 ──
-    def save_artifact(self, record: ArtifactRecord) -> None:
+    def save_artifact(self, record: ArtifactRecord) -> str:
         with self._session_factory() as session:
             existing = session.scalars(
                 select(ArtifactV2Table).where(
@@ -286,6 +286,7 @@ class SqlNoveltyStore:
             if existing is not None:
                 existing.payload = record.payload
                 existing.created_at = record.created_at
+                artifact_id = existing.artifact_id
             else:
                 session.add(
                     ArtifactV2Table(
@@ -297,7 +298,9 @@ class SqlNoveltyStore:
                         created_at=record.created_at,
                     )
                 )
+                artifact_id = record.artifact_id
             session.commit()
+            return artifact_id
 
     def list_artifacts(self, owner_id: str, job_id: str) -> list[ArtifactRecord]:
         with self._session_factory() as session:
@@ -412,6 +415,25 @@ class SqlNoveltyStore:
                 )
             )
             session.commit()
+
+    def get_message(
+        self, owner_id: str, job_id: str, message_id: str
+    ) -> NoveltyChatMessage | None:
+        with self._session_factory() as session:
+            row = session.get(MessageV2Table, message_id)
+            # 비소유자·다른 잡·미존재 모두 None — 존재를 노출하지 않는다.
+            if row is None or row.job_id != job_id or row.owner_id != owner_id:
+                return None
+            return NoveltyChatMessage(
+                message_id=row.message_id,
+                job_id=row.job_id,
+                owner_id=row.owner_id,
+                role=row.role,
+                kind=row.kind,
+                content=row.content,
+                resulting_artifact_ref=row.resulting_artifact_ref,
+                created_at=row.created_at,
+            )
 
     def list_messages(
         self, owner_id: str, job_id: str, *, after: str | None, limit: int

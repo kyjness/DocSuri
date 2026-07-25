@@ -94,14 +94,6 @@ export function pickText(payload: Record<string, unknown>, ...keys: string[]): s
   return '';
 }
 
-export function pickList(payload: Record<string, unknown>, ...keys: string[]): string[] {
-  for (const key of keys) {
-    const values = listField(payload, key);
-    if (values.length > 0) return values;
-  }
-  return [];
-}
-
 export function pickRefs(
   payload: Record<string, unknown>,
   ...keys: string[]

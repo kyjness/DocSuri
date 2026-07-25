@@ -26,6 +26,8 @@ from .agent_step import (
     AgentDeps,
     StepResult,
     TraceUnavailable,
+    append_agent_message,
+    build_observation,
     execute_step,
     persist_progress,
     seed_context,
@@ -34,7 +36,6 @@ from .models import (
     ArtifactKind,
     ArtifactRecord,
     ChatKind,
-    ChatRole,
     NoveltyChatMessage,
     NoveltyJob,
 )
@@ -97,8 +98,10 @@ def run_turn(
     채팅 한 줄이 잔여 예산을 전부 태울 수 있다. 소비 원장은 여전히 잡의 LoopBudget
     하나이고(execute_step 내부), 이 값은 한 턴의 decide 횟수만 제한한다.
     """
-    context = seed_context(job, deps)
-    _seed_artifacts_as_evidence(job, deps, context)
+    # 한 번 읽어 문맥 복원과 근거 시드에 함께 쓴다 — 같은 목록을 두 번 조회하지 않는다.
+    artifacts = deps.store.list_artifacts(job.owner_id, job.job_id)
+    context = seed_context(job, deps, artifacts=artifacts)
+    _seed_artifacts_as_evidence(artifacts, context)
 
     budget = job.loop_run.budget if job.loop_run is not None else None
     if budget is None or budget_rules.begin_iteration(budget) is not None:
@@ -133,7 +136,6 @@ def _drive(
     max_steps: int,
 ) -> TurnOutcome:
     budget = job.loop_run.budget  # type: ignore[union-attr]
-    saved_kind: ArtifactKind | None = None
 
     for step in range(max_steps):
         if step > 0 and budget_rules.begin_iteration(budget) is not None:
@@ -150,25 +152,21 @@ def _drive(
         if isinstance(proposal, TerminationProposal):
             return _finish(
                 job, deps, proposal.note or _NO_REPLY_FALLBACK,
-                kind=ChatKind.AGENT_REPLY, saved_kind=saved_kind,
+                kind=ChatKind.AGENT_REPLY, saved=context.last_saved,
             )
         if proposal.tool_name == TOOL_REPLY:
             content = str(proposal.args.get("content") or "").strip()
             return _finish(
                 job, deps, content or _NO_REPLY_FALLBACK,
-                kind=ChatKind.AGENT_REPLY, saved_kind=saved_kind,
+                kind=ChatKind.AGENT_REPLY, saved=context.last_saved,
             )
 
-        before = set(context.saved_kinds)
         if execute_step(job, deps, context, proposal) is StepResult.BUDGET_EXHAUSTED:
             break
-        newly = context.saved_kinds - before
-        if newly:
-            saved_kind = next(iter(newly))
 
     # 상한·예산 소진으로 답변 없이 끝났다 — 침묵 종료 금지, 사유를 남긴다.
     return _finish(job, deps, _exhausted_reply(context), kind=ChatKind.NOTICE,
-                   saved_kind=saved_kind)
+                   saved=context.last_saved)
 
 
 def _exhausted_reply(context: AgentContext) -> str:
@@ -183,18 +181,13 @@ def _exhausted_reply(context: AgentContext) -> str:
 
 
 def _seed_artifacts_as_evidence(
-    job: NoveltyJob, deps: AgentDeps, context: AgentContext
+    records: list[ArtifactRecord], context: AgentContext
 ) -> None:
     """저장된 조사 산출물을 근거 입력으로 실어 준다(BLM §5.3).
 
     산출물 payload는 외부 논문 텍스트에서 파생된 데이터이므로 관찰의 '도구 결과
     데이터' 구획에 들어간다 — 어댑터가 그 구획을 지시로 취급하지 않게 렌더한다.
     """
-    try:
-        records = deps.store.list_artifacts(job.owner_id, job.job_id)
-    except Exception:  # noqa: BLE001 — 근거 시드 실패는 턴을 죽이지 않는다(빈 근거로 진행)
-        log.warning("novelty turn: artifact seed failed for job %s", job.job_id)
-        return
     by_kind = {record.kind: record for record in records}
     for kind in _EVIDENCE_KINDS:
         record = by_kind.get(kind)
@@ -229,24 +222,9 @@ def _truncate_payload(payload: dict[str, Any]) -> dict[str, Any]:
 def _observe(
     job: NoveltyJob, context: AgentContext, message: NoveltyChatMessage
 ) -> LoopObservation:
-    budget = job.loop_run.budget  # type: ignore[union-attr]
-    consumed = budget.consumed
-    return LoopObservation(
-        topic=job.request.topic,
-        input_type=job.request.input_type.value,
-        recent_results=tuple(context.recent_results),
-        saved_artifact_kinds=frozenset(kind.value for kind in context.saved_kinds),
-        # 대화 턴은 필수 세트를 다시 채우는 자리가 아니다 — 비워서 모델을 조사로
-        # 되돌리지 않는다(BR-RA5).
-        missing_required_kinds=frozenset(),
-        iterations_left=budget.max_iterations - consumed.iterations,
-        tool_calls_left=budget.max_tool_calls_total - consumed.tool_calls_total,
-        cost_left_usd=max(budget.token_cost_limit_usd - consumed.cost_usd, 0.0),
-        notes=tuple(context.notes[-4:]),
-        steering=tuple(context.steering),
-        mode="turn",
-        request=message.content,
-    )
+    # 필수 세트는 비운다 — 대화 턴은 필수 산출물을 다시 채우는 자리가 아니고,
+    # 모델을 조사로 되돌리지 않는다(BR-RA5).
+    return build_observation(job, context, mode="turn", request=message.content)
 
 
 def _exposed_tools(deps: AgentDeps) -> tuple[ToolSpec, ...]:
@@ -259,33 +237,14 @@ def _finish(
     reply: str,
     *,
     kind: ChatKind,
-    saved_kind: ArtifactKind | None = None,
+    saved: tuple[ArtifactKind, str] | None = None,
 ) -> TurnOutcome:
-    """답장을 대화에 남긴다 — 산출물을 만들었으면 그 참조를 함께 건다(BLM §5.5)."""
-    artifact_ref = _artifact_ref(job, deps, saved_kind) if saved_kind else None
-    try:
-        deps.store.append_message(
-            NoveltyChatMessage(
-                job_id=job.job_id,
-                owner_id=job.owner_id,
-                role=ChatRole.AGENT,
-                kind=kind,
-                content=reply[:12000],
-                resulting_artifact_ref=artifact_ref,
-            )
-        )
-    except Exception:  # noqa: BLE001 — 답장 저장 실패는 워커 재전달이 흡수한다
-        log.warning("novelty turn: reply persist failed for job %s", job.job_id)
+    """답장을 대화에 남긴다 — 산출물을 만들었으면 그 참조를 함께 건다(BLM §5.5).
+
+    `saved`는 이번 턴에 게이트를 통과한 마지막 저장(context.last_saved) — 저장
+    시점에 id를 받아 두므로 참조를 다시 조회하지 않는다."""
+    saved_kind, artifact_ref = saved if saved is not None else (None, None)
+    append_agent_message(
+        deps.store, job, reply, kind=kind, resulting_artifact_ref=artifact_ref
+    )
     return TurnOutcome(reply=reply, artifact_ref=artifact_ref, saved_kind=saved_kind)
-
-
-def _artifact_ref(
-    job: NoveltyJob, deps: AgentDeps, kind: ArtifactKind
-) -> str | None:
-    try:
-        for record in deps.store.list_artifacts(job.owner_id, job.job_id):
-            if record.kind is kind:
-                return record.artifact_id
-    except Exception:  # noqa: BLE001 — 참조 조회 실패해도 답장 자체는 나간다
-        log.warning("novelty turn: artifact ref lookup failed for job %s", job.job_id)
-    return None

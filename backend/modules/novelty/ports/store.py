@@ -49,7 +49,10 @@ class NoveltyStorePort(Protocol):
     def list_stale_active(self, *, updated_before: datetime, limit: int) -> list[NoveltyJob]: ...
 
     # ── 산출물 (종류별 최신 검증본) ──
-    def save_artifact(self, record: ArtifactRecord) -> None: ...
+    def save_artifact(self, record: ArtifactRecord) -> str:
+        """저장하고 영속된 artifact_id를 돌려준다 — 같은 (job_id, kind) 슬롯
+        재저장은 기존 id를 승계하므로(정체성 규칙), 반환값이 참조의 단일 진실이다."""
+        ...
 
     def list_artifacts(self, owner_id: str, job_id: str) -> list[ArtifactRecord]: ...
 
@@ -64,6 +67,13 @@ class NoveltyStorePort(Protocol):
 
     # ── 잡 내 대화 (FR-44) ──
     def append_message(self, message: NoveltyChatMessage) -> None: ...
+
+    def get_message(
+        self, owner_id: str, job_id: str, message_id: str
+    ) -> NoveltyChatMessage | None:
+        """id 단건 조회 — 온디맨드 턴이 처리 대상 메시지를 찾는 경로. 커서 목록을
+        훑어 대신하지 않는다(대화가 길어지면 조용히 놓친다)."""
+        ...
 
     def list_messages(
         self, owner_id: str, job_id: str, *, after: str | None, limit: int

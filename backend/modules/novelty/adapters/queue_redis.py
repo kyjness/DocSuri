@@ -46,14 +46,8 @@ class RedisJobQueue:
         kind: str = KIND_LOOP,
         message_id: str | None = None,
     ) -> None:
-        body: dict[str, Any] = {"job_id": job_id, "owner_id": owner_id}
-        # loop은 생략한다 — 배포 시점에 큐에 남아 있던 기존 페이로드와 모양이 같아
-        # 인플라이트 메시지가 그대로 소비된다(consume이 부재 시 loop으로 읽는다).
-        if kind != KIND_LOOP:
-            body["kind"] = kind
-        if message_id is not None:
-            body["message_id"] = message_id
-        self._client.lpush(self._queue_key, json.dumps(body))
+        job = QueuedJob(job_id=job_id, owner_id=owner_id, kind=kind, message_id=message_id)
+        self._client.lpush(self._queue_key, json.dumps(job.to_payload()))
 
     def consume(self, timeout_seconds: float) -> QueuedJob | None:
         raw = self._client.blmove(
@@ -67,15 +61,7 @@ class RedisJobQueue:
             return None
         text = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
         try:
-            data = json.loads(text)
-            message_id = data.get("message_id")
-            return QueuedJob(
-                job_id=str(data["job_id"]),
-                owner_id=str(data["owner_id"]),
-                receipt=text,
-                kind=str(data.get("kind") or KIND_LOOP),
-                message_id=str(message_id) if message_id is not None else None,
-            )
+            return QueuedJob.from_payload(json.loads(text), receipt=text)
         except (ValueError, KeyError):
             # 손상 payload는 큐에서 제거만 하고 버린다(독약 메시지 방지).
             self._client.lrem(self._processing_key, 1, text)

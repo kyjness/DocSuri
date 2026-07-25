@@ -55,14 +55,9 @@ class SqsJobQueue:
         kind: str = KIND_LOOP,
         message_id: str | None = None,
     ) -> None:
-        body: dict[str, Any] = {"job_id": job_id, "owner_id": owner_id}
-        # loop은 생략 — 기존 페이로드 모양을 유지해 인플라이트 메시지가 살아남는다.
-        if kind != KIND_LOOP:
-            body["kind"] = kind
-        if message_id is not None:
-            body["message_id"] = message_id
+        job = QueuedJob(job_id=job_id, owner_id=owner_id, kind=kind, message_id=message_id)
         self._client.send_message(
-            QueueUrl=self._queue_url, MessageBody=json.dumps(body)
+            QueueUrl=self._queue_url, MessageBody=json.dumps(job.to_payload())
         )
 
     def consume(self, timeout_seconds: float) -> QueuedJob | None:
@@ -77,15 +72,7 @@ class SqsJobQueue:
         message = messages[0]
         receipt = message["ReceiptHandle"]
         try:
-            data = json.loads(message.get("Body") or "{}")
-            message_id = data.get("message_id")
-            job = QueuedJob(
-                job_id=str(data["job_id"]),
-                owner_id=str(data["owner_id"]),
-                receipt=receipt,
-                kind=str(data.get("kind") or KIND_LOOP),
-                message_id=str(message_id) if message_id is not None else None,
-            )
+            job = QueuedJob.from_payload(json.loads(message.get("Body") or "{}"), receipt=receipt)
         except (ValueError, KeyError):
             self._client.delete_message(QueueUrl=self._queue_url, ReceiptHandle=receipt)
             return None

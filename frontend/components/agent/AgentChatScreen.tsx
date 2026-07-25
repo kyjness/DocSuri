@@ -34,7 +34,7 @@ import {
   confidenceLabel,
   detailCell,
   itemsOf,
-  pickList,
+  listField,
   pickRefs,
   pickText,
   sourceRefsOf,
@@ -866,15 +866,17 @@ function RiskSignalList({ items }: { items: NoveltyPayloadItem[] }) {
   );
 }
 
-// 키가 두 벌인 이유: v2 산출물은 백엔드 도메인 모델 그대로 snake_case이고,
-// v1 시절 저장분은 camelCase다. 뷰가 둘 다 읽는다.
-const PLAN_LIST_FIELDS: Array<{ keys: string[]; label: string }> = [
-  { keys: ['baselines'], label: '베이스라인' },
-  { keys: ['procedure'], label: '절차' },
-  { keys: ['datasets'], label: '데이터셋' },
-  { keys: ['metrics'], label: '지표' },
-  { keys: ['resources'], label: '자원' },
-  { keys: ['risks'], label: '리스크' },
+// 목록 필드 키는 v1(camelCase)·v2(snake_case)에서 철자가 같다 — 두 벌 키가
+// 필요한 곳(가설·차별화 포인트·출처)만 pickText/pickRefs로 읽는다.
+// hypotheses는 v1 저장분의 복수 가설 목록 — 계속 보여준다.
+const PLAN_LIST_FIELDS: Array<{ key: string; label: string }> = [
+  { key: 'hypotheses', label: '가설 목록' },
+  { key: 'baselines', label: '베이스라인' },
+  { key: 'procedure', label: '절차' },
+  { key: 'datasets', label: '데이터셋' },
+  { key: 'metrics', label: '지표' },
+  { key: 'resources', label: '자원' },
+  { key: 'risks', label: '리스크' },
 ];
 
 function ExperimentPlanView({ plan }: { plan: Record<string, unknown> }) {
@@ -894,23 +896,20 @@ function ExperimentPlanView({ plan }: { plan: Record<string, unknown> }) {
           <p className={styles.noveltyPlanAngle}>{angle}</p>
         </>
       ) : null}
-      {/* v1 저장분의 hypotheses(복수 목록)도 계속 보여준다. */}
-      {[{ keys: ['hypotheses'], label: '가설 목록' }, ...PLAN_LIST_FIELDS].map(
-        ({ keys, label }) => {
-          const values = pickList(plan, ...keys);
-          if (values.length === 0) return null;
-          return (
-            <div key={label} className={styles.noveltyPlanField}>
-              <strong>{label}</strong>
-              <ul>
-                {values.map((value, idx) => (
-                  <li key={idx}>{value}</li>
-                ))}
-              </ul>
-            </div>
-          );
-        },
-      )}
+      {PLAN_LIST_FIELDS.map(({ key, label }) => {
+        const values = listField(plan, key);
+        if (values.length === 0) return null;
+        return (
+          <div key={key} className={styles.noveltyPlanField}>
+            <strong>{label}</strong>
+            <ul>
+              {values.map((value, idx) => (
+                <li key={idx}>{value}</li>
+              ))}
+            </ul>
+          </div>
+        );
+      })}
       <NoveltySourceRefLinks refs={pickRefs(plan, 'source_refs', 'sourceRefs')} />
     </div>
   );
