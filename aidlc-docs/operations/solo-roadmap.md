@@ -57,6 +57,16 @@ u1 정리 패스의 부산물로 실논문 회귀 픽스처(ar5iv HTML·GROBID T
 생겼다. 배포 은퇴로 사라진 "실제 논문이 온전히 파싱되는가"의 육안 확인을 대체하며,
 파싱→청킹까지 `uv run pytest`만으로 검증된다. 갱신 절차는 `ingestion/tests/fixtures/SOURCES.md` 참조.
 
+**⑤a(a) 테스트 공백 점검 종결 (2026-07-25).** u2·u7의 실입력/silent-degradation 경로를 감사한
+결과 로드맵이 우려한 지점은 이미 커버되어 있어 **신규 u2/u7 테스트는 불필요**하다:
+u2 discovery는 fake-client 어댑터 단위 + 실 OpenSearch 통합 게이트 + golden recall + PBT,
+u7 summarization은 `refine_doc_model`(표·수식·캡션·앵커 id + PDF/GROBID `latex=None` image-only
+회귀 `test_refine_doc_model_skips_image_only_formula` + U1 정규화 개행 없는 전문의 copyright 삭제
+회귀 `test_single_line_full_text_survives_copyright_match`), grounding `real_corpus` 평가, 실 게이트
+(`test_assets_rds_real`·`test_integration_real`의 S3 왕복)로 모두 검증된다. **이번 패스에서 실제로
+드러난 "테스트 0" 공백은 u11 evidence `real_wiring`**(제2 리더)였고, ⑤a(b)-1 정합과 함께 단위
+테스트를 신설해 닫았다.
+
 ## 게이트 레인 — 확인 후 전건 해소 (2026-07-20)
 
 u1 정리에서 `PostgresControlPlaneStore`가 "테스트 없음"이 아니라 **게이트 뒤에서 아무도 안 도는 상태**
