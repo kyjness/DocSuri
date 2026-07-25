@@ -124,3 +124,32 @@ def test_turn_message_roundtrips_kind_and_message_id(queue) -> None:
     assert job is not None
     assert job.kind == KIND_TURN and job.message_id == "msg-9"
     queue.ack(job)
+
+
+def test_idle_consume_at_worker_block_duration_returns_none(queue) -> None:
+    """워커의 블록 시간(5초)만큼 빈 큐를 기다려도 예외가 아니라 None이어야 한다.
+
+    redis-py 8부터 소켓 읽기 기본 한도가 5초라, 그 시간만큼 블록하면 서버의 nil
+    응답보다 클라이언트 데드라인이 먼저 걸려 TimeoutError가 난다. 어댑터가 이를
+    정규화하지 않으면 워커가 잡을 하나도 받기 전에 유휴 상태에서 죽는다 —
+    로컬 실스택 검증에서 실제로 그랬다. 종전 테스트는 1초 이하만 써서 못 잡았다.
+    """
+    from backend.modules.novelty.worker import _CONSUME_TIMEOUT_S
+
+    started = time.monotonic()
+    assert queue.consume(timeout_seconds=_CONSUME_TIMEOUT_S) is None
+    # 즉시 반환이면 블로킹이 아예 안 된 것이므로 회귀 가드가 의미를 잃는다.
+    assert time.monotonic() - started >= _CONSUME_TIMEOUT_S - 0.5
+
+
+def test_connection_failure_still_propagates(queue) -> None:
+    """빈 큐 정규화가 진짜 연결 장애까지 삼키면 안 된다 — 그러면 워커가 죽은 redis를
+    상대로 '큐가 비었다'고 오해하며 조용히 공회전한다."""
+    import redis
+
+    from backend.modules.novelty.adapters.queue_redis import RedisJobQueue
+
+    # 아무도 듣지 않는 포트 — 연결 자체가 실패한다.
+    dead = RedisJobQueue(redis.Redis.from_url("redis://localhost:6399/0"))
+    with pytest.raises(redis.exceptions.ConnectionError):
+        dead.consume(timeout_seconds=0.1)

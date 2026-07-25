@@ -387,6 +387,50 @@ describe('ApiClient agent chat mapping', () => {
     expect(requests[1].path.split('?')[0]).toBe('/api/novelty/jobs/n1/manuscript');
   });
 
+  it('sends only fields the novelty job schema accepts', async () => {
+    // 서버 CreateJobRequest는 extra=forbid다 — 모르는 키가 하나라도 있으면 잡 생성이
+    // 매번 422가 되고 novelty 전체가 실환경에서 시작조차 못 한다(로컬 실스택 검증에서
+    // `exportToNotion`으로 실제 발생). 키 집합 자체를 못 박는다.
+    let createBody: Record<string, unknown> | undefined;
+    const t = transportOf(async (req) => {
+      if (req.path === '/api/novelty/jobs') {
+        createBody = req.body as Record<string, unknown>;
+        return { status: 201, body: { jobId: 'n1', state: 'queued' } };
+      }
+      if (req.path === '/api/novelty/jobs/n1') {
+        return {
+          status: 200,
+          body: {
+            job: {
+              jobId: 'n1',
+              topic: 'rag eval',
+              state: 'queued',
+              updatedAt: '2026-07-01T00:00:00Z',
+            },
+            events: [],
+          },
+        };
+      }
+      if (req.path === '/api/novelty/jobs/n1/messages') {
+        return { status: 200, body: { messages: [] } };
+      }
+      if (req.path === '/api/novelty/jobs/n1/result') return { status: 404, body: null };
+      return { status: 500, body: null };
+    });
+
+    await new ApiClient(t, fast).sendAgentMessage('agent-novelty-local', {
+      content: 'rag eval',
+      mode: 'novelty',
+    });
+
+    expect(Object.keys(createBody ?? {}).sort()).toEqual([
+      'constraints',
+      'inputType',
+      'manuscript',
+      'topic',
+    ]);
+  });
+
   it('rejects an oversize PDF attachment before any upload request', async () => {
     const t = transportOf(async () => ({ status: 200, body: null }));
     const bigPdf = new Blob([new Uint8Array(10 * 1024 * 1024 + 1)], { type: 'application/pdf' });

@@ -14,11 +14,24 @@ from typing import Any
 
 from ..ports.queue import KIND_LOOP, QueuedJob
 
+try:  # redis는 선택 의존성 — 미설치 환경에서도 모듈 임포트는 성립해야 한다.
+    from redis.exceptions import TimeoutError as _RedisTimeoutError
+except ImportError:  # pragma: no cover - redis 미설치 경로
+
+    class _RedisTimeoutError(Exception):  # type: ignore[no-redef]
+        """redis 미설치 시 자리표시 — 실제로 발생하지 않는다."""
+
+
 __all__ = ["RedisJobQueue"]
 
 _QUEUE_KEY = "novelty:jobs"
 _PROCESSING_KEY = "novelty:jobs:processing"
 _LOCK_PREFIX = "novelty:lock:"
+
+# 워커의 블록 소비(_CONSUME_TIMEOUT_S=5s)보다 넉넉한 소켓 읽기 한도. redis-py 8이
+# 기본을 5초로 바꾸면서 블록 시간과 같아졌고, 그러면 서버의 nil 응답보다 클라이언트
+# 데드라인이 먼저 걸려 유휴 폴링이 예외가 된다.
+CONSUME_SOCKET_TIMEOUT_S = 30.0
 
 
 class RedisJobQueue:
@@ -50,13 +63,22 @@ class RedisJobQueue:
         self._client.lpush(self._queue_key, json.dumps(job.to_payload()))
 
     def consume(self, timeout_seconds: float) -> QueuedJob | None:
-        raw = self._client.blmove(
-            self._queue_key,
-            self._processing_key,
-            timeout=max(timeout_seconds, 0.001),
-            src="RIGHT",
-            dest="LEFT",
-        )
+        block_for = max(timeout_seconds, 0.001)
+        try:
+            raw = self._client.blmove(
+                self._queue_key,
+                self._processing_key,
+                timeout=block_for,
+                src="RIGHT",
+                dest="LEFT",
+            )
+        except _RedisTimeoutError:
+            # 블로킹 읽기가 만료됐다 = 큐가 비어 있다. redis-py 8부터 소켓 읽기
+            # 기본 한도가 5초라, 그 이상(또는 같게) 블록하면 서버의 nil 응답보다
+            # 클라이언트 데드라인이 먼저 걸려 예외로 나온다. 빈 큐를 예외로 돌려주면
+            # 워커가 유휴 상태에서 죽으므로 여기서 "메시지 없음"으로 정규화한다.
+            # 연결 실패(ConnectionError)는 이 분기에 걸리지 않고 호출자로 올라간다.
+            return None
         if raw is None:
             return None
         text = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)

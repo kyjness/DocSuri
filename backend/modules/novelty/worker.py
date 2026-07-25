@@ -50,6 +50,7 @@ log = logging.getLogger("docsuri.novelty.worker")
 _CONSUME_TIMEOUT_S = 5.0
 _STALE_SWEEP_EVERY_N_IDLE = 12  # 유휴 consume 12회(~1분)마다 스윕
 _CONTENTION_BACKOFF_MAX_S = 30.0  # 잠금 경합 재시도 상한(잠금 TTL보다 짧게 유지)
+_CONSUME_ERROR_BACKOFF_MAX_S = 30.0  # 큐 조회 실패 재시도 상한
 
 
 @dataclass(slots=True)
@@ -64,6 +65,7 @@ class WorkerDeps:
     _idle_count: int = field(default=0, init=False)
     # 잡별 연속 경합 횟수 — 전역 카운터면 잡 A의 경합이 무관한 잡 B의 대기를 키운다.
     _contention_counts: dict[str, int] = field(default_factory=dict, init=False)
+    _consume_failures: int = field(default=0, init=False)  # 연속 큐 조회 실패(백오프용)
 
 
 def run_worker(deps: WorkerDeps, should_stop) -> None:
@@ -73,7 +75,21 @@ def run_worker(deps: WorkerDeps, should_stop) -> None:
         if requeued:
             log.info("novelty worker: requeued %d in-flight jobs", requeued)
     while not should_stop():
-        message = deps.queue.consume(_CONSUME_TIMEOUT_S)
+        # 큐 조회 실패로 워커가 죽으면 안 된다 — redis 재시작·페일오버 같은 일시적
+        # 장애에 프로세스가 영구 종료되면, 복구된 뒤에도 아무도 잡을 집지 않는다.
+        # 개별 잡의 실패는 process_message가 이미 흡수하지만 consume 자체는 무방비였다.
+        try:
+            message = deps.queue.consume(_CONSUME_TIMEOUT_S)
+        except Exception:  # noqa: BLE001 — 큐 장애는 백오프 후 재시도
+            deps._consume_failures += 1
+            delay = min(2.0 ** (deps._consume_failures - 1), _CONSUME_ERROR_BACKOFF_MAX_S)
+            log.warning(
+                "novelty worker: queue consume failed (%d in a row); retrying in %.0fs",
+                deps._consume_failures, delay, exc_info=True,
+            )
+            deps.sleep(delay)
+            continue
+        deps._consume_failures = 0
         if message is None:
             deps._idle_count += 1
             if deps._idle_count >= _STALE_SWEEP_EVERY_N_IDLE:

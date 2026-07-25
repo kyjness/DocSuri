@@ -341,7 +341,9 @@ function toNoveltyBody(req: AgentSendMessageRequest, created: boolean) {
         }
       : null,
     constraints: {},
-    exportToNotion: false,
+    // 서버 CreateJobRequest는 extra=forbid이고 export 필드는 `exportTarget`(문자열)이다 —
+    // 여기서 `exportToNotion`을 실으면 잡 생성이 매번 422다. Notion export는 잡 생성이
+    // 아니라 별도 승인 게이트 흐름이므로(BR-NV17) 생성 시에는 아무 export 필드도 안 보낸다.
   };
 }
 
