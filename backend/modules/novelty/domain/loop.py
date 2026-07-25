@@ -40,9 +40,12 @@ from .models import (
     REQUIRED_ARTIFACT_KINDS,
     ArtifactKind,
     ArtifactRecord,
+    ChatKind,
+    ChatRole,
     InputType,
     InvalidTransitionError,
     JobState,
+    NoveltyChatMessage,
     NoveltyJob,
     TerminationReason,
     ToolCallRecord,
@@ -78,6 +81,11 @@ SAVE_ARTIFACT_SPEC = ToolSpec(
 _RECENT_RESULTS_WINDOW = 6
 _TRACE_FAILURE_HALT_AFTER = 2
 _TOOL_DEGRADED_AFTER = 2
+# 스티어링 롤링 윈도우(BLM §6) — 매 턴 새 요청을 만드는 구조라 대화 이력이 없다.
+# 1회성 주입이면 지시가 한 턴만 살고 사라지므로 최근 N건을 계속 함께 보여준다.
+_STEERING_WINDOW = 3
+_STEERING_MAX_CHARS = 400
+_STEERING_FETCH_LIMIT = 20
 
 
 @dataclass(slots=True)
@@ -105,6 +113,8 @@ class _LoopState:
     trace_failures: int = 0
     tool_failures: dict[str, int] = field(default_factory=dict)
     result_seq: int = 0  # 관찰 뷰 순번 — 윈도우 절단과 무관하게 단조 증가
+    steering: list[str] = field(default_factory=list)  # 사용자 지시 롤링 윈도우
+    steering_cursor: str | None = None  # 마지막으로 읽은 대화 메시지
 
 
 def run_loop(job: NoveltyJob, deps: LoopDeps) -> LoopOutcome:
@@ -142,7 +152,34 @@ def run_loop(job: NoveltyJob, deps: LoopDeps) -> LoopOutcome:
         )
     except Exception:  # noqa: BLE001 — 종단 기록 실패는 스윕이 수렴시킨다(잡 비종단 유지)
         log.exception("novelty loop: failed to persist terminal state for job %s", job.job_id)
+    _notice_unconsumed_steering(job, deps, state)
     return outcome
+
+
+def _notice_unconsumed_steering(job: NoveltyJob, deps: LoopDeps, state: _LoopState) -> None:
+    """종료 직전에 도착해 소비되지 못한 사용자 메시지에 안내를 남긴다.
+
+    루프가 끝나면 잡은 종단이라 더 읽을 주체가 없고, 저장만 된 메시지는 도달
+    불가가 된다(조용한 유실). 자동 재실행은 하지 않는다 — 사용자가 모르는 사이에
+    예산을 쓰게 되므로, 다시 보내달라고 안내만 한다.
+    """
+    if _drain_steering(job, deps, state) == 0:
+        return
+    try:
+        deps.store.append_message(
+            NoveltyChatMessage(
+                job_id=job.job_id,
+                owner_id=job.owner_id,
+                role=ChatRole.AGENT,
+                kind=ChatKind.NOTICE,
+                content=(
+                    "조사가 종료된 뒤 도착한 메시지입니다 — 다시 보내주시면 "
+                    "이어서 답변해 드릴게요."
+                ),
+            )
+        )
+    except Exception:  # noqa: BLE001 — 안내 실패가 종단 결과를 바꾸지 않는다
+        log.warning("novelty loop: late-steering notice failed for job %s", job.job_id)
 
 
 def _seed_state(job: NoveltyJob, deps: LoopDeps) -> _LoopState:
@@ -162,7 +199,54 @@ def _seed_state(job: NoveltyJob, deps: LoopDeps) -> _LoopState:
             "재개된 잡 — 이미 저장된 산출물: "
             + ", ".join(sorted(kind.value for kind in state.saved_kinds))
         )
+    # 대화도 승계한다 — 크래시 전에 받은 사용자 지시가 재실행에서 사라지지 않게.
+    # 윈도우만 남으므로 이력 전체를 다시 재생하지는 않는다.
+    _drain_steering(job, deps, state)
     return state
+
+
+def _drain_steering(job: NoveltyJob, deps: LoopDeps, state: _LoopState) -> int:
+    """새 사용자 메시지를 읽어 스티어링 윈도우에 반영하고, 소비한 건수를 돌려준다.
+
+    (FR-44, BLM §6)
+
+    호출 위치가 계약이다 — 예산 검사 통과 후, decide 직전. 턴 맨 앞에서 읽으면
+    예산이 그 턴을 거부했을 때 커서만 전진해 지시가 유실된다("다음 decide 시점"
+    주입이 성립하지 않는다). 진행 중 도구 호출을 끊지 않는 것도 같은 이유다.
+
+    필터는 kind가 아니라 role이다 — 에이전트 답장·시스템 안내가 같은 테이블에
+    쌓이므로 kind로 거르면 루프가 자기 출력을 되먹는다.
+    """
+    try:
+        messages = deps.store.list_messages(
+            job.owner_id, job.job_id, after=state.steering_cursor, limit=_STEERING_FETCH_LIMIT
+        )
+    except KeyError:
+        # 커서가 가리키던 메시지가 사라졌다 — 풀어서 다음 턴에 다시 앵커한다.
+        # 통째로 삼키면 커서가 박힌 채 스티어링이 조용히 죽는다.
+        log.warning("novelty loop: steering cursor lost for job %s; re-anchoring", job.job_id)
+        state.steering_cursor = None
+        return 0
+    except Exception:  # noqa: BLE001 — 대화 조회 실패가 턴을 죽이지 않는다(다음 턴 재시도)
+        log.warning("novelty loop: steering read failed for job %s", job.job_id)
+        return 0
+    if not messages:
+        return 0
+    state.steering_cursor = messages[-1].message_id
+    fresh = [
+        message.content[:_STEERING_MAX_CHARS]
+        for message in messages
+        if message.role is ChatRole.USER
+    ]
+    if not fresh:
+        return 0
+    state.steering.extend(fresh)
+    del state.steering[:-_STEERING_WINDOW]
+    # 노트에는 사용자 문장을 넣지 않는다 — 시스템 노트는 신뢰 구획이고, 본문은
+    # 별도의 사용자 지시 구획으로만 전달된다(prompt injection 경계).
+    state.notes.append(f"사용자 스티어링 {len(fresh)}건 수신 — 사용자 지시 구획 참조")
+    log.info("novelty loop: job %s consumed %d steering message(s)", job.job_id, len(fresh))
+    return len(fresh)
 
 
 def _collect_record_refs(node: Any, into: set[str]) -> None:
@@ -202,6 +286,7 @@ def _drive(job: NoveltyJob, deps: LoopDeps, state: _LoopState) -> LoopOutcome:
         if budget_rules.begin_iteration(budget) is not None:
             return _budget_exhausted()
 
+        _drain_steering(job, deps, state)
         decision = deps.llm.decide(_observe(job, state), _exposed_tools(deps))
         if decision.cost_estimate_usd:
             budget_rules.record_cost(budget, decision.cost_estimate_usd)
@@ -466,6 +551,7 @@ def _observe(job: NoveltyJob, state: _LoopState) -> LoopObservation:
         tool_calls_left=budget.max_tool_calls_total - consumed.tool_calls_total,
         cost_left_usd=max(budget.token_cost_limit_usd - consumed.cost_usd, 0.0),
         notes=tuple(state.notes[-4:]),
+        steering=tuple(state.steering),
     )
     return observation
 

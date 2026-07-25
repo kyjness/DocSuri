@@ -35,7 +35,11 @@ class ToolResultView:
 
 @dataclass(frozen=True, slots=True)
 class LoopObservation:
-    """observe 단계 입력(BLM §2): 도구 결과·산출물 현황·남은 예산 요약."""
+    """observe 단계 입력(BLM §2): 도구 결과·산출물 현황·남은 예산 요약.
+
+    `notes`는 시스템이 작성한 신뢰 채널이고, `steering`은 사용자가 작성한 준신뢰
+    채널이다 — 두 구획은 렌더링에서 섞이지 않는다(어댑터 책임).
+    """
 
     topic: str
     input_type: str
@@ -46,6 +50,9 @@ class LoopObservation:
     tool_calls_left: int
     cost_left_usd: float
     notes: tuple[str, ...] = ()
+    # 잡 내 대화 스티어링(FR-44, BLM §6) — 조사 방향·우선순위만 바꿀 수 있고
+    # 예산·저장 게이트·allowlist·Notion 승인은 바꿀 수 없다(BR-RA9).
+    steering: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
