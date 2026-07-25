@@ -551,3 +551,73 @@ def test_turn_quota_scope_is_separate_from_job_quota(monkeypatch) -> None:
     keys = [key for key, _ in seen]
     assert keys == ["agent:novelty:u1", "agent:novelty_turn:u1"]
     assert seen[0][1] != seen[1][1]  # 한도도 별도
+
+
+def test_enqueue_failure_refunds_the_turn_quota(app_bundle, monkeypatch) -> None:
+    """큐 적재가 실패하면 한 번도 실행되지 않은 턴이다 — 한도를 되돌린다.
+
+    되돌리지 않으면 인프라 장애 중에 재시도할수록 하루치만 줄고 답은 못 받는다
+    (코드 리뷰 반영).
+    """
+    app, store, queue = app_bundle
+    client = TestClient(app)
+    refunds: list[str] = []
+
+    async def record_refund(request):
+        refunds.append("refunded")
+
+    class _BrokenQueue:
+        def enqueue(self, *args, **kwargs):
+            raise RuntimeError("redis down")
+
+    monkeypatch.setattr(api, "refund_novelty_turn_quota", record_refund)
+    job_id = _create_job(client)
+    queue.consume(0)
+    _terminalize(store, job_id)
+    app.state.novelty_queue = _BrokenQueue()
+
+    response = client.post(
+        f"/api/novelty/jobs/{job_id}/messages", json={"content": "실험 계획 짜줘"}
+    )
+
+    assert response.status_code == 503
+    assert refunds == ["refunded"]
+    # 사용자에게는 사유가 남는다 — 조용히 사라지지 않는다.
+    messages = store.list_messages(_OWNER, job_id, after=None, limit=10)
+    assert messages[-1].role.value == "agent"
+    assert messages[-1].kind.value == "notice"
+
+
+def test_steering_that_lands_after_termination_gets_a_notice(app_bundle) -> None:
+    """접수 시점에는 실행 중이었는데 쓰는 사이 잡이 끝나는 경계(TOCTOU).
+
+    루프의 마지막 드레인은 이미 지나갔으므로 이 메시지를 읽을 주체가 없다 —
+    응답 없는 유실을 막기 위해 API가 append 뒤에 상태를 다시 확인한다.
+    """
+    app, store, queue = app_bundle
+    client = TestClient(app)
+    job_id = _create_job(client)
+    queue.consume(0)
+
+    original_append = store.append_message
+    flipped = {"done": False}
+
+    def append_then_terminalize(message):
+        original_append(message)
+        if not flipped["done"] and message.role.value == "user":
+            flipped["done"] = True
+            _terminalize(store, job_id)  # 쓰는 사이 루프가 끝났다
+
+    store.append_message = append_then_terminalize
+    try:
+        response = client.post(
+            f"/api/novelty/jobs/{job_id}/messages", json={"content": "BM25 위주로"}
+        )
+    finally:
+        store.append_message = original_append
+
+    assert response.status_code == 200
+    assert response.json()["kind"] == "steering"
+    messages = store.list_messages(_OWNER, job_id, after=None, limit=10)
+    assert messages[-1].role.value == "agent"
+    assert "다시 보내주시면" in messages[-1].content

@@ -99,27 +99,29 @@ def run_turn(
     하나이고(execute_step 내부), 이 값은 한 턴의 decide 횟수만 제한한다.
     """
     # 한 번 읽어 문맥 복원과 근거 시드에 함께 쓴다 — 같은 목록을 두 번 조회하지 않는다.
+    # 스티어링 윈도우는 승계하지 않는다 — 요청 본문이 곧 이번 턴의 지시다.
     artifacts = deps.store.list_artifacts(job.owner_id, job.job_id)
-    context = seed_context(job, deps, artifacts=artifacts)
+    context = seed_context(job, deps, artifacts=artifacts, inherit_steering=False)
     _seed_artifacts_as_evidence(artifacts, context)
 
     budget = job.loop_run.budget if job.loop_run is not None else None
     if budget is None or budget_rules.begin_iteration(budget) is not None:
         # 예산이 없거나 이미 소진 — LLM을 호출하지 않고 안내로 끝낸다.
-        return _finish(job, deps, _BUDGET_EXHAUSTED_REPLY, kind=ChatKind.NOTICE)
+        return _finish(job, deps, message, _BUDGET_EXHAUSTED_REPLY, kind=ChatKind.NOTICE)
 
     try:
         return _drive(job, deps, context, message, max_steps=max_steps)
     except TraceUnavailable:
         # 트레이스는 계약이다(NFR-NV2-13) — 기록 없이 계속하지 않는다.
         return _finish(
-            job, deps, "결정 기록을 남길 수 없어 요청을 중단했어요. 잠시 후 다시 시도해 주세요.",
+            job, deps, message,
+            "결정 기록을 남길 수 없어 요청을 중단했어요. 잠시 후 다시 시도해 주세요.",
             kind=ChatKind.NOTICE,
         )
     except Exception:  # noqa: BLE001 — 턴 실패가 종단 잡의 결과를 훼손하지 않는다
         log.exception("novelty turn: job %s failed", job.job_id)
         return _finish(
-            job, deps, "요청을 처리하는 중 문제가 생겼어요. 다시 시도해 주세요.",
+            job, deps, message, "요청을 처리하는 중 문제가 생겼어요. 다시 시도해 주세요.",
             kind=ChatKind.NOTICE,
         )
     finally:
@@ -151,13 +153,13 @@ def _drive(
         # 변환된다. 대화 턴에서 "끝났다"는 곧 "답변했다"이므로 reply와 같게 다룬다.
         if isinstance(proposal, TerminationProposal):
             return _finish(
-                job, deps, proposal.note or _NO_REPLY_FALLBACK,
+                job, deps, message, proposal.note or _NO_REPLY_FALLBACK,
                 kind=ChatKind.AGENT_REPLY, saved=context.last_saved,
             )
         if proposal.tool_name == TOOL_REPLY:
             content = str(proposal.args.get("content") or "").strip()
             return _finish(
-                job, deps, content or _NO_REPLY_FALLBACK,
+                job, deps, message, content or _NO_REPLY_FALLBACK,
                 kind=ChatKind.AGENT_REPLY, saved=context.last_saved,
             )
 
@@ -165,7 +167,7 @@ def _drive(
             break
 
     # 상한·예산 소진으로 답변 없이 끝났다 — 침묵 종료 금지, 사유를 남긴다.
-    return _finish(job, deps, _exhausted_reply(context), kind=ChatKind.NOTICE,
+    return _finish(job, deps, message, _exhausted_reply(context), kind=ChatKind.NOTICE,
                    saved=context.last_saved)
 
 
@@ -234,6 +236,7 @@ def _exposed_tools(deps: AgentDeps) -> tuple[ToolSpec, ...]:
 def _finish(
     job: NoveltyJob,
     deps: AgentDeps,
+    message: NoveltyChatMessage,
     reply: str,
     *,
     kind: ChatKind,
@@ -242,9 +245,11 @@ def _finish(
     """답장을 대화에 남긴다 — 산출물을 만들었으면 그 참조를 함께 건다(BLM §5.5).
 
     `saved`는 이번 턴에 게이트를 통과한 마지막 저장(context.last_saved) — 저장
-    시점에 id를 받아 두므로 참조를 다시 조회하지 않는다."""
+    시점에 id를 받아 두므로 참조를 다시 조회하지 않는다. in_reply_to가 이 턴의
+    멱등 판정 근거이므로 어떤 종류의 답장(안내 포함)이든 반드시 건다."""
     saved_kind, artifact_ref = saved if saved is not None else (None, None)
     append_agent_message(
-        deps.store, job, reply, kind=kind, resulting_artifact_ref=artifact_ref
+        deps.store, job, reply, kind=kind,
+        resulting_artifact_ref=artifact_ref, in_reply_to=message.message_id,
     )
     return TurnOutcome(reply=reply, artifact_ref=artifact_ref, saved_kind=saved_kind)

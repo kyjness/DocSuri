@@ -15,7 +15,7 @@ import json
 import logging
 from dataclasses import dataclass, field, replace
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from ..ports.llm import (
@@ -48,6 +48,7 @@ from .models import (
 )
 
 __all__ = [
+    "LATE_STEERING_NOTICE",
     "ON_DEMAND_UNAVAILABLE_NOTICE",
     "SAVE_ARTIFACT_SPEC",
     "AgentContext",
@@ -96,9 +97,12 @@ STEERING_WINDOW = 3
 STEERING_MAX_CHARS = 400
 STEERING_FETCH_LIMIT = 20
 
-# 같은 판정(온디맨드 불가)을 API와 워커가 서로 다른 시점에 내릴 수 있다 —
-# 사용자에게는 같은 문구여야 하므로 여기 한 곳에만 둔다.
+# 같은 판정(온디맨드 불가·종료 후 도착)을 API와 워커·루프가 서로 다른 시점에 내릴 수
+# 있다 — 사용자에게는 같은 문구여야 하므로 여기 한 곳에만 둔다.
 ON_DEMAND_UNAVAILABLE_NOTICE = "이 조사에서는 추가 생성을 할 수 없어요. 새 조사로 이어가 주세요."
+LATE_STEERING_NOTICE = (
+    "조사가 종료된 뒤 도착한 메시지입니다 — 다시 보내주시면 이어서 답변해 드릴게요."
+)
 
 
 @dataclass(slots=True)
@@ -126,7 +130,7 @@ class AgentContext:
     last_saved: tuple[ArtifactKind, str] | None = None
 
 
-class StepResult(str, Enum):
+class StepResult(StrEnum):
     """한 걸음의 결과 — 종료 의미 부여는 호출자 몫(루프는 partial, 턴은 안내)."""
 
     CONTINUE = "continue"
@@ -138,7 +142,11 @@ class TraceUnavailable(Exception):
 
 
 def seed_context(
-    job: NoveltyJob, deps: AgentDeps, *, artifacts: list[ArtifactRecord] | None = None
+    job: NoveltyJob,
+    deps: AgentDeps,
+    *,
+    artifacts: list[ArtifactRecord] | None = None,
+    inherit_steering: bool = True,
 ) -> AgentContext:
     """저장된 산출물과 그 출처 핸들, 원고 recordRef, 대화 스티어링을 복원한다.
 
@@ -166,8 +174,11 @@ def seed_context(
             + ", ".join(sorted(kind.value for kind in context.saved_kinds))
         )
     # 대화도 승계한다 — 크래시 전에 받은 사용자 지시가 재실행에서 사라지지 않게.
-    # 윈도우만 남으므로 이력 전체를 다시 재생하지는 않는다.
-    drain_steering(job, deps, context)
+    # 윈도우만 남으므로 이력 전체를 다시 재생하지는 않는다. 온디맨드 턴은 승계하지
+    # 않는다(inherit_steering=False) — 커서 없이 읽으면 가장 오래된 페이지가 잡히고,
+    # 이번 요청은 request로 이미 전달되며, 지난 턴의 요청은 살아 있는 지시가 아니다.
+    if inherit_steering:
+        drain_steering(job, deps, context)
     return context
 
 
@@ -263,10 +274,12 @@ def append_agent_message(
     *,
     kind: ChatKind = ChatKind.NOTICE,
     resulting_artifact_ref: str | None = None,
+    in_reply_to: str | None = None,
 ) -> None:
     """에이전트 명의의 대화 메시지를 best-effort로 남긴다 — 침묵 종료 금지의 공용 경로.
 
-    저장 실패가 호출자의 흐름(요청 응답·종단 기록·턴 결과)을 깨지 않는다."""
+    저장 실패가 호출자의 흐름(요청 응답·종단 기록·턴 결과)을 깨지 않는다.
+    `in_reply_to`: 특정 사용자 메시지에 대한 답장이면 그 id — 턴 멱등 판정의 근거."""
     try:
         store.append_message(
             NoveltyChatMessage(
@@ -276,6 +289,7 @@ def append_agent_message(
                 kind=kind,
                 content=content[:12000],
                 resulting_artifact_ref=resulting_artifact_ref,
+                in_reply_to=in_reply_to,
             )
         )
     except Exception:  # noqa: BLE001 — 안내 실패가 호출자를 막지 않는다

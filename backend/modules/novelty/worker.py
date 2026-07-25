@@ -62,7 +62,8 @@ class WorkerDeps:
     observability: Any | None = None
     sleep: Callable[[float], None] = time.sleep  # 경합 백오프 주입점(테스트)
     _idle_count: int = field(default=0, init=False)
-    _contention_count: int = field(default=0, init=False)
+    # 잡별 연속 경합 횟수 — 전역 카운터면 잡 A의 경합이 무관한 잡 B의 대기를 키운다.
+    _contention_counts: dict[str, int] = field(default_factory=dict, init=False)
 
 
 def run_worker(deps: WorkerDeps, should_stop) -> None:
@@ -152,7 +153,12 @@ def _process_turn(deps: WorkerDeps, message: QueuedJob, job: NoveltyJob) -> None
         deps.queue.ack(message)
     except Exception:  # noqa: BLE001 — 턴 하나의 실패가 워커를 죽이지 않는다
         log.exception("novelty worker: turn for job %s crashed", message.job_id)
-        append_agent_message(store, job, "요청을 처리하는 중 문제가 생겼어요. 다시 시도해 주세요.")
+        # in_reply_to를 걸어 이 턴을 종결로 기록한다 — 재전달이 crash 안내 뒤에
+        # 같은 턴을 또 돌려 안내+답장이 겹치는 것을 막는다.
+        append_agent_message(
+            store, job, "요청을 처리하는 중 문제가 생겼어요. 다시 시도해 주세요.",
+            in_reply_to=request.message_id,
+        )
         deps.queue.ack(message)
     finally:
         deps.queue.release(message.job_id)
@@ -165,14 +171,22 @@ def _acquire_or_backoff(deps: WorkerDeps, message: QueuedJob) -> bool:
     되돌리지 않으면 워커 재시작(recover_processing)까지 방치된다. nack은 큐 끝으로
     넣으므로 다른 메시지가 있으면 그쪽이 먼저 처리되고, 같은 메시지만 남아 반복
     경합할 때는 지수 백오프가 핫루프를 막는다(상한은 잠금 TTL보다 짧게).
+
+    sleep이 소비 스레드를 세우는 것은 의도된 절충이다 — 경합은 같은 잡을 다른
+    워커가 쥐고 있을 때(더블탭·재전달)뿐이라 드물고, 카운터가 잡별이므로 무관한
+    잡의 경합이 이 잡의 대기를 키우지 않는다.
     """
     if deps.queue.acquire(message.job_id, deps.settings.lock_ttl_seconds):
-        deps._contention_count = 0
+        deps._contention_counts.pop(message.job_id, None)
         return True
     deps.queue.nack(message)
-    deps._contention_count += 1
-    deps.sleep(min(2.0 ** (deps._contention_count - 1), _CONTENTION_BACKOFF_MAX_S))
+    count = deps._contention_counts.get(message.job_id, 0) + 1
+    deps._contention_counts[message.job_id] = count
+    deps.sleep(min(2.0 ** (count - 1), _CONTENTION_BACKOFF_MAX_S))
     return False
+
+
+_REPLY_SCAN_LIMIT = 50
 
 
 def _turn_request(
@@ -181,8 +195,10 @@ def _turn_request(
     """처리 대상 사용자 메시지를 찾고, 이미 답한 턴이면 None.
 
     멱등성: 큐 재전달(워커 crash 후 recover_processing)로 같은 턴이 두 번 올 수
-    있다. 대상 메시지 **뒤에** 에이전트 행이 있으면 이미 실행된 턴이므로 다시 돌리지
-    않는다 — 중복 답장과 중복 과금을 막는다. 별도 상태 컬럼 없이 기존 커서로 판정한다.
+    있다. 대상 메시지 뒤에 **이 메시지를 in_reply_to로 가리키는** 에이전트 행이
+    있으면 이미 실행된 턴이므로 다시 돌리지 않는다 — 중복 답장과 중복 과금을 막는다.
+    "아무 에이전트 행"으로 판정하면 연속 요청 A·B에서 A의 답장이 B의 답장으로
+    오인돼 B가 무응답으로 사라진다(코드 리뷰 반영).
     """
     if message.message_id is None:
         return None
@@ -190,10 +206,15 @@ def _turn_request(
     if target is None:
         return None  # 대상 메시지가 사라졌다(잡 삭제 경합)
     try:
-        after = store.list_messages(job.owner_id, job.job_id, after=message.message_id, limit=5)
+        after = store.list_messages(
+            job.owner_id, job.job_id, after=message.message_id, limit=_REPLY_SCAN_LIMIT
+        )
     except KeyError:
         return None
-    if any(item.role is ChatRole.AGENT for item in after):
+    if any(
+        item.role is ChatRole.AGENT and item.in_reply_to == message.message_id
+        for item in after
+    ):
         return None
     return target
 

@@ -100,6 +100,10 @@ _FENCE_MARKERS = (
 )
 # 렌더 절단은 드레인 시점 절단과 같은 한도를 쓴다 — 도메인 상수가 단일 소유자다.
 _STEERING_RENDER_MAX_CHARS = STEERING_MAX_CHARS
+# 온디맨드 턴의 요청 본문은 스티어링 윈도우 조각이 아니라 이번 턴의 과제 전체다 —
+# API가 받는 한도(12,000자)까지 그대로 보여준다. 스티어링 한도로 자르면 상세 제약이
+# 달린 요청이 조용히 잘려 엉뚱한 계획이 나온다(코드 리뷰 반영).
+_REQUEST_RENDER_MAX_CHARS = 12000
 
 
 def termination_parameters() -> dict[str, Any]:
@@ -109,19 +113,24 @@ def termination_parameters() -> dict[str, Any]:
     }
 
 
-def sanitize_steering(text: str) -> str:
-    """사용자 지시 본문 무해화 — 구획 마커 위조·제어문자 제거 후 절단.
+def sanitize_steering(text: str, *, max_chars: int = _STEERING_RENDER_MAX_CHARS) -> str:
+    """사용자 지시 본문 무해화 — 제어문자 제거·공백 정규화·구획 마커 위조 차단 후 절단.
 
     스티어링은 사용자가 자유롭게 쓰는 가장 긴 입력 경로(최대 12,000자)라, 구획
     경계를 흉내 내 시스템 지시 영역으로 넘어오려는 시도를 여기서 끊는다. 강제력은
     프롬프트가 아니라 도메인·게이트·allowlist에 있고(BR-RA9), 이건 그 앞단이다.
+
+    **순서가 방어다**: 공백 정규화를 마커 치환보다 **먼저** 한다. 반대로 하면
+    `===  사용자 지시 끝 ===`(공백 2개)처럼 어긋난 위조가 치환을 통과한 뒤 정규화로
+    정확한 마커가 되어 그대로 렌더된다(코드 리뷰 반영). 치환은 `=`·`:`만 `-`로
+    바꾸므로 치환 결과가 새 마커를 만들지는 않는다.
     """
     cleaned = "".join(ch if ch == "\n" or ch >= " " else " " for ch in text)
+    cleaned = " ".join(cleaned.split())
     for marker in _FENCE_MARKERS:
         cleaned = cleaned.replace(marker, marker.replace("=", "-").replace(":", "-"))
-    cleaned = " ".join(cleaned.split())
-    if len(cleaned) > _STEERING_RENDER_MAX_CHARS:
-        cleaned = cleaned[:_STEERING_RENDER_MAX_CHARS] + "…"
+    if len(cleaned) > max_chars:
+        cleaned = cleaned[:max_chars] + "…"
     return cleaned
 
 
@@ -146,7 +155,10 @@ def render_observation(observation: LoopObservation) -> str:
         lines.append("")
         lines.append(_STEERING_BEGIN)
         if observation.request:
-            lines.append(f"- (이번 요청) {sanitize_steering(observation.request)}")
+            request = sanitize_steering(
+                observation.request, max_chars=_REQUEST_RENDER_MAX_CHARS
+            )
+            lines.append(f"- (이번 요청) {request}")
         lines.extend(f"- {sanitize_steering(item)}" for item in observation.steering)
         lines.append(_STEERING_END)
     lines.append("")

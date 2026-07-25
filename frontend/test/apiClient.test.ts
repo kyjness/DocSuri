@@ -443,7 +443,9 @@ describe('ApiClient agent chat mapping', () => {
       // 분류(스티어링/온디맨드)는 서버가 한다 — 프론트는 같은 엔드포인트로 보낸다.
       const posted = requests.find((req) => req.method === 'POST');
       expect(posted?.path).toBe('/api/novelty/jobs/n1/messages');
-      expect(posted?.body).toMatchObject({ content: 'follow up' });
+      // novelty 대화 스키마는 content만 받는다(extra=forbid) — research와 달리
+      // 첨부 키를 실으면 매 전송이 422가 되어 기능 전체가 죽는다. 키 존재를 못 박는다.
+      expect(posted?.body).toEqual({ content: 'follow up' });
     } finally {
       if (previous === undefined) delete process.env.NEXT_PUBLIC_DOCSURI_REAL_API;
       else process.env.NEXT_PUBLIC_DOCSURI_REAL_API = previous;

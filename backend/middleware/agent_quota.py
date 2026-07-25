@@ -38,6 +38,15 @@ async def enforce_novelty_turn_quota(request: Request) -> None:
     await _enforce(request, scope="novelty_turn", limit=_NOVELTY_TURN_DAILY_LIMIT)
 
 
+async def refund_novelty_turn_quota(request: Request) -> None:
+    """승인된 턴이 실행에 들어가지 못했을 때 한도를 되돌린다.
+
+    쿼터는 "LLM을 쓸 권리"를 세는 것이므로, 큐 적재 실패처럼 서버 사정으로 한 번도
+    실행되지 않은 요청까지 세면 인프라 장애가 사용자의 하루치를 태운다. 되돌리기는
+    best-effort다 — 실패해도 호출자의 오류 응답을 가리지 않는다."""
+    await _refund(request, scope="novelty_turn")
+
+
 async def _enforce(request: Request, *, scope: str, limit: int) -> None:
     principal = getattr(request.state, "principal", None)
     if principal is None:
@@ -45,3 +54,10 @@ async def _enforce(request: Request, *, scope: str, limit: int) -> None:
     key = f"agent:{scope}:{principal.user_id}"
     if not await get_shared_limiter().allow(key, limit=limit, window_seconds=_WINDOW_SECONDS):
         raise HTTPException(status_code=429, detail=_QUOTA_MESSAGE)
+
+
+async def _refund(request: Request, *, scope: str) -> None:
+    principal = getattr(request.state, "principal", None)
+    if principal is None:
+        return
+    await get_shared_limiter().refund(f"agent:{scope}:{principal.user_id}")

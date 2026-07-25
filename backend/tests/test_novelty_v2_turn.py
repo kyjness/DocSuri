@@ -302,6 +302,66 @@ def test_turn_seeds_stored_artifacts_as_untrusted_tool_data() -> None:
     assert observation.missing_required_kinds == frozenset()
 
 
+def test_turn_does_not_replay_past_conversation_as_live_steering() -> None:
+    """지난 턴의 요청·답장이 이번 턴의 '사용자 지시'로 되살아나면 안 된다.
+
+    커서 없이 대화를 읽으면 가장 오래된 페이지가 잡혀, 이미 처리된 옛 요청이 살아
+    있는 지시로 렌더되고 이번 요청은 request와 스티어링에 중복으로 실린다
+    (코드 리뷰 반영 — 턴은 스티어링 윈도우를 승계하지 않는다).
+    """
+    store = InMemoryNoveltyStore()
+    job = _completed_job(store)
+    _request(store, job, "지난 턴의 요청 — BM25만 봐줘")
+    message = _request(store, job, "이번 요청 — 실험 계획 짜줘")
+    llm = ScriptedToolCallingLlm([_reply("네")])
+
+    run_turn(job, message, _deps(store, llm), max_steps=4)
+
+    observation = llm.observations[0]
+    assert observation.steering == ()
+    assert observation.request == "이번 요청 — 실험 계획 짜줘"
+
+
+def test_turn_reply_points_back_at_the_request_it_answers() -> None:
+    """답장은 어느 요청에 대한 것인지 남긴다 — 워커 멱등 판정의 근거다."""
+    store = InMemoryNoveltyStore()
+    job = _completed_job(store)
+    message = _request(store, job, "실험 계획 짜줘")
+    llm = ScriptedToolCallingLlm([_save_plan(), _reply("만들었어요")])
+
+    run_turn(job, message, _deps(store, llm), max_steps=4)
+
+    reply = _messages(store, job)[-1]
+    assert reply.in_reply_to == message.message_id
+
+
+def test_turn_reply_carries_artifact_ref_even_when_kind_was_already_saved() -> None:
+    """이미 있는 kind를 갱신 저장해도 답장에 산출물 참조가 붙어야 한다.
+
+    "이번에 새로 생긴 kind"로 판정하면 재저장이 참조 없이 나가 화면에 카드가
+    안 붙는다 — 저장 시점에 받은 artifact_id가 판정 근거여야 한다.
+    """
+    store = InMemoryNoveltyStore()
+    job = _completed_job(store)
+    first = _request(store, job, "실험 계획 짜줘")
+    run_turn(job, first, _deps(store, ScriptedToolCallingLlm([_save_plan(), _reply("v1")])),
+             max_steps=4)
+    saved_id = next(
+        rec.artifact_id
+        for rec in store.list_artifacts(job.owner_id, job.job_id)
+        if rec.kind is ArtifactKind.EXPERIMENT_PLAN
+    )
+
+    second = _request(store, job, "계획 다시 짜줘")
+    outcome = run_turn(
+        job, second, _deps(store, ScriptedToolCallingLlm([_save_plan(), _reply("v2")])),
+        max_steps=4,
+    )
+
+    assert outcome.artifact_ref == saved_id
+    assert _messages(store, job)[-1].resulting_artifact_ref == saved_id
+
+
 def test_turn_records_tool_calls_but_reply_leaves_no_trace() -> None:
     store = InMemoryNoveltyStore()
     job = _completed_job(store)

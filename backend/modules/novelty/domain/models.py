@@ -425,6 +425,10 @@ class NoveltyChatMessage(BaseModel):
     kind: ChatKind
     content: str = Field(min_length=1, max_length=12000)
     resulting_artifact_ref: str | None = None
+    # 에이전트 답장이 어느 사용자 메시지에 대한 것인지(온디맨드 턴 멱등의 판정 근거).
+    # "대상 뒤에 아무 에이전트 행"으로 추정하면 동시 요청에서 남의 답장을 내 답장으로
+    # 오인해 요청이 무응답으로 사라진다.
+    in_reply_to: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
 
 

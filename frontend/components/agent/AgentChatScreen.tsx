@@ -61,6 +61,8 @@ const JOB_STATE_LABEL: Record<AgentJobState, string> = {
   degraded: '저하',
 };
 const AGENT_REFRESH_MS = 1000;
+// 종단 잡의 온디맨드 답장을 기다리는 폴링 상한 — 워커가 죽어도 무한히 돌지 않는다.
+const AGENT_REPLY_WAIT_MS = 120_000;
 const STREAM_CHAR_MS = 8;
 const SSE_FETCH_TIMEOUT_MS = 5000;
 const RESEARCH_MODE_ENABLED =
@@ -78,6 +80,7 @@ export function AgentChatScreen() {
   const seenAgentMessageIdsRef = useRef<Set<string>>(new Set());
   const activeSessionId = state.session?.id;
   const activeMode = state.session?.mode;
+  const pollSession = shouldPollSession(state.jobState, state.messages, state.submitting);
 
   useEffect(() => {
     let alive = true;
@@ -121,15 +124,11 @@ export function AgentChatScreen() {
   }, [state.messages]);
 
   useEffect(() => {
-    if (
-      !activeSessionId ||
-      !activeSessionId.includes(':') ||
-      (state.jobState !== 'queued' && state.jobState !== 'running')
-    ) {
-      return;
-    }
+    if (!activeSessionId || !activeSessionId.includes(':') || !pollSession) return;
+    const jobRunning = state.jobState === 'queued' || state.jobState === 'running';
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let waited = 0;
     const refresh = async () => {
       try {
         const snapshot = await api.loadAgentSession(activeSessionId);
@@ -137,7 +136,11 @@ export function AgentChatScreen() {
       } catch {
         // Keep the last known snapshot; the next user action can retry explicitly.
       } finally {
-        if (alive) timer = setTimeout(refresh, AGENT_REFRESH_MS);
+        // 실행 중인 잡은 종단까지 계속 따라가고, 답장 대기는 상한까지만 기다린다.
+        waited += AGENT_REFRESH_MS;
+        if (alive && (jobRunning || waited < AGENT_REPLY_WAIT_MS)) {
+          timer = setTimeout(refresh, AGENT_REFRESH_MS);
+        }
       }
     };
     void refresh();
@@ -145,7 +148,7 @@ export function AgentChatScreen() {
       alive = false;
       if (timer) clearTimeout(timer);
     };
-  }, [activeSessionId, api, state.jobState]);
+  }, [activeSessionId, api, pollSession, state.jobState]);
 
   useEffect(() => {
     if (
@@ -1009,6 +1012,25 @@ function AgentProgressTimeline({
       ))}
     </section>
   );
+}
+
+/**
+ * 세션 스냅샷을 계속 다시 읽어야 하는지 — 실행 중인 잡을 따라갈 때, 그리고 아직
+ * 답을 못 받은 사용자 메시지가 있을 때다.
+ *
+ * 후자가 없으면 온디맨드 턴(BLM §5)의 답장이 화면에 영영 붙지 않는다: 종단 잡의
+ * 대화 턴은 워커가 비동기로 처리하는데 잡 상태는 completed에서 변하지 않으므로,
+ * 잡 상태만 보는 조건은 폴링을 시작조차 하지 않는다.
+ */
+export function shouldPollSession(
+  jobState: AgentJobState,
+  messages: AgentMessage[],
+  submitting = false,
+): boolean {
+  if (jobState === 'queued' || jobState === 'running') return true;
+  if (submitting) return false;
+  const last = messages.at(-1);
+  return last?.role === 'user' && last.status !== 'failed';
 }
 
 export function normalizeTimelineDisplay(

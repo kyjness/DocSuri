@@ -320,7 +320,9 @@ function toChatBody(req: AgentSendMessageRequest) {
 function toNoveltyBody(req: AgentSendMessageRequest, created: boolean) {
   if (!created) {
     // 후속 대화 = 스티어링(조사 중) 또는 온디맨드 요청(종단). 분류는 서버가 한다.
-    return toChatBody(req);
+    // novelty 대화 스키마는 content만 받는다(extra=forbid) — research와 달리
+    // 첨부 키를 실으면 422다. 잡 내 첨부는 원고 업로드 전용 경로를 쓴다.
+    return { content: req.content };
   }
   const manuscript = req.attachments?.[0];
   // US-NV2(#252)/PR3 — 원고 본문은 잡 생성 직후 별도 업로드로 전달된다(sendAgentMessage).

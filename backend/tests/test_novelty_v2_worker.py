@@ -22,7 +22,7 @@ from backend.modules.novelty.domain.models import (
 )
 from backend.modules.novelty.domain.turn import TOOL_REPLY
 from backend.modules.novelty.ports.llm import LlmDecision, ToolCallProposal
-from backend.modules.novelty.ports.queue import KIND_TURN
+from backend.modules.novelty.ports.queue import KIND_TURN, QueuedJob
 from backend.modules.novelty.ports.tools import (
     TOOL_CORPUS_SEARCH,
     TOOL_FORM_EVIDENCE,
@@ -214,7 +214,7 @@ def test_lock_contention_returns_message_to_queue() -> None:
     # 재전달되어야 하며, 그때까지 메시지가 유실되거나 방치되면 안 된다.
     requeued = queue.consume(0)
     assert requeued is not None and requeued.job_id == job.job_id
-    assert deps._contention_count == 1  # noqa: SLF001 — 백오프 카운터 계약
+    assert deps._contention_counts[job.job_id] == 1  # noqa: SLF001 — 백오프 카운터 계약
 
 
 def test_contention_counter_resets_after_successful_pickup() -> None:
@@ -225,12 +225,37 @@ def test_contention_counter_resets_after_successful_pickup() -> None:
     deps = _deps(store, queue, _happy_script())
 
     process_message(deps, queue.consume(0))
-    assert deps._contention_count == 1  # noqa: SLF001
+    assert deps._contention_counts[job.job_id] == 1  # noqa: SLF001
     queue.release(job.job_id)  # 앞선 워커 종료
     process_message(deps, queue.consume(0))
     # 백오프는 연속 경합에만 걸린다 — 한 번 집어 실행하면 다음 경합은 다시 1초부터.
-    assert deps._contention_count == 0  # noqa: SLF001
+    assert job.job_id not in deps._contention_counts  # noqa: SLF001
     assert store.get_job(job.owner_id, job.job_id).state is JobState.COMPLETED
+
+
+def test_contention_backoff_is_per_job_not_global() -> None:
+    """잡 A의 경합이 무관한 잡 B의 대기를 키우면 안 된다 — 한 잡의 더블탭이 다른
+    사용자의 요청을 지수적으로 늦추게 된다(코드 리뷰 반영)."""
+    store, queue = InMemoryNoveltyStore(), InMemoryJobQueue()
+    job_a, job_b = _job(store), _job(store)
+    for job in (job_a, job_b):
+        queue.enqueue(job.job_id, job.owner_id)
+        assert queue.acquire(job.job_id, ttl_seconds=60) is True
+    slept: list[float] = []
+    deps = _deps(store, queue, ScriptedToolCallingLlm([]))
+    deps.sleep = slept.append
+
+    # A가 세 번 연속 경합해 백오프가 커진 뒤, B가 처음 경합한다.
+    for _ in range(3):
+        process_message(deps, queue.consume(0))
+        queue.consume(0)  # A가 되돌아온 뒤 B가 앞에 오도록 자리 정리
+        queue.enqueue(job_a.job_id, job_a.owner_id)
+    slept.clear()
+    b_message = QueuedJob(job_id=job_b.job_id, owner_id=job_b.owner_id)
+    process_message(deps, b_message)
+
+    assert deps._contention_counts[job_b.job_id] == 1  # noqa: SLF001
+    assert slept == [1.0]  # A의 누적과 무관하게 B는 첫 백오프
 
 
 def test_cancel_before_pickup_finalizes_without_loop() -> None:
@@ -423,8 +448,35 @@ def test_turn_redelivery_is_idempotent_no_duplicate_reply() -> None:
     process_message(deps, queue.consume(0))
 
     after = len(store.list_messages(job.owner_id, job.job_id, after=None, limit=20))
-    # 중복 답장도, 중복 과금도 없다 — 대상 메시지 뒤의 에이전트 행으로 판정한다.
+    # 중복 답장도, 중복 과금도 없다 — 답장이 in_reply_to로 이 턴을 가리키는지로 판정한다.
     assert after == before
+
+
+def test_each_of_two_queued_requests_gets_its_own_reply() -> None:
+    """사용자가 연달아 두 번 요청하면 둘 다 답을 받아야 한다.
+
+    멱등 판정을 "대상 뒤에 아무 에이전트 행"으로 하면, 먼저 처리된 A의 답장이
+    B의 답장으로 오인돼 B가 조용히 삼켜진다 — 쿼터는 이미 썼는데 답은 없다
+    (코드 리뷰 반영). in_reply_to가 판정 근거여야 한다.
+    """
+    store, queue = InMemoryNoveltyStore(), InMemoryJobQueue()
+    job = _terminal_job(store)
+    first = _ask(store, job, "실험 계획 짜줘")
+    second = _ask(store, job, "방향 제안도 해줘")
+    for message in (first, second):
+        queue.enqueue(job.job_id, job.owner_id, kind=KIND_TURN, message_id=message.message_id)
+    deps = _deps(store, queue, _reply_script())
+
+    process_message(deps, queue.consume(0))
+    deps.llm = _reply_script("두 번째 답변입니다")
+    process_message(deps, queue.consume(0))
+
+    replies = [
+        m
+        for m in store.list_messages(job.owner_id, job.job_id, after=None, limit=20)
+        if m.role is ChatRole.AGENT
+    ]
+    assert [m.in_reply_to for m in replies] == [first.message_id, second.message_id]
 
 
 def test_turn_lock_contention_returns_message_to_queue() -> None:

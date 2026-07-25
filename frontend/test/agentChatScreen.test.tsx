@@ -5,7 +5,9 @@ import {
   AgentChatScreen,
   normalizeTimelineDisplay,
   parseNoveltySseEvents,
+  shouldPollSession,
 } from '@/components/agent/AgentChatScreen';
+import type { AgentMessage } from '@/lib/agentChat/types';
 import { resetMockNotionConnection } from '@/lib/api/mockTransport';
 
 describe('AgentChatScreen', () => {
@@ -21,6 +23,32 @@ describe('AgentChatScreen', () => {
         { id: '3', stage: 'degraded', label: 'done', state: 'degraded' },
       ]).map((event) => event.state),
     ).toEqual(['completed', 'completed', 'degraded']);
+  });
+
+  it('keeps polling a completed job while an on-demand reply is outstanding', () => {
+    const message = (role: AgentMessage['role'], id: string): AgentMessage => ({
+      id,
+      role,
+      content: 'x',
+      createdAt: '2026-07-01T00:00:00Z',
+      status: 'sent',
+    });
+
+    // 종단 잡의 온디맨드 턴은 워커가 비동기로 답한다 — 잡 상태(completed)만 보면
+    // 폴링이 시작되지 않아 답장이 화면에 영영 붙지 않는다.
+    expect(shouldPollSession('completed', [message('user', 'u1')])).toBe(true);
+    // 답장이 도착하면 멈춘다.
+    expect(shouldPollSession('completed', [message('user', 'u1'), message('agent', 'a1')])).toBe(
+      false,
+    );
+    // 전송 실패한 메시지는 서버에 없다 — 기다릴 답장도 없다.
+    expect(
+      shouldPollSession('completed', [{ ...message('user', 'u1'), status: 'failed' }]),
+    ).toBe(false);
+    // 전송 중에는 sendAgentMessage가 스냅샷을 가져오므로 중복 폴링하지 않는다.
+    expect(shouldPollSession('completed', [message('user', 'u1')], true)).toBe(false);
+    // 실행 중인 잡은 대화와 무관하게 계속 따라간다.
+    expect(shouldPollSession('running', [])).toBe(true);
   });
 
   it('parses Novelty progress events from SSE frames', () => {

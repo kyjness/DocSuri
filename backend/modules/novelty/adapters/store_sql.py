@@ -100,6 +100,7 @@ class MessageV2Table(NoveltyV2Base):
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
     content: Mapped[str] = mapped_column(String(12000), nullable=False)
     resulting_artifact_ref: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    in_reply_to: Mapped[str | None] = mapped_column(Uuid(as_uuid=False), nullable=True)
     created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -411,6 +412,7 @@ class SqlNoveltyStore:
                     kind=message.kind.value,
                     content=message.content,
                     resulting_artifact_ref=message.resulting_artifact_ref,
+                    in_reply_to=message.in_reply_to,
                     created_at=message.created_at,
                 )
             )
@@ -432,6 +434,7 @@ class SqlNoveltyStore:
                 kind=row.kind,
                 content=row.content,
                 resulting_artifact_ref=row.resulting_artifact_ref,
+                in_reply_to=row.in_reply_to,
                 created_at=row.created_at,
             )
 
@@ -472,6 +475,7 @@ class SqlNoveltyStore:
                     kind=row.kind,
                     content=row.content,
                     resulting_artifact_ref=row.resulting_artifact_ref,
+                    in_reply_to=row.in_reply_to,
                     created_at=row.created_at,
                 )
                 for row in rows

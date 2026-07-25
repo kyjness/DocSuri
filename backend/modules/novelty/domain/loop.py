@@ -25,6 +25,7 @@ from ..ports.llm import LoopObservation, TerminationProposal, ToolCallProposal
 from ..ports.tools import TOOL_FORM_EVIDENCE, ToolSpec
 from . import budget as budget_rules
 from .agent_step import (
+    LATE_STEERING_NOTICE,
     SAVE_ARTIFACT_SPEC,
     AgentContext,
     AgentDeps,
@@ -114,10 +115,7 @@ def _notice_unconsumed_steering(
     """
     if drain_steering(job, deps, context) == 0:
         return
-    append_agent_message(
-        deps.store, job,
-        "조사가 종료된 뒤 도착한 메시지입니다 — 다시 보내주시면 이어서 답변해 드릴게요.",
-    )
+    append_agent_message(deps.store, job, LATE_STEERING_NOTICE)
 
 
 def _drive(job: NoveltyJob, deps: AgentDeps, context: AgentContext) -> LoopOutcome:

@@ -25,6 +25,7 @@ from backend.middleware.agent_attachments import ATTACHMENT_MAX_BYTES
 from backend.middleware.agent_quota import (
     enforce_novelty_job_quota,
     enforce_novelty_turn_quota,
+    refund_novelty_turn_quota,
 )
 from backend.modules.user_docmodel import (
     USER_DOCMODEL_PDF_CONTENT_TYPE,
@@ -32,7 +33,11 @@ from backend.modules.user_docmodel import (
     user_docmodel_ref,
 )
 
-from .domain.agent_step import ON_DEMAND_UNAVAILABLE_NOTICE, append_agent_message
+from .domain.agent_step import (
+    LATE_STEERING_NOTICE,
+    ON_DEMAND_UNAVAILABLE_NOTICE,
+    append_agent_message,
+)
 from .domain.models import (
     ON_DEMAND_ELIGIBLE_STATES,
     TERMINAL_STATES,
@@ -603,15 +608,45 @@ async def add_message(
     store.append_message(message)
     if on_demand:
         # 저장이 먼저다 — 적재가 실패해도 큐에 고아 참조가 남지 않는다.
-        _enqueue_turn(request, store, job, message)
+        await _enqueue_turn(request, store, job, message)
     elif terminal:
         # 실패·취소 잡은 근거가 될 산출물이 없다(BLM §5.1) — 워커를 깨우지 않고
         # 즉시 안내한다. 조용히 삼키지 않는다.
         append_agent_message(store, job, ON_DEMAND_UNAVAILABLE_NOTICE)
+    else:
+        _notice_if_terminated_meanwhile(store, principal.user_id, job_id, message)
     return _message_dto(message)
 
 
-def _enqueue_turn(
+def _notice_if_terminated_meanwhile(
+    store: NoveltyStorePort, owner_id: str, job_id: str, message: NoveltyChatMessage
+) -> None:
+    """스티어링으로 접수한 뒤 잡이 종단이 됐는지 확인하고, 그렇다면 안내를 남긴다.
+
+    잡 상태를 읽은 시점과 메시지를 쓰는 시점 사이에 루프가 끝날 수 있다. 그 사이에
+    끼면 루프의 마지막 드레인은 이미 지나갔고 이 메시지를 읽을 주체가 영영 없다 —
+    응답 없는 조용한 유실이다(코드 리뷰 반영). append 뒤에 다시 읽으면 종단 여부를
+    확실히 알 수 있으므로 여기서 사유를 남긴다.
+
+    루프의 마지막 드레인과 정확히 겹치는 순간에는 양쪽이 각자 안내를 남길 수 있다 —
+    이미 답장이 있으면 건너뛰어 대부분을 걸러내고, 남는 중복은 "다시 보내달라"는
+    같은 뜻이라 유실보다 낫다.
+    """
+    job = store.get_job(owner_id, job_id)
+    if job is None or job.state not in TERMINAL_STATES:
+        return
+    try:
+        answered = store.list_messages(owner_id, job_id, after=message.message_id, limit=5)
+    except KeyError:
+        return
+    if any(item.role is ChatRole.AGENT for item in answered):
+        return
+    append_agent_message(
+        store, job, LATE_STEERING_NOTICE, in_reply_to=message.message_id
+    )
+
+
+async def _enqueue_turn(
     request: Request, store: NoveltyStorePort, job: NoveltyJob, message: NoveltyChatMessage
 ) -> None:
     """온디맨드 턴을 워커에 넘긴다 — API는 실행하지 않는다(NFR-NV2-1)."""
@@ -619,7 +654,15 @@ def _enqueue_turn(
     try:
         queue.enqueue(job.job_id, job.owner_id, kind=KIND_TURN, message_id=message.message_id)
     except Exception as exc:  # noqa: BLE001 — 적재 실패는 안내로 수렴, 잡 상태 불변
-        append_agent_message(store, job, "요청을 접수하지 못했어요. 잠시 후 다시 시도해 주세요.")
+        # 한 번도 실행되지 않은 턴이므로 쿼터를 되돌린다 — 큐 장애가 사용자의
+        # 하루치를 태우면, 재시도할수록 한도만 줄고 답은 못 받는다(코드 리뷰 반영).
+        await refund_novelty_turn_quota(request)
+        # 안내는 이 요청 메시지에 대한 답장으로 건다 — 워커가 나중에 같은 메시지를
+        # 집더라도 이미 종결된 턴으로 보고 중복 실행하지 않는다.
+        append_agent_message(
+            store, job, "요청을 접수하지 못했어요. 잠시 후 다시 시도해 주세요.",
+            in_reply_to=message.message_id,
+        )
         raise HTTPException(status_code=503, detail={"error": "dispatch_failed"}) from exc
     _emit_metric(_observability(request), "novelty.turn_requested")
 
