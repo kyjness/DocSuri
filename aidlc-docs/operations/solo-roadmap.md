@@ -25,12 +25,19 @@
 - `tests/test_pbt.py::test_pbt_response_to_dict_sec9_all_states` hypothesis 실패 — 이관 이전부터 존재 (u7)
 - 요약 출력 언어가 한국어 요구사항과 달리 영어로 나오는 사례 — 프롬프트 언어 강제 보강 또는 모델 변경 실험 (u7)
 
-코드 리뷰 중 발견:
+코드 리뷰 중 발견 — **4건 전부 재감사 후 해결 확인(2026-07-25, 코드가 arbiter)**:
 
-- v2 듀얼라이트 경로의 중복 기록 가능성 (u1)
-- arXiv 경로에서 dedup 이전에 doc-model 빌드 수행 (u1)
-- Bedrock 스트림 error 이벤트 미처리 (u7)
-- LocalCircuitBreaker HALF-OPEN 상태 동시성 (u7)
+- ~~v2 듀얼라이트 경로의 중복 기록 가능성 (u1)~~ ✅ — 쓰기는 단일 인덱스 chunkId upsert
+  (`adapters/aws.py` bulk_upsert, `_id=chunkId`) + `delete_stale_chunks`로 멱등, 마이그레이션은
+  v2 인덱스에만 쓰고 alias cutover는 **쓰기와 분리**된 원자적 repoint(테스트
+  `test_opensearch_switch_alias_cutover_is_separate_from_write`). 라이브 이중 기록 경로 없음.
+- ~~arXiv 경로에서 dedup 이전에 doc-model 빌드 수행 (u1)~~ ✅ — `application.py::_index_paper`가
+  `build_doc_model()`를 dedup 단락·`begin_upsert` claim **이후**에만 호출(deferred lambda, BLM §0.3).
+- ~~Bedrock 스트림 error 이벤트 미처리 (u7)~~ ✅ — `adapters/bedrock_llm.py::_stream_tool_input`이
+  out-of-band error 이벤트(`"chunk" not in event`)와 in-band error frame(`type=="error"`) 모두 raise →
+  retry→LlmUnavailable→abstain.
+- ~~LocalCircuitBreaker HALF-OPEN 상태 동시성 (u7)~~ ✅ — per-unit 브레이커 4종을 스레드 안전한 공유
+  `docsuri_shared.resilience.CircuitBreaker`로 통합(single-probe·stale-success·probe-slot 만료).
 
 ## ⑤a 범위 축소 (2026-07-20)
 
