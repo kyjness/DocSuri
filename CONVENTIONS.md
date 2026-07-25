@@ -40,6 +40,15 @@ lifecycle; AIDLC is deliberately silent on git, so the git workflow is documente
 - Enforced by `.github/workflows/branch-name-check.yml`, which fails any PR whose source branch
   doesn't match an approved prefix. `develop` is allowed only as the source of `develop → main` release PRs.
 
+## Commits
+
+- Conventional-style 제목: `type(scope): 설명`. `type` ∈ `feat` / `fix` / `refactor` / `test` /
+  `chore` / `docs` / `ci`, `scope`는 유닛(`u5` 등) 또는 `qa`.
+- **커밋 제목·본문은 한국어로 작성한다.** `type(scope):` prefix만 영어로 유지한다.
+  예: `feat(qa): 로컬 paper_asset 백필 스크립트`, `fix(u5): 디스플레이 수식 붕괴 방지`.
+- 이미 푸시된 커밋의 메시지를 바꾸는 history rewrite(+force-push)는 SHA가 바뀌고 머지된
+  이력에 영향을 주므로 지양한다 — 필요하면 명시적으로 합의한 뒤에만.
+
 ## Version tags
 
 - SemVer, `v` prefix, **annotated** tags on `main`: `v1.0.0`.
