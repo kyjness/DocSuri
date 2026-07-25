@@ -404,7 +404,13 @@ class ArtifactRecord(BaseModel):
 
 
 class NoveltyChatMessage(BaseModel):
-    """잡 내 멀티턴 대화(FR-44)의 영속 모델. 루프의 스티어링 소비는 ⑤ 3단계."""
+    """잡 내 멀티턴 대화(FR-44)의 영속 모델.
+
+    kind는 서버가 확정한다 — "이 메시지가 어디로 갔는가"의 기록이다(실행 중 잡이면
+    steering, 종단 잡이면 on_demand_request). 의미상의 결과는 에이전트 답장의
+    resulting_artifact_ref가 담는다(BLM §5.5). 잡 간 사용자 메모리는 목표
+    아키텍처에 정의만 되어 있고 도입은 후속 설계 델타로 미룬다.
+    """
 
     message_id: str = Field(default_factory=lambda: str(uuid4()))
     job_id: str
