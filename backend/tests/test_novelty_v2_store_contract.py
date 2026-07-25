@@ -139,6 +139,28 @@ class TestNoveltyStoreContract:
         assert records[0].payload == {"items": [1, 2]}
         assert store.list_artifacts(_OTHER_OWNER, job.job_id) == []
 
+    def test_artifact_id_is_stable_across_resave(self, store) -> None:
+        """재저장은 같은 (job_id, kind) 슬롯을 갱신하므로 artifact_id가 유지돼야 한다 —
+        산출물을 id로 참조하는 경로(온디맨드 답장의 resulting_artifact_ref)가 어댑터에
+        따라 끊기지 않도록 두 구현이 같은 정체성 규칙을 만족해야 한다."""
+        job = _job()
+        store.create_job(job)
+        first = ArtifactRecord(
+            job_id=job.job_id, owner_id=job.owner_id, kind=ArtifactKind.SIMILAR_WORKS,
+            payload={"items": [1]},
+        )
+        store.save_artifact(first)
+        # 새 레코드는 자체 artifact_id를 갖지만, 기존 슬롯 갱신이므로 원래 id가 이긴다.
+        second = ArtifactRecord(
+            job_id=job.job_id, owner_id=job.owner_id, kind=ArtifactKind.SIMILAR_WORKS,
+            payload={"items": [1, 2]},
+        )
+        assert second.artifact_id != first.artifact_id
+        store.save_artifact(second)
+        stored = store.list_artifacts(job.owner_id, job.job_id)[0]
+        assert stored.artifact_id == first.artifact_id
+        assert stored.payload == {"items": [1, 2]}
+
     def test_messages_owner_scoped_cursor(self, store) -> None:
         job = _job()
         store.create_job(job)

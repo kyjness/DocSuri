@@ -145,7 +145,15 @@ class InMemoryNoveltyStore:
     # ── 산출물 ──
     def save_artifact(self, record: ArtifactRecord) -> None:
         # 종류별 최신 검증본만 유지(domain-entities: artifacts 참조 목록).
-        self._artifacts[(record.job_id, record.kind.value)] = record.model_copy(deep=True)
+        # 같은 (job_id, kind) 슬롯 재저장은 기존 artifact_id를 승계한다 — SQL 어댑터의
+        # upsert와 같은 정체성 규칙이어야 산출물을 id로 참조하는 경로가 어댑터에 따라
+        # 끊기지 않는다(공유 계약 테스트).
+        key = (record.job_id, record.kind.value)
+        existing = self._artifacts.get(key)
+        stored = record.model_copy(deep=True)
+        if existing is not None:
+            stored.artifact_id = existing.artifact_id
+        self._artifacts[key] = stored
 
     def list_artifacts(self, owner_id: str, job_id: str) -> list[ArtifactRecord]:
         job = self._jobs.get(job_id)
