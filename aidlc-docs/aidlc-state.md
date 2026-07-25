@@ -1015,4 +1015,24 @@ _Resiliency 옵트인은 `requirements.md` 확정 전에 필수 요구사항 명
   AgentChatScreen·types·mockTransport·fixtures), 테스트 7종(신규 `test_novelty_v2_turn.py` 포함).
 - 검증: backend 전량 통과(redis 통합 테스트를 실제 redis로 실행 — 스킵 0), root 183, frontend
   299 + tsc + lint + 타입 드리프트, shared SSOT 드리프트 없음.
+- 리뷰 3종 반영(2026-07-25):
+  - **simplify** — 같은 규칙이 두 곳에 정의돼 있던 것들을 단일화했다: 온디맨드 대상 상태 집합
+    (`ON_DEMAND_ELIGIBLE_STATES`, api·worker → `domain/models`), 에이전트 메시지 적재
+    (`agent_step.append_agent_message`, 4곳 통합), 잠금 경합 백오프, 큐 직렬 페이로드 계약
+    (`QueuedJob.to_payload/from_payload`), 관찰 조립(`agent_step.build_observation`).
+    `save_artifact`가 영속된 `artifact_id`를 반환하도록 포트를 바꿔 저장 후 재조회를 없앴다.
+  - **code-review** — 실API 모드에서 기능이 성립하지 않던 결함 3건이 드러났다: 후속 대화 body의
+    `attachments` 키(서버 `extra=forbid` → 매 전송 422), 종단 잡에서 폴링이 시작되지 않아 답장
+    미표시, 연속 요청의 두 번째가 멱등 오판으로 무응답 소멸. 마지막 건의 근본 해결로 대화
+    메시지에 **`in_reply_to`를 도입**했다(마이그레이션 005) — "대상 뒤 아무 에이전트 행"이
+    아니라 답장이 가리키는 요청 id가 판정 근거다. 그 외 스티어링 종료 경계 TOCTOU 안내,
+    큐 적재 실패 시 쿼터 환불(리미터 `refund` 신설), `sanitize_steering`의 공백 정규화를 마커
+    치환보다 먼저 수행(어긋난 공백의 위조 마커가 정규화로 되살아나던 문제), 온디맨드 요청
+    본문 절단을 스티어링 한도(400자)와 분리. 회귀 테스트 11건 추가.
+  - **security-review** — 취약점 0건. 확인 범위: 신규 store 포트(`get_message`·`save_artifact`)
+    와 API 경로의 owner 스코프, 큐 페이로드 역직렬화(워커는 페이로드의 `owner_id`를 인가에
+    쓰지 않고 잡에서 재해석), 서버 확정 `kind`와 클라이언트가 건드릴 수 없는 `in_reply_to`,
+    쿼터 환불의 소비-환불 쌍 불변, 프롬프트 구획 경계, 저장 게이트 우회 가능성(BR-RA6), 프론트
+    XSS 싱크. 리뷰가 지적한 잔여 2건(스티어링의 무쿼터 접수, `_REPLY_SCAN_LIMIT` 초과 시 중복
+    실행)은 인가 경계를 넘지 않는 자원 소모 계열로 이번 범위 밖.
 - Current gate: ⑤3(멀티모달 `view_figure`). 착수는 명시적 지시 후.
