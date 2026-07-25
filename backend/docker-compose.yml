@@ -120,10 +120,11 @@ services:
     profiles: ["ingest"]
     ports:
       - "8070:8070"
-    # Model load takes a while; a port-open check (bash builtin, no curl in the image) is a fine
-    # readiness proxy.
+    # Model load takes a while; a port-open check is a fine readiness proxy (the image ships no curl).
+    # `/dev/tcp` is a bash feature, so invoke bash explicitly — CMD-SHELL runs /bin/sh (dash on this
+    # Debian-based image), which has no /dev/tcp and would report the container perpetually unhealthy.
     healthcheck:
-      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8070 || exit 1"]
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8070"]
       interval: 10s
       timeout: 5s
       retries: 20

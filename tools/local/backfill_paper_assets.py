@@ -172,14 +172,17 @@ _INSERT = (
 
 
 def _write_paper(conn: psycopg.Connection, paper_id: str, rows: list[AssetRow]) -> None:
-    """Idempotent (paper, version) replace: delete existing rows, insert rebuilt ones."""
-    versions = {r.version for r in rows}
+    """Idempotent per-paper replace: delete ALL of the paper's rows, insert the rebuilt set.
+
+    Deleting every version (not just versions present in `rows`) is what keeps this idempotent when
+    the crop set SHRINKS: a version whose webp files all vanished from disk yields no rebuilt rows, and
+    a version-scoped delete would leave its old rows presigning objects that no longer exist. `rows` is
+    the complete disk truth for the paper (the builder walks every version dir), so a full replace is
+    safe. (A paper that lost *every* crop yields no rows and is skipped by the caller — clearing those
+    orphans is a separate cleanup, outside this add/replace tool's contract.)
+    """
     with conn.cursor() as cur:
-        for version in versions:
-            cur.execute(
-                "DELETE FROM paper_asset WHERE paper_id = %s AND version = %s",
-                (paper_id, version),
-            )
+        cur.execute("DELETE FROM paper_asset WHERE paper_id = %s", (paper_id,))
         cur.executemany(
             _INSERT,
             [

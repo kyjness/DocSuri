@@ -90,11 +90,16 @@ def _collect(doc: dict) -> tuple[dict[int, str], set[str]]:
             continue
         ref = n.get("assetRef")
         if isinstance(ref, dict) and ref.get("assetId") and n.get("type") in ("figure", "table"):
-            referenced.add(ref["assetId"])
+            aid = ref["assetId"]
+            referenced.add(aid)
             if n["type"] == "figure":
-                ordv = ref.get("ordinal")
-                if isinstance(ordv, int):
-                    fig_labels[ordv] = n.get("anchorLabel") or ""
+                # Key by the ordinal embedded in the assetId tail (…:figure:<ord>), NOT ref["ordinal"]:
+                # the tail is what target/present webp stems carry, and a figure whose assetRef omits a
+                # numeric `ordinal` would otherwise be targeted (in `referenced`) yet get no FigureSpec,
+                # so it could never be page-cropped (targeted > recovered forever).
+                tail = aid.rpartition(":")[2]
+                if tail.isdigit():
+                    fig_labels[int(tail)] = n.get("anchorLabel") or ""
     return fig_labels, referenced
 
 
