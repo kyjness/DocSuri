@@ -66,6 +66,7 @@ import type {
   AgentAttachmentStatus,
   AgentJobState,
   AgentMessage,
+  AgentMessageKind,
   AgentSendMessageRequest,
   AgentSendMessageResult,
   AgentSessionSnapshot,
@@ -112,10 +113,13 @@ type BackendResearchJob = {
 };
 type BackendResearchMessage = {
   messageId: string;
-  role: 'user' | 'assistant' | 'system';
+  role: 'user' | 'assistant' | 'system' | 'agent';
   content: string;
   attachments?: unknown[];
   createdAt: string;
+  // novelty 대화만 사용 — 서버가 확정하는 분류와 생성된 산출물 참조(FR-44).
+  kind?: string;
+  resultingArtifactRef?: string | null;
 };
 type BackendNoveltyJob = {
   jobId: string;
@@ -194,8 +198,16 @@ function mapTimelineState(state: AgentJobState): AgentTimelineEvent['state'] {
   return 'running';
 }
 
+const AGENT_MESSAGE_KINDS: readonly AgentMessageKind[] = [
+  'steering',
+  'on_demand_request',
+  'agent_reply',
+  'notice',
+];
+
 function mapAgentMessage(message: BackendResearchMessage): AgentMessage {
   const role = message.role === 'user' ? 'user' : 'agent';
+  const kind = AGENT_MESSAGE_KINDS.find((candidate) => candidate === message.kind);
   return {
     id: message.messageId,
     role,
@@ -203,6 +215,10 @@ function mapAgentMessage(message: BackendResearchMessage): AgentMessage {
     createdAt: message.createdAt,
     attachments: mapAgentAttachments(message.attachments),
     status: 'sent' as const,
+    ...(kind ? { kind } : {}),
+    ...(message.resultingArtifactRef
+      ? { resultingArtifactRef: message.resultingArtifactRef }
+      : {}),
   };
 }
 
@@ -303,12 +319,7 @@ function toChatBody(req: AgentSendMessageRequest) {
 
 function toNoveltyBody(req: AgentSendMessageRequest, created: boolean) {
   if (!created) {
-    if (process.env.NEXT_PUBLIC_DOCSURI_REAL_API) {
-      throw new UserFacingError(
-        'unknown',
-        'Novelty 후속 대화는 아직 실배포에서 사용할 수 없습니다.',
-      );
-    }
+    // 후속 대화 = 스티어링(조사 중) 또는 온디맨드 요청(종단). 분류는 서버가 한다.
     return toChatBody(req);
   }
   const manuscript = req.attachments?.[0];

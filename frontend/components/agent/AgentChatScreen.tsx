@@ -34,9 +34,10 @@ import {
   confidenceLabel,
   detailCell,
   itemsOf,
-  listField,
+  pickList,
+  pickRefs,
+  pickText,
   sourceRefsOf,
-  textField,
 } from '@/lib/agentChat/noveltyResult';
 import type {
   NoveltyArtifact,
@@ -368,6 +369,15 @@ export function AgentChatScreen() {
         </button>
       </form>
 
+      {/* 조사 중에도 입력은 열려 있다 — 다만 지시는 즉시가 아니라 다음 판단 시점에
+          반영되므로(BLM §6), 반응이 없어 먹혔다고 오해하지 않게 알린다. */}
+      {state.mode === 'novelty' &&
+      (state.jobState === 'queued' || state.jobState === 'running') ? (
+        <p className={styles.composerHint} data-testid="agent-steering-hint">
+          지시는 다음 판단 시점에 반영됩니다.
+        </p>
+      ) : null}
+
       {drawerOpen ? (
         <AgentSessionDrawer
           sessions={state.sessions}
@@ -580,6 +590,15 @@ function AgentMessageContent({
     return <p>{message.content}</p>;
   }
 
+  // 시스템 안내(불가 사유·게이트 거부) — 답변과 섞이지 않게 구분해 보여준다.
+  if (message.kind === 'notice') {
+    return (
+      <p className={styles.abstainNotice} data-testid="agent-notice">
+        {message.content}
+      </p>
+    );
+  }
+
   const parsed = parseAgentContent(message.content);
 
   // 구조화 결과(근거 카드/보류/오류)는 스트리밍하지 않고 즉시 렌더링한다 — JSON을 한 글자씩
@@ -728,7 +747,10 @@ function NoveltyArtifactBody({ artifact }: { artifact: NoveltyArtifact }) {
   if (artifact.kind === 'experiment_plan') {
     return <ExperimentPlanView plan={artifact.payload} />;
   }
-  // novelty_candidates·external_findings·알 수 없는 kind — 공통 목록 렌더링.
+  if (artifact.kind === 'novelty_candidates') {
+    return <NoveltyCandidatesView items={itemsOf(artifact.payload)} />;
+  }
+  // external_findings·알 수 없는 kind — 공통 목록 렌더링.
   return <NoveltyItemList items={itemsOf(artifact.payload)} />;
 }
 
@@ -844,43 +866,86 @@ function RiskSignalList({ items }: { items: NoveltyPayloadItem[] }) {
   );
 }
 
-const PLAN_LIST_FIELDS: Array<{ key: string; label: string }> = [
-  { key: 'hypotheses', label: '가설' },
-  { key: 'baselines', label: '베이스라인' },
-  { key: 'procedure', label: '절차' },
-  { key: 'datasets', label: '데이터셋' },
-  { key: 'metrics', label: '지표' },
-  { key: 'resources', label: '자원' },
-  { key: 'risks', label: '리스크' },
+// 키가 두 벌인 이유: v2 산출물은 백엔드 도메인 모델 그대로 snake_case이고,
+// v1 시절 저장분은 camelCase다. 뷰가 둘 다 읽는다.
+const PLAN_LIST_FIELDS: Array<{ keys: string[]; label: string }> = [
+  { keys: ['baselines'], label: '베이스라인' },
+  { keys: ['procedure'], label: '절차' },
+  { keys: ['datasets'], label: '데이터셋' },
+  { keys: ['metrics'], label: '지표' },
+  { keys: ['resources'], label: '자원' },
+  { keys: ['risks'], label: '리스크' },
 ];
 
 function ExperimentPlanView({ plan }: { plan: Record<string, unknown> }) {
+  const hypothesis = pickText(plan, 'hypothesis', 'researchQuestion');
+  const angle = pickText(plan, 'novelty_angle', 'noveltyAngle');
   return (
     <div className={styles.noveltyPlan}>
-      <span className={styles.evidenceLabel}>연구 질문</span>
-      <p className={styles.noveltyPlanQuestion}>{textField(plan, 'researchQuestion')}</p>
-      {textField(plan, 'noveltyAngle') ? (
+      {hypothesis ? (
         <>
-          <span className={styles.evidenceLabel}>차별화 포인트</span>
-          <p className={styles.noveltyPlanAngle}>{textField(plan, 'noveltyAngle')}</p>
+          <span className={styles.evidenceLabel}>가설</span>
+          <p className={styles.noveltyPlanQuestion}>{hypothesis}</p>
         </>
       ) : null}
-      {PLAN_LIST_FIELDS.map(({ key, label }) => {
-        const values = listField(plan, key);
-        if (values.length === 0) return null;
+      {angle ? (
+        <>
+          <span className={styles.evidenceLabel}>차별화 포인트</span>
+          <p className={styles.noveltyPlanAngle}>{angle}</p>
+        </>
+      ) : null}
+      {/* v1 저장분의 hypotheses(복수 목록)도 계속 보여준다. */}
+      {[{ keys: ['hypotheses'], label: '가설 목록' }, ...PLAN_LIST_FIELDS].map(
+        ({ keys, label }) => {
+          const values = pickList(plan, ...keys);
+          if (values.length === 0) return null;
+          return (
+            <div key={label} className={styles.noveltyPlanField}>
+              <strong>{label}</strong>
+              <ul>
+                {values.map((value, idx) => (
+                  <li key={idx}>{value}</li>
+                ))}
+              </ul>
+            </div>
+          );
+        },
+      )}
+      <NoveltySourceRefLinks refs={pickRefs(plan, 'source_refs', 'sourceRefs')} />
+    </div>
+  );
+}
+
+function NoveltyCandidatesView({ items }: { items: NoveltyPayloadItem[] }) {
+  if (items.length === 0) {
+    return <p className={styles.abstainNotice}>제안할 방향을 찾지 못했습니다.</p>;
+  }
+  return (
+    <ul className={styles.noveltyItems} data-testid="novelty-candidates">
+      {items.map((item, idx) => {
+        const payload = item as unknown as Record<string, unknown>;
+        const excluded = pickText(payload, 'excluded_claims', 'excludedClaims');
+        const feasibility = pickText(payload, 'feasibility_notes', 'feasibilityNotes');
         return (
-          <div key={key} className={styles.noveltyPlanField}>
-            <strong>{label}</strong>
-            <ul>
-              {values.map((value, idx) => (
-                <li key={idx}>{value}</li>
-              ))}
-            </ul>
-          </div>
+          <li key={idx} className={styles.noveltyItem}>
+            <div className={styles.noveltyItemHead}>
+              <strong>{pickText(payload, 'angle', 'title')}</strong>
+            </div>
+            <p>{pickText(payload, 'rationale', 'summary')}</p>
+            {feasibility ? (
+              <p className={styles.noveltyArtifactHint}>실행 고려사항 — {feasibility}</p>
+            ) : null}
+            {/* bounded 제안 규칙(BR-NV11): 근거로 뒷받침되지 않는 주장은 명시적으로 제외된다. */}
+            {excluded ? (
+              <p className={styles.abstainNotice}>주장하지 않는 것 — {excluded}</p>
+            ) : null}
+            <NoveltySourceRefLinks
+              refs={pickRefs(payload, 'supporting_refs', 'supportingRefs', 'source_refs')}
+            />
+          </li>
         );
       })}
-      <NoveltySourceRefLinks refs={sourceRefsOf(plan.sourceRefs)} />
-    </div>
+    </ul>
   );
 }
 

@@ -76,6 +76,10 @@ describe('AgentChatScreen', () => {
     expect(screen.getByText('query: RAG evaluation automation benchmark')).toBeInTheDocument();
     expect(screen.getByText(/차별점은 데이터셋 조건/)).toBeInTheDocument();
     expect(screen.getByText('도메인 지식 기반 실패 유형 분해')).toBeInTheDocument();
+    // FR-32 — 방향 제안은 bounded다. 무엇을 주장하지 않는지가 카드에 함께 보여야 한다.
+    expect(screen.getByTestId('novelty-candidates')).toBeInTheDocument();
+    expect(screen.getByText(/주장하지 않는 것 — .*새롭다고 확정하지 않으며/)).toBeInTheDocument();
+    expect(screen.getByText(/실행 고려사항 — .*소규모 검증/)).toBeInTheDocument();
     expect(screen.getByText(/RAG 평가 자동화 프로토콜.*유사합니다/)).toBeInTheDocument();
     expect(screen.getByText(/판정이 아닙니다/)).toBeInTheDocument();
     expect(
@@ -87,6 +91,30 @@ describe('AgentChatScreen', () => {
     expect(screen.getByText(/소스: corpus/)).toBeInTheDocument();
     expect(screen.getAllByText('완료').length).toBeGreaterThan(0);
     expect(screen.queryByText('completed')).not.toBeInTheDocument();
+  });
+
+  it('tells the user that steering lands at the next decision point', async () => {
+    const user = userEvent.setup();
+    render(<AgentChatScreen />);
+
+    await user.click(screen.getByTestId('agent-menu'));
+    await user.click(await screen.findByText('조사 중인 Novelty 잡'));
+
+    // 조사 중에도 입력은 열려 있다 — 다만 즉시 반영이 아니므로 먹혔다고 오해하지
+    // 않게 안내한다(BLM §6).
+    expect(await screen.findByTestId('agent-steering-hint')).toBeInTheDocument();
+    expect(screen.getByTestId('agent-composer-input')).not.toBeDisabled();
+  });
+
+  it('renders system notices apart from agent answers', async () => {
+    const user = userEvent.setup();
+    render(<AgentChatScreen />);
+
+    await user.click(screen.getByTestId('agent-menu'));
+    await user.click(await screen.findByText('조사 중인 Novelty 잡'));
+
+    const notice = await screen.findByTestId('agent-notice');
+    expect(notice).toHaveTextContent(/조사가 종료된 뒤 도착한 메시지입니다/);
   });
 
   it('loads a previous session from the drawer', async () => {

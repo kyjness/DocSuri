@@ -409,23 +409,106 @@ describe('ApiClient agent chat mapping', () => {
     expect(t.calls).toBe(0);
   });
 
-  it('blocks real novelty follow-up sends until the backend can re-dispatch jobs', async () => {
+  it('sends novelty follow-up messages in real API mode (steering / on-demand)', async () => {
     const previous = process.env.NEXT_PUBLIC_DOCSURI_REAL_API;
     process.env.NEXT_PUBLIC_DOCSURI_REAL_API = '1';
-    const t = transportOf(async () => ({ status: 200, body: null }));
+    const requests: TransportRequest[] = [];
+    const t = transportOf(async (req) => {
+      requests.push(req);
+      if (req.path === '/api/novelty/jobs/n1') {
+        return {
+          status: 200,
+          body: {
+            job: {
+              jobId: 'n1',
+              topic: 'follow up',
+              state: 'completed',
+              updatedAt: '2026-07-01T00:00:00Z',
+            },
+            events: [],
+          },
+        };
+      }
+      if (req.path === '/api/novelty/jobs/n1/messages') {
+        return { status: 200, body: { messages: [] } };
+      }
+      if (req.path === '/api/novelty/jobs/n1/result') return { status: 404, body: null };
+      return { status: 500, body: null };
+    });
     try {
-      await expect(
-        new ApiClient(t, fast).sendAgentMessage('novelty:n1', {
-          content: 'follow up',
-          mode: 'novelty',
-        }),
-      ).rejects.toMatchObject({
-        message: 'Novelty 후속 대화는 아직 실배포에서 사용할 수 없습니다.',
+      await new ApiClient(t, fast).sendAgentMessage('novelty:n1', {
+        content: 'follow up',
+        mode: 'novelty',
       });
-      expect(t.calls).toBe(0);
+      // 분류(스티어링/온디맨드)는 서버가 한다 — 프론트는 같은 엔드포인트로 보낸다.
+      const posted = requests.find((req) => req.method === 'POST');
+      expect(posted?.path).toBe('/api/novelty/jobs/n1/messages');
+      expect(posted?.body).toMatchObject({ content: 'follow up' });
     } finally {
       if (previous === undefined) delete process.env.NEXT_PUBLIC_DOCSURI_REAL_API;
       else process.env.NEXT_PUBLIC_DOCSURI_REAL_API = previous;
     }
+  });
+
+  it('maps server-assigned message kind and artifact ref onto agent messages', async () => {
+    const t = transportOf(async (req) => {
+      if (req.path === '/api/novelty/jobs/n1') {
+        return {
+          status: 200,
+          body: {
+            job: {
+              jobId: 'n1',
+              topic: 'rag',
+              state: 'completed',
+              updatedAt: '2026-07-01T00:00:00Z',
+            },
+            events: [],
+          },
+        };
+      }
+      if (req.path === '/api/novelty/jobs/n1/messages') {
+        return {
+          status: 200,
+          body: {
+            messages: [
+              {
+                messageId: 'm1',
+                role: 'user',
+                kind: 'on_demand_request',
+                content: '실험 계획 짜줘',
+                createdAt: '2026-07-01T00:00:00Z',
+              },
+              {
+                messageId: 'm2',
+                role: 'agent',
+                kind: 'agent_reply',
+                content: '만들었어요',
+                resultingArtifactRef: 'art-1',
+                createdAt: '2026-07-01T00:00:01Z',
+              },
+              {
+                messageId: 'm3',
+                role: 'agent',
+                kind: 'nonsense',
+                content: '알 수 없는 분류',
+                createdAt: '2026-07-01T00:00:02Z',
+              },
+            ],
+          },
+        };
+      }
+      if (req.path === '/api/novelty/jobs/n1/result') return { status: 404, body: null };
+      return { status: 500, body: null };
+    });
+
+    const snapshot = await new ApiClient(t, fast).loadAgentSession('novelty:n1');
+
+    expect(snapshot.messages[0].kind).toBe('on_demand_request');
+    expect(snapshot.messages[1]).toMatchObject({
+      kind: 'agent_reply',
+      resultingArtifactRef: 'art-1',
+    });
+    // 알 수 없는 분류는 버린다 — 서버가 새 kind를 추가해도 렌더링이 깨지지 않는다.
+    expect(snapshot.messages[2].kind).toBeUndefined();
   });
 });

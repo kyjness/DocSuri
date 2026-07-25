@@ -589,6 +589,11 @@ function backendMessage(message: AgentMessage) {
     content: message.content,
     attachments: message.attachments ?? [],
     createdAt: message.createdAt,
+    // 서버가 확정하는 분류·산출물 참조(FR-44) — 실계약과 같은 모양으로 돌려준다.
+    ...(message.kind ? { kind: message.kind } : {}),
+    ...(message.resultingArtifactRef
+      ? { resultingArtifactRef: message.resultingArtifactRef }
+      : {}),
   };
 }
 
@@ -677,15 +682,23 @@ function noveltyArtifacts(snapshot: AgentSessionSnapshot) {
       kind: 'novelty_candidates',
       title: 'Novelty candidates',
       objectKey: `mock/${snapshot.session.id}/ideas.json`,
+      // v2 스키마(백엔드 NoveltyCandidate) — 온디맨드로만 생성되며 bounded 규칙상
+      // supporting_refs와 excluded_claims가 필수다(BR-NV11).
       payload: {
         items: [
           {
-            title: '도메인 지식 기반 실패 유형 분해',
+            angle: '도메인 지식 기반 실패 유형 분해',
             rationale: '유사 연구의 한계가 실패 유형 구분에 집중되어 있어 차별화 여지가 있습니다.',
-            evidenceStatus: 'supported',
-            evidenceNote: '유사 연구의 한계와 데이터셋 조건을 근거로 후보 아이디어를 구성했습니다.',
-            confidence: 0.78,
-            sourceRefs: ['mock:corpus'],
+            excluded_claims: '이 방향이 새롭다고 확정하지 않으며, 논문화 가능성도 판단하지 않습니다.',
+            feasibility_notes: '공개 데이터셋만으로 소규모 검증이 가능합니다.',
+            supporting_refs: [
+              {
+                type: 'url',
+                identifier: '2401.00001',
+                title: 'Prior RAG benchmark',
+                url: 'https://arxiv.org/abs/2401.00001',
+              },
+            ],
           },
         ],
       },
