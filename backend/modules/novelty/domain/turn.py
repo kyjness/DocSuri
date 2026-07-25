@@ -1,0 +1,291 @@
+"""온디맨드 대화 턴(BLM §5) — 종단 잡에서 사용자의 요청 하나를 처리한다.
+
+조사 재실행이 아니다(NFR-NV2-7): 잡의 거시 상태는 바뀌지 않고(BR-RA5 — 종단 상태
+재진입 금지), 응답은 대화 턴으로 돌아간다. 생성물(NoveltyCandidate·ExperimentPlan)은
+조사 산출물과 **같은 저장 게이트**를 통과해야 저장·응답된다(BR-RA6) — 그래서 이
+모듈은 저장을 직접 하지 않고 `agent_step.execute_step`에만 위임한다.
+
+근거 경계는 공짜로 성립한다: `seed_context`가 복원하는 known_record_refs는 이미
+저장된 산출물에서 회수한 출처와 이번 턴 도구 호출로 새로 얻은 출처뿐이므로, 게이트가
+그 밖의 인용을 거부한다.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import dataclass
+from typing import Any
+
+from ..ports.llm import LoopObservation, TerminationProposal, ToolResultView
+from ..ports.tools import ToolSpec
+from . import budget as budget_rules
+from .agent_step import (
+    SAVE_ARTIFACT_SPEC,
+    AgentContext,
+    AgentDeps,
+    StepResult,
+    TraceUnavailable,
+    execute_step,
+    persist_progress,
+    seed_context,
+)
+from .models import (
+    ArtifactKind,
+    ArtifactRecord,
+    ChatKind,
+    ChatRole,
+    NoveltyChatMessage,
+    NoveltyJob,
+)
+
+__all__ = ["REPLY_SPEC", "TOOL_REPLY", "TurnOutcome", "run_turn"]
+
+log = logging.getLogger("docsuri.novelty.turn")
+
+# reply는 레지스트리 도구가 아니다 — KNOWN_LOOP_TOOLS에 없으므로 ToolRegistry가
+# 이 이름의 등록을 구조적으로 거부한다. 턴이 execute_step 이전에 직접 처리하므로
+# 도구 호출 예산을 소비하지 않고 ToolCallRecord도 남기지 않는다(대화 메시지가 기록).
+TOOL_REPLY = "reply"
+
+REPLY_SPEC = ToolSpec(
+    name=TOOL_REPLY,
+    description=(
+        "사용자에게 답변하고 이번 턴을 끝낸다. 산출물 생성이 필요 없는 질문이거나, "
+        "저장을 마쳤거나, 요청을 수행할 수 없을 때 사용한다."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {"content": {"type": "string", "maxLength": 4000}},
+        "required": ["content"],
+    },
+)
+
+# 대화 응답에 근거로 실어 보낼 산출물과 1건당 절단 길이. 조사 결과 전체를 그대로
+# 넣으면 입력이 비싸지므로, 계획 수립에 필요한 종류만 고른다(BLM §5.3).
+_EVIDENCE_KINDS = (
+    ArtifactKind.SIMILAR_WORKS,
+    ArtifactKind.GAP_ANALYSIS,
+    ArtifactKind.EVIDENCE,
+)
+_ARTIFACT_PAYLOAD_MAX_CHARS = 3000
+
+_BUDGET_EXHAUSTED_REPLY = (
+    "이 조사에 배정된 예산을 모두 사용해서 추가 생성을 할 수 없어요. "
+    "새 조사를 시작하면 이어서 도와드릴 수 있습니다."
+)
+_NO_REPLY_FALLBACK = (
+    "요청을 처리하지 못했어요. 조금 더 구체적으로 알려주시면 다시 시도해 볼게요."
+)
+
+
+@dataclass(slots=True)
+class TurnOutcome:
+    """턴 결과 — 저장된 답장 메시지와, 생성됐다면 그 산출물 참조."""
+
+    reply: str
+    artifact_ref: str | None = None
+    saved_kind: ArtifactKind | None = None
+
+
+def run_turn(
+    job: NoveltyJob, message: NoveltyChatMessage, deps: AgentDeps, *, max_steps: int
+) -> TurnOutcome:
+    """종단 잡의 대화 요청 하나를 처리하고 답장을 저장한다.
+
+    `max_steps`는 잡 예산과 별개의 상한이다 — 완료된 잡에는 반복이 넉넉히 남아 있어
+    채팅 한 줄이 잔여 예산을 전부 태울 수 있다. 소비 원장은 여전히 잡의 LoopBudget
+    하나이고(execute_step 내부), 이 값은 한 턴의 decide 횟수만 제한한다.
+    """
+    context = seed_context(job, deps)
+    _seed_artifacts_as_evidence(job, deps, context)
+
+    budget = job.loop_run.budget if job.loop_run is not None else None
+    if budget is None or budget_rules.begin_iteration(budget) is not None:
+        # 예산이 없거나 이미 소진 — LLM을 호출하지 않고 안내로 끝낸다.
+        return _finish(job, deps, _BUDGET_EXHAUSTED_REPLY, kind=ChatKind.NOTICE)
+
+    try:
+        return _drive(job, deps, context, message, max_steps=max_steps)
+    except TraceUnavailable:
+        # 트레이스는 계약이다(NFR-NV2-13) — 기록 없이 계속하지 않는다.
+        return _finish(
+            job, deps, "결정 기록을 남길 수 없어 요청을 중단했어요. 잠시 후 다시 시도해 주세요.",
+            kind=ChatKind.NOTICE,
+        )
+    except Exception:  # noqa: BLE001 — 턴 실패가 종단 잡의 결과를 훼손하지 않는다
+        log.exception("novelty turn: job %s failed", job.job_id)
+        return _finish(
+            job, deps, "요청을 처리하는 중 문제가 생겼어요. 다시 시도해 주세요.",
+            kind=ChatKind.NOTICE,
+        )
+    finally:
+        # 예산 소비는 실패해도 기록돼야 한다 — 잡 상태는 건드리지 않는다(BR-RA5).
+        persist_progress(job, deps)
+
+
+def _drive(
+    job: NoveltyJob,
+    deps: AgentDeps,
+    context: AgentContext,
+    message: NoveltyChatMessage,
+    *,
+    max_steps: int,
+) -> TurnOutcome:
+    budget = job.loop_run.budget  # type: ignore[union-attr]
+    saved_kind: ArtifactKind | None = None
+
+    for step in range(max_steps):
+        if step > 0 and budget_rules.begin_iteration(budget) is not None:
+            break
+        decision = deps.llm.decide(
+            _observe(job, context, message), _exposed_tools(deps)
+        )
+        if decision.cost_estimate_usd:
+            budget_rules.record_cost(budget, decision.cost_estimate_usd)
+
+        proposal = decision.proposal
+        # 어댑터가 propose_termination을 항상 주입하고, 평문 응답도 종료 제안으로
+        # 변환된다. 대화 턴에서 "끝났다"는 곧 "답변했다"이므로 reply와 같게 다룬다.
+        if isinstance(proposal, TerminationProposal):
+            return _finish(
+                job, deps, proposal.note or _NO_REPLY_FALLBACK,
+                kind=ChatKind.AGENT_REPLY, saved_kind=saved_kind,
+            )
+        if proposal.tool_name == TOOL_REPLY:
+            content = str(proposal.args.get("content") or "").strip()
+            return _finish(
+                job, deps, content or _NO_REPLY_FALLBACK,
+                kind=ChatKind.AGENT_REPLY, saved_kind=saved_kind,
+            )
+
+        before = set(context.saved_kinds)
+        if execute_step(job, deps, context, proposal) is StepResult.BUDGET_EXHAUSTED:
+            break
+        newly = context.saved_kinds - before
+        if newly:
+            saved_kind = next(iter(newly))
+
+    # 상한·예산 소진으로 답변 없이 끝났다 — 침묵 종료 금지, 사유를 남긴다.
+    return _finish(job, deps, _exhausted_reply(context), kind=ChatKind.NOTICE,
+                   saved_kind=saved_kind)
+
+
+def _exhausted_reply(context: AgentContext) -> str:
+    """마지막 게이트 거부 사유가 있으면 사용자에게 그대로 전한다(FE 재요청 근거)."""
+    for view in reversed(context.recent_results):
+        if not view.ok and view.error and view.error.startswith("rejected_by_gate"):
+            return (
+                "요청하신 산출물을 근거 검증에서 통과시키지 못했어요 "
+                f"({view.error.split(':')[1].strip()}). 다시 요청해 주시면 보완해 볼게요."
+            )
+    return "이번 요청은 정해진 시도 횟수 안에 마무리하지 못했어요. 다시 요청해 주세요."
+
+
+def _seed_artifacts_as_evidence(
+    job: NoveltyJob, deps: AgentDeps, context: AgentContext
+) -> None:
+    """저장된 조사 산출물을 근거 입력으로 실어 준다(BLM §5.3).
+
+    산출물 payload는 외부 논문 텍스트에서 파생된 데이터이므로 관찰의 '도구 결과
+    데이터' 구획에 들어간다 — 어댑터가 그 구획을 지시로 취급하지 않게 렌더한다.
+    """
+    try:
+        records = deps.store.list_artifacts(job.owner_id, job.job_id)
+    except Exception:  # noqa: BLE001 — 근거 시드 실패는 턴을 죽이지 않는다(빈 근거로 진행)
+        log.warning("novelty turn: artifact seed failed for job %s", job.job_id)
+        return
+    by_kind = {record.kind: record for record in records}
+    for kind in _EVIDENCE_KINDS:
+        record = by_kind.get(kind)
+        if record is None:
+            continue
+        context.result_seq += 1
+        context.recent_results.append(
+            _artifact_view(context.result_seq, record)
+        )
+
+
+def _artifact_view(seq: int, record: ArtifactRecord) -> ToolResultView:
+    return ToolResultView(
+        seq=seq,
+        tool_name=f"saved_artifact:{record.kind.value}",
+        ok=True,
+        content=_truncate_payload(record.payload),
+    )
+
+
+def _truncate_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """렌더링 전 1차 절단 — 산출물 3종을 그대로 실으면 입력이 과대해진다."""
+    try:
+        text = json.dumps(payload, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return {"note": "payload not serialisable"}
+    if len(text) <= _ARTIFACT_PAYLOAD_MAX_CHARS:
+        return payload
+    return {"truncated": text[:_ARTIFACT_PAYLOAD_MAX_CHARS]}
+
+
+def _observe(
+    job: NoveltyJob, context: AgentContext, message: NoveltyChatMessage
+) -> LoopObservation:
+    budget = job.loop_run.budget  # type: ignore[union-attr]
+    consumed = budget.consumed
+    return LoopObservation(
+        topic=job.request.topic,
+        input_type=job.request.input_type.value,
+        recent_results=tuple(context.recent_results),
+        saved_artifact_kinds=frozenset(kind.value for kind in context.saved_kinds),
+        # 대화 턴은 필수 세트를 다시 채우는 자리가 아니다 — 비워서 모델을 조사로
+        # 되돌리지 않는다(BR-RA5).
+        missing_required_kinds=frozenset(),
+        iterations_left=budget.max_iterations - consumed.iterations,
+        tool_calls_left=budget.max_tool_calls_total - consumed.tool_calls_total,
+        cost_left_usd=max(budget.token_cost_limit_usd - consumed.cost_usd, 0.0),
+        notes=tuple(context.notes[-4:]),
+        steering=tuple(context.steering),
+        mode="turn",
+        request=message.content,
+    )
+
+
+def _exposed_tools(deps: AgentDeps) -> tuple[ToolSpec, ...]:
+    return (*deps.registry.specs(), SAVE_ARTIFACT_SPEC, REPLY_SPEC)
+
+
+def _finish(
+    job: NoveltyJob,
+    deps: AgentDeps,
+    reply: str,
+    *,
+    kind: ChatKind,
+    saved_kind: ArtifactKind | None = None,
+) -> TurnOutcome:
+    """답장을 대화에 남긴다 — 산출물을 만들었으면 그 참조를 함께 건다(BLM §5.5)."""
+    artifact_ref = _artifact_ref(job, deps, saved_kind) if saved_kind else None
+    try:
+        deps.store.append_message(
+            NoveltyChatMessage(
+                job_id=job.job_id,
+                owner_id=job.owner_id,
+                role=ChatRole.AGENT,
+                kind=kind,
+                content=reply[:12000],
+                resulting_artifact_ref=artifact_ref,
+            )
+        )
+    except Exception:  # noqa: BLE001 — 답장 저장 실패는 워커 재전달이 흡수한다
+        log.warning("novelty turn: reply persist failed for job %s", job.job_id)
+    return TurnOutcome(reply=reply, artifact_ref=artifact_ref, saved_kind=saved_kind)
+
+
+def _artifact_ref(
+    job: NoveltyJob, deps: AgentDeps, kind: ArtifactKind
+) -> str | None:
+    try:
+        for record in deps.store.list_artifacts(job.owner_id, job.job_id):
+            if record.kind is kind:
+                return record.artifact_id
+    except Exception:  # noqa: BLE001 — 참조 조회 실패해도 답장 자체는 나간다
+        log.warning("novelty turn: artifact ref lookup failed for job %s", job.job_id)
+    return None

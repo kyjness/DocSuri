@@ -22,7 +22,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.middleware.agent_attachments import ATTACHMENT_MAX_BYTES
-from backend.middleware.agent_quota import enforce_novelty_job_quota
+from backend.middleware.agent_quota import (
+    enforce_novelty_job_quota,
+    enforce_novelty_turn_quota,
+)
 from backend.modules.user_docmodel import (
     USER_DOCMODEL_PDF_CONTENT_TYPE,
     object_key_for_upload,
@@ -46,11 +49,15 @@ from .domain.models import (
     utc_now,
 )
 from .domain.projection import describe_state, project_feed
+from .ports.queue import KIND_TURN
 from .ports.store import NoveltyStorePort
 from .security import decrypt_secret, encrypt_secret
 from .settings import NoveltySettings
 
 log = logging.getLogger("docsuri.novelty.api")
+
+# 온디맨드 턴 대상(BLM §5.1) — 실패·취소 잡은 근거가 될 산출물이 없다.
+_ON_DEMAND_STATES = frozenset({JobState.COMPLETED, JobState.PARTIAL})
 
 
 def _feature_enabled() -> None:
@@ -580,18 +587,61 @@ async def add_message(
     # 라벨을 붙일 수 있으면 kind로 렌더링하는 순간 위조 표면이 된다. 값의 의미는
     # "서버가 이 메시지를 어디로 보냈는가"이고, 실제 결과(산출물 생성 여부)는
     # 에이전트 답장의 resulting_artifact_ref가 담는다(BLM §5.5).
-    kind = (
-        ChatKind.ON_DEMAND_REQUEST if job.state in TERMINAL_STATES else ChatKind.STEERING
-    )
+    terminal = job.state in TERMINAL_STATES
+    on_demand = job.state in _ON_DEMAND_STATES
+    if on_demand:
+        # 온디맨드 턴만 LLM 지출을 유발한다 — 가드를 라우트 의존성이 아니라 여기서
+        # 부른다. 라우트에 걸면 큐 장애 시 스티어링(행 하나 쓰기)까지 503이 된다.
+        _require_dispatchable(request)
+        await enforce_novelty_turn_quota(request)
     message = NoveltyChatMessage(
         job_id=job_id,
         owner_id=principal.user_id,
         role=ChatRole.USER,
-        kind=kind,
+        kind=ChatKind.ON_DEMAND_REQUEST if terminal else ChatKind.STEERING,
         content=dto.content,
     )
     store.append_message(message)
+    if on_demand:
+        # 저장이 먼저다 — 적재가 실패해도 큐에 고아 참조가 남지 않는다.
+        _enqueue_turn(request, store, job, message)
+    elif terminal:
+        # 실패·취소 잡은 근거가 될 산출물이 없다(BLM §5.1) — 워커를 깨우지 않고
+        # 즉시 안내한다. 조용히 삼키지 않는다.
+        _append_notice(
+            store, job, "이 조사에서는 추가 생성을 할 수 없어요. 새 조사로 이어가 주세요."
+        )
     return _message_dto(message)
+
+
+def _enqueue_turn(
+    request: Request, store: NoveltyStorePort, job: NoveltyJob, message: NoveltyChatMessage
+) -> None:
+    """온디맨드 턴을 워커에 넘긴다 — API는 실행하지 않는다(NFR-NV2-1)."""
+    queue = _queue(request)  # _require_dispatchable이 존재를 보장
+    try:
+        queue.enqueue(job.job_id, job.owner_id, kind=KIND_TURN, message_id=message.message_id)
+    except Exception as exc:  # noqa: BLE001 — 적재 실패는 안내로 수렴, 잡 상태 불변
+        _append_notice(
+            store, job, "요청을 접수하지 못했어요. 잠시 후 다시 시도해 주세요."
+        )
+        raise HTTPException(status_code=503, detail={"error": "dispatch_failed"}) from exc
+    _emit_metric(_observability(request), "novelty.turn_requested")
+
+
+def _append_notice(store: NoveltyStorePort, job: NoveltyJob, content: str) -> None:
+    try:
+        store.append_message(
+            NoveltyChatMessage(
+                job_id=job.job_id,
+                owner_id=job.owner_id,
+                role=ChatRole.AGENT,
+                kind=ChatKind.NOTICE,
+                content=content,
+            )
+        )
+    except Exception:  # noqa: BLE001 — 안내 실패가 요청 자체를 깨지 않는다
+        log.warning("novelty api: notice persist failed for job %s", job.job_id)
 
 
 # ── Notion export (루프 밖 — preview→승인 게이트, BR-NV17/RA12) ──

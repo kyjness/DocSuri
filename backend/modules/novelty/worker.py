@@ -29,13 +29,17 @@ from .domain.loop import LoopDeps, run_loop
 from .domain.models import (
     TERMINAL_STATES,
     AgentLoopRun,
+    ChatKind,
+    ChatRole,
     JobState,
+    NoveltyChatMessage,
     NoveltyJob,
     TerminationReason,
     utc_now,
     validate_transition,
 )
-from .ports.queue import QueuedJob
+from .domain.turn import run_turn
+from .ports.queue import KIND_TURN, QueuedJob
 from .ports.store import NoveltyStorePort
 from .ports.tools import ToolRegistry
 from .settings import NoveltySettings
@@ -45,6 +49,8 @@ log = logging.getLogger("docsuri.novelty.worker")
 _CONSUME_TIMEOUT_S = 5.0
 _STALE_SWEEP_EVERY_N_IDLE = 12  # 유휴 consume 12회(~1분)마다 스윕
 _CONTENTION_BACKOFF_MAX_S = 30.0  # 잠금 경합 재시도 상한(잠금 TTL보다 짧게 유지)
+# 온디맨드 턴 대상(BLM §5.1) — 실패·취소 잡은 근거가 될 산출물이 없다.
+_TURN_ELIGIBLE_STATES = frozenset({JobState.COMPLETED, JobState.PARTIAL})
 
 
 @dataclass(slots=True)
@@ -79,10 +85,16 @@ def run_worker(deps: WorkerDeps, should_stop) -> None:
 
 
 def process_message(deps: WorkerDeps, message: QueuedJob) -> None:
-    """한 메시지 처리 — 멱등: 종단 잡 재전달은 ack만, 잠금 실패는 재전달에 맡긴다."""
+    """한 메시지 처리 — 멱등: 종단 잡의 loop 재전달은 ack만, 잠금 실패는 nack."""
     store = deps.store
     job = store.get_job_for_worker(message.job_id)
-    if job is None or job.state in TERMINAL_STATES:
+    if job is None:
+        deps.queue.ack(message)
+        return
+    if message.kind == KIND_TURN:
+        _process_turn(deps, message, job)
+        return
+    if job.state in TERMINAL_STATES:
         deps.queue.ack(message)
         return
     if not deps.queue.acquire(message.job_id, deps.settings.lock_ttl_seconds):
@@ -117,6 +129,86 @@ def process_message(deps: WorkerDeps, message: QueuedJob) -> None:
         deps.queue.ack(message)
     finally:
         deps.queue.release(message.job_id)
+
+
+def _process_turn(deps: WorkerDeps, message: QueuedJob, job: NoveltyJob) -> None:
+    """온디맨드 대화 턴(BLM §5) — 잡 상태를 바꾸지 않고 답장만 남긴다."""
+    store = deps.store
+    # BLM §5.1은 "완료/부분 완료"의 잡만 대상으로 한다. 실패·취소 잡은 산출물이
+    # 없거나 loop_run조차 없을 수 있어 근거 있는 생성이 성립하지 않는다.
+    if job.state not in _TURN_ELIGIBLE_STATES or job.loop_run is None:
+        _notice(store, job, "이 조사에서는 추가 생성을 할 수 없어요. 새 조사로 이어가 주세요.")
+        deps.queue.ack(message)
+        return
+    request = _turn_request(store, job, message)
+    if request is None:
+        # 대상 메시지가 없거나 이미 답장이 있다 — 재전달분이므로 조용히 흡수한다.
+        deps.queue.ack(message)
+        return
+    if not deps.queue.acquire(message.job_id, deps.settings.lock_ttl_seconds):
+        deps.queue.nack(message)
+        deps._contention_count += 1
+        deps.sleep(min(2.0 ** (deps._contention_count - 1), _CONTENTION_BACKOFF_MAX_S))
+        return
+    deps._contention_count = 0
+    try:
+        with _LeaseHeartbeat(deps.queue, message.job_id, deps.settings.lock_ttl_seconds):
+            outcome = run_turn(
+                job,
+                request,
+                LoopDeps(store=store, llm=deps.llm, registry=deps.registry),
+                max_steps=deps.settings.max_turn_steps,
+            )
+        _emit(
+            deps.observability,
+            "novelty.turn_saved" if outcome.saved_kind else "novelty.turn_replied",
+        )
+        deps.queue.ack(message)
+    except Exception:  # noqa: BLE001 — 턴 하나의 실패가 워커를 죽이지 않는다
+        log.exception("novelty worker: turn for job %s crashed", message.job_id)
+        _notice(store, job, "요청을 처리하는 중 문제가 생겼어요. 다시 시도해 주세요.")
+        deps.queue.ack(message)
+    finally:
+        deps.queue.release(message.job_id)
+
+
+def _turn_request(
+    store: NoveltyStorePort, job: NoveltyJob, message: QueuedJob
+) -> NoveltyChatMessage | None:
+    """처리 대상 사용자 메시지를 찾고, 이미 답한 턴이면 None.
+
+    멱등성: 큐 재전달(워커 crash 후 recover_processing)로 같은 턴이 두 번 올 수
+    있다. 대상 메시지 **뒤에** 에이전트 행이 있으면 이미 실행된 턴이므로 다시 돌리지
+    않는다 — 중복 답장과 중복 과금을 막는다. 별도 상태 컬럼 없이 기존 커서로 판정한다.
+    """
+    if message.message_id is None:
+        return None
+    try:
+        after = store.list_messages(job.owner_id, job.job_id, after=message.message_id, limit=5)
+    except KeyError:
+        return None  # 대상 메시지가 사라졌다(잡 삭제 경합)
+    if any(item.role is ChatRole.AGENT for item in after):
+        return None
+    for item in store.list_messages(job.owner_id, job.job_id, after=None, limit=200):
+        if item.message_id == message.message_id:
+            return item
+    return None
+
+
+def _notice(store: NoveltyStorePort, job: NoveltyJob, content: str) -> None:
+    """사용자에게 사유를 남긴다 — 침묵하고 끝내지 않는다."""
+    try:
+        store.append_message(
+            NoveltyChatMessage(
+                job_id=job.job_id,
+                owner_id=job.owner_id,
+                role=ChatRole.AGENT,
+                kind=ChatKind.NOTICE,
+                content=content,
+            )
+        )
+    except Exception:  # noqa: BLE001 — 안내 실패가 워커를 막지 않는다
+        log.warning("novelty worker: notice persist failed for job %s", job.job_id)
 
 
 def sweep_stale_jobs(deps: WorkerDeps) -> int:

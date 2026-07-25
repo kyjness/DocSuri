@@ -7,15 +7,22 @@ from uuid import uuid4
 
 from backend.modules.novelty.domain.models import (
     AgentLoopRun,
+    ArtifactKind,
+    ArtifactRecord,
+    ChatKind,
+    ChatRole,
     InputType,
     JobState,
     LoopBudget,
+    NoveltyChatMessage,
     NoveltyJob,
     NoveltyJobRequest,
     TerminationReason,
     utc_now,
 )
+from backend.modules.novelty.domain.turn import TOOL_REPLY
 from backend.modules.novelty.ports.llm import LlmDecision, ToolCallProposal
+from backend.modules.novelty.ports.queue import KIND_TURN
 from backend.modules.novelty.ports.tools import (
     TOOL_CORPUS_SEARCH,
     TOOL_FORM_EVIDENCE,
@@ -60,6 +67,7 @@ def _settings(**overrides) -> NoveltySettings:
         max_view_figure_calls=8,
         max_save_artifact_calls=12,
         job_cost_limit_usd=0.5,
+        max_turn_steps=4,
     )
     return replace(base, **overrides)
 
@@ -313,3 +321,134 @@ def test_lease_heartbeat_renews_in_background() -> None:
         time_mod.sleep(1.3)
     assert len(queue.renews) >= 1
     assert queue.renews[0] == ("job-1", 1.5)
+
+
+# ── 온디맨드 대화 턴 (BLM §5) ──────────────────────────────────────────────
+
+
+def _terminal_job(store, state=JobState.COMPLETED, *, with_run: bool = True) -> NoveltyJob:
+    job = _job(store, with_run=with_run)
+    job.state = JobState.INVESTIGATING
+    store.update_job(job)
+    job.state = state
+    store.update_job(job)
+    store.save_artifact(
+        ArtifactRecord(
+            job_id=job.job_id, owner_id=job.owner_id, kind=ArtifactKind.GAP_ANALYSIS,
+            payload={
+                "items": [
+                    {
+                        "area": "a",
+                        "status": "partially_covered",
+                        "rationale": "r",
+                        "source_refs": [_ref()],
+                    }
+                ]
+            },
+        )
+    )
+    return job
+
+
+def _ask(store, job, content="실험 계획 짜줘") -> NoveltyChatMessage:
+    message = NoveltyChatMessage(
+        job_id=job.job_id, owner_id=job.owner_id, role=ChatRole.USER,
+        kind=ChatKind.ON_DEMAND_REQUEST, content=content,
+    )
+    store.append_message(message)
+    return message
+
+
+def _reply_script(text="답변입니다") -> ScriptedToolCallingLlm:
+    return ScriptedToolCallingLlm(
+        [LlmDecision(ToolCallProposal(TOOL_REPLY, {"content": text}))]
+    )
+
+
+def test_turn_message_runs_on_terminal_job_without_state_change() -> None:
+    store, queue = InMemoryNoveltyStore(), InMemoryJobQueue()
+    job = _terminal_job(store)
+    message = _ask(store, job)
+    queue.enqueue(job.job_id, job.owner_id, kind=KIND_TURN, message_id=message.message_id)
+    deps = _deps(store, queue, _reply_script())
+
+    process_message(deps, queue.consume(0))
+
+    assert store.get_job(job.owner_id, job.job_id).state is JobState.COMPLETED
+    messages = store.list_messages(job.owner_id, job.job_id, after=None, limit=20)
+    assert messages[-1].role is ChatRole.AGENT
+    assert messages[-1].content == "답변입니다"
+    assert queue.acquire(job.job_id, ttl_seconds=1) is True  # 잠금 해제됨
+
+
+def test_turn_on_failed_job_yields_notice_only() -> None:
+    store, queue = InMemoryNoveltyStore(), InMemoryJobQueue()
+    job = _terminal_job(store, JobState.FAILED)
+    message = _ask(store, job)
+    queue.enqueue(job.job_id, job.owner_id, kind=KIND_TURN, message_id=message.message_id)
+    deps = _deps(store, queue, ScriptedToolCallingLlm([]))  # 호출되면 죽는다
+
+    process_message(deps, queue.consume(0))
+
+    # BLM §5.1은 완료/부분 완료만 대상으로 한다 — LLM을 부르지 않고 안내만 남긴다.
+    messages = store.list_messages(job.owner_id, job.job_id, after=None, limit=20)
+    assert messages[-1].kind is ChatKind.NOTICE
+
+
+def test_turn_on_job_without_loop_run_yields_notice() -> None:
+    store, queue = InMemoryNoveltyStore(), InMemoryJobQueue()
+    job = _terminal_job(store, with_run=False)
+    message = _ask(store, job)
+    queue.enqueue(job.job_id, job.owner_id, kind=KIND_TURN, message_id=message.message_id)
+    deps = _deps(store, queue, ScriptedToolCallingLlm([]))
+
+    process_message(deps, queue.consume(0))
+
+    messages = store.list_messages(job.owner_id, job.job_id, after=None, limit=20)
+    assert messages[-1].kind is ChatKind.NOTICE
+
+
+def test_turn_redelivery_is_idempotent_no_duplicate_reply() -> None:
+    store, queue = InMemoryNoveltyStore(), InMemoryJobQueue()
+    job = _terminal_job(store)
+    message = _ask(store, job)
+    queue.enqueue(job.job_id, job.owner_id, kind=KIND_TURN, message_id=message.message_id)
+    deps = _deps(store, queue, _reply_script())
+
+    process_message(deps, queue.consume(0))
+    before = len(store.list_messages(job.owner_id, job.job_id, after=None, limit=20))
+
+    # 워커 crash 후 recover_processing으로 같은 턴이 다시 올 수 있다.
+    queue.enqueue(job.job_id, job.owner_id, kind=KIND_TURN, message_id=message.message_id)
+    process_message(deps, queue.consume(0))
+
+    after = len(store.list_messages(job.owner_id, job.job_id, after=None, limit=20))
+    # 중복 답장도, 중복 과금도 없다 — 대상 메시지 뒤의 에이전트 행으로 판정한다.
+    assert after == before
+
+
+def test_turn_lock_contention_returns_message_to_queue() -> None:
+    store, queue = InMemoryNoveltyStore(), InMemoryJobQueue()
+    job = _terminal_job(store)
+    message = _ask(store, job)
+    queue.enqueue(job.job_id, job.owner_id, kind=KIND_TURN, message_id=message.message_id)
+    assert queue.acquire(job.job_id, ttl_seconds=60) is True  # 앞선 턴이 실행 중
+    deps = _deps(store, queue, ScriptedToolCallingLlm([]))
+
+    process_message(deps, queue.consume(0))
+
+    requeued = queue.consume(0)
+    assert requeued is not None and requeued.kind == KIND_TURN
+    assert requeued.message_id == message.message_id
+
+
+def test_loop_message_still_drops_terminal_jobs() -> None:
+    store, queue = InMemoryNoveltyStore(), InMemoryJobQueue()
+    job = _terminal_job(store)
+    queue.enqueue(job.job_id, job.owner_id)  # kind=loop
+    deps = _deps(store, queue, ScriptedToolCallingLlm([]))
+
+    process_message(deps, queue.consume(0))
+
+    assert store.get_job(job.owner_id, job.job_id).state is JobState.COMPLETED
+    assert store.list_messages(job.owner_id, job.job_id, after=None, limit=20) == []

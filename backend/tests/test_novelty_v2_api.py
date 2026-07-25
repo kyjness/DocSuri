@@ -393,3 +393,161 @@ def test_v1_api_metrics_are_emitted_best_effort(app_bundle) -> None:
     assert client.post(
         "/api/novelty/jobs", json={"inputType": "natural_language", "topic": "rag again"}
     ).status_code == 200
+
+
+# ── 온디맨드 요청 접수 (BLM §5) ────────────────────────────────────────────
+
+
+def _terminalize(store, job_id, state=JobState.COMPLETED) -> None:
+    job = store.get_job_for_worker(job_id)
+    job.state = JobState.INVESTIGATING
+    store.update_job(job)
+    job.state = state
+    store.update_job(job)
+
+
+def test_terminal_job_message_is_enqueued_as_turn(app_bundle) -> None:
+    app, store, queue = app_bundle
+    client = TestClient(app)
+    job_id = _create_job(client)
+    queue.consume(0)  # 잡 생성 시 적재된 loop 메시지를 비운다
+    _terminalize(store, job_id)
+
+    created = client.post(
+        f"/api/novelty/jobs/{job_id}/messages", json={"content": "이 여백으로 실험 계획 짜줘"}
+    )
+    assert created.status_code == 200
+
+    queued = queue.consume(0)
+    # API는 실행하지 않는다(NFR-NV2-1) — 워커에게 넘긴다.
+    assert queued is not None
+    assert queued.kind == "turn"
+    assert queued.message_id == created.json()["messageId"]
+
+
+def test_steering_message_is_not_enqueued(app_bundle) -> None:
+    app, store, queue = app_bundle
+    client = TestClient(app)
+    job_id = _create_job(client)
+    queue.consume(0)
+
+    client.post(f"/api/novelty/jobs/{job_id}/messages", json={"content": "BM25 위주로"})
+
+    # 실행 중 잡의 스티어링은 루프가 다음 decide에서 읽는다 — 큐를 건드리지 않는다.
+    assert queue.consume(0) is None
+
+
+def test_steering_still_accepted_when_queue_is_unavailable(app_bundle) -> None:
+    app, store, queue = app_bundle
+    client = TestClient(app)
+    job_id = _create_job(client)
+    app.state.novelty_queue = None  # redis 장애 가정
+
+    response = client.post(
+        f"/api/novelty/jobs/{job_id}/messages", json={"content": "BM25 위주로"}
+    )
+    # 스티어링은 행 하나를 쓸 뿐이다 — 큐 장애로 막히면 안 된다.
+    assert response.status_code == 200
+    assert response.json()["kind"] == "steering"
+
+
+def test_on_demand_request_requires_queue(app_bundle) -> None:
+    app, store, queue = app_bundle
+    client = TestClient(app)
+    job_id = _create_job(client)
+    _terminalize(store, job_id)
+    app.state.novelty_queue = None
+
+    response = client.post(
+        f"/api/novelty/jobs/{job_id}/messages", json={"content": "실험 계획 짜줘"}
+    )
+    assert response.status_code == 503
+    assert response.json()["detail"]["error"] == "queue_unavailable"
+
+
+def test_failed_job_message_gets_notice_without_enqueue(app_bundle) -> None:
+    app, store, queue = app_bundle
+    client = TestClient(app)
+    job_id = _create_job(client)
+    queue.consume(0)
+    _terminalize(store, job_id, JobState.FAILED)
+
+    response = client.post(
+        f"/api/novelty/jobs/{job_id}/messages", json={"content": "실험 계획 짜줘"}
+    )
+    assert response.status_code == 200
+
+    assert queue.consume(0) is None  # 워커를 깨우지 않는다(과금 없음)
+    listed = client.get(f"/api/novelty/jobs/{job_id}/messages").json()
+    assert listed["messages"][-1]["kind"] == "notice"
+    assert listed["messages"][-1]["role"] == "agent"
+
+
+def test_on_demand_request_enforces_turn_quota_but_steering_does_not(
+    app_bundle, monkeypatch
+) -> None:
+    app, store, queue = app_bundle
+    client = TestClient(app)
+    calls = {"n": 0}
+
+    async def counting_quota(request):
+        calls["n"] += 1
+
+    monkeypatch.setattr(api, "enforce_novelty_turn_quota", counting_quota)
+
+    job_id = _create_job(client)
+    queue.consume(0)
+    client.post(f"/api/novelty/jobs/{job_id}/messages", json={"content": "BM25 위주로"})
+    assert calls["n"] == 0  # 스티어링은 지출을 유발하지 않는다
+
+    _terminalize(store, job_id)
+    client.post(f"/api/novelty/jobs/{job_id}/messages", json={"content": "실험 계획 짜줘"})
+    assert calls["n"] == 1  # 온디맨드 턴만 LLM 지출을 유발한다
+
+
+def test_turn_quota_exhaustion_returns_429(app_bundle, monkeypatch) -> None:
+    from fastapi import HTTPException
+
+    app, store, queue = app_bundle
+    client = TestClient(app)
+
+    async def exhausted(request):
+        raise HTTPException(status_code=429, detail="quota")
+
+    monkeypatch.setattr(api, "enforce_novelty_turn_quota", exhausted)
+
+    job_id = _create_job(client)
+    queue.consume(0)
+    _terminalize(store, job_id)
+    response = client.post(
+        f"/api/novelty/jobs/{job_id}/messages", json={"content": "실험 계획 짜줘"}
+    )
+    assert response.status_code == 429
+    # 거부된 요청은 메시지를 남기지도, 큐를 깨우지도 않는다.
+    assert queue.consume(0) is None
+    assert store.list_messages(_OWNER, job_id, after=None, limit=10) == []
+
+
+def test_turn_quota_scope_is_separate_from_job_quota(monkeypatch) -> None:
+    """잡 쿼터(일 5회)를 공유하면 잡 5개 만든 날 후속 질문이 0회가 된다."""
+    import asyncio
+
+    from backend.middleware import agent_quota
+
+    seen: list[tuple[str, int]] = []
+
+    class _Limiter:
+        async def allow(self, key, *, limit, window_seconds):
+            seen.append((key, limit))
+            return True
+
+    monkeypatch.setattr(agent_quota, "get_shared_limiter", lambda: _Limiter())
+    request = SimpleNamespace(
+        state=SimpleNamespace(principal=SimpleNamespace(user_id="u1"))
+    )
+    asyncio.run(agent_quota.enforce_novelty_job_quota(request))
+    asyncio.run(agent_quota.enforce_novelty_turn_quota(request))
+
+    keys = [key for key, _ in seen]
+    assert keys == ["agent:novelty:u1", "agent:novelty_turn:u1"]
+    assert seen[0][1] != seen[1][1]  # 한도도 별도

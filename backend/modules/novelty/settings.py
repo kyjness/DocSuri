@@ -71,6 +71,10 @@ class NoveltySettings:
     max_view_figure_calls: int
     max_save_artifact_calls: int
     job_cost_limit_usd: float
+    # 온디맨드 대화 턴 한 번의 decide 상한(NFR-NV2-7 — 잡 재실행이 아니다).
+    # 예산 원장은 잡의 LoopBudget 하나이고, 이 값은 한 턴이 잔여 예산을 통째로
+    # 태우지 못하게 막는 별도 상한이다.
+    max_turn_steps: int
 
     @property
     def queue_configured(self) -> bool:
@@ -125,4 +129,5 @@ class NoveltySettings:
             max_view_figure_calls=_env_int("DOCSURI_NOVELTY_MAX_VIEW_FIGURE_CALLS", 8),
             max_save_artifact_calls=_env_int("DOCSURI_NOVELTY_MAX_SAVE_ARTIFACT_CALLS", 12),
             job_cost_limit_usd=_env_float("DOCSURI_NOVELTY_JOB_COST_LIMIT_USD", 0.50),
+            max_turn_steps=_env_int("DOCSURI_NOVELTY_MAX_TURN_STEPS", 4),
         )

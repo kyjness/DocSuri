@@ -23,7 +23,7 @@ from ..domain.models import (
     NoveltyJob,
     ToolCallRecord,
 )
-from ..ports.queue import QueuedJob
+from ..ports.queue import KIND_LOOP, QueuedJob
 from ..ports.store import DuplicateTraceSeqError
 
 __all__ = ["InMemoryJobQueue", "InMemoryNoveltyStore"]
@@ -214,9 +214,20 @@ class InMemoryJobQueue:
         # consume 블로킹 대기(redis BLMOVE 등가 계약) — 폴백 워커의 busy-spin 방지.
         self._not_empty = threading.Condition()
 
-    def enqueue(self, job_id: str, owner_id: str) -> None:
+    def enqueue(
+        self,
+        job_id: str,
+        owner_id: str,
+        *,
+        kind: str = KIND_LOOP,
+        message_id: str | None = None,
+    ) -> None:
         with self._not_empty:
-            self._queue.append(QueuedJob(job_id=job_id, owner_id=owner_id))
+            self._queue.append(
+                QueuedJob(
+                    job_id=job_id, owner_id=owner_id, kind=kind, message_id=message_id
+                )
+            )
             self._not_empty.notify()
 
     def consume(self, timeout_seconds: float) -> QueuedJob | None:

@@ -316,3 +316,15 @@ class TestStoreLatches:
         store.create_job(job)
         with pytest.raises(KeyError):
             store.list_messages(job.owner_id, job.job_id, after=str(uuid4()), limit=5)
+
+    def test_enqueue_carries_turn_kind_and_message_id(self) -> None:
+        from backend.modules.novelty.ports.queue import KIND_LOOP, KIND_TURN
+
+        from .novelty_v2_fakes import InMemoryJobQueue
+
+        queue = InMemoryJobQueue()
+        queue.enqueue("job-1", "owner-1")
+        queue.enqueue("job-1", "owner-1", kind=KIND_TURN, message_id="msg-1")
+        first, second = queue.consume(1), queue.consume(1)
+        assert first.kind == KIND_LOOP and first.message_id is None
+        assert second.kind == KIND_TURN and second.message_id == "msg-1"

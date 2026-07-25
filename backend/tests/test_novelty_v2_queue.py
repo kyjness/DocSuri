@@ -100,3 +100,27 @@ def test_corrupt_payload_is_discarded(queue) -> None:
     assert queue.consume(timeout_seconds=1) is None
     assert queue.recover_processing() == 0
     client.close()
+
+
+def test_queued_job_kind_defaults_to_loop_for_legacy_payloads(queue) -> None:
+    import redis
+
+    from backend.modules.novelty.ports.queue import KIND_LOOP
+
+    client = redis.Redis.from_url(_REDIS_URL)
+    # 배포 시점에 큐에 남아 있던 기존 페이로드(kind 키 없음).
+    client.lpush(queue._queue_key, '{"job_id": "job-legacy", "owner_id": "owner-1"}')  # noqa: SLF001
+    job = queue.consume(timeout_seconds=1)
+    assert job is not None and job.kind == KIND_LOOP and job.message_id is None
+    queue.ack(job)
+    client.close()
+
+
+def test_turn_message_roundtrips_kind_and_message_id(queue) -> None:
+    from backend.modules.novelty.ports.queue import KIND_TURN
+
+    queue.enqueue("job-1", "owner-1", kind=KIND_TURN, message_id="msg-9")
+    job = queue.consume(timeout_seconds=1)
+    assert job is not None
+    assert job.kind == KIND_TURN and job.message_id == "msg-9"
+    queue.ack(job)

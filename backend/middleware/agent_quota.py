@@ -18,6 +18,9 @@ from backend.middleware.rate_limit import get_shared_limiter
 
 _EVIDENCE_DAILY_LIMIT = int(os.getenv("DOCSURI_AGENT_EVIDENCE_DAILY_LIMIT") or "30")
 _NOVELTY_DAILY_LIMIT = int(os.getenv("DOCSURI_AGENT_NOVELTY_DAILY_LIMIT") or "5")
+# 온디맨드 대화 턴은 잡 생성과 별도 한도다 — 같은 키를 쓰면 잡 5개를 만든 날에는
+# 이미 끝난 조사에 후속 질문 하나 못 하게 된다(턴은 잡 한 번보다 훨씬 싸다).
+_NOVELTY_TURN_DAILY_LIMIT = int(os.getenv("DOCSURI_AGENT_NOVELTY_TURN_DAILY_LIMIT") or "20")
 # ponytail: 첫 사용 기준 고정 24h 창(달력일 아님) — 달력일 리셋이 필요해지면 교체.
 _WINDOW_SECONDS = 86_400
 _QUOTA_MESSAGE = "오늘의 에이전트 사용 한도에 도달했습니다. 나중에 다시 시도해 주세요."
@@ -29,6 +32,10 @@ async def enforce_evidence_turn_quota(request: Request) -> None:
 
 async def enforce_novelty_job_quota(request: Request) -> None:
     await _enforce(request, scope="novelty", limit=_NOVELTY_DAILY_LIMIT)
+
+
+async def enforce_novelty_turn_quota(request: Request) -> None:
+    await _enforce(request, scope="novelty_turn", limit=_NOVELTY_TURN_DAILY_LIMIT)
 
 
 async def _enforce(request: Request, *, scope: str, limit: int) -> None:

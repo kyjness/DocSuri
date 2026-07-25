@@ -10,7 +10,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-__all__ = ["ExecutionLockPort", "JobQueuePort", "QueuedJob"]
+__all__ = ["KIND_LOOP", "KIND_TURN", "ExecutionLockPort", "JobQueuePort", "QueuedJob"]
+
+KIND_LOOP = "loop"
+KIND_TURN = "turn"
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,10 +21,21 @@ class QueuedJob:
     job_id: str
     owner_id: str
     receipt: str | None = None  # 큐 구현별 ack 핸들(SQS receipt 등)
+    # "loop"(자율 조사 실행) 또는 "turn"(종단 잡의 온디맨드 대화 한 턴).
+    # 기본값이 loop이므로 이 필드가 없는 기존 페이로드도 그대로 해석된다.
+    kind: str = KIND_LOOP
+    message_id: str | None = None  # turn일 때 처리 대상 사용자 메시지
 
 
 class JobQueuePort(Protocol):
-    def enqueue(self, job_id: str, owner_id: str) -> None: ...
+    def enqueue(
+        self,
+        job_id: str,
+        owner_id: str,
+        *,
+        kind: str = KIND_LOOP,
+        message_id: str | None = None,
+    ) -> None: ...
 
     def consume(self, timeout_seconds: float) -> QueuedJob | None: ...
 
