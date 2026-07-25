@@ -38,14 +38,20 @@ for (const paper of PAPERS) {
     // At least one figure WebP actually loads from s3proxy. This is the assertion that catches the
     // CSP img-src gap (a signed URL the browser refuses) and an empty/mis-signed manifest — a curl
     // presign check cannot, since it doesn't enforce CSP. Figures are `loading="lazy"`, so scroll
-    // the first one into view to trigger the load before reading its decoded size.
-    const firstFigure = page.locator('figure img').first();
-    await firstFigure.scrollIntoViewIfNeeded({ timeout: 20_000 });
-    await expect
-      .poll(() => firstFigure.evaluate((el: HTMLImageElement) => el.naturalWidth), {
-        timeout: 20_000,
-      })
-      .toBeGreaterThan(0);
+    // the first one into view to trigger the load before reading its decoded size. Guarded on
+    // presence (like the math block below): a table-only paper has no `figure img` and must not fail
+    // on a scroll timeout — a blocked/mis-signed URL still leaves the `<img>` in the DOM (naturalWidth
+    // 0), so this still fires whenever a figure exists.
+    const figures = page.locator('figure img');
+    if ((await figures.count()) > 0) {
+      const firstFigure = figures.first();
+      await firstFigure.scrollIntoViewIfNeeded({ timeout: 20_000 });
+      await expect
+        .poll(() => firstFigure.evaluate((el: HTMLImageElement) => el.naturalWidth), {
+          timeout: 20_000,
+        })
+        .toBeGreaterThan(0);
+    }
 
     // Math: once the lazy MathJax engine has resolved, a display equation becomes inline SVG. Only
     // some papers carry display formulas, so assert conditionally — if this paper has any, the first

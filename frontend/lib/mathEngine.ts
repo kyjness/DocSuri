@@ -273,7 +273,12 @@ export function preprocessLatex(latex: string): string {
     .replace(PHYSICS_TRIG_RE, (_m, name, power) =>
       power ? `\\operatorname{${name}}^{${power.slice(1, -1)}}` : `\\operatorname{${name}}`,
     )
-    .replace(PHYSICS_FN_RE, '\\operatorname{$1}')
+    // `\det`/`\Pr` are LIMITS operators — their subscript sets UNDER the name in display mode
+    // (`\det_A`, `\Pr_{x\sim D}`), so route them to `\operatorname*`; the rest (`exp`/`log`/… )
+    // take no under-set limits and stay non-star.
+    .replace(PHYSICS_FN_RE, (_m, name) =>
+      name === 'det' || name === 'Pr' ? `\\operatorname*{${name}}` : `\\operatorname{${name}}`,
+    )
     .replace(/\\trace(?![a-zA-Z])/g, '\\operatorname{tr}')
     .replace(/\\Trace(?![a-zA-Z])/g, '\\operatorname{Tr}')
     // Glue/penalty/mathchar primitives (from the corpus render sweep) take a NON-braced arg — a
@@ -282,7 +287,8 @@ export function preprocessLatex(latex: string): string {
     // unhandled one collapses the whole formula.
     .replace(/\\vskip\s*-?[\d.]+\s*[a-z]{0,2}/g, '') // \vskip 5.69pt  (vertical glue — drop)
     .replace(/\\penalty\s*-?\d+/g, '') //               \penalty 10000 (line-break penalty — drop)
-    .replace(/\\mathchar\s*"?[0-9A-Fa-f]+/g, '') //     \mathchar 58   (raw char code — drop)
+    .replace(/\\mathchar(?![a-zA-Z])\s*"?[0-9A-Fa-f]+/g, '') // \mathchar 58 (raw char code — drop; the
+    //   boundary keeps sibling primitives like `\mathchardef` from having their name eaten as hex)
     .replace(/\\@(?![a-zA-Z])/g, '') //                 \@             (sentence-end spacing — drop)
     // Color commands (from the sweep) carry no math meaning in our display-only render and their
     // `[model]{spec}` args need color models MathJax doesn't define by default (→ "Color model not
