@@ -154,7 +154,8 @@ def _happy_script() -> ScriptedToolCallingLlm:
 
 def _deps(store, queue, llm) -> WorkerDeps:
     return WorkerDeps(
-        store=store, queue=queue, llm=llm, registry=_registry(), settings=_settings()
+        store=store, queue=queue, llm=llm, registry=_registry(), settings=_settings(),
+        sleep=lambda _seconds: None,  # 경합 백오프는 계약이 아니라 대기 — 테스트에서 생략
     )
 
 
@@ -191,7 +192,7 @@ def test_terminal_job_redelivery_is_acked_idempotently() -> None:
     assert store.get_job(job.owner_id, job.job_id).state is JobState.COMPLETED
 
 
-def test_lock_contention_skips_without_ack() -> None:
+def test_lock_contention_returns_message_to_queue() -> None:
     store, queue = InMemoryNoveltyStore(), InMemoryJobQueue()
     job = _job(store)
     queue.enqueue(job.job_id, job.owner_id)
@@ -199,8 +200,29 @@ def test_lock_contention_skips_without_ack() -> None:
     deps = _deps(store, queue, ScriptedToolCallingLlm([]))
 
     process_message(deps, queue.consume(0))
-    # 실행되지 않았고(트레이스 없음) 잡 상태 불변 — 재전달에 맡긴다.
+    # 실행되지 않았고(트레이스 없음) 잡 상태 불변.
     assert store.get_job(job.owner_id, job.job_id).state is JobState.RECEIVED
+    # ack 생략에 기대지 않고 명시적으로 큐에 되돌린다 — 리스를 쥔 워커가 끝난 뒤
+    # 재전달되어야 하며, 그때까지 메시지가 유실되거나 방치되면 안 된다.
+    requeued = queue.consume(0)
+    assert requeued is not None and requeued.job_id == job.job_id
+    assert deps._contention_count == 1  # noqa: SLF001 — 백오프 카운터 계약
+
+
+def test_contention_counter_resets_after_successful_pickup() -> None:
+    store, queue = InMemoryNoveltyStore(), InMemoryJobQueue()
+    job = _job(store)
+    queue.enqueue(job.job_id, job.owner_id)
+    assert queue.acquire(job.job_id, ttl_seconds=60) is True
+    deps = _deps(store, queue, _happy_script())
+
+    process_message(deps, queue.consume(0))
+    assert deps._contention_count == 1  # noqa: SLF001
+    queue.release(job.job_id)  # 앞선 워커 종료
+    process_message(deps, queue.consume(0))
+    # 백오프는 연속 경합에만 걸린다 — 한 번 집어 실행하면 다음 경합은 다시 1초부터.
+    assert deps._contention_count == 0  # noqa: SLF001
+    assert store.get_job(job.owner_id, job.job_id).state is JobState.COMPLETED
 
 
 def test_cancel_before_pickup_finalizes_without_loop() -> None:

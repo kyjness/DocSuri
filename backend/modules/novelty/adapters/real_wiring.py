@@ -80,6 +80,15 @@ class SqsJobQueue:
             self._client.delete_message(QueueUrl=self._queue_url, ReceiptHandle=job.receipt)
         self._in_flight.pop(job.job_id, None)
 
+    def nack(self, job: QueuedJob) -> None:
+        """visibility를 0으로 되돌려 즉시 재전달 가능하게 한다. 만료를 기다리는
+        기존 동작(ack 생략)보다 대기가 짧고, redis 구현과 계약이 같아진다."""
+        if job.receipt is not None:
+            self._client.change_message_visibility(
+                QueueUrl=self._queue_url, ReceiptHandle=job.receipt, VisibilityTimeout=0
+            )
+        self._in_flight.pop(job.job_id, None)
+
     # ── 실행 잠금: visibility 리스 ──
     def acquire(self, job_id: str, ttl_seconds: float) -> bool:
         receipt = self._in_flight.get(job_id)

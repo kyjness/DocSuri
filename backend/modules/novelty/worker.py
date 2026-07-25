@@ -16,6 +16,8 @@ import logging
 import signal
 import sys
 import threading
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
@@ -42,6 +44,7 @@ log = logging.getLogger("docsuri.novelty.worker")
 
 _CONSUME_TIMEOUT_S = 5.0
 _STALE_SWEEP_EVERY_N_IDLE = 12  # 유휴 consume 12회(~1분)마다 스윕
+_CONTENTION_BACKOFF_MAX_S = 30.0  # 잠금 경합 재시도 상한(잠금 TTL보다 짧게 유지)
 
 
 @dataclass(slots=True)
@@ -52,7 +55,9 @@ class WorkerDeps:
     registry: ToolRegistry
     settings: NoveltySettings
     observability: Any | None = None
+    sleep: Callable[[float], None] = time.sleep  # 경합 백오프 주입점(테스트)
     _idle_count: int = field(default=0, init=False)
+    _contention_count: int = field(default=0, init=False)
 
 
 def run_worker(deps: WorkerDeps, should_stop) -> None:
@@ -81,8 +86,16 @@ def process_message(deps: WorkerDeps, message: QueuedJob) -> None:
         deps.queue.ack(message)
         return
     if not deps.queue.acquire(message.job_id, deps.settings.lock_ttl_seconds):
-        # 다른 워커가 실행 중 — ack하지 않고 재전달(리스 만료 후 회수)에 맡긴다.
+        # 다른 워커가 실행 중 — 메시지를 큐로 되돌린다. ack 생략만으로는 부족하다:
+        # redis 구현은 소비 시점에 processing 리스트로 옮기므로 되돌리지 않으면
+        # 워커 재시작(recover_processing)까지 방치된다. nack은 큐 끝으로 넣으므로
+        # 다른 메시지가 있으면 그쪽이 먼저 처리되고, 같은 메시지만 남아 반복 경합할
+        # 때는 아래 백오프가 핫루프를 막는다.
+        deps.queue.nack(message)
+        deps._contention_count += 1
+        deps.sleep(min(2.0 ** (deps._contention_count - 1), _CONTENTION_BACKOFF_MAX_S))
         return
+    deps._contention_count = 0
     try:
         if job.cancel_requested:
             _finalize_cancelled(store, job)

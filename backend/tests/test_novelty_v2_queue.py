@@ -69,6 +69,29 @@ def test_execution_lock_lease(queue) -> None:
     assert queue.acquire("job-9", ttl_seconds=1) is True
 
 
+def test_nack_returns_message_to_queue(queue) -> None:
+    # ack 생략만으로는 processing 리스트에 방치된다(워커 재시작 전까지 재전달 없음).
+    queue.enqueue("job-1", "owner-1")
+    job = queue.consume(timeout_seconds=1)
+    assert job is not None
+    queue.nack(job)
+    assert queue.recover_processing() == 0  # processing에 남아 있지 않다
+    again = queue.consume(timeout_seconds=1)
+    assert again is not None and again.job_id == "job-1"
+    queue.ack(again)
+
+
+def test_nack_puts_message_at_back_of_queue(queue) -> None:
+    for i in range(2):
+        queue.enqueue(f"job-{i}", "owner-1")
+    first = queue.consume(timeout_seconds=1)
+    assert first.job_id == "job-0"
+    queue.nack(first)
+    # 같은 메시지를 즉시 다시 집지 않는다 — 뒤의 메시지가 먼저 처리된다.
+    assert queue.consume(timeout_seconds=1).job_id == "job-1"
+    assert queue.consume(timeout_seconds=1).job_id == "job-0"
+
+
 def test_corrupt_payload_is_discarded(queue) -> None:
     import redis
 

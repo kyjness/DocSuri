@@ -251,6 +251,20 @@ class TestExecutionLockContract:
         assert job is not None and job.job_id == "job-1"
         assert time.monotonic() - started < 3.0
 
+    def test_nack_returns_message_to_back_of_queue(self) -> None:
+        # ack 생략만으로는 redis 구현에서 메시지가 processing에 방치된다 — nack이
+        # 되돌리는 계약이고, 위치는 큐의 끝이어야 한다(같은 메시지 즉시 재획득 방지).
+        from .novelty_v2_fakes import InMemoryJobQueue
+
+        queue = InMemoryJobQueue()
+        queue.enqueue("job-1", "owner-1")
+        queue.enqueue("job-2", "owner-1")
+        first = queue.consume(timeout_seconds=1)
+        assert first is not None and first.job_id == "job-1"
+        queue.nack(first)
+        assert queue.consume(timeout_seconds=1).job_id == "job-2"
+        assert queue.consume(timeout_seconds=1).job_id == "job-1"
+
 
 class TestStoreLatches:
     """update_job의 단방향 래치 계약 — 취소 플래그·종단 상태(BR-RA5), 양 구현 공통."""

@@ -229,6 +229,12 @@ class InMemoryJobQueue:
     def ack(self, job: QueuedJob) -> None:
         return None
 
+    def nack(self, job: QueuedJob) -> None:
+        # 큐 끝으로 반환 — consume이 왼쪽에서 팝하므로 append가 끝이다(FIFO 유지).
+        with self._not_empty:
+            self._queue.append(job)
+            self._not_empty.notify()
+
     # 실행 잠금 — 만료된 리스는 회수 가능해야 한다(stale 잡 감지의 전제).
     def acquire(self, job_id: str, ttl_seconds: float) -> bool:
         now = self._clock()

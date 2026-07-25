@@ -67,6 +67,19 @@ class RedisJobQueue:
         if job.receipt is not None:
             self._client.lrem(self._processing_key, 1, job.receipt)
 
+    def nack(self, job: QueuedJob) -> None:
+        """처리하지 않은 메시지를 큐로 반환한다(SQS visibility 0 등가).
+
+        consume이 RIGHT에서 팝하므로 LPUSH는 큐의 끝에 놓는다 — 다른 메시지가
+        있으면 그것들이 먼저 처리되고, 없으면 호출자의 backoff가 재시도 간격을
+        책임진다. 되돌리지 않으면 recover_processing(워커 재시작)까지 방치된다.
+        """
+        if job.receipt is None:
+            return
+        removed = self._client.lrem(self._processing_key, 1, job.receipt)
+        if removed:
+            self._client.lpush(self._queue_key, job.receipt)
+
     def recover_processing(self) -> int:
         """워커 기동 시 호출 — crash로 processing에 남은 항목을 재적재한다."""
         moved = 0

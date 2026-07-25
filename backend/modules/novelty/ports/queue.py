@@ -27,6 +27,16 @@ class JobQueuePort(Protocol):
 
     def ack(self, job: QueuedJob) -> None: ...
 
+    def nack(self, job: QueuedJob) -> None:
+        """처리하지 않은 메시지를 즉시 재전달 가능 상태로 되돌린다.
+
+        ack 생략만으로는 부족하다 — SQS는 visibility 만료로 스스로 재전달하지만
+        redis 구현은 소비 시점에 processing 리스트로 옮겨두므로, 되돌리지 않으면
+        워커 재시작(recover_processing) 전까지 메시지가 방치된다. 재적재 위치는
+        큐의 끝이어야 한다(FIFO 유지 — 같은 메시지를 즉시 다시 집지 않도록).
+        """
+        ...
+
 
 class ExecutionLockPort(Protocol):
     """job_id 단위 실행 잠금 — 이중 실행 방지(멱등)."""
