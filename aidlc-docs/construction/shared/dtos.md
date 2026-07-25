@@ -20,7 +20,7 @@
 
 | DTO | 종류/형상 | 필드(외부 노출) | 의미·제약 | 상태 | 트레이스 |
 |---|---|---|---|---|---|
-| `SearchRequest` | 요청 | `query: string`, `options?` _(타입명 잠정 — SSOT는 `options?` 필드만)_ | 동기 검색 진입 입력. `query`는 FR-1/SEC-5 검증(빈값·≤500자·새니타이즈). `options`는 선택(타입 정제 시 확정). | 🟡 PROVISIONAL | FR-1, SEC-5, US-H1 |
+| `SearchRequest` | 요청 | `query: string`, `scope?: 'lite' \| 'full'`, `options?` _(options 타입명 잠정)_ | 동기 검색 진입 입력. `query`는 FR-1/SEC-5 검증(빈값·≤500자·새니타이즈). `scope`는 검색 폭(BR-4b, 페이즈 2·#236): `lite`(기본·사람 검색창) vs `full`(본문까지·에이전트 심층), 부재⇒`lite`. `options`는 선택(타입 정제 시 확정). | 🟡 PROVISIONAL | FR-1, FR-2, BR-4b, SEC-5, US-H1 |
 | `SearchResponse` | 응답(union) | `SearchResultPageDTO \| AbstainDTO \| DegradedResultDTO \| ValidationErrorDTO` | 종단 상태 명시 합집합. `QueryIntakeController.search` 반환·U5 `ApiClient.search`가 분기 처리(FR-11 상태 표면화). | 🟡 PROVISIONAL | FR-11, US-D1..D7 |
 | `SearchResultPageDTO` | 응답(성공/빈 페이지) | `cards: ResultCardVM[]`, `meta: ResultMeta` | 정렬 순서 보존 상위 N건 카드 페이지(FR-3). 카드 배열은 **랭킹 순서**(PBT-03). **`cards=[]`·`resultCount=0`이면 명시적 빈 페이지** — 무매치/코퍼스 밖(및 근거화 통과 후 전량 필터)이 여기로 종단한다(기권 ≠ 빈 결과, U5 B3-a). | 🟡 PROVISIONAL(카드 FROZEN-인접) | FR-3, FR-4, US-D6 |
 | `ResultMeta` | 값 | `resultCount: int`, `degraded: boolean`, `degradationMode?: DegradationMode` | 결과 수·저하 여부 배너 힌트. 내부 점수/타이밍 비노출(SEC-9). | 🟡 PROVISIONAL | FR-11, QT-3 |

@@ -38,6 +38,10 @@ export interface ResultMeta {
 /** Synchronous search entry input. */
 export interface SearchRequest {
   query: string;
+  /** Phase 2 (BR-4b, #236). Retrieval breadth: 'lite' (default — title+abstract BM25 +
+   * abstract-chunk k-NN, the low-latency human search box) or 'full' (full-body hybrid for
+   * the evidence agent / opt-in '본문까지 검색' toggle, non-SLA). Absent ⇒ lite. Optional, additive. */
+  scope?: 'lite' | 'full';
   options?: unknown;
 }
 
