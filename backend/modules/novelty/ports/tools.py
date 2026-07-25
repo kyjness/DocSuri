@@ -3,7 +3,7 @@
 도구 실행 결과는 신뢰 경계 밖 데이터로 취급한다(prompt injection 방어) —
 LLM 컨텍스트에 넣을 내용과 트레이스용 sanitized 요약을 분리해 반환한다.
 Notion은 도구가 아니다(BR-RA12) — 레지스트리가 등록 자체를 거부한다.
-`view_figure`는 포트만 정의하고 ⑤ 4단계 전까지 등록하지 않는다.
+`view_figure`는 포트만 정의하고 멀티모달 단계 전까지 등록하지 않는다.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ __all__ = [
     "ToolSpec",
 ]
 
-# v1 도구 어휘(BLM §3). view_figure는 ⑤ 4단계 전까지 미등록.
+# v1 도구 어휘(BLM §3). view_figure는 멀티모달 단계 전까지 미등록.
 TOOL_CORPUS_SEARCH = "corpus_search"
 TOOL_FORM_EVIDENCE = "form_evidence"
 TOOL_GITHUB_SEARCH = "github_search"
@@ -36,7 +36,7 @@ TOOL_VIEW_FIGURE = "view_figure"
 TOOL_SAVE_ARTIFACT = "save_artifact"
 
 # 레지스트리 기본 allowlist — 루프에 등록될 수 있는 도구 어휘의 전체(BLM §3).
-# MCP(⑤ 2단계) 도구는 이 어휘를 명시 확장하는 방식으로만 합류한다.
+# 신규 도구는 이 어휘를 명시 확장하는 방식으로만 합류한다.
 KNOWN_LOOP_TOOLS: frozenset[str] = frozenset(
     {
         TOOL_CORPUS_SEARCH,

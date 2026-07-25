@@ -2,7 +2,7 @@
 
 **Unit**: Novelty Agent v2 (U12)
 **Stage**: Functional Design (재설계 라운드, 2026-07-18)
-**Scope**: 자연어 연구 주제 또는 업로드 원고에서 자율 도구 호출 루프로 **조사 + 여백 분석**을 생성하고, 대화 요청 시 방향 제안·실험 계획을 온디맨드로 추가 생성하는 에이전트의 도메인 모델. 구현 기술, 저장소, 큐, MCP 서버 선정은 후속 NFR/Code 단계로 둔다.
+**Scope**: 자연어 연구 주제 또는 업로드 원고에서 자율 도구 호출 루프로 **조사 + 여백 분석**을 생성하고, 대화 요청 시 방향 제안·실험 계획을 온디맨드로 추가 생성하는 에이전트의 도메인 모델. 구현 기술, 저장소, 큐, 외부 탐색 어댑터 구현 선정은 후속 NFR/Code 단계로 둔다.
 **기준선**: `construction/novelty-agent/functional-design/domain-entities.md` (v1 frozen). 각 엔티티에 **승계/개정/신설/폐기**를 명시한다.
 
 ## Entity Model
@@ -96,7 +96,7 @@ v1과 동일 — `EvidenceFormationPort` 결과의 내부 보존본. `state`(`ok
 
 ### ExternalFinding (승계)
 
-GitHub·데이터셋 검색 결과의 정규화 artifact — v1과 동일. 향후 arXiv MCP 결과도 이 형태로 정규화하되 DocModel 앵커가 없으므로 `evidence_status`는 근거 등급 구분을 따른다(⑤ 2단계 설계 시 확정).
+GitHub·데이터셋 검색 결과의 정규화 artifact — v1과 동일. 훗날 외부 arXiv 결과가 추가되면 이 형태로 정규화하되, DocModel 앵커가 없으므로 `evidence_status`는 근거 등급 구분을 따른다 — **그 등급 체계는 로드맵 ⑥(근거 대상 확장 게이트)에서 확정**한다. *(2026-07-25 개정: 종전 "⑤ 2단계(MCP) 설계 시 확정" — 고정 슬롯 해제.)*
 
 ### NoveltyCandidate (승계·개정 — 온디맨드)
 

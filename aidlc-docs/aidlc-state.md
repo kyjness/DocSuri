@@ -933,3 +933,35 @@ _Resiliency 옵트인은 `requirements.md` 확정 전에 필수 요구사항 명
 - Outputs: `construction/novelty-agent-v2/nfr-design/` — logical-components.md(컴포넌트 지도·잡 수명 시퀀스·마운팅 조건·Notion 도구 미등록), nfr-design-patterns.md(재시도 저하 계단·멱등 잠금·예산 단일 집행·관측·테스트 전략).
 - 로드맵 ④ ✅ 완료 — 산출물 총계: 질문지 3장(inception 2 + FD 게이트 1) + NFR 게이트 2 + requirements 개정 블록 + 설계 문서 8종.
 - Current gate: 사용자 최종 리뷰 → push + PR(develop) 승인 대기. 다음 = 로드맵 ⑤(novelty 코어 재작성 — 구현)는 별도 사이클·명시적 착수 지시 후.
+
+## 에이전트 로드맵 개정 — MCP 고정 슬롯 해제 · supervisor 구성 방식
+
+- Date: 2026-07-25
+- Stage: OPERATIONS / 로드맵 개정 (구현 사이클 아님 — 문서만)
+- Trigger: 로드맵 ⑤ 2단계 착수 검토 중, **MCP 도입을 정면으로 물은 문항이 어느 질문지에도 없다**는 것이
+  확인됨. 유일한 상위 근거는 아키텍처 Q1=C **선택지 설명문**의 역량 나열이었고, FD 게이트 Q5는 도입을
+  전제하고 위치만, NFR 게이트 Q3은 도입을 전제하고 서버 제품만 물었다(Q3 선택지 C의 기각 사유가
+  "⑤ 2단계 목표와 상충"인 것이 그 전제를 드러낸다).
+- Decisions:
+  - **MCP 고정 단계 해제** — 금지가 아니라 일정에서 해제. 근거: 대상 3종이 이미 어댑터로 동작 중이라
+    (`adapters/external/github.py`·`datasets.py`, arXiv는 u1 클라이언트) 교체로 늘어나는 기능이 0인 반면,
+    배포 환경 프로세스 증가와 GitHub·Notion 자격증명의 서드파티 위임이라는 비용은 실재한다. 프라이버시
+    방어선이 우리 어댑터의 allowlist라는 종전 관찰의 귀결은 경계를 늘리지 않는 쪽이다.
+  - **supervisor는 별도 신설** — ⑦의 미결이던 "⑤ 루프의 계획층 승격 vs 별도 신설"을 확정. 승격안은
+    역할 혼재(단일 루프가 두 목적의 프롬프트·예산·종료 조건을 가짐)·진입점 상실(문헌탐색 단독 사용이
+    novelty 하위로 묻힘)·확장 경로 악화로 기각. Q1=C 원문이 "아이디어 생성"도 서브로 두므로 정합.
+  - **용어 경계 고정** — 도구=스스로 판단하지 않는 부품(검색·요약·DocModel·figure), 서브 에이전트=스스로
+    판단하는 단위(문헌탐색·차별화).
+  - **⑥ 문헌탐색은 새로 작성** — 기존 `orchestrator.py` 고정 파이프라인은 승계 대상 아님(arch Q4=A 상속).
+    자율/기계식 경계 명시: 질의 설계·깊이·종료 판단은 에이전트, 앵커 실재성·수치 정합은 게이트(C-2 불변).
+  - **⑤ 단계 재편** — 4단계(루프→MCP→메모리→멀티모달) → 3단계(루프→메모리→멀티모달) + 시점 미정
+    확장 1건(`arxiv_search`, 근거 등급 체계 선행 — ⑥ 게이트).
+  - `solo-local-migration.md` §7 배포 항목의 대체 호스팅 후보(Lightsail/Vercel/데모 영상) 삭제 —
+    결정된 바 없음. **AWS 재배포**가 전제.
+- Outputs: `operations/solo-roadmap.md`(개정 블록 + ③·⑤·⑤a·⑥·⑦ 행), `operations/solo-local-migration.md`,
+  `construction/plans/novelty-agent-v2-{functional-design,nfr-requirements}-plan.md`(Q3·Q5 / Q3 개정 주석),
+  `construction/novelty-agent-v2/` 5종(BLM·domain-entities·business-rules·tech-stack-decisions·
+  logical-components), `inception/requirements/requirements.md`(FR-31·NFR-R3),
+  `requirement-verification-questions-novelty-v2-function.md`(Q6), 코드 주석 5곳(novelty 모듈).
+- 종전 답은 지우지 않고 개정 주석을 덧붙이는 기존 관례를 따랐다 — 무엇이 왜 바뀌었는지가 남아야 한다.
+- Current gate: ⑤a 완료로 ⑤ 잔여 단계·⑥ 착수 가능. 다음 단계는 명시적 착수 지시 후.

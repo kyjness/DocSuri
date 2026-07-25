@@ -89,7 +89,7 @@ def build_tool_registry(
     evidence_port: Any | None = None,
     http_client: Any | None = None,
 ) -> ToolRegistry:
-    """가용 의존성이 있는 도구만 등록 — view_figure는 ⑤ 4단계 전 미등록,
+    """가용 의존성이 있는 도구만 등록 — view_figure는 멀티모달 단계 전 미등록,
     Notion은 레지스트리가 구조적으로 거부한다(BR-RA12)."""
     registry = ToolRegistry()
     if orchestrator is not None and grounding_hook is not None:

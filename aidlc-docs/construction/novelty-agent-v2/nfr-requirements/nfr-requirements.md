@@ -25,7 +25,7 @@
 | 도구 호출 총량 | **40** | 아래 도구별 상한의 합산 상한 |
 | — 검색류(corpus/github/dataset) | 12 | 합산 |
 | — form_evidence | 4 | |
-| — view_figure | 8 | ⑤ 4단계 도입 시 적용 |
+| — view_figure | 8 | ⑤ 3단계(멀티모달) 도입 시 적용 |
 | — save_artifact | 12 | 게이트 거부 재시도 포함 |
 | per-job 토큰/비용 상한 | **$0.50** | U6 `get_budget_state()` 배분 내 — 전용 CostGuard 금지 |
 

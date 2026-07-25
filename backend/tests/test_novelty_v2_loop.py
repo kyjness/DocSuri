@@ -451,7 +451,7 @@ def test_notion_cannot_even_be_allowlisted() -> None:
     # 확장 경로(allowed_names)로도 Notion 계열은 합류 불가 — 생성자가 거부.
     with pytest.raises(ValueError):
         ToolRegistry(allowed_names={"corpus_search", "export_to_notion"})
-    # 정상 확장은 허용된다(MCP 단계의 어휘 확장 경로).
+    # 정상 확장은 허용된다(신규 도구의 어휘 확장 경로).
     registry = ToolRegistry(allowed_names={"corpus_search", "mcp_paper_qa"})
     registry.register(FakeTool("mcp_paper_qa"))
     assert "mcp_paper_qa" in registry.names()

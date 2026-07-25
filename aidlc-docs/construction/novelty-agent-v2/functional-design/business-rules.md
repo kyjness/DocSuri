@@ -14,7 +14,7 @@
 | BR-NV4 Reuse U2 Full Search | **유지** | 전용 인덱스·독자 랭킹 금지 — 불변. |
 | BR-NV5 Bounded Query Set | **개정** | 고정 질의 set → 루프에서 질의 구성은 에이전트 자율. 폭주 방지는 질의 목록 고정이 아니라 **예산 상한(BR-RA3)** 이 담당. "원고 전 chunk를 질의로 무제한 발사 금지"의 정신은 도구별 호출 상한으로 승계. |
 | BR-NV6 External Search Privacy Boundary | **개정·강화** | 최소 질의 원칙 승계 + **도구별 payload allowlist를 어댑터가 기계식 강제**(BR-RA7)로 확장 — 에이전트가 인자를 자유 구성하는 시대의 방어. |
-| BR-NV7 v1 External Sources | **개정** | GitHub+데이터셋 유지, 뉴스 제외 유지. 외부 arXiv 검색은 ⑤ 2단계(MCP)에서 추가(FR-31 개정 — 메커니즘 중립화). |
+| BR-NV7 v1 External Sources | **개정** | GitHub+데이터셋 유지, 뉴스 제외 유지. 외부 arXiv 검색은 근거 등급 체계(⑥ 게이트) 확정 후 시점 미정으로 추가 — 메커니즘 중립(FR-31 개정). *(2026-07-25 개정: 종전 "⑤ 2단계(MCP)에서 추가".)* |
 | BR-NV8 Deterministic Normalization/Dedupe | **유지** | 정규화·중복 제거는 결정론 — LLM 재량 금지. |
 | BR-NV9 No Unsupported Table Cells | **유지** | 근거 없으면 셀 비움(`insufficient`/`abstained`). |
 | BR-NV10 No Novelty Score or Certainty Claim | **유지** | "새로움 확정"·score·논문화 판정 금지 — 여백 분석에도 동일 적용(open_gap ≠ 새로움 보증). |

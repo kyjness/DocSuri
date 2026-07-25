@@ -22,7 +22,7 @@ backend/modules/novelty/
 ├── adapters/
 │   ├── local_wiring.py         redis 큐·postgres 저장·OpenAI tool-calling (1차)
 │   ├── real_wiring.py          SQS·RDS·Bedrock (배포 기준선 — 계약 보존)
-│   ├── external/               GitHub·데이터셋 (→ ⑤ 2단계에서 MCP 어댑터 추가)
+│   ├── external/               GitHub·데이터셋 (직접 구현 어댑터 — TD-NV2-4)
 │   │   └── sanitize.py         도구별 payload allowlist 강제(BR-RA7)
 │   └── evidence.py             U11 EvidenceFormationPort 소비(공유 계약)
 ├── api.py                      잡 생성/조회/취소 + 잡 귀속 대화(스티어링·온디맨드)
@@ -56,7 +56,7 @@ FE → API: Notion preview 요청 → 승인 → export (루프 밖)
 ## 4. Conditional Mounting
 
 - 모듈 마운트 조건: 저장소 + 잡 큐 + LLM 프로바이더 설정 존재 시 API 마운트, 워커는 동일 설정으로 별도 기동. 외부 탐색 어댑터는 각자 설정 존재 시에만 도구 레지스트리에 등록(없으면 해당 도구 미노출 — 에이전트 도구 목록이 자연 축소).
-- `view_figure`는 자산 스토어 설정 존재 + ⑤ 4단계 도입 후 등록.
+- `view_figure`는 자산 스토어 설정 존재 + ⑤ 3단계(멀티모달) 도입 후 등록.
 - Notion은 도구 레지스트리에 절대 등록되지 않는다(BR-RA12) — export 경로는 API 측 별도 서비스.
 
 ## Traceability
