@@ -16,6 +16,7 @@ Summarization(U7) 어댑터 재사용:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from .assembler import EvidenceComparisonAssembler
 from .extractor import EvidenceExtractor
@@ -30,6 +31,49 @@ class EvidenceBundle:
     settings: EvidenceSettings
 
 
+def _build_guarded_query_embedder(
+    d_settings: Any, os_client: Any, fallback_region: str | None
+) -> Any:
+    """Query-embedding provider switch + same-space guard, shared with discovery's read path.
+
+    Bedrock Cohere (team deploy) vs OpenAI (solo-local, DOCSURI_EMBEDDING_PROVIDER=openai). The
+    evidence agent is a SECOND reader over the SAME index, so it must resolve the provider the same
+    (else a solo-local OpenAI-indexed corpus gets Bedrock query vectors) AND validate the index's
+    embedding manifest against the reader identity — the dimension guard can't catch a
+    same-dim/different-model swap (OpenAI vs Cohere, both 1024-dim).
+
+    Returns the real embedder when the space matches (or can't be verified — logged), else a
+    MismatchedSpaceEmbedder that raises EmbeddingUnavailable per request; EvidencePaperSearchTool.
+    _hybrid_search catches that and degrades to lexical-only instead of scoring a foreign space.
+    Extracted from build_evidence_orchestrator so the guard wiring is unit-testable in isolation.
+    """
+    from discovery.adapters.bedrock_embedding import BedrockCohereQueryEmbedder
+    from discovery.adapters.openai_embedding import OpenAIQueryEmbedder
+    from discovery.adapters.space_guard import guard_embedding_space
+    from docsuri_shared.vector_spec import DIMENSIONS
+
+    if d_settings.embedding_provider == 'openai':
+        embedding: object = OpenAIQueryEmbedder(model=d_settings.openai_embedding_model)
+        reader_identity = {
+            'provider': 'openai',
+            'model': d_settings.openai_embedding_model,
+            'dimensions': DIMENSIONS,
+        }
+    else:
+        embedding = BedrockCohereQueryEmbedder(
+            model_id=d_settings.bedrock_model_id,
+            # Bedrock region decoupled from region_name (OpenSearch SigV4): Cohere v3 isn't in
+            # ap-northeast-2, so query embedding goes cross-region. Mirrors discovery real_wiring.
+            region_name=d_settings.bedrock_region or fallback_region,
+        )
+        reader_identity = {
+            'provider': 'bedrock',
+            'model': d_settings.bedrock_model_id,
+            'dimensions': DIMENSIONS,
+        }
+    return guard_embedding_space(os_client, d_settings.opensearch_index, reader_identity, embedding)
+
+
 def build_evidence_orchestrator(
     settings: EvidenceSettings, cost_guard: object | None = None
 ) -> EvidenceBundle:
@@ -39,7 +83,6 @@ def build_evidence_orchestrator(
     연결된다(NFR-C1).
     """
     # --- Discovery 어댑터 (U2 재사용) ---
-    from discovery.adapters.bedrock_embedding import BedrockCohereQueryEmbedder
     from discovery.adapters.opensearch_index import (
         OpenSearchClientFactory,
         OpenSearchLexicalIndexAdapter,
@@ -58,12 +101,10 @@ def build_evidence_orchestrator(
         verify_certs=d_settings.opensearch_verify_certs,
     )
 
-    embedding = BedrockCohereQueryEmbedder(
-        model_id=d_settings.bedrock_model_id,
-        # Bedrock region decoupled from region_name (OpenSearch SigV4): Cohere v3 isn't in
-        # ap-northeast-2, so query embedding must go cross-region. Mirrors discovery real_wiring.
-        region_name=d_settings.bedrock_region or settings.region_name,
-    )
+    # Query-embedding: provider switch (Bedrock/OpenAI) + same-space guard. The evidence agent is a
+    # SECOND reader over the SAME index, so it must resolve the provider and validate the embedding
+    # space exactly as discovery's read path does (see helper for the why).
+    embedding = _build_guarded_query_embedder(d_settings, os_client, settings.region_name)
     vector_store = OpenSearchVectorStoreAdapter(os_client, d_settings.opensearch_index)
     lexical_index = OpenSearchLexicalIndexAdapter(os_client, d_settings.opensearch_index)
     paper_lookup = OpenSearchPaperLookupAdapter(os_client, d_settings.opensearch_index)
