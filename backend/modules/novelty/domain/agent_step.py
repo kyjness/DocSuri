@@ -87,7 +87,10 @@ SOURCE_REF_RULE = (
 )
 
 SAVE_ARTIFACT_PAYLOAD_SHAPES = {
-    "evidence": "{state, claims[], coverage} — form_evidence 결과를 그대로 넣는다(보통 자동 저장됨)",
+    "evidence": (
+        "{state, claims[], coverage, abstain_reason(state=abstain일 때 필수)} — "
+        "form_evidence 결과를 그대로 넣는다(보통 자동 저장됨)"
+    ),
     "similar_works": (
         '{"items": [{artifact_type, title, problem_definition?, method?, dataset?, '
         "result?, limitation?, overlap_with_user_idea?, source_refs[], evidence_status?, "
@@ -107,9 +110,19 @@ SAVE_ARTIFACT_PAYLOAD_SHAPES = {
     ),
     "experiment_plan": (
         "{hypothesis, novelty_angle, baselines[], datasets[], metrics[], procedure[], "
-        "risks[], resources[], source_refs[]} — 목록 아님(단일 객체)"
+        "risks[], resources[], source_refs[]} — 목록 아님(단일 객체). 배열 필드는 전부 "
+        "1개 이상이어야 한다(빈 배열은 거부된다)"
     ),
 }
+
+# 어느 kind가 {"items": [...]} 컨테이너인지는 위 표에서 읽는다 — 같은 사실을 두 번
+# 쓰면 kind가 늘 때 한쪽만 고쳐져 모델에게 옛 구분을 알려주게 된다.
+_ITEMS_CONTAINER_KIND_NAMES = tuple(
+    kind for kind, shape in SAVE_ARTIFACT_PAYLOAD_SHAPES.items() if '"items"' in shape
+)
+_SINGLE_OBJECT_KIND_NAMES = tuple(
+    kind for kind in SAVE_ARTIFACT_PAYLOAD_SHAPES if kind not in _ITEMS_CONTAINER_KIND_NAMES
+)
 
 SAVE_ARTIFACT_SPEC = ToolSpec(
     name=TOOL_SAVE_ARTIFACT,
@@ -117,8 +130,7 @@ SAVE_ARTIFACT_SPEC = ToolSpec(
         "조사 산출물 저장 시도. 결정론 게이트가 SourceRef 실재성·필수 필드·bounded "
         "규칙을 검증하며, 거부 시 기계 판독 사유가 반환된다.\n"
         "payload 형태는 kind마다 다르다 — 아래 형태를 정확히 따를 것. 표 형태 산출물은 "
-        ' 반드시 최상위 키 "items"에 배열을 담는다("works"·"rows" 등 다른 이름은 빈 '
-        "산출물로 거부된다).\n"
+        '반드시 최상위 키 "items"에 배열을 담는다(다른 이름을 쓰면 형태 오류로 거부된다).\n'
         + "\n".join(f"- {kind}: {shape}" for kind, shape in SAVE_ARTIFACT_PAYLOAD_SHAPES.items())
         + "\n"
         + SOURCE_REF_RULE
@@ -132,10 +144,14 @@ SAVE_ARTIFACT_SPEC = ToolSpec(
             },
             "payload": {
                 "type": "object",
+                # 조사(는/은)를 붙이지 않는다 — kind 이름은 영문 식별자라 목록이
+                # 바뀌면 받침이 어긋난다. 화살표 표기는 어떤 조합에도 맞는다.
                 "description": (
-                    "kind별 형태는 도구 설명 참조. similar_works·gap_analysis·"
-                    'external_findings·novelty_candidates는 {"items": [...]} 형태, '
-                    "experiment_plan·evidence는 단일 객체."
+                    "kind별 형태는 도구 설명 참조. "
+                    + "·".join(_ITEMS_CONTAINER_KIND_NAMES)
+                    + ' → {"items": [...]} 형태 / '
+                    + "·".join(_SINGLE_OBJECT_KIND_NAMES)
+                    + " → 단일 객체."
                 ),
             },
         },

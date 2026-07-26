@@ -85,7 +85,9 @@ class CorpusSearchTool:
             return ToolResult(
                 ok=True,
                 content=content,
-                record_refs=tuple(item["arxivId"] for item in items if item.get("arxivId")),
+                # 카드가 모델에게 보여준 이름(recordRef)에서 그대로 뽑는다 — 게이트가
+                # 대조할 집합과 카드에 적힌 값이 구조적으로 같은 출처를 갖게 한다.
+                record_refs=tuple(item["recordRef"] for item in items if item.get("recordRef")),
                 result_summary=f"corpus: {len(items)} papers"
                 + (" (degraded)" if degraded else ""),
             )

@@ -200,6 +200,16 @@ def test_misnamed_items_key_is_a_shape_error_not_an_empty_artifact() -> None:
     assert "items" in rejection.detail and "works" in rejection.detail
 
 
+def test_misnamed_items_reason_names_every_array_key_it_found() -> None:
+    """미리 정해둔 이름 목록에 기대지 않는다 — 실제로 쓴 키를 그대로 돌려줘야
+    처음 보는 오답(`papers`·`tables`…)에도 같은 수리 정보가 나간다."""
+    payload = {"papers": [{"title": "A"}], "notes": ["b"]}
+    rejection = evaluate_artifact(ArtifactKind.SIMILAR_WORKS, payload, _KNOWN)
+    assert rejection is not None
+    assert rejection.reason is GateRejectionReason.INVALID_SHAPE
+    assert "papers" in rejection.detail and "notes" in rejection.detail
+
+
 def test_genuinely_empty_items_still_reports_empty_artifact() -> None:
     """키가 맞고 정말로 비었으면 여전히 empty_artifact다 — 형태 오류와 구분된다."""
     rejection = evaluate_artifact(ArtifactKind.SIMILAR_WORKS, {"items": []}, _KNOWN)

@@ -164,6 +164,18 @@ class ExportStatus(StrEnum):
     FAILED = "failed"
 
 
+# 산출물의 사용자 표기 — 대화 답장과 Notion 내보내기 제목이 같은 이름을 써야
+# 한다(한쪽에서 "유사 연구", 다른 쪽에서 "유사 연구 표"로 보이면 같은 산출물인지
+# 알 수 없다). kind가 늘면 여기 한 곳만 고친다.
+ARTIFACT_LABELS: dict[ArtifactKind, str] = {
+    ArtifactKind.EVIDENCE: "근거표",
+    ArtifactKind.SIMILAR_WORKS: "유사 연구 표",
+    ArtifactKind.GAP_ANALYSIS: "여백 분석",
+    ArtifactKind.EXTERNAL_FINDINGS: "외부 탐색 결과",
+    ArtifactKind.NOVELTY_CANDIDATES: "차별화 방향 제안",
+    ArtifactKind.EXPERIMENT_PLAN: "실험 계획",
+}
+
 # 기본 세트(BR-RA1) — 전부 게이트 통과·저장되어야 completed.
 REQUIRED_ARTIFACT_KINDS = frozenset(
     {ArtifactKind.EVIDENCE, ArtifactKind.SIMILAR_WORKS, ArtifactKind.GAP_ANALYSIS}

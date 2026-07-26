@@ -258,6 +258,16 @@ def test_contention_backoff_is_per_job_not_global() -> None:
     assert slept == [1.0]  # A의 누적과 무관하게 B는 첫 백오프
 
 
+def test_backoff_delay_survives_a_very_long_outage() -> None:
+    """백오프는 워커를 살려두려고 있는 장치다 — 장애가 길어져 시도 횟수가 1024를
+    넘으면 `2.0 ** n`이 OverflowError를 던져, 하필 그 장치가 워커를 죽인다."""
+    from backend.modules.novelty.worker import _backoff_delay
+
+    assert _backoff_delay(1, 30.0) == 1.0
+    assert _backoff_delay(2, 30.0) == 2.0
+    assert _backoff_delay(9999, 30.0) == 30.0
+
+
 def test_cancel_before_pickup_finalizes_without_loop() -> None:
     store, queue = InMemoryNoveltyStore(), InMemoryJobQueue()
     job = _job(store)

@@ -12,15 +12,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from redis.exceptions import TimeoutError as RedisTimeoutError
+
 from ..ports.queue import KIND_LOOP, QueuedJob
-
-try:  # redis는 선택 의존성 — 미설치 환경에서도 모듈 임포트는 성립해야 한다.
-    from redis.exceptions import TimeoutError as _RedisTimeoutError
-except ImportError:  # pragma: no cover - redis 미설치 경로
-
-    class _RedisTimeoutError(Exception):  # type: ignore[no-redef]
-        """redis 미설치 시 자리표시 — 실제로 발생하지 않는다."""
-
 
 __all__ = ["RedisJobQueue"]
 
@@ -63,16 +57,15 @@ class RedisJobQueue:
         self._client.lpush(self._queue_key, json.dumps(job.to_payload()))
 
     def consume(self, timeout_seconds: float) -> QueuedJob | None:
-        block_for = max(timeout_seconds, 0.001)
         try:
             raw = self._client.blmove(
                 self._queue_key,
                 self._processing_key,
-                timeout=block_for,
+                timeout=max(timeout_seconds, 0.001),
                 src="RIGHT",
                 dest="LEFT",
             )
-        except _RedisTimeoutError:
+        except RedisTimeoutError:
             # 블로킹 읽기가 만료됐다 = 큐가 비어 있다. redis-py 8부터 소켓 읽기
             # 기본 한도가 5초라, 그 이상(또는 같게) 블록하면 서버의 nil 응답보다
             # 클라이언트 데드라인이 먼저 걸려 예외로 나온다. 빈 큐를 예외로 돌려주면

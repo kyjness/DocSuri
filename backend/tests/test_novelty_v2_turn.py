@@ -419,10 +419,19 @@ def test_turn_with_nothing_saved_still_reports_the_failure() -> None:
 
 def test_success_reply_uses_the_right_korean_object_particle() -> None:
     """사용자에게 보이는 문구다 — "계획을(를)" 같은 표기를 쓰지 않는다."""
-    from backend.modules.novelty.domain.turn import _ARTIFACT_LABELS, _with_object_particle
+    from backend.modules.novelty.domain.models import ARTIFACT_LABELS
+    from backend.modules.novelty.domain.turn import _with_object_particle
 
     assert _with_object_particle("실험 계획") == "실험 계획을"  # 받침 있음
     assert _with_object_particle("유사 연구 표") == "유사 연구 표를"  # 받침 없음
     # 모든 라벨이 둘 중 하나로 끝나고 괄호 표기가 남지 않는다.
-    for label in _ARTIFACT_LABELS.values():
+    for label in ARTIFACT_LABELS.values():
         assert _with_object_particle(label).endswith(("을", "를"))
+
+
+def test_every_artifact_kind_has_a_user_facing_label() -> None:
+    """라벨이 빠지면 대화 답장과 Notion 제목이 조용히 `similar_works` 같은 내부
+    식별자로 떨어진다 — 화면에 나가기 전에 여기서 걸린다."""
+    from backend.modules.novelty.domain.models import ARTIFACT_LABELS, ArtifactKind
+
+    assert set(ARTIFACT_LABELS) == set(ArtifactKind)

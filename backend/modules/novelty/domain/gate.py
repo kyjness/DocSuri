@@ -91,13 +91,10 @@ def evaluate_artifact(
             GateRejectionReason.FORBIDDEN_CLAIM, f"forbidden claim key: {forbidden}"
         )
     if kind in _ITEMS_CONTAINER_KINDS:
-        misnamed = _misnamed_items_key(payload)
-        if misnamed is not None:
-            # 형태 오류는 데이터 부재와 다르다 — 고칠 방법을 사유에 담아 돌려준다.
-            return GateRejection(
-                GateRejectionReason.INVALID_SHAPE,
-                f'items must be the top-level array key; found "{misnamed}" instead',
-            )
+        # 형태 오류는 데이터 부재와 다르다 — 고칠 방법을 사유에 담아 돌려준다.
+        shape_error = _items_shape_error(payload)
+        if shape_error is not None:
+            return GateRejection(GateRejectionReason.INVALID_SHAPE, shape_error)
     try:
         if kind is ArtifactKind.EVIDENCE:
             return _check_evidence(EvidenceSnapshot.model_validate(payload))
@@ -124,26 +121,26 @@ def evaluate_artifact(
     return GateRejection(GateRejectionReason.UNSUPPORTED_KIND, f"unsupported kind: {kind}")
 
 
-# 목록형 산출물의 컨테이너 키를 다른 이름으로 보내는 흔한 오답 — 사유를
-# "비어 있다"로 뭉뚱그리면 무엇이 틀렸는지 알 수 없어 같은 실수를 반복하게 된다.
-_MISNAMED_ITEM_KEYS = ("works", "rows", "entries", "results", "gaps", "candidates", "findings")
-
-
 def _items_of(payload: dict[str, Any]) -> list[Any]:
     items = payload.get("items")
     return items if isinstance(items, list) else []
 
 
-def _misnamed_items_key(payload: dict[str, Any]) -> str | None:
-    """`items` 대신 쓰인 배열 키가 있으면 그 이름 — 수리 가능한 사유로 되돌리기 위해."""
+def _items_shape_error(payload: dict[str, Any]) -> str | None:
+    """목록형 산출물이 `items` 아닌 이름으로 배열을 담았으면 그 사실을 사유 문구로.
+
+    컨테이너 키를 다른 이름(`works`·`rows`…)으로 보내는 것은 흔한 오답인데, 사유를
+    "비어 있다"로 뭉뚱그리면 무엇이 틀렸는지 알 수 없어 같은 실수를 반복하게 된다.
+    실제로 쓴 키 이름을 그대로 돌려준다 — 이름 후보를 미리 나열해두면 목록에 없는
+    이름이 나올 때 다시 뭉뚱그려진다.
+    """
     if isinstance(payload.get("items"), list):
         return None
-    for key in _MISNAMED_ITEM_KEYS:
-        if isinstance(payload.get(key), list) and payload[key]:
-            return key
-    # 목록 키를 못 찾았지만 배열 값이 하나뿐이면 그것을 지목한다.
-    arrays = [k for k, v in payload.items() if isinstance(v, list) and v]
-    return arrays[0] if len(arrays) == 1 else None
+    arrays = [key for key, value in payload.items() if isinstance(value, list) and value]
+    if not arrays:
+        return None
+    found = ", ".join(f'"{key}"' for key in arrays)
+    return f"items must be the top-level array key; found {found} instead"
 
 
 def _find_forbidden_key(node: Any) -> str | None:
