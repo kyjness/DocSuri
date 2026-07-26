@@ -17,6 +17,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from docsuri_shared.hangul import attach_particle
+
 from ..ports.llm import (
     LoopObservation,
     TerminationProposal,
@@ -84,16 +86,7 @@ _BUDGET_EXHAUSTED_REPLY = (
 _NO_REPLY_FALLBACK = (
     "요청을 처리하지 못했어요. 조금 더 구체적으로 알려주시면 다시 시도해 볼게요."
 )
-
-
-def _with_object_particle(label: str) -> str:
-    """받침 유무에 따라 을/를을 붙인다 — "계획을(를)" 같은 어색한 표기를 쓰지 않는다."""
-    last = label.strip()[-1:]
-    if not last:
-        return label
-    code = ord(last)
-    has_final = 0xAC00 <= code <= 0xD7A3 and (code - 0xAC00) % 28 != 0
-    return f"{label}{'을' if has_final else '를'}"
+_SAVED_THIS_TURN_NOTE = "이번 턴에서 산출물 저장에 성공했다 — 다시 저장하지 말고 reply로 마무리하라."
 
 
 @dataclass(slots=True)
@@ -179,8 +172,14 @@ def _drive(
                 kind=ChatKind.AGENT_REPLY, saved=context.last_saved,
             )
 
+        saved_before = context.last_saved
         if execute_step(job, deps, context, proposal) is StepResult.BUDGET_EXHAUSTED:
             break
+        # 저장이 실제로 성공했다는 사실을 시스템 노트(신뢰 구획)로 알린다. 프롬프트
+        # 문구만으로는 모델이 같은 산출물을 다시 저장하려 들어 남은 시도와 예산을
+        # 태운다 — 사실 관찰은 도메인이 만들고, 프롬프트는 심층 방어로만 둔다.
+        if context.last_saved is not None and context.last_saved != saved_before:
+            context.notes.append(_SAVED_THIS_TURN_NOTE)
 
     # 상한·예산 소진으로 reply 없이 끝났다. 그래도 저장에 성공했다면 요청은 이뤄진
     # 것이다 — 실패로 안내하면 사용자가 이미 만들어진 산출물을 두고 재요청해 쿼터와
@@ -190,7 +189,7 @@ def _drive(
         saved_kind, _ = context.last_saved
         label = ARTIFACT_LABELS.get(saved_kind, saved_kind.value)
         return _finish(
-            job, deps, message, f"요청하신 {_with_object_particle(label)} 만들어 저장했어요.",
+            job, deps, message, f"요청하신 {attach_particle(label, '을')} 만들어 저장했어요.",
             kind=ChatKind.AGENT_REPLY, saved=context.last_saved,
         )
     # 침묵 종료 금지 — 아무것도 만들지 못했으면 사유를 남긴다.

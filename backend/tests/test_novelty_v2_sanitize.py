@@ -125,7 +125,7 @@ def test_github_tool_normalizes_and_drops_unsafe_urls() -> None:
     tool = GithubSearchTool(client)
     result = tool.invoke({"query": "dp retrieval"}, _CTX)
     assert result.ok is True
-    findings = result.content["findings"]
+    findings = result.content["items"]
     assert len(findings) == 1
     assert findings[0]["source_type"] == "github"
     assert findings[0]["license"] == "MIT"
@@ -150,7 +150,7 @@ def test_dataset_tool_partial_source_failure_degrades_not_fails() -> None:
     result = tool.invoke({"query": "beir"}, _CTX)
     assert result.ok is True
     assert result.content["degraded_sources"] == ["zenodo"]
-    assert result.content["findings"][0]["task"] == "retrieval"
+    assert result.content["items"][0]["task"] == "retrieval"
 
 
 def test_dataset_tool_all_sources_down_returns_error() -> None:

@@ -178,6 +178,26 @@ def test_turn_generates_experiment_plan_through_the_same_gate() -> None:
     assert outcome.artifact_ref is not None
 
 
+def test_successful_save_is_reported_to_the_model_as_a_system_note() -> None:
+    """저장 성공을 관찰에 실어야 모델이 같은 산출물을 다시 저장하지 않는다.
+
+    프롬프트 문구만으로 막으면 남은 시도와 예산을 재저장에 태운다 — 강제력은
+    도메인이 만드는 사실 관찰에 두고 프롬프트는 심층 방어로만 둔다.
+    """
+    from backend.modules.novelty.domain.turn import _SAVED_THIS_TURN_NOTE
+
+    store = InMemoryNoveltyStore()
+    job = _completed_job(store)
+    message = _request(store, job, "실험 계획 짜줘")
+    llm = ScriptedToolCallingLlm([_save_plan(), _reply("만들었어요.")])
+
+    run_turn(job, message, _deps(store, llm), max_steps=4)
+
+    # 저장 전 관찰에는 없고, 저장 다음 관찰에는 있다.
+    assert _SAVED_THIS_TURN_NOTE not in llm.observations[0].notes
+    assert _SAVED_THIS_TURN_NOTE in llm.observations[1].notes
+
+
 def test_turn_plan_citing_unknown_record_ref_is_rejected_then_retry_succeeds() -> None:
     store = InMemoryNoveltyStore()
     job = _completed_job(store)
@@ -419,14 +439,15 @@ def test_turn_with_nothing_saved_still_reports_the_failure() -> None:
 
 def test_success_reply_uses_the_right_korean_object_particle() -> None:
     """사용자에게 보이는 문구다 — "계획을(를)" 같은 표기를 쓰지 않는다."""
-    from backend.modules.novelty.domain.models import ARTIFACT_LABELS
-    from backend.modules.novelty.domain.turn import _with_object_particle
+    from docsuri_shared.hangul import attach_particle
 
-    assert _with_object_particle("실험 계획") == "실험 계획을"  # 받침 있음
-    assert _with_object_particle("유사 연구 표") == "유사 연구 표를"  # 받침 없음
+    from backend.modules.novelty.domain.models import ARTIFACT_LABELS
+
+    assert attach_particle("실험 계획", "을") == "실험 계획을"  # 받침 있음
+    assert attach_particle("유사 연구 표", "을") == "유사 연구 표를"  # 받침 없음
     # 모든 라벨이 둘 중 하나로 끝나고 괄호 표기가 남지 않는다.
     for label in ARTIFACT_LABELS.values():
-        assert _with_object_particle(label).endswith(("을", "를"))
+        assert attach_particle(label, "을").endswith(("을", "를"))
 
 
 def test_every_artifact_kind_has_a_user_facing_label() -> None:

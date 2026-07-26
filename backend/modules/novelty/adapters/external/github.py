@@ -60,7 +60,10 @@ class GithubSearchTool:
         findings = [finding for finding in map(_normalize_repo, repos) if finding]
         return ToolResult(
             ok=True,
-            content={"findings": findings},
+            # 목록 키는 도구를 가리지 않고 "items"다 — 저장 payload 규약과 같은 이름을
+            # 써야 모델이 컨테이너 키를 헷갈리지 않고, 관찰 렌더가 한도를 넘을 때
+            # 항목 단위로 줄일 수 있다(바이트 절단이면 마지막 항목이 끊긴다).
+            content={"items": findings},
             result_summary=f"github: {len(findings)} repos for '{payload.get('query', '')}'",
         )
 

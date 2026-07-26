@@ -235,3 +235,34 @@ def test_save_artifact_spec_documents_every_supported_kind() -> None:
     )
     # 목록형 산출물은 "items"를 쓰라는 지시가 설명에 있어야 한다.
     assert '"items"' in SAVE_ARTIFACT_SPEC.description
+
+
+def test_payload_shapes_name_every_required_field_of_the_model() -> None:
+    """형태 설명은 게이트가 검증하는 모델에서 갈라져 나오면 안 된다.
+
+    설명은 산문이라 모델 필드가 바뀌어도 조용히 남는다. 모델이 설명대로 보냈는데
+    필수 필드가 빠져 거부되면, 사유를 읽고 고칠 방법이 없다 — 이 브랜치가 없애려던
+    상태 그대로다(실제로 evidence의 abstain_reason, experiment_plan의 비어 있지 않은
+    배열 조건이 빠져 있었다). 필수 필드 이름이 설명에 전부 등장하는지 못 박는다.
+    """
+    from backend.modules.novelty.domain import models
+    from backend.modules.novelty.domain.agent_step import SAVE_ARTIFACT_PAYLOAD_SHAPES
+
+    # kind → 게이트가 payload(또는 items 원소)를 검증할 때 쓰는 모델.
+    models_by_kind = {
+        ArtifactKind.EVIDENCE: models.EvidenceSnapshot,
+        ArtifactKind.SIMILAR_WORKS: models.SimilarWorkItem,
+        ArtifactKind.GAP_ANALYSIS: models.GapItem,
+        ArtifactKind.EXTERNAL_FINDINGS: models.ExternalFinding,
+        ArtifactKind.NOVELTY_CANDIDATES: models.NoveltyCandidate,
+        ArtifactKind.EXPERIMENT_PLAN: models.ExperimentPlan,
+    }
+    assert set(models_by_kind) == set(ArtifactKind)  # kind가 늘면 여기도 늘어야 한다
+
+    for kind, model in models_by_kind.items():
+        shape = SAVE_ARTIFACT_PAYLOAD_SHAPES[kind.value]
+        required = [
+            name for name, field in model.model_fields.items() if field.is_required()
+        ]
+        missing = [name for name in required if name not in shape]
+        assert not missing, f"{kind.value} 형태 설명에 필수 필드 누락: {missing}"
