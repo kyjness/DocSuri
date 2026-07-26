@@ -22,6 +22,8 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from docsuri_shared.hangul import PARTICLE_PAIRS, final_jamo, select_particle
+
 logger = logging.getLogger(__name__)
 
 # --- token scheme ------------------------------------------------------------
@@ -55,20 +57,10 @@ def contains_token(text: str) -> bool:
     return _TOKEN_OPEN in text or _TOKEN_CLOSE in text
 
 
-# Korean josa allomorph pairs — (form-after-batchim, form-after-vowel). (으)로 is special-cased
-# (ㄹ받침 takes 로, like a vowel) in :func:`normalize_particle`.
-_PARTICLE_PAIRS: dict[str, tuple[str, str]] = {
-    "은": ("은", "는"),
-    "는": ("은", "는"),
-    "이": ("이", "가"),
-    "가": ("이", "가"),
-    "을": ("을", "를"),
-    "를": ("을", "를"),
-    "과": ("과", "와"),
-    "와": ("과", "와"),
-    "으로": ("으로", "로"),
-    "로": ("으로", "로"),
-}
+# Korean josa allomorph pairs live in shared — u12 agent replies pick allomorphs too, and two
+# copies of the same jamo arithmetic drift. This unit keeps only its own glossary knowledge
+# (_KEEPASIS_BATCHIM, the English keep-as-is reading table).
+_PARTICLE_PAIRS = PARTICLE_PAIRS
 # Longest-first so ``으로`` wins over ``로`` (they don't share a first char, but keep it explicit).
 _PARTICLE_ALT = "|".join(sorted(_PARTICLE_PAIRS, key=len, reverse=True))
 
@@ -181,16 +173,13 @@ def mask_text(text: str, table: MaskTable) -> tuple[str, set[int]]:
 def _final_jamo(term: str) -> tuple[bool, bool] | None:
     """(has_batchim, is_rieul) of the term's final sound, or None when undeterminable.
 
-    Hangul: exact via the syllable-block formula. Non-Hangul (English keep-as-is): the curated
-    reading table; None (→ leave the model's particle) for uncurated/ambiguous terms."""
-    t = term.rstrip()
-    if not t:
-        return None
-    c = t[-1]
-    if "가" <= c <= "힣":
-        code = (ord(c) - 0xAC00) % 28
-        return (code != 0, code == 8)
-    has_batchim = _KEEPASIS_BATCHIM.get(t.lower())
+    Hangul: the shared syllable-block formula. Non-Hangul (English keep-as-is): the curated
+    reading table below — that table is glossary knowledge and stays in this unit; None
+    (→ leave the model's particle) for uncurated/ambiguous terms."""
+    hangul = final_jamo(term)
+    if hangul is not None:
+        return hangul
+    has_batchim = _KEEPASIS_BATCHIM.get(term.rstrip().lower())
     if has_batchim is None:
         return None
     return (has_batchim, False)
@@ -201,18 +190,7 @@ def normalize_particle(term: str, particle: str) -> str:
 
     Exact for a Hangul-final term (mappings, Korean overrides); for an English keep-as-is term it
     uses the curated reading, else returns the model's ``particle`` unchanged (best-effort)."""
-    pair = _PARTICLE_PAIRS.get(particle)
-    if pair is None:
-        return particle
-    info = _final_jamo(term)
-    if info is None:
-        return particle
-    has_batchim, is_rieul = info
-    if particle in ("으로", "로"):
-        # (으)로: vowel-ending AND ㄹ받침 take the short 로; other 받침 take 으로.
-        return "로" if (not has_batchim or is_rieul) else "으로"
-    after_batchim, after_vowel = pair
-    return after_batchim if has_batchim else after_vowel
+    return select_particle(particle, _final_jamo(term))
 
 
 # Whitespace-tolerant token (``⟦ G 7 ⟧``) optionally followed by a josa that is NOT itself the first
