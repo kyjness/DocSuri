@@ -334,7 +334,11 @@ def test_oversized_result_drops_whole_items_never_cuts_a_handle() -> None:
     rendered = json.loads(body.strip().splitlines()[1])
 
     assert 0 < len(rendered["items"]) < len(cards)  # 일부만 실렸다
-    assert rendered["omittedItems"] == len(cards) - len(rendered["items"])  # 뺀 개수를 알린다
+    # 어느 필드에서 몇 개를 뺐는지 알린다 — 목록이 전부가 아님을 모델이 알아야 한다.
+    assert rendered["omitted"] == {
+        "field": "items",
+        "count": len(cards) - len(rendered["items"]),
+    }
     # 실린 카드는 전부 온전한 핸들을 갖는다 — 잘린 조각이 없다.
     shown = [card["recordRef"] for card in rendered["items"]]
     assert shown == [card["recordRef"] for card in cards[: len(shown)]]
@@ -358,3 +362,34 @@ def test_payload_container_split_matches_the_gate() -> None:
     listed, _, single = description.partition(" / ")
     for kind in ITEMS_CONTAINER_KINDS:
         assert kind.value in listed and kind.value not in single
+
+
+def test_item_wise_trimming_is_not_limited_to_the_key_named_items() -> None:
+    """목록 키 이름은 도구·산출물마다 다르다 — `items`만 알면 나머지는 바이트 절단으로
+    되돌아간다. 근거 스냅숏은 `claims`, form_evidence 결과는 `evidence.claims`다.
+    이름을 정해두는 대신 가장 긴 목록을 찾아 항목 단위로 줄인다(코드 리뷰 반영)."""
+    from backend.modules.novelty.ports.llm import fit_result_content
+
+    claims = [{"recordRef": f"rec:{i:04d}", "text": "가" * 300} for i in range(40)]
+
+    top = fit_result_content({"state": "ok", "claims": claims}, 6000)
+    assert 0 < len(top["claims"]) < len(claims)
+    assert top["omitted"]["field"] == "claims"
+    assert all(c["recordRef"].startswith("rec:") for c in top["claims"])  # 온전한 핸들
+
+    nested = fit_result_content({"evidence": {"state": "ok", "claims": claims}}, 6000)
+    assert 0 < len(nested["evidence"]["claims"]) < len(claims)
+    assert nested["omitted"]["field"] == "evidence.claims"
+
+
+def test_fitted_content_never_exceeds_the_limit_even_in_the_fallback() -> None:
+    """폴백은 잘린 문자열을 다시 감싸 직렬화한다 — 따옴표 이스케이프로 길이가 늘어
+    한도를 넘던 경로다. 한도는 한도여야 한다."""
+    import json as _json
+
+    from backend.modules.novelty.ports.llm import fit_result_content
+
+    # 목록이 없어 덜어낼 것이 없고, 값에 이스케이프 대상이 가득한 content.
+    content = {"blob": '"\\' * 4000}
+    fitted = fit_result_content(content, 1000)
+    assert len(_json.dumps(fitted, ensure_ascii=False, default=str)) <= 1000

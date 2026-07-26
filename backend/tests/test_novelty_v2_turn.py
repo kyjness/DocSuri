@@ -26,6 +26,7 @@ from backend.modules.novelty.ports.llm import (
 )
 from backend.modules.novelty.ports.tools import (
     TOOL_CORPUS_SEARCH,
+    TOOL_FORM_EVIDENCE,
     TOOL_SAVE_ARTIFACT,
     ToolRegistry,
     ToolResult,
@@ -131,6 +132,16 @@ def _registry() -> ToolRegistry:
             default=ToolResult(ok=True, content={"items": []}, record_refs=("rec:new",)),
         )
     )
+    registry.register(
+        FakeTool(
+            TOOL_FORM_EVIDENCE,
+            # 성공 시 루프가 evidence를 자동 보존한다 — context.last_saved가 채워진다.
+            default=ToolResult(
+                ok=True,
+                content={"evidence": {"state": "abstain", "abstain_reason": "근거 부족"}},
+            ),
+        )
+    )
     return registry
 
 
@@ -196,6 +207,35 @@ def test_successful_save_is_reported_to_the_model_as_a_system_note() -> None:
     # 저장 전 관찰에는 없고, 저장 다음 관찰에는 있다.
     assert _SAVED_THIS_TURN_NOTE not in llm.observations[0].notes
     assert _SAVED_THIS_TURN_NOTE in llm.observations[1].notes
+
+
+def test_evidence_auto_save_does_not_cut_the_turn_before_the_request_is_met() -> None:
+    """근거 자동 보존은 "요청받은 것을 만들었다"가 아니다.
+
+    form_evidence가 성공하면 루프가 evidence를 자동 저장하며 `last_saved`를 채운다.
+    저장 중단 조건을 그 필드로 판정하면, 근거부터 모으는 정상 턴이 사용자가 요청한
+    산출물을 만들기도 전에 끊기고 — 엉뚱하게 "근거표를 만들어 저장했어요"라는
+    성공 안내까지 나간다(코드 리뷰 반영).
+    """
+    store = InMemoryNoveltyStore()
+    job = _completed_job(store)
+    message = _request(store, job, "실험 계획 짜줘")
+    llm = ScriptedToolCallingLlm(
+        [
+            LlmDecision(ToolCallProposal(TOOL_FORM_EVIDENCE, {"topic": "privacy rag"})),
+            _save_plan(),
+            _reply("근거를 확인하고 계획을 만들었어요."),
+        ]
+    )
+
+    outcome = run_turn(job, message, _deps(store, llm), max_steps=4)
+
+    kinds = {rec.kind for rec in store.list_artifacts(job.owner_id, job.job_id)}
+    assert ArtifactKind.EXPERIMENT_PLAN in kinds  # 요청받은 산출물이 실제로 만들어졌다
+    assert outcome.saved_kind is ArtifactKind.EXPERIMENT_PLAN  # 근거가 아니다
+    reply = _messages(store, job)[-1]
+    assert reply.content == "근거를 확인하고 계획을 만들었어요."
+    assert reply.resulting_artifact_ref == outcome.artifact_ref is not None
 
 
 def test_resaving_after_a_successful_save_ends_the_turn_instead_of_burning_steps() -> None:
