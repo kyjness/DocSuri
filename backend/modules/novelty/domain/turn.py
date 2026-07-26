@@ -172,6 +172,14 @@ def _drive(
                 kind=ChatKind.AGENT_REPLY, saved=context.last_saved,
             )
 
+        # 이미 저장에 성공했는데 또 도구를 부르려 한다 — 여기서 끊는다. 남은 시도는
+        # 답변 하나를 위한 것이고, 이 턴의 산출물은 이미 만들어졌다. 실스택 검증에서
+        # 모델은 같은 계획을 max_steps까지 4번 다시 저장하고 답변 없이 끝났다(호출
+        # 4회 전부 게이트 통과 — 사용자에게 달라지는 것 없이 예산만 태웠다).
+        # 프롬프트 문구와 시스템 노트로는 막히지 않았다.
+        if context.last_saved is not None:
+            break
+
         saved_before = context.last_saved
         if execute_step(job, deps, context, proposal) is StepResult.BUDGET_EXHAUSTED:
             break

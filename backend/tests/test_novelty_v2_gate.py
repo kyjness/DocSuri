@@ -266,3 +266,46 @@ def test_payload_shapes_name_every_required_field_of_the_model() -> None:
         ]
         missing = [name for name in required if name not in shape]
         assert not missing, f"{kind.value} 형태 설명에 필수 필드 누락: {missing}"
+
+
+def test_payload_shapes_describe_nested_objects_as_objects() -> None:
+    """이름만 맞고 형태가 틀린 경우도 같은 실패를 낳는다.
+
+    실스택에서 실제로 겪었다: evidence의 coverage를 설명이 이름만 적어둬 모델이
+    `"coverage": 0`을 보냈고, 게이트는 "dictionary가 필요하다"로 거부했다. 중첩
+    객체 필드는 그 안의 필수 필드까지 설명에 드러나야 형태를 짐작하지 않는다.
+    """
+    from pydantic import BaseModel
+
+    from backend.modules.novelty.domain import models
+    from backend.modules.novelty.domain.agent_step import SAVE_ARTIFACT_PAYLOAD_SHAPES
+
+    def nested_models(model: type[BaseModel]) -> dict[str, type[BaseModel]]:
+        """필드명 → 그 필드가 담는 중첩 pydantic 모델(있을 때만)."""
+        found = {}
+        for name, field in model.model_fields.items():
+            for candidate in (field.annotation, *getattr(field.annotation, "__args__", ())):
+                if isinstance(candidate, type) and issubclass(candidate, BaseModel):
+                    found[name] = candidate
+                    break
+        return found
+
+    # SourceRef는 SOURCE_REF_RULE이 따로 설명한다(모든 kind 공통).
+    described_elsewhere = {"source_refs", "supporting_refs", "conflicting_refs", "claims"}
+    for kind_name, shape in SAVE_ARTIFACT_PAYLOAD_SHAPES.items():
+        model = {
+            "evidence": models.EvidenceSnapshot,
+            "similar_works": models.SimilarWorkItem,
+            "gap_analysis": models.GapItem,
+            "external_findings": models.ExternalFinding,
+            "novelty_candidates": models.NoveltyCandidate,
+            "experiment_plan": models.ExperimentPlan,
+        }[kind_name]
+        for field_name, nested in nested_models(model).items():
+            if field_name in described_elsewhere or field_name not in shape:
+                continue
+            required = [n for n, f in nested.model_fields.items() if f.is_required()]
+            assert any(name in shape for name in required), (
+                f"{kind_name}.{field_name}은 객체({nested.__name__})인데 설명이 "
+                f"내부 필드를 하나도 안 보여준다 — 모델이 스칼라로 채운다"
+            )

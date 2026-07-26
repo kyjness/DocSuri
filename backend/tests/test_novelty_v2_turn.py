@@ -198,6 +198,29 @@ def test_successful_save_is_reported_to_the_model_as_a_system_note() -> None:
     assert _SAVED_THIS_TURN_NOTE in llm.observations[1].notes
 
 
+def test_resaving_after_a_successful_save_ends_the_turn_instead_of_burning_steps() -> None:
+    """저장에 성공한 뒤 또 저장하려 들면 그 자리에서 끊는다.
+
+    실스택 검증에서 모델은 같은 계획을 max_steps까지 네 번 다시 저장했다 — 네 번
+    모두 게이트를 통과했으니 사용자에게 달라지는 것은 없고 LLM 호출만 늘었다.
+    프롬프트 문구도 시스템 노트도 이걸 막지 못했으므로 도메인이 끊는다.
+    """
+    store = InMemoryNoveltyStore()
+    job = _completed_job(store)
+    message = _request(store, job, "실험 계획 짜줘")
+    # 저장 후에도 계속 저장만 시도하는 모델.
+    llm = ScriptedToolCallingLlm([_save_plan(), _save_plan(), _save_plan(), _save_plan()])
+
+    outcome = run_turn(job, message, _deps(store, llm), max_steps=4)
+
+    # 두 번째 결정에서 끊었다 — 스크립트가 소진되지 않았다는 것이 그 증거다.
+    assert len(llm.observations) == 2
+    # 그래도 답장은 나가고 산출물 참조가 걸린다(침묵 종료 금지).
+    reply = _messages(store, job)[-1]
+    assert reply.kind is ChatKind.AGENT_REPLY
+    assert reply.resulting_artifact_ref == outcome.artifact_ref is not None
+
+
 def test_turn_plan_citing_unknown_record_ref_is_rejected_then_retry_succeeds() -> None:
     store = InMemoryNoveltyStore()
     job = _completed_job(store)

@@ -88,8 +88,9 @@ SOURCE_REF_RULE = (
 
 SAVE_ARTIFACT_PAYLOAD_SHAPES = {
     "evidence": (
-        "{state, claims[], coverage, abstain_reason(state=abstain일 때 필수)} — "
-        "form_evidence 결과를 그대로 넣는다(보통 자동 저장됨)"
+        '{state("ok"|"abstain"), claims[], coverage{paperCount, queryUsed?}(객체 — 숫자 아님), '
+        "abstain_reason(state=abstain일 때 필수)} — form_evidence 결과를 그대로 넣는다"
+        "(보통 자동 저장되므로 직접 저장할 일은 드물다)"
     ),
     "similar_works": (
         '{"items": [{artifact_type, title, problem_definition?, method?, dataset?, '
