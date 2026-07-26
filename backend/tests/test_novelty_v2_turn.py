@@ -375,3 +375,43 @@ def test_turn_records_tool_calls_but_reply_leaves_no_trace() -> None:
     trace = store.list_trace(job.owner_id, job.job_id, after_seq=0, limit=50)
     # 실행된 도구는 1:1로 기록되고(BR-RA4), reply는 도구가 아니므로 기록되지 않는다.
     assert [rec.tool_name for rec in trace] == [TOOL_CORPUS_SEARCH]
+
+
+def test_turn_that_saved_but_ran_out_of_steps_reports_success_not_failure() -> None:
+    """저장에 성공했으면 시도 횟수를 다 써도 실패로 안내하면 안 된다.
+
+    로컬 실스택에서 실제로 겪었다: 모델이 실험 계획을 저장한 뒤 reply 대신 같은
+    저장을 반복하다 max_steps에 걸렸고, 사용자는 "마무리하지 못했으니 다시 요청
+    하라"는 안내를 받았다 — 계획은 이미 만들어져 있었는데도. 그대로 재요청하면
+    쿼터와 예산을 다시 쓴다.
+    """
+    store = InMemoryNoveltyStore()
+    job = _completed_job(store)
+    message = _request(store, job, "실험 계획 짜줘")
+    # 모델이 저장만 반복하고 reply를 하지 않는다.
+    llm = ScriptedToolCallingLlm([_save_plan(), _save_plan(), _save_plan(), _save_plan()])
+
+    outcome = run_turn(job, message, _deps(store, llm), max_steps=4)
+
+    reply = _messages(store, job)[-1]
+    assert reply.kind is ChatKind.AGENT_REPLY  # NOTICE(실패)가 아니다
+    assert "다시 요청" not in reply.content
+    # 만들어진 산출물이 답장에 연결돼 화면에 카드로 붙는다.
+    assert outcome.saved_kind is ArtifactKind.EXPERIMENT_PLAN
+    assert reply.resulting_artifact_ref == outcome.artifact_ref
+    assert outcome.artifact_ref is not None
+
+
+def test_turn_with_nothing_saved_still_reports_the_failure() -> None:
+    """아무것도 만들지 못했을 때는 종전대로 사유를 남긴다 — 성공과 구분된다."""
+    store = InMemoryNoveltyStore()
+    job = _completed_job(store)
+    message = _request(store, job, "실험 계획 짜줘")
+    # 게이트가 계속 거부해 저장이 한 번도 성립하지 않는다.
+    llm = ScriptedToolCallingLlm([_save_plan("rec:unknown")] * 4)
+
+    run_turn(job, message, _deps(store, llm), max_steps=4)
+
+    reply = _messages(store, job)[-1]
+    assert reply.kind is ChatKind.NOTICE
+    assert reply.resulting_artifact_ref is None

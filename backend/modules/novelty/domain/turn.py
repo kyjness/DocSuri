@@ -78,6 +78,15 @@ _BUDGET_EXHAUSTED_REPLY = (
 _NO_REPLY_FALLBACK = (
     "요청을 처리하지 못했어요. 조금 더 구체적으로 알려주시면 다시 시도해 볼게요."
 )
+# 사용자에게 보일 산출물 이름 — 저장은 됐는데 모델이 마무리 답변을 못 한 경우에 쓴다.
+_ARTIFACT_LABELS = {
+    ArtifactKind.EXPERIMENT_PLAN: "실험 계획",
+    ArtifactKind.NOVELTY_CANDIDATES: "방향 제안",
+    ArtifactKind.SIMILAR_WORKS: "유사 연구 표",
+    ArtifactKind.GAP_ANALYSIS: "여백 분석",
+    ArtifactKind.EXTERNAL_FINDINGS: "외부 탐색 결과",
+    ArtifactKind.EVIDENCE: "근거",
+}
 
 
 @dataclass(slots=True)
@@ -166,9 +175,19 @@ def _drive(
         if execute_step(job, deps, context, proposal) is StepResult.BUDGET_EXHAUSTED:
             break
 
-    # 상한·예산 소진으로 답변 없이 끝났다 — 침묵 종료 금지, 사유를 남긴다.
-    return _finish(job, deps, message, _exhausted_reply(context), kind=ChatKind.NOTICE,
-                   saved=context.last_saved)
+    # 상한·예산 소진으로 reply 없이 끝났다. 그래도 저장에 성공했다면 요청은 이뤄진
+    # 것이다 — 실패로 안내하면 사용자가 이미 만들어진 산출물을 두고 재요청해 쿼터와
+    # 예산을 다시 쓴다(로컬 실스택 검증에서 실제로 발생: 계획은 저장됐는데 "마무리하지
+    # 못했으니 다시 요청하라"는 안내가 나갔다).
+    if context.last_saved is not None:
+        saved_kind, _ = context.last_saved
+        label = _ARTIFACT_LABELS.get(saved_kind, saved_kind.value)
+        return _finish(
+            job, deps, message, f"요청하신 {label}을(를) 만들어 저장했어요.",
+            kind=ChatKind.AGENT_REPLY, saved=context.last_saved,
+        )
+    # 침묵 종료 금지 — 아무것도 만들지 못했으면 사유를 남긴다.
+    return _finish(job, deps, message, _exhausted_reply(context), kind=ChatKind.NOTICE)
 
 
 def _exhausted_reply(context: AgentContext) -> str:
