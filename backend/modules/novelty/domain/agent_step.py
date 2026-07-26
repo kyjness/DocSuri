@@ -70,19 +70,74 @@ log = logging.getLogger("docsuri.novelty.loop")
 
 # save_artifact는 레지스트리 도구가 아니라 호출자가 직접 게이트로 처리한다 —
 # 우회 저장 경로를 만들지 않기 위해(BR-RA2). LLM에는 이 스펙으로 노출된다.
+#
+# payload 형태를 스펙에 싣는 이유(로컬 실스택 검증 반영): 종전에는 payload가
+# 스키마 없는 {"type": "object"}였다. 모델은 컨테이너 키를 추측할 수밖에 없었고
+# similar_works에 {"works": [...]}를 보냈다 — 게이트는 payload["items"]를 읽으므로
+# 빈 산출물로 거부됐고, 사유("비어 있다")가 키가 틀렸다는 사실을 알려주지 않아
+# 같은 구조로 재시도하다 예산을 소진했다. 그 결과 필수 세트가 영영 완성되지 않았다.
+# source_refs의 recordRef는 지어낼 수 없다 — 게이트가 이번 잡이 도구 결과로 확보한
+# 집합과 대조한다(BR-NV19). 도구 결과 카드가 같은 이름으로 값을 실어 보내므로,
+# 그 값을 그대로 복사하라고 명시한다. 종전에는 카드에 `arxivId`로만 보여서 모델이
+# 연결을 알 수 없었고 산출물마다 unknown_source_ref로 거부됐다.
+SOURCE_REF_RULE = (
+    'source_refs/supporting_refs 항목은 {"paperId": ..., "recordRef": ...} 형태이고, '
+    "recordRef는 도구 결과 카드의 recordRef 값을 **그대로 복사**해야 한다 — "
+    "지어내거나 URL·제목으로 대체하면 unknown_source_ref로 거부된다."
+)
+
+SAVE_ARTIFACT_PAYLOAD_SHAPES = {
+    "evidence": "{state, claims[], coverage} — form_evidence 결과를 그대로 넣는다(보통 자동 저장됨)",
+    "similar_works": (
+        '{"items": [{artifact_type, title, problem_definition?, method?, dataset?, '
+        "result?, limitation?, overlap_with_user_idea?, source_refs[], evidence_status?, "
+        "confidence?}]}"
+    ),
+    "gap_analysis": (
+        '{"items": [{area, status(well_covered|partially_covered|open_gap), rationale, '
+        "source_refs[], searched_scope_note(open_gap일 때 필수), related_similar_work_ids?}]}"
+    ),
+    "external_findings": (
+        '{"items": [{source_type, canonical_id, title, url, license?, task?, metrics?, '
+        "baseline_or_code_hint?}]}"
+    ),
+    "novelty_candidates": (
+        '{"items": [{angle, rationale, excluded_claims, supporting_refs[], '
+        "conflicting_refs?, feasibility_notes?}]}"
+    ),
+    "experiment_plan": (
+        "{hypothesis, novelty_angle, baselines[], datasets[], metrics[], procedure[], "
+        "risks[], resources[], source_refs[]} — 목록 아님(단일 객체)"
+    ),
+}
+
 SAVE_ARTIFACT_SPEC = ToolSpec(
     name=TOOL_SAVE_ARTIFACT,
     description=(
         "조사 산출물 저장 시도. 결정론 게이트가 SourceRef 실재성·필수 필드·bounded "
-        "규칙을 검증하며, 거부 시 기계 판독 사유가 반환된다. "
-        "kind: evidence|similar_works|gap_analysis|external_findings|"
-        "novelty_candidates|experiment_plan"
+        "규칙을 검증하며, 거부 시 기계 판독 사유가 반환된다.\n"
+        "payload 형태는 kind마다 다르다 — 아래 형태를 정확히 따를 것. 표 형태 산출물은 "
+        ' 반드시 최상위 키 "items"에 배열을 담는다("works"·"rows" 등 다른 이름은 빈 '
+        "산출물로 거부된다).\n"
+        + "\n".join(f"- {kind}: {shape}" for kind, shape in SAVE_ARTIFACT_PAYLOAD_SHAPES.items())
+        + "\n"
+        + SOURCE_REF_RULE
     ),
     parameters={
         "type": "object",
         "properties": {
-            "kind": {"type": "string"},
-            "payload": {"type": "object"},
+            "kind": {
+                "type": "string",
+                "enum": sorted(SAVE_ARTIFACT_PAYLOAD_SHAPES),
+            },
+            "payload": {
+                "type": "object",
+                "description": (
+                    "kind별 형태는 도구 설명 참조. similar_works·gap_analysis·"
+                    'external_findings·novelty_candidates는 {"items": [...]} 형태, '
+                    "experiment_plan·evidence는 단일 객체."
+                ),
+            },
         },
         "required": ["kind", "payload"],
     },

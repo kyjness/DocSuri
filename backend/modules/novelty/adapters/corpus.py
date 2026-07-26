@@ -112,6 +112,12 @@ def _card_view(card: Any) -> dict[str, Any]:
         "authors": list(card.authors),
         "year": card.year,
         "arxivId": card.arxivId,
+        # 게이트가 요구하는 이름 그대로 한 번 더 노출한다(로컬 실스택 검증 반영).
+        # arxivId가 곧 실재성 핸들이지만, 카드에 `arxivId`라는 이름으로만 보이면
+        # 모델은 그것을 source_refs[].recordRef에 넣어야 한다는 걸 알 수 없다 —
+        # 실제로 산출물마다 unknown_source_ref로 거부돼 필수 세트가 완성되지 않았다.
+        # 데이터가 스스로 계약을 담아야 프롬프트 설명에만 기대지 않는다.
+        "recordRef": card.arxivId,
         "abstractSnippet": card.abstractSnippet,
         "sourceName": card.sourceName or "arXiv",
         "sourceUrl": card.sourceUrl or card.arxivUrl,

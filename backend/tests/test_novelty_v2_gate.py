@@ -173,3 +173,55 @@ def test_candidate_without_supporting_refs_rejected() -> None:
     rejection = evaluate_artifact(ArtifactKind.NOVELTY_CANDIDATES, payload, _KNOWN)
     assert rejection is not None
     assert rejection.reason is GateRejectionReason.MISSING_SOURCE_REFS
+
+
+def test_misnamed_items_key_is_a_shape_error_not_an_empty_artifact() -> None:
+    """컨테이너 키를 틀리면 "비어 있다"가 아니라 "형태가 틀렸다"로 돌려줘야 한다.
+
+    로컬 실스택에서 실제로 겪은 실패다: 모델이 similar_works에 {"works": [...]}를
+    보냈고 게이트는 payload["items"]만 읽어 empty_artifact로 거부했다. 그 사유는
+    데이터가 비었다고 말할 뿐 키가 틀렸다는 사실을 알려주지 않아, 모델이 같은 구조로
+    19회 재시도하다 예산을 소진했다 — 필수 세트가 영영 완성되지 않았다.
+    """
+    payload = {
+        "works": [
+            {
+                "artifact_type": "paper",
+                "title": "CoinPress",
+                "source_refs": [_ref()],
+                "evidence_status": "supported",
+            }
+        ]
+    }
+    rejection = evaluate_artifact(ArtifactKind.SIMILAR_WORKS, payload, _KNOWN)
+    assert rejection is not None
+    assert rejection.reason is GateRejectionReason.INVALID_SHAPE
+    # 사유가 무엇을 고쳐야 하는지 담아야 한다 — 그래야 다음 시도가 달라진다.
+    assert "items" in rejection.detail and "works" in rejection.detail
+
+
+def test_genuinely_empty_items_still_reports_empty_artifact() -> None:
+    """키가 맞고 정말로 비었으면 여전히 empty_artifact다 — 형태 오류와 구분된다."""
+    rejection = evaluate_artifact(ArtifactKind.SIMILAR_WORKS, {"items": []}, _KNOWN)
+    assert rejection is not None
+    assert rejection.reason is GateRejectionReason.EMPTY_ARTIFACT
+
+
+def test_save_artifact_spec_documents_every_supported_kind() -> None:
+    """툴 스펙이 kind별 payload 형태를 알려줘야 모델이 키를 추측하지 않는다.
+
+    스펙에 형태가 없으면 모델은 컨테이너 키를 지어내고, 게이트는 그걸 거부한다.
+    새 ArtifactKind를 추가하면서 스펙을 빠뜨리면 같은 함정이 다시 생기므로,
+    지원 kind 집합과 스펙 문서화 집합이 어긋나지 않게 못 박는다.
+    """
+    from backend.modules.novelty.domain.agent_step import (
+        SAVE_ARTIFACT_PAYLOAD_SHAPES,
+        SAVE_ARTIFACT_SPEC,
+    )
+
+    assert set(SAVE_ARTIFACT_PAYLOAD_SHAPES) == {kind.value for kind in ArtifactKind}
+    assert SAVE_ARTIFACT_SPEC.parameters["properties"]["kind"]["enum"] == sorted(
+        kind.value for kind in ArtifactKind
+    )
+    # 목록형 산출물은 "items"를 쓰라는 지시가 설명에 있어야 한다.
+    assert '"items"' in SAVE_ARTIFACT_SPEC.description
