@@ -78,6 +78,16 @@ _BUDGET_EXHAUSTED_REPLY = (
 _NO_REPLY_FALLBACK = (
     "요청을 처리하지 못했어요. 조금 더 구체적으로 알려주시면 다시 시도해 볼게요."
 )
+def _with_object_particle(label: str) -> str:
+    """받침 유무에 따라 을/를을 붙인다 — "계획을(를)" 같은 어색한 표기를 쓰지 않는다."""
+    last = label.strip()[-1:]
+    if not last:
+        return label
+    code = ord(last)
+    has_final = 0xAC00 <= code <= 0xD7A3 and (code - 0xAC00) % 28 != 0
+    return f"{label}{'을' if has_final else '를'}"
+
+
 # 사용자에게 보일 산출물 이름 — 저장은 됐는데 모델이 마무리 답변을 못 한 경우에 쓴다.
 _ARTIFACT_LABELS = {
     ArtifactKind.EXPERIMENT_PLAN: "실험 계획",
@@ -183,7 +193,7 @@ def _drive(
         saved_kind, _ = context.last_saved
         label = _ARTIFACT_LABELS.get(saved_kind, saved_kind.value)
         return _finish(
-            job, deps, message, f"요청하신 {label}을(를) 만들어 저장했어요.",
+            job, deps, message, f"요청하신 {_with_object_particle(label)} 만들어 저장했어요.",
             kind=ChatKind.AGENT_REPLY, saved=context.last_saved,
         )
     # 침묵 종료 금지 — 아무것도 만들지 못했으면 사유를 남긴다.

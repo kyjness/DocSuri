@@ -415,3 +415,14 @@ def test_turn_with_nothing_saved_still_reports_the_failure() -> None:
     reply = _messages(store, job)[-1]
     assert reply.kind is ChatKind.NOTICE
     assert reply.resulting_artifact_ref is None
+
+
+def test_success_reply_uses_the_right_korean_object_particle() -> None:
+    """사용자에게 보이는 문구다 — "계획을(를)" 같은 표기를 쓰지 않는다."""
+    from backend.modules.novelty.domain.turn import _ARTIFACT_LABELS, _with_object_particle
+
+    assert _with_object_particle("실험 계획") == "실험 계획을"  # 받침 있음
+    assert _with_object_particle("유사 연구 표") == "유사 연구 표를"  # 받침 없음
+    # 모든 라벨이 둘 중 하나로 끝나고 괄호 표기가 남지 않는다.
+    for label in _ARTIFACT_LABELS.values():
+        assert _with_object_particle(label).endswith(("을", "를"))
