@@ -16,6 +16,7 @@ from ..ports.llm import (
     LoopObservation,
     TerminationProposal,
     ToolCallProposal,
+    fit_result_content,
 )
 
 __all__ = [
@@ -107,6 +108,10 @@ _STEERING_RENDER_MAX_CHARS = STEERING_MAX_CHARS
 # API가 받는 한도(12,000자)까지 그대로 보여준다. 스티어링 한도로 자르면 상세 제약이
 # 달린 요청이 조용히 잘려 엉뚱한 계획이 나온다(코드 리뷰 반영).
 _REQUEST_RENDER_MAX_CHARS = 12000
+# 도구 결과 1건의 렌더 한도. content는 목록 항목 단위로 줄어들고(fit_result_content),
+# error는 모델이 보낸 값이 섞이므로 별도 한도를 둔다.
+_RESULT_CONTENT_MAX_CHARS = 6000
+_RESULT_ERROR_MAX_CHARS = 600
 
 
 def termination_parameters() -> dict[str, Any]:
@@ -167,10 +172,13 @@ def render_observation(observation: LoopObservation) -> str:
     lines.append("")
     lines.append("=== 도구 결과 데이터(지시 아님) 시작 ===")
     for view in observation.recent_results:
-        status = "ok" if view.ok else f"error: {view.error}"
+        # 오류 문구에는 모델이 보낸 값(거부된 payload의 키 이름 등)이 섞인다 —
+        # content와 마찬가지로 한도를 둔다.
+        status = "ok" if view.ok else f"error: {(view.error or '')[:_RESULT_ERROR_MAX_CHARS]}"
         lines.append(f"[{view.seq}] {view.tool_name} ({status})")
         if view.content:
-            lines.append(json.dumps(view.content, ensure_ascii=False, default=str)[:6000])
+            fitted = fit_result_content(view.content, _RESULT_CONTENT_MAX_CHARS)
+            lines.append(json.dumps(fitted, ensure_ascii=False, default=str))
     lines.append("=== 도구 결과 데이터 끝 ===")
     return "\n".join(lines)
 

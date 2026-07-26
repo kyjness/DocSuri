@@ -167,3 +167,6 @@ def test_corpus_cards_carry_the_record_ref_key_the_gate_requires() -> None:
     assert card["recordRef"] == "2401.09999"
     # 게이트가 대조하는 집합과 카드에 보이는 값이 같아야 한다.
     assert card["recordRef"] in result.record_refs
+    # paperId도 이름 그대로 실어야 한다 — 게이트는 recordRef만 대조하므로, 이름을
+    # 알려주지 않으면 모델이 넣은 엉뚱한 paperId가 걸러지지 않고 저장된다.
+    assert card["paperId"] == "2401.09999"

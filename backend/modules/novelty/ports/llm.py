@@ -7,6 +7,7 @@ domain.loop이 저장 게이트 기준으로 판정한다. 시스템 지시와 �
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -19,7 +20,34 @@ __all__ = [
     "ToolCallProposal",
     "ToolCallingLlmPort",
     "ToolResultView",
+    "fit_result_content",
 ]
+
+
+def fit_result_content(content: dict[str, Any], max_chars: int) -> dict[str, Any]:
+    """도구 결과 content를 한도 안에 맞춘다 — 목록은 항목 단위로 덜어낸다.
+
+    직렬화한 문자열을 바이트로 자르면 마지막 항목이 값 중간에서 끊긴다. 카드의
+    recordRef가 그렇게 잘리면 모델은 잘린 줄 모르고 그대로 복사하고, 게이트는
+    unknown_source_ref로 거부한다 — 실재하는 출처인데도 인용할 수 없게 된다.
+    항목을 통째로 빼면 **보이는 항목은 전부 온전하다**. 몇 개를 뺐는지 함께 알려
+    모델이 목록이 전부가 아님을 알 수 있게 한다.
+    """
+    try:
+        text = json.dumps(content, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return {"note": "content not serialisable"}
+    if len(text) <= max_chars:
+        return content
+    items = content.get("items")
+    if isinstance(items, list) and items:
+        rest = {key: value for key, value in content.items() if key != "items"}
+        for keep in range(len(items) - 1, 0, -1):
+            trimmed = {**rest, "items": items[:keep], "omittedItems": len(items) - keep}
+            if len(json.dumps(trimmed, ensure_ascii=False, default=str)) <= max_chars:
+                return trimmed
+    # 목록이 아니거나 한 항목조차 한도를 넘는다 — 잘렸다는 사실이라도 남긴다.
+    return {"truncated": text[:max_chars]}
 
 
 @dataclass(frozen=True, slots=True)

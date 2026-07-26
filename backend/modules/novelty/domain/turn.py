@@ -17,7 +17,12 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from ..ports.llm import LoopObservation, TerminationProposal, ToolResultView
+from ..ports.llm import (
+    LoopObservation,
+    TerminationProposal,
+    ToolResultView,
+    fit_result_content,
+)
 from ..ports.tools import ToolSpec
 from . import budget as budget_rules
 from .agent_step import (
@@ -232,14 +237,12 @@ def _artifact_view(seq: int, record: ArtifactRecord) -> ToolResultView:
 
 
 def _truncate_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """렌더링 전 1차 절단 — 산출물 3종을 그대로 실으면 입력이 과대해진다."""
-    try:
-        text = json.dumps(payload, ensure_ascii=False, default=str)
-    except (TypeError, ValueError):
-        return {"note": "payload not serialisable"}
-    if len(text) <= _ARTIFACT_PAYLOAD_MAX_CHARS:
-        return payload
-    return {"truncated": text[:_ARTIFACT_PAYLOAD_MAX_CHARS]}
+    """렌더링 전 1차 절단 — 산출물 3종을 그대로 실으면 입력이 과대해진다.
+
+    항목 단위로 줄인다(바이트 절단 아님) — 마지막 행이 중간에서 끊기면 그 행의
+    recordRef가 잘린 채 인용돼 게이트에서 거부된다.
+    """
+    return fit_result_content(payload, _ARTIFACT_PAYLOAD_MAX_CHARS)
 
 
 def _observe(

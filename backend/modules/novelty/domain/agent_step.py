@@ -34,7 +34,7 @@ from ..ports.tools import (
     ToolSpec,
 )
 from . import budget as budget_rules
-from .gate import GateRejectionReason, evaluate_artifact
+from .gate import ITEMS_CONTAINER_KINDS, GateRejectionReason, evaluate_artifact
 from .models import (
     ArtifactKind,
     ArtifactRecord,
@@ -115,13 +115,13 @@ SAVE_ARTIFACT_PAYLOAD_SHAPES = {
     ),
 }
 
-# 어느 kind가 {"items": [...]} 컨테이너인지는 위 표에서 읽는다 — 같은 사실을 두 번
-# 쓰면 kind가 늘 때 한쪽만 고쳐져 모델에게 옛 구분을 알려주게 된다.
+# 어느 kind가 {"items": [...]} 컨테이너인지는 게이트가 실제로 판정에 쓰는 집합에서
+# 읽는다 — 설명이 게이트와 어긋나면 모델은 스펙대로 보내고도 거부당한다.
 _ITEMS_CONTAINER_KIND_NAMES = tuple(
-    kind for kind, shape in SAVE_ARTIFACT_PAYLOAD_SHAPES.items() if '"items"' in shape
+    kind for kind in SAVE_ARTIFACT_PAYLOAD_SHAPES if kind in ITEMS_CONTAINER_KINDS
 )
 _SINGLE_OBJECT_KIND_NAMES = tuple(
-    kind for kind in SAVE_ARTIFACT_PAYLOAD_SHAPES if kind not in _ITEMS_CONTAINER_KIND_NAMES
+    kind for kind in SAVE_ARTIFACT_PAYLOAD_SHAPES if kind not in ITEMS_CONTAINER_KINDS
 )
 
 SAVE_ARTIFACT_SPEC = ToolSpec(

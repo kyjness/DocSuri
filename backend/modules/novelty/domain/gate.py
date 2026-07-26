@@ -68,7 +68,7 @@ FORBIDDEN_CLAIM_KEYS = frozenset(
 
 # payload 최상위가 {"items": [...]} 인 산출물 — gap_analysis는 GapAnalysis 모델이
 # 같은 키를 갖는다. experiment_plan·evidence는 단일 객체라 해당 없다.
-_ITEMS_CONTAINER_KINDS = frozenset(
+ITEMS_CONTAINER_KINDS = frozenset(
     {
         ArtifactKind.SIMILAR_WORKS,
         ArtifactKind.GAP_ANALYSIS,
@@ -90,7 +90,7 @@ def evaluate_artifact(
         return GateRejection(
             GateRejectionReason.FORBIDDEN_CLAIM, f"forbidden claim key: {forbidden}"
         )
-    if kind in _ITEMS_CONTAINER_KINDS:
+    if kind in ITEMS_CONTAINER_KINDS:
         # 형태 오류는 데이터 부재와 다르다 — 고칠 방법을 사유에 담아 돌려준다.
         shape_error = _items_shape_error(payload)
         if shape_error is not None:
@@ -139,7 +139,8 @@ def _items_shape_error(payload: dict[str, Any]) -> str | None:
     arrays = [key for key, value in payload.items() if isinstance(value, list) and value]
     if not arrays:
         return None
-    found = ", ".join(f'"{key}"' for key in arrays)
+    # 키 이름은 모델이 지은 값이다 — 사유가 다음 관찰에 그대로 실리므로 한도를 둔다.
+    found = ", ".join(f'"{key[:60]}"' for key in arrays[:5])
     return f"items must be the top-level array key; found {found} instead"
 
 
