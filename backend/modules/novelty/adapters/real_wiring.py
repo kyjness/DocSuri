@@ -18,17 +18,17 @@ import logging
 from typing import Any
 
 from ..ports.llm import LlmDecision, LoopObservation
-from ..ports.queue import QueuedJob
+from ..ports.queue import KIND_LOOP, QueuedJob
 from ..ports.tools import ToolSpec
 from .external.base import SourceBreaker, SourceUnavailable
 from .llm_prompt import (
-    SYSTEM_PROMPT,
     TERMINATION_TOOL,
     LlmUnavailable,
     conservative_termination,
     decision_from_tool_call,
     estimate_cost,
     render_observation,
+    system_prompt_for,
     termination_parameters,
 )
 
@@ -47,10 +47,17 @@ class SqsJobQueue:
         # 프로세스 간 격리는 SQS visibility timeout이 담당한다.
         self._in_flight: dict[str, str] = {}
 
-    def enqueue(self, job_id: str, owner_id: str) -> None:
+    def enqueue(
+        self,
+        job_id: str,
+        owner_id: str,
+        *,
+        kind: str = KIND_LOOP,
+        message_id: str | None = None,
+    ) -> None:
+        job = QueuedJob(job_id=job_id, owner_id=owner_id, kind=kind, message_id=message_id)
         self._client.send_message(
-            QueueUrl=self._queue_url,
-            MessageBody=json.dumps({"job_id": job_id, "owner_id": owner_id}),
+            QueueUrl=self._queue_url, MessageBody=json.dumps(job.to_payload())
         )
 
     def consume(self, timeout_seconds: float) -> QueuedJob | None:
@@ -65,10 +72,7 @@ class SqsJobQueue:
         message = messages[0]
         receipt = message["ReceiptHandle"]
         try:
-            data = json.loads(message.get("Body") or "{}")
-            job = QueuedJob(
-                job_id=str(data["job_id"]), owner_id=str(data["owner_id"]), receipt=receipt
-            )
+            job = QueuedJob.from_payload(json.loads(message.get("Body") or "{}"), receipt=receipt)
         except (ValueError, KeyError):
             self._client.delete_message(QueueUrl=self._queue_url, ReceiptHandle=receipt)
             return None
@@ -78,6 +82,15 @@ class SqsJobQueue:
     def ack(self, job: QueuedJob) -> None:
         if job.receipt is not None:
             self._client.delete_message(QueueUrl=self._queue_url, ReceiptHandle=job.receipt)
+        self._in_flight.pop(job.job_id, None)
+
+    def nack(self, job: QueuedJob) -> None:
+        """visibility를 0으로 되돌려 즉시 재전달 가능하게 한다. 만료를 기다리는
+        기존 동작(ack 생략)보다 대기가 짧고, redis 구현과 계약이 같아진다."""
+        if job.receipt is not None:
+            self._client.change_message_visibility(
+                QueueUrl=self._queue_url, ReceiptHandle=job.receipt, VisibilityTimeout=0
+            )
         self._in_flight.pop(job.job_id, None)
 
     # ── 실행 잠금: visibility 리스 ──
@@ -129,7 +142,7 @@ class BedrockToolCallingLlm:
         body = {
             "anthropic_version": "bedrock-2023-05-31",
             "max_tokens": self._max_tokens,
-            "system": SYSTEM_PROMPT,
+            "system": system_prompt_for(observation),
             "messages": [
                 {
                     "role": "user",

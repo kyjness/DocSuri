@@ -16,9 +16,12 @@ from backend.modules.novelty.domain.loop import LoopDeps, run_loop
 from backend.modules.novelty.domain.models import (
     AgentLoopRun,
     ArtifactKind,
+    ChatKind,
+    ChatRole,
     InputType,
     JobState,
     LoopBudget,
+    NoveltyChatMessage,
     NoveltyJob,
     NoveltyJobRequest,
     TerminationReason,
@@ -645,3 +648,193 @@ def test_observation_result_seq_is_monotonic_past_window() -> None:
     seqs = [view.seq for view in last.recent_results]
     assert seqs == sorted(set(seqs))  # 중복 없음·오름차순
     assert len(seqs) <= 6 and seqs[-1] > 6  # 윈도우 절단 후에도 전역 순번 유지
+
+
+# ── 대화 스티어링 (FR-44, BLM §6) ───────────────────────────────────────────
+
+
+def _steer(store, job, content: str, *, role: ChatRole = ChatRole.USER) -> NoveltyChatMessage:
+    message = NoveltyChatMessage(
+        job_id=job.job_id,
+        owner_id=job.owner_id,
+        role=role,
+        kind=ChatKind.STEERING if role is ChatRole.USER else ChatKind.AGENT_REPLY,
+        content=content,
+    )
+    store.append_message(message)
+    return message
+
+
+def _finish() -> list[LlmDecision]:
+    """필수 세트를 채워 루프를 정상 종료시키는 스크립트 꼬리."""
+    return [_save("similar_works", _similar_payload()), _save("gap_analysis", _gap_payload())]
+
+
+def test_steering_message_reaches_the_next_decide_not_the_current_one() -> None:
+    store = InMemoryNoveltyStore()
+    job = _job(store)
+
+    def steer_then_search(observation):
+        # 이 턴의 관찰에는 아직 없어야 한다 — 주입은 '다음 decide' 시점이다.
+        assert observation.steering == ()
+        _steer(store, job, "BM25 계열 위주로 봐줘")
+        return LlmDecision(ToolCallProposal(TOOL_CORPUS_SEARCH, {"query": "q"}))
+
+    llm = ScriptedToolCallingLlm([steer_then_search, *_finish()])
+    deps = LoopDeps(store=store, llm=llm, registry=_registry(_evidence_tool(), _corpus_tool()))
+
+    run_loop(job, deps)
+
+    assert llm.observations[0].steering == ()
+    assert llm.observations[1].steering == ("BM25 계열 위주로 봐줘",)
+
+
+def test_steering_persists_across_turns_within_window() -> None:
+    store = InMemoryNoveltyStore()
+    job = _job(store)
+
+    def steer_then_search(observation):
+        _steer(store, job, "재현성 있는 baseline 위주")
+        return LlmDecision(ToolCallProposal(TOOL_CORPUS_SEARCH, {"query": "q"}))
+
+    llm = ScriptedToolCallingLlm([steer_then_search, *_finish()])
+    deps = LoopDeps(store=store, llm=llm, registry=_registry(_evidence_tool(), _corpus_tool()))
+
+    run_loop(job, deps)
+
+    # 매 턴 새 요청을 만드는 구조라 1회성 주입이면 지시가 곧 사라진다 —
+    # 이후 모든 관찰이 계속 지시를 들고 있어야 기능이 성립한다.
+    assert all(obs.steering == ("재현성 있는 baseline 위주",) for obs in llm.observations[1:])
+
+
+def test_steering_window_is_bounded() -> None:
+    store = InMemoryNoveltyStore()
+    job = _job(store)
+    for i in range(5):
+        _steer(store, job, f"지시-{i}")
+
+    llm = ScriptedToolCallingLlm(_finish())
+    deps = LoopDeps(store=store, llm=llm, registry=_registry(_evidence_tool(), _corpus_tool()))
+
+    run_loop(job, deps)
+
+    assert llm.observations[0].steering == ("지시-2", "지시-3", "지시-4")
+
+
+def test_agent_messages_are_never_drained_as_steering() -> None:
+    store = InMemoryNoveltyStore()
+    job = _job(store)
+    _steer(store, job, "에이전트 답장입니다", role=ChatRole.AGENT)
+    _steer(store, job, "사용자 지시입니다")
+
+    llm = ScriptedToolCallingLlm(_finish())
+    deps = LoopDeps(store=store, llm=llm, registry=_registry(_evidence_tool(), _corpus_tool()))
+
+    run_loop(job, deps)
+
+    # kind가 아니라 role로 거른다 — 아니면 루프가 자기 출력을 되먹는다.
+    assert llm.observations[0].steering == ("사용자 지시입니다",)
+
+
+def test_steering_produces_no_tool_call_record() -> None:
+    store = InMemoryNoveltyStore()
+    job = _job(store)
+    _steer(store, job, "지시")
+
+    llm = ScriptedToolCallingLlm(_finish())
+    deps = LoopDeps(store=store, llm=llm, registry=_registry(_evidence_tool(), _corpus_tool()))
+
+    run_loop(job, deps)
+
+    # 스티어링은 도구 호출이 아니다 — 트레이스 1:1(BR-RA4)을 깨지 않는다.
+    trace = store.list_trace(job.owner_id, job.job_id, after_seq=0, limit=50)
+    assert {rec.tool_name for rec in trace} == {
+        TOOL_FORM_EVIDENCE, TOOL_SAVE_ARTIFACT,
+    }
+    # 노트에는 수신 사실만 남고 사용자 문장은 들어가지 않는다(신뢰 구획 보호).
+    notes = [note for obs in llm.observations for note in obs.notes]
+    assert any("사용자 스티어링 1건 수신" in note for note in notes)
+    assert not any("지시" == note for note in notes)
+
+
+class _SteeringUnavailableStore(InMemoryNoveltyStore):
+    def list_messages(self, owner_id, job_id, *, after, limit):
+        raise RuntimeError("message store down")
+
+
+def test_steering_drain_failure_does_not_kill_the_turn() -> None:
+    store = _SteeringUnavailableStore()
+    job = _job(store)
+
+    llm = ScriptedToolCallingLlm(_finish())
+    deps = LoopDeps(store=store, llm=llm, registry=_registry(_evidence_tool(), _corpus_tool()))
+
+    outcome = run_loop(job, deps)
+
+    # 대화 조회 실패는 best-effort — 조사 자체를 실패시키지 않는다.
+    assert outcome.reason is TerminationReason.ARTIFACTS_COMPLETE
+    assert all(obs.steering == () for obs in llm.observations)
+
+
+def test_unknown_steering_cursor_resets_instead_of_wedging() -> None:
+    store = InMemoryNoveltyStore()
+    job = _job(store)
+    dropped = _steer(store, job, "곧 사라질 메시지")
+
+    def drop_cursor_anchor(observation):
+        # 커서가 가리키던 메시지가 사라진 상황(잡 삭제 경합 등)을 만든다.
+        store._messages[job.job_id] = []  # noqa: SLF001 — 커서 유실 주입
+        _steer(store, job, "새 지시")
+        return LlmDecision(ToolCallProposal(TOOL_CORPUS_SEARCH, {"query": "q"}))
+
+    llm = ScriptedToolCallingLlm([drop_cursor_anchor, *_finish()])
+    deps = LoopDeps(store=store, llm=llm, registry=_registry(_evidence_tool(), _corpus_tool()))
+
+    run_loop(job, deps)
+
+    assert llm.observations[0].steering == (dropped.content,)
+    # 커서가 박히지 않고 다시 앵커해 이후 지시를 읽는다.
+    assert "새 지시" in llm.observations[-1].steering
+
+
+def test_late_steering_after_terminal_yields_notice() -> None:
+    store = InMemoryNoveltyStore()
+    job = _job(store)
+
+    def steer_on_last_turn(observation):
+        # 이 턴이 필수 세트를 완성시켜 루프가 끝난다 — 지시는 드레인될 기회가 없다.
+        _steer(store, job, "종료 직전에 도착한 지시")
+        return _save("gap_analysis", _gap_payload())
+
+    llm = ScriptedToolCallingLlm(
+        [_save("similar_works", _similar_payload()), steer_on_last_turn]
+    )
+    deps = LoopDeps(store=store, llm=llm, registry=_registry(_evidence_tool(), _corpus_tool()))
+
+    run_loop(job, deps)
+
+    messages = store.list_messages(job.owner_id, job.job_id, after=None, limit=20)
+    notices = [m for m in messages if m.kind is ChatKind.NOTICE]
+    # 종단 뒤 도착한 메시지는 읽을 주체가 없다 — 조용히 버리지 않고 안내를 남긴다.
+    assert len(notices) == 1
+    assert notices[0].role is ChatRole.AGENT
+
+
+def test_steering_is_not_consumed_when_budget_denies_the_turn() -> None:
+    store = InMemoryNoveltyStore()
+    job = _job(store, budget=_budget(max_iterations=1))
+
+    def steer_then_search(observation):
+        _steer(store, job, "예산 소진 직전에 보낸 지시")
+        return LlmDecision(ToolCallProposal(TOOL_CORPUS_SEARCH, {"query": "q"}))
+
+    llm = ScriptedToolCallingLlm([steer_then_search])
+    deps = LoopDeps(store=store, llm=llm, registry=_registry(_evidence_tool(), _corpus_tool()))
+
+    outcome = run_loop(job, deps)
+
+    assert outcome.reason is TerminationReason.BUDGET_EXHAUSTED
+    # 드레인 위치 회귀 가드: 예산 검사보다 앞에서 읽으면 커서만 전진하고 decide는
+    # 일어나지 않아 지시가 증발한다. 뒤에서 읽으므로 미소비로 남고 안내가 나간다.
+    messages = store.list_messages(job.owner_id, job.job_id, after=None, limit=20)
+    assert any(m.kind is ChatKind.NOTICE for m in messages)

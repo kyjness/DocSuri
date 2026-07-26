@@ -44,9 +44,15 @@ def build_queue(settings: NoveltySettings) -> Any | None:
     if settings.queue_url:
         import redis
 
-        from .queue_redis import RedisJobQueue
+        from .queue_redis import CONSUME_SOCKET_TIMEOUT_S, RedisJobQueue
 
-        return RedisJobQueue(redis.Redis.from_url(settings.queue_url))
+        # 소켓 읽기 한도를 워커의 블록 시간보다 넉넉히 준다 — redis-py 8의 기본값
+        # (5초)은 워커 블록 시간과 같아 유휴 폴링마다 읽기 데드라인에 걸린다.
+        # 어댑터도 그 예외를 "빈 큐"로 정규화하지만, 정상 경로가 예외에 기대지
+        # 않도록 여기서 한도를 맞춘다. URL이 값을 직접 지정하면 그쪽이 이긴다.
+        return RedisJobQueue(
+            redis.Redis.from_url(settings.queue_url, socket_timeout=CONSUME_SOCKET_TIMEOUT_S)
+        )
     if settings.sqs_queue_url:
         import boto3
 

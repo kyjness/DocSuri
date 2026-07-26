@@ -121,6 +121,35 @@ const baseSessions: AgentSessionSnapshot[] = [
       },
     ],
   },
+  {
+    // 조사 중인 잡 — 스티어링 입력 안내와 시스템 안내 메시지 렌더링을 다룬다(FR-44).
+    session: {
+      id: 'agent-novelty-running',
+      title: '조사 중인 Novelty 잡',
+      mode: 'novelty',
+      state: 'running',
+      updatedAt: '2026-07-01T00:06:00Z',
+    },
+    messages: [
+      {
+        id: 'msg-demo-5',
+        role: 'user',
+        content: 'BM25 계열 위주로 봐줘',
+        createdAt: '2026-07-01T00:06:00Z',
+        status: 'sent',
+        kind: 'steering',
+      },
+      {
+        id: 'msg-demo-6',
+        role: 'agent',
+        content: '조사가 종료된 뒤 도착한 메시지입니다 — 다시 보내주시면 이어서 답변해 드릴게요.',
+        createdAt: '2026-07-01T00:06:30Z',
+        status: 'sent',
+        kind: 'notice',
+      },
+    ],
+    events: [],
+  },
 ];
 
 let sessions = [...baseSessions];

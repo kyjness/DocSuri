@@ -4,6 +4,6 @@
 개정 블록(FR-30~33·35 개정, FR-34 폐기, FR-44~47). 배치는 nfr-design/
 logical-components.md의 domain/ports/adapters/api·worker 트리를 따른다.
 
-로드맵 ⑤ 단계: 1(루프·트레이스) 구현 — 세션 메모리 루프 반영(2)·
-view_figure(3)는 후속 단계.
+로드맵 ⑤ 단계: 1(루프·트레이스)·2(세션 메모리 — 대화 스티어링·온디맨드 턴) 구현.
+view_figure(3, 멀티모달)는 후속 단계.
 """

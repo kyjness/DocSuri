@@ -12,13 +12,26 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from ..ports.queue import QueuedJob
+from ..ports.queue import KIND_LOOP, QueuedJob
+
+try:  # redis는 선택 의존성 — 미설치 환경에서도 모듈 임포트는 성립해야 한다.
+    from redis.exceptions import TimeoutError as _RedisTimeoutError
+except ImportError:  # pragma: no cover - redis 미설치 경로
+
+    class _RedisTimeoutError(Exception):  # type: ignore[no-redef]
+        """redis 미설치 시 자리표시 — 실제로 발생하지 않는다."""
+
 
 __all__ = ["RedisJobQueue"]
 
 _QUEUE_KEY = "novelty:jobs"
 _PROCESSING_KEY = "novelty:jobs:processing"
 _LOCK_PREFIX = "novelty:lock:"
+
+# 워커의 블록 소비(_CONSUME_TIMEOUT_S=5s)보다 넉넉한 소켓 읽기 한도. redis-py 8이
+# 기본을 5초로 바꾸면서 블록 시간과 같아졌고, 그러면 서버의 nil 응답보다 클라이언트
+# 데드라인이 먼저 걸려 유휴 폴링이 예외가 된다.
+CONSUME_SOCKET_TIMEOUT_S = 30.0
 
 
 class RedisJobQueue:
@@ -38,26 +51,39 @@ class RedisJobQueue:
         self._lock_prefix = lock_prefix
 
     # ── 큐 ──
-    def enqueue(self, job_id: str, owner_id: str) -> None:
-        payload = json.dumps({"job_id": job_id, "owner_id": owner_id})
-        self._client.lpush(self._queue_key, payload)
+    def enqueue(
+        self,
+        job_id: str,
+        owner_id: str,
+        *,
+        kind: str = KIND_LOOP,
+        message_id: str | None = None,
+    ) -> None:
+        job = QueuedJob(job_id=job_id, owner_id=owner_id, kind=kind, message_id=message_id)
+        self._client.lpush(self._queue_key, json.dumps(job.to_payload()))
 
     def consume(self, timeout_seconds: float) -> QueuedJob | None:
-        raw = self._client.blmove(
-            self._queue_key,
-            self._processing_key,
-            timeout=max(timeout_seconds, 0.001),
-            src="RIGHT",
-            dest="LEFT",
-        )
+        block_for = max(timeout_seconds, 0.001)
+        try:
+            raw = self._client.blmove(
+                self._queue_key,
+                self._processing_key,
+                timeout=block_for,
+                src="RIGHT",
+                dest="LEFT",
+            )
+        except _RedisTimeoutError:
+            # 블로킹 읽기가 만료됐다 = 큐가 비어 있다. redis-py 8부터 소켓 읽기
+            # 기본 한도가 5초라, 그 이상(또는 같게) 블록하면 서버의 nil 응답보다
+            # 클라이언트 데드라인이 먼저 걸려 예외로 나온다. 빈 큐를 예외로 돌려주면
+            # 워커가 유휴 상태에서 죽으므로 여기서 "메시지 없음"으로 정규화한다.
+            # 연결 실패(ConnectionError)는 이 분기에 걸리지 않고 호출자로 올라간다.
+            return None
         if raw is None:
             return None
         text = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
         try:
-            data = json.loads(text)
-            return QueuedJob(
-                job_id=str(data["job_id"]), owner_id=str(data["owner_id"]), receipt=text
-            )
+            return QueuedJob.from_payload(json.loads(text), receipt=text)
         except (ValueError, KeyError):
             # 손상 payload는 큐에서 제거만 하고 버린다(독약 메시지 방지).
             self._client.lrem(self._processing_key, 1, text)
@@ -66,6 +92,19 @@ class RedisJobQueue:
     def ack(self, job: QueuedJob) -> None:
         if job.receipt is not None:
             self._client.lrem(self._processing_key, 1, job.receipt)
+
+    def nack(self, job: QueuedJob) -> None:
+        """처리하지 않은 메시지를 큐로 반환한다(SQS visibility 0 등가).
+
+        consume이 RIGHT에서 팝하므로 LPUSH는 큐의 끝에 놓는다 — 다른 메시지가
+        있으면 그것들이 먼저 처리되고, 없으면 호출자의 backoff가 재시도 간격을
+        책임진다. 되돌리지 않으면 recover_processing(워커 재시작)까지 방치된다.
+        """
+        if job.receipt is None:
+            return
+        removed = self._client.lrem(self._processing_key, 1, job.receipt)
+        if removed:
+            self._client.lpush(self._queue_key, job.receipt)
 
     def recover_processing(self) -> int:
         """워커 기동 시 호출 — crash로 processing에 남은 항목을 재적재한다."""

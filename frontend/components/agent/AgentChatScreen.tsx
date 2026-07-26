@@ -35,8 +35,9 @@ import {
   detailCell,
   itemsOf,
   listField,
+  pickRefs,
+  pickText,
   sourceRefsOf,
-  textField,
 } from '@/lib/agentChat/noveltyResult';
 import type {
   NoveltyArtifact,
@@ -60,6 +61,8 @@ const JOB_STATE_LABEL: Record<AgentJobState, string> = {
   degraded: '저하',
 };
 const AGENT_REFRESH_MS = 1000;
+// 종단 잡의 온디맨드 답장을 기다리는 폴링 상한 — 워커가 죽어도 무한히 돌지 않는다.
+const AGENT_REPLY_WAIT_MS = 120_000;
 const STREAM_CHAR_MS = 8;
 const SSE_FETCH_TIMEOUT_MS = 5000;
 const RESEARCH_MODE_ENABLED =
@@ -77,6 +80,7 @@ export function AgentChatScreen() {
   const seenAgentMessageIdsRef = useRef<Set<string>>(new Set());
   const activeSessionId = state.session?.id;
   const activeMode = state.session?.mode;
+  const pollSession = shouldPollSession(state.jobState, state.messages, state.submitting);
 
   useEffect(() => {
     let alive = true;
@@ -120,15 +124,11 @@ export function AgentChatScreen() {
   }, [state.messages]);
 
   useEffect(() => {
-    if (
-      !activeSessionId ||
-      !activeSessionId.includes(':') ||
-      (state.jobState !== 'queued' && state.jobState !== 'running')
-    ) {
-      return;
-    }
+    if (!activeSessionId || !activeSessionId.includes(':') || !pollSession) return;
+    const jobRunning = state.jobState === 'queued' || state.jobState === 'running';
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let waited = 0;
     const refresh = async () => {
       try {
         const snapshot = await api.loadAgentSession(activeSessionId);
@@ -136,7 +136,11 @@ export function AgentChatScreen() {
       } catch {
         // Keep the last known snapshot; the next user action can retry explicitly.
       } finally {
-        if (alive) timer = setTimeout(refresh, AGENT_REFRESH_MS);
+        // 실행 중인 잡은 종단까지 계속 따라가고, 답장 대기는 상한까지만 기다린다.
+        waited += AGENT_REFRESH_MS;
+        if (alive && (jobRunning || waited < AGENT_REPLY_WAIT_MS)) {
+          timer = setTimeout(refresh, AGENT_REFRESH_MS);
+        }
       }
     };
     void refresh();
@@ -144,7 +148,7 @@ export function AgentChatScreen() {
       alive = false;
       if (timer) clearTimeout(timer);
     };
-  }, [activeSessionId, api, state.jobState]);
+  }, [activeSessionId, api, pollSession, state.jobState]);
 
   useEffect(() => {
     if (
@@ -368,6 +372,15 @@ export function AgentChatScreen() {
         </button>
       </form>
 
+      {/* 조사 중에도 입력은 열려 있다 — 다만 지시는 즉시가 아니라 다음 판단 시점에
+          반영되므로(BLM §6), 반응이 없어 먹혔다고 오해하지 않게 알린다. */}
+      {state.mode === 'novelty' &&
+      (state.jobState === 'queued' || state.jobState === 'running') ? (
+        <p className={styles.composerHint} data-testid="agent-steering-hint">
+          지시는 다음 판단 시점에 반영됩니다.
+        </p>
+      ) : null}
+
       {drawerOpen ? (
         <AgentSessionDrawer
           sessions={state.sessions}
@@ -580,6 +593,15 @@ function AgentMessageContent({
     return <p>{message.content}</p>;
   }
 
+  // 시스템 안내(불가 사유·게이트 거부) — 답변과 섞이지 않게 구분해 보여준다.
+  if (message.kind === 'notice') {
+    return (
+      <p className={styles.abstainNotice} data-testid="agent-notice">
+        {message.content}
+      </p>
+    );
+  }
+
   const parsed = parseAgentContent(message.content);
 
   // 구조화 결과(근거 카드/보류/오류)는 스트리밍하지 않고 즉시 렌더링한다 — JSON을 한 글자씩
@@ -728,7 +750,10 @@ function NoveltyArtifactBody({ artifact }: { artifact: NoveltyArtifact }) {
   if (artifact.kind === 'experiment_plan') {
     return <ExperimentPlanView plan={artifact.payload} />;
   }
-  // novelty_candidates·external_findings·알 수 없는 kind — 공통 목록 렌더링.
+  if (artifact.kind === 'novelty_candidates') {
+    return <NoveltyCandidatesView items={itemsOf(artifact.payload)} />;
+  }
+  // external_findings·알 수 없는 kind — 공통 목록 렌더링.
   return <NoveltyItemList items={itemsOf(artifact.payload)} />;
 }
 
@@ -844,8 +869,11 @@ function RiskSignalList({ items }: { items: NoveltyPayloadItem[] }) {
   );
 }
 
+// 목록 필드 키는 v1(camelCase)·v2(snake_case)에서 철자가 같다 — 두 벌 키가
+// 필요한 곳(가설·차별화 포인트·출처)만 pickText/pickRefs로 읽는다.
+// hypotheses는 v1 저장분의 복수 가설 목록 — 계속 보여준다.
 const PLAN_LIST_FIELDS: Array<{ key: string; label: string }> = [
-  { key: 'hypotheses', label: '가설' },
+  { key: 'hypotheses', label: '가설 목록' },
   { key: 'baselines', label: '베이스라인' },
   { key: 'procedure', label: '절차' },
   { key: 'datasets', label: '데이터셋' },
@@ -855,14 +883,20 @@ const PLAN_LIST_FIELDS: Array<{ key: string; label: string }> = [
 ];
 
 function ExperimentPlanView({ plan }: { plan: Record<string, unknown> }) {
+  const hypothesis = pickText(plan, 'hypothesis', 'researchQuestion');
+  const angle = pickText(plan, 'novelty_angle', 'noveltyAngle');
   return (
     <div className={styles.noveltyPlan}>
-      <span className={styles.evidenceLabel}>연구 질문</span>
-      <p className={styles.noveltyPlanQuestion}>{textField(plan, 'researchQuestion')}</p>
-      {textField(plan, 'noveltyAngle') ? (
+      {hypothesis ? (
+        <>
+          <span className={styles.evidenceLabel}>가설</span>
+          <p className={styles.noveltyPlanQuestion}>{hypothesis}</p>
+        </>
+      ) : null}
+      {angle ? (
         <>
           <span className={styles.evidenceLabel}>차별화 포인트</span>
-          <p className={styles.noveltyPlanAngle}>{textField(plan, 'noveltyAngle')}</p>
+          <p className={styles.noveltyPlanAngle}>{angle}</p>
         </>
       ) : null}
       {PLAN_LIST_FIELDS.map(({ key, label }) => {
@@ -879,8 +913,41 @@ function ExperimentPlanView({ plan }: { plan: Record<string, unknown> }) {
           </div>
         );
       })}
-      <NoveltySourceRefLinks refs={sourceRefsOf(plan.sourceRefs)} />
+      <NoveltySourceRefLinks refs={pickRefs(plan, 'source_refs', 'sourceRefs')} />
     </div>
+  );
+}
+
+function NoveltyCandidatesView({ items }: { items: NoveltyPayloadItem[] }) {
+  if (items.length === 0) {
+    return <p className={styles.abstainNotice}>제안할 방향을 찾지 못했습니다.</p>;
+  }
+  return (
+    <ul className={styles.noveltyItems} data-testid="novelty-candidates">
+      {items.map((item, idx) => {
+        const payload = item as unknown as Record<string, unknown>;
+        const excluded = pickText(payload, 'excluded_claims', 'excludedClaims');
+        const feasibility = pickText(payload, 'feasibility_notes', 'feasibilityNotes');
+        return (
+          <li key={idx} className={styles.noveltyItem}>
+            <div className={styles.noveltyItemHead}>
+              <strong>{pickText(payload, 'angle', 'title')}</strong>
+            </div>
+            <p>{pickText(payload, 'rationale', 'summary')}</p>
+            {feasibility ? (
+              <p className={styles.noveltyArtifactHint}>실행 고려사항 — {feasibility}</p>
+            ) : null}
+            {/* bounded 제안 규칙(BR-NV11): 근거로 뒷받침되지 않는 주장은 명시적으로 제외된다. */}
+            {excluded ? (
+              <p className={styles.abstainNotice}>주장하지 않는 것 — {excluded}</p>
+            ) : null}
+            <NoveltySourceRefLinks
+              refs={pickRefs(payload, 'supporting_refs', 'supportingRefs', 'source_refs')}
+            />
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
@@ -945,6 +1012,25 @@ function AgentProgressTimeline({
       ))}
     </section>
   );
+}
+
+/**
+ * 세션 스냅샷을 계속 다시 읽어야 하는지 — 실행 중인 잡을 따라갈 때, 그리고 아직
+ * 답을 못 받은 사용자 메시지가 있을 때다.
+ *
+ * 후자가 없으면 온디맨드 턴(BLM §5)의 답장이 화면에 영영 붙지 않는다: 종단 잡의
+ * 대화 턴은 워커가 비동기로 처리하는데 잡 상태는 completed에서 변하지 않으므로,
+ * 잡 상태만 보는 조건은 폴링을 시작조차 하지 않는다.
+ */
+export function shouldPollSession(
+  jobState: AgentJobState,
+  messages: AgentMessage[],
+  submitting = false,
+): boolean {
+  if (jobState === 'queued' || jobState === 'running') return true;
+  if (submitting) return false;
+  const last = messages.at(-1);
+  return last?.role === 'user' && last.status !== 'failed';
 }
 
 export function normalizeTimelineDisplay(

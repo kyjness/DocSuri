@@ -2,8 +2,9 @@
 
 API는 루프를 실행하지 않는다(NFR-NV2-5·6·10) — 접수는 큐 적재까지, 실행은 워커.
 진행 표시는 거시 상태 + 트레이스 파생 활동 피드(FR-35, 커서 방식 — 오프셋 금지).
-대화는 저장만 한다(FR-44 — 루프의 스티어링 소비는 ⑤ 3단계). Notion export는
-preview→승인 게이트 경로만 존재하고 루프 도구가 아니다(BR-RA12).
+대화 메시지의 kind는 클라이언트가 아니라 서버가 확정한다(FR-44) — 실행 중 잡으로
+가면 스티어링, 종단 잡으로 가면 온디맨드 요청이다. Notion export는 preview→승인
+게이트 경로만 존재하고 루프 도구가 아니다(BR-RA12).
 """
 
 from __future__ import annotations
@@ -21,14 +22,25 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.middleware.agent_attachments import ATTACHMENT_MAX_BYTES
-from backend.middleware.agent_quota import enforce_novelty_job_quota
+from backend.middleware.agent_quota import (
+    enforce_novelty_job_quota,
+    enforce_novelty_turn_quota,
+    refund_novelty_turn_quota,
+)
 from backend.modules.user_docmodel import (
     USER_DOCMODEL_PDF_CONTENT_TYPE,
     object_key_for_upload,
     user_docmodel_ref,
 )
 
+from .domain.agent_step import (
+    LATE_STEERING_NOTICE,
+    ON_DEMAND_UNAVAILABLE_NOTICE,
+    append_agent_message,
+)
 from .domain.models import (
+    ON_DEMAND_ELIGIBLE_STATES,
+    TERMINAL_STATES,
     AgentLoopRun,
     ChatKind,
     ChatRole,
@@ -44,6 +56,7 @@ from .domain.models import (
     utc_now,
 )
 from .domain.projection import describe_state, project_feed
+from .ports.queue import KIND_TURN
 from .ports.store import NoveltyStorePort
 from .security import decrypt_secret, encrypt_secret
 from .settings import NoveltySettings
@@ -206,6 +219,8 @@ class ChatMessageCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     content: str = Field(min_length=1, max_length=12000)
+    # 서버가 kind를 확정하므로 이 값은 무시된다. 필드를 지우면 extra="forbid"에
+    # 걸려 기존 클라이언트가 422가 되므로 호환을 위해 남긴다.
     kind: ChatKind = ChatKind.STEERING
 
 
@@ -534,7 +549,7 @@ async def upload_manuscript(
     return _job_view(job, store)
 
 
-# ── 잡 내 대화 (FR-44 — 저장만, 루프 소비는 ⑤ 3단계) ──
+# ── 잡 내 대화 (FR-44) ──
 
 
 @router.get("/jobs/{job_id}/messages", response_model=ChatMessageListResponse)
@@ -572,15 +587,84 @@ async def add_message(
     job = store.get_job(principal.user_id, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")
+    # kind는 서버가 확정한다 — 클라이언트가 USER 역할 행에 agent_reply·notice
+    # 라벨을 붙일 수 있으면 kind로 렌더링하는 순간 위조 표면이 된다. 값의 의미는
+    # "서버가 이 메시지를 어디로 보냈는가"이고, 실제 결과(산출물 생성 여부)는
+    # 에이전트 답장의 resulting_artifact_ref가 담는다(BLM §5.5).
+    terminal = job.state in TERMINAL_STATES
+    on_demand = job.state in ON_DEMAND_ELIGIBLE_STATES
+    if on_demand:
+        # 온디맨드 턴만 LLM 지출을 유발한다 — 가드를 라우트 의존성이 아니라 여기서
+        # 부른다. 라우트에 걸면 큐 장애 시 스티어링(행 하나 쓰기)까지 503이 된다.
+        _require_dispatchable(request)
+        await enforce_novelty_turn_quota(request)
     message = NoveltyChatMessage(
         job_id=job_id,
         owner_id=principal.user_id,
         role=ChatRole.USER,
-        kind=dto.kind,
+        kind=ChatKind.ON_DEMAND_REQUEST if terminal else ChatKind.STEERING,
         content=dto.content,
     )
     store.append_message(message)
+    if on_demand:
+        # 저장이 먼저다 — 적재가 실패해도 큐에 고아 참조가 남지 않는다.
+        await _enqueue_turn(request, store, job, message)
+    elif terminal:
+        # 실패·취소 잡은 근거가 될 산출물이 없다(BLM §5.1) — 워커를 깨우지 않고
+        # 즉시 안내한다. 조용히 삼키지 않는다.
+        append_agent_message(store, job, ON_DEMAND_UNAVAILABLE_NOTICE)
+    else:
+        _notice_if_terminated_meanwhile(store, principal.user_id, job_id, message)
     return _message_dto(message)
+
+
+def _notice_if_terminated_meanwhile(
+    store: NoveltyStorePort, owner_id: str, job_id: str, message: NoveltyChatMessage
+) -> None:
+    """스티어링으로 접수한 뒤 잡이 종단이 됐는지 확인하고, 그렇다면 안내를 남긴다.
+
+    잡 상태를 읽은 시점과 메시지를 쓰는 시점 사이에 루프가 끝날 수 있다. 그 사이에
+    끼면 루프의 마지막 드레인은 이미 지나갔고 이 메시지를 읽을 주체가 영영 없다 —
+    응답 없는 조용한 유실이다(코드 리뷰 반영). append 뒤에 다시 읽으면 종단 여부를
+    확실히 알 수 있으므로 여기서 사유를 남긴다.
+
+    루프의 마지막 드레인과 정확히 겹치는 순간에는 양쪽이 각자 안내를 남길 수 있다 —
+    이미 답장이 있으면 건너뛰어 대부분을 걸러내고, 남는 중복은 "다시 보내달라"는
+    같은 뜻이라 유실보다 낫다.
+    """
+    job = store.get_job(owner_id, job_id)
+    if job is None or job.state not in TERMINAL_STATES:
+        return
+    try:
+        answered = store.list_messages(owner_id, job_id, after=message.message_id, limit=5)
+    except KeyError:
+        return
+    if any(item.role is ChatRole.AGENT for item in answered):
+        return
+    append_agent_message(
+        store, job, LATE_STEERING_NOTICE, in_reply_to=message.message_id
+    )
+
+
+async def _enqueue_turn(
+    request: Request, store: NoveltyStorePort, job: NoveltyJob, message: NoveltyChatMessage
+) -> None:
+    """온디맨드 턴을 워커에 넘긴다 — API는 실행하지 않는다(NFR-NV2-1)."""
+    queue = _queue(request)  # _require_dispatchable이 존재를 보장
+    try:
+        queue.enqueue(job.job_id, job.owner_id, kind=KIND_TURN, message_id=message.message_id)
+    except Exception as exc:  # noqa: BLE001 — 적재 실패는 안내로 수렴, 잡 상태 불변
+        # 한 번도 실행되지 않은 턴이므로 쿼터를 되돌린다 — 큐 장애가 사용자의
+        # 하루치를 태우면, 재시도할수록 한도만 줄고 답은 못 받는다(코드 리뷰 반영).
+        await refund_novelty_turn_quota(request)
+        # 안내는 이 요청 메시지에 대한 답장으로 건다 — 워커가 나중에 같은 메시지를
+        # 집더라도 이미 종결된 턴으로 보고 중복 실행하지 않는다.
+        append_agent_message(
+            store, job, "요청을 접수하지 못했어요. 잠시 후 다시 시도해 주세요.",
+            in_reply_to=message.message_id,
+        )
+        raise HTTPException(status_code=503, detail={"error": "dispatch_failed"}) from exc
+    _emit_metric(_observability(request), "novelty.turn_requested")
 
 
 # ── Notion export (루프 밖 — preview→승인 게이트, BR-NV17/RA12) ──

@@ -965,3 +965,74 @@ _Resiliency 옵트인은 `requirements.md` 확정 전에 필수 요구사항 명
   `requirement-verification-questions-novelty-v2-function.md`(Q6), 코드 주석 5곳(novelty 모듈).
 - 종전 답은 지우지 않고 개정 주석을 덧붙이는 기존 관례를 따랐다 — 무엇이 왜 바뀌었는지가 남아야 한다.
 - Current gate: ⑤a 완료로 ⑤ 잔여 단계·⑥ 착수 가능. 다음 단계는 명시적 착수 지시 후.
+
+## ⑤ 2단계 — 세션 메모리(잡 내 멀티턴) 구현
+
+- Date: 2026-07-25
+- Stage: CONSTRUCTION → Code (novelty-agent-v2 / u5 대화 표면)
+- Trigger: 로드맵 ⑤2. 설계는 동결돼 있었으나 구현이 껍데기였다 —
+  `POST /jobs/{id}/messages`가 저장만 하고 루프도 워커도 읽지 않아, 대화 스티어링(BLM §6)과
+  온디맨드 산출물(BLM §5)이 둘 다 동작하지 않았다. FR-32/33 개정으로 방향 제안·실험 계획이
+  온디맨드 전용이 된 뒤로는 두 산출물이 아예 생성되지 않는 상태였다.
+- Decisions:
+  - **의도 분류기를 두지 않는다** — BLM §5.2는 "서버가 분류해 kind에 기록"까지만 정하고 방법은
+    비워뒀다. 메시지를 그대로 에이전트에게 주고 행동으로 결정하게 하는 것이 실서비스 에이전트의
+    방식이므로, `kind`의 의미를 **"서버가 이 메시지를 어디로 보냈는가"**(활성=steering,
+    종단=on_demand_request)로 고정하고 의미상의 결과는 답장의 `resulting_artifact_ref`가 담게
+    했다(BLM §5.5). 저장된 메시지를 사후에 고쳐 쓰지 않으므로 대화 로그의 append-only 성질이
+    유지된다. 클라이언트가 보낸 `kind`는 무시한다(USER 행에 agent_reply를 붙이는 위조 표면 제거).
+  - **스티어링 드레인 위치가 계약** — 예산 검사 통과 후 decide 직전. 턴 맨 앞에서 읽으면 예산이
+    그 턴을 거부했을 때 커서만 전진해 지시가 유실된다("다음 decide 시점 주입"이 성립하지 않음).
+    회귀 가드 테스트를 두고, 드레인을 앞으로 옮기면 실패함을 확인했다.
+  - **스티어링은 롤링 윈도우(3건)** — 어댑터가 매 턴 fresh 2-message 요청을 만들어 대화 이력이
+    없으므로, 1회성 주입이면 지시가 한 턴만 살고 증발한다. 윈도우가 없으면 기능이 조용히 무력화된다.
+  - **사용자 본문 전용 구획 신설** — 시스템 노트(신뢰)와 도구 결과(불신뢰) 사이. 노트 구획에
+    사용자 텍스트를 넣지 않는다(시스템 지시 영역에 쓰기 권한을 주는 셈). 구획 마커 위조·제어문자는
+    `sanitize_steering`이 제거한다. 권한 경계(BR-RA9)의 강제력은 도메인·게이트·allowlist에 있고
+    프롬프트 문구는 심층 방어다.
+  - **저장·트레이스 경로 단일화** — 온디맨드 턴이 저장 로직을 복사하면 게이트 우회 경로(BR-RA2)와
+    두 번째 트레이스 경로(BR-RA4)가 생긴다. 루프의 사적 함수를 `domain/agent_step.py`로 추출하고
+    (동작 무변경 — 기존 테스트 무수정 통과) 턴이 재사용한다. 부수 효과로 BR-RA6이 추가 코드 없이
+    성립한다: `seed_context`가 복원하는 출처 집합이 저장된 산출물 + 이번 턴 도구 결과뿐이다.
+  - **턴은 단일 턴** — 잔여 예산만 보면 완료 잡의 남은 반복을 채팅 한 줄이 태울 수 있어
+    `max_turn_steps`(기본 4)를 별도로 둔다(NFR-NV2-7). 소비 원장은 여전히 잡의 LoopBudget 하나.
+  - **턴 대상은 완료/부분완료만**(BLM §5.1) — 실패·취소 잡은 근거가 될 산출물이 없다. 워커를
+    깨우지 않고 즉시 안내한다. 답변 없이 끝나는 경로를 만들지 않는다(예산 소진·게이트 거부·시도
+    초과 모두 사유를 남긴다).
+  - **가드는 라우트가 아니라 분기 안에서** — `_require_dispatchable`을 라우트에 걸면 큐 장애 시
+    스티어링(행 하나 쓰기)까지 503이 된다. 턴 쿼터도 잡 쿼터(일 5회)와 분리 — 공유하면 잡 5개를
+    만든 날 후속 질문이 0회가 된다.
+  - **프론트를 범위에 포함** — `apiClient.ts`가 실서버 모드에서 novelty 후속 대화를 throw로 막고
+    있어 백엔드만 고치면 실환경에서 보이지 않았다. 차단 해제 + 스티어링 안내 문구 + notice 구분
+    렌더 + bounded 제안 카드(`excluded_claims` 표시 — 종전 공통 목록에서는 화면에서 사라졌다).
+- 선행 수리(작업 중 발견, 미루지 않고 처리):
+  - 어댑터 간 `artifact_id` 불일치 — SQL은 재저장 시 id 유지, InMemory는 교체. 산출물을 id로
+    참조하는 순간 동작이 갈린다. 계약 테스트 추가.
+  - 큐 `nack` 부재 — 잠금 경합 시 ack 생략만으로는 redis에서 메시지가 `processing`에 방치된다
+    (워커 재시작까지). 포트에 `nack` 추가 + 3어댑터 구현 + 워커 백오프.
+- Outputs: `backend/modules/novelty/`(`domain/agent_step.py`·`domain/turn.py` 신설, loop·worker·
+  api·settings·ports·adapters 갱신), `backend/middleware/agent_quota.py`, `frontend/`(apiClient·
+  AgentChatScreen·types·mockTransport·fixtures), 테스트 7종(신규 `test_novelty_v2_turn.py` 포함).
+- 검증: backend 전량 통과(redis 통합 테스트를 실제 redis로 실행 — 스킵 0), root 183, frontend
+  299 + tsc + lint + 타입 드리프트, shared SSOT 드리프트 없음.
+- 리뷰 3종 반영(2026-07-25):
+  - **simplify** — 같은 규칙이 두 곳에 정의돼 있던 것들을 단일화했다: 온디맨드 대상 상태 집합
+    (`ON_DEMAND_ELIGIBLE_STATES`, api·worker → `domain/models`), 에이전트 메시지 적재
+    (`agent_step.append_agent_message`, 4곳 통합), 잠금 경합 백오프, 큐 직렬 페이로드 계약
+    (`QueuedJob.to_payload/from_payload`), 관찰 조립(`agent_step.build_observation`).
+    `save_artifact`가 영속된 `artifact_id`를 반환하도록 포트를 바꿔 저장 후 재조회를 없앴다.
+  - **code-review** — 실API 모드에서 기능이 성립하지 않던 결함 3건이 드러났다: 후속 대화 body의
+    `attachments` 키(서버 `extra=forbid` → 매 전송 422), 종단 잡에서 폴링이 시작되지 않아 답장
+    미표시, 연속 요청의 두 번째가 멱등 오판으로 무응답 소멸. 마지막 건의 근본 해결로 대화
+    메시지에 **`in_reply_to`를 도입**했다(마이그레이션 005) — "대상 뒤 아무 에이전트 행"이
+    아니라 답장이 가리키는 요청 id가 판정 근거다. 그 외 스티어링 종료 경계 TOCTOU 안내,
+    큐 적재 실패 시 쿼터 환불(리미터 `refund` 신설), `sanitize_steering`의 공백 정규화를 마커
+    치환보다 먼저 수행(어긋난 공백의 위조 마커가 정규화로 되살아나던 문제), 온디맨드 요청
+    본문 절단을 스티어링 한도(400자)와 분리. 회귀 테스트 11건 추가.
+  - **security-review** — 취약점 0건. 확인 범위: 신규 store 포트(`get_message`·`save_artifact`)
+    와 API 경로의 owner 스코프, 큐 페이로드 역직렬화(워커는 페이로드의 `owner_id`를 인가에
+    쓰지 않고 잡에서 재해석), 서버 확정 `kind`와 클라이언트가 건드릴 수 없는 `in_reply_to`,
+    쿼터 환불의 소비-환불 쌍 불변, 프롬프트 구획 경계, 저장 게이트 우회 가능성(BR-RA6), 프론트
+    XSS 싱크. 리뷰가 지적한 잔여 2건(스티어링의 무쿼터 접수, `_REPLY_SCAN_LIMIT` 초과 시 중복
+    실행)은 인가 경계를 넘지 않는 자원 소모 계열로 이번 범위 밖.
+- Current gate: ⑤3(멀티모달 `view_figure`). 착수는 명시적 지시 후.

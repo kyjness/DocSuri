@@ -23,7 +23,7 @@ from ..domain.models import (
     NoveltyJob,
     ToolCallRecord,
 )
-from ..ports.queue import QueuedJob
+from ..ports.queue import KIND_LOOP, QueuedJob
 from ..ports.store import DuplicateTraceSeqError
 
 __all__ = ["InMemoryJobQueue", "InMemoryNoveltyStore"]
@@ -143,9 +143,18 @@ class InMemoryNoveltyStore:
         return [job.model_copy(deep=True) for job in stale[:limit]]
 
     # ── 산출물 ──
-    def save_artifact(self, record: ArtifactRecord) -> None:
+    def save_artifact(self, record: ArtifactRecord) -> str:
         # 종류별 최신 검증본만 유지(domain-entities: artifacts 참조 목록).
-        self._artifacts[(record.job_id, record.kind.value)] = record.model_copy(deep=True)
+        # 같은 (job_id, kind) 슬롯 재저장은 기존 artifact_id를 승계한다 — SQL 어댑터의
+        # upsert와 같은 정체성 규칙이어야 산출물을 id로 참조하는 경로가 어댑터에 따라
+        # 끊기지 않는다(공유 계약 테스트).
+        key = (record.job_id, record.kind.value)
+        existing = self._artifacts.get(key)
+        stored = record.model_copy(deep=True)
+        if existing is not None:
+            stored.artifact_id = existing.artifact_id
+        self._artifacts[key] = stored
+        return stored.artifact_id
 
     def list_artifacts(self, owner_id: str, job_id: str) -> list[ArtifactRecord]:
         job = self._jobs.get(job_id)
@@ -179,6 +188,15 @@ class InMemoryNoveltyStore:
     def append_message(self, message: NoveltyChatMessage) -> None:
         self._messages.setdefault(message.job_id, []).append(message.model_copy(deep=True))
 
+    def get_message(
+        self, owner_id: str, job_id: str, message_id: str
+    ) -> NoveltyChatMessage | None:
+        # 비소유자·미존재 모두 None — 존재를 노출하지 않는다.
+        for message in self._messages.get(job_id, []):
+            if message.message_id == message_id and message.owner_id == owner_id:
+                return message.model_copy(deep=True)
+        return None
+
     def list_messages(
         self, owner_id: str, job_id: str, *, after: str | None, limit: int
     ) -> list[NoveltyChatMessage]:
@@ -206,9 +224,20 @@ class InMemoryJobQueue:
         # consume 블로킹 대기(redis BLMOVE 등가 계약) — 폴백 워커의 busy-spin 방지.
         self._not_empty = threading.Condition()
 
-    def enqueue(self, job_id: str, owner_id: str) -> None:
+    def enqueue(
+        self,
+        job_id: str,
+        owner_id: str,
+        *,
+        kind: str = KIND_LOOP,
+        message_id: str | None = None,
+    ) -> None:
         with self._not_empty:
-            self._queue.append(QueuedJob(job_id=job_id, owner_id=owner_id))
+            self._queue.append(
+                QueuedJob(
+                    job_id=job_id, owner_id=owner_id, kind=kind, message_id=message_id
+                )
+            )
             self._not_empty.notify()
 
     def consume(self, timeout_seconds: float) -> QueuedJob | None:
@@ -220,6 +249,12 @@ class InMemoryJobQueue:
 
     def ack(self, job: QueuedJob) -> None:
         return None
+
+    def nack(self, job: QueuedJob) -> None:
+        # 큐 끝으로 반환 — consume이 왼쪽에서 팝하므로 append가 끝이다(FIFO 유지).
+        with self._not_empty:
+            self._queue.append(job)
+            self._not_empty.notify()
 
     # 실행 잠금 — 만료된 리스는 회수 가능해야 한다(stale 잡 감지의 전제).
     def acquire(self, job_id: str, ttl_seconds: float) -> bool:

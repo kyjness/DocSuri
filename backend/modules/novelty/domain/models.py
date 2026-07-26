@@ -29,6 +29,7 @@ from docsuri_shared._generated.dtos.evidence_schema import (
 
 __all__ = [
     "ALLOWED_TRANSITIONS",
+    "ON_DEMAND_ELIGIBLE_STATES",
     "REQUIRED_ARTIFACT_KINDS",
     "TERMINAL_STATES",
     "AgentLoopRun",
@@ -171,6 +172,11 @@ REQUIRED_ARTIFACT_KINDS = frozenset(
 TERMINAL_STATES = frozenset(
     {JobState.COMPLETED, JobState.PARTIAL, JobState.FAILED, JobState.CANCELLED}
 )
+
+# 온디맨드 대화 턴 대상(BLM §5.1) — "완료/부분 완료"만이다. 실패·취소 잡은 근거가
+# 될 산출물이 없거나 loop_run조차 없을 수 있다. API의 접수 분기와 워커의 실행
+# 분기가 같은 규칙을 봐야 하므로 여기 한 곳에만 정의한다.
+ON_DEMAND_ELIGIBLE_STATES = frozenset({JobState.COMPLETED, JobState.PARTIAL})
 
 # Progress State Rules(business-rules.md). received -> cancelled는 워커 픽업 전
 # 협조적 취소 경로로 허용한다(취소 신호는 어느 활성 상태에서든 수신 가능).
@@ -404,7 +410,13 @@ class ArtifactRecord(BaseModel):
 
 
 class NoveltyChatMessage(BaseModel):
-    """잡 내 멀티턴 대화(FR-44)의 영속 모델. 루프의 스티어링 소비는 ⑤ 3단계."""
+    """잡 내 멀티턴 대화(FR-44)의 영속 모델.
+
+    kind는 서버가 확정한다 — "이 메시지가 어디로 갔는가"의 기록이다(실행 중 잡이면
+    steering, 종단 잡이면 on_demand_request). 의미상의 결과는 에이전트 답장의
+    resulting_artifact_ref가 담는다(BLM §5.5). 잡 간 사용자 메모리는 목표
+    아키텍처에 정의만 되어 있고 도입은 후속 설계 델타로 미룬다.
+    """
 
     message_id: str = Field(default_factory=lambda: str(uuid4()))
     job_id: str
@@ -413,6 +425,10 @@ class NoveltyChatMessage(BaseModel):
     kind: ChatKind
     content: str = Field(min_length=1, max_length=12000)
     resulting_artifact_ref: str | None = None
+    # 에이전트 답장이 어느 사용자 메시지에 대한 것인지(온디맨드 턴 멱등의 판정 근거).
+    # "대상 뒤에 아무 에이전트 행"으로 추정하면 동시 요청에서 남의 답장을 내 답장으로
+    # 오인해 요청이 무응답으로 사라진다.
+    in_reply_to: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
 
 

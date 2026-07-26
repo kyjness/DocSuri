@@ -24,13 +24,13 @@ from ..ports.llm import LlmDecision, LoopObservation
 from ..ports.tools import ToolSpec
 from .external.base import SourceBreaker, SourceUnavailable
 from .llm_prompt import (
-    SYSTEM_PROMPT,
     TERMINATION_TOOL,
     LlmUnavailable,
     conservative_termination,
     decision_from_tool_call,
     estimate_cost,
     render_observation,
+    system_prompt_for,
     termination_parameters,
 )
 
@@ -64,7 +64,7 @@ class OpenAiToolCallingLlm:
         request = {
             "model": self._model,
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt_for(observation)},
                 {"role": "user", "content": render_observation(observation)},
             ],
             "tools": [*(_to_function(spec) for spec in tools), _termination_function()],

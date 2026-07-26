@@ -82,6 +82,29 @@ export function listField(payload: Record<string, unknown>, key: string): string
   return value.filter((item): item is string => typeof item === 'string');
 }
 
+/**
+ * 첫 번째로 값이 있는 키를 고른다. v2 산출물은 snake_case(백엔드 도메인 모델 그대로)이고
+ * v1 시절 저장분은 camelCase라, 같은 뷰가 둘을 함께 읽어야 한다.
+ */
+export function pickText(payload: Record<string, unknown>, ...keys: string[]): string {
+  for (const key of keys) {
+    const value = textField(payload, key);
+    if (value) return value;
+  }
+  return '';
+}
+
+export function pickRefs(
+  payload: Record<string, unknown>,
+  ...keys: string[]
+): NoveltySourceRef[] {
+  for (const key of keys) {
+    const refs = sourceRefsOf(payload[key]);
+    if (refs.length > 0) return refs;
+  }
+  return [];
+}
+
 export function confidenceLabel(value: unknown): string | null {
   if (typeof value !== 'number' || !Number.isFinite(value)) return null;
   return `${Math.round(Math.max(0, Math.min(1, value)) * 100)}%`;

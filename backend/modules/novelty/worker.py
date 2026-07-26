@@ -16,6 +16,8 @@ import logging
 import signal
 import sys
 import threading
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
@@ -23,17 +25,22 @@ from typing import Any
 # 계측 방출은 공유 best-effort 헬퍼(포트 시그니처 강제) — 유닛 사본 금지.
 from docsuri_shared.observability import emit_metric as _emit
 
+from .domain.agent_step import ON_DEMAND_UNAVAILABLE_NOTICE, append_agent_message
 from .domain.loop import LoopDeps, run_loop
 from .domain.models import (
+    ON_DEMAND_ELIGIBLE_STATES,
     TERMINAL_STATES,
     AgentLoopRun,
+    ChatRole,
     JobState,
+    NoveltyChatMessage,
     NoveltyJob,
     TerminationReason,
     utc_now,
     validate_transition,
 )
-from .ports.queue import QueuedJob
+from .domain.turn import run_turn
+from .ports.queue import KIND_TURN, QueuedJob
 from .ports.store import NoveltyStorePort
 from .ports.tools import ToolRegistry
 from .settings import NoveltySettings
@@ -42,6 +49,8 @@ log = logging.getLogger("docsuri.novelty.worker")
 
 _CONSUME_TIMEOUT_S = 5.0
 _STALE_SWEEP_EVERY_N_IDLE = 12  # 유휴 consume 12회(~1분)마다 스윕
+_CONTENTION_BACKOFF_MAX_S = 30.0  # 잠금 경합 재시도 상한(잠금 TTL보다 짧게 유지)
+_CONSUME_ERROR_BACKOFF_MAX_S = 30.0  # 큐 조회 실패 재시도 상한
 
 
 @dataclass(slots=True)
@@ -52,7 +61,11 @@ class WorkerDeps:
     registry: ToolRegistry
     settings: NoveltySettings
     observability: Any | None = None
+    sleep: Callable[[float], None] = time.sleep  # 경합 백오프 주입점(테스트)
     _idle_count: int = field(default=0, init=False)
+    # 잡별 연속 경합 횟수 — 전역 카운터면 잡 A의 경합이 무관한 잡 B의 대기를 키운다.
+    _contention_counts: dict[str, int] = field(default_factory=dict, init=False)
+    _consume_failures: int = field(default=0, init=False)  # 연속 큐 조회 실패(백오프용)
 
 
 def run_worker(deps: WorkerDeps, should_stop) -> None:
@@ -62,7 +75,21 @@ def run_worker(deps: WorkerDeps, should_stop) -> None:
         if requeued:
             log.info("novelty worker: requeued %d in-flight jobs", requeued)
     while not should_stop():
-        message = deps.queue.consume(_CONSUME_TIMEOUT_S)
+        # 큐 조회 실패로 워커가 죽으면 안 된다 — redis 재시작·페일오버 같은 일시적
+        # 장애에 프로세스가 영구 종료되면, 복구된 뒤에도 아무도 잡을 집지 않는다.
+        # 개별 잡의 실패는 process_message가 이미 흡수하지만 consume 자체는 무방비였다.
+        try:
+            message = deps.queue.consume(_CONSUME_TIMEOUT_S)
+        except Exception:  # noqa: BLE001 — 큐 장애는 백오프 후 재시도
+            deps._consume_failures += 1
+            delay = min(2.0 ** (deps._consume_failures - 1), _CONSUME_ERROR_BACKOFF_MAX_S)
+            log.warning(
+                "novelty worker: queue consume failed (%d in a row); retrying in %.0fs",
+                deps._consume_failures, delay, exc_info=True,
+            )
+            deps.sleep(delay)
+            continue
+        deps._consume_failures = 0
         if message is None:
             deps._idle_count += 1
             if deps._idle_count >= _STALE_SWEEP_EVERY_N_IDLE:
@@ -74,14 +101,19 @@ def run_worker(deps: WorkerDeps, should_stop) -> None:
 
 
 def process_message(deps: WorkerDeps, message: QueuedJob) -> None:
-    """한 메시지 처리 — 멱등: 종단 잡 재전달은 ack만, 잠금 실패는 재전달에 맡긴다."""
+    """한 메시지 처리 — 멱등: 종단 잡의 loop 재전달은 ack만, 잠금 실패는 nack."""
     store = deps.store
     job = store.get_job_for_worker(message.job_id)
-    if job is None or job.state in TERMINAL_STATES:
+    if job is None:
         deps.queue.ack(message)
         return
-    if not deps.queue.acquire(message.job_id, deps.settings.lock_ttl_seconds):
-        # 다른 워커가 실행 중 — ack하지 않고 재전달(리스 만료 후 회수)에 맡긴다.
+    if message.kind == KIND_TURN:
+        _process_turn(deps, message, job)
+        return
+    if job.state in TERMINAL_STATES:
+        deps.queue.ack(message)
+        return
+    if not _acquire_or_backoff(deps, message):
         return
     try:
         if job.cancel_requested:
@@ -104,6 +136,103 @@ def process_message(deps: WorkerDeps, message: QueuedJob) -> None:
         deps.queue.ack(message)
     finally:
         deps.queue.release(message.job_id)
+
+
+def _process_turn(deps: WorkerDeps, message: QueuedJob, job: NoveltyJob) -> None:
+    """온디맨드 대화 턴(BLM §5) — 잡 상태를 바꾸지 않고 답장만 남긴다."""
+    store = deps.store
+    # BLM §5.1은 "완료/부분 완료"의 잡만 대상으로 한다. 실패·취소 잡은 산출물이
+    # 없거나 loop_run조차 없을 수 있어 근거 있는 생성이 성립하지 않는다.
+    if job.state not in ON_DEMAND_ELIGIBLE_STATES or job.loop_run is None:
+        append_agent_message(store, job, ON_DEMAND_UNAVAILABLE_NOTICE)
+        deps.queue.ack(message)
+        return
+    request = _turn_request(store, job, message)
+    if request is None:
+        # 대상 메시지가 없거나 이미 답장이 있다 — 재전달분이므로 조용히 흡수한다.
+        deps.queue.ack(message)
+        return
+    if not _acquire_or_backoff(deps, message):
+        return
+    try:
+        with _LeaseHeartbeat(deps.queue, message.job_id, deps.settings.lock_ttl_seconds):
+            outcome = run_turn(
+                job,
+                request,
+                LoopDeps(store=store, llm=deps.llm, registry=deps.registry),
+                max_steps=deps.settings.max_turn_steps,
+            )
+        _emit(
+            deps.observability,
+            "novelty.turn_saved" if outcome.saved_kind else "novelty.turn_replied",
+        )
+        deps.queue.ack(message)
+    except Exception:  # noqa: BLE001 — 턴 하나의 실패가 워커를 죽이지 않는다
+        log.exception("novelty worker: turn for job %s crashed", message.job_id)
+        # in_reply_to를 걸어 이 턴을 종결로 기록한다 — 재전달이 crash 안내 뒤에
+        # 같은 턴을 또 돌려 안내+답장이 겹치는 것을 막는다.
+        append_agent_message(
+            store, job, "요청을 처리하는 중 문제가 생겼어요. 다시 시도해 주세요.",
+            in_reply_to=request.message_id,
+        )
+        deps.queue.ack(message)
+    finally:
+        deps.queue.release(message.job_id)
+
+
+def _acquire_or_backoff(deps: WorkerDeps, message: QueuedJob) -> bool:
+    """실행 잠금을 시도하고, 경합이면 nack 후 백오프한다 — loop·turn 공용 정책.
+
+    ack 생략만으로는 부족하다: redis 구현은 소비 시점에 processing 리스트로 옮기므로
+    되돌리지 않으면 워커 재시작(recover_processing)까지 방치된다. nack은 큐 끝으로
+    넣으므로 다른 메시지가 있으면 그쪽이 먼저 처리되고, 같은 메시지만 남아 반복
+    경합할 때는 지수 백오프가 핫루프를 막는다(상한은 잠금 TTL보다 짧게).
+
+    sleep이 소비 스레드를 세우는 것은 의도된 절충이다 — 경합은 같은 잡을 다른
+    워커가 쥐고 있을 때(더블탭·재전달)뿐이라 드물고, 카운터가 잡별이므로 무관한
+    잡의 경합이 이 잡의 대기를 키우지 않는다.
+    """
+    if deps.queue.acquire(message.job_id, deps.settings.lock_ttl_seconds):
+        deps._contention_counts.pop(message.job_id, None)
+        return True
+    deps.queue.nack(message)
+    count = deps._contention_counts.get(message.job_id, 0) + 1
+    deps._contention_counts[message.job_id] = count
+    deps.sleep(min(2.0 ** (count - 1), _CONTENTION_BACKOFF_MAX_S))
+    return False
+
+
+_REPLY_SCAN_LIMIT = 50
+
+
+def _turn_request(
+    store: NoveltyStorePort, job: NoveltyJob, message: QueuedJob
+) -> NoveltyChatMessage | None:
+    """처리 대상 사용자 메시지를 찾고, 이미 답한 턴이면 None.
+
+    멱등성: 큐 재전달(워커 crash 후 recover_processing)로 같은 턴이 두 번 올 수
+    있다. 대상 메시지 뒤에 **이 메시지를 in_reply_to로 가리키는** 에이전트 행이
+    있으면 이미 실행된 턴이므로 다시 돌리지 않는다 — 중복 답장과 중복 과금을 막는다.
+    "아무 에이전트 행"으로 판정하면 연속 요청 A·B에서 A의 답장이 B의 답장으로
+    오인돼 B가 무응답으로 사라진다(코드 리뷰 반영).
+    """
+    if message.message_id is None:
+        return None
+    target = store.get_message(job.owner_id, job.job_id, message.message_id)
+    if target is None:
+        return None  # 대상 메시지가 사라졌다(잡 삭제 경합)
+    try:
+        after = store.list_messages(
+            job.owner_id, job.job_id, after=message.message_id, limit=_REPLY_SCAN_LIMIT
+        )
+    except KeyError:
+        return None
+    if any(
+        item.role is ChatRole.AGENT and item.in_reply_to == message.message_id
+        for item in after
+    ):
+        return None
+    return target
 
 
 def sweep_stale_jobs(deps: WorkerDeps) -> int:

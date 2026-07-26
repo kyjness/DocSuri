@@ -5,7 +5,9 @@ import {
   AgentChatScreen,
   normalizeTimelineDisplay,
   parseNoveltySseEvents,
+  shouldPollSession,
 } from '@/components/agent/AgentChatScreen';
+import type { AgentMessage } from '@/lib/agentChat/types';
 import { resetMockNotionConnection } from '@/lib/api/mockTransport';
 
 describe('AgentChatScreen', () => {
@@ -21,6 +23,32 @@ describe('AgentChatScreen', () => {
         { id: '3', stage: 'degraded', label: 'done', state: 'degraded' },
       ]).map((event) => event.state),
     ).toEqual(['completed', 'completed', 'degraded']);
+  });
+
+  it('keeps polling a completed job while an on-demand reply is outstanding', () => {
+    const message = (role: AgentMessage['role'], id: string): AgentMessage => ({
+      id,
+      role,
+      content: 'x',
+      createdAt: '2026-07-01T00:00:00Z',
+      status: 'sent',
+    });
+
+    // 종단 잡의 온디맨드 턴은 워커가 비동기로 답한다 — 잡 상태(completed)만 보면
+    // 폴링이 시작되지 않아 답장이 화면에 영영 붙지 않는다.
+    expect(shouldPollSession('completed', [message('user', 'u1')])).toBe(true);
+    // 답장이 도착하면 멈춘다.
+    expect(shouldPollSession('completed', [message('user', 'u1'), message('agent', 'a1')])).toBe(
+      false,
+    );
+    // 전송 실패한 메시지는 서버에 없다 — 기다릴 답장도 없다.
+    expect(
+      shouldPollSession('completed', [{ ...message('user', 'u1'), status: 'failed' }]),
+    ).toBe(false);
+    // 전송 중에는 sendAgentMessage가 스냅샷을 가져오므로 중복 폴링하지 않는다.
+    expect(shouldPollSession('completed', [message('user', 'u1')], true)).toBe(false);
+    // 실행 중인 잡은 대화와 무관하게 계속 따라간다.
+    expect(shouldPollSession('running', [])).toBe(true);
   });
 
   it('parses Novelty progress events from SSE frames', () => {
@@ -76,6 +104,10 @@ describe('AgentChatScreen', () => {
     expect(screen.getByText('query: RAG evaluation automation benchmark')).toBeInTheDocument();
     expect(screen.getByText(/차별점은 데이터셋 조건/)).toBeInTheDocument();
     expect(screen.getByText('도메인 지식 기반 실패 유형 분해')).toBeInTheDocument();
+    // FR-32 — 방향 제안은 bounded다. 무엇을 주장하지 않는지가 카드에 함께 보여야 한다.
+    expect(screen.getByTestId('novelty-candidates')).toBeInTheDocument();
+    expect(screen.getByText(/주장하지 않는 것 — .*새롭다고 확정하지 않으며/)).toBeInTheDocument();
+    expect(screen.getByText(/실행 고려사항 — .*소규모 검증/)).toBeInTheDocument();
     expect(screen.getByText(/RAG 평가 자동화 프로토콜.*유사합니다/)).toBeInTheDocument();
     expect(screen.getByText(/판정이 아닙니다/)).toBeInTheDocument();
     expect(
@@ -87,6 +119,30 @@ describe('AgentChatScreen', () => {
     expect(screen.getByText(/소스: corpus/)).toBeInTheDocument();
     expect(screen.getAllByText('완료').length).toBeGreaterThan(0);
     expect(screen.queryByText('completed')).not.toBeInTheDocument();
+  });
+
+  it('tells the user that steering lands at the next decision point', async () => {
+    const user = userEvent.setup();
+    render(<AgentChatScreen />);
+
+    await user.click(screen.getByTestId('agent-menu'));
+    await user.click(await screen.findByText('조사 중인 Novelty 잡'));
+
+    // 조사 중에도 입력은 열려 있다 — 다만 즉시 반영이 아니므로 먹혔다고 오해하지
+    // 않게 안내한다(BLM §6).
+    expect(await screen.findByTestId('agent-steering-hint')).toBeInTheDocument();
+    expect(screen.getByTestId('agent-composer-input')).not.toBeDisabled();
+  });
+
+  it('renders system notices apart from agent answers', async () => {
+    const user = userEvent.setup();
+    render(<AgentChatScreen />);
+
+    await user.click(screen.getByTestId('agent-menu'));
+    await user.click(await screen.findByText('조사 중인 Novelty 잡'));
+
+    const notice = await screen.findByTestId('agent-notice');
+    expect(notice).toHaveTextContent(/조사가 종료된 뒤 도착한 메시지입니다/);
   });
 
   it('loads a previous session from the drawer', async () => {

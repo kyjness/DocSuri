@@ -95,6 +95,19 @@ class InProcessWindowLimiter:
         self._buckets[key] = (count, reset)
         return count <= limit
 
+    async def refund(self, key: str) -> None:
+        """`allow`가 소비한 1건을 되돌린다 — 승인 후 작업 자체가 실패했을 때만."""
+        bucket = self._buckets.get(key)
+        if bucket is None:
+            return
+        count, reset = bucket
+        if self._clock() >= reset:
+            return  # 창이 이미 리셋됐다 — 되돌릴 것이 없다
+        if count <= 1:
+            del self._buckets[key]
+        else:
+            self._buckets[key] = (count - 1, reset)
+
 
 class RedisRateLimiter:
     """Shared (cross-worker) fixed-window limiter backed by Redis (INCR + EXPIRE).
@@ -133,6 +146,20 @@ class RedisRateLimiter:
         except Exception as e:  # noqa: BLE001 — fail-open for availability (non-auth endpoints)
             logger.warning("RedisRateLimiter unavailable; failing open for key=%s (%s)", key, e)
             return True
+
+    async def refund(self, key: str) -> None:
+        """`allow`가 소비한 1건을 되돌린다 — 승인 후 작업 자체가 실패했을 때만.
+
+        창이 만료된 뒤 도착한 환불은 DECR이 키를 -1로 되살려 TTL 없이 남길 수 있으므로,
+        결과가 0 이하가 되면 키를 지운다. 환불 실패는 삼킨다(사용자 요청은 이미 실패
+        경로에 있고, 최악의 결과는 한도 1건 손해다).
+        """
+        full = f"ratelimit:{key}"
+        try:
+            if await self._redis.decr(full) <= 0:
+                await self._redis.delete(full)
+        except Exception as e:  # noqa: BLE001 — best-effort refund, never masks the caller's error
+            logger.warning("RedisRateLimiter refund failed for key=%s (%s)", key, e)
 
 
 @lru_cache(maxsize=1)

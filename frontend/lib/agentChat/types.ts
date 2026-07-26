@@ -34,6 +34,15 @@ export interface AgentTimelineEvent {
   source?: string;
 }
 
+/**
+ * 서버가 확정하는 메시지 분류(FR-44). 프론트는 분류하지 않고 렌더링만 나눈다.
+ * - steering: 조사 중 잡에 보낸 지시 (다음 판단 시점에 반영)
+ * - on_demand_request: 종단 잡에 보낸 생성/질문 요청
+ * - agent_reply: 에이전트 답변. resultingArtifactRef가 있으면 산출물을 만든 것
+ * - notice: 시스템 안내(불가 사유·게이트 거부 등)
+ */
+export type AgentMessageKind = 'steering' | 'on_demand_request' | 'agent_reply' | 'notice';
+
 export interface AgentMessage {
   id: string;
   role: AgentMessageRole;
@@ -41,6 +50,9 @@ export interface AgentMessage {
   createdAt: string;
   attachments?: AgentAttachment[];
   status?: 'pending' | 'sent' | 'failed';
+  kind?: AgentMessageKind;
+  /** 이 답변이 생성한 산출물(artifactId) — 없으면 답변만 한 턴이다(BLM §5.5). */
+  resultingArtifactRef?: string;
 }
 
 export interface AgentSessionSummary {

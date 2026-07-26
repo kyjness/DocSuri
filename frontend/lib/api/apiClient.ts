@@ -66,6 +66,7 @@ import type {
   AgentAttachmentStatus,
   AgentJobState,
   AgentMessage,
+  AgentMessageKind,
   AgentSendMessageRequest,
   AgentSendMessageResult,
   AgentSessionSnapshot,
@@ -112,10 +113,13 @@ type BackendResearchJob = {
 };
 type BackendResearchMessage = {
   messageId: string;
-  role: 'user' | 'assistant' | 'system';
+  role: 'user' | 'assistant' | 'system' | 'agent';
   content: string;
   attachments?: unknown[];
   createdAt: string;
+  // novelty 대화만 사용 — 서버가 확정하는 분류와 생성된 산출물 참조(FR-44).
+  kind?: string;
+  resultingArtifactRef?: string | null;
 };
 type BackendNoveltyJob = {
   jobId: string;
@@ -194,8 +198,16 @@ function mapTimelineState(state: AgentJobState): AgentTimelineEvent['state'] {
   return 'running';
 }
 
+const AGENT_MESSAGE_KINDS: readonly AgentMessageKind[] = [
+  'steering',
+  'on_demand_request',
+  'agent_reply',
+  'notice',
+];
+
 function mapAgentMessage(message: BackendResearchMessage): AgentMessage {
   const role = message.role === 'user' ? 'user' : 'agent';
+  const kind = AGENT_MESSAGE_KINDS.find((candidate) => candidate === message.kind);
   return {
     id: message.messageId,
     role,
@@ -203,6 +215,10 @@ function mapAgentMessage(message: BackendResearchMessage): AgentMessage {
     createdAt: message.createdAt,
     attachments: mapAgentAttachments(message.attachments),
     status: 'sent' as const,
+    ...(kind ? { kind } : {}),
+    ...(message.resultingArtifactRef
+      ? { resultingArtifactRef: message.resultingArtifactRef }
+      : {}),
   };
 }
 
@@ -303,13 +319,10 @@ function toChatBody(req: AgentSendMessageRequest) {
 
 function toNoveltyBody(req: AgentSendMessageRequest, created: boolean) {
   if (!created) {
-    if (process.env.NEXT_PUBLIC_DOCSURI_REAL_API) {
-      throw new UserFacingError(
-        'unknown',
-        'Novelty 후속 대화는 아직 실배포에서 사용할 수 없습니다.',
-      );
-    }
-    return toChatBody(req);
+    // 후속 대화 = 스티어링(조사 중) 또는 온디맨드 요청(종단). 분류는 서버가 한다.
+    // novelty 대화 스키마는 content만 받는다(extra=forbid) — research와 달리
+    // 첨부 키를 실으면 422다. 잡 내 첨부는 원고 업로드 전용 경로를 쓴다.
+    return { content: req.content };
   }
   const manuscript = req.attachments?.[0];
   // US-NV2(#252)/PR3 — 원고 본문은 잡 생성 직후 별도 업로드로 전달된다(sendAgentMessage).
@@ -328,7 +341,9 @@ function toNoveltyBody(req: AgentSendMessageRequest, created: boolean) {
         }
       : null,
     constraints: {},
-    exportToNotion: false,
+    // 서버 CreateJobRequest는 extra=forbid이고 export 필드는 `exportTarget`(문자열)이다 —
+    // 여기서 `exportToNotion`을 실으면 잡 생성이 매번 422다. Notion export는 잡 생성이
+    // 아니라 별도 승인 게이트 흐름이므로(BR-NV17) 생성 시에는 아무 export 필드도 안 보낸다.
   };
 }
 

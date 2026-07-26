@@ -139,6 +139,29 @@ class TestNoveltyStoreContract:
         assert records[0].payload == {"items": [1, 2]}
         assert store.list_artifacts(_OTHER_OWNER, job.job_id) == []
 
+    def test_artifact_id_is_stable_across_resave(self, store) -> None:
+        """재저장은 같은 (job_id, kind) 슬롯을 갱신하므로 artifact_id가 유지돼야 한다 —
+        산출물을 id로 참조하는 경로(온디맨드 답장의 resulting_artifact_ref)가 어댑터에
+        따라 끊기지 않도록 두 구현이 같은 정체성 규칙을 만족해야 한다."""
+        job = _job()
+        store.create_job(job)
+        first = ArtifactRecord(
+            job_id=job.job_id, owner_id=job.owner_id, kind=ArtifactKind.SIMILAR_WORKS,
+            payload={"items": [1]},
+        )
+        store.save_artifact(first)
+        # 새 레코드는 자체 artifact_id를 갖지만, 기존 슬롯 갱신이므로 원래 id가 이긴다.
+        second = ArtifactRecord(
+            job_id=job.job_id, owner_id=job.owner_id, kind=ArtifactKind.SIMILAR_WORKS,
+            payload={"items": [1, 2]},
+        )
+        assert second.artifact_id != first.artifact_id
+        # 반환값이 참조의 단일 진실 — 저장 직후 재조회 없이 답장에 걸 수 있어야 한다.
+        assert store.save_artifact(second) == first.artifact_id
+        stored = store.list_artifacts(job.owner_id, job.job_id)[0]
+        assert stored.artifact_id == first.artifact_id
+        assert stored.payload == {"items": [1, 2]}
+
     def test_messages_owner_scoped_cursor(self, store) -> None:
         job = _job()
         store.create_job(job)
@@ -161,6 +184,22 @@ class TestNoveltyStoreContract:
             store.list_messages(_OTHER_OWNER, job.job_id, after=page[-1].message_id, limit=5)
             == []
         )
+
+    def test_get_message_point_lookup_owner_scoped(self, store) -> None:
+        """온디맨드 턴의 대상 메시지 조회 — 대화 길이와 무관한 단건 조회여야 하고,
+        비소유자·다른 잡·미존재는 모두 None(존재 비노출)."""
+        job = _job()
+        store.create_job(job)
+        message = NoveltyChatMessage(
+            job_id=job.job_id, owner_id=job.owner_id, role=ChatRole.USER,
+            kind=ChatKind.ON_DEMAND_REQUEST, content="실험 계획 짜줘",
+        )
+        store.append_message(message)
+        found = store.get_message(job.owner_id, job.job_id, message.message_id)
+        assert found is not None and found.content == "실험 계획 짜줘"
+        assert store.get_message(_OTHER_OWNER, job.job_id, message.message_id) is None
+        assert store.get_message(job.owner_id, "other-job", message.message_id) is None
+        assert store.get_message(job.owner_id, job.job_id, "missing") is None
 
     def test_delete_job_cascades_everything(self, store) -> None:
         job = _job()
@@ -229,6 +268,20 @@ class TestExecutionLockContract:
         assert job is not None and job.job_id == "job-1"
         assert time.monotonic() - started < 3.0
 
+    def test_nack_returns_message_to_back_of_queue(self) -> None:
+        # ack 생략만으로는 redis 구현에서 메시지가 processing에 방치된다 — nack이
+        # 되돌리는 계약이고, 위치는 큐의 끝이어야 한다(같은 메시지 즉시 재획득 방지).
+        from .novelty_v2_fakes import InMemoryJobQueue
+
+        queue = InMemoryJobQueue()
+        queue.enqueue("job-1", "owner-1")
+        queue.enqueue("job-2", "owner-1")
+        first = queue.consume(timeout_seconds=1)
+        assert first is not None and first.job_id == "job-1"
+        queue.nack(first)
+        assert queue.consume(timeout_seconds=1).job_id == "job-2"
+        assert queue.consume(timeout_seconds=1).job_id == "job-1"
+
 
 class TestStoreLatches:
     """update_job의 단방향 래치 계약 — 취소 플래그·종단 상태(BR-RA5), 양 구현 공통."""
@@ -280,3 +333,15 @@ class TestStoreLatches:
         store.create_job(job)
         with pytest.raises(KeyError):
             store.list_messages(job.owner_id, job.job_id, after=str(uuid4()), limit=5)
+
+    def test_enqueue_carries_turn_kind_and_message_id(self) -> None:
+        from backend.modules.novelty.ports.queue import KIND_LOOP, KIND_TURN
+
+        from .novelty_v2_fakes import InMemoryJobQueue
+
+        queue = InMemoryJobQueue()
+        queue.enqueue("job-1", "owner-1")
+        queue.enqueue("job-1", "owner-1", kind=KIND_TURN, message_id="msg-1")
+        first, second = queue.consume(1), queue.consume(1)
+        assert first.kind == KIND_LOOP and first.message_id is None
+        assert second.kind == KIND_TURN and second.message_id == "msg-1"

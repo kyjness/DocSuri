@@ -101,3 +101,34 @@ def test_bedrock_incurring_routes_are_all_quota_gated(monkeypatch) -> None:
         assert "enforce_novelty_job_quota" in dependencies.get(route, []), (
             f"{route}가 novelty 일일 쿼터로 게이트되지 않음"
         )
+
+
+def test_refund_returns_a_consumed_slot(monkeypatch) -> None:
+    """승인 후 작업이 실행되지 못했으면 한도를 되돌린다 — 인프라 장애가 사용자의
+    하루치를 태우면, 재시도할수록 한도만 줄고 결과는 못 받는다(코드 리뷰 반영)."""
+    limiter = InProcessWindowLimiter()
+    monkeypatch.setattr(agent_quota, "get_shared_limiter", lambda: limiter)
+    monkeypatch.setattr(agent_quota, "_NOVELTY_TURN_DAILY_LIMIT", 2)
+    request = _request()
+
+    asyncio.run(agent_quota.enforce_novelty_turn_quota(request))
+    asyncio.run(agent_quota.refund_novelty_turn_quota(request))
+    # 환불했으므로 한도 2회를 온전히 쓸 수 있다.
+    asyncio.run(agent_quota.enforce_novelty_turn_quota(request))
+    asyncio.run(agent_quota.enforce_novelty_turn_quota(request))
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(agent_quota.enforce_novelty_turn_quota(request))
+    assert exc.value.status_code == 429
+
+
+def test_refund_without_a_prior_allow_is_a_noop(monkeypatch) -> None:
+    """쓰지 않은 한도를 되돌려 추가 허용량을 만들어내면 안 된다."""
+    limiter = InProcessWindowLimiter()
+    monkeypatch.setattr(agent_quota, "get_shared_limiter", lambda: limiter)
+    monkeypatch.setattr(agent_quota, "_NOVELTY_TURN_DAILY_LIMIT", 1)
+    request = _request()
+
+    asyncio.run(agent_quota.refund_novelty_turn_quota(request))
+    asyncio.run(agent_quota.enforce_novelty_turn_quota(request))
+    with pytest.raises(HTTPException):
+        asyncio.run(agent_quota.enforce_novelty_turn_quota(request))

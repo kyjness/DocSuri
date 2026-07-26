@@ -170,6 +170,7 @@ def _settings(**overrides) -> NoveltySettings:
         max_view_figure_calls=8,
         max_save_artifact_calls=12,
         job_cost_limit_usd=0.5,
+        max_turn_steps=4,
     )
     return replace(base, **overrides)
 
