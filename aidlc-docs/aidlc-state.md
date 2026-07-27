@@ -1105,9 +1105,10 @@ _Resiliency 옵트인은 `requirements.md` 확정 전에 필수 요구사항 명
   `/code-review`(잡을 통째로 죽이던 경로 3종 — 프로바이더 이미지 한도 초과·detail 오타·무제한
   버퍼링; 자산 부재와 스토어 장애 분리; 모델 통제 recordRef에 앱 id용 휴리스틱 사용),
   `/security-review`(HIGH/MEDIUM 0건).
-- ⚠️ 부수 발견: `backend/pyproject.toml`의 `extend-exclude = ["modules"]`와 `ci.yml`의 린트
-  레인 때문에 **novelty·evidence·research는 어디서도 ruff가 돌지 않는다**. 이번엔 명시 경로로
-  직접 돌려 확인했고, 레인 추가는 별건.
+- 부수 발견(별건으로 처리): `backend/pyproject.toml`의 `extend-exclude = ["modules"]`와
+  `ci.yml` 린트 레인의 모듈 열거가 겹쳐 **novelty·evidence·research·mypage·citation_graph·
+  personalization은 어디서도 ruff가 돌지 않았다**. 이번엔 명시 경로로 직접 돌려 확인했고,
+  레인 폐쇄는 `ci/lint-backend-modules`에서 처리한다(열거 → `backend/modules` 통째).
 
 ## ⑤ 2단계 후속 — 저장 게이트 계약을 모델이 알 수 있게
 
