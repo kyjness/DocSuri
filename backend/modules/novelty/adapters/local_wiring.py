@@ -75,8 +75,8 @@ def build_queue(settings: NoveltySettings, *, for_consumer: bool = False) -> Any
 def build_asset_port(
     settings: NoveltySettings, session_factory: Callable[[], Any] | None
 ) -> Any | None:
-    """자산 스토어 설정 + postgres가 있을 때만 — 없으면 view_figure가 도구 목록에서 빠진다."""
-    if not settings.figure_assets_configured or session_factory is None:
+    """자산 토글 + postgres가 있을 때만 — 없으면 view_figure가 도구 목록에서 빠진다."""
+    if not settings.assets_enabled or session_factory is None:
         return None
     return SqlS3FigureReader(session_factory, region_name=settings.region_name)
 

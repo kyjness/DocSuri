@@ -83,7 +83,6 @@ class ImageAttachment:
     media_type: str
     data_b64: str
     asset_id: str
-    caption: str = ""
 
 
 @dataclass(frozen=True, slots=True)

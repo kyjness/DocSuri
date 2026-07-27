@@ -189,7 +189,6 @@ def _asset(asset_id: str, type_: str = "figure", ordinal: int = 1) -> FigureAsse
         type=type_,
         ordinal=ordinal,
         caption=f"caption for {asset_id}",
-        source_mode="structured",
         object_ref=f"s3://bucket/assets/2401.00001/v1/{asset_id}.webp",
     )
 
@@ -203,6 +202,7 @@ def _figure_tool(**kwargs) -> tuple[ViewFigureTool, FakeFigureAssetPort]:
             formula.object_ref: ("image/webp", _PNG),
         },
     )
+    kwargs.setdefault("max_image_bytes", 4 * 1024 * 1024)
     return ViewFigureTool(port, **kwargs), port
 
 
@@ -280,7 +280,7 @@ def test_view_figure_refuses_an_oversized_image_with_an_alternative() -> None:
 
 
 def test_view_figure_reports_papers_without_assets_instead_of_crashing() -> None:
-    tool = ViewFigureTool(FakeFigureAssetPort())
+    tool = ViewFigureTool(FakeFigureAssetPort(), max_image_bytes=4096)
     result = tool.invoke({"record_ref": "2401.77777"}, _CTX)
     assert not result.ok
     assert "자산이 없다" in result.error
@@ -294,6 +294,8 @@ def test_view_figure_uses_the_version_suffix_when_the_record_ref_carries_one() -
         assets={("2401.00001", 2): [figure]},
         blobs={figure.object_ref: ("image/webp", _PNG)},
     )
-    result = ViewFigureTool(port).invoke({"record_ref": "2401.00001v2"}, _CTX)
+    result = ViewFigureTool(port, max_image_bytes=4096).invoke(
+        {"record_ref": "2401.00001v2"}, _CTX
+    )
     assert result.ok
     assert [item["assetId"] for item in result.content["assets"]] == ["fig-1"]

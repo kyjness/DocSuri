@@ -20,10 +20,14 @@ from __future__ import annotations
 import base64
 import logging
 import os
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from typing import Any
 
-from ..ports.assets import FigureAsset
+# u11 evidence가 같은 방식으로 쓰는 공용 arXiv id 규약(`evidence/tools.py`) —
+# 백엔드는 summarization을 의존성으로 선언하므로 사본을 만들지 않는다.
+from summarization.adapters._paper_ref import bare_paper_id, paper_version
+
+from ..ports.assets import FigureAsset, FigureManifest
 from ..ports.tools import (
     TOOL_VIEW_FIGURE,
     ImageAttachment,
@@ -32,7 +36,7 @@ from ..ports.tools import (
     ToolSpec,
 )
 
-__all__ = ["SqlS3FigureReader", "ViewFigureTool", "bare_paper_id", "paper_version"]
+__all__ = ["SqlS3FigureReader", "ViewFigureTool"]
 
 log = logging.getLogger("docsuri.novelty.figures")
 
@@ -48,21 +52,22 @@ _MEDIA_TYPES = {
 }
 _LIST_LIMIT = 60
 
-
-def bare_paper_id(paper_id: str) -> str:
-    """arXiv 버전 suffix(``v<N>``)를 떼어낸다 — `paper_asset.paper_id`는 bare다.
-
-    u7 `_paper_ref.bare_paper_id`와 같은 규약(u1의 ``rsplit('v', 1)`` 파생). u7 모듈을
-    import하지 않는 이유는 novelty가 summarization 서브프로젝트에 의존하지 않기
-    때문이다(헥사고날 — 모듈 간 직접 의존 금지).
-    """
-    return paper_id.rsplit("v", 1)[0] if "v" in paper_id else paper_id
-
-
-def paper_version(paper_id: str) -> int | None:
-    """버전 suffix가 있으면 그 번호, 없으면 None(호출자가 최신 버전을 찾는다)."""
-    bare, sep, tail = paper_id.rpartition("v")
-    return int(tail) if sep and bare and tail.isdigit() else None
+# 버전 해석을 별도 질의로 두지 않는다 — 코퍼스의 recordRef가 거의 전부 bare라
+# 나누면 사실상 모든 호출이 왕복 2회가 된다. `count(*) OVER ()`는 LIMIT 적용
+# 전에 계산되므로 상한을 걸어도 실제 총 개수를 얻는다.
+_RESOLVED_VERSION = (
+    "COALESCE(:version, (SELECT max(version) FROM paper_asset WHERE paper_id = :paper_id))"
+)
+_LIST_SQL = (
+    "SELECT asset_id, type, ordinal, caption, object_ref, version, count(*) OVER () "
+    "FROM paper_asset WHERE paper_id = :paper_id AND version = "
+    f"{_RESOLVED_VERSION} ORDER BY type, ordinal LIMIT :limit"
+)
+_GET_SQL = (
+    "SELECT asset_id, type, ordinal, caption, object_ref "
+    "FROM paper_asset WHERE paper_id = :paper_id AND asset_id = :asset_id "
+    f"AND version = {_RESOLVED_VERSION}"
+)
 
 
 class SqlS3FigureReader:
@@ -99,40 +104,37 @@ class SqlS3FigureReader:
             self._s3 = boto3.client("s3", region_name=region, endpoint_url=endpoint)
         return self._s3
 
-    def latest_version(self, paper_id: str) -> int | None:
+    def list_assets(
+        self, paper_id: str, version: int | None, *, limit: int = _LIST_LIMIT
+    ) -> FigureManifest | None:
         from sqlalchemy import text
 
-        sql = text("SELECT max(version) FROM paper_asset WHERE paper_id = :paper_id")
-        with self._session_factory() as session:
-            row = session.execute(sql, {"paper_id": bare_paper_id(paper_id)}).first()
-        return int(row[0]) if row and row[0] is not None else None
-
-    def list_assets(self, paper_id: str, version: int) -> Sequence[FigureAsset]:
-        from sqlalchemy import text
-
-        # figure·table·formula 전부 — u7과 달리 type 필터를 걸지 않는다(모듈 docstring).
-        sql = text(
-            "SELECT asset_id, type, ordinal, caption, source_mode, object_ref "
-            "FROM paper_asset WHERE paper_id = :paper_id AND version = :version "
-            "ORDER BY type, ordinal"
-        )
         with self._session_factory() as session:
             rows = session.execute(
-                sql, {"paper_id": bare_paper_id(paper_id), "version": version}
+                text(_LIST_SQL),
+                {"paper_id": paper_id, "version": version, "limit": limit},
             ).all()
-        return [
-            FigureAsset(
-                asset_id=str(row[0]),
-                type=str(row[1]),
-                ordinal=int(row[2]),
-                caption=str(row[3] or ""),
-                source_mode=str(row[4] or ""),
-                object_ref=str(row[5]),
-            )
-            for row in rows
-        ]
+        if not rows:
+            return None
+        return FigureManifest(
+            version=int(rows[0][5]),
+            assets=[_asset_from_row(row) for row in rows],
+            total=int(rows[0][6]),
+        )
 
-    def fetch_bytes(self, object_ref: str) -> tuple[str, bytes] | None:
+    def get_asset(
+        self, paper_id: str, version: int | None, asset_id: str
+    ) -> FigureAsset | None:
+        from sqlalchemy import text
+
+        with self._session_factory() as session:
+            row = session.execute(
+                text(_GET_SQL),
+                {"paper_id": paper_id, "version": version, "asset_id": asset_id},
+            ).first()
+        return _asset_from_row(row) if row is not None else None
+
+    def fetch_bytes(self, object_ref: str, *, max_bytes: int) -> tuple[str, bytes] | None:
         parsed = _split_s3_ref(object_ref)
         if parsed is None:
             return None
@@ -142,10 +144,25 @@ class SqlS3FigureReader:
             return None
         try:
             response = self._client().get_object(Bucket=bucket, Key=key)
-            return media_type, response["Body"].read()
+            # 본문을 읽기 전에 크기를 본다 — 어차피 버릴 메가바이트를 받지 않는다.
+            length = response.get("ContentLength")
+            if length is not None and int(length) > max_bytes:
+                return None
+            data = response["Body"].read()
+            return (media_type, data) if len(data) <= max_bytes else None
         except Exception:  # noqa: BLE001 — 자산 1건의 부재·장애가 루프를 끊지 않는다
             log.warning("novelty view_figure: asset fetch failed", exc_info=True)
             return None
+
+
+def _asset_from_row(row: Any) -> FigureAsset:
+    return FigureAsset(
+        asset_id=str(row[0]),
+        type=str(row[1]),
+        ordinal=int(row[2]),
+        caption=str(row[3] or ""),
+        object_ref=str(row[4]),
+    )
 
 
 def _split_s3_ref(object_ref: str) -> tuple[str, str] | None:
@@ -158,6 +175,15 @@ def _split_s3_ref(object_ref: str) -> tuple[str, str] | None:
 def _media_type_for(key: str) -> str | None:
     _, _, ext = key.rpartition(".")
     return _MEDIA_TYPES.get(f".{ext.lower()}") if ext else None
+
+
+# 거부 사유는 판정이자 **수리 지시**다(⑤2 실스택 검증 교훈) — 무엇이 틀렸는지와
+# 다음에 무엇을 하면 되는지를 함께 담지 않으면 자율 루프는 같은 실수를 반복한다.
+_RETRY_HINT = "같은 논문의 다른 자산을 고르거나 텍스트 근거로 진행하라"
+
+
+def _refuse(summary: str, message: str) -> ToolResult:
+    return ToolResult(ok=False, error=message, result_summary=f"view_figure: {summary}")
 
 
 class ViewFigureTool:
@@ -179,7 +205,7 @@ class ViewFigureTool:
         },
     )
 
-    def __init__(self, assets: Any, *, max_image_bytes: int = 4 * 1024 * 1024) -> None:
+    def __init__(self, assets: Any, *, max_image_bytes: int) -> None:
         self._assets = assets
         self._max_image_bytes = max_image_bytes
 
@@ -193,110 +219,84 @@ class ViewFigureTool:
         """
         record_ref = str(args.get("record_ref") or "").strip()
         if not record_ref:
-            return ToolResult(
-                ok=False,
-                error="record_ref는 필수다 — 검색·근거 결과의 recordRef 값을 그대로 넣어라",
-                result_summary="view_figure: missing record_ref",
+            return _refuse(
+                "missing record_ref",
+                "record_ref는 필수다 — 검색·근거 결과의 recordRef 값을 그대로 넣어라",
             )
-        asset_id = str(args.get("asset_id") or "").strip()
 
         # 포트는 bare paper_id를 받는다 — 정규화는 여기서 한 번만 한다. 어댑터의
         # 방어적 정규화에 기대면 다른 구현이 들어올 때 조용한 영구 미스가 된다.
         paper_id = bare_paper_id(record_ref)
-        version = paper_version(record_ref)
-        if version is None:
-            version = self._assets.latest_version(paper_id)
-        if version is None:
-            return ToolResult(
-                ok=False,
-                error=(
-                    f"{record_ref} 논문에는 저장된 그림·수식 자산이 없다 — "
-                    "다른 논문을 고르거나 텍스트 근거로 진행하라"
-                ),
-                result_summary="view_figure: no assets",
+        # suffix가 있을 때만 명시 버전 — bare면 None으로 넘겨 어댑터가 최신을 해석한다.
+        version = paper_version(record_ref) if paper_id != record_ref else None
+
+        asset_id = str(args.get("asset_id") or "").strip()
+        if asset_id:
+            return self._image_result(record_ref, paper_id, version, asset_id)
+        return self._list_result(record_ref, paper_id, version)
+
+    def _list_result(
+        self, record_ref: str, paper_id: str, version: int | None
+    ) -> ToolResult:
+        manifest = self._assets.list_assets(paper_id, version, limit=_LIST_LIMIT)
+        if manifest is None:
+            return _refuse(
+                "no assets",
+                f"{record_ref} 논문에는 저장된 그림·수식 자산이 없다 — "
+                "다른 논문을 고르거나 텍스트 근거로 진행하라",
             )
-
-        assets = list(self._assets.list_assets(paper_id, version))
-        if not assets:
-            return ToolResult(
-                ok=False,
-                error=(
-                    f"{record_ref} 논문에는 저장된 그림·수식 자산이 없다 — "
-                    "다른 논문을 고르거나 텍스트 근거로 진행하라"
-                ),
-                result_summary="view_figure: no assets",
-            )
-
-        if not asset_id:
-            return self._list_result(record_ref, assets)
-        return self._image_result(record_ref, assets, asset_id)
-
-    def _list_result(self, record_ref: str, assets: list[FigureAsset]) -> ToolResult:
         # object_ref는 내부 값 — 목록에 싣지 않는다(SEC-9).
-        items = [
-            {
-                "assetId": asset.asset_id,
-                "type": asset.type,
-                "ordinal": asset.ordinal,
-                "caption": asset.caption,
-            }
-            for asset in assets[:_LIST_LIMIT]
-        ]
-        content: dict[str, Any] = {"recordRef": record_ref, "assets": items}
-        if len(assets) > _LIST_LIMIT:
-            content["omitted"] = {"field": "assets", "count": len(assets) - _LIST_LIMIT}
+        content: dict[str, Any] = {
+            "recordRef": record_ref,
+            "assets": [
+                {
+                    "assetId": asset.asset_id,
+                    "type": asset.type,
+                    "ordinal": asset.ordinal,
+                    "caption": asset.caption,
+                }
+                for asset in manifest.assets
+            ],
+        }
+        # `omitted`를 직접 쓰지 않는다 — 그 키는 렌더 단계의 `fit_result_content`가
+        # 소유하고, 둘이 같이 쓰면 나중 값이 앞의 개수를 덮어써 모델이 실제보다
+        # 적게 숨겨졌다고 믿는다. 총량은 이름이 겹치지 않는 필드로 알린다.
+        if manifest.total > len(manifest.assets):
+            content["totalAssets"] = manifest.total
         return ToolResult(
             ok=True,
             content=content,
-            result_summary=f"figure list: {len(items)} assets",
+            result_summary=f"figure list: {len(manifest.assets)} assets",
         )
 
     def _image_result(
-        self, record_ref: str, assets: list[FigureAsset], asset_id: str
+        self, record_ref: str, paper_id: str, version: int | None, asset_id: str
     ) -> ToolResult:
-        # BR-RA11 — 실재하는 자산만. 매니페스트에 없는 id는 조회하지 않는다.
-        match = next((asset for asset in assets if asset.asset_id == asset_id), None)
+        # BR-RA11 — 실재하는 자산만. 단건 조회로 존재를 확인한다(매니페스트 전체를
+        # 다시 읽지 않는다 — 자산이 많은 논문에서 통째로 낭비된다).
+        match = self._assets.get_asset(paper_id, version, asset_id)
         if match is None:
-            return ToolResult(
-                ok=False,
-                error=(
-                    f"asset_id '{asset_id}'는 {record_ref} 논문에 없다 — "
-                    "asset_id 없이 view_figure를 호출해 목록을 먼저 받아라"
-                ),
-                result_summary="view_figure: unknown asset",
+            return _refuse(
+                "unknown asset",
+                f"asset_id '{asset_id}'는 {record_ref} 논문에 없다 — "
+                "asset_id 없이 view_figure를 호출해 목록을 먼저 받아라",
             )
 
-        fetched = self._assets.fetch_bytes(match.object_ref)
+        fetched = self._assets.fetch_bytes(
+            match.object_ref, max_bytes=self._max_image_bytes
+        )
         if fetched is None:
-            return ToolResult(
-                ok=False,
-                error=(
-                    f"asset_id '{asset_id}' 이미지를 가져오지 못했다 — "
-                    "같은 논문의 다른 자산을 고르거나 텍스트 근거로 진행하라"
-                ),
-                result_summary="view_figure: asset unavailable",
+            # 부재·장애·상한 초과가 한 사유로 모인다 — 에이전트가 할 수 있는 다음
+            # 행동이 셋 다 같기 때문이다(다른 자산을 고르거나 텍스트로 진행).
+            return _refuse(
+                "asset unavailable",
+                f"asset_id '{asset_id}' 이미지를 쓸 수 없다(부재·장애 또는 크기 초과) — "
+                f"{_RETRY_HINT}",
             )
         media_type, data = fetched
         if not data:
-            return ToolResult(
-                ok=False,
-                error=(
-                    f"asset_id '{asset_id}' 이미지가 비어 있다 — "
-                    "같은 논문의 다른 자산을 고르거나 텍스트 근거로 진행하라"
-                ),
-                result_summary="view_figure: empty asset",
-            )
-        if len(data) > self._max_image_bytes:
-            # 백엔드에 이미지 처리 의존성이 없어 다운스케일이 불가하다 — 거부하되
-            # 사유에 다음 행동을 담는다.
-            return ToolResult(
-                ok=False,
-                error=(
-                    f"asset_id '{asset_id}' 이미지가 너무 크다"
-                    f"({len(data)} bytes > {self._max_image_bytes}) — "
-                    "같은 논문의 다른 자산을 고르거나 텍스트 근거로 진행하라"
-                ),
-                result_summary="view_figure: asset too large",
+            return _refuse(
+                "empty asset", f"asset_id '{asset_id}' 이미지가 비어 있다 — {_RETRY_HINT}"
             )
 
         return ToolResult(
@@ -314,7 +314,6 @@ class ViewFigureTool:
                     media_type=media_type,
                     data_b64=base64.b64encode(data).decode("ascii"),
                     asset_id=match.asset_id,
-                    caption=match.caption,
                 ),
             ),
             result_summary=f"figure: {match.type} {match.asset_id}",

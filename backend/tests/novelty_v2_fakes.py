@@ -14,7 +14,7 @@ from backend.modules.novelty.adapters.memory import (
     InMemoryJobQueue,
     InMemoryNoveltyStore,
 )
-from backend.modules.novelty.ports.assets import FigureAsset
+from backend.modules.novelty.ports.assets import FigureAsset, FigureManifest
 from backend.modules.novelty.ports.llm import (
     LlmDecision,
     LoopObservation,
@@ -68,7 +68,10 @@ class FakeTool:
 
 
 class FakeFigureAssetPort:
-    """FigureAssetPort 대역 — `paper_asset` 행과 S3 바이트를 메모리로 흉내 낸다."""
+    """FigureAssetPort 대역 — `paper_asset` 행과 S3 바이트를 메모리로 흉내 낸다.
+
+    `version=None`은 실제 어댑터와 같이 최신 버전으로 해석한다.
+    """
 
     def __init__(
         self,
@@ -78,14 +81,34 @@ class FakeFigureAssetPort:
         self.assets = assets or {}
         self.blobs = blobs or {}
         self.fetched: list[str] = []
+        self.listed: list[tuple[str, int | None]] = []
 
-    def latest_version(self, paper_id: str) -> int | None:
-        versions = [version for (pid, version) in self.assets if pid == paper_id]
+    def _resolve(self, paper_id: str, version: int | None) -> int | None:
+        if version is not None:
+            return version
+        versions = [ver for (pid, ver) in self.assets if pid == paper_id]
         return max(versions) if versions else None
 
-    def list_assets(self, paper_id: str, version: int) -> list[FigureAsset]:
-        return list(self.assets.get((paper_id, version), ()))
+    def list_assets(
+        self, paper_id: str, version: int | None, *, limit: int = 60
+    ) -> FigureManifest | None:
+        self.listed.append((paper_id, version))
+        resolved = self._resolve(paper_id, version)
+        rows = list(self.assets.get((paper_id, resolved), ())) if resolved else []
+        if not rows:
+            return None
+        return FigureManifest(version=resolved, assets=rows[:limit], total=len(rows))
 
-    def fetch_bytes(self, object_ref: str) -> tuple[str, bytes] | None:
+    def get_asset(
+        self, paper_id: str, version: int | None, asset_id: str
+    ) -> FigureAsset | None:
+        resolved = self._resolve(paper_id, version)
+        rows = self.assets.get((paper_id, resolved), ()) if resolved else ()
+        return next((row for row in rows if row.asset_id == asset_id), None)
+
+    def fetch_bytes(self, object_ref: str, *, max_bytes: int) -> tuple[str, bytes] | None:
         self.fetched.append(object_ref)
-        return self.blobs.get(object_ref)
+        found = self.blobs.get(object_ref)
+        if found is None or len(found[1]) > max_bytes:
+            return None
+        return found

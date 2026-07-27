@@ -59,7 +59,6 @@ def _settings(**overrides) -> NoveltySettings:
         github_token=None,
         external_timeout_seconds=5.0,
         assets_enabled=False,
-        asset_bucket=None,
         figure_max_image_bytes=4 * 1024 * 1024,
         figure_image_detail=None,
         lock_ttl_seconds=120.0,

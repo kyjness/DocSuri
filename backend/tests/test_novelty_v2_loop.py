@@ -893,3 +893,47 @@ def test_viewed_figure_is_attached_for_one_turn_then_drops_to_text() -> None:
     assert stale and all(view.images == () for view in stale)
     # 텍스트 content는 그대로 — 무엇을 봤는지는 계속 보인다.
     assert stale[-1].content["assetId"] == "fig-1"
+
+
+def test_image_is_not_resent_when_a_termination_proposal_is_refused() -> None:
+    """종료 제안이 거부되면 루프는 도구 실행 없이 decide로 되돈다(loop `_drive`).
+
+    첨부 소비를 도구 실행 뒤에 두면 그 경로에서 같은 그림이 매 반복 재전송돼
+    반복 상한까지 같은 토큰이 계상된다 — 관찰 조립이 소비 지점인 이유다.
+    """
+    from backend.modules.novelty.ports.tools import TOOL_VIEW_FIGURE, ImageAttachment
+
+    store = InMemoryNoveltyStore()
+    job = _job(store, budget=_budget(max_tool_calls={**_budget().max_tool_calls, "view_figure": 8}))
+    figure_tool = FakeTool(
+        TOOL_VIEW_FIGURE,
+        default=ToolResult(
+            ok=True,
+            content={"assetId": "fig-1", "type": "figure"},
+            images=(ImageAttachment(media_type="image/webp", data_b64="QUJD", asset_id="fig-1"),),
+        ),
+    )
+    llm = ScriptedToolCallingLlm(
+        [
+            LlmDecision(ToolCallProposal(TOOL_VIEW_FIGURE, {"record_ref": "2401.00001"})),
+            # 필수 산출물이 없어 거부된다 — 도구 실행 없이 다음 decide로 되돈다.
+            LlmDecision(TerminationProposal(note="충분")),
+            LlmDecision(TerminationProposal(note="정말 충분")),
+            _save("similar_works", _similar_payload()),
+            _save("gap_analysis", _gap_payload()),
+        ]
+    )
+    deps = LoopDeps(
+        store=store,
+        llm=llm,
+        registry=_registry(_evidence_tool(), _corpus_tool(), figure_tool),
+    )
+
+    run_loop(job, deps)
+
+    with_images = [
+        obs for obs in llm.observations
+        if any(view.images for view in obs.recent_results)
+    ]
+    # 조회 직후 관찰 딱 한 번 — 거부된 종료 제안이 두 번 되돌아도 재전송되지 않는다.
+    assert len(with_images) == 1

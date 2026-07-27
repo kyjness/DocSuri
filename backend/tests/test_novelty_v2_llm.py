@@ -230,9 +230,9 @@ def test_empty_choices_raises_llm_unavailable() -> None:
 
 
 def _rendered(**overrides) -> str:
-    from backend.modules.novelty.adapters.llm_prompt import render_observation
+    from backend.modules.novelty.adapters.llm_prompt import render_observation_parts
 
-    return render_observation(_observation(**overrides))
+    return render_observation_parts(_observation(**overrides))[0]
 
 
 def test_steering_block_is_separate_from_system_notes_and_tool_data() -> None:
@@ -428,7 +428,6 @@ def _image(asset_id: str = "fig-1") -> ImageAttachment:
         media_type="image/webp",
         data_b64="QUJD",
         asset_id=asset_id,
-        caption="architecture overview",
     )
 
 

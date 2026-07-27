@@ -317,6 +317,17 @@ def drain_steering(job: NoveltyJob, deps: AgentDeps, context: AgentContext) -> i
     return len(fresh)
 
 
+def _consume_images(context: AgentContext) -> None:
+    """전달된 이미지 첨부를 컨텍스트에서 지운다 — 첨부는 관찰 1회짜리다.
+
+    텍스트 content는 남으므로 모델은 무엇을 봤는지 계속 알 수 있고, 다시 봐야 하면
+    재호출하면 된다(도구 캡이 그 횟수를 통제한다).
+    """
+    for index, view in enumerate(context.recent_results):
+        if view.images:
+            context.recent_results[index] = replace(view, images=())
+
+
 def build_observation(
     job: NoveltyJob,
     context: AgentContext,
@@ -326,13 +337,23 @@ def build_observation(
     request: str | None = None,
 ) -> LoopObservation:
     """관찰 조립의 단일 정의 — 루프와 대화 턴이 의도한 차이(mode·request·필수 세트)만
-    인자로 밝히고, 예산 잔량 계산·노트 윈도우 등 나머지는 여기서 한 번만 유지한다."""
+    인자로 밝히고, 예산 잔량 계산·노트 윈도우 등 나머지는 여기서 한 번만 유지한다.
+
+    **이미지 첨부는 이 관찰이 소비한다**: 스냅샷에는 실리고, 컨텍스트에서는 지워진다.
+    관찰은 최근 결과 여러 건을 매 턴 다시 싣는 구조라 그냥 두면 한 번 조회한 그림이
+    윈도우에서 밀려날 때까지 매 턴 재전송돼 같은 토큰이 반복 계상된다(BR-RA11).
+    소비 지점이 관찰 조립인 이유는 여기가 decide로 가는 **유일한 길목**이기 때문이다 —
+    도구 실행 뒤에 지우면 종료 제안이 거부돼 도구 없이 되도는 경로(loop `_drive`)에서
+    같은 이미지가 반복해서 실린다.
+    """
     budget = job.loop_run.budget  # type: ignore[union-attr]
     consumed = budget.consumed
+    observed = tuple(context.recent_results)
+    _consume_images(context)
     return LoopObservation(
         topic=job.request.topic,
         input_type=job.request.input_type.value,
-        recent_results=tuple(context.recent_results),
+        recent_results=observed,
         saved_artifact_kinds=frozenset(kind.value for kind in context.saved_kinds),
         missing_required_kinds=missing_required,
         iterations_left=budget.max_iterations - consumed.iterations,
@@ -383,19 +404,6 @@ def persist_progress(job: NoveltyJob, deps: AgentDeps) -> None:
         log.warning("novelty agent: progress persist failed for job %s", job.job_id)
 
 
-def _drop_stale_images(views: list[ToolResultView]) -> None:
-    """가장 최근 결과 1건에만 이미지를 남긴다.
-
-    관찰은 매 턴 최근 결과 `RECENT_RESULTS_WINDOW`건을 다시 싣는다. 이미지를 그대로
-    두면 한 번 조회한 그림이 윈도우에서 밀려날 때까지 매 턴 재전송돼 같은 토큰이
-    반복 계상된다(BR-RA11 비용 계상). 텍스트 content는 남으므로 모델은 무엇을 봤는지
-    계속 알 수 있고, 다시 봐야 하면 재호출하면 된다.
-    """
-    for index in range(len(views) - 1):
-        if views[index].images:
-            views[index] = replace(views[index], images=())
-
-
 def execute_step(
     job: NoveltyJob,
     deps: AgentDeps,
@@ -437,7 +445,6 @@ def execute_step(
         )
     )
     del context.recent_results[:-RECENT_RESULTS_WINDOW]
-    _drop_stale_images(context.recent_results)
 
     if result.ok:
         context.tool_failures.pop(proposal.tool_name, None)

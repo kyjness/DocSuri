@@ -28,7 +28,6 @@ __all__ = [
     "conservative_termination",
     "decision_from_tool_call",
     "estimate_cost",
-    "render_observation",
     "render_observation_parts",
     "sanitize_steering",
     "system_prompt_for",
@@ -133,6 +132,18 @@ def termination_parameters() -> dict[str, Any]:
     }
 
 
+def _defuse_markers(text: str) -> str:
+    """구획 경계 위조 차단 — 무해화 경로 전부가 공유하는 단일 규칙.
+
+    이 치환이 방어의 핵심이라 사본을 두지 않는다: 한쪽에만 고치면 다른 경로에
+    위조 표면이 그대로 열린다. 치환은 `=`·`:`만 `-`로 바꾸므로 결과가 새 마커를
+    만들지는 않는다.
+    """
+    for marker in _FENCE_MARKERS:
+        text = text.replace(marker, marker.replace("=", "-").replace(":", "-"))
+    return text
+
+
 def sanitize_steering(text: str, *, max_chars: int = _STEERING_RENDER_MAX_CHARS) -> str:
     """사용자 지시 본문 무해화 — 제어문자 제거·공백 정규화·구획 마커 위조 차단 후 절단.
 
@@ -146,9 +157,7 @@ def sanitize_steering(text: str, *, max_chars: int = _STEERING_RENDER_MAX_CHARS)
     바꾸므로 치환 결과가 새 마커를 만들지는 않는다.
     """
     cleaned = "".join(ch if ch == "\n" or ch >= " " else " " for ch in text)
-    cleaned = " ".join(cleaned.split())
-    for marker in _FENCE_MARKERS:
-        cleaned = cleaned.replace(marker, marker.replace("=", "-").replace(":", "-"))
+    cleaned = _defuse_markers(" ".join(cleaned.split()))
     if len(cleaned) > max_chars:
         cleaned = cleaned[:max_chars] + "…"
     return cleaned
@@ -161,19 +170,12 @@ def _flatten_line(text: str, max_chars: int) -> str:
     머물러야 하며, 여러 줄이 되면 없는 도구 결과 항목을 지어낼 수 있다.
     """
     cleaned = " ".join("".join(ch if ch >= " " else " " for ch in text).split())
-    for marker in _FENCE_MARKERS:
-        cleaned = cleaned.replace(marker, marker.replace("=", "-").replace(":", "-"))
-    return cleaned[:max_chars]
+    return _defuse_markers(cleaned)[:max_chars]
 
 
 def _flatten_error(error: str | None) -> str:
     """도구 오류 문구를 한 줄로 — 모델이 보낸 값(거부된 키 이름 등)이 섞이는 경로."""
     return _flatten_line(error, _RESULT_ERROR_MAX_CHARS) if error else ""
-
-
-def render_observation(observation: LoopObservation) -> str:
-    """텍스트만 필요한 호출부용 — 이미지 첨부는 버린다."""
-    return render_observation_parts(observation)[0]
 
 
 def render_observation_parts(

@@ -62,10 +62,12 @@ class NoveltySettings:
     github_token: str | None
     external_timeout_seconds: float
     # 자산 스토어(FR-17) — view_figure 등록 조건(logical-components §4).
-    # u1/u7과 같은 토글을 공유한다: 자산을 쓰지 않는 배포에서 도구만 살아나면
-    # 에이전트가 매번 빈 목록을 받고 캡만 태운다.
+    # u1/u7과 같은 토글을 공유한다(u7 read side와 동일): 자산을 쓰지 않는 배포에서
+    # 도구만 살아나면 에이전트가 매번 빈 목록을 받고 캡만 태운다. 버킷은 조건에
+    # 넣지 않는다 — 객체 주소는 `paper_asset.object_ref`가 들고 있고,
+    # `DOCSURI_S3_BUCKET`은 인제스천 스택에만 있어 배포 환경에서 도구가 조용히
+    # 사라진다.
     assets_enabled: bool
-    asset_bucket: str | None
     # 이미지 1건 바이트 상한 — 백엔드에 이미지 처리 의존성이 없어 다운스케일 불가,
     # 초과는 거부한다. Anthropic 이미지 한도(5MB)보다 낮게 잡는다.
     figure_max_image_bytes: int
@@ -96,11 +98,6 @@ class NoveltySettings:
         if self.llm_provider == "openai":
             return bool(self.openai_api_key)
         return self.llm_provider == "bedrock"
-
-    @property
-    def figure_assets_configured(self) -> bool:
-        """자산 스토어 설정 존재 — view_figure 등록 조건(logical-components §4)."""
-        return self.assets_enabled and bool(self.asset_bucket)
 
     def build_loop_budget(self) -> LoopBudget:
         return LoopBudget(
@@ -137,7 +134,6 @@ class NoveltySettings:
             github_token=os.environ.get("DOCSURI_GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN"),
             external_timeout_seconds=_env_float("DOCSURI_NOVELTY_EXTERNAL_TIMEOUT_SECONDS", 10.0),
             assets_enabled=_env_flag("DOCSURI_MULTIMODAL_ASSETS_ENABLED"),
-            asset_bucket=os.environ.get("DOCSURI_S3_BUCKET"),
             figure_max_image_bytes=_env_int(
                 "DOCSURI_NOVELTY_FIGURE_MAX_BYTES", 4 * 1024 * 1024
             ),
