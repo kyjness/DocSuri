@@ -21,7 +21,7 @@ from collections.abc import Callable
 from typing import Any
 
 from ..ports.llm import LlmDecision, LoopObservation
-from ..ports.tools import ToolSpec
+from ..ports.tools import ImageAttachment, ToolSpec
 from .external.base import SourceBreaker, SourceUnavailable
 from .llm_prompt import (
     TERMINATION_TOOL,
@@ -29,7 +29,7 @@ from .llm_prompt import (
     conservative_termination,
     decision_from_tool_call,
     estimate_cost,
-    render_observation,
+    render_observation_parts,
     system_prompt_for,
     termination_parameters,
 )
@@ -52,6 +52,7 @@ class OpenAiToolCallingLlm:
         output_usd_per_mtok: float = 0.60,
         transport: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
         breaker: SourceBreaker | None = None,
+        image_detail: str | None = None,
     ) -> None:
         self._model = model
         self._api_key = api_key
@@ -59,13 +60,14 @@ class OpenAiToolCallingLlm:
         self._output_rate = output_usd_per_mtok
         self._transport = transport or self._http_post
         self._breaker = breaker or SourceBreaker()
+        self._image_detail = image_detail
 
     def decide(self, observation: LoopObservation, tools: tuple[ToolSpec, ...]) -> LlmDecision:
         request = {
             "model": self._model,
             "messages": [
                 {"role": "system", "content": system_prompt_for(observation)},
-                {"role": "user", "content": render_observation(observation)},
+                {"role": "user", "content": self._user_content(observation)},
             ],
             "tools": [*(_to_function(spec) for spec in tools), _termination_function()],
             "tool_choice": "required",
@@ -74,6 +76,25 @@ class OpenAiToolCallingLlm:
         }
         response = self._invoke(request)
         return self._parse_decision(response)
+
+    def _user_content(self, observation: LoopObservation) -> Any:
+        """첨부 이미지가 없으면 문자열, 있으면 블록 리스트.
+
+        이미지가 없을 때 문자열을 유지하는 것은 절약이 아니라 계약 보존이다 —
+        관찰 렌더의 기존 형태를 검증하는 테스트·프록시가 그대로 통한다.
+        """
+        text, images = render_observation_parts(observation)
+        if not images:
+            return text
+        # 텍스트(신뢰 경계 선언 포함)가 반드시 이미지보다 앞에 온다.
+        return [{"type": "text", "text": text}, *(self._image_part(img) for img in images)]
+
+    def _image_part(self, image: ImageAttachment) -> dict[str, Any]:
+        url = f"data:{image.media_type};base64,{image.data_b64}"
+        part: dict[str, Any] = {"type": "image_url", "image_url": {"url": url}}
+        if self._image_detail:
+            part["image_url"]["detail"] = self._image_detail
+        return part
 
     def _invoke(self, request: dict[str, Any]) -> dict[str, Any]:
         try:

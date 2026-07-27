@@ -17,12 +17,20 @@ from backend.modules.novelty.domain.budget import (
 )
 from backend.modules.novelty.domain.models import LoopBudget
 
-_TOOLS = ("corpus_search", "github_search", "dataset_search", "form_evidence", "save_artifact")
+_TOOLS = (
+    "corpus_search",
+    "github_search",
+    "dataset_search",
+    "form_evidence",
+    "view_figure",
+    "save_artifact",
+)
 _CAP_GROUPS = {
     "corpus_search": "search",
     "github_search": "search",
     "dataset_search": "search",
     "form_evidence": "form_evidence",
+    "view_figure": "view_figure",
     "save_artifact": "save_artifact",
 }
 
@@ -148,3 +156,14 @@ def test_negative_cost_is_rejected() -> None:
     with pytest.raises(ValueError):
         record_cost(budget, -0.05)
     assert budget.consumed.cost_usd == 0.1
+
+
+def test_view_figure_cap_is_independent_and_blocks_only_itself() -> None:
+    """NFR §3 — view_figure 8회. 캡 소진은 그 도구만 막고 잔여 예산으로 조사는 계속된다."""
+    budget = _budget(max_total=1000, caps={"view_figure": 8, "search": 12})
+    for _ in range(8):
+        assert check_and_consume_tool_call(budget, "view_figure") is None
+    denial = check_and_consume_tool_call(budget, "view_figure")
+    assert denial is not None and denial.reason is BudgetDenialReason.TOOL_CAP_EXHAUSTED
+    # 다른 캡 그룹은 독립 — 그림을 더 못 봐도 검색은 계속할 수 있다.
+    assert check_and_consume_tool_call(budget, "corpus_search") is None

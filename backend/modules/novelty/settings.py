@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from docsuri_shared.env import env_flag as _env_flag
 from docsuri_shared.env import env_float as _env_float
 from docsuri_shared.env import env_int as _env_int
 
@@ -26,6 +27,25 @@ from .ports.tools import (
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 # v1 승계 — Bedrock inference profile(배포 기준선).
 DEFAULT_BEDROCK_MODEL = "global.anthropic.claude-sonnet-4-6"
+
+# 3.5MB — 프로바이더 이미지 한도(첫 프로바이더 5MB, 배포 기준선 Bedrock은 그보다
+# 낮다) 아래로 여유를 둔 값. 실측 코퍼스 최대 자산 1.5MB 미만이라 손실 없음.
+DEFAULT_FIGURE_MAX_IMAGE_BYTES = 3_500_000
+_IMAGE_DETAILS = frozenset({"low", "high", "auto"})
+
+
+def _image_detail_from_env() -> str | None:
+    """미지정이면 None(프로바이더 기본값). 오타는 조립 시점에 시끄럽게 실패한다 —
+    이미지가 실린 첫 턴에서 400으로 잡을 죽이는 것보다 낫다."""
+    raw = (os.environ.get("DOCSURI_NOVELTY_FIGURE_IMAGE_DETAIL") or "").strip().lower()
+    if not raw:
+        return None
+    if raw not in _IMAGE_DETAILS:
+        raise ValueError(
+            f"DOCSURI_NOVELTY_FIGURE_IMAGE_DETAIL must be one of "
+            f"{sorted(_IMAGE_DETAILS)}; got {raw!r}"
+        )
+    return raw
 
 # 캡 그룹(nfr-requirements §3) — 탐색류는 합산 캡.
 CAP_GROUP_SEARCH = "search"
@@ -60,6 +80,24 @@ class NoveltySettings:
     # 외부 탐색
     github_token: str | None
     external_timeout_seconds: float
+    # 자산 스토어(FR-17) — view_figure 등록 조건(logical-components §4).
+    # u1/u7과 같은 토글을 공유한다(u7 read side와 동일): 자산을 쓰지 않는 배포에서
+    # 도구만 살아나면 에이전트가 매번 빈 목록을 받고 캡만 태운다. 버킷은 조건에
+    # 넣지 않는다 — 객체 주소는 `paper_asset.object_ref`가 들고 있고,
+    # `DOCSURI_S3_BUCKET`은 인제스천 스택에만 있어 배포 환경에서 도구가 조용히
+    # 사라진다.
+    assets_enabled: bool
+    # 이미지 1건 바이트 상한 — 백엔드에 이미지 처리 의존성이 없어 다운스케일 불가,
+    # 초과는 거부한다. 프로바이더별 이미지 한도 중 **가장 낮은 것보다 아래**로 잡는다:
+    # 상한을 통과했는데 프로바이더가 거부하면 자산 1건의 거부로 끝나지 않고
+    # LlmUnavailable → 잡 전체 FAILED로 번진다(브레이커가 같은 요청을 재시도한 뒤
+    # run_loop의 포괄 except가 fatal로 수렴). 실측 코퍼스 최대 자산이 1.5MB 미만이라
+    # 낮게 잡아도 잃는 것이 없다.
+    figure_max_image_bytes: int
+    # OpenAI image_url detail 힌트. 프로바이더가 받는 값만 허용한다 — 오타가 그대로
+    # 나가면 이미지가 실린 첫 턴에서 400 → 잡 FAILED로 번지고, 텍스트 턴은 멀쩡해서
+    # 프로바이더 불안정으로 오인하기 쉽다.
+    figure_image_detail: str | None
     # 워커 잠금·stale 감지(NFR-NV2-2·3)
     lock_ttl_seconds: float
     stale_after_seconds: float
@@ -74,6 +112,11 @@ class NoveltySettings:
     # 온디맨드 대화 턴 한 번의 decide 상한(NFR-NV2-7 — 잡 재실행이 아니다).
     # 예산 원장은 잡의 LoopBudget 하나이고, 이 값은 한 턴이 잔여 예산을 통째로
     # 태우지 못하게 막는 별도 상한이다.
+    #
+    # ⑤3에서 4 → 6으로 올렸다. `view_figure`가 2모드(목록 → 조회)라 그림을 보는 턴은
+    # 바닥이 3스텝이다(목록·조회·답변). 4에서는 그림 두 장을 보면 답변할 스텝이 남지
+    # 않아, 실스택 검증에서 조회에 성공하고도 "시도 횟수 안에 마무리하지 못했다"는
+    # 안내가 나갔다 — 쓴 비용은 그대로인데 사용자에게 전달된 것이 없다.
     max_turn_steps: int
 
     @property
@@ -120,6 +163,11 @@ class NoveltySettings:
             sqs_queue_url=os.environ.get("DOCSURI_NOVELTY_JOB_QUEUE_URL"),
             github_token=os.environ.get("DOCSURI_GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN"),
             external_timeout_seconds=_env_float("DOCSURI_NOVELTY_EXTERNAL_TIMEOUT_SECONDS", 10.0),
+            assets_enabled=_env_flag("DOCSURI_MULTIMODAL_ASSETS_ENABLED"),
+            figure_max_image_bytes=_env_int(
+                "DOCSURI_NOVELTY_FIGURE_MAX_BYTES", DEFAULT_FIGURE_MAX_IMAGE_BYTES
+            ),
+            figure_image_detail=_image_detail_from_env(),
             lock_ttl_seconds=_env_float("DOCSURI_NOVELTY_LOCK_TTL_SECONDS", 120.0),
             stale_after_seconds=_env_float("DOCSURI_NOVELTY_STALE_AFTER_SECONDS", 900.0),
             max_iterations=_env_int("DOCSURI_NOVELTY_MAX_ITERATIONS", 24),
@@ -129,5 +177,5 @@ class NoveltySettings:
             max_view_figure_calls=_env_int("DOCSURI_NOVELTY_MAX_VIEW_FIGURE_CALLS", 8),
             max_save_artifact_calls=_env_int("DOCSURI_NOVELTY_MAX_SAVE_ARTIFACT_CALLS", 12),
             job_cost_limit_usd=_env_float("DOCSURI_NOVELTY_JOB_COST_LIMIT_USD", 0.50),
-            max_turn_steps=_env_int("DOCSURI_NOVELTY_MAX_TURN_STEPS", 4),
+            max_turn_steps=_env_int("DOCSURI_NOVELTY_MAX_TURN_STEPS", 6),
         )

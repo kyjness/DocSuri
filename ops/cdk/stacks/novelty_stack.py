@@ -105,6 +105,10 @@ class NoveltyStack(Stack):
                 "DOCSURI_OPENSEARCH_ENDPOINT": f"https://{opensearch_domain.domain_endpoint}",
                 "DOCSURI_BEDROCK_MODEL_ID": "global.cohere.embed-v4:0",
                 "DOCSURI_NOVELTY_LLM_MODEL_ID": "global.anthropic.claude-sonnet-4-6",
+                # view_figure(⑤3) 등록 조건. 워커가 도구 레지스트리를 만드는 유일한
+                # 프로세스라 여기 없으면 그림 조회 도구가 아무 신호 없이 사라진다
+                # (API 태스크에만 켜져 있던 상태 — compute_stack).
+                "DOCSURI_MULTIMODAL_ASSETS_ENABLED": "true",
                 "DOCSURI_AWS_REGION": self.region,
                 "CLOUDWATCH_NAMESPACE": "DocSuri/Production",
                 "CLOUDWATCH_LOG_GROUP": "/docsuri/ops",
@@ -157,6 +161,15 @@ class NoveltyStack(Stack):
             iam.PolicyStatement(
                 actions=["s3:GetObject"],
                 resources=[f"{artifact_bucket_arn}/doc-model/*"],
+            )
+        )
+        # view_figure가 읽는 figure/수식 crop — u1이 assets/{paper}/v{n}/*.webp에 쓴다
+        # (002_paper_asset.sql의 object_ref 규약). 이 권한이 없으면 매 조회가
+        # AccessDenied로 떨어지고, 에이전트는 원인을 모른 채 캡 8회를 태운다.
+        task_def.add_to_task_role_policy(
+            iam.PolicyStatement(
+                actions=["s3:GetObject"],
+                resources=[f"{artifact_bucket_arn}/assets/*"],
             )
         )
         # ListBucket 없이 GetObject만 있으면 아직 안 만들어진 doc-model 키가 404가 아니라

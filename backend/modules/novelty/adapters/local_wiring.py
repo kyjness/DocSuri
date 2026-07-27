@@ -17,10 +17,12 @@ from .corpus import CorpusSearchTool
 from .evidence import FormEvidenceTool
 from .external.datasets import DatasetSearchTool
 from .external.github import GithubSearchTool
+from .figures import SqlS3FigureReader, ViewFigureTool
 from .memory import InMemoryNoveltyStore
 from .store_sql import SqlNoveltyStore
 
 __all__ = [
+    "build_asset_port",
     "build_llm",
     "build_queue",
     "build_store",
@@ -70,6 +72,15 @@ def build_queue(settings: NoveltySettings, *, for_consumer: bool = False) -> Any
     return None
 
 
+def build_asset_port(
+    settings: NoveltySettings, session_factory: Callable[[], Any] | None
+) -> Any | None:
+    """자산 토글 + postgres가 있을 때만 — 없으면 view_figure가 도구 목록에서 빠진다."""
+    if not settings.assets_enabled or session_factory is None:
+        return None
+    return SqlS3FigureReader(session_factory, region_name=settings.region_name)
+
+
 def build_llm(settings: NoveltySettings) -> Any | None:
     """프로바이더 스위치(TD-NV2-3) — openai(로컬 1차) | bedrock(배포 기준선)."""
     if settings.llm_provider == "openai" and settings.openai_api_key:
@@ -80,6 +91,7 @@ def build_llm(settings: NoveltySettings) -> Any | None:
             api_key=settings.openai_api_key,
             input_usd_per_mtok=settings.openai_input_usd_per_mtok,
             output_usd_per_mtok=settings.openai_output_usd_per_mtok,
+            image_detail=settings.figure_image_detail,
         )
     if settings.llm_provider == "bedrock":
         import boto3
@@ -99,15 +111,20 @@ def build_tool_registry(
     orchestrator: Any | None = None,
     grounding_hook: Any | None = None,
     evidence_port: Any | None = None,
+    asset_port: Any | None = None,
     http_client: Any | None = None,
 ) -> ToolRegistry:
-    """가용 의존성이 있는 도구만 등록 — view_figure는 멀티모달 단계 전 미등록,
+    """가용 의존성이 있는 도구만 등록 — view_figure는 자산 스토어가 설정된 경우에만,
     Notion은 레지스트리가 구조적으로 거부한다(BR-RA12)."""
     registry = ToolRegistry()
     if orchestrator is not None and grounding_hook is not None:
         registry.register(CorpusSearchTool(orchestrator, grounding_hook))
     if evidence_port is not None:
         registry.register(FormEvidenceTool(evidence_port))
+    if asset_port is not None:
+        registry.register(
+            ViewFigureTool(asset_port, max_image_bytes=settings.figure_max_image_bytes)
+        )
     if http_client is None:
         import httpx
 

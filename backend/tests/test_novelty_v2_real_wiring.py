@@ -161,6 +161,9 @@ def _settings(**overrides) -> NoveltySettings:
         sqs_queue_url=None,
         github_token=None,
         external_timeout_seconds=5.0,
+        assets_enabled=False,
+        figure_max_image_bytes=4 * 1024 * 1024,
+        figure_image_detail=None,
         lock_ttl_seconds=120.0,
         stale_after_seconds=900.0,
         max_iterations=24,
@@ -193,8 +196,38 @@ def test_tool_registry_shrinks_naturally_without_deps() -> None:
             raise RuntimeError("no network in tests")
 
     registry = build_tool_registry(_settings(), http_client=_NoopHttp())
-    # corpus·evidence 의존성 없음 → 외부 탐색 도구만. Notion·view_figure 부재.
+    # corpus·evidence·자산 의존성 없음 → 외부 탐색 도구만. Notion·view_figure 부재.
     assert registry.names() == frozenset({"github_search", "dataset_search"})
+
+
+def test_view_figure_registers_only_when_the_asset_store_is_wired() -> None:
+    """logical-components §4 — 자산 스토어 설정이 있을 때만 등록된다."""
+    from backend.modules.novelty.adapters.local_wiring import build_tool_registry
+
+    class _NoopHttp:
+        def get(self, *args, **kwargs):
+            raise RuntimeError("no network in tests")
+
+    registry = build_tool_registry(
+        _settings(), asset_port=object(), http_client=_NoopHttp()
+    )
+    assert "view_figure" in registry.names()
+
+
+def test_asset_port_gates_on_the_toggle_and_postgres_only() -> None:
+    """u1/u7과 같은 토글을 공유한다 — 자산을 쓰지 않는 배포에서 도구만 살아나면
+    에이전트가 매번 빈 목록을 받고 캡만 태운다.
+
+    버킷 env는 조건에 넣지 않는다: 객체 주소는 `paper_asset.object_ref`가 들고 있고,
+    `DOCSURI_S3_BUCKET`은 인제스천 스택에만 설정돼 있어(compute 스택에는 없다) 조건에
+    넣으면 배포 환경에서 view_figure가 아무 신호 없이 사라진다.
+    """
+    from backend.modules.novelty.adapters.local_wiring import build_asset_port
+
+    session_factory = object
+    assert build_asset_port(_settings(), session_factory) is None  # 토글 off
+    assert build_asset_port(_settings(assets_enabled=True), None) is None  # postgres 없음
+    assert build_asset_port(_settings(assets_enabled=True), session_factory) is not None
 
 
 def test_bedrock_outage_goes_through_breaker_to_llm_unavailable() -> None:
@@ -221,3 +254,28 @@ def test_bedrock_outage_goes_through_breaker_to_llm_unavailable() -> None:
     with pytest.raises(LlmUnavailable):
         llm.decide(_observation(), _TOOLS)  # 차단 개방 — 호출 없이 즉시 실패
     assert calls["n"] == first_attempts
+
+
+def test_image_detail_typo_fails_at_composition_root_not_mid_investigation() -> None:
+    """오타가 그대로 프로바이더에 나가면 이미지가 실린 첫 턴에서 400 → 잡 FAILED다.
+    텍스트 턴은 멀쩡해서 프로바이더 불안정으로 오인하기 쉽다 — 조립 시점에 끊는다."""
+    import os
+
+    import pytest
+
+    from backend.modules.novelty.settings import NoveltySettings
+
+    key = "DOCSURI_NOVELTY_FIGURE_IMAGE_DETAIL"
+    previous = os.environ.get(key)
+    try:
+        os.environ[key] = "medium"  # OpenAI가 받지 않는 값
+        with pytest.raises(ValueError, match=key):
+            NoveltySettings.from_env()
+        os.environ[key] = "LOW"
+        assert NoveltySettings.from_env().figure_image_detail == "low"
+        del os.environ[key]
+        assert NoveltySettings.from_env().figure_image_detail is None
+    finally:
+        os.environ.pop(key, None)
+        if previous is not None:
+            os.environ[key] = previous

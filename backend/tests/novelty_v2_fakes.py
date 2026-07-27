@@ -10,9 +10,15 @@ from collections import deque
 from collections.abc import Callable, Iterable
 from typing import Any
 
+from backend.modules.novelty.adapters.figures import _LIST_LIMIT, _SERVED_TYPES
 from backend.modules.novelty.adapters.memory import (
     InMemoryJobQueue,
     InMemoryNoveltyStore,
+)
+from backend.modules.novelty.ports.assets import (
+    AssetStoreUnavailable,
+    FigureAsset,
+    FigureManifest,
 )
 from backend.modules.novelty.ports.llm import (
     LlmDecision,
@@ -21,6 +27,7 @@ from backend.modules.novelty.ports.llm import (
 from backend.modules.novelty.ports.tools import ToolContext, ToolResult, ToolSpec
 
 __all__ = [
+    "FakeFigureAssetPort",
     "FakeTool",
     "InMemoryJobQueue",
     "InMemoryNoveltyStore",
@@ -63,3 +70,58 @@ class FakeTool:
     def invoke(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         self.calls.append((args, ctx))
         return self._results.popleft() if self._results else self._default
+
+
+class FakeFigureAssetPort:
+    """FigureAssetPort 대역 — `paper_asset` 행과 S3 바이트를 메모리로 흉내 낸다.
+
+    `version=None`은 실제 어댑터와 같이 최신 버전으로 해석한다.
+    """
+
+    def __init__(
+        self,
+        assets: dict[tuple[str, int], list[FigureAsset]] | None = None,
+        blobs: dict[str, tuple[str, bytes]] | None = None,
+        store_down: bool = False,
+    ) -> None:
+        self.assets = assets or {}
+        self.blobs = blobs or {}
+        self.store_down = store_down
+        self.fetched: list[str] = []
+        self.listed: list[tuple[str, int | None]] = []
+
+    def _resolve(self, paper_id: str, version: int | None) -> int | None:
+        if version is not None:
+            return version
+        versions = [ver for (pid, ver) in self.assets if pid == paper_id]
+        return max(versions) if versions else None
+
+    def list_assets(
+        self, paper_id: str, version: int | None, *, limit: int = _LIST_LIMIT
+    ) -> FigureManifest | None:
+        self.listed.append((paper_id, version))
+        resolved = self._resolve(paper_id, version)
+        stored = self.assets.get((paper_id, resolved), ()) if resolved is not None else ()
+        # 어댑터 SQL의 타입 필터를 그대로 반영 — 표 crop은 서빙 대상이 아니다.
+        rows = [row for row in stored if row.type in _SERVED_TYPES]
+        if not rows:
+            return None
+        return FigureManifest(version=resolved, assets=rows[:limit], total=len(rows))
+
+    def get_asset(
+        self, paper_id: str, version: int | None, asset_id: str
+    ) -> FigureAsset | None:
+        resolved = self._resolve(paper_id, version)
+        rows = self.assets.get((paper_id, resolved), ()) if resolved is not None else ()
+        return next(
+            (r for r in rows if r.asset_id == asset_id and r.type in _SERVED_TYPES), None
+        )
+
+    def fetch_bytes(self, object_ref: str, *, max_bytes: int) -> tuple[str, bytes] | None:
+        self.fetched.append(object_ref)
+        if self.store_down:
+            raise AssetStoreUnavailable("store down")
+        found = self.blobs.get(object_ref)
+        if found is None or len(found[1]) > max_bytes:
+            return None
+        return found

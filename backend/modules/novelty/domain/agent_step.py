@@ -58,6 +58,7 @@ __all__ = [
     "append_agent_message",
     "build_observation",
     "collect_record_refs",
+    "consume_images",
     "drain_steering",
     "execute_save",
     "execute_step",
@@ -317,6 +318,24 @@ def drain_steering(job: NoveltyJob, deps: AgentDeps, context: AgentContext) -> i
     return len(fresh)
 
 
+def consume_images(context: AgentContext) -> None:
+    """전달된 이미지 첨부를 컨텍스트에서 지운다 — 첨부는 전달 1회짜리다.
+
+    **호출 위치는 `deps.llm.decide()` 직후다**(loop·turn의 두 decide 지점). 관찰은
+    최근 결과 여러 건을 매 턴 다시 싣는 구조라, 지우지 않으면 한 번 조회한 그림이
+    윈도우에서 밀려날 때까지 매 턴 재전송돼 같은 토큰이 반복 계상된다(BR-RA11) —
+    특히 종료 제안이 거부돼 도구 실행 없이 decide로 되도는 경로에서. 도구 실행
+    뒤에 지우면 그 경로를 놓치고, 관찰 조립 안에서 지우면 조회 함수가 숨은 변이를
+    갖게 되어 재-decide(향후 LLM 일시 장애 재시도 등)가 첨부를 잃는다.
+
+    텍스트 content는 남으므로 모델은 무엇을 봤는지 계속 알 수 있고, 다시 봐야 하면
+    재호출하면 된다(도구 캡이 그 횟수를 통제한다).
+    """
+    for index, view in enumerate(context.recent_results):
+        if view.images:
+            context.recent_results[index] = replace(view, images=())
+
+
 def build_observation(
     job: NoveltyJob,
     context: AgentContext,
@@ -326,7 +345,11 @@ def build_observation(
     request: str | None = None,
 ) -> LoopObservation:
     """관찰 조립의 단일 정의 — 루프와 대화 턴이 의도한 차이(mode·request·필수 세트)만
-    인자로 밝히고, 예산 잔량 계산·노트 윈도우 등 나머지는 여기서 한 번만 유지한다."""
+    인자로 밝히고, 예산 잔량 계산·노트 윈도우 등 나머지는 여기서 한 번만 유지한다.
+
+    순수 조회다 — 컨텍스트를 바꾸지 않는다. 이미지 첨부의 1회성은 decide 직후의
+    `consume_images`가 맡는다(그쪽 docstring 참조).
+    """
     budget = job.loop_run.budget  # type: ignore[union-attr]
     consumed = budget.consumed
     return LoopObservation(
@@ -420,6 +443,7 @@ def execute_step(
             ok=result.ok,
             content=result.content,
             error=result.error,
+            images=result.images,
         )
     )
     del context.recent_results[:-RECENT_RESULTS_WINDOW]

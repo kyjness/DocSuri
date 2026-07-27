@@ -326,7 +326,13 @@ def build_worker_deps() -> WorkerDeps:
     from backend.config import Settings
     from backend.db import make_engine, make_session_factory
 
-    from .adapters.local_wiring import build_llm, build_queue, build_store, build_tool_registry
+    from .adapters.local_wiring import (
+        build_asset_port,
+        build_llm,
+        build_queue,
+        build_store,
+        build_tool_registry,
+    )
 
     settings = NoveltySettings.from_env()
     if not settings.queue_configured:
@@ -346,11 +352,16 @@ def build_worker_deps() -> WorkerDeps:
     llm = build_llm(settings)
     orchestrator, grounding_hook = _build_corpus_deps()
     evidence_port = _build_evidence_port()
+    # 자산 리더는 형제 wrapper들과 달리 try/except가 없다 — 다른 서브프로젝트를
+    # import하지도, I/O를 하지도 않아서 잡을 실패가 없다(boto3·sqlalchemy는 메서드
+    # 안에서 lazy import).
+    asset_port = build_asset_port(settings, session_factory)
     registry = build_tool_registry(
         settings,
         orchestrator=orchestrator,
         grounding_hook=grounding_hook,
         evidence_port=evidence_port,
+        asset_port=asset_port,
     )
     return WorkerDeps(
         store=store,

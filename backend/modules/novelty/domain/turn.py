@@ -34,6 +34,7 @@ from .agent_step import (
     TraceUnavailable,
     append_agent_message,
     build_observation,
+    consume_images,
     execute_step,
     persist_progress,
     seed_context,
@@ -157,6 +158,7 @@ def _drive(
         decision = deps.llm.decide(
             _observe(job, context, message), _exposed_tools(deps)
         )
+        consume_images(context)  # 첨부는 전달 1회짜리 — decide 직후가 소비 지점
         if decision.cost_estimate_usd:
             budget_rules.record_cost(budget, decision.cost_estimate_usd)
 
