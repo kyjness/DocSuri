@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import base64
 
+import pytest
+
 from backend.modules.novelty.adapters.corpus import CorpusSearchTool
 from backend.modules.novelty.adapters.evidence import FormEvidenceTool
 from backend.modules.novelty.adapters.external.datasets import DatasetSearchTool
@@ -299,3 +301,148 @@ def test_view_figure_uses_the_version_suffix_when_the_record_ref_carries_one() -
     )
     assert result.ok
     assert [item["assetId"] for item in result.content["assets"]] == ["fig-1"]
+
+
+def test_view_figure_tolerates_a_prefixed_record_ref_from_the_model() -> None:
+    """recordRef는 모델이 쓴 값이다 — u7의 rsplit('v') 휴리스틱을 그대로 쓰면
+    'arXiv:...'가 paper_id 'arXi'로 잘려 실재하는 논문에 "자산 없다"는 오답이 나간다."""
+    tool, _ = _figure_tool()
+    result = tool.invoke({"record_ref": "arXiv:2401.00001"}, _CTX)
+    assert result.ok
+    assert [item["assetId"] for item in result.content["assets"]] == ["fig-1", "eq-3"]
+
+
+def test_view_figure_falls_back_when_the_requested_version_has_no_assets() -> None:
+    """명시 버전 미스 ≠ 논문에 자산 없음. 백필 코퍼스는 버전 하나만 갖고 있어
+    recordRef의 vN과 어긋날 수 있다 — 저장된 버전으로 폴백하되 어긋남을 밝힌다."""
+    figure = _asset("fig-1")
+    port = FakeFigureAssetPort(
+        assets={("2401.00001", 1): [figure]},
+        blobs={figure.object_ref: ("image/webp", _PNG)},
+    )
+    tool = ViewFigureTool(port, max_image_bytes=4096)
+
+    listed = tool.invoke({"record_ref": "2401.00001v3"}, _CTX)
+    assert listed.ok
+    assert "v3" in listed.content["note"] and "v1" in listed.content["note"]
+
+    # 이미지 경로도 같은 폴백을 해야 한다 — 아니면 목록↔조회가 서로를 무한 반복한다.
+    fetched = tool.invoke({"record_ref": "2401.00001v3", "asset_id": "fig-1"}, _CTX)
+    assert fetched.ok and fetched.images[0].asset_id == "fig-1"
+
+
+def test_view_figure_separates_store_outage_from_a_missing_asset() -> None:
+    """스토어 장애에 "다른 자산을 고르라"고 안내하면 로드될 수 없는 자산들로 캡 8회를
+    태운다 — 사유가 곧 수리 지시이므로 둘을 구분한다."""
+    figure = _asset("fig-1")
+    port = FakeFigureAssetPort(
+        assets={("2401.00001", 1): [figure]},
+        blobs={figure.object_ref: ("image/webp", _PNG)},
+        store_down=True,
+    )
+    result = ViewFigureTool(port, max_image_bytes=4096).invoke(
+        {"record_ref": "2401.00001", "asset_id": "fig-1"}, _CTX
+    )
+    assert not result.ok
+    assert result.result_summary == "view_figure: asset store unavailable"
+    assert "반복하지" in result.error  # 다른 자산으로 재시도하라고 하지 않는다
+    assert "다른 자산을 고르" not in result.error
+
+
+# ── SqlS3FigureReader — S3 경계(부재 vs 장애, 상한, 스트림 정리) ──
+
+
+class _FakeBody:
+    def __init__(self, data: bytes) -> None:
+        self._data = data
+        self.closed = False
+        self.read_sizes: list[int | None] = []
+
+    def read(self, size: int | None = None) -> bytes:
+        self.read_sizes.append(size)
+        return self._data if size is None else self._data[:size]
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _FakeS3:
+    def __init__(self, body: _FakeBody | None, *, content_length=..., error=None) -> None:
+        self._body = body
+        self._content_length = content_length
+        self._error = error
+        self.calls = 0
+
+    def get_object(self, Bucket, Key):  # noqa: N803 — boto3 시그니처
+        self.calls += 1
+        if self._error is not None:
+            raise self._error
+        response = {"Body": self._body}
+        if self._content_length is not ...:
+            response["ContentLength"] = self._content_length
+        return response
+
+
+def _reader(s3, **kwargs):
+    from backend.modules.novelty.adapters.figures import SqlS3FigureReader
+
+    return SqlS3FigureReader(lambda: None, s3_client=s3, **kwargs)
+
+
+_REF = "s3://bucket/assets/2401.00001/v1/fig-1.webp"
+
+
+def test_reader_never_buffers_past_the_cap_when_content_length_is_absent() -> None:
+    """chunked 응답(로컬 s3proxy)에는 ContentLength가 없다 — 그때도 무제한으로 읽지
+    않는다. 상한+1까지만 읽어 초과를 판정하고 스트림은 닫는다."""
+    body = _FakeBody(b"x" * 5000)
+    reader = _reader(_FakeS3(body, content_length=...))
+    assert reader.fetch_bytes(_REF, max_bytes=100) is None
+    assert body.read_sizes == [101]  # 전체 5000바이트를 버퍼링하지 않았다
+    assert body.closed
+
+
+def test_reader_rejects_on_content_length_before_reading_the_body() -> None:
+    body = _FakeBody(b"x" * 5000)
+    reader = _reader(_FakeS3(body, content_length=5000))
+    assert reader.fetch_bytes(_REF, max_bytes=100) is None
+    assert body.read_sizes == []  # 본문 전송 전에 끊었다
+    assert body.closed
+
+
+def test_reader_returns_bytes_within_the_cap() -> None:
+    body = _FakeBody(b"x" * 50)
+    reader = _reader(_FakeS3(body, content_length=50))
+    assert reader.fetch_bytes(_REF, max_bytes=100) == ("image/webp", b"x" * 50)
+
+
+def test_reader_treats_a_missing_key_as_absence_not_an_outage() -> None:
+    """부재는 브레이커의 실패 집계 대상이 아니다 — 없는 자산 몇 건이 스토어를 차단하면
+    멀쩡한 자산까지 못 읽는다."""
+    from botocore.exceptions import ClientError
+
+    error = ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
+    reader = _reader(_FakeS3(None, error=error))
+    assert reader.fetch_bytes(_REF, max_bytes=100) is None  # 예외 아님
+
+
+def test_reader_raises_store_unavailable_on_credential_failure() -> None:
+    """AWS_ENDPOINT_URL_S3 미설정 같은 배선 사고는 자산 부재로 위장되면 안 된다 —
+    에이전트가 로드될 수 없는 자산들로 캡을 태운다(외부 연동 규칙: 재시도+차단)."""
+    from botocore.exceptions import ClientError
+
+    from backend.modules.novelty.ports.assets import AssetStoreUnavailable
+
+    error = ClientError({"Error": {"Code": "AccessDenied"}}, "GetObject")
+    s3 = _FakeS3(None, error=error)
+    reader = _reader(s3)
+    with pytest.raises(AssetStoreUnavailable):
+        reader.fetch_bytes(_REF, max_bytes=100)
+    assert s3.calls == 2  # 기계 재시도 1회(다른 외부 도구와 동일 정책)
+
+
+def test_reader_skips_formats_no_provider_accepts() -> None:
+    s3 = _FakeS3(_FakeBody(b"x"), content_length=1)
+    reader = _reader(s3)
+    assert reader.fetch_bytes("s3://bucket/assets/a/v1/fig.tiff", max_bytes=100) is None
+    assert s3.calls == 0  # 프로바이더가 400을 주기 전에 우리가 막는다

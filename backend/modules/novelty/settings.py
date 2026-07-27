@@ -28,6 +28,25 @@ DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 # v1 승계 — Bedrock inference profile(배포 기준선).
 DEFAULT_BEDROCK_MODEL = "global.anthropic.claude-sonnet-4-6"
 
+# 3.5MB — 프로바이더 이미지 한도(첫 프로바이더 5MB, 배포 기준선 Bedrock은 그보다
+# 낮다) 아래로 여유를 둔 값. 실측 코퍼스 최대 자산 1.5MB 미만이라 손실 없음.
+DEFAULT_FIGURE_MAX_IMAGE_BYTES = 3_500_000
+_IMAGE_DETAILS = frozenset({"low", "high", "auto"})
+
+
+def _image_detail_from_env() -> str | None:
+    """미지정이면 None(프로바이더 기본값). 오타는 조립 시점에 시끄럽게 실패한다 —
+    이미지가 실린 첫 턴에서 400으로 잡을 죽이는 것보다 낫다."""
+    raw = (os.environ.get("DOCSURI_NOVELTY_FIGURE_IMAGE_DETAIL") or "").strip().lower()
+    if not raw:
+        return None
+    if raw not in _IMAGE_DETAILS:
+        raise ValueError(
+            f"DOCSURI_NOVELTY_FIGURE_IMAGE_DETAIL must be one of "
+            f"{sorted(_IMAGE_DETAILS)}; got {raw!r}"
+        )
+    return raw
+
 # 캡 그룹(nfr-requirements §3) — 탐색류는 합산 캡.
 CAP_GROUP_SEARCH = "search"
 CAP_GROUP_FORM_EVIDENCE = "form_evidence"
@@ -69,9 +88,15 @@ class NoveltySettings:
     # 사라진다.
     assets_enabled: bool
     # 이미지 1건 바이트 상한 — 백엔드에 이미지 처리 의존성이 없어 다운스케일 불가,
-    # 초과는 거부한다. Anthropic 이미지 한도(5MB)보다 낮게 잡는다.
+    # 초과는 거부한다. 프로바이더별 이미지 한도 중 **가장 낮은 것보다 아래**로 잡는다:
+    # 상한을 통과했는데 프로바이더가 거부하면 자산 1건의 거부로 끝나지 않고
+    # LlmUnavailable → 잡 전체 FAILED로 번진다(브레이커가 같은 요청을 재시도한 뒤
+    # run_loop의 포괄 except가 fatal로 수렴). 실측 코퍼스 최대 자산이 1.5MB 미만이라
+    # 낮게 잡아도 잃는 것이 없다.
     figure_max_image_bytes: int
-    # OpenAI image_url detail 힌트(low|high|auto). 미지정이면 프로바이더 기본값.
+    # OpenAI image_url detail 힌트. 프로바이더가 받는 값만 허용한다 — 오타가 그대로
+    # 나가면 이미지가 실린 첫 턴에서 400 → 잡 FAILED로 번지고, 텍스트 턴은 멀쩡해서
+    # 프로바이더 불안정으로 오인하기 쉽다.
     figure_image_detail: str | None
     # 워커 잠금·stale 감지(NFR-NV2-2·3)
     lock_ttl_seconds: float
@@ -135,9 +160,9 @@ class NoveltySettings:
             external_timeout_seconds=_env_float("DOCSURI_NOVELTY_EXTERNAL_TIMEOUT_SECONDS", 10.0),
             assets_enabled=_env_flag("DOCSURI_MULTIMODAL_ASSETS_ENABLED"),
             figure_max_image_bytes=_env_int(
-                "DOCSURI_NOVELTY_FIGURE_MAX_BYTES", 4 * 1024 * 1024
+                "DOCSURI_NOVELTY_FIGURE_MAX_BYTES", DEFAULT_FIGURE_MAX_IMAGE_BYTES
             ),
-            figure_image_detail=os.environ.get("DOCSURI_NOVELTY_FIGURE_IMAGE_DETAIL") or None,
+            figure_image_detail=_image_detail_from_env(),
             lock_ttl_seconds=_env_float("DOCSURI_NOVELTY_LOCK_TTL_SECONDS", 120.0),
             stale_after_seconds=_env_float("DOCSURI_NOVELTY_STALE_AFTER_SECONDS", 900.0),
             max_iterations=_env_int("DOCSURI_NOVELTY_MAX_ITERATIONS", 24),

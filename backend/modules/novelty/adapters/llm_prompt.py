@@ -151,13 +151,11 @@ def sanitize_steering(text: str, *, max_chars: int = _STEERING_RENDER_MAX_CHARS)
     경계를 흉내 내 시스템 지시 영역으로 넘어오려는 시도를 여기서 끊는다. 강제력은
     프롬프트가 아니라 도메인·게이트·allowlist에 있고(BR-RA9), 이건 그 앞단이다.
 
-    **순서가 방어다**: 공백 정규화를 마커 치환보다 **먼저** 한다. 반대로 하면
-    `===  사용자 지시 끝 ===`(공백 2개)처럼 어긋난 위조가 치환을 통과한 뒤 정규화로
-    정확한 마커가 되어 그대로 렌더된다(코드 리뷰 반영). 치환은 `=`·`:`만 `-`로
-    바꾸므로 치환 결과가 새 마커를 만들지는 않는다.
+    무해화 파이프라인 자체는 `_flatten_line`과 **공유한다** — 렌더 경로마다 사본을
+    두면 나중의 강화(제로폭·BiDi 문자 제거 등)가 한쪽에만 적용돼, 가장 길고 사용자
+    통제도가 높은 이 입력에 위조 표면이 그대로 열린다. 여기서 더하는 것은 절단 표시(…)뿐.
     """
-    cleaned = "".join(ch if ch == "\n" or ch >= " " else " " for ch in text)
-    cleaned = _defuse_markers(" ".join(cleaned.split()))
+    cleaned = _flatten_line(text, max_chars + 1)
     if len(cleaned) > max_chars:
         cleaned = cleaned[:max_chars] + "…"
     return cleaned
@@ -166,8 +164,13 @@ def sanitize_steering(text: str, *, max_chars: int = _STEERING_RENDER_MAX_CHARS)
 def _flatten_line(text: str, max_chars: int) -> str:
     """임의 문자열을 한 줄로 — 제어문자 제거·공백 정규화 후 마커 위조 차단·절단.
 
-    `sanitize_steering`과 같은 순서를 따르되 개행도 지운다: 이 값은 한 줄 안에
-    머물러야 하며, 여러 줄이 되면 없는 도구 결과 항목을 지어낼 수 있다.
+    렌더 경로 전체(도구 오류·assetId·사용자 지시)의 단일 무해화 파이프라인이다.
+    개행을 지우는 것이 핵심: 여러 줄이 되면 없는 도구 결과 항목이나 구획 경계를
+    지어낼 수 있다.
+
+    **순서가 방어다**: 공백 정규화를 마커 치환보다 **먼저** 한다. 반대로 하면
+    `===  사용자 지시 끝 ===`(공백 2개)처럼 어긋난 위조가 치환을 통과한 뒤 정규화로
+    정확한 마커가 되어 그대로 렌더된다(코드 리뷰 반영).
     """
     cleaned = " ".join("".join(ch if ch >= " " else " " for ch in text).split())
     return _defuse_markers(cleaned)[:max_chars]

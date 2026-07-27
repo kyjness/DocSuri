@@ -20,14 +20,11 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import re
 from collections.abc import Callable
 from typing import Any
 
-# u11 evidence가 같은 방식으로 쓰는 공용 arXiv id 규약(`evidence/tools.py`) —
-# 백엔드는 summarization을 의존성으로 선언하므로 사본을 만들지 않는다.
-from summarization.adapters._paper_ref import bare_paper_id, paper_version
-
-from ..ports.assets import FigureAsset, FigureManifest
+from ..ports.assets import AssetStoreUnavailable, FigureAsset, FigureManifest
 from ..ports.tools import (
     TOOL_VIEW_FIGURE,
     ImageAttachment,
@@ -35,6 +32,7 @@ from ..ports.tools import (
     ToolResult,
     ToolSpec,
 )
+from .external.base import SourceBreaker, SourceUnavailable
 
 __all__ = ["SqlS3FigureReader", "ViewFigureTool"]
 
@@ -50,7 +48,27 @@ _MEDIA_TYPES = {
     ".jpeg": "image/jpeg",
     ".gif": "image/gif",
 }
+# 부재로 취급하는 S3 오류 코드 — ingestion `s3_get_or_none`과 같은 분류.
+_MISS_CODES = frozenset({"NoSuchKey", "404", "NotFound"})
 _LIST_LIMIT = 60
+
+# recordRef는 **모델이 쓴 값**이다 — u7 `_paper_ref`의 rsplit 휴리스틱은 앱이 나르는
+# 정규 id용이라 여기에 쓰면 안 된다: 'arXiv:2401.00001'을 rsplit('v')하면 paper_id가
+# 'arXi'가 되고 버전이 1로 강제되어, 실재하는 논문에 "자산이 없다"는 확신에 찬
+# 오답이 나간다. 접두어를 벗기고 **끝의 vN만** 버전으로 인정하는 검증적 파서를 쓴다.
+_RECORD_REF_RE = re.compile(r"^(?:arxiv:)?(?P<paper>.+?)(?:v(?P<version>\d+))?$", re.IGNORECASE)
+_RECORD_REF_MAX_CHARS = 100  # ToolSpec.parameters의 maxLength와 같은 값
+
+
+def _parse_record_ref(record_ref: str) -> tuple[str, int | None] | None:
+    # 스펙의 maxLength는 모델에 대한 안내일 뿐 강제가 아니다 — 경계에서 막는다.
+    if len(record_ref) > _RECORD_REF_MAX_CHARS:
+        return None
+    match = _RECORD_REF_RE.match(record_ref)
+    if match is None:
+        return None
+    version = match["version"]
+    return match["paper"], int(version) if version else None
 
 # 버전 해석을 별도 질의로 두지 않는다 — 코퍼스의 recordRef가 거의 전부 bare라
 # 나누면 사실상 모든 호출이 왕복 2회가 된다. `count(*) OVER ()`는 LIMIT 적용
@@ -83,10 +101,14 @@ class SqlS3FigureReader:
         *,
         s3_client: Any | None = None,
         region_name: str | None = None,
+        breaker: SourceBreaker | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._s3 = s3_client
         self._region = region_name
+        # 외부 연동 규칙(재시도 1회 + 반복 실패 시 자동 차단) — 다른 외부 도구와
+        # 동일 정책. 부재(NoSuchKey)는 실패로 집계하지 않는다.
+        self._breaker = breaker or SourceBreaker()
 
     def _client(self) -> Any:
         if self._s3 is None:
@@ -143,16 +165,38 @@ class SqlS3FigureReader:
         if media_type is None:
             return None
         try:
+            data = self._breaker.call(lambda: self._get_bounded(bucket, key, max_bytes))
+        except SourceUnavailable as exc:
+            # 자격증명·엔드포인트·연속 실패 — 부재와 구분해 올린다. 뭉개면 도구가
+            # "다른 자산을 고르라"고 잘못 안내해 로드될 수 없는 자산들로 캡을 태운다.
+            log.warning("novelty view_figure: asset store unavailable", exc_info=True)
+            raise AssetStoreUnavailable(str(exc)) from exc
+        return (media_type, data) if data is not None else None
+
+    def _get_bounded(self, bucket: str, key: str, max_bytes: int) -> bytes | None:
+        """부재·크기 초과는 None(실패 집계 없음), 그 외 오류는 예외로 승격."""
+        from botocore.exceptions import ClientError
+
+        try:
             response = self._client().get_object(Bucket=bucket, Key=key)
-            # 본문을 읽기 전에 크기를 본다 — 어차피 버릴 메가바이트를 받지 않는다.
+        except ClientError as exc:
+            code = str(exc.response.get("Error", {}).get("Code", ""))
+            if code in _MISS_CODES:
+                return None  # 자산 부재는 스토어 장애가 아니다
+            raise
+        body = response["Body"]
+        try:
+            # 헤더에 크기가 있으면 본문 전송 전에 끊고, 없으면(로컬 프록시의 chunked
+            # 응답) 상한+1까지만 읽는다 — 어느 쪽이든 무제한 버퍼링은 없다.
             length = response.get("ContentLength")
             if length is not None and int(length) > max_bytes:
                 return None
-            data = response["Body"].read()
-            return (media_type, data) if len(data) <= max_bytes else None
-        except Exception:  # noqa: BLE001 — 자산 1건의 부재·장애가 루프를 끊지 않는다
-            log.warning("novelty view_figure: asset fetch failed", exc_info=True)
-            return None
+            data = body.read(max_bytes + 1)
+        finally:
+            close = getattr(body, "close", None)
+            if close is not None:
+                close()
+        return data if len(data) <= max_bytes else None
 
 
 def _asset_from_row(row: Any) -> FigureAsset:
@@ -218,17 +262,16 @@ class ViewFigureTool:
         경로의 대상이 아니다.
         """
         record_ref = str(args.get("record_ref") or "").strip()
-        if not record_ref:
+        parsed = _parse_record_ref(record_ref) if record_ref else None
+        if parsed is None:
             return _refuse(
                 "missing record_ref",
                 "record_ref는 필수다 — 검색·근거 결과의 recordRef 값을 그대로 넣어라",
             )
-
         # 포트는 bare paper_id를 받는다 — 정규화는 여기서 한 번만 한다. 어댑터의
         # 방어적 정규화에 기대면 다른 구현이 들어올 때 조용한 영구 미스가 된다.
-        paper_id = bare_paper_id(record_ref)
-        # suffix가 있을 때만 명시 버전 — bare면 None으로 넘겨 어댑터가 최신을 해석한다.
-        version = paper_version(record_ref) if paper_id != record_ref else None
+        # suffix가 없으면 version=None으로 넘겨 어댑터가 최신을 해석한다.
+        paper_id, version = parsed
 
         asset_id = str(args.get("asset_id") or "").strip()
         if asset_id:
@@ -239,6 +282,16 @@ class ViewFigureTool:
         self, record_ref: str, paper_id: str, version: int | None
     ) -> ToolResult:
         manifest = self._assets.list_assets(paper_id, version, limit=_LIST_LIMIT)
+        version_note: str | None = None
+        if manifest is None and version is not None:
+            # 명시 버전 미스 ≠ 논문에 자산 없음 — 백필 코퍼스는 버전 하나만 갖고
+            # 있어 recordRef의 vN과 어긋날 수 있다. 저장된 버전으로 폴백하되
+            # 어긋남을 밝힌다("자산이 없다"는 오답이 실재 자산에서 모델을 떼어놓는다).
+            manifest = self._assets.list_assets(paper_id, None, limit=_LIST_LIMIT)
+            if manifest is not None:
+                version_note = (
+                    f"요청한 v{version}의 자산은 없어 저장된 v{manifest.version}의 자산이다"
+                )
         if manifest is None:
             return _refuse(
                 "no assets",
@@ -263,6 +316,8 @@ class ViewFigureTool:
         # 적게 숨겨졌다고 믿는다. 총량은 이름이 겹치지 않는 필드로 알린다.
         if manifest.total > len(manifest.assets):
             content["totalAssets"] = manifest.total
+        if version_note:
+            content["note"] = version_note
         return ToolResult(
             ok=True,
             content=content,
@@ -275,6 +330,10 @@ class ViewFigureTool:
         # BR-RA11 — 실재하는 자산만. 단건 조회로 존재를 확인한다(매니페스트 전체를
         # 다시 읽지 않는다 — 자산이 많은 논문에서 통째로 낭비된다).
         match = self._assets.get_asset(paper_id, version, asset_id)
+        if match is None and version is not None:
+            # 목록 경로와 같은 버전 폴백 — 목록이 폴백으로 보여준 자산을 이미지로
+            # 조회하면 같은 명시 버전으로 다시 미스가 나 무한 목록↔조회 루프가 된다.
+            match = self._assets.get_asset(paper_id, None, asset_id)
         if match is None:
             return _refuse(
                 "unknown asset",
@@ -282,15 +341,24 @@ class ViewFigureTool:
                 "asset_id 없이 view_figure를 호출해 목록을 먼저 받아라",
             )
 
-        fetched = self._assets.fetch_bytes(
-            match.object_ref, max_bytes=self._max_image_bytes
-        )
+        try:
+            fetched = self._assets.fetch_bytes(
+                match.object_ref, max_bytes=self._max_image_bytes
+            )
+        except AssetStoreUnavailable:
+            # 스토어 장애는 자산 부재와 다른 수리 지시를 받는다 — "다른 자산을
+            # 고르라"는 안내는 로드될 수 없는 자산들로 캡 8회를 태우게 만든다.
+            return _refuse(
+                "asset store unavailable",
+                "자산 스토어에 접근할 수 없다(스토리지 장애) — 이미지 조회를 반복하지 "
+                "말고 캡션·텍스트 근거로 진행하라",
+            )
         if fetched is None:
-            # 부재·장애·상한 초과가 한 사유로 모인다 — 에이전트가 할 수 있는 다음
-            # 행동이 셋 다 같기 때문이다(다른 자산을 고르거나 텍스트로 진행).
+            # 부재와 상한 초과가 한 사유로 모인다 — 다음 행동이 같기 때문이다
+            # (다른 자산을 고르거나 텍스트로 진행). 스토어 장애는 위에서 분리됐다.
             return _refuse(
                 "asset unavailable",
-                f"asset_id '{asset_id}' 이미지를 쓸 수 없다(부재·장애 또는 크기 초과) — "
+                f"asset_id '{asset_id}' 이미지를 쓸 수 없다(부재 또는 크기 초과) — "
                 f"{_RETRY_HINT}",
             )
         media_type, data = fetched

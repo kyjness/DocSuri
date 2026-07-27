@@ -254,3 +254,28 @@ def test_bedrock_outage_goes_through_breaker_to_llm_unavailable() -> None:
     with pytest.raises(LlmUnavailable):
         llm.decide(_observation(), _TOOLS)  # 차단 개방 — 호출 없이 즉시 실패
     assert calls["n"] == first_attempts
+
+
+def test_image_detail_typo_fails_at_composition_root_not_mid_investigation() -> None:
+    """오타가 그대로 프로바이더에 나가면 이미지가 실린 첫 턴에서 400 → 잡 FAILED다.
+    텍스트 턴은 멀쩡해서 프로바이더 불안정으로 오인하기 쉽다 — 조립 시점에 끊는다."""
+    import os
+
+    import pytest
+
+    from backend.modules.novelty.settings import NoveltySettings
+
+    key = "DOCSURI_NOVELTY_FIGURE_IMAGE_DETAIL"
+    previous = os.environ.get(key)
+    try:
+        os.environ[key] = "medium"  # OpenAI가 받지 않는 값
+        with pytest.raises(ValueError, match=key):
+            NoveltySettings.from_env()
+        os.environ[key] = "LOW"
+        assert NoveltySettings.from_env().figure_image_detail == "low"
+        del os.environ[key]
+        assert NoveltySettings.from_env().figure_image_detail is None
+    finally:
+        os.environ.pop(key, None)
+        if previous is not None:
+            os.environ[key] = previous

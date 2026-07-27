@@ -16,7 +16,13 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
-__all__ = ["FigureAsset", "FigureAssetPort", "FigureManifest"]
+__all__ = ["AssetStoreUnavailable", "FigureAsset", "FigureAssetPort", "FigureManifest"]
+
+
+class AssetStoreUnavailable(RuntimeError):
+    """자산 스토어 자체의 장애(자격증명·엔드포인트·연속 실패) — 자산 1건의 부재와
+    구분한다. 부재는 다른 자산을 고르면 되지만, 스토어 장애에서 같은 안내를 하면
+    에이전트가 로드될 수 없는 자산들로 캡 8회를 전부 태운다."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,5 +65,9 @@ class FigureAssetPort(Protocol):
         ...
 
     def fetch_bytes(self, object_ref: str, *, max_bytes: int) -> tuple[str, bytes] | None:
-        """(media_type, data) — 없거나 `max_bytes` 초과면 None(본문 전송 전 차단)."""
+        """(media_type, data) — 없거나 `max_bytes` 초과면 None(본문 전송 전 차단).
+
+        스토어 자체가 죽었으면 `AssetStoreUnavailable`을 던진다 — 부재와 장애를
+        한 값으로 뭉개면 호출자가 수리 지시를 잘못 준다.
+        """
         ...
