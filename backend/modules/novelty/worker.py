@@ -68,6 +68,15 @@ class WorkerDeps:
     _consume_failures: int = field(default=0, init=False)  # 연속 큐 조회 실패(백오프용)
 
 
+def _backoff_delay(attempt: int, cap_seconds: float) -> float:
+    """연속 실패 횟수 → 대기 시간(첫 재시도 1초, 이후 2배씩, 상한까지).
+
+    지수를 먼저 제한한다 — 장애가 길어져 attempt가 1024를 넘으면 `2.0 ** n`이
+    OverflowError를 던져, 하필 워커를 살려두려고 만든 처리 경로가 워커를 죽인다.
+    """
+    return min(2.0 ** min(attempt - 1, 20), cap_seconds)
+
+
 def run_worker(deps: WorkerDeps, should_stop) -> None:
     recover = getattr(deps.queue, "recover_processing", None)
     if recover is not None:
@@ -82,7 +91,7 @@ def run_worker(deps: WorkerDeps, should_stop) -> None:
             message = deps.queue.consume(_CONSUME_TIMEOUT_S)
         except Exception:  # noqa: BLE001 — 큐 장애는 백오프 후 재시도
             deps._consume_failures += 1
-            delay = min(2.0 ** (deps._consume_failures - 1), _CONSUME_ERROR_BACKOFF_MAX_S)
+            delay = _backoff_delay(deps._consume_failures, _CONSUME_ERROR_BACKOFF_MAX_S)
             log.warning(
                 "novelty worker: queue consume failed (%d in a row); retrying in %.0fs",
                 deps._consume_failures, delay, exc_info=True,
@@ -198,7 +207,7 @@ def _acquire_or_backoff(deps: WorkerDeps, message: QueuedJob) -> bool:
     deps.queue.nack(message)
     count = deps._contention_counts.get(message.job_id, 0) + 1
     deps._contention_counts[message.job_id] = count
-    deps.sleep(min(2.0 ** (count - 1), _CONTENTION_BACKOFF_MAX_S))
+    deps.sleep(_backoff_delay(count, _CONTENTION_BACKOFF_MAX_S))
     return False
 
 
@@ -333,7 +342,7 @@ def build_worker_deps() -> WorkerDeps:
         raise SystemExit("novelty worker: postgres DATABASE_URL is required")
     session_factory = make_session_factory(make_engine(database_url))
     store = build_store(session_factory)
-    queue = build_queue(settings)
+    queue = build_queue(settings, for_consumer=True)
     llm = build_llm(settings)
     orchestrator, grounding_hook = _build_corpus_deps()
     evidence_port = _build_evidence_port()

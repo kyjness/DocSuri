@@ -69,7 +69,8 @@ class DatasetSearchTool:
                 result_summary="dataset sources unavailable",
             )
         deduped = _dedupe_by_url(findings)
-        content: dict[str, Any] = {"findings": deduped}
+        # 목록 키는 도구를 가리지 않고 "items"(github_search·corpus_search와 동일).
+        content: dict[str, Any] = {"items": deduped}
         if degraded:
             content["degraded_sources"] = degraded
         return ToolResult(

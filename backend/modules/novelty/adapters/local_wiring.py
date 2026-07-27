@@ -38,9 +38,14 @@ def build_store(session_factory: Callable[[], Any] | None) -> Any:
     return InMemoryNoveltyStore()
 
 
-def build_queue(settings: NoveltySettings) -> Any | None:
+def build_queue(settings: NoveltySettings, *, for_consumer: bool = False) -> Any | None:
     """redis(로컬 1차) 우선, SQS(배포 기준선)는 sqs_queue_url 존재 시. 둘 다 없으면
-    None — API는 뜨되 잡 접수가 503으로 거부된다(queue_unavailable)."""
+    None — API는 뜨되 잡 접수가 503으로 거부된다(queue_unavailable).
+
+    `for_consumer`는 블록 소비를 도는 워커만 켠다. 소켓 읽기 한도를 늘리는 것은
+    consume 한 곳에만 필요한데, 같은 클라이언트를 쓰는 API의 enqueue까지 길어지면
+    redis가 멎었을 때 잡 접수 요청이 그만큼 더 붙들려 있다가 503을 낸다.
+    """
     if settings.queue_url:
         import redis
 
@@ -50,9 +55,10 @@ def build_queue(settings: NoveltySettings) -> Any | None:
         # (5초)은 워커 블록 시간과 같아 유휴 폴링마다 읽기 데드라인에 걸린다.
         # 어댑터도 그 예외를 "빈 큐"로 정규화하지만, 정상 경로가 예외에 기대지
         # 않도록 여기서 한도를 맞춘다. URL이 값을 직접 지정하면 그쪽이 이긴다.
-        return RedisJobQueue(
-            redis.Redis.from_url(settings.queue_url, socket_timeout=CONSUME_SOCKET_TIMEOUT_S)
+        options: dict[str, Any] = (
+            {"socket_timeout": CONSUME_SOCKET_TIMEOUT_S} if for_consumer else {}
         )
+        return RedisJobQueue(redis.Redis.from_url(settings.queue_url, **options))
     if settings.sqs_queue_url:
         import boto3
 

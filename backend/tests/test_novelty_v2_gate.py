@@ -173,3 +173,205 @@ def test_candidate_without_supporting_refs_rejected() -> None:
     rejection = evaluate_artifact(ArtifactKind.NOVELTY_CANDIDATES, payload, _KNOWN)
     assert rejection is not None
     assert rejection.reason is GateRejectionReason.MISSING_SOURCE_REFS
+
+
+def test_misnamed_items_key_is_a_shape_error_not_an_empty_artifact() -> None:
+    """컨테이너 키를 틀리면 "비어 있다"가 아니라 "형태가 틀렸다"로 돌려줘야 한다.
+
+    로컬 실스택에서 실제로 겪은 실패다: 모델이 similar_works에 {"works": [...]}를
+    보냈고 게이트는 payload["items"]만 읽어 empty_artifact로 거부했다. 그 사유는
+    데이터가 비었다고 말할 뿐 키가 틀렸다는 사실을 알려주지 않아, 모델이 같은 구조로
+    19회 재시도하다 예산을 소진했다 — 필수 세트가 영영 완성되지 않았다.
+    """
+    payload = {
+        "works": [
+            {
+                "artifact_type": "paper",
+                "title": "CoinPress",
+                "source_refs": [_ref()],
+                "evidence_status": "supported",
+            }
+        ]
+    }
+    rejection = evaluate_artifact(ArtifactKind.SIMILAR_WORKS, payload, _KNOWN)
+    assert rejection is not None
+    assert rejection.reason is GateRejectionReason.INVALID_SHAPE
+    # 사유가 무엇을 고쳐야 하는지 담아야 한다 — 그래야 다음 시도가 달라진다.
+    assert "items" in rejection.detail and "works" in rejection.detail
+
+
+def test_misnamed_items_reason_names_every_array_key_it_found() -> None:
+    """미리 정해둔 이름 목록에 기대지 않는다 — 실제로 쓴 키를 그대로 돌려줘야
+    처음 보는 오답(`papers`·`tables`…)에도 같은 수리 정보가 나간다."""
+    payload = {"papers": [{"title": "A"}], "notes": ["b"]}
+    rejection = evaluate_artifact(ArtifactKind.SIMILAR_WORKS, payload, _KNOWN)
+    assert rejection is not None
+    assert rejection.reason is GateRejectionReason.INVALID_SHAPE
+    assert "papers" in rejection.detail and "notes" in rejection.detail
+
+
+def test_genuinely_empty_items_still_reports_empty_artifact() -> None:
+    """키가 맞고 정말로 비었으면 여전히 empty_artifact다 — 형태 오류와 구분된다."""
+    rejection = evaluate_artifact(ArtifactKind.SIMILAR_WORKS, {"items": []}, _KNOWN)
+    assert rejection is not None
+    assert rejection.reason is GateRejectionReason.EMPTY_ARTIFACT
+
+
+def test_save_artifact_spec_documents_every_supported_kind() -> None:
+    """툴 스펙이 kind별 payload 형태를 알려줘야 모델이 키를 추측하지 않는다.
+
+    스펙에 형태가 없으면 모델은 컨테이너 키를 지어내고, 게이트는 그걸 거부한다.
+    새 ArtifactKind를 추가하면서 스펙을 빠뜨리면 같은 함정이 다시 생기므로,
+    지원 kind 집합과 스펙 문서화 집합이 어긋나지 않게 못 박는다.
+    """
+    from backend.modules.novelty.domain.agent_step import (
+        SAVE_ARTIFACT_PAYLOAD_SHAPES,
+        SAVE_ARTIFACT_SPEC,
+    )
+
+    assert set(SAVE_ARTIFACT_PAYLOAD_SHAPES) == {kind.value for kind in ArtifactKind}
+    assert SAVE_ARTIFACT_SPEC.parameters["properties"]["kind"]["enum"] == sorted(
+        kind.value for kind in ArtifactKind
+    )
+    # 목록형 산출물은 "items"를 쓰라는 지시가 설명에 있어야 한다.
+    assert '"items"' in SAVE_ARTIFACT_SPEC.description
+
+
+def test_payload_shapes_name_every_required_field_of_the_model() -> None:
+    """형태 설명은 게이트가 검증하는 모델에서 갈라져 나오면 안 된다.
+
+    설명은 산문이라 모델 필드가 바뀌어도 조용히 남는다. 모델이 설명대로 보냈는데
+    필수 필드가 빠져 거부되면, 사유를 읽고 고칠 방법이 없다 — 이 브랜치가 없애려던
+    상태 그대로다(실제로 evidence의 abstain_reason, experiment_plan의 비어 있지 않은
+    배열 조건이 빠져 있었다). 필수 필드 이름이 설명에 전부 등장하는지 못 박는다.
+    """
+    from backend.modules.novelty.domain import models
+    from backend.modules.novelty.domain.agent_step import SAVE_ARTIFACT_PAYLOAD_SHAPES
+
+    # kind → 게이트가 payload(또는 items 원소)를 검증할 때 쓰는 모델.
+    models_by_kind = {
+        ArtifactKind.EVIDENCE: models.EvidenceSnapshot,
+        ArtifactKind.SIMILAR_WORKS: models.SimilarWorkItem,
+        ArtifactKind.GAP_ANALYSIS: models.GapItem,
+        ArtifactKind.EXTERNAL_FINDINGS: models.ExternalFinding,
+        ArtifactKind.NOVELTY_CANDIDATES: models.NoveltyCandidate,
+        ArtifactKind.EXPERIMENT_PLAN: models.ExperimentPlan,
+    }
+    assert set(models_by_kind) == set(ArtifactKind)  # kind가 늘면 여기도 늘어야 한다
+
+    for kind, model in models_by_kind.items():
+        shape = SAVE_ARTIFACT_PAYLOAD_SHAPES[kind.value]
+        required = [
+            name for name, field in model.model_fields.items() if field.is_required()
+        ]
+        missing = [name for name in required if name not in shape]
+        assert not missing, f"{kind.value} 형태 설명에 필수 필드 누락: {missing}"
+
+
+def test_payload_shapes_describe_nested_objects_as_objects() -> None:
+    """이름만 맞고 형태가 틀린 경우도 같은 실패를 낳는다.
+
+    실스택에서 실제로 겪었다: evidence의 coverage를 설명이 이름만 적어둬 모델이
+    `"coverage": 0`을 보냈고, 게이트는 "dictionary가 필요하다"로 거부했다. 중첩
+    객체 필드는 그 안의 필수 필드까지 설명에 드러나야 형태를 짐작하지 않는다.
+    """
+    from pydantic import BaseModel
+
+    from backend.modules.novelty.domain import models
+    from backend.modules.novelty.domain.agent_step import SAVE_ARTIFACT_PAYLOAD_SHAPES
+
+    def nested_models(model: type[BaseModel]) -> dict[str, type[BaseModel]]:
+        """필드명 → 그 필드가 담는 중첩 pydantic 모델(있을 때만)."""
+        found = {}
+        for name, field in model.model_fields.items():
+            for candidate in (field.annotation, *getattr(field.annotation, "__args__", ())):
+                if isinstance(candidate, type) and issubclass(candidate, BaseModel):
+                    found[name] = candidate
+                    break
+        return found
+
+    # SourceRef는 SOURCE_REF_RULE이 따로 설명한다(모든 kind 공통).
+    described_elsewhere = {"source_refs", "supporting_refs", "conflicting_refs", "claims"}
+    for kind_name, shape in SAVE_ARTIFACT_PAYLOAD_SHAPES.items():
+        model = {
+            "evidence": models.EvidenceSnapshot,
+            "similar_works": models.SimilarWorkItem,
+            "gap_analysis": models.GapItem,
+            "external_findings": models.ExternalFinding,
+            "novelty_candidates": models.NoveltyCandidate,
+            "experiment_plan": models.ExperimentPlan,
+        }[kind_name]
+        for field_name, nested in nested_models(model).items():
+            if field_name in described_elsewhere or field_name not in shape:
+                continue
+            required = [n for n, f in nested.model_fields.items() if f.is_required()]
+            assert any(name in shape for name in required), (
+                f"{kind_name}.{field_name}은 객체({nested.__name__})인데 설명이 "
+                f"내부 필드를 하나도 안 보여준다 — 모델이 스칼라로 채운다"
+            )
+
+
+def test_payload_shapes_mark_list_fields_and_only_list_fields_with_brackets() -> None:
+    """`foo[]` 표기는 배열, 표기 없으면 단일 값 — 설명과 모델이 이 규약을 공유해야 한다.
+
+    실스택에서 두 번 같은 방식으로 깨졌다: `coverage`(객체인데 이름만 적힘)와
+    `excluded_claims`(이름은 복수형인데 타입은 문자열 하나). 둘 다 모델이 형태를
+    짐작해 보냈고 게이트가 invalid_shape로 돌려보냈다 — 이름은 맞는데 형태가 틀린
+    경우다. 필수 필드의 배열 여부가 표기와 어긋나면 여기서 걸린다.
+    """
+    from backend.modules.novelty.domain import models
+    from backend.modules.novelty.domain.agent_step import SAVE_ARTIFACT_PAYLOAD_SHAPES
+
+    models_by_kind = {
+        "evidence": models.EvidenceSnapshot,
+        "similar_works": models.SimilarWorkItem,
+        "gap_analysis": models.GapItem,
+        "external_findings": models.ExternalFinding,
+        "novelty_candidates": models.NoveltyCandidate,
+        "experiment_plan": models.ExperimentPlan,
+    }
+    for kind_name, model in models_by_kind.items():
+        shape = SAVE_ARTIFACT_PAYLOAD_SHAPES[kind_name]
+        for name, field in model.model_fields.items():
+            if not field.is_required() or name not in shape:
+                continue
+            annotation = str(field.annotation)
+            is_list = annotation.startswith("list[") or "list[" in annotation
+            shown_as_list = f"{name}[]" in shape
+            assert is_list == shown_as_list, (
+                f"{kind_name}.{name}: 모델은 {'배열' if is_list else '단일 값'}인데 "
+                f"설명은 {'배열' if shown_as_list else '단일 값'}로 보여준다"
+            )
+
+
+def test_null_on_an_optional_list_reads_as_empty_not_a_shape_error() -> None:
+    """모델은 "없음"을 null로 쓴다 — 생략과 빈 목록이 같은 뜻인 필드에서 그걸
+    거부하면 사유가 `Input should be a valid list`뿐이라 수리 방향이 안 보인다.
+    실스택에서 conflicting_refs 하나로 한 턴이 통째로 소진됐다.
+
+    필수 목록은 계속 거부한다 — 느슨해지는 것은 "생략 가능한 목록"뿐이다.
+    """
+    candidate = {
+        "angle": "privacy-first retrieval",
+        "rationale": "기존 한계 보완",
+        "excluded_claims": "새로움 확정은 하지 않는다",
+        "supporting_refs": [_ref()],
+        "conflicting_refs": None,  # 충돌 근거 없음
+    }
+    payload = {"items": [candidate]}
+    assert evaluate_artifact(ArtifactKind.NOVELTY_CANDIDATES, payload, _KNOWN) is None
+
+    gap = _gap_item(related_similar_work_ids=None)
+    assert evaluate_artifact(ArtifactKind.GAP_ANALYSIS, {"items": [gap]}, _KNOWN) is None
+
+    # 근거 목록이 null이면 통과하지 않는다 — 다만 사유는 형태가 아니라 의미로 나간다.
+    no_refs = {**candidate, "supporting_refs": None}
+    rejection = evaluate_artifact(ArtifactKind.NOVELTY_CANDIDATES, {"items": [no_refs]}, _KNOWN)
+    assert rejection is not None
+    assert rejection.reason is GateRejectionReason.MISSING_SOURCE_REFS
+
+    # 필수 목록(min_length=1, 기본값 없음)은 null을 그대로 거부한다.
+    plan = _experiment_plan(baselines=None)
+    plan_rejection = evaluate_artifact(ArtifactKind.EXPERIMENT_PLAN, plan, _KNOWN)
+    assert plan_rejection is not None
+    assert plan_rejection.reason is GateRejectionReason.INVALID_SHAPE

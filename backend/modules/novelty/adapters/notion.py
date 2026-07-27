@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..domain.models import ARTIFACT_LABELS
 from .external.base import SourceBreaker
 
 __all__ = ["NotionApiExportClient", "build_notion_client"]
@@ -71,15 +72,6 @@ def build_notion_client() -> NotionApiExportClient:
     )
 
 
-_KIND_HEADINGS = {
-    "evidence": "근거표",
-    "similar_works": "유사 연구",
-    "gap_analysis": "여백 분석",
-    "external_findings": "외부 탐색 결과",
-    "novelty_candidates": "차별화 방향 제안",
-    "experiment_plan": "실험 계획",
-}
-
 
 def _notion_blocks(content: dict[str, Any]) -> list[dict[str, Any]]:
     blocks: list[dict[str, Any]] = []
@@ -88,7 +80,7 @@ def _notion_blocks(content: dict[str, Any]) -> list[dict[str, Any]]:
         blocks.append(_bullet(f"입력 프롬프트: {prompt}"))
     for artifact in content.get("artifacts") or []:
         kind = str(artifact.get("kind") or "")
-        blocks.append(_heading(_KIND_HEADINGS.get(kind, kind or "산출물")))
+        blocks.append(_heading(ARTIFACT_LABELS.get(kind, kind or "산출물")))
         payload = artifact.get("payload") or {}
         for item in (payload.get("items") or [])[:5]:
             if not isinstance(item, dict):

@@ -26,6 +26,7 @@ from backend.modules.novelty.ports.llm import (
 )
 from backend.modules.novelty.ports.tools import (
     TOOL_CORPUS_SEARCH,
+    TOOL_FORM_EVIDENCE,
     TOOL_SAVE_ARTIFACT,
     ToolRegistry,
     ToolResult,
@@ -131,6 +132,16 @@ def _registry() -> ToolRegistry:
             default=ToolResult(ok=True, content={"items": []}, record_refs=("rec:new",)),
         )
     )
+    registry.register(
+        FakeTool(
+            TOOL_FORM_EVIDENCE,
+            # 성공 시 루프가 evidence를 자동 보존한다 — context.last_saved가 채워진다.
+            default=ToolResult(
+                ok=True,
+                content={"evidence": {"state": "abstain", "abstain_reason": "근거 부족"}},
+            ),
+        )
+    )
     return registry
 
 
@@ -176,6 +187,78 @@ def test_turn_generates_experiment_plan_through_the_same_gate() -> None:
     assert reply.kind is ChatKind.AGENT_REPLY
     assert reply.resulting_artifact_ref == outcome.artifact_ref
     assert outcome.artifact_ref is not None
+
+
+def test_successful_save_is_reported_to_the_model_as_a_system_note() -> None:
+    """저장 성공을 관찰에 실어야 모델이 같은 산출물을 다시 저장하지 않는다.
+
+    프롬프트 문구만으로 막으면 남은 시도와 예산을 재저장에 태운다 — 강제력은
+    도메인이 만드는 사실 관찰에 두고 프롬프트는 심층 방어로만 둔다.
+    """
+    from backend.modules.novelty.domain.turn import _SAVED_THIS_TURN_NOTE
+
+    store = InMemoryNoveltyStore()
+    job = _completed_job(store)
+    message = _request(store, job, "실험 계획 짜줘")
+    llm = ScriptedToolCallingLlm([_save_plan(), _reply("만들었어요.")])
+
+    run_turn(job, message, _deps(store, llm), max_steps=4)
+
+    # 저장 전 관찰에는 없고, 저장 다음 관찰에는 있다.
+    assert _SAVED_THIS_TURN_NOTE not in llm.observations[0].notes
+    assert _SAVED_THIS_TURN_NOTE in llm.observations[1].notes
+
+
+def test_evidence_auto_save_does_not_cut_the_turn_before_the_request_is_met() -> None:
+    """근거 자동 보존은 "요청받은 것을 만들었다"가 아니다.
+
+    form_evidence가 성공하면 루프가 evidence를 자동 저장하며 `last_saved`를 채운다.
+    저장 중단 조건을 그 필드로 판정하면, 근거부터 모으는 정상 턴이 사용자가 요청한
+    산출물을 만들기도 전에 끊기고 — 엉뚱하게 "근거표를 만들어 저장했어요"라는
+    성공 안내까지 나간다(코드 리뷰 반영).
+    """
+    store = InMemoryNoveltyStore()
+    job = _completed_job(store)
+    message = _request(store, job, "실험 계획 짜줘")
+    llm = ScriptedToolCallingLlm(
+        [
+            LlmDecision(ToolCallProposal(TOOL_FORM_EVIDENCE, {"topic": "privacy rag"})),
+            _save_plan(),
+            _reply("근거를 확인하고 계획을 만들었어요."),
+        ]
+    )
+
+    outcome = run_turn(job, message, _deps(store, llm), max_steps=4)
+
+    kinds = {rec.kind for rec in store.list_artifacts(job.owner_id, job.job_id)}
+    assert ArtifactKind.EXPERIMENT_PLAN in kinds  # 요청받은 산출물이 실제로 만들어졌다
+    assert outcome.saved_kind is ArtifactKind.EXPERIMENT_PLAN  # 근거가 아니다
+    reply = _messages(store, job)[-1]
+    assert reply.content == "근거를 확인하고 계획을 만들었어요."
+    assert reply.resulting_artifact_ref == outcome.artifact_ref is not None
+
+
+def test_resaving_after_a_successful_save_ends_the_turn_instead_of_burning_steps() -> None:
+    """저장에 성공한 뒤 또 저장하려 들면 그 자리에서 끊는다.
+
+    실스택 검증에서 모델은 같은 계획을 max_steps까지 네 번 다시 저장했다 — 네 번
+    모두 게이트를 통과했으니 사용자에게 달라지는 것은 없고 LLM 호출만 늘었다.
+    프롬프트 문구도 시스템 노트도 이걸 막지 못했으므로 도메인이 끊는다.
+    """
+    store = InMemoryNoveltyStore()
+    job = _completed_job(store)
+    message = _request(store, job, "실험 계획 짜줘")
+    # 저장 후에도 계속 저장만 시도하는 모델.
+    llm = ScriptedToolCallingLlm([_save_plan(), _save_plan(), _save_plan(), _save_plan()])
+
+    outcome = run_turn(job, message, _deps(store, llm), max_steps=4)
+
+    # 두 번째 결정에서 끊었다 — 스크립트가 소진되지 않았다는 것이 그 증거다.
+    assert len(llm.observations) == 2
+    # 그래도 답장은 나가고 산출물 참조가 걸린다(침묵 종료 금지).
+    reply = _messages(store, job)[-1]
+    assert reply.kind is ChatKind.AGENT_REPLY
+    assert reply.resulting_artifact_ref == outcome.artifact_ref is not None
 
 
 def test_turn_plan_citing_unknown_record_ref_is_rejected_then_retry_succeeds() -> None:
@@ -419,10 +502,20 @@ def test_turn_with_nothing_saved_still_reports_the_failure() -> None:
 
 def test_success_reply_uses_the_right_korean_object_particle() -> None:
     """사용자에게 보이는 문구다 — "계획을(를)" 같은 표기를 쓰지 않는다."""
-    from backend.modules.novelty.domain.turn import _ARTIFACT_LABELS, _with_object_particle
+    from docsuri_shared.hangul import attach_particle
 
-    assert _with_object_particle("실험 계획") == "실험 계획을"  # 받침 있음
-    assert _with_object_particle("유사 연구 표") == "유사 연구 표를"  # 받침 없음
+    from backend.modules.novelty.domain.models import ARTIFACT_LABELS
+
+    assert attach_particle("실험 계획", "을") == "실험 계획을"  # 받침 있음
+    assert attach_particle("유사 연구 표", "을") == "유사 연구 표를"  # 받침 없음
     # 모든 라벨이 둘 중 하나로 끝나고 괄호 표기가 남지 않는다.
-    for label in _ARTIFACT_LABELS.values():
-        assert _with_object_particle(label).endswith(("을", "를"))
+    for label in ARTIFACT_LABELS.values():
+        assert attach_particle(label, "을").endswith(("을", "를"))
+
+
+def test_every_artifact_kind_has_a_user_facing_label() -> None:
+    """라벨이 빠지면 대화 답장과 Notion 제목이 조용히 `similar_works` 같은 내부
+    식별자로 떨어진다 — 화면에 나가기 전에 여기서 걸린다."""
+    from backend.modules.novelty.domain.models import ARTIFACT_LABELS, ArtifactKind
+
+    assert set(ARTIFACT_LABELS) == set(ArtifactKind)

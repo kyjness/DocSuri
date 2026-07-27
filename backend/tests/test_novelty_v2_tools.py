@@ -147,3 +147,26 @@ def test_no_buildable_registry_contains_notion() -> None:
     for tool_cls in (GithubSearchTool, DatasetSearchTool, CorpusSearchTool, FormEvidenceTool):
         registry.register(_Stub(tool_cls.spec))
     assert all("notion" not in name.lower() for name in registry.names())
+
+
+def test_corpus_cards_carry_the_record_ref_key_the_gate_requires() -> None:
+    """카드가 게이트가 요구하는 이름(recordRef)으로 값을 실어야 한다.
+
+    arxivId가 곧 실재성 핸들이지만 카드에 `arxivId`로만 보이면, 모델은 그것을
+    source_refs[].recordRef에 넣어야 한다는 걸 알 방법이 없다 — 로컬 실스택
+    검증에서 실제로 산출물마다 unknown_source_ref로 거부돼 필수 세트가 완성되지
+    않았다. 데이터가 스스로 계약을 담아야 프롬프트 설명에만 기대지 않는다.
+    """
+    tool = CorpusSearchTool(
+        orchestrator=object(),
+        grounding_hook=object(),
+        runner=lambda *a, **k: _page_response([_card("2401.09999")]),
+    )
+    result = tool.invoke({"query": "privacy rag"}, _CTX)
+    card = result.content["items"][0]
+    assert card["recordRef"] == "2401.09999"
+    # 게이트가 대조하는 집합과 카드에 보이는 값이 같아야 한다.
+    assert card["recordRef"] in result.record_refs
+    # paperId도 이름 그대로 실어야 한다 — 게이트는 recordRef만 대조하므로, 이름을
+    # 알려주지 않으면 모델이 넣은 엉뚱한 paperId가 걸러지지 않고 저장된다.
+    assert card["paperId"] == "2401.09999"

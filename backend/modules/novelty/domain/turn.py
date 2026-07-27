@@ -12,13 +12,19 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass
 from typing import Any
 
-from ..ports.llm import LoopObservation, TerminationProposal, ToolResultView
-from ..ports.tools import ToolSpec
+from docsuri_shared.hangul import attach_particle
+
+from ..ports.llm import (
+    LoopObservation,
+    TerminationProposal,
+    ToolResultView,
+    fit_result_content,
+)
+from ..ports.tools import TOOL_SAVE_ARTIFACT, ToolSpec
 from . import budget as budget_rules
 from .agent_step import (
     SAVE_ARTIFACT_SPEC,
@@ -33,6 +39,7 @@ from .agent_step import (
     seed_context,
 )
 from .models import (
+    ARTIFACT_LABELS,
     ArtifactKind,
     ArtifactRecord,
     ChatKind,
@@ -78,25 +85,7 @@ _BUDGET_EXHAUSTED_REPLY = (
 _NO_REPLY_FALLBACK = (
     "요청을 처리하지 못했어요. 조금 더 구체적으로 알려주시면 다시 시도해 볼게요."
 )
-def _with_object_particle(label: str) -> str:
-    """받침 유무에 따라 을/를을 붙인다 — "계획을(를)" 같은 어색한 표기를 쓰지 않는다."""
-    last = label.strip()[-1:]
-    if not last:
-        return label
-    code = ord(last)
-    has_final = 0xAC00 <= code <= 0xD7A3 and (code - 0xAC00) % 28 != 0
-    return f"{label}{'을' if has_final else '를'}"
-
-
-# 사용자에게 보일 산출물 이름 — 저장은 됐는데 모델이 마무리 답변을 못 한 경우에 쓴다.
-_ARTIFACT_LABELS = {
-    ArtifactKind.EXPERIMENT_PLAN: "실험 계획",
-    ArtifactKind.NOVELTY_CANDIDATES: "방향 제안",
-    ArtifactKind.SIMILAR_WORKS: "유사 연구 표",
-    ArtifactKind.GAP_ANALYSIS: "여백 분석",
-    ArtifactKind.EXTERNAL_FINDINGS: "외부 탐색 결과",
-    ArtifactKind.EVIDENCE: "근거",
-}
+_SAVED_THIS_TURN_NOTE = "이번 턴에서 산출물 저장에 성공했다 — 다시 저장하지 말고 reply로 마무리하라."
 
 
 @dataclass(slots=True)
@@ -157,6 +146,10 @@ def _drive(
     max_steps: int,
 ) -> TurnOutcome:
     budget = job.loop_run.budget  # type: ignore[union-attr]
+    # 이번 턴이 **요청받아** 만든 산출물. `context.last_saved`와 다르다 — 그쪽은
+    # form_evidence의 근거 자동 저장으로도 채워지므로, 사용자가 요청한 것을 만들기
+    # 전에 이미 값이 들어 있다(코드 리뷰 반영).
+    requested_save: tuple[ArtifactKind, str] | None = None
 
     for step in range(max_steps):
         if step > 0 and budget_rules.begin_iteration(budget) is not None:
@@ -173,28 +166,54 @@ def _drive(
         if isinstance(proposal, TerminationProposal):
             return _finish(
                 job, deps, message, proposal.note or _NO_REPLY_FALLBACK,
-                kind=ChatKind.AGENT_REPLY, saved=context.last_saved,
+                kind=ChatKind.AGENT_REPLY, saved=requested_save,
             )
         if proposal.tool_name == TOOL_REPLY:
             content = str(proposal.args.get("content") or "").strip()
             return _finish(
                 job, deps, message, content or _NO_REPLY_FALLBACK,
-                kind=ChatKind.AGENT_REPLY, saved=context.last_saved,
+                kind=ChatKind.AGENT_REPLY, saved=requested_save,
             )
 
+        # 요청받은 산출물을 이미 저장했는데 또 도구를 부르려 한다 — 여기서 끊는다.
+        # 남은 시도는 답변 하나를 위한 것이고 산출물은 이미 만들어졌다. 실스택
+        # 검증에서 모델은 같은 계획을 max_steps까지 4번 다시 저장하고 답변 없이
+        # 끝났다(4회 전부 게이트 통과 — 사용자에게 달라지는 것 없이 예산만 태웠다).
+        # 프롬프트 문구와 시스템 노트로는 막히지 않았다.
+        if requested_save is not None:
+            # 도구 호출이 없었으므로 ToolCallRecord도 없다(트레이스 1:1 유지) —
+            # 대신 중단 사실을 로그로 남긴다.
+            log.info(
+                "novelty turn: stopping after save — refused another %s call (job=%s)",
+                proposal.tool_name, job.job_id,
+            )
+            break
+
+        saved_before = context.last_saved
         if execute_step(job, deps, context, proposal) is StepResult.BUDGET_EXHAUSTED:
             break
+        # 저장이 실제로 성공했다는 사실을 시스템 노트(신뢰 구획)로 알린다. 프롬프트
+        # 문구만으로는 모델이 같은 산출물을 다시 저장하려 들어 남은 시도와 예산을
+        # 태운다 — 사실 관찰은 도메인이 만들고, 프롬프트는 심층 방어로만 둔다.
+        # 근거 자동 저장은 여기 해당하지 않는다 — 사용자가 요청한 산출물이 아니다.
+        if (
+            proposal.tool_name == TOOL_SAVE_ARTIFACT
+            and context.last_saved is not None
+            and context.last_saved != saved_before
+        ):
+            requested_save = context.last_saved
+            context.notes.append(_SAVED_THIS_TURN_NOTE)
 
     # 상한·예산 소진으로 reply 없이 끝났다. 그래도 저장에 성공했다면 요청은 이뤄진
     # 것이다 — 실패로 안내하면 사용자가 이미 만들어진 산출물을 두고 재요청해 쿼터와
     # 예산을 다시 쓴다(로컬 실스택 검증에서 실제로 발생: 계획은 저장됐는데 "마무리하지
     # 못했으니 다시 요청하라"는 안내가 나갔다).
-    if context.last_saved is not None:
-        saved_kind, _ = context.last_saved
-        label = _ARTIFACT_LABELS.get(saved_kind, saved_kind.value)
+    if requested_save is not None:
+        saved_kind, _ = requested_save
+        label = ARTIFACT_LABELS.get(saved_kind, saved_kind.value)
         return _finish(
-            job, deps, message, f"요청하신 {_with_object_particle(label)} 만들어 저장했어요.",
-            kind=ChatKind.AGENT_REPLY, saved=context.last_saved,
+            job, deps, message, f"요청하신 {attach_particle(label, '을')} 만들어 저장했어요.",
+            kind=ChatKind.AGENT_REPLY, saved=requested_save,
         )
     # 침묵 종료 금지 — 아무것도 만들지 못했으면 사유를 남긴다.
     return _finish(job, deps, message, _exhausted_reply(context), kind=ChatKind.NOTICE)
@@ -240,14 +259,12 @@ def _artifact_view(seq: int, record: ArtifactRecord) -> ToolResultView:
 
 
 def _truncate_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """렌더링 전 1차 절단 — 산출물 3종을 그대로 실으면 입력이 과대해진다."""
-    try:
-        text = json.dumps(payload, ensure_ascii=False, default=str)
-    except (TypeError, ValueError):
-        return {"note": "payload not serialisable"}
-    if len(text) <= _ARTIFACT_PAYLOAD_MAX_CHARS:
-        return payload
-    return {"truncated": text[:_ARTIFACT_PAYLOAD_MAX_CHARS]}
+    """렌더링 전 1차 절단 — 산출물 3종을 그대로 실으면 입력이 과대해진다.
+
+    항목 단위로 줄인다(바이트 절단 아님) — 마지막 행이 중간에서 끊기면 그 행의
+    recordRef가 잘린 채 인용돼 게이트에서 거부된다.
+    """
+    return fit_result_content(payload, _ARTIFACT_PAYLOAD_MAX_CHARS)
 
 
 def _observe(

@@ -164,6 +164,18 @@ class ExportStatus(StrEnum):
     FAILED = "failed"
 
 
+# 산출물의 사용자 표기 — 대화 답장과 Notion 내보내기 제목이 같은 이름을 써야
+# 한다(한쪽에서 "유사 연구", 다른 쪽에서 "유사 연구 표"로 보이면 같은 산출물인지
+# 알 수 없다). kind가 늘면 여기 한 곳만 고친다.
+ARTIFACT_LABELS: dict[ArtifactKind, str] = {
+    ArtifactKind.EVIDENCE: "근거표",
+    ArtifactKind.SIMILAR_WORKS: "유사 연구 표",
+    ArtifactKind.GAP_ANALYSIS: "여백 분석",
+    ArtifactKind.EXTERNAL_FINDINGS: "외부 탐색 결과",
+    ArtifactKind.NOVELTY_CANDIDATES: "차별화 방향 제안",
+    ArtifactKind.EXPERIMENT_PLAN: "실험 계획",
+}
+
 # 기본 세트(BR-RA1) — 전부 게이트 통과·저장되어야 completed.
 REQUIRED_ARTIFACT_KINDS = frozenset(
     {ArtifactKind.EVIDENCE, ArtifactKind.SIMILAR_WORKS, ArtifactKind.GAP_ANALYSIS}
@@ -312,7 +324,34 @@ class ToolCallRecord(BaseModel):
     finished_at: datetime
 
 
-class EvidenceSnapshot(BaseModel):
+class ArtifactPayloadModel(BaseModel):
+    """산출물 payload 모델의 공통 바탕 — 생략 가능한 목록에 온 null을 빈 목록으로 읽는다.
+
+    에이전트는 "충돌하는 근거 없음"을 자연스럽게 `"conflicting_refs": null`로 쓴다.
+    여기서 생략과 빈 목록은 같은 뜻이라 그 구분에 의미가 없는데, 거부하면 사유가
+    `Input should be a valid list`뿐이라 모델이 무엇을 바꿔야 할지 알기 어렵다 —
+    실스택에서 이 한 필드로 한 턴이 통째로 소진됐다.
+
+    필수 목록(experiment_plan의 baselines 등)은 default_factory가 없으므로 여기
+    해당하지 않는다 — null은 여전히 거부되고, 그래야 한다.
+    """
+
+    @model_validator(mode="before")
+    @classmethod
+    def _null_optional_lists_are_absent(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        drop = [
+            name
+            for name, field in cls.model_fields.items()
+            if data.get(name, ...) is None and field.default_factory is list
+        ]
+        if not drop:
+            return data
+        return {key: value for key, value in data.items() if key not in drop}
+
+
+class EvidenceSnapshot(ArtifactPayloadModel):
     """EvidenceFormationPort 결과의 내부 보존본(승계). PROVISIONAL 필드는 있으면
     소비하되 필수로 의존하지 않는다(BR-NV3)."""
 
@@ -322,7 +361,7 @@ class EvidenceSnapshot(BaseModel):
     abstain_reason: str | None = None
 
 
-class SimilarWorkItem(BaseModel):
+class SimilarWorkItem(ArtifactPayloadModel):
     """유사 연구 표의 한 행(승계). 근거가 있을 때만 셀을 채운다(BR-NV9)."""
 
     artifact_id: str = Field(default_factory=lambda: str(uuid4()))
@@ -339,7 +378,7 @@ class SimilarWorkItem(BaseModel):
     confidence: str | None = None
 
 
-class GapItem(BaseModel):
+class GapItem(ArtifactPayloadModel):
     """여백 분석 항목(FR-32). 모든 판정에 source_refs 필수(BR-RA10),
     open_gap은 '부재 증명'이 아니라 탐색 범위 내 미발견 — searched_scope_note 필수."""
 
@@ -352,11 +391,11 @@ class GapItem(BaseModel):
     related_similar_work_ids: list[str] = Field(default_factory=list)
 
 
-class GapAnalysis(BaseModel):
+class GapAnalysis(ArtifactPayloadModel):
     items: list[GapItem] = Field(default_factory=list)
 
 
-class ExternalFinding(BaseModel):
+class ExternalFinding(ArtifactPayloadModel):
     """GitHub·데이터셋 검색 결과의 정규화 artifact(승계). 뉴스는 제외(BR-NV7)."""
 
     source_type: str = Field(pattern=r"^(github|dataset)$")
@@ -370,7 +409,7 @@ class ExternalFinding(BaseModel):
     normalized_at: datetime = Field(default_factory=utc_now)
 
 
-class NoveltyCandidate(BaseModel):
+class NoveltyCandidate(ArtifactPayloadModel):
     """차별화 방향 제안 — 온디맨드 전용(FR-32 개정). bounded 생성 규칙(BR-NV11)과
     저장 게이트(BR-RA2)를 동일 적용한다."""
 

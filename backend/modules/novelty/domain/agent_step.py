@@ -34,7 +34,7 @@ from ..ports.tools import (
     ToolSpec,
 )
 from . import budget as budget_rules
-from .gate import GateRejectionReason, evaluate_artifact
+from .gate import ITEMS_CONTAINER_KINDS, GateRejectionReason, evaluate_artifact
 from .models import (
     ArtifactKind,
     ArtifactRecord,
@@ -70,19 +70,97 @@ log = logging.getLogger("docsuri.novelty.loop")
 
 # save_artifact는 레지스트리 도구가 아니라 호출자가 직접 게이트로 처리한다 —
 # 우회 저장 경로를 만들지 않기 위해(BR-RA2). LLM에는 이 스펙으로 노출된다.
+#
+# payload 형태를 스펙에 싣는 이유(로컬 실스택 검증 반영): 종전에는 payload가
+# 스키마 없는 {"type": "object"}였다. 모델은 컨테이너 키를 추측할 수밖에 없었고
+# similar_works에 {"works": [...]}를 보냈다 — 게이트는 payload["items"]를 읽으므로
+# 빈 산출물로 거부됐고, 사유("비어 있다")가 키가 틀렸다는 사실을 알려주지 않아
+# 같은 구조로 재시도하다 예산을 소진했다. 그 결과 필수 세트가 영영 완성되지 않았다.
+# source_refs의 recordRef는 지어낼 수 없다 — 게이트가 이번 잡이 도구 결과로 확보한
+# 집합과 대조한다(BR-NV19). 도구 결과 카드가 같은 이름으로 값을 실어 보내므로,
+# 그 값을 그대로 복사하라고 명시한다. 종전에는 카드에 `arxivId`로만 보여서 모델이
+# 연결을 알 수 없었고 산출물마다 unknown_source_ref로 거부됐다.
+SOURCE_REF_RULE = (
+    'source_refs/supporting_refs 항목은 {"paperId": ..., "recordRef": ...} 형태이고, '
+    "recordRef는 도구 결과 카드의 recordRef 값을 **그대로 복사**해야 한다 — "
+    "지어내거나 URL·제목으로 대체하면 unknown_source_ref로 거부된다. "
+    "이 두 키 외의 필드(title·quote·url 등)를 넣으면 형태 오류로 거부된다."
+)
+
+SAVE_ARTIFACT_PAYLOAD_SHAPES = {
+    "evidence": (
+        '{state("ok"|"abstain"), claims[], coverage{paperCount, queryUsed?}(객체 — 숫자 아님), '
+        "abstain_reason(state=abstain일 때 필수)} — form_evidence 결과를 그대로 넣는다"
+        "(보통 자동 저장되므로 직접 저장할 일은 드물다)"
+    ),
+    "similar_works": (
+        '{"items": [{artifact_type, title, problem_definition?, method?, dataset?, '
+        "result?, limitation?, overlap_with_user_idea?, source_refs[], "
+        "evidence_status?(supported|unsupported|abstained), confidence?(문자열 — 숫자 아님)"
+        "}]}"
+    ),
+    "gap_analysis": (
+        '{"items": [{area, status(well_covered|partially_covered|open_gap), rationale, '
+        "source_refs[], searched_scope_note(open_gap일 때 필수), related_similar_work_ids?}]} "
+        "— source_refs는 **open_gap 항목에도 비울 수 없다**. 여백은 '아무 논문도 없다'가 "
+        "아니라 '찾아본 논문들이 이걸 다루지 않는다'는 판정이므로, 근거로 삼은 그 논문들을 "
+        "인용한다"
+    ),
+    "external_findings": (
+        '{"items": [{source_type, canonical_id, title, url, license?, task?, metrics?, '
+        "baseline_or_code_hint?}]}"
+    ),
+    "novelty_candidates": (
+        '{"items": [{angle, rationale, excluded_claims, supporting_refs[], '
+        "conflicting_refs?, feasibility_notes?}]} — excluded_claims는 **문자열 하나**다"
+        "(이름은 복수형이지만 목록이 아니다): 이 방향이 주장하지 않는 것을 한 문장으로"
+    ),
+    "experiment_plan": (
+        "{hypothesis, novelty_angle, baselines[], datasets[], metrics[], procedure[], "
+        "risks[], resources[], source_refs[]} — 목록 아님(단일 객체). 배열 필드는 전부 "
+        "1개 이상이어야 한다(빈 배열은 거부된다)"
+    ),
+}
+
+# 어느 kind가 {"items": [...]} 컨테이너인지는 게이트가 실제로 판정에 쓰는 집합에서
+# 읽는다 — 설명이 게이트와 어긋나면 모델은 스펙대로 보내고도 거부당한다.
+_ITEMS_CONTAINER_KIND_NAMES = tuple(
+    kind for kind in SAVE_ARTIFACT_PAYLOAD_SHAPES if kind in ITEMS_CONTAINER_KINDS
+)
+_SINGLE_OBJECT_KIND_NAMES = tuple(
+    kind for kind in SAVE_ARTIFACT_PAYLOAD_SHAPES if kind not in ITEMS_CONTAINER_KINDS
+)
+
 SAVE_ARTIFACT_SPEC = ToolSpec(
     name=TOOL_SAVE_ARTIFACT,
     description=(
         "조사 산출물 저장 시도. 결정론 게이트가 SourceRef 실재성·필수 필드·bounded "
-        "규칙을 검증하며, 거부 시 기계 판독 사유가 반환된다. "
-        "kind: evidence|similar_works|gap_analysis|external_findings|"
-        "novelty_candidates|experiment_plan"
+        "규칙을 검증하며, 거부 시 기계 판독 사유가 반환된다.\n"
+        "payload 형태는 kind마다 다르다 — 아래 형태를 정확히 따를 것. 표 형태 산출물은 "
+        '반드시 최상위 키 "items"에 배열을 담는다(다른 이름을 쓰면 형태 오류로 거부된다).\n'
+        + "\n".join(f"- {kind}: {shape}" for kind, shape in SAVE_ARTIFACT_PAYLOAD_SHAPES.items())
+        + "\n"
+        + SOURCE_REF_RULE
     ),
     parameters={
         "type": "object",
         "properties": {
-            "kind": {"type": "string"},
-            "payload": {"type": "object"},
+            "kind": {
+                "type": "string",
+                "enum": sorted(SAVE_ARTIFACT_PAYLOAD_SHAPES),
+            },
+            "payload": {
+                "type": "object",
+                # 조사(는/은)를 붙이지 않는다 — kind 이름은 영문 식별자라 목록이
+                # 바뀌면 받침이 어긋난다. 화살표 표기는 어떤 조합에도 맞는다.
+                "description": (
+                    "kind별 형태는 도구 설명 참조. "
+                    + "·".join(_ITEMS_CONTAINER_KIND_NAMES)
+                    + ' → {"items": [...]} 형태 / '
+                    + "·".join(_SINGLE_OBJECT_KIND_NAMES)
+                    + " → 단일 객체."
+                ),
+            },
         },
         "required": ["kind", "payload"],
     },
@@ -416,7 +494,9 @@ def execute_save(
             ok=False,
             content={"rejected": {"reason": rejection.reason.value, "detail": rejection.detail}},
             error=f"rejected_by_gate: {rejection.reason.value}: {rejection.detail}",
-            result_summary=f"save rejected: {rejection.reason.value}",
+            # 사유 코드만 남기면 트레이스로는 왜 거부됐는지 알 수 없다 — 모델은
+            # error로 상세를 받지만 사람이 보는 기록에는 없었다(관측 가능성).
+            result_summary=f"save rejected: {rejection.reason.value}: {rejection.detail}",
             gate_rejection_code=rejection.reason.value,
         )
     artifact_id = deps.store.save_artifact(

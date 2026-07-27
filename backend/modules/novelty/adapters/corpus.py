@@ -85,7 +85,9 @@ class CorpusSearchTool:
             return ToolResult(
                 ok=True,
                 content=content,
-                record_refs=tuple(item["arxivId"] for item in items if item.get("arxivId")),
+                # 카드가 모델에게 보여준 이름(recordRef)에서 그대로 뽑는다 — 게이트가
+                # 대조할 집합과 카드에 적힌 값이 구조적으로 같은 출처를 갖게 한다.
+                record_refs=tuple(item["recordRef"] for item in items if item.get("recordRef")),
                 result_summary=f"corpus: {len(items)} papers"
                 + (" (degraded)" if degraded else ""),
             )
@@ -112,6 +114,15 @@ def _card_view(card: Any) -> dict[str, Any]:
         "authors": list(card.authors),
         "year": card.year,
         "arxivId": card.arxivId,
+        # SourceRef의 두 필드를 게이트가 쓰는 이름 그대로 노출한다(실스택 검증 반영).
+        # arxivId가 곧 실재성 핸들이지만, 카드에 `arxivId`라는 이름으로만 보이면
+        # 모델은 그것을 source_refs[].recordRef에 넣어야 한다는 걸 알 수 없다 —
+        # 실제로 산출물마다 unknown_source_ref로 거부돼 필수 세트가 완성되지 않았다.
+        # paperId도 같이 싣는다: 게이트는 recordRef만 대조하므로, 이름을 알려주지
+        # 않으면 모델이 제목·URL 같은 엉뚱한 값을 넣어도 그대로 저장된다.
+        # 데이터가 스스로 계약을 담아야 프롬프트 설명에만 기대지 않는다.
+        "paperId": card.arxivId,
+        "recordRef": card.arxivId,
         "abstractSnippet": card.abstractSnippet,
         "sourceName": card.sourceName or "arXiv",
         "sourceUrl": card.sourceUrl or card.arxivUrl,

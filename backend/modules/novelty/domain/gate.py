@@ -66,6 +66,17 @@ FORBIDDEN_CLAIM_KEYS = frozenset(
     }
 )
 
+# payload 최상위가 {"items": [...]} 인 산출물 — gap_analysis는 GapAnalysis 모델이
+# 같은 키를 갖는다. experiment_plan·evidence는 단일 객체라 해당 없다.
+ITEMS_CONTAINER_KINDS = frozenset(
+    {
+        ArtifactKind.SIMILAR_WORKS,
+        ArtifactKind.GAP_ANALYSIS,
+        ArtifactKind.EXTERNAL_FINDINGS,
+        ArtifactKind.NOVELTY_CANDIDATES,
+    }
+)
+
 
 def evaluate_artifact(
     kind: ArtifactKind,
@@ -79,6 +90,11 @@ def evaluate_artifact(
         return GateRejection(
             GateRejectionReason.FORBIDDEN_CLAIM, f"forbidden claim key: {forbidden}"
         )
+    if kind in ITEMS_CONTAINER_KINDS:
+        # 형태 오류는 데이터 부재와 다르다 — 고칠 방법을 사유에 담아 돌려준다.
+        shape_error = _items_shape_error(payload)
+        if shape_error is not None:
+            return GateRejection(GateRejectionReason.INVALID_SHAPE, shape_error)
     try:
         if kind is ArtifactKind.EVIDENCE:
             return _check_evidence(EvidenceSnapshot.model_validate(payload))
@@ -110,6 +126,24 @@ def _items_of(payload: dict[str, Any]) -> list[Any]:
     return items if isinstance(items, list) else []
 
 
+def _items_shape_error(payload: dict[str, Any]) -> str | None:
+    """목록형 산출물이 `items` 아닌 이름으로 배열을 담았으면 그 사실을 사유 문구로.
+
+    컨테이너 키를 다른 이름(`works`·`rows`…)으로 보내는 것은 흔한 오답인데, 사유를
+    "비어 있다"로 뭉뚱그리면 무엇이 틀렸는지 알 수 없어 같은 실수를 반복하게 된다.
+    실제로 쓴 키 이름을 그대로 돌려준다 — 이름 후보를 미리 나열해두면 목록에 없는
+    이름이 나올 때 다시 뭉뚱그려진다.
+    """
+    if isinstance(payload.get("items"), list):
+        return None
+    arrays = [key for key, value in payload.items() if isinstance(value, list) and value]
+    if not arrays:
+        return None
+    # 키 이름은 모델이 지은 값이다 — 사유가 다음 관찰에 그대로 실리므로 한도를 둔다.
+    found = ", ".join(f'"{key[:60]}"' for key in arrays[:5])
+    return f"items must be the top-level array key; found {found} instead"
+
+
 def _find_forbidden_key(node: Any) -> str | None:
     if isinstance(node, dict):
         for key, value in node.items():
@@ -131,9 +165,12 @@ def _check_refs_known(
 ) -> GateRejection | None:
     for ref in refs:
         if ref.recordRef not in known_record_refs:
+            # 무엇이 틀렸는지에 더해 올바른 값의 출처를 함께 준다 — 그래야 다음
+            # 시도가 달라진다(틀렸다는 사실만으로는 같은 값을 다시 보낸다).
             return GateRejection(
                 GateRejectionReason.UNKNOWN_SOURCE_REF,
-                f"recordRef not in job evidence set: {ref.recordRef[:120]}",
+                f"recordRef not in job evidence set: {ref.recordRef[:120]} "
+                "— copy the recordRef value verbatim from a tool result card",
             )
     return None
 
@@ -174,9 +211,13 @@ def _check_gap_analysis(
     for item in analysis.items:
         # BR-RA10 — 모든 판정 항목에 source_refs 필수.
         if not item.source_refs:
+            # open_gap이라 인용할 게 없다고 판단해 비워 보내는 일이 실제로 반복됐다 —
+            # 무엇을 인용해야 하는지까지 사유에 담아야 다음 시도가 달라진다.
             return GateRejection(
                 GateRejectionReason.MISSING_SOURCE_REFS,
-                f"gap item without source_refs: {item.area[:80]}",
+                f"gap item without source_refs: {item.area[:80]}"
+                " — every gap item needs source_refs, including open_gap:"
+                " cite the searched papers that fail to cover it",
             )
         rejection = _check_refs_known(item.source_refs, known_record_refs)
         if rejection is not None:
