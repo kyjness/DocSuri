@@ -648,6 +648,11 @@ def test_observation_result_seq_is_monotonic_past_window() -> None:
     seqs = [view.seq for view in last.recent_results]
     assert seqs == sorted(set(seqs))  # 중복 없음·오름차순
     assert len(seqs) <= 6 and seqs[-1] > 6  # 윈도우 절단 후에도 전역 순번 유지
+    # 각 결과가 그것을 낳은 호출의 인자를 달고 온다 — 인자가 없으면 모델은 자기가
+    # 무엇을 물었는지 몰라 같은 질의를 반복한다(실스택 측정: 검색 캡 소진).
+    searched = [v for v in last.recent_results if v.tool_name == TOOL_CORPUS_SEARCH]
+    assert searched and all("query=q" in v.args_summary for v in searched)
+    assert len({v.args_summary for v in searched}) == len(searched)
 
 
 # ── 대화 스티어링 (FR-44, BLM §6) ───────────────────────────────────────────

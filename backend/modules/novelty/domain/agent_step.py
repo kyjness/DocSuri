@@ -415,10 +415,13 @@ def execute_step(
     """한 걸음: 예산 검사(단일 지점) → 실행 → 트레이스 1:1(BR-RA4)."""
     budget = job.loop_run.budget  # type: ignore[union-attr]
     started = utc_now()
+    # 인자 요약은 트레이스와 관찰이 함께 쓴다 — 한 걸음에서 두 번 만들지 않는다.
+    args_summary = summarize_args(proposal.args)
     denial = budget_rules.check_and_consume_tool_call(budget, proposal.tool_name)
     if denial is not None:
         record_trace(
             job, deps, context, proposal,
+            args_summary=args_summary,
             result_summary=f"budget denied: {denial.reason}: {denial.detail}",
             outcome=ToolOutcome.BUDGET_DENIED, started=started,
         )
@@ -444,6 +447,7 @@ def execute_step(
             content=result.content,
             error=result.error,
             images=result.images,
+            args_summary=args_summary,
         )
     )
     del context.recent_results[:-RECENT_RESULTS_WINDOW]
@@ -463,6 +467,7 @@ def execute_step(
 
     record_trace(
         job, deps, context, proposal,
+        args_summary=args_summary,
         result_summary=result.result_summary or (result.error or "")[:500],
         outcome=record_outcome, started=started,
         cost=result.cost_usd,
@@ -573,16 +578,21 @@ def record_trace(
     context: AgentContext,
     proposal: ToolCallProposal,
     *,
+    args_summary: str,
     result_summary: str,
     outcome: ToolOutcome,
     started: datetime,
     cost: float | None = None,
 ) -> None:
-    """도구 호출 1:1 트레이스(BR-RA4). 실패는 호출을 실패시키지 않되 지속 시 중단."""
+    """도구 호출 1:1 트레이스(BR-RA4). 실패는 호출을 실패시키지 않되 지속 시 중단.
+
+    `args_summary`는 호출자가 만들어 넘긴다 — 같은 값을 관찰 뷰도 쓰므로 한 걸음에서
+    두 번 만들지 않기 위해서다.
+    """
     fields: dict[str, Any] = {
         "job_id": job.job_id,
         "tool_name": proposal.tool_name,
-        "args_summary": summarize_args(proposal.args),
+        "args_summary": args_summary,
         "decision_note": proposal.decision_note or None,
         "result_summary": result_summary[:2000],
         "outcome": outcome,

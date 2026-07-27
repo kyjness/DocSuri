@@ -89,11 +89,16 @@ def fit_result_content(content: dict[str, Any], max_chars: int) -> dict[str, Any
 
 @dataclass(frozen=True, slots=True)
 class ToolResultView:
-    """직전 도구 호출의 관찰 뷰 — content·images 모두 신뢰 경계 밖 데이터.
+    """직전 도구 호출의 관찰 뷰 — args_summary·content·images 모두 신뢰 경계 밖 데이터.
 
     `images`는 **가장 최근 결과 1건에만** 남는다(도메인이 절단). 관찰은 매 턴 최근
     결과 여러 건을 다시 싣는 구조라, 그냥 두면 이미지 1건이 윈도우에서 밀려날 때까지
     매 턴 재전송돼 토큰을 반복 계상한다.
+
+    `args_summary`는 **그 결과를 낳은 호출의 인자**다. 결과만 보여주면 모델은 자기가
+    방금 무엇을 물었는지 알 수 없어 같은 질의·같은 자산을 반복한다(실스택 측정:
+    corpus_search 13회가 사실상 한 질의, view_figure 6회가 대상 2개). 값은 모델이 쓴
+    것이므로 렌더 단계에서 무해화된다.
     """
 
     seq: int
@@ -102,6 +107,7 @@ class ToolResultView:
     content: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
     images: tuple[ImageAttachment, ...] = ()
+    args_summary: str = ""
 
 
 @dataclass(frozen=True, slots=True)
