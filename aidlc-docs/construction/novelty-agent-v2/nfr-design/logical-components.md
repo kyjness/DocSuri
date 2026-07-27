@@ -17,6 +17,7 @@ backend/modules/novelty/
 ├── ports/                      Protocol 정의
 │   ├── llm.py                  tool-calling LLM 포트
 │   ├── tools.py                도구 포트: corpus_search·form_evidence·external_search·view_figure
+│   ├── assets.py               자산 포트: figure/수식 crop 매니페스트·바이트(view_figure)
 │   ├── queue.py                잡 큐 포트(적재·소비·실행 잠금)
 │   └── store.py                잡·산출물·트레이스·대화 저장 포트
 ├── adapters/
@@ -24,7 +25,8 @@ backend/modules/novelty/
 │   ├── real_wiring.py          SQS·RDS·Bedrock (배포 기준선 — 계약 보존)
 │   ├── external/               GitHub·데이터셋 (직접 구현 어댑터 — TD-NV2-4)
 │   │   └── sanitize.py         도구별 payload allowlist 강제(BR-RA7)
-│   └── evidence.py             U11 EvidenceFormationPort 소비(공유 계약)
+│   ├── evidence.py             U11 EvidenceFormationPort 소비(공유 계약)
+│   └── figures.py              view_figure 도구 + paper_asset/S3 리더(⑤3)
 ├── api.py                      잡 생성/조회/취소 + 잡 귀속 대화(스티어링·온디맨드)
 └── worker.py                   워커 엔트리포인트 — 큐 소비→루프 실행(NFR-NV2-1)
 ```
@@ -56,7 +58,11 @@ FE → API: Notion preview 요청 → 승인 → export (루프 밖)
 ## 4. Conditional Mounting
 
 - 모듈 마운트 조건: 저장소 + 잡 큐 + LLM 프로바이더 설정 존재 시 API 마운트, 워커는 동일 설정으로 별도 기동. 외부 탐색 어댑터는 각자 설정 존재 시에만 도구 레지스트리에 등록(없으면 해당 도구 미노출 — 에이전트 도구 목록이 자연 축소).
-- `view_figure`는 자산 스토어 설정 존재 + ⑤ 3단계(멀티모달) 도입 후 등록.
+- `view_figure`는 자산 스토어 설정(`DOCSURI_MULTIMODAL_ASSETS_ENABLED` — u1/u7과 공유하는
+  토글) + postgres 세션 팩토리가 있을 때만 등록한다(구현 완료 2026-07-27). 버킷 env는
+  조건이 아니다 — 객체 주소는 `paper_asset.object_ref`가 들고 있고, `DOCSURI_S3_BUCKET`은
+  인제스천 스택에만 있어 조건에 넣으면 배포 환경에서 도구가 무증상으로 사라진다.
+  워커가 도구 레지스트리를 만드는 유일한 프로세스이므로 토글은 **워커 태스크**에 있어야 한다.
 - Notion은 도구 레지스트리에 절대 등록되지 않는다(BR-RA12) — export 경로는 API 측 별도 서비스.
 
 ## Traceability
