@@ -211,9 +211,13 @@ def _check_gap_analysis(
     for item in analysis.items:
         # BR-RA10 — 모든 판정 항목에 source_refs 필수.
         if not item.source_refs:
+            # open_gap이라 인용할 게 없다고 판단해 비워 보내는 일이 실제로 반복됐다 —
+            # 무엇을 인용해야 하는지까지 사유에 담아야 다음 시도가 달라진다.
             return GateRejection(
                 GateRejectionReason.MISSING_SOURCE_REFS,
-                f"gap item without source_refs: {item.area[:80]}",
+                f"gap item without source_refs: {item.area[:80]}"
+                " — every gap item needs source_refs, including open_gap:"
+                " cite the searched papers that fail to cover it",
             )
         rejection = _check_refs_known(item.source_refs, known_record_refs)
         if rejection is not None:

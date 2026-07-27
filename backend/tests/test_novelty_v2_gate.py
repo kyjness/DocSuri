@@ -309,3 +309,69 @@ def test_payload_shapes_describe_nested_objects_as_objects() -> None:
                 f"{kind_name}.{field_name}은 객체({nested.__name__})인데 설명이 "
                 f"내부 필드를 하나도 안 보여준다 — 모델이 스칼라로 채운다"
             )
+
+
+def test_payload_shapes_mark_list_fields_and_only_list_fields_with_brackets() -> None:
+    """`foo[]` 표기는 배열, 표기 없으면 단일 값 — 설명과 모델이 이 규약을 공유해야 한다.
+
+    실스택에서 두 번 같은 방식으로 깨졌다: `coverage`(객체인데 이름만 적힘)와
+    `excluded_claims`(이름은 복수형인데 타입은 문자열 하나). 둘 다 모델이 형태를
+    짐작해 보냈고 게이트가 invalid_shape로 돌려보냈다 — 이름은 맞는데 형태가 틀린
+    경우다. 필수 필드의 배열 여부가 표기와 어긋나면 여기서 걸린다.
+    """
+    from backend.modules.novelty.domain import models
+    from backend.modules.novelty.domain.agent_step import SAVE_ARTIFACT_PAYLOAD_SHAPES
+
+    models_by_kind = {
+        "evidence": models.EvidenceSnapshot,
+        "similar_works": models.SimilarWorkItem,
+        "gap_analysis": models.GapItem,
+        "external_findings": models.ExternalFinding,
+        "novelty_candidates": models.NoveltyCandidate,
+        "experiment_plan": models.ExperimentPlan,
+    }
+    for kind_name, model in models_by_kind.items():
+        shape = SAVE_ARTIFACT_PAYLOAD_SHAPES[kind_name]
+        for name, field in model.model_fields.items():
+            if not field.is_required() or name not in shape:
+                continue
+            annotation = str(field.annotation)
+            is_list = annotation.startswith("list[") or "list[" in annotation
+            shown_as_list = f"{name}[]" in shape
+            assert is_list == shown_as_list, (
+                f"{kind_name}.{name}: 모델은 {'배열' if is_list else '단일 값'}인데 "
+                f"설명은 {'배열' if shown_as_list else '단일 값'}로 보여준다"
+            )
+
+
+def test_null_on_an_optional_list_reads_as_empty_not_a_shape_error() -> None:
+    """모델은 "없음"을 null로 쓴다 — 생략과 빈 목록이 같은 뜻인 필드에서 그걸
+    거부하면 사유가 `Input should be a valid list`뿐이라 수리 방향이 안 보인다.
+    실스택에서 conflicting_refs 하나로 한 턴이 통째로 소진됐다.
+
+    필수 목록은 계속 거부한다 — 느슨해지는 것은 "생략 가능한 목록"뿐이다.
+    """
+    candidate = {
+        "angle": "privacy-first retrieval",
+        "rationale": "기존 한계 보완",
+        "excluded_claims": "새로움 확정은 하지 않는다",
+        "supporting_refs": [_ref()],
+        "conflicting_refs": None,  # 충돌 근거 없음
+    }
+    payload = {"items": [candidate]}
+    assert evaluate_artifact(ArtifactKind.NOVELTY_CANDIDATES, payload, _KNOWN) is None
+
+    gap = _gap_item(related_similar_work_ids=None)
+    assert evaluate_artifact(ArtifactKind.GAP_ANALYSIS, {"items": [gap]}, _KNOWN) is None
+
+    # 근거 목록이 null이면 통과하지 않는다 — 다만 사유는 형태가 아니라 의미로 나간다.
+    no_refs = {**candidate, "supporting_refs": None}
+    rejection = evaluate_artifact(ArtifactKind.NOVELTY_CANDIDATES, {"items": [no_refs]}, _KNOWN)
+    assert rejection is not None
+    assert rejection.reason is GateRejectionReason.MISSING_SOURCE_REFS
+
+    # 필수 목록(min_length=1, 기본값 없음)은 null을 그대로 거부한다.
+    plan = _experiment_plan(baselines=None)
+    plan_rejection = evaluate_artifact(ArtifactKind.EXPERIMENT_PLAN, plan, _KNOWN)
+    assert plan_rejection is not None
+    assert plan_rejection.reason is GateRejectionReason.INVALID_SHAPE

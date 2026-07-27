@@ -83,7 +83,8 @@ log = logging.getLogger("docsuri.novelty.loop")
 SOURCE_REF_RULE = (
     'source_refs/supporting_refs 항목은 {"paperId": ..., "recordRef": ...} 형태이고, '
     "recordRef는 도구 결과 카드의 recordRef 값을 **그대로 복사**해야 한다 — "
-    "지어내거나 URL·제목으로 대체하면 unknown_source_ref로 거부된다."
+    "지어내거나 URL·제목으로 대체하면 unknown_source_ref로 거부된다. "
+    "이 두 키 외의 필드(title·quote·url 등)를 넣으면 형태 오류로 거부된다."
 )
 
 SAVE_ARTIFACT_PAYLOAD_SHAPES = {
@@ -94,12 +95,16 @@ SAVE_ARTIFACT_PAYLOAD_SHAPES = {
     ),
     "similar_works": (
         '{"items": [{artifact_type, title, problem_definition?, method?, dataset?, '
-        "result?, limitation?, overlap_with_user_idea?, source_refs[], evidence_status?, "
-        "confidence?}]}"
+        "result?, limitation?, overlap_with_user_idea?, source_refs[], "
+        "evidence_status?(supported|unsupported|abstained), confidence?(문자열 — 숫자 아님)"
+        "}]}"
     ),
     "gap_analysis": (
         '{"items": [{area, status(well_covered|partially_covered|open_gap), rationale, '
-        "source_refs[], searched_scope_note(open_gap일 때 필수), related_similar_work_ids?}]}"
+        "source_refs[], searched_scope_note(open_gap일 때 필수), related_similar_work_ids?}]} "
+        "— source_refs는 **open_gap 항목에도 비울 수 없다**. 여백은 '아무 논문도 없다'가 "
+        "아니라 '찾아본 논문들이 이걸 다루지 않는다'는 판정이므로, 근거로 삼은 그 논문들을 "
+        "인용한다"
     ),
     "external_findings": (
         '{"items": [{source_type, canonical_id, title, url, license?, task?, metrics?, '
@@ -107,7 +112,8 @@ SAVE_ARTIFACT_PAYLOAD_SHAPES = {
     ),
     "novelty_candidates": (
         '{"items": [{angle, rationale, excluded_claims, supporting_refs[], '
-        "conflicting_refs?, feasibility_notes?}]}"
+        "conflicting_refs?, feasibility_notes?}]} — excluded_claims는 **문자열 하나**다"
+        "(이름은 복수형이지만 목록이 아니다): 이 방향이 주장하지 않는 것을 한 문장으로"
     ),
     "experiment_plan": (
         "{hypothesis, novelty_angle, baselines[], datasets[], metrics[], procedure[], "
@@ -488,7 +494,9 @@ def execute_save(
             ok=False,
             content={"rejected": {"reason": rejection.reason.value, "detail": rejection.detail}},
             error=f"rejected_by_gate: {rejection.reason.value}: {rejection.detail}",
-            result_summary=f"save rejected: {rejection.reason.value}",
+            # 사유 코드만 남기면 트레이스로는 왜 거부됐는지 알 수 없다 — 모델은
+            # error로 상세를 받지만 사람이 보는 기록에는 없었다(관측 가능성).
+            result_summary=f"save rejected: {rejection.reason.value}: {rejection.detail}",
             gate_rejection_code=rejection.reason.value,
         )
     artifact_id = deps.store.save_artifact(
