@@ -18,7 +18,7 @@ import json
 import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
@@ -51,7 +51,7 @@ def progress_event(stage: str, payload: dict[str, Any] | None = None) -> dict[st
         'stage': stage,
         'message': STAGE_LABELS.get(stage, stage),
         'payload': payload or {},
-        'createdAt': datetime.now(timezone.utc).isoformat(),
+        'createdAt': datetime.now(UTC).isoformat(),
     }
 
 

@@ -11,6 +11,12 @@ from enum import StrEnum
 from typing import Any
 from uuid import uuid4
 
+from docsuri_shared._generated.dtos.evidence_schema import (
+    EvidenceCoverage,
+    EvidenceItem,
+    EvidenceRequest,
+    SourceRef,
+)
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -18,13 +24,6 @@ from pydantic import (
     computed_field,
     field_validator,
     model_validator,
-)
-
-from docsuri_shared._generated.dtos.evidence_schema import (
-    EvidenceCoverage,
-    EvidenceItem,
-    EvidenceRequest,
-    SourceRef,
 )
 
 __all__ = [

@@ -256,11 +256,18 @@ jobs:
           enable-cache: true
       # Root tests/ (accounts U3 + library U4) import backend.modules.* and need the backend
       # env (incl. hypothesis + pytest-asyncio). Run from the repo root via the root pytest.ini
-      # (pythonpath=. · asyncio_mode=auto). The accounts/library/ops module lanes self-lint with
-      # their own ruff.toml (the app-shell ruff excludes modules/), so gate them here — plus the
-      # root tests/ tree itself, which no other lane covered (ruff defaults catch F401 there).
-      - name: Lint (accounts + library + ops modules + root tests/)
-        run: uv run --project backend ruff check backend/modules/accounts backend/modules/library backend/modules/ops tests
+      # (pythonpath=. · asyncio_mode=auto).
+      #
+      # The lint step passes backend/modules WHOLE, not a list of module names. The app-shell
+      # ruff config excludes modules/, so nothing under it is linted by default — and the
+      # enumeration this replaced silently left novelty, evidence, research, mypage,
+      # citation_graph and personalization unlinted in every lane. An allowlist you have to
+      # remember to extend is the same bug waiting to happen, so the default is now "covered".
+      # Per-subtree ruff.toml/pyproject still governs each module (discovery and summarization
+      # keep their own rules and their own lanes); explicit CLI paths bypass the exclusion.
+      # tests/ has no other lane at all.
+      - name: Lint (backend modules + root tests/)
+        run: uv run --project backend ruff check backend/modules tests
       - name: Tests (accounts + library)
         run: uv run --project backend pytest tests -c pytest.ini -rs
 

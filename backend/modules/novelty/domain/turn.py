@@ -86,7 +86,9 @@ _BUDGET_EXHAUSTED_REPLY = (
 _NO_REPLY_FALLBACK = (
     "요청을 처리하지 못했어요. 조금 더 구체적으로 알려주시면 다시 시도해 볼게요."
 )
-_SAVED_THIS_TURN_NOTE = "이번 턴에서 산출물 저장에 성공했다 — 다시 저장하지 말고 reply로 마무리하라."
+_SAVED_THIS_TURN_NOTE = (
+    "이번 턴에서 산출물 저장에 성공했다 — 다시 저장하지 말고 reply로 마무리하라."
+)
 
 
 @dataclass(slots=True)

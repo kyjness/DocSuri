@@ -80,7 +80,7 @@ def sanitize_payload(
     return sanitized, violations
 
 
-def blocked_result(tool_name: str, args: dict[str, Any]) -> "tuple[dict[str, str], Any]":
+def blocked_result(tool_name: str, args: dict[str, Any]) -> tuple[dict[str, str], Any]:
     """sanitize 후 (정제 payload, 위반 시 차단 ToolResult|None) — 도구 공통 진입부."""
     from ...ports.tools import ToolResult
 
