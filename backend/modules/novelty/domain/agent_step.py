@@ -383,6 +383,19 @@ def persist_progress(job: NoveltyJob, deps: AgentDeps) -> None:
         log.warning("novelty agent: progress persist failed for job %s", job.job_id)
 
 
+def _drop_stale_images(views: list[ToolResultView]) -> None:
+    """가장 최근 결과 1건에만 이미지를 남긴다.
+
+    관찰은 매 턴 최근 결과 `RECENT_RESULTS_WINDOW`건을 다시 싣는다. 이미지를 그대로
+    두면 한 번 조회한 그림이 윈도우에서 밀려날 때까지 매 턴 재전송돼 같은 토큰이
+    반복 계상된다(BR-RA11 비용 계상). 텍스트 content는 남으므로 모델은 무엇을 봤는지
+    계속 알 수 있고, 다시 봐야 하면 재호출하면 된다.
+    """
+    for index in range(len(views) - 1):
+        if views[index].images:
+            views[index] = replace(views[index], images=())
+
+
 def execute_step(
     job: NoveltyJob,
     deps: AgentDeps,
@@ -420,9 +433,11 @@ def execute_step(
             ok=result.ok,
             content=result.content,
             error=result.error,
+            images=result.images,
         )
     )
     del context.recent_results[:-RECENT_RESULTS_WINDOW]
+    _drop_stale_images(context.recent_results)
 
     if result.ok:
         context.tool_failures.pop(proposal.tool_name, None)

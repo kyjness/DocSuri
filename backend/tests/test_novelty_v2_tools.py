@@ -1,14 +1,20 @@
-"""corpus_search·form_evidence 도구 어댑터 계약 + Notion 레지스트리 부재(BR-RA12)."""
+"""corpus_search·form_evidence·view_figure 도구 어댑터 계약 + Notion 부재(BR-RA12)."""
 
 from __future__ import annotations
+
+import base64
 
 from backend.modules.novelty.adapters.corpus import CorpusSearchTool
 from backend.modules.novelty.adapters.evidence import FormEvidenceTool
 from backend.modules.novelty.adapters.external.datasets import DatasetSearchTool
 from backend.modules.novelty.adapters.external.github import GithubSearchTool
+from backend.modules.novelty.adapters.figures import ViewFigureTool
 from backend.modules.novelty.domain.gate import evaluate_artifact
 from backend.modules.novelty.domain.models import ArtifactKind
+from backend.modules.novelty.ports.assets import FigureAsset
 from backend.modules.novelty.ports.tools import ToolContext, ToolRegistry
+
+from .novelty_v2_fakes import FakeFigureAssetPort
 
 _CTX = ToolContext(owner_id="o1", job_id="j1")
 
@@ -170,3 +176,124 @@ def test_corpus_cards_carry_the_record_ref_key_the_gate_requires() -> None:
     # paperId도 이름 그대로 실어야 한다 — 게이트는 recordRef만 대조하므로, 이름을
     # 알려주지 않으면 모델이 넣은 엉뚱한 paperId가 걸러지지 않고 저장된다.
     assert card["paperId"] == "2401.09999"
+
+
+# ── view_figure (BLM §3, BR-RA11) ──
+
+_PNG = b"\x89PNG\r\n\x1a\n" + b"x" * 32
+
+
+def _asset(asset_id: str, type_: str = "figure", ordinal: int = 1) -> FigureAsset:
+    return FigureAsset(
+        asset_id=asset_id,
+        type=type_,
+        ordinal=ordinal,
+        caption=f"caption for {asset_id}",
+        source_mode="structured",
+        object_ref=f"s3://bucket/assets/2401.00001/v1/{asset_id}.webp",
+    )
+
+
+def _figure_tool(**kwargs) -> tuple[ViewFigureTool, FakeFigureAssetPort]:
+    figure, formula = _asset("fig-1"), _asset("eq-3", "formula", 3)
+    port = FakeFigureAssetPort(
+        assets={("2401.00001", 1): [figure, formula]},
+        blobs={
+            figure.object_ref: ("image/webp", _PNG),
+            formula.object_ref: ("image/webp", _PNG),
+        },
+    )
+    return ViewFigureTool(port, **kwargs), port
+
+
+def test_view_figure_without_asset_id_lists_the_manifest() -> None:
+    """Q7=A — 목록·캡션을 먼저 보고 필요한 것만 고르게 한다."""
+    tool, _ = _figure_tool()
+    result = tool.invoke({"record_ref": "2401.00001"}, _CTX)
+    assert result.ok
+    assert result.images == ()
+    ids = [item["assetId"] for item in result.content["assets"]]
+    assert ids == ["fig-1", "eq-3"]
+    assert result.content["assets"][0]["caption"] == "caption for fig-1"
+
+
+def test_view_figure_list_never_leaks_the_object_ref() -> None:
+    """SEC-9 — 내부 스토리지 핸들은 모델에 보이지 않는다."""
+    tool, _ = _figure_tool()
+    result = tool.invoke({"record_ref": "2401.00001"}, _CTX)
+    assert "s3://" not in str(result.content)
+
+
+def test_view_figure_with_asset_id_returns_an_image_attachment() -> None:
+    tool, port = _figure_tool()
+    result = tool.invoke({"record_ref": "2401.00001", "asset_id": "fig-1"}, _CTX)
+    assert result.ok
+    assert len(result.images) == 1
+    image = result.images[0]
+    assert image.asset_id == "fig-1"
+    assert image.media_type == "image/webp"
+    assert base64.b64decode(image.data_b64) == _PNG
+    # 텍스트 쪽에는 어느 자산인지만 남는다 — base64는 content로 가지 않는다.
+    assert result.content["assetId"] == "fig-1"
+    assert image.data_b64 not in str(result.content)
+    assert port.fetched == ["s3://bucket/assets/2401.00001/v1/fig-1.webp"]
+
+
+def test_view_figure_does_not_claim_new_record_refs() -> None:
+    """이미 확보한 논문을 들여다보는 도구다 — 게이트 실재성 집합을 넓히지 않는다."""
+    tool, _ = _figure_tool()
+    result = tool.invoke({"record_ref": "2401.00001", "asset_id": "fig-1"}, _CTX)
+    assert result.record_refs == ()
+
+
+def test_view_figure_serves_formula_crops_unlike_the_u7_reader() -> None:
+    """수식 crop 행의 존재 = LaTeX 복원 실패 → crop 서빙이 곧 '수식은 LaTeX 1차,
+    crop 폴백'(BLM §3)의 결과다. u7 리더는 formula를 걸러내지만 여기서는 아니다."""
+    tool, _ = _figure_tool()
+    listed = tool.invoke({"record_ref": "2401.00001"}, _CTX)
+    assert any(item["type"] == "formula" for item in listed.content["assets"])
+    fetched = tool.invoke({"record_ref": "2401.00001", "asset_id": "eq-3"}, _CTX)
+    assert fetched.ok and fetched.images[0].asset_id == "eq-3"
+
+
+def test_view_figure_rejects_an_asset_that_is_not_in_the_manifest() -> None:
+    """BR-RA11 실재 자산만 — 그리고 거부 사유는 다음 행동을 담아야 한다.
+
+    ⑤2 실스택 검증 교훈: 사유가 '무엇이 틀렸는지'를 못 담으면 자율 루프는
+    수렴하지 못하고 같은 실수를 반복하며 예산만 태운다.
+    """
+    tool, port = _figure_tool()
+    result = tool.invoke({"record_ref": "2401.00001", "asset_id": "fig-999"}, _CTX)
+    assert not result.ok
+    assert result.images == ()
+    assert "asset_id 없이" in result.error  # 목록을 먼저 받으라는 수리 지시
+    assert port.fetched == []  # 실재하지 않는 자산은 스토리지까지 가지 않는다
+
+
+def test_view_figure_refuses_an_oversized_image_with_an_alternative() -> None:
+    """백엔드에 이미지 처리 의존성이 없어 다운스케일 불가 — 거부하되 대안을 준다."""
+    tool, _ = _figure_tool(max_image_bytes=8)
+    result = tool.invoke({"record_ref": "2401.00001", "asset_id": "fig-1"}, _CTX)
+    assert not result.ok
+    assert result.images == ()
+    assert "다른 자산" in result.error
+
+
+def test_view_figure_reports_papers_without_assets_instead_of_crashing() -> None:
+    tool = ViewFigureTool(FakeFigureAssetPort())
+    result = tool.invoke({"record_ref": "2401.77777"}, _CTX)
+    assert not result.ok
+    assert "자산이 없다" in result.error
+
+
+def test_view_figure_uses_the_version_suffix_when_the_record_ref_carries_one() -> None:
+    """`paper_asset`는 bare paper_id + 별도 version 컬럼이다 — 버전 있는 id로 조회하면
+    영구 미스가 된다(u7 리더가 같은 함정을 겪었다)."""
+    figure = _asset("fig-1")
+    port = FakeFigureAssetPort(
+        assets={("2401.00001", 2): [figure]},
+        blobs={figure.object_ref: ("image/webp", _PNG)},
+    )
+    result = ViewFigureTool(port).invoke({"record_ref": "2401.00001v2"}, _CTX)
+    assert result.ok
+    assert [item["assetId"] for item in result.content["assets"]] == ["fig-1"]

@@ -27,7 +27,7 @@ from .llm_prompt import (
     conservative_termination,
     decision_from_tool_call,
     estimate_cost,
-    render_observation,
+    render_observation_parts,
     system_prompt_for,
     termination_parameters,
 )
@@ -139,16 +139,25 @@ class BedrockToolCallingLlm:
         self._breaker = breaker or SourceBreaker()
 
     def decide(self, observation: LoopObservation, tools: tuple[ToolSpec, ...]) -> LlmDecision:
+        text, images = render_observation_parts(observation)
+        # 텍스트(신뢰 경계 선언 포함)가 반드시 이미지보다 앞에 온다.
+        content: list[dict[str, Any]] = [{"type": "text", "text": text}]
+        content.extend(
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": image.media_type,
+                    "data": image.data_b64,
+                },
+            }
+            for image in images
+        )
         body = {
             "anthropic_version": "bedrock-2023-05-31",
             "max_tokens": self._max_tokens,
             "system": system_prompt_for(observation),
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [{"type": "text", "text": render_observation(observation)}],
-                }
-            ],
+            "messages": [{"role": "user", "content": content}],
             "tools": [*(_to_tool(spec) for spec in tools), _termination_tool()],
             "tool_choice": {"type": "any"},
         }

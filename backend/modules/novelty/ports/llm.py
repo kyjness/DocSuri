@@ -11,7 +11,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from .tools import ToolSpec
+from .tools import ImageAttachment, ToolSpec
 
 __all__ = [
     "LlmDecision",
@@ -89,13 +89,19 @@ def fit_result_content(content: dict[str, Any], max_chars: int) -> dict[str, Any
 
 @dataclass(frozen=True, slots=True)
 class ToolResultView:
-    """직전 도구 호출의 관찰 뷰 — content는 신뢰 경계 밖 데이터."""
+    """직전 도구 호출의 관찰 뷰 — content·images 모두 신뢰 경계 밖 데이터.
+
+    `images`는 **가장 최근 결과 1건에만** 남는다(도메인이 절단). 관찰은 매 턴 최근
+    결과 여러 건을 다시 싣는 구조라, 그냥 두면 이미지 1건이 윈도우에서 밀려날 때까지
+    매 턴 재전송돼 토큰을 반복 계상한다.
+    """
 
     seq: int
     tool_name: str
     ok: bool
     content: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
+    images: tuple[ImageAttachment, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

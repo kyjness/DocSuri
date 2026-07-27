@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from docsuri_shared.env import env_flag as _env_flag
 from docsuri_shared.env import env_float as _env_float
 from docsuri_shared.env import env_int as _env_int
 
@@ -60,6 +61,16 @@ class NoveltySettings:
     # 외부 탐색
     github_token: str | None
     external_timeout_seconds: float
+    # 자산 스토어(FR-17) — view_figure 등록 조건(logical-components §4).
+    # u1/u7과 같은 토글을 공유한다: 자산을 쓰지 않는 배포에서 도구만 살아나면
+    # 에이전트가 매번 빈 목록을 받고 캡만 태운다.
+    assets_enabled: bool
+    asset_bucket: str | None
+    # 이미지 1건 바이트 상한 — 백엔드에 이미지 처리 의존성이 없어 다운스케일 불가,
+    # 초과는 거부한다. Anthropic 이미지 한도(5MB)보다 낮게 잡는다.
+    figure_max_image_bytes: int
+    # OpenAI image_url detail 힌트(low|high|auto). 미지정이면 프로바이더 기본값.
+    figure_image_detail: str | None
     # 워커 잠금·stale 감지(NFR-NV2-2·3)
     lock_ttl_seconds: float
     stale_after_seconds: float
@@ -85,6 +96,11 @@ class NoveltySettings:
         if self.llm_provider == "openai":
             return bool(self.openai_api_key)
         return self.llm_provider == "bedrock"
+
+    @property
+    def figure_assets_configured(self) -> bool:
+        """자산 스토어 설정 존재 — view_figure 등록 조건(logical-components §4)."""
+        return self.assets_enabled and bool(self.asset_bucket)
 
     def build_loop_budget(self) -> LoopBudget:
         return LoopBudget(
@@ -120,6 +136,12 @@ class NoveltySettings:
             sqs_queue_url=os.environ.get("DOCSURI_NOVELTY_JOB_QUEUE_URL"),
             github_token=os.environ.get("DOCSURI_GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN"),
             external_timeout_seconds=_env_float("DOCSURI_NOVELTY_EXTERNAL_TIMEOUT_SECONDS", 10.0),
+            assets_enabled=_env_flag("DOCSURI_MULTIMODAL_ASSETS_ENABLED"),
+            asset_bucket=os.environ.get("DOCSURI_S3_BUCKET"),
+            figure_max_image_bytes=_env_int(
+                "DOCSURI_NOVELTY_FIGURE_MAX_BYTES", 4 * 1024 * 1024
+            ),
+            figure_image_detail=os.environ.get("DOCSURI_NOVELTY_FIGURE_IMAGE_DETAIL") or None,
             lock_ttl_seconds=_env_float("DOCSURI_NOVELTY_LOCK_TTL_SECONDS", 120.0),
             stale_after_seconds=_env_float("DOCSURI_NOVELTY_STALE_AFTER_SECONDS", 900.0),
             max_iterations=_env_int("DOCSURI_NOVELTY_MAX_ITERATIONS", 24),

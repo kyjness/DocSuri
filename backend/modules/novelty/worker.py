@@ -326,7 +326,13 @@ def build_worker_deps() -> WorkerDeps:
     from backend.config import Settings
     from backend.db import make_engine, make_session_factory
 
-    from .adapters.local_wiring import build_llm, build_queue, build_store, build_tool_registry
+    from .adapters.local_wiring import (
+        build_asset_port,
+        build_llm,
+        build_queue,
+        build_store,
+        build_tool_registry,
+    )
 
     settings = NoveltySettings.from_env()
     if not settings.queue_configured:
@@ -346,11 +352,13 @@ def build_worker_deps() -> WorkerDeps:
     llm = build_llm(settings)
     orchestrator, grounding_hook = _build_corpus_deps()
     evidence_port = _build_evidence_port()
+    asset_port = _build_asset_port(settings, session_factory)
     registry = build_tool_registry(
         settings,
         orchestrator=orchestrator,
         grounding_hook=grounding_hook,
         evidence_port=evidence_port,
+        asset_port=asset_port,
     )
     return WorkerDeps(
         store=store,
@@ -389,6 +397,17 @@ def _build_corpus_deps() -> tuple[Any | None, Any | None]:
     except Exception:  # noqa: BLE001 — 코퍼스 검색은 선택 의존성, 부재 시 도구 축소
         log.warning("novelty worker: corpus search unavailable", exc_info=True)
         return None, None
+
+
+def _build_asset_port(settings: NoveltySettings, session_factory: Any) -> Any | None:
+    """FR-17 자산 리더 — 설정이 있을 때만(없으면 view_figure 미노출)."""
+    try:
+        from .adapters.local_wiring import build_asset_port
+
+        return build_asset_port(settings, session_factory)
+    except Exception:  # noqa: BLE001 — 자산 조회는 선택 의존성, 부재 시 도구 축소
+        log.warning("novelty worker: figure assets unavailable", exc_info=True)
+        return None
 
 
 def _build_evidence_port() -> Any | None:

@@ -161,6 +161,10 @@ def _settings(**overrides) -> NoveltySettings:
         sqs_queue_url=None,
         github_token=None,
         external_timeout_seconds=5.0,
+        assets_enabled=False,
+        asset_bucket=None,
+        figure_max_image_bytes=4 * 1024 * 1024,
+        figure_image_detail=None,
         lock_ttl_seconds=120.0,
         stale_after_seconds=900.0,
         max_iterations=24,
@@ -193,8 +197,40 @@ def test_tool_registry_shrinks_naturally_without_deps() -> None:
             raise RuntimeError("no network in tests")
 
     registry = build_tool_registry(_settings(), http_client=_NoopHttp())
-    # corpus·evidence 의존성 없음 → 외부 탐색 도구만. Notion·view_figure 부재.
+    # corpus·evidence·자산 의존성 없음 → 외부 탐색 도구만. Notion·view_figure 부재.
     assert registry.names() == frozenset({"github_search", "dataset_search"})
+
+
+def test_view_figure_registers_only_when_the_asset_store_is_wired() -> None:
+    """logical-components §4 — 자산 스토어 설정이 있을 때만 등록된다."""
+    from backend.modules.novelty.adapters.local_wiring import build_tool_registry
+
+    class _NoopHttp:
+        def get(self, *args, **kwargs):
+            raise RuntimeError("no network in tests")
+
+    registry = build_tool_registry(
+        _settings(), asset_port=object(), http_client=_NoopHttp()
+    )
+    assert "view_figure" in registry.names()
+
+
+def test_asset_port_needs_both_the_toggle_and_a_bucket() -> None:
+    """u1/u7과 같은 토글을 공유한다 — 자산을 쓰지 않는 배포에서 도구만 살아나면
+    에이전트가 매번 빈 목록을 받고 캡만 태운다."""
+    from backend.modules.novelty.adapters.local_wiring import build_asset_port
+
+    session_factory = object
+    assert build_asset_port(_settings(), session_factory) is None  # 토글 off
+    assert build_asset_port(
+        _settings(assets_enabled=True), session_factory
+    ) is None  # 버킷 없음
+    assert build_asset_port(
+        _settings(assets_enabled=True, asset_bucket="docsuri"), None
+    ) is None  # postgres 없음
+    assert build_asset_port(
+        _settings(assets_enabled=True, asset_bucket="docsuri"), session_factory
+    ) is not None
 
 
 def test_bedrock_outage_goes_through_breaker_to_llm_unavailable() -> None:

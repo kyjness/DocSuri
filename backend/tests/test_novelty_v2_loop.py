@@ -838,3 +838,58 @@ def test_steering_is_not_consumed_when_budget_denies_the_turn() -> None:
     # 일어나지 않아 지시가 증발한다. 뒤에서 읽으므로 미소비로 남고 안내가 나간다.
     messages = store.list_messages(job.owner_id, job.job_id, after=None, limit=20)
     assert any(m.kind is ChatKind.NOTICE for m in messages)
+
+
+def test_viewed_figure_is_attached_for_one_turn_then_drops_to_text() -> None:
+    """관찰은 최근 결과를 매 턴 다시 싣는다 — 이미지까지 그러면 같은 토큰이 반복 계상된다.
+
+    직전 1턴만 이미지를 남기고, 그 다음 턴부터는 텍스트 content만 남는다(무엇을 봤는지는
+    계속 알 수 있고, 다시 보려면 재호출하면 된다 — BR-RA11 비용 계상).
+    """
+    from backend.modules.novelty.ports.tools import TOOL_VIEW_FIGURE, ImageAttachment
+
+    store = InMemoryNoveltyStore()
+    job = _job(store, budget=_budget(max_tool_calls={**_budget().max_tool_calls, "view_figure": 8}))
+    figure_tool = FakeTool(
+        TOOL_VIEW_FIGURE,
+        default=ToolResult(
+            ok=True,
+            content={"assetId": "fig-1", "type": "figure"},
+            result_summary="figure: figure fig-1",
+            images=(
+                ImageAttachment(
+                    media_type="image/webp", data_b64="QUJD", asset_id="fig-1"
+                ),
+            ),
+        ),
+    )
+    llm = ScriptedToolCallingLlm(
+        [
+            LlmDecision(ToolCallProposal(TOOL_VIEW_FIGURE, {"record_ref": "2401.00001"})),
+            LlmDecision(ToolCallProposal(TOOL_CORPUS_SEARCH, {"query": "q"})),
+            LlmDecision(TerminationProposal(note="done")),
+        ]
+    )
+    deps = LoopDeps(
+        store=store,
+        llm=llm,
+        registry=_registry(_evidence_tool(), _corpus_tool(), figure_tool),
+    )
+
+    run_loop(job, deps)
+
+    # 관찰 0: form_evidence 선행 뒤 첫 결정(아직 그림 없음)
+    # 그림 조회 직후 관찰에는 이미지가 실린다.
+    after_view = next(
+        obs for obs in llm.observations
+        if any(view.tool_name == TOOL_VIEW_FIGURE for view in obs.recent_results)
+    )
+    figure_views = [v for v in after_view.recent_results if v.tool_name == TOOL_VIEW_FIGURE]
+    assert figure_views[-1].images  # 직전 결과 = 이미지 있음
+
+    # 그 다음 관찰에서는 같은 결과가 이미지 없이 남는다.
+    later = llm.observations[llm.observations.index(after_view) + 1]
+    stale = [v for v in later.recent_results if v.tool_name == TOOL_VIEW_FIGURE]
+    assert stale and all(view.images == () for view in stale)
+    # 텍스트 content는 그대로 — 무엇을 봤는지는 계속 보인다.
+    assert stale[-1].content["assetId"] == "fig-1"

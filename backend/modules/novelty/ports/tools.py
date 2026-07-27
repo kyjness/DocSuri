@@ -3,7 +3,7 @@
 도구 실행 결과는 신뢰 경계 밖 데이터로 취급한다(prompt injection 방어) —
 LLM 컨텍스트에 넣을 내용과 트레이스용 sanitized 요약을 분리해 반환한다.
 Notion은 도구가 아니다(BR-RA12) — 레지스트리가 등록 자체를 거부한다.
-`view_figure`는 포트만 정의하고 멀티모달 단계 전까지 등록하지 않는다.
+`view_figure`는 자산 스토어 설정이 있을 때만 등록된다(logical-components §4).
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ __all__ = [
     "TOOL_GITHUB_SEARCH",
     "TOOL_SAVE_ARTIFACT",
     "TOOL_VIEW_FIGURE",
+    "ImageAttachment",
     "ToolContext",
     "ToolPort",
     "ToolRegistry",
@@ -27,7 +28,7 @@ __all__ = [
     "ToolSpec",
 ]
 
-# v1 도구 어휘(BLM §3). view_figure는 멀티모달 단계 전까지 미등록.
+# v1 도구 어휘(BLM §3).
 TOOL_CORPUS_SEARCH = "corpus_search"
 TOOL_FORM_EVIDENCE = "form_evidence"
 TOOL_GITHUB_SEARCH = "github_search"
@@ -70,12 +71,30 @@ class ToolContext:
 
 
 @dataclass(frozen=True, slots=True)
+class ImageAttachment:
+    """도구가 확보한 이미지 1건 — 텍스트가 아닌 별도 채널로 LLM에 전달된다.
+
+    `content`(JSON 덤프 후 문자 한도로 절단)로는 base64를 보낼 수 없다 — 잘린
+    base64는 디코드 불능이라 조용히 사라진다. 그래서 타입 채널을 따로 둔다.
+    이미지도 도구 결과와 동일한 **신뢰 경계 밖 데이터**다(그림 안의 문구는 지시가
+    아니다) — 어댑터는 반드시 도구 결과 구획 뒤에 배치한다.
+    """
+
+    media_type: str
+    data_b64: str
+    asset_id: str
+    caption: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class ToolResult:
     """단일 도구 실행 결과.
 
     content        — 다음 observe에서 LLM에 보이는 내용(신뢰 경계 밖 데이터).
     result_summary — 트레이스·활동 피드용 sanitized 요약(SEC-9/15).
     record_refs    — 결과가 확보한 실재 출처 핸들(recordRef) — 게이트 실재성 검사 입력.
+    images         — 멀티모달 첨부(BR-RA11). content와 달리 어댑터가 프로바이더별
+                     이미지 블록으로 렌더한다.
     gate_rejection_code — 저장 게이트 거부 사유 코드(BR-RA2). 트레이스 outcome 분류의
                      타입 채널 — 오류 문자열 프로토콜에 의존하지 않는다.
     """
@@ -87,6 +106,7 @@ class ToolResult:
     cost_usd: float | None = None
     error: str | None = None
     gate_rejection_code: str | None = None
+    images: tuple[ImageAttachment, ...] = ()
 
 
 class ToolPort(Protocol):

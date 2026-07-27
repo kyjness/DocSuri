@@ -14,6 +14,7 @@ from backend.modules.novelty.adapters.memory import (
     InMemoryJobQueue,
     InMemoryNoveltyStore,
 )
+from backend.modules.novelty.ports.assets import FigureAsset
 from backend.modules.novelty.ports.llm import (
     LlmDecision,
     LoopObservation,
@@ -21,6 +22,7 @@ from backend.modules.novelty.ports.llm import (
 from backend.modules.novelty.ports.tools import ToolContext, ToolResult, ToolSpec
 
 __all__ = [
+    "FakeFigureAssetPort",
     "FakeTool",
     "InMemoryJobQueue",
     "InMemoryNoveltyStore",
@@ -63,3 +65,27 @@ class FakeTool:
     def invoke(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         self.calls.append((args, ctx))
         return self._results.popleft() if self._results else self._default
+
+
+class FakeFigureAssetPort:
+    """FigureAssetPort 대역 — `paper_asset` 행과 S3 바이트를 메모리로 흉내 낸다."""
+
+    def __init__(
+        self,
+        assets: dict[tuple[str, int], list[FigureAsset]] | None = None,
+        blobs: dict[str, tuple[str, bytes]] | None = None,
+    ) -> None:
+        self.assets = assets or {}
+        self.blobs = blobs or {}
+        self.fetched: list[str] = []
+
+    def latest_version(self, paper_id: str) -> int | None:
+        versions = [version for (pid, version) in self.assets if pid == paper_id]
+        return max(versions) if versions else None
+
+    def list_assets(self, paper_id: str, version: int) -> list[FigureAsset]:
+        return list(self.assets.get((paper_id, version), ()))
+
+    def fetch_bytes(self, object_ref: str) -> tuple[str, bytes] | None:
+        self.fetched.append(object_ref)
+        return self.blobs.get(object_ref)
