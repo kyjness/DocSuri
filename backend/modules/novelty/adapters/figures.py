@@ -4,15 +4,21 @@
 텍스트로 돌려주고, `asset_id`를 주면 그 자산 하나를 이미지로 돌려준다. 온디맨드
 원칙(FD 게이트 Q7=A — 캡션 보고 필요 판단한 것만 조회)을 도구 어휘 확장 없이 지킨다.
 
-**타입별 처리를 분기하지 않는 이유**: `paper_asset`에 행이 존재한다는 사실 자체가
-이미 판정이다. 구조화에 성공한 표는 DocModel에 rows/cells로 실리고 crop을 만들지
-않으므로 표 crop 행은 비-HTML 폴백 티어에서만 생기고, 수식은 `latex`와 `assetRef` 중
-하나만 렌더 소스이므로(docmodel.schema.json) 수식 crop 행의 존재는 LaTeX 복원 실패를
-뜻한다. 즉 "표는 텍스트로, 수식은 LaTeX 1차·crop 폴백"(BLM §3)은 DocModel을 따로 읽지
-않아도 자산 매니페스트만으로 성립한다.
+**서빙 대상은 figure·formula뿐이다(`_SERVED_TYPES`)** — 표 crop은 제외한다.
 
-u7 리더(`rds_assets.py`)는 `type IN ('figure','table')`로 수식을 걸러내지만 여기서는
-걸러내지 않는다 — 수식 crop은 ⑤3의 1급 대상이다.
+- **수식**: `latex`와 `assetRef` 중 하나만 렌더 소스이므로(docmodel.schema.json) 수식
+  crop 행의 존재가 곧 LaTeX 복원 실패를 뜻한다. 따라서 crop 서빙이 "LaTeX 1차, crop
+  폴백"(BLM §3)의 결과다. 로컬 코퍼스 전수 확인(2026-07-27): 수식 crop 24건 중 DocModel에
+  `latex`가 함께 있는 것은 **0건**.
+- **표**: 제외한다. u1은 표를 구조화(rows/cells)해 DocModel에 싣고 **동시에** 페이지 crop도
+  남기는데, DocModel은 그 crop을 참조하지 않는다. 로컬 코퍼스 표본 확인(199편·자산 2,244건):
+  표 crop 772건 중 DocModel이 참조하는 것 **0건**, 표본의 82%가 DocModel에 구조화 표를 갖고
+  있었다. 즉 표 crop을 서빙하면 에이전트가 이미 텍스트로 읽을 수 있는 것을 이미지로 다시
+  받으며 캡 8회를 태운다 — BLM §3의 "표는 텍스트 경로로 읽힌다"와 BR-RA11의 "DocModel에
+  실재하는"에 모두 어긋난다.
+
+u7 리더(`rds_assets.py`)는 `type IN ('figure','table')`(표시 갤러리용)이고 여기는
+`('figure','formula')`(비전 입력용)다 — 목적이 다르니 대상도 다르다.
 """
 
 from __future__ import annotations
@@ -51,6 +57,9 @@ _MEDIA_TYPES = {
 # 부재로 취급하는 S3 오류 코드 — ingestion `s3_get_or_none`과 같은 분류.
 _MISS_CODES = frozenset({"NoSuchKey", "404", "NotFound"})
 _LIST_LIMIT = 60
+# 비전 입력 대상 — 표는 제외한다(모듈 docstring의 근거·실측). 포트 계약이므로
+# 테스트 대역도 이 상수를 그대로 쓴다.
+_SERVED_TYPES = frozenset({"figure", "formula"})
 
 # recordRef는 **모델이 쓴 값**이다 — u7 `_paper_ref`의 rsplit 휴리스틱은 앱이 나르는
 # 정규 id용이라 여기에 쓰면 안 된다: 'arXiv:2401.00001'을 rsplit('v')하면 paper_id가
@@ -76,15 +85,16 @@ def _parse_record_ref(record_ref: str) -> tuple[str, int | None] | None:
 _RESOLVED_VERSION = (
     "COALESCE(:version, (SELECT max(version) FROM paper_asset WHERE paper_id = :paper_id))"
 )
+_TYPE_FILTER = "type IN ('figure', 'formula')"
 _LIST_SQL = (
     "SELECT asset_id, type, ordinal, caption, object_ref, version, count(*) OVER () "
-    "FROM paper_asset WHERE paper_id = :paper_id AND version = "
+    f"FROM paper_asset WHERE paper_id = :paper_id AND {_TYPE_FILTER} AND version = "
     f"{_RESOLVED_VERSION} ORDER BY type, ordinal LIMIT :limit"
 )
 _GET_SQL = (
     "SELECT asset_id, type, ordinal, caption, object_ref "
     "FROM paper_asset WHERE paper_id = :paper_id AND asset_id = :asset_id "
-    f"AND version = {_RESOLVED_VERSION}"
+    f"AND {_TYPE_FILTER} AND version = {_RESOLVED_VERSION}"
 )
 
 

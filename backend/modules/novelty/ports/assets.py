@@ -50,7 +50,10 @@ class FigureManifest:
 
 class FigureAssetPort(Protocol):
     """`paper_id`는 **bare**(버전 suffix 없음)다 — `paper_asset`가 그렇게 키를 잡는다.
-    정규화는 호출자(도구)가 한 번 수행한다."""
+    정규화는 호출자(도구)가 한 번 수행한다.
+
+    구현은 **비전 입력 대상 타입만**(figure·formula) 돌려준다. 표 crop은 DocModel이
+    참조하지 않는 중복물이라 제외된다 — 근거는 `adapters/figures.py` 모듈 docstring."""
 
     def list_assets(
         self, paper_id: str, version: int | None, *, limit: int

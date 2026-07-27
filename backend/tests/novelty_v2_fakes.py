@@ -10,7 +10,7 @@ from collections import deque
 from collections.abc import Callable, Iterable
 from typing import Any
 
-from backend.modules.novelty.adapters.figures import _LIST_LIMIT
+from backend.modules.novelty.adapters.figures import _LIST_LIMIT, _SERVED_TYPES
 from backend.modules.novelty.adapters.memory import (
     InMemoryJobQueue,
     InMemoryNoveltyStore,
@@ -101,7 +101,9 @@ class FakeFigureAssetPort:
     ) -> FigureManifest | None:
         self.listed.append((paper_id, version))
         resolved = self._resolve(paper_id, version)
-        rows = list(self.assets.get((paper_id, resolved), ())) if resolved is not None else []
+        stored = self.assets.get((paper_id, resolved), ()) if resolved is not None else ()
+        # 어댑터 SQL의 타입 필터를 그대로 반영 — 표 crop은 서빙 대상이 아니다.
+        rows = [row for row in stored if row.type in _SERVED_TYPES]
         if not rows:
             return None
         return FigureManifest(version=resolved, assets=rows[:limit], total=len(rows))
@@ -111,7 +113,9 @@ class FakeFigureAssetPort:
     ) -> FigureAsset | None:
         resolved = self._resolve(paper_id, version)
         rows = self.assets.get((paper_id, resolved), ()) if resolved is not None else ()
-        return next((row for row in rows if row.asset_id == asset_id), None)
+        return next(
+            (r for r in rows if r.asset_id == asset_id and r.type in _SERVED_TYPES), None
+        )
 
     def fetch_bytes(self, object_ref: str, *, max_bytes: int) -> tuple[str, bytes] | None:
         self.fetched.append(object_ref)

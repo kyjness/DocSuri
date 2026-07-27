@@ -1046,11 +1046,15 @@ _Resiliency 옵트인은 `requirements.md` 확정 전에 필수 요구사항 명
   type·caption), 주면 그 자산 1건의 이미지. Q7=A의 "목록 보고 필요한 것만"을 `KNOWN_LOOP_TOOLS`
   확장 없이 충족한다. **목록 조회도 캡 8회를 소비**한다(논문 하나에 최소 2회) — 수치 조정은
   NFR-NV2-8상 문서 갱신 + U6 확인 동반이라 시작값 유지.
-- 타입 분기 없음: `paper_asset` 행의 **존재 자체가 판정**이다. 구조화 성공한 표는 crop이 없고,
-  수식은 `latex`/`assetRef` 중 하나만 렌더 소스라 crop 행의 존재가 곧 LaTeX 복원 실패 —
-  "표는 텍스트, 수식은 LaTeX 1차·crop 폴백"이 DocModel 없이 매니페스트만으로 성립한다.
-  ⚠️ 이 전제는 실스택 검증의 **반증 대상**(formula crop 행 중 DocModel에 `latex`가 있는 것이
-  하나라도 있으면 DocModel 읽기를 추가해야 한다).
+- **서빙 대상은 figure·formula뿐**(표 crop 제외). 로컬 코퍼스 실측(2026-07-27)으로 확정:
+  - formula crop 24건 중 DocModel에 `latex` 공존 **0건** → "crop 행의 존재 = LaTeX 복원 실패"
+    전제는 **유효**. crop 서빙이 곧 "LaTeX 1차·crop 폴백"의 결과다.
+  - table crop 772건(표본 199편) 중 DocModel 참조 **0건**, 표본 82%가 구조화 표를 보유 →
+    초안의 "표 crop은 비-HTML 폴백 티어에서만"은 **틀렸다**(전체 26,583편 중 18,171편에
+    표 crop 존재). 서빙하면 텍스트로 읽을 수 있는 것을 이미지로 다시 받아 캡을 태운다.
+    `type IN ('figure','formula')`로 SQL에서 제외.
+  - figure는 표본에서 참조 1,267 / 고아 205 — 고아분은 u1 `assetRef` 결손(기지 결함,
+    [[u1-parse-completeness-audit]])이지 위조 자산이 아니라 서빙 유지.
 - 이미지 채널은 `ToolResult`/`ToolResultView`의 별도 타입 필드다 — `content`는 렌더 단계에서
   문자 한도로 잘려 base64가 디코드 불능으로 조용히 사라진다. 어댑터는 텍스트(신뢰 경계 선언
   포함)를 먼저, 이미지 블록을 나중에 싣고, 그림 속 문구도 지시가 아님을 프롬프트가 명시한다.

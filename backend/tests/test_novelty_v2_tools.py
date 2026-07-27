@@ -446,3 +446,30 @@ def test_reader_skips_formats_no_provider_accepts() -> None:
     reader = _reader(s3)
     assert reader.fetch_bytes("s3://bucket/assets/a/v1/fig.tiff", max_bytes=100) is None
     assert s3.calls == 0  # 프로바이더가 400을 주기 전에 우리가 막는다
+
+
+def test_view_figure_never_serves_table_crops() -> None:
+    """u1은 표를 구조화해 DocModel에 싣고 **동시에** 페이지 crop도 남기는데, DocModel은
+    그 crop을 참조하지 않는다(로컬 코퍼스 표본: 표 crop 772건 중 참조 0건).
+
+    서빙하면 에이전트가 이미 텍스트로 읽을 수 있는 것을 이미지로 다시 받으며 캡 8회를
+    태운다 — BLM §3의 "표는 텍스트 경로로 읽힌다"와 BR-RA11의 "DocModel에 실재하는"에
+    모두 어긋난다. u7 리더가 표를 서빙하는 것은 표시 갤러리라는 다른 목적이다.
+    """
+    figure, table = _asset("fig-1"), _asset("tbl-0", "table", 0)
+    port = FakeFigureAssetPort(
+        assets={("2401.00001", 1): [figure, table]},
+        blobs={
+            figure.object_ref: ("image/webp", _PNG),
+            table.object_ref: ("image/webp", _PNG),
+        },
+    )
+    tool = ViewFigureTool(port, max_image_bytes=4096)
+
+    listed = tool.invoke({"record_ref": "2401.00001"}, _CTX)
+    assert [item["assetId"] for item in listed.content["assets"]] == ["fig-1"]
+
+    # 목록에 없으니 직접 지정해도 조회되지 않는다.
+    fetched = tool.invoke({"record_ref": "2401.00001", "asset_id": "tbl-0"}, _CTX)
+    assert not fetched.ok
+    assert fetched.result_summary == "view_figure: unknown asset"
