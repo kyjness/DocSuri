@@ -112,6 +112,11 @@ class NoveltySettings:
     # 온디맨드 대화 턴 한 번의 decide 상한(NFR-NV2-7 — 잡 재실행이 아니다).
     # 예산 원장은 잡의 LoopBudget 하나이고, 이 값은 한 턴이 잔여 예산을 통째로
     # 태우지 못하게 막는 별도 상한이다.
+    #
+    # ⑤3에서 4 → 6으로 올렸다. `view_figure`가 2모드(목록 → 조회)라 그림을 보는 턴은
+    # 바닥이 3스텝이다(목록·조회·답변). 4에서는 그림 두 장을 보면 답변할 스텝이 남지
+    # 않아, 실스택 검증에서 조회에 성공하고도 "시도 횟수 안에 마무리하지 못했다"는
+    # 안내가 나갔다 — 쓴 비용은 그대로인데 사용자에게 전달된 것이 없다.
     max_turn_steps: int
 
     @property
@@ -172,5 +177,5 @@ class NoveltySettings:
             max_view_figure_calls=_env_int("DOCSURI_NOVELTY_MAX_VIEW_FIGURE_CALLS", 8),
             max_save_artifact_calls=_env_int("DOCSURI_NOVELTY_MAX_SAVE_ARTIFACT_CALLS", 12),
             job_cost_limit_usd=_env_float("DOCSURI_NOVELTY_JOB_COST_LIMIT_USD", 0.50),
-            max_turn_steps=_env_int("DOCSURI_NOVELTY_MAX_TURN_STEPS", 4),
+            max_turn_steps=_env_int("DOCSURI_NOVELTY_MAX_TURN_STEPS", 6),
         )
