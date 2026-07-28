@@ -41,7 +41,7 @@ from backend.modules.novelty.ports.tools import (
 )
 from backend.modules.novelty.settings import TOOL_CAP_GROUPS
 
-from .novelty_v2_fakes import FakeTool, InMemoryNoveltyStore, ScriptedToolCallingLlm
+from .novelty_fakes import FakeTool, InMemoryNoveltyStore, ScriptedToolCallingLlm
 
 _REFS = ("rec:paper-1", "rec:paper-2")
 

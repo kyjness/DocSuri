@@ -1,8 +1,8 @@
 """redis 잡 큐 어댑터 — 실 redis 통합 테스트(env-gated) + 페이크 잠금 계약은
-test_novelty_v2_store_contract.py::TestExecutionLockContract가 담당.
+test_novelty_store_contract.py::TestExecutionLockContract가 담당.
 
 CI에는 서비스 컨테이너가 없으므로 NOVELTY_TEST_REDIS_URL 설정 시에만 실행:
-NOVELTY_TEST_REDIS_URL=redis://localhost:6379/1 uv run pytest tests/test_novelty_v2_queue.py
+NOVELTY_TEST_REDIS_URL=redis://localhost:6379/1 uv run pytest tests/test_novelty_queue.py
 """
 
 from __future__ import annotations

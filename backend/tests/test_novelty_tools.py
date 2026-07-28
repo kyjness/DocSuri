@@ -16,7 +16,7 @@ from backend.modules.novelty.domain.models import ArtifactKind
 from backend.modules.novelty.ports.assets import FigureAsset
 from backend.modules.novelty.ports.tools import ToolContext, ToolRegistry
 
-from .novelty_v2_fakes import FakeFigureAssetPort
+from .novelty_fakes import FakeFigureAssetPort
 
 _CTX = ToolContext(owner_id="o1", job_id="j1")
 

@@ -180,7 +180,7 @@ u1 정리에서 `PostgresControlPlaneStore`가 "테스트 없음"이 아니라 *
 | `test_assets_rds_real.py` | u7 | postgres 서비스(테스트가 자체 DDL 생성) | 309 passed, **스킵 0** |
 | `test_integration_real.py` | u7 | **AWS → 로컬 스택으로 재작성** (아래) | 동일 레인에서 실행 |
 | `test_opensearch_integration.py` | u2 | opensearch 서비스 + `real` extra(원인 2겹) | 138 passed, k-NN/BM25가 실클러스터 상대 |
-| `test_novelty_v2_queue.py` | u12 | redis 서비스 | 384 passed — 잡 큐 락·visibility timeout 실검증 |
+| `test_novelty_queue.py` | u12 | redis 서비스 | 384 passed — 잡 큐 락·visibility timeout 실검증 |
 
 u7 `test_integration_real.py`는 은퇴한 AWS를 가리키고 있어 **로컬 스택(S3 호환 엔드포인트/redis/
 postgres)으로 재작성**했다. 어댑터는 무수정 — boto3가 `AWS_ENDPOINT_URL_S3`를 인식하는 것이 ②단계에서

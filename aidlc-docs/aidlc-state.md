@@ -1012,7 +1012,7 @@ _Resiliency 옵트인은 `requirements.md` 확정 전에 필수 요구사항 명
     (워커 재시작까지). 포트에 `nack` 추가 + 3어댑터 구현 + 워커 백오프.
 - Outputs: `backend/modules/novelty/`(`domain/agent_step.py`·`domain/turn.py` 신설, loop·worker·
   api·settings·ports·adapters 갱신), `backend/middleware/agent_quota.py`, `frontend/`(apiClient·
-  AgentChatScreen·types·mockTransport·fixtures), 테스트 7종(신규 `test_novelty_v2_turn.py` 포함).
+  AgentChatScreen·types·mockTransport·fixtures), 테스트 7종(신규 `test_novelty_turn.py` 포함).
 - 검증: backend 전량 통과(redis 통합 테스트를 실제 redis로 실행 — 스킵 0), root 183, frontend
   299 + tsc + lint + 타입 드리프트, shared SSOT 드리프트 없음.
 - 리뷰 3종 반영(2026-07-25):

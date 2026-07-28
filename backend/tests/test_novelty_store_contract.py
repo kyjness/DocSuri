@@ -26,7 +26,7 @@ from backend.modules.novelty.domain.models import (
 )
 from backend.modules.novelty.ports.store import DuplicateTraceSeqError
 
-from .novelty_v2_fakes import InMemoryNoveltyStore
+from .novelty_fakes import InMemoryNoveltyStore
 
 # owner 격리 검증용 제3자 — SQL 스토어의 UUID 컬럼과 호환되도록 UUID 문자열.
 _OTHER_OWNER = str(uuid4())
@@ -235,7 +235,7 @@ class TestNoveltyStoreContract:
 
 class TestExecutionLockContract:
     def test_lock_idempotency_and_lease_expiry(self) -> None:
-        from .novelty_v2_fakes import InMemoryJobQueue
+        from .novelty_fakes import InMemoryJobQueue
 
         clock = {"now": 0.0}
         queue = InMemoryJobQueue(clock=lambda: clock["now"])
@@ -255,7 +255,7 @@ class TestExecutionLockContract:
         import threading
         import time
 
-        from .novelty_v2_fakes import InMemoryJobQueue
+        from .novelty_fakes import InMemoryJobQueue
 
         queue = InMemoryJobQueue()
         started = time.monotonic()
@@ -271,7 +271,7 @@ class TestExecutionLockContract:
     def test_nack_returns_message_to_back_of_queue(self) -> None:
         # ack 생략만으로는 redis 구현에서 메시지가 processing에 방치된다 — nack이
         # 되돌리는 계약이고, 위치는 큐의 끝이어야 한다(같은 메시지 즉시 재획득 방지).
-        from .novelty_v2_fakes import InMemoryJobQueue
+        from .novelty_fakes import InMemoryJobQueue
 
         queue = InMemoryJobQueue()
         queue.enqueue("job-1", "owner-1")
@@ -337,7 +337,7 @@ class TestStoreLatches:
     def test_enqueue_carries_turn_kind_and_message_id(self) -> None:
         from backend.modules.novelty.ports.queue import KIND_LOOP, KIND_TURN
 
-        from .novelty_v2_fakes import InMemoryJobQueue
+        from .novelty_fakes import InMemoryJobQueue
 
         queue = InMemoryJobQueue()
         queue.enqueue("job-1", "owner-1")

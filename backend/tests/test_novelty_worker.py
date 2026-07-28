@@ -33,7 +33,7 @@ from backend.modules.novelty.ports.tools import (
 from backend.modules.novelty.settings import TOOL_CAP_GROUPS, NoveltySettings
 from backend.modules.novelty.worker import WorkerDeps, process_message, sweep_stale_jobs
 
-from .novelty_v2_fakes import (
+from .novelty_fakes import (
     FakeTool,
     InMemoryJobQueue,
     InMemoryNoveltyStore,
