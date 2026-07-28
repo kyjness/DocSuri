@@ -65,7 +65,7 @@
 | ④ | novelty v2 유닛 설계 | ✅ 완료 (2026-07-18) | 질문지 3장 확정(아키텍처 Q1~Q8 · 기능 정의 Q1~Q7 · FD 게이트 Q1~Q14) — v2 임무 = **조사 + 여백 분석**(방향 제안·실험 계획은 대화 온디맨드), 완전 자율 루프, 채팅 모드 + 잡 + 대화 스티어링, 원고 위험 신호 폐기, Notion export 유지(승인 게이트). `requirements.md` 개정 블록(FR-30~33·35 개정, FR-34 폐기, FR-44~47 신규) + `construction/novelty-agent-v2/` 설계 세트 8종(functional-design 4 / nfr-requirements 2 / nfr-design 2). 유닛명·코드 경로 모두 `novelty` 유지 — "research*"는 ⑦ supervisor 명명 후보로 예약 |
 | ⑤ | novelty 코어 재작성 | ✅ 3/3 | 고정 상태머신(QUEUED→…→EXPORTING_NOTION)을 **단일 자율 도구 호출 루프**로 모듈 내부 재작성(Q4=A; 루프는 프레임워크 없이 직접 구현, Q5=A). 단계: **1) 에이전트 루프 ✅** (2026-07-20, PR #2~#6 — 도메인 코어/포트/게이트·어댑터(redis/postgres/OpenAI + real_wiring 기준선)·API/워커 컷오버·레거시 제거; shared 서킷 브레이커·env·emit_metric 통합 포함) → **2) 세션 메모리 ✅** (2026-07-25) — 잡 내 멀티턴: 대화 스티어링을 다음 decide 시점에 주입(BLM §6, 드레인 위치는 예산 검사 통과 후 — 앞에 두면 예산이 거부한 턴에서 지시가 유실된다) + 종단 잡의 온디맨드 산출물 생성 경로(BLM §5). 저장은 `agent_step.execute_save` 하나만 통과하고(BR-RA2/RA6), 잡 상태는 바뀌지 않으며(BR-RA5), 한 턴은 `max_turn_steps`로 제한된다(NFR-NV2-7). 메시지 `kind`는 서버가 확정(위조 표면 제거) — 별도 의도 분류기는 두지 않고 결과는 답장의 `resulting_artifact_ref`가 담는다. u5 대화 UI 동반(차단 해제·스티어링 안내·bounded 제안 카드). 선행 결함 2건 수리: 어댑터 간 `artifact_id` 불일치, 큐 nack 부재 → **3) 멀티모달 ✅** (2026-07-27) — `view_figure` 등록(figure/수식 crop을 LLM 컨텍스트에 편입). 2모드 계약(목록/이미지)으로 도구 어휘 확장 없이 Q7=A 온디맨드를 지킨다(BLM §3.2). 이미지 채널은 `ToolResult`/`ToolResultView`의 별도 타입 필드 — content는 문자 한도로 잘려 base64가 조용히 죽는다. 첨부는 decide 직후 소비되는 1회성(종료 제안 거부로 도구 없이 되도는 경로에서 재전송되던 결함 수리). 등록 조건은 자산 토글 + postgres. requirements 멀티모달 카브아웃을 '표시 경로 제외 유지 + U12 on-demand 비전 해제'로 개정(FR-17 D5 발동). 배포 스택에 자산 토글·`assets/*` GetObject 추가. **MCP는 고정 단계에서 해제**(2026-07-25 개정 — 아래) — 외부 탐색 어댑터를 MCP로 교체할 필요가 실제로 생기는 시점에 도입한다. 모듈 경로 유지, API·화면 계약은 새 산출물 기준 재설계(기능 정의 Q7=B), 결정 트레이스(도구·질의·종료 사유) 구조화 저장을 루프 도입과 동시 시작 |
 | ⑤a | 정리 보수 | ✅ 완료 (2026-07-25, PR #7·#14) | ⑤ 1단계 직후에 끼운 유지보수 — ③(설계 정합성)·코드 리뷰와는 관점이 다른 별개 작업. (a) **u1 ingestion 정리 ✅ 완료** (2026-07-20, PR #7) — 중복 제거 외에 평문 시크릿 로깅·alias 분기·429 오분류 등 실결함 5건 수리, 테스트 320→355. **u2 discovery·u7 summarization의 동일 전면 정리는 취소**한다(근거는 아래 "⑤a 범위 축소") — 대신 두 유닛에는 **테스트 공백 점검만** 수행: 실입력 픽스처 없이 mock/합성 입력만으로 검증되는 경로를 찾아 필요한 곳에만 픽스처·테스트를 추가한다 (b) **③ 잔여 후속 2건 ✅ 완료** (PR #14): evidence `real_wiring.py` 리더 정합(임베딩 공간 가드 + 프로바이더 스위치 — discovery 가드 헬퍼 공유, `7d1e630`), shared `search.schema.json` Scope 설명문 stale 정정(BR-4b 불일치; 재생성 + FE 타입 파급 동반, `6b7431c`) (c) **게이트 테스트 미실행 ✅ 해소** (PR #7) — 아래 "게이트 레인" 참조 |
-| ⑥ | 문헌탐색 에이전트화 | ⬜ | U11 evidence를 **검색 전략만 자율**(어떤 질의로, 어떤 논문을 깊이, 언제 충분한지)인 에이전트로 **새로 작성**(Q2=A, Q4=A 상속 — 기존 `orchestrator.py` 고정 파이프라인은 승계 대상이 아니다). 문장 추출·근거표 조립·날조 검사 게이트는 기계식 유지 — C-2 fail-closed 불변. **자율/기계식 경계**: 질의 설계·깊이 판단·종료 판단은 에이전트, 앵커 실재성·수치 정합 검증은 게이트. 설계 문서(질문 게이트) 선행. **⑥ 게이트에서 결정할 항목**: ① **근거 대상 확장** — 근거 검색·추출·앵커(SourceRef)를 문장만이 아니라 DocModel의 표·그림·수식 객체까지 커버하도록 설계(requirements 델타 ⑥ 연동) ② figure/표 조회 도구(DocModel/S3 공용 부품)를 문헌탐색 루프에도 노출할지 |
+| ⑥ | 문헌탐색 에이전트화 | ⬜ | U11 evidence를 **검색 전략만 자율**(어떤 질의로, 어떤 논문을 깊이, 언제 충분한지)인 에이전트로 **새로 작성**(Q2=A, Q4=A 상속 — 기존 `orchestrator.py` 고정 파이프라인은 승계 대상이 아니다). 문장 추출·근거표 조립·날조 검사 게이트는 기계식 유지 — C-2 fail-closed 불변. **자율/기계식 경계**: 질의 설계·깊이 판단·종료 판단은 에이전트, 앵커 실재성·수치 정합 검증은 게이트. 설계 문서(질문 게이트) 선행. **⑥ 게이트에서 결정할 항목**: ① **근거 대상 확장** — 근거 검색·추출·앵커(SourceRef)를 문장만이 아니라 DocModel의 표·그림·수식 객체까지 커버하도록 설계(requirements 델타 ⑥ 연동) ② figure/표 조회 도구(DocModel/S3 공용 부품)를 문헌탐색 루프에도 노출할지 ③ **대화 표면·모듈 경계 일원화** ④ **figure 자산 리더 공용화 시점** — ③④ 근거는 아래 "⑥ 게이트 추가 항목" |
 | ⑦ | supervisor + LangGraph | ⬜ | supervisor가 서브 에이전트(문헌탐색 탐색 워커, 아이디어 생성)를 지휘·병렬 실행하는 멀티 에이전트 완성형(Q1=C). 병렬 배선·에이전트 간 상태 전달에 LangGraph 도입(Q5=A). **supervisor는 별도 신설**한다 — novelty를 계획층으로 승격하는 안은 기각(2026-07-25, 아래 "supervisor 구성 방식"). novelty·evidence는 둘 다 서브로 남고, 각자의 단독 진입점(잡·채팅)도 유지된다. **⑦ 질문 게이트에서 결정**: supervisor의 도구/서브 경계, 전용 UI 모드, 서브 활동 노출 수준, LangGraph 도입 범위 |
 
 ## 개정 (2026-07-25) — MCP 고정 슬롯 해제 · supervisor 구성 방식
@@ -116,6 +116,51 @@ FR-31의 "메커니즘 중립화"는 그대로 유효하다 — 포트 뒤 어�
 용어 경계도 함께 고정한다 — **도구**는 스스로 판단하지 않는 부품(검색·요약·DocModel·figure 조회),
 **서브 에이전트**는 스스로 판단하는 단위(문헌탐색·차별화). supervisor는 주로 서브 지휘와 결과
 종합을 맡고, 저수준 도구는 서브가 쥔다. 구체 배선은 ⑦ 질문 게이트에서 정한다.
+
+## ⑥ 게이트 추가 항목 (2026-07-28)
+
+⑤ 마감 후 코드를 훑다 나온 두 건. 둘 다 **지금 고치면 ⑥에서 다시 고치게 되는** 종류라
+재작성 시점에 함께 정한다.
+
+### 항목 ③ — 대화 표면·모듈 경계 일원화
+
+evidence 에이전트 하나에 사용자 대면 표면이 두 벌이다.
+
+| | `research` | `evidence` |
+|---|---|---|
+| URL | `/api/research/jobs` | `/api/evidence/turns` |
+| 테이블 | `research_jobs`·`research_messages` | `evidence_sessions`·`evidence_turns` |
+| 프론트 호출 | `lib/api/apiClient.ts` 6곳 — 실사용 | BFF allowlist·테스트뿐 — 클라이언트 호출부 없음 |
+
+`evidence/repository.py`의 전용 테이블은 `research_jobs` 재사용의 부작용
+(evidence 세션이 `/api/research/jobs`에 노출, `status='deleted'`가 `ResearchJobState`를 파손)
+때문에 갈라져 나온 것이다. 즉 한쪽이 다른 쪽의 파생인데 원본이 남아 있는 상태이고,
+`research` 모듈은 자기 판단 로직 없이 evidence orchestrator를 주입받아 호출하는 껍데기다.
+
+**게이트에서 정할 것**: 어느 표면을 남기는가(현 근거로는 프론트가 쓰는 `research` 쪽을 남기고
+`/api/evidence` 표면을 접는 편이 URL·테이블 마이그레이션 비용이 0), 그리고 그 결과로
+엔진/표면을 2모듈로 둘지 1모듈로 합칠지. **모듈 이름 문제는 이 결정에 종속**된다 —
+표면을 접기 전에는 "`research`가 왜 껍데기인가"에 답이 없어서 이름만 바꿔봐야 ⑥에서 또 바뀐다.
+
+**⑦와의 충돌**: ④ 행이 `"research*"`를 ⑦ supervisor 명명 후보로 예약해 뒀는데, 그 이름을
+지금 evidence의 껍데기 표면이 선점하고 있다. ⑥에서 표면을 접지 않으면 ⑦에서 supervisor가
+`research`를 쓸 수 없거나, 두 개의 서로 다른 `research`가 공존한다.
+
+유닛명 `novelty`는 **바꾸지 않는다** — `/api/novelty`·`novelty_jobs`·프론트·설계 문서 SSOT·
+`ops/cdk/stacks/novelty_stack.py`까지 번지는 데 비해 얻는 것이 명명 정확도뿐이고,
+참신성 판정이 목적이고 `similar_works`·`gap_analysis`는 그 판정의 중간 산출물이라
+현 이름이 틀린 것도 아니다.
+
+### 항목 ④ — figure 자산 리더 공용화 시점
+
+`novelty/adapters/figures.py`의 `SqlS3FigureReader`(paper_asset 조회 + S3 GetObject)는
+novelty 도메인과 무관한 부품인데 novelty 안에 있다. u7에도 같은 성격의
+`summarization/adapters/rds_assets.py`가 있어 이미 리더가 2벌이다.
+
+**지금 추출하지 않는다** — 소비자가 하나일 때 공용 레이어를 파면 두 번째 소비자가 요구를
+바꿔 추상이 틀리게 굳는다. 위 ②가 "노출한다"로 정해지면 리더가 3벌이 되고 그때
+`shared/`로 올릴 근거가 확정된다. 갈라내기 위한 조건(포트 `ports/assets.py`와 어댑터 분리)은
+이미 충족돼 있어 미루는 비용이 없다.
 
 ## ③ 유닛 리뷰 이관 이슈
 
