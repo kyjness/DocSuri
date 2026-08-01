@@ -29,7 +29,7 @@ from typing import Any
 
 from docsuri_shared._generated.dtos.evidence_schema import EvidenceRequest, EvidenceScope
 
-from .models import AgentRunContext, EvidenceTurn, TurnErrorResult, TurnPendingResult
+from .models import EvidenceTurn, TurnErrorResult, TurnPendingResult
 from .repository import EvidenceRepository
 from .service import build_run_context, trace_row
 
@@ -139,9 +139,9 @@ def process_job(
     attachment_docs: list[dict[str, Any]] | None = None,
     user_docmodel: Any = None,
 ) -> None:
-    # 세션 조회 (INV-EV-1: 소유권 확인)
+    # 세션 조회 (INV-EV-1: 소유권 확인) — 존재·소유 확인이 목적이라 반환값은 안 쓴다.
     try:
-        session = repo.get_session(owner_id, session_id)
+        repo.get_session(owner_id, session_id)
     except KeyError:
         log.warning('evidence job %s: session %s not found or wrong owner', job_id, session_id)
         # turn을 pending으로 방치하면 GET /jobs/{job_id}가 영원히 pending을 반환한다
@@ -158,9 +158,12 @@ def process_job(
             )
         return
 
-    # turn 조회 — 이미 완료 상태면 스킵
-    turns = repo.list_turns(owner_id, session_id)
-    turn: EvidenceTurn | None = next((t for t in turns if t.turn_id == turn_id), None)
+    # turn 조회 — 이미 완료 상태면 스킵. PK 조회 하나면 되는 일에 세션 전체를
+    # 역직렬화하지 않는다(긴 세션에서 잡마다 선형 비용이 붙는다).
+    try:
+        turn: EvidenceTurn | None = repo.get_turn(owner_id, turn_id)
+    except KeyError:
+        turn = None
     if turn is None:
         log.warning('evidence job %s: turn %s not found', job_id, turn_id)
         return
@@ -193,18 +196,11 @@ def process_job(
         turn_id=turn_id,
         request_id=job_id,
     )
-    ctx = AgentRunContext(
-        session=session,
-        current_turn=turn,
+    docs = _attachment_inputs(
         owner_id=owner_id,
-        request_id=job_id,
-        budget_signal={},
-        attachment_docs=_attachment_inputs(
-            owner_id=owner_id,
-            scope_id=job_id,
-            attachment_docs=attachment_docs or [],
-            user_docmodel=user_docmodel,
-        ),
+        scope_id=job_id,
+        attachment_docs=attachment_docs or [],
+        user_docmodel=user_docmodel,
     )
 
     try:
@@ -212,7 +208,7 @@ def process_job(
             loop_ctx,
             request,
             budget_signal={},
-            attachments=ctx.attachment_docs,
+            attachments=docs,
             on_trace=lambda record: _append_trace(repo, owner_id, turn_id, record),
         )
     except Exception as exc:

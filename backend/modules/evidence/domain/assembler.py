@@ -71,13 +71,10 @@ def _comparison_order(items: list) -> list:
     단순 나열 금지(BR-EV-5)의 최소 구현이다. 정렬은 안정적이어야 하므로 원래
     순서를 보조 키로 유지한다.
     """
-    return [
-        item
-        for _rank, _idx, item in sorted(
-            ((0 if item.conflicting else 1, idx, item) for idx, item in enumerate(items)),
-            key=lambda triple: (triple[0], triple[1]),
-        )
-    ]
+    # 안정 분할 — 각 그룹 안에서는 원래 순서를 지킨다.
+    contested = [item for item in items if item.conflicting]
+    rest = [item for item in items if not item.conflicting]
+    return contested + rest
 
 
 # 이름을 나열하는 상한 — 근거 논문이 많을 때 문장이 목록으로 변하는 것을 막는다.

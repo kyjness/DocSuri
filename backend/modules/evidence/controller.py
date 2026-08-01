@@ -6,6 +6,10 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import uuid4
 
+from docsuri_shared._generated.dtos.evidence_schema import (
+    EvidenceCoverage,
+    EvidenceItem,
+)
 from docsuri_shared.authz import Principal
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
@@ -98,40 +102,18 @@ class TurnCreateRequest(BaseModel):
     )
 
 
-class SourceRefOut(BaseModel):
-    paper_id: str = Field(alias='paperId')
-    record_ref: str = Field(alias='recordRef')
-    anchor: str | None = None
-    quote: str | None = None
-    # v2(FR-47) — 인용 객체 종류와 근거 범위. 화면이 칩 라벨·배지를 고르는 근거다.
-    anchor_type: str | None = Field(None, alias='anchorType')
-    source_scope: str | None = Field(None, alias='sourceScope')
-
-    model_config = ConfigDict(populate_by_name=True)
-
-
-class EvidenceItemOut(BaseModel):
-    statement: str
-    supporting: list[SourceRefOut]
-    conflicting: list[SourceRefOut]
-
-
-class EvidenceCoverageOut(BaseModel):
-    paper_count: int = Field(alias='paperCount')
-    query_used: str | None = Field(None, alias='queryUsed')
-    # v2 — 확인 범위. 탐색이 완결되지 않았을 때 화면이 한 줄로 알린다.
-    examined: int | None = None
-    candidates: int | None = None
-    stopped_reason: str | None = Field(None, alias='stoppedReason')
-
-    model_config = ConfigDict(populate_by_name=True)
-
-
 class TurnResultOut(BaseModel):
-    """INV-EV-5: 벡터 점수·청크 ID·LLM 내부 미노출."""
+    """턴 결과 봉투 — claims/coverage는 **생성 계약 모델을 그대로 싣는다**.
+
+    D5 스키마가 SSOT이고 CI 드리프트 가드가 지킨다. 손 미러 DTO를 두면 스키마
+    추가가 4곳 편집(스키마→바인딩→미러→직렬화)이 되고, 하나를 빠뜨리면 필드가
+    조용히 떨어진다 — 실제로 v2 필드 4종이 그렇게 떨어졌었다. INV-EV-5(점수·청크
+    비노출)는 게이트·조립이 이미 강제한다: 계약 모델에는 그 필드 자체가 없다.
+    """
+
     state: Literal['ok', 'abstain', 'pending', 'error']
-    claims: list[EvidenceItemOut] | None = None
-    coverage: EvidenceCoverageOut | None = None
+    claims: list[EvidenceItem] | None = None
+    coverage: EvidenceCoverage | None = None
     answer: str | None = None
     abstain_reason: str | None = Field(None, alias='abstainReason')
     job_id: str | None = Field(None, alias='jobId')
@@ -424,10 +406,10 @@ async def delete_session(
 ) -> Response:
     service = EvidenceSessionManagementService(repo=repo)
     try:
+        # commit은 서비스가 소유한다 — 여기서 또 커밋하면 소유가 둘이 된다.
         service.delete_session(principal.user_id, session_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail='session not found') from exc
-    repo.commit()
     return Response(status_code=204)
 
 
@@ -440,7 +422,6 @@ async def reset_sessions(
 ) -> Response:
     """BR-EV-9 — 본인 세션만 초기화(멱등)."""
     EvidenceSessionManagementService(repo=repo).reset_all(principal.user_id)
-    repo.commit()
     return Response(status_code=204)
 
 
@@ -488,50 +469,17 @@ def _serialize_result(result: Any) -> TurnResultOut:
         outcome = result.outcome
         return TurnResultOut(
             state='ok',
-            claims=[
-                EvidenceItemOut(
-                    statement=item.statement,
-                    supporting=[
-                        _source_ref_out(ref)
-                        for ref in item.supporting
-                    ],
-                    conflicting=[
-                        _source_ref_out(ref)
-                        for ref in item.conflicting
-                    ],
-                )
-                for item in outcome.claims
-            ],
-            coverage=EvidenceCoverageOut(
-                paperCount=outcome.coverage.paperCount,
-                queryUsed=outcome.coverage.queryUsed,
-                examined=getattr(outcome.coverage, 'examined', None),
-                candidates=getattr(outcome.coverage, 'candidates', None),
-                stoppedReason=_enum_value(getattr(outcome.coverage, 'stoppedReason', None)),
-            ),
-            answer=getattr(outcome, 'answer', None),
+            claims=list(outcome.claims),
+            coverage=outcome.coverage,
+            answer=outcome.answer,
         )
-
     if isinstance(result, TurnAbstainResult):
-        return TurnResultOut(
-            state='abstain',
-            abstainReason=result.outcome.abstainReason,
-        )
-
+        return TurnResultOut(state='abstain', abstainReason=result.outcome.abstainReason)
     if isinstance(result, TurnPendingResult):
-        return TurnResultOut(
-            state='pending',
-            jobId=result.job_id,
-            startedAt=result.started_at,
-        )
-
+        return TurnResultOut(state='pending', jobId=result.job_id, startedAt=result.started_at)
     if isinstance(result, TurnErrorResult):
-        return TurnResultOut(
-            state='error',
-            errorCode=result.error_code,
-        )
-
-    return TurnResultOut(state='pending')
+        return TurnResultOut(state='error', errorCode=result.error_code)
+    return TurnResultOut(state='error', errorCode='unknown')
 
 
 def _attachment_docs(
@@ -553,18 +501,3 @@ def _attachment_docs(
 
 routers = (router,)
 
-
-def _source_ref_out(ref: Any) -> SourceRefOut:
-    """SourceRef → 응답 DTO. v2 필드를 빠뜨리면 화면이 종류·범위를 모른다."""
-    return SourceRefOut(
-        paperId=ref.paperId,
-        recordRef=ref.recordRef,
-        anchor=ref.anchor,
-        quote=ref.quote,
-        anchorType=_enum_value(getattr(ref, 'anchorType', None)),
-        sourceScope=_enum_value(getattr(ref, 'sourceScope', None)),
-    )
-
-
-def _enum_value(value: Any) -> str | None:
-    return None if value is None else str(getattr(value, 'value', value))

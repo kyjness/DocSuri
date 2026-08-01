@@ -12,7 +12,6 @@ from backend.config import Settings
 from backend.modules.evidence import controller
 from backend.modules.evidence.models import (
     EvidenceSession,
-    EvidenceTurn,
     TurnAbstainResult,
     TurnPendingResult,
     TurnSuccessResult,
@@ -475,30 +474,6 @@ def test_api_topic_over_2000_rejected_with_422(monkeypatch) -> None:
 # ---------------------------------------------------------------------------
 # FR-37: 멀티턴 검색 맥락화 (PR #338 리뷰 Blocking #2 — buildable 절반)
 # ---------------------------------------------------------------------------
-
-def _cost_gate_ctx(budget_signal: dict):
-    """비용 게이트 테스트용 최소 ctx/request — research 경로와 동일한 구성."""
-    from docsuri_shared._generated.dtos.evidence_schema import EvidenceRequest
-
-    from backend.modules.evidence.models import AgentRunContext, EvidenceSession
-
-    request = EvidenceRequest(topic='t', paperIds=[])
-    session = EvidenceSession(owner_id='o')
-    ctx = AgentRunContext(
-        session=session,
-        current_turn=EvidenceTurn(session_id=session.session_id, request=request),
-        owner_id='o',
-        request_id='',
-        budget_signal=budget_signal,
-    )
-    return ctx, request
-
-
-class _NoToolAllowed:
-    """비용 게이트 이후 어떤 tool도 호출되면 안 된다 — 속성 접근 자체가 실패."""
-
-    def __getattr__(self, name: str):
-        raise AssertionError('cost gate must run before any tool call')
 
 
 # ---------------------------------------------------------------------------

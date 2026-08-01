@@ -46,6 +46,9 @@ class ToolResultView:
     ok: bool
     args_summary: str = ""
     content: dict[str, Any] = field(default_factory=dict)
+    # content의 렌더형(직렬화+절단) — 관찰은 같은 결과를 매 회차 다시 싣는 구조라,
+    # 여기서 1회 만들어 두지 않으면 수십 KB dict가 회차마다 재직렬화된다.
+    content_preview: str = ""
     error: str | None = None
     images: tuple[ImageAttachment, ...] = ()
 

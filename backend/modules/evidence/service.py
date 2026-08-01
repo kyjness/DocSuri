@@ -97,6 +97,8 @@ class EvidenceChatService:
             session_id=session.session_id,
             owner_id=owner_id,
             topic=request.topic,
+            # FR-38: 첨부 핸들도 턴에 영속한다 — 원시 파일이 아니라 참조 id다(INV-EV-4).
+            attachments=list(request.attachments or []),
             request=request,
         )
         loop_ctx = build_run_context(

@@ -23,7 +23,8 @@ import urllib.request
 from collections.abc import Callable
 from typing import Any
 
-from docsuri_shared.resilience import CircuitBreaker
+from backend.modules.novelty.adapters.external.base import SourceBreaker, SourceUnavailable
+from backend.modules.novelty.adapters.llm_prompt import estimate_cost
 
 from ..ports.llm import (
     LlmDecision,
@@ -40,8 +41,6 @@ __all__ = ["OpenAiDecider", "OpenAiExtractor"]
 log = logging.getLogger("docsuri.evidence.llm")
 
 _FINISH_TOOL = "finish"
-_CB_FAILURES = 5
-_CB_RECOVERY = 30.0
 _ENDPOINT = "https://api.openai.com/v1/chat/completions"
 _TIMEOUT_S = 120.0
 
@@ -83,24 +82,37 @@ class _OpenAiBase:
         model: str,
         api_key: str | None = None,
         transport: Transport | None = None,
-        name: str,
+        input_usd_per_mtok: float = 0.15,
+        output_usd_per_mtok: float = 0.60,
+        breaker: SourceBreaker | None = None,
     ) -> None:
         self._model = model
         self._api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
         self._transport = transport or self._http_post
-        self._cb = CircuitBreaker(name, failure_threshold=_CB_FAILURES,
-                                  recovery_seconds=_CB_RECOVERY)
+        self._input_rate = input_usd_per_mtok
+        self._output_rate = output_usd_per_mtok
+        # 외부 연동 규칙(일시 실패 재시도 1회 + 반복 실패 자동 차단) — novelty와
+        # 같은 정책. 브레이커만 감싸면 첫 일시 오류가 곧장 턴 실패가 된다.
+        self._breaker = breaker or SourceBreaker()
 
     def _complete(self, **kwargs: Any) -> dict[str, Any]:
-        with self._cb.guard() as permit:
-            if permit is None:
-                raise LlmUnavailable(f"{self._model}: circuit breaker OPEN")
-            try:
-                response = self._transport({"model": self._model, **kwargs})
-            except Exception as exc:  # noqa: BLE001 — 프로바이더 오류를 포트 계약으로 좁힌다
-                raise LlmUnavailable(str(exc)[:300]) from exc
-            permit.success()
-            return response
+        try:
+            return self._breaker.call(lambda: self._transport({"model": self._model, **kwargs}))
+        except SourceUnavailable as exc:
+            raise LlmUnavailable(str(exc)[:300]) from exc
+
+    def _usage_cost(self, response: dict[str, Any]) -> float | None:
+        usage = (response or {}).get("usage")
+        if not usage:
+            # 토큰 수가 없으면 계상하지 않는다 — 없는 값을 추정해 넣으면 예산이
+            # 실제와 무관하게 소진된다.
+            return None
+        return estimate_cost(
+            input_tokens=int(usage.get("prompt_tokens") or 0),
+            output_tokens=int(usage.get("completion_tokens") or 0),
+            input_usd_per_mtok=self._input_rate,
+            output_usd_per_mtok=self._output_rate,
+        )
 
     def _http_post(self, request: dict[str, Any]) -> dict[str, Any]:
         req = urllib.request.Request(  # noqa: S310 — 고정 상수 엔드포인트
@@ -119,12 +131,8 @@ class _OpenAiBase:
 class OpenAiDecider(_OpenAiBase):
     """루프의 `decide` — 다음 도구·인자 또는 종료."""
 
-    def __init__(
-        self, *, model: str, api_key: str | None = None, transport: Transport | None = None
-    ) -> None:
-        super().__init__(
-            model=model, api_key=api_key, transport=transport, name="evidence-decide"
-        )
+    def __init__(self, *, model: str, **kwargs: Any) -> None:
+        super().__init__(model=model, **kwargs)
 
     def decide(self, observation: LoopObservation, tools: tuple[ToolSpec, ...]) -> LlmDecision:
         messages = build_decide_messages(observation)
@@ -134,7 +142,7 @@ class OpenAiDecider(_OpenAiBase):
             tools=[_tool_schema(spec) for spec in tools] + [_finish_spec()],
             tool_choice="required",
         )
-        cost = _usage_cost(response)
+        cost = self._usage_cost(response)
         call = _first_tool_call(response)
         if call is None:
             # 도구를 안 골랐다 — 종료 제안으로 해석한다. 근거가 없으면 도메인이 거부한다.
@@ -151,12 +159,8 @@ class OpenAiDecider(_OpenAiBase):
 class OpenAiExtractor(_OpenAiBase):
     """`extract_evidence` 뒤의 추출 — 검증 전 원시 항목을 돌려준다."""
 
-    def __init__(
-        self, *, model: str, api_key: str | None = None, transport: Transport | None = None
-    ) -> None:
-        super().__init__(
-            model=model, api_key=api_key, transport=transport, name="evidence-extract"
-        )
+    def __init__(self, *, model: str, **kwargs: Any) -> None:
+        super().__init__(model=model, **kwargs)
 
     def extract(
         self, *, topic: str, focus: str, papers: tuple[Any, ...]
@@ -225,20 +229,3 @@ def _parse_json(text: str) -> dict[str, Any]:
         return {}
     return parsed if isinstance(parsed, dict) else {}
 
-
-# 프로바이더별 단가는 설정에서 주입하는 편이 옳지만, 현 단계에서 필요한 것은
-# "예산이 단조 감소한다"는 성질이다. 토큰 수가 없으면 계상하지 않는다 —
-# 없는 값을 추정해 넣으면 예산이 실제와 무관하게 소진된다.
-_USD_PER_1K_INPUT = 0.00015
-_USD_PER_1K_OUTPUT = 0.0006
-
-
-def _usage_cost(response: dict[str, Any]) -> float | None:
-    usage = (response or {}).get("usage")
-    if not usage:
-        return None
-    prompt = int(usage.get("prompt_tokens") or 0)
-    completion = int(usage.get("completion_tokens") or 0)
-    if not prompt and not completion:
-        return None
-    return prompt / 1000 * _USD_PER_1K_INPUT + completion / 1000 * _USD_PER_1K_OUTPUT

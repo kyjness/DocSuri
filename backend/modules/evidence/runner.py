@@ -144,7 +144,7 @@ class EvidenceTurnRunner:
             registry.register(ReadPaperTool(state))
         if deps.assets is not None:
             registry.register(
-                ViewFigureTool(deps.assets, state, max_image_bytes=deps.max_image_bytes)
+                ViewFigureTool(deps.assets, max_image_bytes=deps.max_image_bytes)
             )
         registry.register(ExtractEvidenceTool(deps.extractor, state))
         return registry

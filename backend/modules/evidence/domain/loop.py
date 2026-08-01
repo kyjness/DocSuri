@@ -166,11 +166,24 @@ def _observe(state: LoopState, deps: LoopDeps) -> LoopObservation:
     )
 
 
+# 관찰에 싣는 결과 1건의 렌더 상한 — 프롬프트 어댑터가 아니라 여기서 절단하는 이유는
+# 렌더형을 1회만 만들기 위해서다(같은 결과가 회차마다 다시 실린다).
+_PREVIEW_CHARS = 2000
+
+
+def _preview(content: dict) -> str:
+    import json
+
+    try:
+        text = json.dumps(content, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return "(직렬화 불가)"
+    return text if len(text) <= _PREVIEW_CHARS else text[:_PREVIEW_CHARS] + " …(생략)"
+
+
 def _push_result(state: LoopState, tool_name: str, args_summary: str, result: ToolResult) -> None:
     """관찰 윈도우 갱신 — 이미지는 **가장 최근 1건에만** 남긴다."""
-    state.recent_results = [
-        view if not view.images else _without_images(view) for view in state.recent_results
-    ]
+    _drop_images(state)
     state.recent_results.append(
         ToolResultView(
             seq=len(state.trace),
@@ -178,6 +191,7 @@ def _push_result(state: LoopState, tool_name: str, args_summary: str, result: To
             ok=result.ok,
             args_summary=args_summary,
             content=result.content,
+            content_preview=_preview(result.content),
             error=result.error,
             images=result.images,
         )
@@ -193,6 +207,7 @@ def _without_images(view: ToolResultView) -> ToolResultView:
         ok=view.ok,
         args_summary=view.args_summary,
         content=view.content,
+        content_preview=view.content_preview,
         error=view.error,
     )
 

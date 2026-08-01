@@ -49,12 +49,8 @@ __all__ = [
     "EvidenceTurnTable",
     "InMemoryEvidenceRepository",
     "SqlEvidenceRepository",
-    "TraceRow",
 ]
 
-
-class TraceRow(dict):
-    """트레이스 1건의 저장·조회 형태. 활동 피드가 그대로 읽는다."""
 
 
 class EvidenceRepository(Protocol):

@@ -81,6 +81,11 @@ class PaperHandle:
     title: str = ""
     doc_model: Any | None = None
     abstract_text: str = ""
+    # 투영 캐시 — doc_model은 확보 후 불변이라 무효화가 필요 없다. 캐시가 없으면
+    # extract·read_paper·프롬프트 렌더가 같은 문서를 턴당 수십 번 재투영한다
+    # (전 블록 정규식 + 표 행 join이 매번 다시 돈다).
+    _blocks_cache: list[tuple[str, str, str]] | None = None
+    _source_cache: PaperEvidenceSource | None = None
 
     @property
     def scope(self) -> str:
@@ -90,22 +95,42 @@ class PaperHandle:
             else SourceScope.abstract.value
         )
 
+    def blocks(self) -> list[tuple[str, str, str]]:
+        """(block_id, anchor_type, projection) — 문서당 1회만 계산."""
+        if self.doc_model is None:
+            return []
+        if self._blocks_cache is None:
+            self._blocks_cache = iter_blocks(self.doc_model)
+        return self._blocks_cache
+
+    def invalidate_projections(self) -> None:
+        """doc_model이 나중에 채워지는 유일한 전이(승격) 직후 호출한다."""
+        self._blocks_cache = None
+        self._source_cache = None
+
     def as_source(self) -> PaperEvidenceSource:
         """게이트가 대조할 형태로. 투영은 `projection` 단일 지점에서만 나온다."""
+        if self._source_cache is not None:
+            return self._source_cache
         if self.doc_model is None:
-            return PaperEvidenceSource(
+            source = PaperEvidenceSource(
                 paper_id=self.paper_id,
                 record_ref=self.record_ref,
                 scope=SourceScope.abstract.value,
                 text=normalize(self.abstract_text),
             )
-        return PaperEvidenceSource(
-            paper_id=self.paper_id,
-            record_ref=self.record_ref,
-            scope=SourceScope.fulltext.value,
-            text=paper_projection(self.doc_model),
-            blocks={bid: (kind, text) for bid, kind, text in iter_blocks(self.doc_model)},
-        )
+        else:
+            source = PaperEvidenceSource(
+                paper_id=self.paper_id,
+                record_ref=self.record_ref,
+                scope=SourceScope.fulltext.value,
+                # 전문 텍스트도 정규화형으로 만든다 — 게이트가 ref마다 전문을
+                # 재정규화하지 않도록(E3) 대조는 항상 정규화형끼리 한다.
+                text=normalize(paper_projection(self.doc_model)),
+                blocks={bid: (kind, text) for bid, kind, text in self.blocks()},
+            )
+        self._source_cache = source
+        return source
 
 
 @dataclass(slots=True)
@@ -204,9 +229,6 @@ class LoopState:
         self.discovered.pop(handle.paper_id, None)
         self.papers[handle.paper_id] = handle
         return handle
-
-    def sources(self) -> dict[str, PaperEvidenceSource]:
-        return {pid: handle.as_source() for pid, handle in self.papers.items()}
 
 
 @dataclass(slots=True)

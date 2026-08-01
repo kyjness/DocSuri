@@ -621,6 +621,7 @@ def _mount_evidence(app: FastAPI, settings: Settings, result: MountResult) -> No
     from backend.modules.evidence.settings import EvidenceSettings
 
     ev_settings = EvidenceSettings.from_env()
+    evidence_session_factory = None
 
     if _is_postgres(settings.database_url):
         from .db import make_engine, make_session_factory
@@ -628,6 +629,7 @@ def _mount_evidence(app: FastAPI, settings: Settings, result: MountResult) -> No
         engine = getattr(app.state, "db_engine", None) or make_engine(settings.database_url)
         app.state.db_engine = engine
         session_factory = make_session_factory(engine)
+        evidence_session_factory = session_factory
 
         def get_evidence_repo():
             session = session_factory()
@@ -641,7 +643,6 @@ def _mount_evidence(app: FastAPI, settings: Settings, result: MountResult) -> No
                 session.close()
     else:
         repo = InMemoryEvidenceRepository()
-        app.state.evidence_repo = repo
 
         def get_evidence_repo():
             return repo
@@ -650,9 +651,11 @@ def _mount_evidence(app: FastAPI, settings: Settings, result: MountResult) -> No
         from backend.modules.evidence.real_wiring import build_evidence_runner
 
         runner = build_evidence_runner(
-            ev_settings, cost_guard=getattr(app.state, "cost_guard", None)
+            ev_settings,
+            cost_guard=getattr(app.state, "cost_guard", None),
+            # 앱쉘이 이미 가진 세션 팩토리 재사용 — 없으면 러너가 자체 생성한다.
+            session_factory=evidence_session_factory,
         )
-        app.state.evidence_runner = runner
 
         def get_evidence_runner():
             return runner

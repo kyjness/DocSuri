@@ -452,16 +452,6 @@ export class MockTransport implements Transport {
         ? { status: 204, body: null }
         : { status: 404, body: null };
     }
-    const researchMessage = null;
-    if (researchMessage && req.method === 'POST') {
-      const body = req.body as { content?: string; attachments?: AgentAttachment[] };
-      const result = mockSendAgentMessage('', {
-        content: String(body.content ?? ''),
-        mode: 'evidence',
-        attachments: body.attachments,
-      });
-      return { status: 201, body: backendMessage(result.messages.at(-1)!) };
-    }
     const novelty = path.match(/^\/api\/novelty\/jobs\/([^/]+)$/);
     if (novelty && req.method === 'GET') {
       const snapshot = mockLoadAgentSession(decodeURIComponent(novelty[1]));

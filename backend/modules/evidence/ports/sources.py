@@ -37,7 +37,6 @@ class PaperCandidate:
     record_ref: str
     title: str
     abstract: str = ""
-    year: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

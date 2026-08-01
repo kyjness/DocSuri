@@ -6,8 +6,6 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 
 from backend.modules.evidence.adapters.llm_openai import OpenAiDecider, OpenAiExtractor
@@ -26,27 +24,10 @@ from backend.modules.evidence.ports.llm import (
     ToolResultView,
 )
 from backend.modules.evidence.ports.tools import ImageAttachment, ToolSpec
-
-FIGURE_CAPTION = "Figure 3 Accuracy versus training set size"
-
-
-def _doc_model() -> SimpleNamespace:
-    figure = SimpleNamespace(
-        id="s5.fig3",
-        type="figure",
-        anchorLabel="Figure 3",
-        caption="Accuracy versus training set size",
-    )
-    table = SimpleNamespace(
-        id="s4.tbl1",
-        type="table",
-        anchorLabel="Table 1",
-        caption="Results",
-        rows=[SimpleNamespace(cells=[SimpleNamespace(text=c) for c in ("AlphaFold2", "92.4")])],
-    )
-    return SimpleNamespace(
-        sections=[SimpleNamespace(id="s1", title="Intro", blocks=[figure, table], sections=[])]
-    )
+from backend.tests.evidence_fakes import (
+    FIGURE_CAPTION,
+    doc_model,
+)
 
 
 def _handle(doc_model=None, abstract="") -> PaperHandle:
@@ -109,18 +90,18 @@ def _text_response(text: str):
 
 def test_extraction_prompt_renders_the_same_string_the_gate_will_compare():
     """프롬프트 표현 ≠ 대조 투영이면 인용은 구조적으로 탈락한다."""
-    handle = _handle(doc_model=_doc_model())
+    handle = _handle(doc_model=doc_model())
     messages = build_extraction_messages(topic="q", focus="", papers=(handle,))
     body = messages[-1]["content"]
 
-    figure_block = handle.doc_model.sections[0].blocks[0]
+    figure_block = handle.doc_model.sections[0].blocks[2]  # 공용 픽스처: [p, tbl, fig, eq]
     assert block_projection(figure_block) == FIGURE_CAPTION
     assert FIGURE_CAPTION in body
     assert FIGURE_CAPTION in paper_projection(handle.doc_model)
 
 
 def test_extraction_prompt_exposes_block_ids():
-    messages = build_extraction_messages(topic="q", focus="", papers=(_handle(_doc_model()),))
+    messages = build_extraction_messages(topic="q", focus="", papers=(_handle(doc_model()),))
     body = messages[-1]["content"]
 
     assert "s5.fig3" in body
@@ -228,7 +209,7 @@ def test_extractor_returns_raw_items_for_the_gate_to_judge():
     payload = '{"items": [{"statement": "s", "supporting": [], "conflicting": []}]}'
     extractor = OpenAiExtractor(model="gpt-x", transport=FakeTransport(_text_response(payload)))
 
-    items = extractor.extract(topic="q", focus="", papers=(_handle(_doc_model()),))
+    items = extractor.extract(topic="q", focus="", papers=(_handle(doc_model()),))
 
     assert len(items) == 1
 

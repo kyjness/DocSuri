@@ -7,7 +7,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -58,7 +57,12 @@ class ToolSpec:
 
 @dataclass(frozen=True, slots=True)
 class ToolContext:
-    """owner-scoped 실행 문맥(SEC-8)."""
+    """owner-scoped 실행 문맥(SEC-8).
+
+    현행 도구 6종은 이 값을 읽지 않는다 — 코퍼스 자산은 소유자별 리소스가 아니고
+    (novelty ViewFigureTool과 같은 근거), 세션 격리는 턴마다 새로 만드는 루프
+    상태가 담당한다. 소유자별 도구(예: 개인 라이브러리 검색)가 생기면 그때 읽는다.
+    포트 계약으로 유지하는 이유다."""
 
     owner_id: str
     session_id: str
@@ -107,13 +111,8 @@ class ToolRegistry:
     """가용 설정이 있는 도구만 등록된다 — 없으면 도구 목록이 자연 축소된다
     (logical-components §4). 어휘 밖 이름은 등록 자체가 거부된다."""
 
-    def __init__(self, allowed_names: Iterable[str] | None = None) -> None:
-        self._allowed = (
-            frozenset(allowed_names) if allowed_names is not None else KNOWN_LOOP_TOOLS
-        )
-        unknown = sorted(self._allowed - KNOWN_LOOP_TOOLS)
-        if unknown:
-            raise ValueError(f"tools outside the v1 vocabulary may not be allowlisted: {unknown}")
+    def __init__(self) -> None:
+        self._allowed = KNOWN_LOOP_TOOLS
         self._tools: dict[str, ToolPort] = {}
 
     def register(self, tool: ToolPort) -> None:
@@ -129,6 +128,3 @@ class ToolRegistry:
 
     def specs(self) -> tuple[ToolSpec, ...]:
         return tuple(tool.spec for tool in self._tools.values())
-
-    def names(self) -> frozenset[str]:
-        return frozenset(self._tools)

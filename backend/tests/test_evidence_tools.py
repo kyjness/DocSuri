@@ -5,7 +5,6 @@ v1의 같은 이름 파일(고정 파이프라인의 검색·DocModel 도구 테
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import Any
 
 from backend.modules.evidence.adapters.tools import (
@@ -28,28 +27,15 @@ from backend.modules.evidence.ports.sources import (
     SearchUnavailable,
 )
 from backend.modules.evidence.ports.tools import ToolContext
+from backend.tests.evidence_fakes import (
+    TABLE_ROW,
+    doc_model,
+)
 
 CTX = ToolContext(owner_id="o1", session_id="s1", turn_id="t1")
 
-TABLE_ROW = "AlphaFold2 | 92.4 | 87.0"
 
 
-def _doc_model() -> SimpleNamespace:
-    table = SimpleNamespace(
-        id="s4.tbl1",
-        type="table",
-        anchorLabel="Table 1",
-        caption="CASP14 results",
-        rows=[
-            SimpleNamespace(
-                cells=[SimpleNamespace(text=c) for c in ("AlphaFold2", "92.4", "87.0")]
-            )
-        ],
-    )
-    para = SimpleNamespace(id="s1.p1", type="paragraph", text="Structure prediction improved.")
-    return SimpleNamespace(
-        sections=[SimpleNamespace(id="s1", title="Intro", blocks=[para, table], sections=[])]
-    )
 
 
 class FakeSearch:
@@ -159,7 +145,7 @@ def test_external_search_marks_origin_so_promotion_takes_the_right_path():
 def test_fetch_paper_reads_docmodel_for_corpus_papers():
     state = LoopState(topic="q")
     state.discovered["p1"] = PaperHandle("p1", "r1", PaperOrigin.CORPUS, abstract_text="abs")
-    tool = FetchPaperTool(doc_models=FakeDocModels(_doc_model()), promotion=None, state=state)
+    tool = FetchPaperTool(doc_models=FakeDocModels(doc_model()), promotion=None, state=state)
 
     result = tool.invoke({"paper_id": "p1"}, CTX)
 
@@ -172,7 +158,7 @@ def test_fetch_paper_promotes_external_papers():
     state = LoopState(topic="q")
     state.discovered["x1"] = PaperHandle("x1", "external:x1", PaperOrigin.EXTERNAL)
     promotion = FakePromotion(
-        PromotionResult(outcome=PromotionOutcome.PROMOTED, doc_model=_doc_model())
+        PromotionResult(outcome=PromotionOutcome.PROMOTED, doc_model=doc_model())
     )
     tool = FetchPaperTool(doc_models=FakeDocModels(), promotion=promotion, state=state)
 
@@ -218,13 +204,15 @@ def test_fetch_unknown_paper_points_at_the_search_results():
 def test_read_paper_exposes_block_ids():
     """v1은 블록 id를 감춰 모델이 유효한 anchor를 쓸 방법이 없었다."""
     state = LoopState(topic="q")
-    state.papers["p1"] = PaperHandle("p1", "r1", PaperOrigin.CORPUS, doc_model=_doc_model())
+    state.papers["p1"] = PaperHandle("p1", "r1", PaperOrigin.CORPUS, doc_model=doc_model())
 
     result = ReadPaperTool(state).invoke({"paper_id": "p1"}, CTX)
 
     ids = [block["id"] for block in result.content["blocks"]]
     assert "s4.tbl1" in ids
-    assert {block["type"] for block in result.content["blocks"]} == {"paragraph", "table"}
+    assert {block["type"] for block in result.content["blocks"]} == {
+        "paragraph", "table", "figure", "formula",
+    }
 
 
 def test_read_paper_without_full_text_says_how_to_get_it():
@@ -239,7 +227,7 @@ def test_read_paper_without_full_text_says_how_to_get_it():
 
 def test_read_paper_keyword_filters_blocks():
     state = LoopState(topic="q")
-    state.papers["p1"] = PaperHandle("p1", "r1", PaperOrigin.CORPUS, doc_model=_doc_model())
+    state.papers["p1"] = PaperHandle("p1", "r1", PaperOrigin.CORPUS, doc_model=doc_model())
 
     result = ReadPaperTool(state).invoke({"paper_id": "p1", "keyword": "CASP"}, CTX)
 
@@ -261,7 +249,7 @@ def _raw_item(anchor="s4.tbl1", quote=TABLE_ROW) -> dict:
 
 def _state_with_full_text() -> LoopState:
     state = LoopState(topic="q")
-    state.papers["p1"] = PaperHandle("p1", "r1", PaperOrigin.CORPUS, doc_model=_doc_model())
+    state.papers["p1"] = PaperHandle("p1", "r1", PaperOrigin.CORPUS, doc_model=doc_model())
     return state
 
 

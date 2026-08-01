@@ -7,8 +7,6 @@ v1 대비 신설된 두 검사가 실제로 막는지를 중심으로 본다:
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
@@ -24,43 +22,20 @@ from backend.modules.evidence.domain.projection import (
     iter_blocks,
     paper_projection,
 )
+from backend.tests.evidence_fakes import (
+    FIGURE_CAPTION,
+    INTRO,
+    TABLE_ROW,
+    doc_model,
+)
 
 PAPER = "2107.06xxx"
 RECORD = "rec-1"
 
-INTRO = "Protein structure prediction has progressed rapidly in recent years."
-TABLE_ROW = "AlphaFold2 | 92.4 | 87.0"
-FIGURE_CAPTION = "Figure 3 Accuracy versus training set size across three model scales"
-
-
-def _doc_model() -> SimpleNamespace:
-    """구조 동형 스탠드인 — 게이트는 pydantic 인스턴스가 아니라 모양만 본다."""
-    paragraph = SimpleNamespace(id="s1.p1", type="paragraph", text=INTRO)
-    table = SimpleNamespace(
-        id="s4.tbl1",
-        type="table",
-        anchorLabel="Table 1",
-        caption="CASP14 results",
-        rows=[
-            SimpleNamespace(cells=[SimpleNamespace(text=c) for c in ("Method", "GDT", "TM")]),
-            SimpleNamespace(
-                cells=[SimpleNamespace(text=c) for c in ("AlphaFold2", "92.4", "87.0")]
-            ),
-        ],
-    )
-    figure = SimpleNamespace(
-        id="s5.fig3", type="figure", anchorLabel="Figure 3",
-        caption="Accuracy versus training set size across three model scales",
-    )
-    formula = SimpleNamespace(id="s2.eq1", type="formula", latex="L = -\\sum_i y_i \\log p_i")
-    section = SimpleNamespace(
-        id="s1", title="Introduction", blocks=[paragraph, table, figure, formula], sections=[]
-    )
-    return SimpleNamespace(sections=[section])
 
 
 def _source(scope: str = "fulltext") -> PaperEvidenceSource:
-    doc = _doc_model()
+    doc = doc_model()
     blocks = {bid: (kind, text) for bid, kind, text in iter_blocks(doc)}
     return PaperEvidenceSource(
         paper_id=PAPER,
@@ -300,7 +275,7 @@ def test_projection_is_shared_between_prompt_and_gate():
     v1은 캡션을 프롬프트에서 "Figure 3: ...", 투영에서 "Figure 3 ..."로 만들어
     캡션 인용이 구조적으로 탈락했다. 두 표현이 갈라지지 않는지 고정한다.
     """
-    doc = _doc_model()
+    doc = doc_model()
     figure = doc.sections[0].blocks[2]
 
     projected = block_projection(figure)

@@ -20,7 +20,6 @@ from backend.modules.paper_assets import AssetStoreUnavailable, parse_record_ref
 
 from ..domain.gate import run_gate
 from ..domain.models import LoopState, PaperHandle, PaperOrigin, PromotionOutcome
-from ..domain.projection import iter_blocks
 from ..ports.llm import EvidenceExtractionPort, LlmUnavailable
 from ..ports.sources import (
     CorpusSearchPort,
@@ -236,6 +235,7 @@ class FetchPaperTool:
                     result_summary="fetch_paper: abstract only",
                 )
             handle.doc_model = doc_model
+            handle.invalidate_projections()
             self._state.examine(handle)
             return _fetched(handle)
 
@@ -260,12 +260,13 @@ class FetchPaperTool:
                 result_summary=f"fetch_paper: {result.outcome}",
             )
         handle.doc_model = result.doc_model
+        handle.invalidate_projections()
         self._state.examine(handle)
         return _fetched(handle)
 
 
 def _fetched(handle: PaperHandle) -> ToolResult:
-    blocks = iter_blocks(handle.doc_model)
+    blocks = handle.blocks()
     kinds: dict[str, int] = {}
     for _bid, kind, _text in blocks:
         kinds[kind] = kinds.get(kind, 0) + 1
@@ -315,7 +316,7 @@ class ReadPaperTool:
         self._state.examine(handle)
 
         keyword = str(args.get("keyword") or "").strip().lower()
-        blocks = iter_blocks(handle.doc_model)
+        blocks = handle.blocks()
         if keyword:
             blocks = [b for b in blocks if keyword in b[2].lower()]
         shown = blocks[:_MAX_BLOCKS]
@@ -356,9 +357,8 @@ class ViewFigureTool:
         },
     )
 
-    def __init__(self, assets: Any, state: LoopState, *, max_image_bytes: int) -> None:
+    def __init__(self, assets: Any, *, max_image_bytes: int) -> None:
         self._assets = assets
-        self._state = state
         self._max_image_bytes = max_image_bytes
 
     def invoke(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
@@ -377,28 +377,41 @@ class ViewFigureTool:
 
     def _list(self, record_ref: str, paper_id: str, version: int | None) -> ToolResult:
         manifest = self._assets.list_assets(paper_id, version, limit=_ASSET_LIST_LIMIT)
+        version_note: str | None = None
         if manifest is None and version is not None:
+            # 명시 버전 미스 ≠ 자산 없음 — 백필 코퍼스는 버전 하나만 갖는다. 폴백하되
+            # 어긋남을 밝힌다("자산 없음" 오답이 실재 자산에서 모델을 떼어놓는다).
             manifest = self._assets.list_assets(paper_id, None, limit=_ASSET_LIST_LIMIT)
+            if manifest is not None:
+                version_note = (
+                    f"요청한 v{version}의 자산은 없어 저장된 v{manifest.version}의 자산이다"
+                )
         if manifest is None:
             return _fail(
                 "view_figure: no assets",
                 f"{record_ref} 논문에는 저장된 그림·수식이 없다 — "
                 "다른 논문을 고르거나 텍스트 근거로 진행하라",
             )
+        content: dict[str, Any] = {
+            "recordRef": record_ref,
+            "assets": [
+                {
+                    "assetId": a.asset_id,
+                    "type": a.type,
+                    "ordinal": a.ordinal,
+                    "caption": a.caption,
+                }
+                for a in manifest.assets
+            ],
+        }
+        # 목록이 전부가 아님을 알린다 — 모르면 모델이 "이게 다"라고 믿는다(novelty 실측).
+        if manifest.total > len(manifest.assets):
+            content["totalAssets"] = manifest.total
+        if version_note:
+            content["note"] = version_note
         return ToolResult(
             ok=True,
-            content={
-                "recordRef": record_ref,
-                "assets": [
-                    {
-                        "assetId": a.asset_id,
-                        "type": a.type,
-                        "ordinal": a.ordinal,
-                        "caption": a.caption,
-                    }
-                    for a in manifest.assets
-                ],
-            },
+            content=content,
             result_summary=f"view_figure: {len(manifest.assets)} assets",
         )
 

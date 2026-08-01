@@ -16,17 +16,12 @@ Summarization(U7) 어댑터 재사용:
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
 from typing import Any
+
+from docsuri_shared.env import env_float
 
 from .runner import EvidenceTurnRunner, RunnerDeps
 from .settings import EvidenceSettings
-
-
-@dataclass(frozen=True)
-class EvidenceBundle:
-    runner: object
-    settings: EvidenceSettings
 
 
 def _build_guarded_query_embedder(
@@ -73,8 +68,11 @@ def _build_guarded_query_embedder(
 
 
 def build_evidence_runner(
-    settings: EvidenceSettings, cost_guard: object | None = None
-) -> EvidenceBundle:
+    settings: EvidenceSettings,
+    *,
+    cost_guard: Any | None = None,
+    session_factory: Any | None = None,
+) -> EvidenceTurnRunner:
     """실 어댑터 조립 — DOCSURI_DOCMODEL_BUCKET + OpenSearch 설정 필요.
 
     cost_guard(U6 단일 권위)를 주면 턴 실행의 비용 게이트에
@@ -125,8 +123,12 @@ def build_evidence_runner(
     # --- LLM (결정 + 추출) ---
     from .adapters.llm_openai import OpenAiDecider, OpenAiExtractor
 
-    decider = OpenAiDecider(model=settings.model_id)
-    extractor = OpenAiExtractor(model=settings.model_id)
+    rates = {
+        "input_usd_per_mtok": settings.input_usd_per_mtok,
+        "output_usd_per_mtok": settings.output_usd_per_mtok,
+    }
+    decider = OpenAiDecider(model=settings.model_id, **rates)
+    extractor = OpenAiExtractor(model=settings.model_id, **rates)
 
     # --- 선택 도구: 없으면 등록되지 않고 도구 목록이 자연 축소된다 ---
     external_search = None
@@ -135,7 +137,7 @@ def build_evidence_runner(
         external_search = ArxivExternalSearch(_build_arxiv_client())
         promotion = _build_promotion(doc_models)
 
-    assets = _build_asset_reader()
+    assets = _build_asset_reader(session_factory)
 
     runner = EvidenceTurnRunner(
         RunnerDeps(
@@ -147,6 +149,7 @@ def build_evidence_runner(
             promotion=promotion,
             assets=assets,
             cost_guard=cost_guard,
+            budget_factory=settings.build_loop_budget,
         )
     )
     return runner
@@ -181,7 +184,7 @@ def _build_promotion(doc_models: object) -> object | None:
     return QueuedPaperPromotion(
         build_queue=queue,
         doc_models=doc_models,
-        poll_timeout_seconds=_float_env('DOCSURI_EVIDENCE_PROMOTION_TIMEOUT_MS', 20000) / 1000,
+        poll_timeout_seconds=env_float('DOCSURI_EVIDENCE_PROMOTION_TIMEOUT_MS', 20000) / 1000,
     )
 
 
@@ -195,19 +198,20 @@ def _build_build_queue() -> object | None:
     return SqsDocModelBuildQueue(queue_url=queue_url)
 
 
-def _build_asset_reader() -> object | None:
+def _build_asset_reader(session_factory: object | None) -> object | None:
+    """자산 리더 — 앱쉘이 이미 가진 세션 팩토리를 재사용한다.
+
+    여기서 엔진을 새로 만들면 같은 프로세스에 같은 Postgres로 향하는 커넥션 풀이
+    두 벌 생긴다. 팩토리가 없을 때(단독 워커)만 직접 만든다.
+    """
+    from backend.modules.paper_assets import SqlS3FigureReader
+
+    if session_factory is not None:
+        return SqlS3FigureReader(session_factory)
     if not os.environ.get('DOCSURI_DATABASE_URL'):
         return None
     from backend.db import make_engine, make_session_factory
-    from backend.modules.paper_assets import SqlS3FigureReader
 
     engine = make_engine(os.environ['DOCSURI_DATABASE_URL'])
     return SqlS3FigureReader(make_session_factory(engine))
 
-
-def _float_env(name: str, default: float) -> float:
-    raw = os.environ.get(name)
-    try:
-        return float(raw) if raw else default
-    except ValueError:
-        return default

@@ -211,7 +211,9 @@ def _validate_ref(
         if len(quote) < MIN_QUOTE_CHARS:
             rejections[RejectReason.QUOTE_TOO_SHORT] += 1
             return None
-        if quote not in normalize(source.text):
+        if quote not in source.text:
+            # source.text는 as_source가 만든 정규화형이다 — ref마다 전문(수백 KB)을
+            # 재정규화하지 않는다.
             rejections[RejectReason.QUOTE_NOT_VERBATIM] += 1
             return None
         if scope == SourceScope.fulltext.value and quote not in normalize(block_text):
@@ -232,7 +234,9 @@ def _validate_ref(
 
 
 def _grounded_numbers(
-    refs: list[tuple[SourceRef, str]], sources: dict[str, PaperEvidenceSource]
+    refs: list[tuple[SourceRef, str]],
+    sources: dict[str, PaperEvidenceSource],
+    text_numbers: dict[str, set[str]],
 ) -> set[str]:
     """statement가 쓸 수 있는 숫자 집합.
 
@@ -240,6 +244,9 @@ def _grounded_numbers(
     후자가 BLM §3의 검사 6이다 — 차트에서 눈으로 읽은 값이 논문 어디에도 없으면
     그것이 날조다. 정성 서술(추세·구조)은 숫자가 없어 이 규칙에 걸리지 않고,
     검증 강도 차이는 `sourceScope=figure` 표시로 드러낸다.
+
+    전문 숫자 집합은 `run_gate` 호출당 논문마다 1회만 센다(`text_numbers` 캐시) —
+    항목마다 전문 정규식을 다시 돌리지 않는다.
     """
     allowed: set[str] = set()
     for ref, quote in refs:
@@ -247,7 +254,9 @@ def _grounded_numbers(
         if ref.sourceScope == SourceScope.figure:
             source = sources.get(ref.paperId)
             if source is not None:
-                allowed |= _numbers(source.text)
+                if ref.paperId not in text_numbers:
+                    text_numbers[ref.paperId] = _numbers(source.text)
+                allowed |= text_numbers[ref.paperId]
     return allowed
 
 
@@ -258,6 +267,7 @@ def run_gate(
     """LLM이 제안한 근거 항목 → 검증을 통과한 `EvidenceItem`만."""
     rejections: Counter[str] = Counter()
     items: list[EvidenceItem] = []
+    text_numbers: dict[str, set[str]] = {}
 
     for raw in raw_items or []:
         if not isinstance(raw, dict):
@@ -288,7 +298,8 @@ def run_gate(
             continue
 
         statement_numbers = _numbers(statement)
-        if statement_numbers and not statement_numbers <= _grounded_numbers(supporting, sources):
+        grounded = _grounded_numbers(supporting, sources, text_numbers)
+        if statement_numbers and not statement_numbers <= grounded:
             rejections[RejectReason.NUMBER_NOT_GROUNDED] += 1
             continue
 

@@ -19,23 +19,14 @@ from backend.modules.evidence.runner import (
     EvidenceTurnRunner,
     RunnerDeps,
 )
+from backend.tests.evidence_fakes import (
+    TABLE_ROW,
+    doc_model,
+)
 
 CTX = AgentRunContext(owner_id="o1", session_id="s1", turn_id="t1")
-TABLE_ROW = "AlphaFold2 | 92.4 | 87.0"
 
 
-def _doc_model() -> SimpleNamespace:
-    table = SimpleNamespace(
-        id="s4.tbl1", type="table", anchorLabel="Table 1", caption="Results",
-        rows=[
-            SimpleNamespace(
-                cells=[SimpleNamespace(text=c) for c in ("AlphaFold2", "92.4", "87.0")]
-            )
-        ],
-    )
-    return SimpleNamespace(
-        sections=[SimpleNamespace(id="s1", title="Intro", blocks=[table], sections=[])]
-    )
 
 
 class ScriptedLlm:
@@ -68,7 +59,7 @@ class Search:
 
 class DocModels:
     def get_doc_model(self, paper_id):
-        return _doc_model()
+        return doc_model()
 
 
 def _request(topic="단백질 구조 예측", **kw) -> EvidenceRequest:
@@ -203,7 +194,7 @@ def test_no_evidence_abstains_rather_than_returning_an_empty_table():
 def test_attachments_are_examined_without_a_search():
     attachment = SimpleNamespace(
         paper_id="userdoc:abc", record_ref="upload:o1:s1:a1", name="my.md",
-        doc_model=_doc_model(), text="",
+        doc_model=doc_model(), text="",
     )
     llm = ScriptedLlm([ToolCallProposal("extract_evidence", {"paper_ids": ["userdoc:abc"]})])
     runner = EvidenceTurnRunner(

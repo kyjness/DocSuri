@@ -15,7 +15,9 @@ from __future__ import annotations
 import logging
 from typing import Any, Protocol, runtime_checkable
 
-from summarization.adapters._paper_ref import bare_paper_id, paper_version
+from summarization.adapters._paper_ref import bare_paper_id
+
+from backend.modules.paper_assets import parse_record_ref
 
 from ..ports.sources import PaperCandidate, SearchUnavailable
 
@@ -85,7 +87,12 @@ class CorpusSearch:
         return tuple(seen.values())
 
     def _hybrid(self, query: str) -> list[Any]:
-        from discovery.domain.models import QueryPlan, RetrievalMode, SearchScope
+        from discovery.domain.models import (
+            DegradationSignal,
+            QueryPlan,
+            RetrievalMode,
+            SearchScope,
+        )
         from discovery.domain.retriever import HybridRetriever
 
         try:
@@ -103,22 +110,15 @@ class CorpusSearch:
             scope=SearchScope.FULL,
         )
 
-        class _NoDegradation:
-            llm_enabled = True
-            rerank_enabled = True
-
         retriever = HybridRetriever(self._vector_store, self._lexical_index)
-        candidate_set = retriever.retrieve(plan, _NoDegradation())
+        candidate_set = retriever.retrieve(
+            plan, DegradationSignal(llm_enabled=True, rerank_enabled=True)
+        )
         return [c.record for c in candidate_set.candidates[:_TOP_K]]
 
     def _phrase(self, phrase: str) -> list[Any]:
         hits = self._lexical_index.phrase_search(phrase, top_k=_PHRASE_TOP_K)
         return [record for record, _score in hits]
-
-
-# 버전 없는 id로 최신을 찾을 때 훑는 범위. arXiv 개정이 이보다 많은 논문은 드물고,
-# 넘어가면 초록 범위로 수렴하므로 답이 사라지지는 않는다.
-_MAX_VERSION_PROBE = 12
 
 
 class DocModelReader:
@@ -128,39 +128,47 @@ class DocModelReader:
     id가 두 형태로 들어온다:
 
     - 버전 붙은 arxivId(`2304.10557v3`) — 멀티턴에서 이어지는 값. 그 버전을 읽는다.
-    - **버전 없는 bare id**(`1706.03762`) — 색인이 돌려주는 값. 여기서 v1로 가정하면
-      개정된 논문이 전부 미스가 되고, 그러면 코퍼스 논문이 통째로 초록 범위로
-      떨어진다(로컬 실측: `1706.03762`의 실제 저장분은 v7).
+    - **버전 없는 bare id**(`1706.03762`) — 색인이 돌려주는 값. v1로 가정하면 개정된
+      논문이 전부 미스가 되어 코퍼스 논문이 통째로 초록 범위로 떨어진다(로컬 실측:
+      `1706.03762`의 실제 저장분은 v7). 최신 버전은 스토어에 **질의**한다 —
+      레이아웃을 소유한 `S3DocModelReader.latest_version`이 프리픽스 목록 1회로
+      답하므로, 순차 GET으로 추측할 이유가 없다.
     """
 
     def __init__(self, reader: Any) -> None:
         self._reader = reader
 
     def get_doc_model(self, paper_id: str) -> Any | None:
-        explicit = _explicit_version(paper_id)
-        if explicit is not None:
-            return self._read(paper_id, explicit)
-        # 최신부터 내려오며 처음 잡히는 것을 쓴다. 저장소가 버전 목록을 주지 않으므로
-        # 탐색이 유일한 방법이고, 성공하면 대개 첫 시도에서 끝난다.
-        for version in range(_MAX_VERSION_PROBE, 0, -1):
-            found = self._read(paper_id, version)
-            if found is not None:
-                return found
-        return None
-
-    def _read(self, paper_id: str, version: int) -> Any | None:
+        version = _explicit_version(paper_id)
+        if version is None:
+            version = self._latest(paper_id)
+        if version is None:
+            return None
         try:
             return self._reader.get_doc_model(paper_id, version)
         except Exception:  # noqa: BLE001 — 논문 1편 실패로 턴을 깨지 않는다
             log.warning("docmodel read failed for %s v%s", paper_id, version, exc_info=True)
             return None
 
+    def _latest(self, paper_id: str) -> int | None:
+        lookup = getattr(self._reader, "latest_version", None)
+        if lookup is None:
+            return 1  # 목록을 못 주는 리더(테스트 대역 등)는 v1 규약으로 폴백
+        try:
+            return lookup(paper_id)
+        except Exception:  # noqa: BLE001
+            log.warning("docmodel version lookup failed for %s", paper_id, exc_info=True)
+            return None
+
 
 def _explicit_version(paper_id: str) -> int | None:
-    """id가 버전을 **명시**했을 때만 그 값. bare id는 None(=최신 해석 대상)."""
-    sentinel = -1
-    version = paper_version(paper_id, default=sentinel)
-    return None if version == sentinel else version
+    """id가 버전을 **명시**했을 때만 그 값. bare id는 None(=최신 해석 대상).
+
+    `parse_record_ref`가 정확히 version-or-None 의미라 재사용한다 — paper_version의
+    기본값 센티널로 같은 것을 흉내내던 우회를 없앤다.
+    """
+    parsed = parse_record_ref(paper_id)
+    return parsed[1] if parsed else None
 
 
 class ArxivExternalSearch:

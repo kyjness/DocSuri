@@ -10,6 +10,8 @@ import os
 from dataclasses import dataclass
 
 from docsuri_shared.env import env_flag as _env_flag
+from docsuri_shared.env import env_float as _env_float
+from docsuri_shared.env import env_int as _env_int
 
 # v2 어댑터는 OpenAI 호환 HTTP를 친다(TD-EV2-2) — 기본값도 그 어휘여야 한다.
 # v1의 Bedrock 추론 프로파일명을 그대로 두면 실경로가 마운트되고도 매 호출이
@@ -25,6 +27,21 @@ class EvidenceSettings:
     # 비동기 잡 경로 게이트 (BR-EV-6, NFR-P6)
     async_enabled: bool
     job_queue_url: str | None     # SQS evidence-agent-job-queue
+    # 토큰 단가(USD/Mtok) — 모델을 env로 바꾸면 단가도 함께 바꾼다. 코드에 박으면
+    # 비싼 모델로 갈아탄 뒤 예산 대장이 조용히 과소계상된다(novelty와 같은 패턴).
+    input_usd_per_mtok: float
+    output_usd_per_mtok: float
+    # 루프 예산 시작값(FR-45, nfr-requirements §3) — "실측 후 조정"이 배포 없이
+    # 가능해야 하므로 env로 연다. 수치 변경은 문서 갱신을 동반한다.
+    max_iterations: int
+    max_tool_calls_total: int
+    cap_corpus_search: int
+    cap_external_search: int
+    cap_fetch_paper: int
+    cap_read_paper: int
+    cap_view_figure: int
+    cap_extract_evidence: int
+    token_cost_limit_usd: float
 
     @property
     def evidence_enabled(self) -> bool:
@@ -39,4 +56,42 @@ class EvidenceSettings:
             region_name=os.environ.get('AWS_REGION') or os.environ.get('AWS_DEFAULT_REGION'),
             async_enabled=_env_flag('DOCSURI_EVIDENCE_ASYNC_ENABLED'),
             job_queue_url=os.environ.get('DOCSURI_EVIDENCE_JOB_QUEUE_URL'),
+            input_usd_per_mtok=_env_float('DOCSURI_EVIDENCE_INPUT_USD_PER_MTOK', 0.15),
+            output_usd_per_mtok=_env_float('DOCSURI_EVIDENCE_OUTPUT_USD_PER_MTOK', 0.60),
+            max_iterations=_env_int('DOCSURI_EVIDENCE_MAX_ITERATIONS', 12),
+            max_tool_calls_total=_env_int('DOCSURI_EVIDENCE_MAX_TOOL_CALLS', 30),
+            cap_corpus_search=_env_int('DOCSURI_EVIDENCE_CAP_CORPUS_SEARCH', 5),
+            cap_external_search=_env_int('DOCSURI_EVIDENCE_CAP_EXTERNAL_SEARCH', 3),
+            cap_fetch_paper=_env_int('DOCSURI_EVIDENCE_CAP_FETCH_PAPER', 3),
+            cap_read_paper=_env_int('DOCSURI_EVIDENCE_CAP_READ_PAPER', 8),
+            cap_view_figure=_env_int('DOCSURI_EVIDENCE_CAP_VIEW_FIGURE', 6),
+            cap_extract_evidence=_env_int('DOCSURI_EVIDENCE_CAP_EXTRACT_EVIDENCE', 8),
+            token_cost_limit_usd=_env_float('DOCSURI_EVIDENCE_TURN_COST_LIMIT_USD', 0.50),
+        )
+
+    def build_loop_budget(self):
+        """턴 1회의 3중 한도(FR-45) — runner가 factory로 쓴다."""
+        from .domain.models import BudgetConsumed, LoopBudget
+        from .ports.tools import (
+            TOOL_CORPUS_SEARCH,
+            TOOL_EXTERNAL_SEARCH,
+            TOOL_EXTRACT_EVIDENCE,
+            TOOL_FETCH_PAPER,
+            TOOL_READ_PAPER,
+            TOOL_VIEW_FIGURE,
+        )
+
+        return LoopBudget(
+            max_iterations=self.max_iterations,
+            max_tool_calls_total=self.max_tool_calls_total,
+            max_tool_calls={
+                TOOL_CORPUS_SEARCH: self.cap_corpus_search,
+                TOOL_EXTERNAL_SEARCH: self.cap_external_search,
+                TOOL_FETCH_PAPER: self.cap_fetch_paper,
+                TOOL_READ_PAPER: self.cap_read_paper,
+                TOOL_VIEW_FIGURE: self.cap_view_figure,
+                TOOL_EXTRACT_EVIDENCE: self.cap_extract_evidence,
+            },
+            token_cost_limit_usd=self.token_cost_limit_usd,
+            consumed=BudgetConsumed(),
         )
