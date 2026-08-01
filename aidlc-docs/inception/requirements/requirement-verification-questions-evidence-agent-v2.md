@@ -65,7 +65,7 @@ supporting이 0건이면 근거 줄 폐기, 근거 줄이 0건이면 기권(INV-
 - **novelty(U12)의 외부 도구는 인용 대상이 아니다** — `github_search`·`dataset_search`의 결과는 `record_refs`를 싣지 않아(`adapters/external/*.py`) 저장 게이트가 인용을 거부하고(`gate.py:167`), 대신 `ExternalFinding`이라는 **별도 산출물**로 들어간다. 유사연구표·여백분석의 인용 출처는 내부 코퍼스 논문뿐이다.
 - **외부 논문 검색(`arxiv_search`)은 아직 없다.** FR-31이 "근거 등급 체계 확정 후"로 미뤄뒀고 그 자리가 이 게이트다.
 - **본문 취득 비용은 균일하지 않다** — arXiv은 **ar5iv HTML을 우선** 시도하고(`adapters/arxiv.py`) PDF+GROBID는 폴백이다(요구사항 기준 비-HTML ~9%). 즉 대다수는 HTTP 취득 + 파싱이고, 무거운 건 그다음의 **청킹·임베딩·색인**이다.
-- **backend는 ingestion에 의존하지 않는다** — 별도 uv 프로젝트이고 진입점은 CLI(`docsuri-ingestion`)뿐이다. "이 논문 지금 가져와줘"를 부를 표면이 없다(→ Q15).
+- **온디맨드 빌드 경로는 이미 있다** *(2026-07-28 정정 — 초안은 "부를 표면이 없다"고 적었으나 사실이 아니다)*: `JobKind.BUILD_DOC_MODEL` 큐 계약 + ingestion 워커 소비 + **reader-triggered 전용 우선순위 큐**가 갖춰져 있고, u7이 읽기 미스에서 이미 이 경로를 쓴다. 백엔드 쪽 enqueue + bounded-poll 코디네이터는 `backend/modules/user_docmodel.py`에 있다(→ Q15).
 
 ### 1.5 두 대화 표면 (Q6·Q7의 사실관계)
 
@@ -262,7 +262,11 @@ Q5=B가 만든 새 배선 문제다. `backend`는 `docsuri-ingestion`에 의존�
 - **C) 큐에 승격 요청을 넣고 ingestion 워커가 처리** — 기존 큐 인프라(redis) 재사용. *"이번 턴에 인용"하려면 결국 완료를 기다려야 해서 동기 대기와 같아지고 큐 왕복만 추가된다. 백그라운드 색인 구간에는 잘 맞는다.*
 - **X) 기타**
 
-[Answer]: **A** — 파싱은 비동기 잡 워커 프로세스에서 실행해 API 이벤트 루프를 막지 않는다. 로컬 스택에 GROBID가 없어 PDF 폴백 경로(~9%)는 현재 동작하지 않으며, 설계대로 초록 범위 인용(Q5의 폴백)으로 수렴한다.
+[Answer]: **C로 재결정** (2026-07-28, 구현 조사 중 정정) — 본 문항의 전제였던 "backend에 ingestion 호출 표면이 없다"가 **사실이 아니었다**. `JobKind.BUILD_DOC_MODEL` 큐 계약이 이미 있고(`ingestion/src/docsuri_ingestion/domain/enums.py`), 워커가 소비하며(`worker.py`), **reader-triggered 빌드 전용 우선순위 큐**까지 분리돼 있다(`runtime.py`). u7 요약이 읽기 미스에서 이미 이 경로로 enqueue하고(`summarization/tests/test_docmodel_build_trigger.py`), 백엔드 쪽 enqueue + bounded-poll 코디네이터도 `backend/modules/user_docmodel.py`에 구현·테스트돼 있다.
+
+  따라서 A(인프로세스 import)는 **같은 일을 하는 경로를 두 벌로 만드는 것**이 된다. C를 택하면 backend 의존성 closure가 커지지 않고, 파싱 CPU가 이미 ingestion 워커에 격리돼 있어 A가 별도로 요구하던 "파싱은 잡 워커에서"가 공짜로 따라온다. C의 단점으로 적었던 "동기 대기와 같아진다"는 유효하나, 이번 턴에 인용하려면 어느 안이든 완료를 기다려야 하므로 순증은 큐 왕복(로컬 ms 수준)뿐이다. **운영 전제 추가**: ingestion 워커가 떠 있어야 승격이 동작한다 — 미가동 시 폴링이 시간 초과되고 설계대로 초록 범위(Q5)로 수렴한다.
+
+  **정정 2 — GROBID는 로컬에 있다**: `backend/docker-compose.yml`의 `grobid` 서비스가 `profiles: ["ingest"]` 뒤에 있을 뿐 부재가 아니다. `docker compose --profile ingest up -d grobid` + `DOCSURI_GROBID_URL`로 켜면 PDF 폴백 경로(~9%)가 동작한다. 켜지 않은 상태에서는 ar5iv HTML 경로만 승격되고 나머지는 초록 범위로 수렴한다.
 
 ---
 

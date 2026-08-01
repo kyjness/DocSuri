@@ -1,7 +1,7 @@
 # Evidence Agent v2 (U11) — 논리 컴포넌트 (Logical Components)
 
 **단계**: CONSTRUCTION → NFR Design (재설계 라운드) · **유닛**: U11 · **일자**: 2026-07-28
-**근거**: `functional-design/*` · `nfr-requirements/tech-stack-decisions.md` · 요구사항 게이트 Q6=B·Q7=A·Q15=A.
+**근거**: `functional-design/*` · `nfr-requirements/tech-stack-decisions.md` · 요구사항 게이트 Q6=B·Q7=A·Q15(2026-07-28 재결정 — 기존 `BUILD_DOC_MODEL` 큐 경로 재사용).
 
 ---
 
@@ -54,7 +54,7 @@
 | `EvidenceAssembler` | 비교표·쟁점 조립(결정론) | Domain |
 | `EvidenceRepository` | 세션·턴·트레이스 저장(소유자 격리) | Port + Adapter |
 | `EvidenceFormationService` | D5 포트 구현 — U12 노출 | Application |
-| `EvidenceWorker` | 비동기 잡 실행 + 승격 파싱(CPU) | Worker |
+| `EvidenceWorker` | 비동기 잡 실행(루프 구동) — 승격 빌드는 u1 워커 소관 | Worker |
 
 ---
 
@@ -65,7 +65,7 @@
 | `LlmPort` | OpenAI 어댑터 | 재시도 1 + 브레이커 → `abstain(llm_unavailable)` |
 | `CorpusSearchPort` | U2 discovery 재사용 | 브레이커 → 근거 유무에 따라 기권/확인 범위 |
 | `ExternalPaperSearchPort` | arXiv 클라이언트 + payload allowlist + 허용 호스트 | 브레이커 → 그 도구만 실패 |
-| `PaperPromotionPort` | u1 ingestion 빌드 경로 **인프로세스 호출** | 실패·라이선스 차단은 **정상 결과값** |
+| `PaperPromotionPort` | `BUILD_DOC_MODEL` **enqueue + bounded polling**(u1 워커가 빌드) | 실패·라이선스 차단·폴링 시간 초과는 **정상 결과값** — 예외로 루프를 깨지 않는다 |
 | `DocModelReadPort` | DocModel 스토어 read-only | 개별 실패는 건너뜀 |
 | `FigureAssetPort` | `shared/`로 올린 비전용 리더(바이트 반환) | 부재/장애 구분 |
 | `EvidenceRepositoryPort` | postgres 3테이블 | 재시도 → `TurnErrorResult` |
@@ -93,9 +93,10 @@
 | 실행 단위 | 담당 |
 |---|---|
 | API 프로세스 | 라우터 + 동기 SSE 루프(짧은 질의) |
-| 잡 워커 | 복잡 요청 루프 + **승격 파싱(CPU 바운드)** + 백그라운드 색인 |
+| 잡 워커(U11) | 복잡 요청 루프 |
+| ingestion 워커(U1) | **승격 빌드(취득·파싱·DocModel)** + 백그라운드 색인 |
 
-**승격 파싱을 워커에 두는 이유**: 파싱은 CPU를 쓰므로 API 이벤트 루프에서 돌리면 다른 요청의 지연이 튄다(TD-EV2-5).
+**승격 파싱이 U11 밖에 있는 이유**: 파싱 CPU는 이미 ingestion 워커에 격리돼 있고 `BUILD_DOC_MODEL` 큐가 그 진입점이다(TD-EV2-5). U11은 enqueue 후 bounded polling으로 기다리며, 워커가 없거나 느리면 시간 초과 → 초록 범위로 수렴한다.
 
 ---
 

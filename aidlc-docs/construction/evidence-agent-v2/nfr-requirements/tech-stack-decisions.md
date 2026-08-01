@@ -9,8 +9,8 @@
 | **TD-EV2-2** | LLM 호출은 **포트 뒤 어댑터** — 현행 구현은 OpenAI, 프로바이더 교체는 어댑터 추가 | 헥사고날 원칙. novelty가 같은 형태로 이미 돌고 있다 |
 | **TD-EV2-3** | 도구 레지스트리는 **allowlist deny-by-default** | novelty `ports/tools.py` 선례 — 어휘 밖 도구가 구조적으로 등록 불가 |
 | **TD-EV2-4** | 검색은 **U2 discovery 재사용**(하이브리드 + phrase) | BR-EV-2. 전용 인덱스·랭킹 금지 |
-| **TD-EV2-5** | 온디맨드 승격은 **ingestion 패키지 인프로세스 호출** | 요구사항 게이트 Q15=A. 프로세스를 늘리지 않고, 파싱은 CPU를 쓰므로 **비동기 잡 워커 쪽에서 실행**해 API 이벤트 루프를 막지 않는다 |
-| **TD-EV2-6** | 승격 취득 경로는 u1의 사다리를 그대로 탄다(ar5iv HTML 우선 → PDF+GROBID 폴백) | u1 `adapters/arxiv.py`. **로컬 스택에 GROBID가 없어 폴백은 현재 동작하지 않으며**, 설계대로 초록 범위로 수렴한다 |
+| **TD-EV2-5** | 온디맨드 승격은 **기존 `BUILD_DOC_MODEL` 큐 경로 재사용**(enqueue + bounded polling) | 요구사항 게이트 Q15 재결정(2026-07-28). 큐 계약·워커·reader-triggered 우선순위 큐가 이미 있고 u7이 쓰고 있다. backend 의존성 closure를 늘리지 않고, 파싱 CPU가 ingestion 워커에 이미 격리돼 있다. 코디네이터는 `backend/modules/user_docmodel.py`의 enqueue+poll 패턴을 따른다. **운영 전제**: ingestion 워커 미가동 시 폴링 시간 초과 → 초록 범위로 수렴 |
+| **TD-EV2-6** | 승격 취득 경로는 u1의 사다리를 그대로 탄다(ar5iv HTML 우선 → PDF+GROBID 폴백) | u1 `adapters/arxiv.py`. **GROBID는 로컬 compose에 있으나 `profiles: ["ingest"]` 옵트인**이라 기본 `up`에서 빠진다 — `docker compose --profile ingest up -d grobid` + `DOCSURI_GROBID_URL`로 켜야 폴백이 동작하고, 켜지 않으면 초록 범위로 수렴한다 |
 | **TD-EV2-7** | 백그라운드 색인은 **기존 잡 큐(redis)** 경유 | 응답 경로와 분리. 실패해도 답변 무영향 |
 | **TD-EV2-8** | 세션·턴·트레이스 저장은 **postgres 3테이블** | FD 게이트 Q6=A. 결과는 전용 컬럼(현행 `attachments` JSON 부채 청산) |
 | **TD-EV2-9** | 외부 초록 스냅샷 테이블을 **두지 않는다** | FD 게이트 Q5=A. 버전 고정 식별자 + 재취득으로 재현 |
