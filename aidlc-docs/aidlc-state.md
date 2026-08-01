@@ -1061,8 +1061,16 @@ _Resiliency 옵트인은 `requirements.md` 확정 전에 필수 요구사항 명
   모두 해제. U7 요약·번역의 비전은 계속 제외.
 - 반영 완료: `requirements.md` 델타 개정 블록(2026-07-28) + FR-31/36/37/45/46/47 · §12 카브아웃 ·
   성공 기준 10 · 추적성 행, `operations/solo-roadmap.md` ⑥ 행 + "⑥ 게이트 추가 항목" 절 종결.
-- 다음: `construction/evidence-agent-v2/` 설계 세트 작성(기존 `u11-evidence-agent/`는 frozen 원본 보존)
-  + 잔여 FD 게이트 질문지(도구 어휘·루프 수치·승격 편수 상한·그림 조회 캡·저장 스키마).
+- **유닛 FD 게이트 확정 (2026-07-28)** — `plans/evidence-agent-v2-functional-design-plan.md` Q1~Q12 전 문항 권장안.
+  도구 6종(`corpus_search`·`external_search`·`fetch_paper`·`read_paper`·`view_figure`·`extract_evidence`),
+  근거는 루프 안에서 게이트 통과분만 점진 축적, 승격은 명시 도구(예산 계상 단위), 저장은 owner-scoped 3테이블,
+  활동 피드는 트레이스 단일 원천. **외부 초록 스냅샷 테이블은 두지 않는다** — 인용 식별자에 버전을 고정해
+  (`arxiv:{id}v{n}`) 재취득으로 재현한다(arXiv 버전 영구 보존).
+- **설계 세트 작성 완료 (2026-07-28)** — `construction/evidence-agent-v2/` 8종
+  (functional-design 4 / nfr-requirements 2 / nfr-design 2). `u11-evidence-agent/`는 frozen 원본 보존.
+  신설 규칙: INV-EV-6(근거 단일 유입 경로)·INV-EV-7(DocModel 단일 writer)·BR-EV-13~20(루프 상한·승격 비용·
+  확인 범위·트레이스·신뢰 경계·수리 지시성·범위 표기·payload 경계), PBT-EV-6~8 신설.
+- 다음: 브랜치 `feature/u11-evidence-agent-v2`에서 구현 착수(로드맵 절차 2단계).
 
 ## ⑤ 3단계 — 멀티모달 `view_figure`
 
