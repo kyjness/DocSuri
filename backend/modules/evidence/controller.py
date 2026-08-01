@@ -48,7 +48,7 @@ def get_repo() -> EvidenceRepository:
     raise RuntimeError('evidence repository is not wired')
 
 
-def get_orchestrator() -> Any:
+def get_runner() -> Any:
     raise RuntimeError('evidence orchestrator is not wired')
 
 
@@ -73,7 +73,7 @@ def get_user_docmodel(request: Request):
 
 PRINCIPAL_DEP = Depends(get_principal)
 REPO_DEP = Depends(get_repo)
-ORCHESTRATOR_DEP = Depends(get_orchestrator)
+RUNNER_DEP = Depends(get_runner)
 SQS_ENQUEUE_DEP = Depends(get_sqs_enqueue)
 USER_DOCMODEL_DEP = Depends(get_user_docmodel)
 
@@ -170,7 +170,7 @@ async def create_turn(
     request: Request,
     principal: Principal = PRINCIPAL_DEP,
     repo: EvidenceRepository = REPO_DEP,
-    orchestrator: Any = ORCHESTRATOR_DEP,
+    runner: Any = RUNNER_DEP,
     sqs_enqueue: Any = SQS_ENQUEUE_DEP,
     user_docmodel: Any = USER_DOCMODEL_DEP,
 ) -> Any:
@@ -201,7 +201,7 @@ async def create_turn(
 
     service = EvidenceChatService(
         repo=repo,
-        orchestrator=orchestrator,
+        runner=runner,
         sqs_enqueue=sqs_enqueue,
     )
     budget_signal = getattr(request.state, 'budget_signal', {})

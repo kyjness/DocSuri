@@ -111,3 +111,19 @@ def test_assembly_is_deterministic():
     second = assemble(state, TerminationReason.SUFFICIENT)
 
     assert first.model_dump() == second.model_dump()
+
+
+def test_answer_narrative_is_built_from_claims_only():
+    """C-2의 금지는 새 사실이지 요약 표현이 아니다 — v1 동작을 승계한다."""
+    state = _state(items=[_item("p1"), _item("p9", conflicting=True)])
+
+    result = assemble(state, TerminationReason.SUFFICIENT)
+
+    assert "p1에서 확인됨" in result.answer
+    assert "다른 결과를 보고합니다" in result.answer
+
+
+def test_answer_is_absent_when_there_is_nothing_to_summarise():
+    result = assemble(_state(candidates=1), TerminationReason.NO_EVIDENCE)
+
+    assert getattr(result, "answer", None) is None

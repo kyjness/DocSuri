@@ -13,8 +13,9 @@ from docsuri_shared._generated.dtos.evidence_schema import (
     EvidenceResult,
 )
 
+from .domain.models import AgentRunContext as LoopRunContext
+from .domain.models import ToolCallRecord
 from .models import (
-    AgentRunContext,
     AttachmentInput,
     EvidenceSession,
     EvidenceTurn,
@@ -25,8 +26,8 @@ from .models import (
     _new_id,
     _utc_now,
 )
-from .orchestrator import EvidenceAgentOrchestrator
 from .repository import EvidenceRepository
+from .runner import EvidenceTurnRunner
 
 logger = logging.getLogger(__name__)
 
@@ -67,11 +68,11 @@ class EvidenceChatService:
         self,
         *,
         repo: EvidenceRepository,
-        orchestrator: EvidenceAgentOrchestrator,
+        runner: EvidenceTurnRunner,
         sqs_enqueue: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self._repo = repo
-        self._orchestrator = orchestrator
+        self._runner = runner
         self._sqs_enqueue = sqs_enqueue
 
     def run_turn(
@@ -92,15 +93,18 @@ class EvidenceChatService:
         경로에서만 의미가 있다 — 비동기 잡은 폴링으로 진행을 본다.
         """
         session = self._load_or_create_session(owner_id, request, session_id)
-        turn = EvidenceTurn(session_id=session.session_id, request=request)
-        ctx = AgentRunContext(
-            session=session,
-            current_turn=turn,
+        turn = EvidenceTurn(
+            session_id=session.session_id,
             owner_id=owner_id,
+            topic=request.topic,
+            request=request,
+        )
+        loop_ctx = LoopRunContext(
+            owner_id=owner_id,
+            session_id=session.session_id,
+            turn_id=turn.turn_id,
             request_id=request_id,
-            budget_signal=budget_signal or {},
             prior_topics=_prior_topics(self._repo, owner_id, session),
-            attachment_docs=attachment_docs,
         )
 
         if self._sqs_enqueue is not None:
@@ -124,13 +128,29 @@ class EvidenceChatService:
             # 동기 경로: async 분기와 달리 add_turn을 빠뜨려 저장된 턴이 0건이었다 —
             # 응답의 turnId를 이후 세션 이력(list_turns)에서 되찾을 수 없었다
             # (PR #338 리뷰 Blocking #1/FR-38).
-            # on_progress 미지정 시 2-인자 호출 유지 — 기존 테스트 스텁 호환.
-            if on_progress is None:
-                result = self._orchestrator.run(ctx, request)
-            else:
-                result = self._orchestrator.run(ctx, request, on_progress=on_progress)
-            turn.result = result
+            # 턴 행을 **먼저** 저장한다 — 트레이스가 턴을 참조하므로 루프가 도는
+            # 동안 append하려면 부모 행이 있어야 한다.
+            turn.result = TurnPendingResult(job_id='', started_at=_utc_now())
             self._repo.add_turn(turn)
+
+            def _sink(record: Any) -> None:
+                # 진행 표시는 advisory다(NFR-O1) — 실패가 근거형성을 막지 않는다.
+                try:
+                    self._repo.append_trace(owner_id, turn.turn_id, _trace_row(record))
+                except Exception:  # noqa: BLE001
+                    logger.warning('evidence trace append failed', exc_info=True)
+                if on_progress is not None:
+                    on_progress('tool', _trace_row(record))
+
+            result = self._runner.run(
+                loop_ctx,
+                request,
+                budget_signal=budget_signal or {},
+                attachments=attachment_docs,
+                on_trace=_sink,
+            )
+            turn.result = result
+            self._repo.update_turn_result(owner_id, turn.turn_id, result)
 
         self._repo.commit()
         return TurnResponse(
@@ -210,8 +230,8 @@ class EvidenceFormationService:
     순환 차단: U12 → shared/ports ← U11(구현). Trace: D5.
     """
 
-    def __init__(self, *, orchestrator: EvidenceAgentOrchestrator) -> None:
-        self._orchestrator = orchestrator
+    def __init__(self, *, runner: EvidenceTurnRunner) -> None:
+        self._runner = runner
 
     async def form_evidence(
         self,
@@ -227,18 +247,17 @@ class EvidenceFormationService:
         owner_id = getattr(ctx, 'owner_id', '')
         request_id = getattr(ctx, 'request_id', '')
 
-        # 임시 세션·턴으로 AgentRunContext 구성 (U12 경로 — 세션 저장 없음)
-        session = EvidenceSession(owner_id=owner_id)
-        turn = EvidenceTurn(session_id=session.session_id, request=request)
-        agent_ctx = AgentRunContext(
-            session=session,
-            current_turn=turn,
+        # U12 경로는 세션을 저장하지 않는다 — 호출자의 잡이 산출물을 소유한다.
+        loop_ctx = LoopRunContext(
             owner_id=owner_id,
+            session_id=f'port:{owner_id or "anon"}',
+            turn_id=_new_id(),
             request_id=request_id,
-            budget_signal=budget_signal,
         )
 
-        result = await asyncio.to_thread(self._orchestrator.run, agent_ctx, request)
+        result = await asyncio.to_thread(
+            lambda: self._runner.run(loop_ctx, request, budget_signal=budget_signal)
+        )
 
         if isinstance(result, TurnSuccessResult):
             return result.outcome
@@ -278,3 +297,15 @@ def _attachment_doc_payloads(attachment_docs: tuple[AttachmentInput, ...]) -> li
     from .attachments import attachment_inputs_to_payloads
 
     return attachment_inputs_to_payloads(attachment_docs)
+
+
+def _trace_row(record: ToolCallRecord) -> dict[str, Any]:
+    """트레이스 저장·전송 형태. sanitized 요약만 나간다(INV-EV-5)."""
+    return {
+        'seq': record.seq,
+        'tool': record.tool,
+        'argsSummary': record.args_summary,
+        'outcome': record.outcome.value,
+        'resultSummary': record.result_summary,
+        'costUsd': record.cost_usd,
+    }

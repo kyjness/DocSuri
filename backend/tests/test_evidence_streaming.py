@@ -20,11 +20,10 @@ from fastapi.testclient import TestClient
 from backend.app import create_app
 from backend.config import Settings
 from backend.modules.evidence import controller
+from backend.modules.evidence.domain.models import ToolCallOutcome, ToolCallRecord
 from backend.modules.evidence.models import TurnSuccessResult
 from backend.modules.evidence.repository import InMemoryEvidenceRepository
 from backend.modules.evidence.streaming import progress_event, turn_sse_stream
-from backend.modules.research import controller as research_controller
-from backend.modules.research.repository import InMemoryResearchRepository
 
 CLAIM_STATEMENT = '벤치마크 재사용은 데이터 누수 위험을 높인다.'
 CLAIM_QUOTE = 'benchmark reuse inflates scores through leakage'
@@ -64,15 +63,27 @@ def _success_result() -> TurnSuccessResult:
     )
 
 
-class _StreamingStubOrchestrator:
-    """단계 진행을 emit한 뒤 검증 완료 결과를 반환하는 동기 orchestrator 스텁."""
+class _StreamingStubRunner:
+    """도구 트레이스를 흘린 뒤 검증 완료 결과를 반환하는 동기 러너 스텁.
 
-    def run(self, ctx, request, on_progress=None):
-        if on_progress is not None:
-            on_progress('scope_resolved', {'scope': 'auto', 'paperCount': 0})
-            on_progress('papers_fetched', {'count': 1})
-            on_progress('extracting', {'paperCount': 1})
-            on_progress('validating', {'claimCount': 1})
+    v1은 고정 4단계(scope_resolved→papers_fetched→extracting→validating)를 흘렸다.
+    v2에는 그 단계가 없다 — 활동 피드는 결정 트레이스에서 파생된다(FD 게이트 Q7=A).
+    """
+
+    def run(self, ctx, request, *, budget_signal=None, attachments=(), on_trace=None):
+        if on_trace is not None:
+            for seq, (tool, summary) in enumerate(
+                [('corpus_search', 'query=protein'), ('extract_evidence', 'paper_ids=p1')], 1
+            ):
+                on_trace(
+                    ToolCallRecord(
+                        seq=seq,
+                        tool=tool,
+                        args_summary=summary,
+                        outcome=ToolCallOutcome.OK,
+                        result_summary=f'{tool}: ok',
+                    )
+                )
         return _success_result()
 
 
@@ -81,7 +92,7 @@ def _client(monkeypatch, principal: Principal, repo, orchestrator) -> TestClient
     app = create_app(Settings(env='test', database_url='sqlite://'))
     app.dependency_overrides[controller.get_principal] = lambda: principal
     app.dependency_overrides[controller.get_repo] = lambda: repo
-    app.dependency_overrides[controller.get_orchestrator] = lambda: orchestrator
+    app.dependency_overrides[controller.get_runner] = lambda: orchestrator
     return TestClient(app)
 
 
@@ -106,7 +117,7 @@ def _parse_sse(text: str) -> list[tuple[str, dict]]:
 def test_sse_turn_streams_stages_then_validated_terminal(monkeypatch) -> None:
     principal = _principal()
     repo = InMemoryEvidenceRepository()
-    client = _client(monkeypatch, principal, repo, _StreamingStubOrchestrator())
+    client = _client(monkeypatch, principal, repo, _StreamingStubRunner())
 
     resp = client.post(
         '/api/evidence/turns',
@@ -121,9 +132,15 @@ def test_sse_turn_streams_stages_then_validated_terminal(monkeypatch) -> None:
     # 진행 이벤트가 먼저, 터미널 result가 마지막 1건.
     assert [event for event, _ in frames[:-1]] == ['progress'] * (len(frames) - 1)
     stages = [data.get('stage') for event, data in frames if event == 'progress']
-    assert stages == [
-        'started', 'scope_resolved', 'papers_fetched', 'extracting', 'validating',
-    ]
+    # v2: 고정 4단계가 사라지고 활동 피드가 결정 트레이스에서 파생된다(FD 게이트 Q7=A).
+    # 루프는 몇 번 돌지 정해져 있지 않으므로 단계 이름을 고정할 수 없다.
+    assert stages[0] == 'started'
+    assert set(stages[1:]) == {'tool'}
+
+    feed = [data for event, data in frames if event == 'progress' and data.get('stage') == 'tool']
+    assert [item['payload']['tool'] for item in feed] == ['corpus_search', 'extract_evidence']
+    # 호출 인자가 함께 실린다 — 결과만 보이면 모델이 같은 질의를 반복한다.
+    assert feed[0]['payload']['argsSummary'] == 'query=protein'
 
     terminal_event, terminal = frames[-1]
     assert terminal_event == 'result'
@@ -141,7 +158,7 @@ def test_sse_turn_exposes_no_claim_text_before_terminal(monkeypatch) -> None:
     """C-2/INV-EV-3 — 검증 전 claim/quote 텍스트는 어떤 pre-terminal 프레임에도 없다."""
     principal = _principal()
     client = _client(
-        monkeypatch, principal, InMemoryEvidenceRepository(), _StreamingStubOrchestrator()
+        monkeypatch, principal, InMemoryEvidenceRepository(), _StreamingStubRunner()
     )
 
     resp = client.post(
@@ -163,7 +180,7 @@ def test_sse_surface_keeps_pending_json_for_async_eligible_turn(monkeypatch) -> 
     """BR-EV-6 — 비동기 적격 턴은 SSE 표면에서도 pending/jobId JSON 동작 그대로."""
     principal = _principal()
     repo = InMemoryEvidenceRepository()
-    client = _client(monkeypatch, principal, repo, _StreamingStubOrchestrator())
+    client = _client(monkeypatch, principal, repo, _StreamingStubRunner())
     enqueued: list[dict] = []
     client.app.state.evidence_sqs_enqueue = enqueued.append
 
@@ -185,7 +202,7 @@ def test_sse_turn_unknown_session_is_plain_404(monkeypatch) -> None:
     """INV-EV-1 — 스트림 시작 전에 소유권 검증(404는 HTTP 에러로 남는다)."""
     principal = _principal()
     client = _client(
-        monkeypatch, principal, InMemoryEvidenceRepository(), _StreamingStubOrchestrator()
+        monkeypatch, principal, InMemoryEvidenceRepository(), _StreamingStubRunner()
     )
 
     resp = client.post(
@@ -198,98 +215,6 @@ def test_sse_turn_unknown_session_is_plain_404(monkeypatch) -> None:
 
 
 # ---------------------------------------------------------------------------
-# API: research 표면(POST /api/research/jobs[/…/messages]) — FE agent chat 홉
-# ---------------------------------------------------------------------------
-
-def _research_client(monkeypatch, principal: Principal, repo, orchestrator) -> TestClient:
-    monkeypatch.setenv('RESEARCH_AGENT_ENABLED', 'true')
-    app = create_app(Settings(env='test', database_url='sqlite://'))
-    app.dependency_overrides[research_controller.get_principal] = lambda: principal
-    app.dependency_overrides[research_controller.get_repo] = lambda: repo
-    app.dependency_overrides[research_controller.get_evidence_orchestrator] = (
-        lambda: orchestrator
-    )
-    return TestClient(app)
-
-
-def test_research_create_job_streams_and_persists_turn(monkeypatch) -> None:
-    principal = _principal()
-    repo = InMemoryResearchRepository()
-    client = _research_client(monkeypatch, principal, repo, _StreamingStubOrchestrator())
-
-    resp = client.post(
-        '/api/research/jobs',
-        json={'content': 'benchmark reuse risks'},
-        headers={'accept': 'text/event-stream'},
-    )
-
-    assert resp.status_code == 200
-    assert resp.headers['content-type'].startswith('text/event-stream')
-    frames = _parse_sse(resp.text)
-
-    started = frames[0][1]
-    assert started['stage'] == 'started'
-    # 중간 중단 시 FE 스냅샷 복구 앵커(jobId) — started payload에 동봉된다.
-    job_id = started['payload']['jobId']
-    assert job_id
-
-    # C-2 — 터미널 이전 프레임에 claim 텍스트 없음.
-    terminal_at = resp.text.index('event: result')
-    assert CLAIM_STATEMENT not in resp.text[:terminal_at]
-
-    terminal_event, terminal = frames[-1]
-    assert terminal_event == 'result'
-    assert terminal == {'jobId': job_id, 'state': 'completed'}
-
-    # JSON 경로와 동일하게 assistant 메시지가 영속되고 잡이 완료된다.
-    messages = repo.list_messages(principal.user_id, job_id)
-    assert any(CLAIM_STATEMENT in m.content for m in messages)
-    assert repo.get_job(principal.user_id, job_id).state.value == 'completed'
-
-
-def test_research_add_message_streams_with_job_scope_404(monkeypatch) -> None:
-    principal = _principal()
-    repo = InMemoryResearchRepository()
-    client = _research_client(monkeypatch, principal, repo, _StreamingStubOrchestrator())
-
-    missing = client.post(
-        '/api/research/jobs/unknown-job/messages',
-        json={'content': 'follow-up'},
-        headers={'accept': 'text/event-stream'},
-    )
-    assert missing.status_code == 404
-
-    created = client.post('/api/research/jobs', json={'content': 'seed question'})
-    job_id = created.json()['jobId']
-
-    resp = client.post(
-        f'/api/research/jobs/{job_id}/messages',
-        json={'content': 'follow-up question'},
-        headers={'accept': 'text/event-stream'},
-    )
-
-    assert resp.status_code == 200
-    frames = _parse_sse(resp.text)
-    assert frames[0][1]['payload'] == {'jobId': job_id}
-    terminal_event, terminal = frames[-1]
-    assert terminal_event == 'result'
-    # 터미널 = JSON 경로의 ResearchChatMessage 본문 그대로.
-    assert terminal['role'] == 'assistant'
-    assert CLAIM_STATEMENT in terminal['content']
-
-
-def test_research_json_path_unchanged_without_accept_header(monkeypatch) -> None:
-    principal = _principal()
-    repo = InMemoryResearchRepository()
-    client = _research_client(monkeypatch, principal, repo, _StreamingStubOrchestrator())
-
-    resp = client.post('/api/research/jobs', json={'content': 'plain json turn'})
-
-    assert resp.status_code == 200
-    assert resp.headers['content-type'].startswith('application/json')
-    assert resp.json()['state'] == 'completed'
-
-
 # ---------------------------------------------------------------------------
 # 단위: turn_sse_stream — NFR-O1 스트리밍 건강도 메트릭 (fail-soft)
 # ---------------------------------------------------------------------------
@@ -344,7 +269,7 @@ def test_stream_client_abort_emits_abort_metric() -> None:
             await release.wait()
             return {'ok': True}
 
-        stream = turn_sse_stream(run, lambda r: r, observability=hub, surface='research')
+        stream = turn_sse_stream(run, lambda r: r, observability=hub, surface='evidence')
         first = await anext(stream)
         assert first.startswith('event: progress')
         # 클라이언트 중단 — StreamingResponse가 제너레이터를 닫는 경로.

@@ -60,6 +60,11 @@ TurnResult = TurnSuccessResult | TurnAbstainResult | TurnPendingResult | TurnErr
 class EvidenceTurn:
     turn_id: str = field(default_factory=_new_id)
     session_id: str = ''
+    # v2: 소유자를 턴에도 싣는다 — 잡 폴링은 세션을 거치지 않고 턴을 직접 찾으므로
+    # 그 경로에도 owner 격리가 필요하다(INV-EV-1).
+    owner_id: str = ''
+    topic: str = ''
+    attachments: list = field(default_factory=list)
     request: EvidenceRequest | None = None
     result: TurnResult | None = None
     created_at: datetime = field(default_factory=_utc_now)

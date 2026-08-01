@@ -56,10 +56,12 @@ def assemble(
         candidates=state.candidates,
         stoppedReason=_STOPPED_BY_REASON.get(reason, StoppedReason.partial_failure),
     )
+    ordered = _comparison_order(items)
     return EvidenceResult(
         state="ok",
-        claims=_comparison_order(items),
+        claims=ordered,
         coverage=coverage,
+        answer=_narrative(ordered),
     )
 
 
@@ -76,3 +78,42 @@ def _comparison_order(items: list) -> list:
             key=lambda triple: (triple[0], triple[1]),
         )
     ]
+
+
+# 이름을 나열하는 상한 — 근거 논문이 많을 때 문장이 목록으로 변하는 것을 막는다.
+_MAX_NAMED_PAPERS = 3
+
+
+def _narrative(items: list) -> str | None:
+    """claims만으로 조립하는 대화체 요약(v1 승계).
+
+    C-2의 금지는 **새 사실**이지 요약 표현이 아니다 — 이미 게이트를 통과한
+    statement와 paperId만 문장으로 잇는다. LLM을 타지 않으므로 결정론이다.
+    """
+    if not items:
+        return None
+    sentences: list[str] = []
+    for item in items:
+        sentence = item.statement.rstrip(".。 ")
+        supporting = _distinct(item.supporting)
+        if supporting:
+            sentence += f" ({_listing(supporting)}에서 확인됨)"
+        conflicting = _distinct(item.conflicting)
+        if conflicting:
+            sentence += f". 다만 {_listing(conflicting)}는 다른 결과를 보고합니다"
+        sentences.append(sentence + ".")
+    return " ".join(sentences)
+
+
+def _distinct(refs) -> list[str]:
+    seen: dict[str, None] = {}
+    for ref in refs:
+        if ref.paperId:
+            seen.setdefault(ref.paperId, None)
+    return list(seen)
+
+
+def _listing(paper_ids: list[str]) -> str:
+    listing = ", ".join(paper_ids[:_MAX_NAMED_PAPERS])
+    remainder = len(paper_ids) - _MAX_NAMED_PAPERS
+    return f"{listing} 외 {remainder}편" if remainder > 0 else listing

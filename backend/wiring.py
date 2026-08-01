@@ -612,43 +612,6 @@ def _mount_novelty(app: FastAPI, settings: Settings, result: MountResult) -> Non
     result.mounted.append("novelty")
 
 
-def _mount_research(app: FastAPI, settings: Settings, result: MountResult) -> None:
-    from backend.modules.research import controller as research
-    from backend.modules.research.repository import (
-        InMemoryResearchRepository,
-        SqlResearchRepository,
-    )
-
-    if _is_postgres(settings.database_url):
-        from .db import make_engine, make_session_factory
-
-        engine = getattr(app.state, "db_engine", None) or make_engine(settings.database_url)
-        app.state.db_engine = engine
-        session_factory = make_session_factory(engine)
-
-        def get_research_repo():
-            session = session_factory()
-            try:
-                yield SqlResearchRepository(session)
-                session.commit()
-            except Exception:
-                session.rollback()
-                raise
-            finally:
-                session.close()
-    else:
-        repo = InMemoryResearchRepository()
-        app.state.research_repo = repo
-
-        def get_research_repo():
-            return repo
-
-    app.dependency_overrides[research.get_repo] = get_research_repo
-    for router in research.routers:
-        app.include_router(router)
-    result.mounted.append("research")
-
-
 def _mount_evidence(app: FastAPI, settings: Settings, result: MountResult) -> None:
     from backend.modules.evidence import controller as evidence
     from backend.modules.evidence.repository import (
@@ -684,17 +647,17 @@ def _mount_evidence(app: FastAPI, settings: Settings, result: MountResult) -> No
             return repo
 
     if ev_settings.evidence_enabled:
-        from backend.modules.evidence.real_wiring import build_evidence_orchestrator
+        from backend.modules.evidence.real_wiring import build_evidence_runner
 
-        bundle = build_evidence_orchestrator(
+        runner = build_evidence_runner(
             ev_settings, cost_guard=getattr(app.state, "cost_guard", None)
         )
-        app.state.evidence_bundle = bundle
+        app.state.evidence_runner = runner
 
-        def get_evidence_orchestrator():
-            return bundle.orchestrator
+        def get_evidence_runner():
+            return runner
     else:
-        def get_evidence_orchestrator():
+        def get_evidence_runner():
             raise RuntimeError("evidence real path not configured (no S3 DocModel bucket)")
 
         log.info("app-shell: evidence real path not configured — running in repo-only mode")
@@ -715,7 +678,7 @@ def _mount_evidence(app: FastAPI, settings: Settings, result: MountResult) -> No
     app.state.evidence_sqs_enqueue = sqs_enqueue
 
     app.dependency_overrides[evidence.get_repo] = get_evidence_repo
-    app.dependency_overrides[evidence.get_orchestrator] = get_evidence_orchestrator
+    app.dependency_overrides[evidence.get_runner] = get_evidence_runner
     for router in evidence.routers:
         app.include_router(router)
     result.mounted.append("evidence")
@@ -736,7 +699,6 @@ _INTEGRATIONS = (
     _mount_ops,
     _mount_citation_graph,
     _mount_personalization,
-    _mount_research,
     _mount_novelty,
     _mount_summarization,
     _mount_evidence,
