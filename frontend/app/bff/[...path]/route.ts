@@ -34,9 +34,7 @@ const SEARCH_GATEWAY_TIMEOUT_MS = 30000;
 const SUMMARIZE_GATEWAY_TIMEOUT_MS = 30000;
 
 function isEvidenceHeavyPath(upstreamPath: string): boolean {
-  return (
-    upstreamPath.startsWith('/api/research/jobs') || upstreamPath.startsWith('/api/evidence/turns')
-  );
+  return upstreamPath.startsWith('/api/evidence/');
 }
 
 function isSearchPath(upstreamPath: string): boolean {
@@ -86,21 +84,14 @@ function isNoveltyEventStream(method: TransportMethod, path: string[]): boolean 
 }
 
 // US-EV2/NFR-P6 — 동기 evidence 턴의 SSE 표면(POST + Accept: text/event-stream).
-// research(에이전트 채팅의 evidence 모드)와 U11 canonical 엔드포인트 둘 다 지원한다.
+// v2에서 표면이 /api/evidence/turns 하나로 합쳐졌다 — 첫 턴과 후속 턴이 같은
+// 엔드포인트이고, 세션은 본문의 sessionId 유무로 갈린다.
 // 게이트웨이 미구성(mock) 시에는 일반 proxy로 흘려 JSON 폴백이 그대로 동작한다.
 function isAgentTurnStream(req: NextRequest, method: TransportMethod, path: string[]): boolean {
   if (method !== 'POST') return false;
   if (!req.headers.get('accept')?.includes('text/event-stream')) return false;
   const upstream = `/${path.join('/')}`;
-  return (
-    upstream === '/api/evidence/turns' ||
-    upstream === '/api/research/jobs' ||
-    (path.length === 5 &&
-      path[0] === 'api' &&
-      path[1] === 'research' &&
-      path[2] === 'jobs' &&
-      path[4] === 'messages')
-  );
+  return upstream === '/api/evidence/turns';
 }
 
 function isPdfBody(req: NextRequest): boolean {

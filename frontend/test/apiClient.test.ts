@@ -129,7 +129,7 @@ describe('ApiClient outcome mapping', () => {
 describe('ApiClient agent chat mapping', () => {
   it('keeps sessions from the healthy agent mode when the other mode fails', async () => {
     const t = transportOf(async (req) => {
-      if (req.path === '/api/research/jobs?limit=20') return { status: 500, body: null };
+      if (req.path === '/api/evidence/sessions?limit=20') return { status: 500, body: null };
       if (req.path === '/api/novelty/jobs?limit=20') {
         return {
           status: 200,
@@ -265,11 +265,11 @@ describe('ApiClient agent chat mapping', () => {
     };
     const t = transportOf(async (req) => {
       requests.push(req);
-      if (req.path.startsWith('/api/research/attachments?')) {
+      if (req.path.startsWith('/api/evidence/attachments?')) {
         expect(isBinaryTransportBody(req.body)).toBe(true);
         return { status: 200, body: uploadRef };
       }
-      if (req.path === '/api/research/jobs') {
+      if (req.path === '/api/evidence/turns') {
         const body = req.body as { attachments?: unknown[] };
         expect(body.attachments?.[0]).toMatchObject({
           objectKey: uploadRef.objectKey,
@@ -279,7 +279,7 @@ describe('ApiClient agent chat mapping', () => {
         expect(body.attachments?.[0]).not.toHaveProperty('sourceFile');
         return { status: 201, body: { jobId: 'r1', state: 'active' } };
       }
-      if (req.path === '/api/research/jobs/r1') {
+      if (req.path === '/api/evidence/sessions/r1') {
         return {
           status: 200,
           body: {
@@ -312,9 +312,9 @@ describe('ApiClient agent chat mapping', () => {
     });
 
     expect(requests.map((req) => req.path.split('?')[0])).toEqual([
-      '/api/research/attachments',
-      '/api/research/jobs',
-      '/api/research/jobs/r1',
+      '/api/evidence/attachments',
+      '/api/evidence/turns',
+      '/api/evidence/sessions/r1',
     ]);
   });
 

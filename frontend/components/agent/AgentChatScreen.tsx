@@ -28,6 +28,10 @@ import {
   parseAgentContent,
   type EvidenceResultPayload,
   type EvidenceSourceRef,
+  anchorTypeLabel,
+  canJumpToSource,
+  examinedRangeMessage,
+  sourceScopeBadge,
 } from '@/lib/agentChat/evidenceResult';
 import {
   SIMILAR_WORK_COLUMNS,
@@ -683,6 +687,12 @@ function EvidenceResultView({ result }: { result: EvidenceResultPayload }) {
         {' '}참고 논문 {result.coverage.paperCount}편
         {result.coverage.queryUsed ? ` · 검색어: ${result.coverage.queryUsed}` : ''}
       </p>
+      {/* 확인 범위(FR-37 v2) — 탐색이 완결되지 않았을 때만 나온다. */}
+      {examinedRangeMessage(result.coverage) ? (
+        <p className={styles.evidenceExamined} data-testid="evidence-examined-range">
+          {examinedRangeMessage(result.coverage)}
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -696,8 +706,24 @@ function EvidenceRefList({ refs }: { refs: EvidenceSourceRef[] }) {
           <span className={styles.evidenceSource}>
             <span className={styles.evidenceSourceLabel}>출처 논문</span>
             <span className={styles.evidencePaperId}>{ref.paperId}</span>
-            {/* 인용 앵커(#339). recordRef는 내부 식별자라 노출하지 않는다. */}
-            {ref.anchor ? <span className={styles.evidenceAnchor}>§ {ref.anchor}</span> : null}
+            {/* 인용 앵커(#339). recordRef는 내부 식별자라 노출하지 않는다.
+                앵커가 없는 출처(초록 범위)는 이동 대상이 없어 칩도 렌더하지 않는다. */}
+            {canJumpToSource(ref) ? (
+              <span className={styles.evidenceAnchor}>
+                {anchorTypeLabel(ref) ? `${anchorTypeLabel(ref)} · ` : '§ '}
+                {ref.anchor}
+              </span>
+            ) : null}
+            {/* 근거 범위 배지 — fulltext에는 붙이지 않는다(대다수라 소음이 된다). */}
+            {sourceScopeBadge(ref) ? (
+              <span
+                className={styles.evidenceScopeBadge}
+                title={sourceScopeBadge(ref)?.hint}
+                data-testid="evidence-scope-badge"
+              >
+                {sourceScopeBadge(ref)?.label}
+              </span>
+            ) : null}
           </span>
           {ref.quote ? (
             <>

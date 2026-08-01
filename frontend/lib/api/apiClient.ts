@@ -629,7 +629,7 @@ export class ApiClient {
   }
 
   private async listAgentSessionsForMode(mode: AgentMode): Promise<AgentSessionSummary[]> {
-    const path = mode === 'evidence' ? '/api/research/jobs?limit=20' : '/api/novelty/jobs?limit=20';
+    const path = mode === 'evidence' ? '/api/evidence/sessions?limit=20' : '/api/novelty/jobs?limit=20';
     const res = await this.request({
       method: 'GET',
       path,
@@ -655,7 +655,7 @@ export class ApiClient {
   private async loadResearchSession(id: string): Promise<AgentSessionSnapshot> {
     const res = await this.request({
       method: 'GET',
-      path: `/api/research/jobs/${encodeURIComponent(id)}`,
+      path: `/api/evidence/sessions/${encodeURIComponent(id)}`,
       idempotent: true,
     });
     if (res.status === 200) {
@@ -733,7 +733,7 @@ export class ApiClient {
     const query = new URLSearchParams({ fileName: attachment.name, id: attachment.id });
     const uploaded = await this.request({
       method: 'POST',
-      path: `/api/research/attachments?${query.toString()}`,
+      path: `/api/evidence/attachments?${query.toString()}`,
       body: binaryBody(attachment.sourceFile, 'application/pdf'),
       idempotent: false,
     });
@@ -775,9 +775,9 @@ export class ApiClient {
       target.mode === 'evidence' ? await this.withUploadedResearchAttachments(req) : req;
     const path =
       target.mode === 'evidence'
-        ? created
-          ? '/api/research/jobs'
-          : `/api/research/jobs/${encodeURIComponent(target.rawId)}/messages`
+        ? // v2: 첫 턴과 후속 턴이 같은 엔드포인트다. 세션은 sessionId 유무로 갈린다 —
+          // v1은 '잡 생성'과 '메시지 추가'가 다른 경로였고 그 구분이 표면에 남아 있었다.
+          '/api/evidence/turns'
         : created
           ? '/api/novelty/jobs'
           : `/api/novelty/jobs/${encodeURIComponent(target.rawId)}/messages`;
@@ -871,7 +871,7 @@ export class ApiClient {
       method: 'DELETE',
       path:
         target.mode === 'evidence'
-          ? `/api/research/jobs/${encodeURIComponent(target.rawId)}`
+          ? `/api/evidence/sessions/${encodeURIComponent(target.rawId)}`
           : `/api/novelty/jobs/${encodeURIComponent(target.rawId)}`,
       idempotent: false,
     });
@@ -882,7 +882,7 @@ export class ApiClient {
   /** 전체 세션 초기화 — US-EV8(#272). 두 에이전트 모듈의 소유 세션을 모두 비운다(멱등). */
   async resetAgentSessions(): Promise<void> {
     await Promise.all(
-      ['/api/research/jobs', '/api/novelty/jobs'].map(async (path) => {
+      ['/api/evidence/sessions', '/api/novelty/jobs'].map(async (path) => {
         const res = await this.request({ method: 'DELETE', path, idempotent: false });
         if (res.status !== 200 && res.status !== 204) {
           throw normalizeHttpError(res.status, serverMessage(res.body));

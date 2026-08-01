@@ -360,14 +360,15 @@ export class MockTransport implements Transport {
   }
 
   private routeAgent(req: TransportRequest, path: string): TransportResponse | null {
-    if (path === '/api/research/jobs' && req.method === 'GET') {
+    // 목록은 정확 매치여야 한다 — prefix로 두면 아래 세션 상세 조회까지 삼킨다.
+    if (path === '/api/evidence/sessions' && req.method === 'GET') {
       return { status: 200, body: { jobs: mockListAgentSessions('evidence').map(researchJob) } };
     }
     if (path === '/api/novelty/jobs' && req.method === 'GET') {
       return { status: 200, body: { jobs: mockListAgentSessions('novelty').map(noveltyJob) } };
     }
     // US-EV8(#272) 전체 초기화 — 모듈별 소유 세션 일괄 삭제(멱등 204).
-    if (path === '/api/research/jobs' && req.method === 'DELETE') {
+    if (path === '/api/evidence/sessions' && req.method === 'DELETE') {
       mockResetAgentSessions('evidence');
       return { status: 204, body: null };
     }
@@ -375,7 +376,7 @@ export class MockTransport implements Transport {
       mockResetAgentSessions('novelty');
       return { status: 204, body: null };
     }
-    if (path === '/api/research/attachments' && req.method === 'POST') {
+    if (path === '/api/evidence/attachments' && req.method === 'POST') {
       const qIdx = req.path.indexOf('?');
       const sp = new URLSearchParams(qIdx >= 0 ? req.path.slice(qIdx + 1) : '');
       const attachmentId = sp.get('id') ?? `att-${Date.now()}`;
@@ -394,9 +395,14 @@ export class MockTransport implements Transport {
         },
       };
     }
-    if (path === '/api/research/jobs' && req.method === 'POST') {
-      const body = req.body as { content?: string; attachments?: AgentAttachment[] };
-      const result = mockSendAgentMessage(`agent-evidence-${Date.now()}`, {
+    if (path === '/api/evidence/turns' && req.method === 'POST') {
+      // v2: 첫 턴과 후속 턴이 같은 엔드포인트다 — sessionId가 있으면 이어붙인다.
+      const body = req.body as {
+        content?: string;
+        sessionId?: string;
+        attachments?: AgentAttachment[];
+      };
+      const result = mockSendAgentMessage(body.sessionId || `agent-evidence-${Date.now()}`, {
         content: String(body.content ?? ''),
         mode: 'evidence',
         attachments: body.attachments,
@@ -413,9 +419,9 @@ export class MockTransport implements Transport {
       });
       return { status: 201, body: { jobId: result.session.id, state: 'queued' } };
     }
-    const research = path.match(/^\/api\/research\/jobs\/([^/]+)$/);
-    if (research && req.method === 'GET') {
-      const snapshot = mockLoadAgentSession(decodeURIComponent(research[1]));
+    const evidenceSession = path.match(/^\/api\/evidence\/sessions\/([^/]+)$/);
+    if (evidenceSession && req.method === 'GET') {
+      const snapshot = mockLoadAgentSession(decodeURIComponent(evidenceSession[1]));
       return snapshot
         ? {
             status: 200,
@@ -426,15 +432,15 @@ export class MockTransport implements Transport {
           }
         : { status: 404, body: null };
     }
-    if (research && req.method === 'DELETE') {
-      return mockDeleteAgentSession(decodeURIComponent(research[1]))
+    if (evidenceSession && req.method === 'DELETE') {
+      return mockDeleteAgentSession(decodeURIComponent(evidenceSession[1]))
         ? { status: 204, body: null }
         : { status: 404, body: null };
     }
-    const researchMessage = path.match(/^\/api\/research\/jobs\/([^/]+)\/messages$/);
+    const researchMessage = null;
     if (researchMessage && req.method === 'POST') {
       const body = req.body as { content?: string; attachments?: AgentAttachment[] };
-      const result = mockSendAgentMessage(decodeURIComponent(researchMessage[1]), {
+      const result = mockSendAgentMessage('', {
         content: String(body.content ?? ''),
         mode: 'evidence',
         attachments: body.attachments,

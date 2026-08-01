@@ -7,7 +7,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from docsuri_shared.authz import Principal
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
@@ -28,7 +28,7 @@ from .models import (
     TurnSuccessResult,
 )
 from .repository import EvidenceRepository
-from .service import EvidenceChatService, TurnResponse
+from .service import EvidenceChatService, EvidenceSessionManagementService, TurnResponse
 from .streaming import progress_event, turn_sse_stream, wants_event_stream
 
 
@@ -316,6 +316,119 @@ async def upload_attachment(
         paperId=ref.paper_id,
         recordRef=ref.record_ref,
     )
+
+
+class SessionOut(BaseModel):
+    """세션 목록·상세 항목 — FR-38 재열람 표면."""
+
+    id: str
+    title: str | None = None
+    createdAt: datetime
+    updatedAt: datetime
+
+
+class SessionDetailOut(SessionOut):
+    turns: list[TurnOut] = []
+
+
+class TraceItemOut(BaseModel):
+    """활동 피드 1건(FR-46 파생). 내부 payload·자격증명은 담기지 않는다(INV-EV-5)."""
+
+    seq: int
+    tool: str
+    argsSummary: str = ''
+    outcome: str
+    resultSummary: str = ''
+    costUsd: float | None = None
+    at: str | None = None
+
+
+@router.get('/sessions', response_model=list[SessionOut])
+async def list_sessions(
+    limit: int = 20,
+    principal: Principal = PRINCIPAL_DEP,
+    repo: EvidenceRepository = REPO_DEP,
+) -> Any:
+    """BR-EV-10 — 본인 active 세션만, updated_at DESC."""
+    service = EvidenceSessionManagementService(repo=repo)
+    return [
+        SessionOut(
+            id=summary.session_id,
+            title=summary.title,
+            createdAt=summary.created_at,
+            updatedAt=summary.updated_at,
+        )
+        for summary in service.list_sessions(principal.user_id, limit)
+    ]
+
+
+@router.get('/sessions/{session_id}', response_model=SessionDetailOut)
+async def get_session(
+    session_id: str,
+    principal: Principal = PRINCIPAL_DEP,
+    repo: EvidenceRepository = REPO_DEP,
+) -> Any:
+    try:
+        session = repo.get_session(principal.user_id, session_id)
+        turns = repo.list_turns(principal.user_id, session_id)
+    except KeyError as exc:
+        # INV-EV-1: 타인 세션은 존재 여부도 노출하지 않는다(SEC-9).
+        raise HTTPException(status_code=404, detail='session not found') from exc
+    return SessionDetailOut(
+        id=session.session_id,
+        title=session.title,
+        createdAt=session.created_at,
+        updatedAt=session.updated_at,
+        turns=[
+            TurnOut(
+                sessionId=turn.session_id,
+                turnId=turn.turn_id,
+                result=_serialize_result(turn.result),
+                createdAt=turn.created_at,
+            )
+            for turn in turns
+        ],
+    )
+
+
+@router.get('/turns/{turn_id}/trace', response_model=list[TraceItemOut])
+async def get_turn_trace(
+    turn_id: str,
+    principal: Principal = PRINCIPAL_DEP,
+    repo: EvidenceRepository = REPO_DEP,
+) -> Any:
+    """활동 피드 복원 — 재접속·비동기 잡은 저장된 트레이스를 읽는다(FD 게이트 Q7=A)."""
+    return [TraceItemOut(**row) for row in repo.list_trace(principal.user_id, turn_id)]
+
+
+@router.delete(
+    '/sessions/{session_id}', status_code=204, response_class=Response, response_model=None
+)
+async def delete_session(
+    session_id: str,
+    principal: Principal = PRINCIPAL_DEP,
+    repo: EvidenceRepository = REPO_DEP,
+) -> Response:
+    service = EvidenceSessionManagementService(repo=repo)
+    try:
+        service.delete_session(principal.user_id, session_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail='session not found') from exc
+    repo.commit()
+    return Response(status_code=204)
+
+
+@router.delete(
+    '/sessions', status_code=204, response_class=Response, response_model=None
+)
+async def reset_sessions(
+    principal: Principal = PRINCIPAL_DEP,
+    repo: EvidenceRepository = REPO_DEP,
+) -> Response:
+    """BR-EV-9 — 본인 세션만 초기화(멱등)."""
+    EvidenceSessionManagementService(repo=repo).reset_all(principal.user_id)
+    repo.commit()
+    return Response(status_code=204)
 
 
 @router.get('/jobs/{job_id}', response_model=TurnOut)

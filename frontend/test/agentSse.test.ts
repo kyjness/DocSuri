@@ -74,7 +74,7 @@ describe('streamAgentTurn (US-EV2 sync SSE)', () => {
 
     const events: AgentTimelineEvent[] = [];
     const outcome = await streamAgentTurn({
-      path: '/api/research/jobs',
+      path: '/api/evidence/turns',
       body: { content: 'q' },
       onEvents: (incoming) => {
         events.push(...incoming);
@@ -100,7 +100,7 @@ describe('streamAgentTurn (US-EV2 sync SSE)', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    const outcome = await streamAgentTurn({ path: '/api/research/jobs', body: {} });
+    const outcome = await streamAgentTurn({ path: '/api/evidence/turns', body: {} });
 
     expect(outcome).toEqual({
       kind: 'json',
@@ -116,7 +116,7 @@ describe('streamAgentTurn (US-EV2 sync SSE)', () => {
       vi.fn(async () => sseResponse([progressFrame('e1', 'started', { jobId: 'job-7' })])),
     );
 
-    const outcome = await streamAgentTurn({ path: '/api/research/jobs', body: {} });
+    const outcome = await streamAgentTurn({ path: '/api/evidence/turns', body: {} });
 
     expect(outcome).toEqual({ kind: 'failed', jobId: 'job-7' });
   });
@@ -132,7 +132,7 @@ describe('streamAgentTurn (US-EV2 sync SSE)', () => {
       ),
     );
 
-    const outcome = await streamAgentTurn({ path: '/api/research/jobs', body: {} });
+    const outcome = await streamAgentTurn({ path: '/api/evidence/turns', body: {} });
 
     expect(outcome).toEqual({ kind: 'failed', jobId: 'job-3' });
   });
@@ -163,7 +163,7 @@ describe('ApiClient.sendAgentMessage streaming integration', () => {
       streamsAgentTurns: true,
       async send(req: TransportRequest): Promise<TransportResponse> {
         t.calls.push(req);
-        if (req.method === 'GET' && req.path === '/api/research/jobs/job-9') {
+        if (req.method === 'GET' && req.path === '/api/evidence/sessions/job-9') {
           return {
             status: 200,
             body: {
@@ -230,7 +230,7 @@ describe('ApiClient.sendAgentMessage streaming integration', () => {
     });
 
     expect(result.session.id).toBe('evidence:job-9');
-    expect(t.calls.some((req) => req.method === 'POST' && req.path === '/api/research/jobs')).toBe(
+    expect(t.calls.some((req) => req.method === 'POST' && req.path === '/api/evidence/turns')).toBe(
       true,
     );
   });
