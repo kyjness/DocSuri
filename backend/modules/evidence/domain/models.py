@@ -174,6 +174,9 @@ class LoopState:
     """한 턴의 루프 실행 상태."""
 
     topic: str
+    # 검색으로 **발견**한 논문(제목·초록만) — 아직 확인 대상이 아니다.
+    discovered: dict[str, PaperHandle] = field(default_factory=dict)
+    # 에이전트가 실제로 **확인**한 논문(본문을 확보했거나 근거 추출 대상으로 삼은 것).
     papers: dict[str, PaperHandle] = field(default_factory=dict)
     accumulator: EvidenceAccumulator = field(default_factory=EvidenceAccumulator)
     trace: list[ToolCallRecord] = field(default_factory=list)
@@ -189,8 +192,18 @@ class LoopState:
 
     @property
     def candidates(self) -> int:
-        """탐색 중 발견한 후보 수. 확보분을 포함한다."""
-        return len(self.candidates_seen | set(self.papers))
+        """탐색 중 발견한 후보 수. 확인분을 포함한다."""
+        return len(self.candidates_seen | set(self.papers) | set(self.discovered))
+
+    def handle(self, paper_id: str) -> PaperHandle | None:
+        """확인분 우선 — 같은 논문이 양쪽에 있으면 본문을 가진 쪽이 권위다."""
+        return self.papers.get(paper_id) or self.discovered.get(paper_id)
+
+    def examine(self, handle: PaperHandle) -> PaperHandle:
+        """발견 → 확인으로 승격. 근거 추출·본문 열람의 대상이 된다."""
+        self.discovered.pop(handle.paper_id, None)
+        self.papers[handle.paper_id] = handle
+        return handle
 
     def sources(self) -> dict[str, PaperEvidenceSource]:
         return {pid: handle.as_source() for pid, handle in self.papers.items()}

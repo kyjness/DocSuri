@@ -13,6 +13,7 @@ from typing import Any, Protocol
 from .tools import ImageAttachment, ToolSpec
 
 __all__ = [
+    "EvidenceExtractionPort",
     "EvidenceLlmPort",
     "LlmDecision",
     "LlmUnavailable",
@@ -101,3 +102,19 @@ class LlmDecision:
 
 class EvidenceLlmPort(Protocol):
     def decide(self, observation: LoopObservation, tools: tuple[ToolSpec, ...]) -> LlmDecision: ...
+
+
+class EvidenceExtractionPort(Protocol):
+    """근거 추출 LLM — `extract_evidence` 도구 뒤에 있다.
+
+    `decide`와 분리한 이유는 역할이 다르기 때문이다: decide는 "다음에 무엇을 할까",
+    extract는 "이 논문들에서 무엇을 인용할까". 프롬프트도 검증 경계도 다르고,
+    추출 결과는 **반드시 게이트를 지나야** 저장된다(INV-EV-6).
+
+    반환은 검증 전 원시 항목이다(`{statement, supporting[], conflicting[]}`) —
+    게이트가 판정할 몫을 어댑터가 미리 걸러내면 판정 지점이 둘이 된다.
+    """
+
+    def extract(
+        self, *, topic: str, focus: str, papers: tuple[Any, ...]
+    ) -> list[dict[str, Any]]: ...
