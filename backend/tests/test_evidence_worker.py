@@ -6,7 +6,6 @@ import pytest
 from docsuri_shared._generated.dtos.evidence_schema import EvidenceAbstainResult, EvidenceRequest
 
 from backend.modules.evidence.models import (
-    AgentRunContext,
     EvidenceSession,
     EvidenceTurn,
     TurnAbstainResult,

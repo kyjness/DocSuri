@@ -27,7 +27,11 @@ TABLE_ROW = "AlphaFold2 | 92.4 | 87.0"
 def _doc_model() -> SimpleNamespace:
     table = SimpleNamespace(
         id="s4.tbl1", type="table", anchorLabel="Table 1", caption="Results",
-        rows=[SimpleNamespace(cells=[SimpleNamespace(text=c) for c in ("AlphaFold2", "92.4", "87.0")])],
+        rows=[
+            SimpleNamespace(
+                cells=[SimpleNamespace(text=c) for c in ("AlphaFold2", "92.4", "87.0")]
+            )
+        ],
     )
     return SimpleNamespace(
         sections=[SimpleNamespace(id="s1", title="Intro", blocks=[table], sections=[])]

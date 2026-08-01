@@ -13,8 +13,8 @@ from backend.modules.novelty.adapters.external.github import GithubSearchTool
 from backend.modules.novelty.adapters.figures import ViewFigureTool
 from backend.modules.novelty.domain.gate import evaluate_artifact
 from backend.modules.novelty.domain.models import ArtifactKind
-from backend.modules.paper_assets import FigureAsset
 from backend.modules.novelty.ports.tools import ToolContext, ToolRegistry
+from backend.modules.paper_assets import FigureAsset
 
 from .novelty_fakes import FakeFigureAssetPort
 

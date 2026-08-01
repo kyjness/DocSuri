@@ -14,7 +14,6 @@ from backend.modules.evidence.models import (
     EvidenceSession,
     EvidenceTurn,
     TurnAbstainResult,
-    TurnErrorResult,
     TurnPendingResult,
     TurnSuccessResult,
 )
@@ -481,7 +480,7 @@ def _cost_gate_ctx(budget_signal: dict):
     """비용 게이트 테스트용 최소 ctx/request — research 경로와 동일한 구성."""
     from docsuri_shared._generated.dtos.evidence_schema import EvidenceRequest
 
-    from backend.modules.evidence.models import AgentRunContext, EvidenceSession, EvidenceTurn
+    from backend.modules.evidence.models import AgentRunContext, EvidenceSession
 
     request = EvidenceRequest(topic='t', paperIds=[])
     session = EvidenceSession(owner_id='o')
