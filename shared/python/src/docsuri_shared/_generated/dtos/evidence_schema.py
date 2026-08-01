@@ -18,6 +18,29 @@ class EvidenceScope(StrEnum):
     mixed = 'mixed'
 
 
+class AnchorType(StrEnum):
+    """
+    anchor가 가리키는 DocModel 블록의 종류(선택, FR-47 v2). 소비자(U12·FE)가 DocModel을 다시 읽지 않고 분기하기 위한 것 — FE는 이 값으로 인용 칩 라벨(표 3·그림 2·식 4)을 고른다. anchor가 없으면(예: sourceScope=abstract) 생략한다. Trace: FR-47.
+    """
+
+    paragraph = 'paragraph'
+    list = 'list'
+    code = 'code'
+    table = 'table'
+    figure = 'figure'
+    formula = 'formula'
+
+
+class SourceScope(StrEnum):
+    """
+    근거 범위 등급(선택, FR-31/FR-47 v2). fulltext = DocModel 확보 논문의 원문 verbatim 인용(앵커 보유). abstract = 본문을 확보하지 못해 초록 범위에서 인용(앵커 없음, 코퍼스 밖 논문의 폴백). figure = 그림 해석 기반(인용문이 아니라 해석 — 주장의 수치는 논문 텍스트에 실재해야 하고, 정성 서술은 이 표시로 검증 강도 차이를 드러낸다). 범위는 결과 단위가 아니라 출처 단위다 — 한 응답에 세 종류가 섞인다. 생략 시 fulltext로 해석한다(하위호환). Trace: FR-31, FR-47, C-2.
+    """
+
+    fulltext = 'fulltext'
+    abstract = 'abstract'
+    figure = 'figure'
+
+
 class SourceRef(BaseModel):
     """
     단일 출처 핸들 — 기존 계약 재사용. paperId = IndexRecord.arxivId(vector-spec §2). 사용자 업로드 문서는 paperId="userdoc:{uuid}", recordRef="upload:{ownerId}:{jobId}:{attachmentId}" — 실재 arXiv id가 없으므로 arxiv.org URL 조립 금지(무날조). recordRef = IndexRecord 식별자(실재성 검증 핸들). anchor = DocModel Section/Block id(summarization AnchorTarget 동일 방식). quote = 원문 스니펫(근거 인용, 선택). 내부 벡터/청크/점수 미노출(SEC-9). Trace: FR-5, SEC-9, vector-spec §2, summarization.schema.json AnchorTarget.
@@ -42,6 +65,14 @@ class SourceRef(BaseModel):
         None,
         description='원문 인용 스니펫(선택, 추출 근거 표시용). 생성 산문 금지(C-2) — 논문 원문만.',
     )
+    anchorType: AnchorType | None = Field(
+        None,
+        description='anchor가 가리키는 DocModel 블록의 종류(선택, FR-47 v2). 소비자(U12·FE)가 DocModel을 다시 읽지 않고 분기하기 위한 것 — FE는 이 값으로 인용 칩 라벨(표 3·그림 2·식 4)을 고른다. anchor가 없으면(예: sourceScope=abstract) 생략한다. Trace: FR-47.',
+    )
+    sourceScope: SourceScope | None = Field(
+        None,
+        description='근거 범위 등급(선택, FR-31/FR-47 v2). fulltext = DocModel 확보 논문의 원문 verbatim 인용(앵커 보유). abstract = 본문을 확보하지 못해 초록 범위에서 인용(앵커 없음, 코퍼스 밖 논문의 폴백). figure = 그림 해석 기반(인용문이 아니라 해석 — 주장의 수치는 논문 텍스트에 실재해야 하고, 정성 서술은 이 표시로 검증 강도 차이를 드러낸다). 범위는 결과 단위가 아니라 출처 단위다 — 한 응답에 세 종류가 섞인다. 생략 시 fulltext로 해석한다(하위호환). Trace: FR-31, FR-47, C-2.',
+    )
 
 
 class EvidenceItem(BaseModel):
@@ -65,6 +96,16 @@ class EvidenceItem(BaseModel):
     )
 
 
+class StoppedReason(StrEnum):
+    """
+    탐색 종료 사유(선택, v2). 비기술 사유만 — 내부 상태·예외 상세 비노출(SEC-9). sufficient이면 화면에 확인 범위를 표시하지 않는다. 터미널 상태는 ok|abstain 2종을 유지하며 이 필드는 상태가 아니라 부가 정보다. Trace: FR-37 v2, SEC-9.
+    """
+
+    sufficient = 'sufficient'
+    budget_exhausted = 'budget_exhausted'
+    partial_failure = 'partial_failure'
+
+
 class EvidenceCoverage(BaseModel):
     """
     근거형성에 사용된 논문·쿼리 요약 메타(투명성). 내부 점수·타이밍 미노출(SEC-9).
@@ -76,7 +117,19 @@ class EvidenceCoverage(BaseModel):
     paperCount: int = Field(..., description='근거 추출에 사용된 논문 수.')
     queryUsed: str | None = Field(
         None,
-        description='자동 검색 시 사용된 쿼리(auto·mixed scope). explicit scope이면 생략.',
+        description='자동 검색 시 사용된 쿼리(auto·mixed scope). explicit scope이면 생략. v2 자율 루프는 질의를 여러 번 설계하므로 대표 질의(또는 요약)를 싣는다.',
+    )
+    examined: int | None = Field(
+        None,
+        description="실제로 확인(본문·초록 열람)한 논문 수(선택, v2). candidates와 함께 '탐색이 어디까지 갔는지'를 사용자에게 알린다. Trace: FR-37 v2.",
+    )
+    candidates: int | None = Field(
+        None,
+        description='탐색 중 발견한 후보 논문 수(선택, v2). examined < candidates이면 탐색이 완결되지 않은 것이다. Trace: FR-37 v2.',
+    )
+    stoppedReason: StoppedReason | None = Field(
+        None,
+        description='탐색 종료 사유(선택, v2). 비기술 사유만 — 내부 상태·예외 상세 비노출(SEC-9). sufficient이면 화면에 확인 범위를 표시하지 않는다. 터미널 상태는 ok|abstain 2종을 유지하며 이 필드는 상태가 아니라 부가 정보다. Trace: FR-37 v2, SEC-9.',
     )
 
 
