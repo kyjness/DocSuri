@@ -14,7 +14,7 @@
 | **TD-EV2-7** | 백그라운드 색인은 **기존 잡 큐(redis)** 경유 | 응답 경로와 분리. 실패해도 답변 무영향 |
 | **TD-EV2-8** | 세션·턴·트레이스 저장은 **postgres 3테이블** | FD 게이트 Q6=A. 결과는 전용 컬럼(현행 `attachments` JSON 부채 청산) |
 | **TD-EV2-9** | 외부 초록 스냅샷 테이블을 **두지 않는다** | FD 게이트 Q5=A. 버전 고정 식별자 + 재취득으로 재현 |
-| **TD-EV2-10** | 그림 자산 리더는 **`shared/`로 공용화한 비전용 리더** 사용 | 요구사항 게이트 Q8. u7 표시용 리더(서명 URL)는 목적이 달라 합치지 않는다 |
+| **TD-EV2-10** | 그림 자산 리더는 **`backend/modules/paper_assets.py`로 공용화한 비전용 리더** 사용 | 요구사항 게이트 Q8. `shared/python`이 아닌 이유: `docsuri-shared`는 pydantic만 의존하는 계약 패키지라 sqlalchemy·boto3 런타임 부품을 넣으면 계약 소비자 전부가 그 의존을 진다. 저장소 선례(`backend/modules/user_docmodel.py`)와 같은 자리. u7 표시용 리더(서명 URL)는 목적이 달라 합치지 않는다 |
 | **TD-EV2-11** | 진행 전달은 **SSE**, 비동기 경로는 폴링 | NFR-P6 승계. 트레이스 append가 유일한 원천 |
 | **TD-EV2-12** | 첨부는 **기존 `user_docmodel` 공유 coordinator** 재사용 | FD 게이트 Q9=A. 원시 파일 미저장 불변 유지 |
 | **TD-EV2-13** | 서킷 브레이커는 **`docsuri_shared.resilience.CircuitBreaker`** 공유 구현 | u7·u2 통합 선례. 의존성별로 하나씩 |

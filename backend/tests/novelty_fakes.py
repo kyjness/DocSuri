@@ -10,12 +10,13 @@ from collections import deque
 from collections.abc import Callable, Iterable
 from typing import Any
 
-from backend.modules.novelty.adapters.figures import _LIST_LIMIT, _SERVED_TYPES
+from backend.modules.novelty.adapters.figures import _LIST_LIMIT
+from backend.modules.paper_assets import _SERVED_TYPES
 from backend.modules.novelty.adapters.memory import (
     InMemoryJobQueue,
     InMemoryNoveltyStore,
 )
-from backend.modules.novelty.ports.assets import (
+from backend.modules.paper_assets import (
     AssetStoreUnavailable,
     FigureAsset,
     FigureManifest,

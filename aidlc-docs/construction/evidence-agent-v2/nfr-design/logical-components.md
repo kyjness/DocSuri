@@ -67,7 +67,7 @@
 | `ExternalPaperSearchPort` | arXiv 클라이언트 + payload allowlist + 허용 호스트 | 브레이커 → 그 도구만 실패 |
 | `PaperPromotionPort` | `BUILD_DOC_MODEL` **enqueue + bounded polling**(u1 워커가 빌드) | 실패·라이선스 차단·폴링 시간 초과는 **정상 결과값** — 예외로 루프를 깨지 않는다 |
 | `DocModelReadPort` | DocModel 스토어 read-only | 개별 실패는 건너뜀 |
-| `FigureAssetPort` | `shared/`로 올린 비전용 리더(바이트 반환) | 부재/장애 구분 |
+| `FigureAssetPort` | `backend/modules/paper_assets.py`의 비전용 리더(바이트 반환) | 부재/장애 구분 |
 | `EvidenceRepositoryPort` | postgres 3테이블 | 재시도 → `TurnErrorResult` |
 | `JobQueuePort` | redis 큐 | best-effort enqueue |
 | `BudgetStatePort` | U6 `get_budget_state()` | 단일 권위 — 재판정 금지 |
@@ -116,4 +116,4 @@
 | `evidence/intent.py` (정규식 의도 분류) | **제거** — 질의 해석은 루프 판단 |
 | `evidence/extractor.py` 검증 로직 | **이식** — `EvidenceGate`로 승격·확장 |
 | `evidence/assembler.py` | **이식** — 결정론 조립 유지 |
-| `novelty/adapters/figures.py` 리더 | **`shared/`로 이동** — novelty·evidence 공유 |
+| `novelty/adapters/figures.py` 리더 | **`backend/modules/paper_assets.py`로 이동** — novelty·evidence 공유(도구 껍데기는 유닛별로 남는다: ToolResult 타입이 다르다) |

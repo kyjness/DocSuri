@@ -13,7 +13,7 @@ from backend.modules.novelty.adapters.external.github import GithubSearchTool
 from backend.modules.novelty.adapters.figures import ViewFigureTool
 from backend.modules.novelty.domain.gate import evaluate_artifact
 from backend.modules.novelty.domain.models import ArtifactKind
-from backend.modules.novelty.ports.assets import FigureAsset
+from backend.modules.paper_assets import FigureAsset
 from backend.modules.novelty.ports.tools import ToolContext, ToolRegistry
 
 from .novelty_fakes import FakeFigureAssetPort
@@ -384,7 +384,7 @@ class _FakeS3:
 
 
 def _reader(s3, **kwargs):
-    from backend.modules.novelty.adapters.figures import SqlS3FigureReader
+    from backend.modules.paper_assets import SqlS3FigureReader
 
     return SqlS3FigureReader(lambda: None, s3_client=s3, **kwargs)
 
@@ -431,7 +431,7 @@ def test_reader_raises_store_unavailable_on_credential_failure() -> None:
     에이전트가 로드될 수 없는 자산들로 캡을 태운다(외부 연동 규칙: 재시도+차단)."""
     from botocore.exceptions import ClientError
 
-    from backend.modules.novelty.ports.assets import AssetStoreUnavailable
+    from backend.modules.paper_assets import AssetStoreUnavailable
 
     error = ClientError({"Error": {"Code": "AccessDenied"}}, "GetObject")
     s3 = _FakeS3(None, error=error)
