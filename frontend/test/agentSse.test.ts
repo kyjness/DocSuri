@@ -164,22 +164,37 @@ describe('ApiClient.sendAgentMessage streaming integration', () => {
       async send(req: TransportRequest): Promise<TransportResponse> {
         t.calls.push(req);
         if (req.method === 'GET' && req.path === '/api/evidence/sessions/job-9') {
+          // v2 SessionDetailOut — 실 컨트롤러 형태를 그대로 흉내낸다.
           return {
             status: 200,
             body: {
-              job: { jobId: 'job-9', title: 'q', state: 'completed', updatedAt: '2026-07-10' },
-              messages: [
+              id: 'job-9',
+              title: 'q',
+              createdAt: '2026-07-10',
+              updatedAt: '2026-07-10',
+              turns: [
                 {
-                  messageId: 'm1',
-                  role: 'assistant',
-                  content: JSON.stringify({ state: 'ok', claims: [] }),
+                  sessionId: 'job-9',
+                  turnId: 't1',
+                  topic: 'q',
+                  result: { state: 'ok', claims: [], coverage: { paperCount: 0 } },
                   createdAt: '2026-07-10',
                 },
               ],
             },
           };
         }
-        return { status: 200, body: { jobId: 'job-9', state: 'completed' } };
+        // v2 TurnOut — 턴 생성·잡 폴링 응답.
+        return {
+          status: 200,
+          body: {
+            sessionId: 'job-9',
+            turnId: 't1',
+            topic: 'q',
+            result: { state: 'ok', claims: [], coverage: { paperCount: 0 } },
+            createdAt: '2026-07-10',
+          },
+        };
       },
     };
     return t;
@@ -192,7 +207,7 @@ describe('ApiClient.sendAgentMessage streaming integration', () => {
         sseResponse([
           progressFrame('e1', 'started', { jobId: 'job-9' }),
           progressFrame('e2', 'validating', { claimCount: 1 }),
-          frame('result', { jobId: 'job-9', state: 'completed' }),
+          frame('result', { sessionId: 'job-9', turnId: 't1', result: { state: 'ok', claims: [], coverage: { paperCount: 0 } } }),
         ]),
       ),
     );

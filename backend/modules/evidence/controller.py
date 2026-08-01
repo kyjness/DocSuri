@@ -144,6 +144,8 @@ class TurnResultOut(BaseModel):
 class TurnOut(BaseModel):
     session_id: str = Field(alias='sessionId')
     turn_id: str = Field(alias='turnId')
+    # 세션 상세에서 사용자 메시지를 복원할 원문 질문 — 없으면 화면이 답변만 나열하게 된다.
+    topic: str = ''
     result: TurnResultOut
     created_at: datetime = Field(alias='createdAt')
 
@@ -239,11 +241,12 @@ async def create_turn(
             )
 
         def _terminal(turn_resp: TurnResponse) -> dict:
-            return TurnOut(
-                sessionId=turn_resp.session_id,
-                turnId=turn_resp.turn_id,
-                result=_serialize_result(turn_resp.result),
-                createdAt=turn_resp.created_at,
+            return _turn_out(
+                session_id=turn_resp.session_id,
+                turn_id=turn_resp.turn_id,
+                topic=body.topic,
+                result=turn_resp.result,
+                created_at=turn_resp.created_at,
             ).model_dump(mode='json', by_alias=True)
 
         started_payload = {'sessionId': body.session_id} if body.session_id else {}
@@ -272,11 +275,12 @@ async def create_turn(
     except KeyError as exc:
         raise HTTPException(status_code=404, detail='session not found') from exc
 
-    return TurnOut(
-        sessionId=turn_resp.session_id,
-        turnId=turn_resp.turn_id,
-        result=_serialize_result(turn_resp.result),
-        createdAt=turn_resp.created_at,
+    return _turn_out(
+        session_id=turn_resp.session_id,
+        turn_id=turn_resp.turn_id,
+        topic=body.topic,
+        result=turn_resp.result,
+        created_at=turn_resp.created_at,
     )
 
 
@@ -388,11 +392,12 @@ async def get_session(
         createdAt=session.created_at,
         updatedAt=session.updated_at,
         turns=[
-            TurnOut(
-                sessionId=turn.session_id,
-                turnId=turn.turn_id,
-                result=_serialize_result(turn.result),
-                createdAt=turn.created_at,
+            _turn_out(
+                session_id=turn.session_id,
+                turn_id=turn.turn_id,
+                topic=turn.topic,
+                result=turn.result,
+                created_at=turn.created_at,
             )
             for turn in turns
         ],
@@ -451,17 +456,32 @@ async def get_job(
     except (KeyError, AttributeError) as exc:
         raise HTTPException(status_code=404, detail='job not found') from exc
 
-    return TurnOut(
-        sessionId=turn.session_id,
-        turnId=turn.turn_id,
-        result=_serialize_result(turn.result),
-        createdAt=turn.created_at,
+    return _turn_out(
+        session_id=turn.session_id,
+        turn_id=turn.turn_id,
+        topic=turn.topic,
+        result=turn.result,
+        created_at=turn.created_at,
     )
 
 
 # ---------------------------------------------------------------------------
 # 직렬화 헬퍼 — INV-EV-5: 내부 필드 비노출
 # ---------------------------------------------------------------------------
+
+def _turn_out(
+    *, session_id: str, turn_id: str, topic: str, result: Any, created_at: datetime
+) -> TurnOut:
+    """턴 응답 조립 — 직렬화 규칙이 네 표면(SSE 터미널·동기 응답·상세·잡 폴링)에서
+    갈라지지 않도록 한 곳에 둔다."""
+    return TurnOut(
+        sessionId=session_id,
+        turnId=turn_id,
+        topic=topic,
+        result=_serialize_result(result),
+        createdAt=created_at,
+    )
+
 
 def _serialize_result(result: Any) -> TurnResultOut:
     if isinstance(result, TurnSuccessResult):

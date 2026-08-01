@@ -405,15 +405,15 @@ def _build_corpus_deps() -> tuple[Any | None, Any | None]:
 def _build_evidence_port() -> Any | None:
     """U11 EvidenceFormationPort — evidence 설정이 있을 때만."""
     try:
-        from backend.modules.evidence.real_wiring import build_evidence_orchestrator
+        from backend.modules.evidence.real_wiring import build_evidence_runner
         from backend.modules.evidence.service import EvidenceFormationService
         from backend.modules.evidence.settings import EvidenceSettings
 
         evidence_settings = EvidenceSettings.from_env()
         if not evidence_settings.evidence_enabled:
             return None
-        bundle = build_evidence_orchestrator(evidence_settings)
-        return EvidenceFormationService(orchestrator=bundle.orchestrator)
+        runner = build_evidence_runner(evidence_settings)
+        return EvidenceFormationService(runner=runner)
     except Exception:  # noqa: BLE001 — 근거형성은 선택 의존성(자연어 잡은 fatal로 표면화)
         log.warning("novelty worker: evidence engine unavailable", exc_info=True)
         return None

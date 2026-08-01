@@ -270,26 +270,35 @@ describe('ApiClient agent chat mapping', () => {
         return { status: 200, body: uploadRef };
       }
       if (req.path === '/api/evidence/turns') {
-        const body = req.body as { attachments?: unknown[] };
+        const body = req.body as { topic?: string; attachments?: unknown[] };
+        expect(body.topic).toBe('PDF evidence');
         expect(body.attachments?.[0]).toMatchObject({
           objectKey: uploadRef.objectKey,
           paperId: uploadRef.paperId,
           recordRef: uploadRef.recordRef,
         });
         expect(body.attachments?.[0]).not.toHaveProperty('sourceFile');
-        return { status: 201, body: { jobId: 'r1', state: 'active' } };
+        // v2 TurnOut — 클라이언트는 sessionId로 세션을 잇는다.
+        return {
+          status: 200,
+          body: {
+            sessionId: 'r1',
+            turnId: 't1',
+            topic: 'PDF evidence',
+            result: { state: 'ok', claims: [], coverage: { paperCount: 0 } },
+            createdAt: '2026-07-01T00:00:00Z',
+          },
+        };
       }
       if (req.path === '/api/evidence/sessions/r1') {
         return {
           status: 200,
           body: {
-            job: {
-              jobId: 'r1',
-              title: 'PDF evidence',
-              state: 'completed',
-              updatedAt: '2026-07-01T00:00:00Z',
-            },
-            messages: [],
+            id: 'r1',
+            title: 'PDF evidence',
+            createdAt: '2026-07-01T00:00:00Z',
+            updatedAt: '2026-07-01T00:00:00Z',
+            turns: [],
           },
         };
       }

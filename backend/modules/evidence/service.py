@@ -99,12 +99,12 @@ class EvidenceChatService:
             topic=request.topic,
             request=request,
         )
-        loop_ctx = LoopRunContext(
+        loop_ctx = build_run_context(
+            self._repo,
             owner_id=owner_id,
             session_id=session.session_id,
             turn_id=turn.turn_id,
             request_id=request_id,
-            prior_topics=_prior_topics(self._repo, owner_id, session),
         )
 
         if self._sqs_enqueue is not None:
@@ -135,12 +135,13 @@ class EvidenceChatService:
 
             def _sink(record: Any) -> None:
                 # 진행 표시는 advisory다(NFR-O1) — 실패가 근거형성을 막지 않는다.
+                row = trace_row(record)
                 try:
-                    self._repo.append_trace(owner_id, turn.turn_id, _trace_row(record))
+                    self._repo.append_trace(owner_id, turn.turn_id, row)
                 except Exception:  # noqa: BLE001
                     logger.warning('evidence trace append failed', exc_info=True)
                 if on_progress is not None:
-                    on_progress('tool', _trace_row(record))
+                    on_progress('tool', row)
 
             result = self._runner.run(
                 loop_ctx,
@@ -279,18 +280,53 @@ def _derive_title(topic: str) -> str:
     return stripped[:_TITLE_MAX_LEN - 1] + '…'
 
 
-def _prior_topics(
-    repo: EvidenceRepository, owner_id: str, session: EvidenceSession
-) -> tuple[str, ...]:
-    """세션의 이전 턴 topic들 — 멀티턴 검색 맥락화(PR #338 리뷰 Blocking #2/FR-37).
-    현재 턴은 아직 add_turn 전이라 list_turns에 없다. 새 세션·조회 실패는 ()."""
+# 멀티턴 맥락으로 되짚는 이전 턴 수 — 검색 맥락이지 대화 전체 기억이 아니다.
+_PRIOR_TURNS = 3
+
+
+def build_run_context(
+    repo: EvidenceRepository,
+    *,
+    owner_id: str,
+    session_id: str,
+    turn_id: str,
+    request_id: str = '',
+) -> LoopRunContext:
+    """루프 실행 컨텍스트 조립 — 동기(service)·비동기(worker) **양쪽이 이 하나를 쓴다**.
+
+    두 벌로 두면 갈라진다: 실제로 워커 사본이 prior_topics를 빠뜨려 비동기 턴만
+    멀티턴이 안 되는 상태였다. 맥락 필드가 늘어나면 여기만 고친다.
+
+    prior 맥락은 저장 컬럼에서 읽는다 — `t.request`는 SQL 복원 턴에서 None이라
+    (요청 원문은 영속하지 않는다) 그걸 읽으면 인메모리에서만 동작한다.
+    """
     try:
-        prior = repo.list_turns(owner_id, session.session_id)
+        prior = repo.recent_turns(owner_id, session_id, _PRIOR_TURNS)
     except KeyError:
-        return ()
-    return tuple(
-        t.request.topic for t in prior if t.request is not None and t.request.topic
+        prior = []
+    paper_ids: dict[str, None] = {}
+    for t in prior:
+        for pid in _cited_paper_ids(t.result):
+            paper_ids.setdefault(pid, None)
+    return LoopRunContext(
+        owner_id=owner_id,
+        session_id=session_id,
+        turn_id=turn_id,
+        request_id=request_id,
+        prior_topics=tuple(t.topic for t in prior if t.topic),
+        prior_paper_ids=tuple(paper_ids),
     )
+
+
+def _cited_paper_ids(result: TurnResult | None) -> tuple[str, ...]:
+    """이전 턴이 실제로 인용한 논문 — "그중에서" 류 후속 질문의 좁히기 재료."""
+    if not isinstance(result, TurnSuccessResult):
+        return ()
+    seen: dict[str, None] = {}
+    for item in result.outcome.claims:
+        for ref in (*item.supporting, *item.conflicting):
+            seen.setdefault(ref.paperId, None)
+    return tuple(seen)
 
 
 def _attachment_doc_payloads(attachment_docs: tuple[AttachmentInput, ...]) -> list[dict[str, Any]]:
@@ -299,8 +335,8 @@ def _attachment_doc_payloads(attachment_docs: tuple[AttachmentInput, ...]) -> li
     return attachment_inputs_to_payloads(attachment_docs)
 
 
-def _trace_row(record: ToolCallRecord) -> dict[str, Any]:
-    """트레이스 저장·전송 형태. sanitized 요약만 나간다(INV-EV-5)."""
+def trace_row(record: ToolCallRecord) -> dict[str, Any]:
+    """트레이스 저장·전송 형태 — service와 worker가 공유한다. sanitized 요약만(INV-EV-5)."""
     return {
         'seq': record.seq,
         'tool': record.tool,

@@ -73,8 +73,9 @@ function isEvidenceResultPayload(value: unknown): value is EvidenceResultPayload
   return candidate.state === 'ok' && Array.isArray(candidate.claims);
 }
 
-// research/service.py가 evidence orchestrator 결과를 assistant 메시지로 저장할 때 쓰는 세 가지
-// 형태를 판별한다: JSON 문자열(EvidenceResult), "[abstain] <reason>", "[error] ...", 일반 텍스트.
+// apiClient의 contentFromTurnResult가 턴 결과를 메시지 본문으로 만들 때 쓰는 프로토콜을
+// 판별한다: JSON 문자열(EvidenceResult), "[abstain] <reason>", "[error] ...", 일반 텍스트.
+// 생산자와 파서가 한 계약이다 — 형태를 바꾸면 양쪽을 함께 바꾼다.
 export function parseAgentContent(content: string): ParsedAgentContent {
   const trimmed = content.trim();
 

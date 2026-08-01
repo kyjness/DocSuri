@@ -66,6 +66,11 @@ class EvidenceRepository(Protocol):
     def soft_delete_all_sessions(self, owner_id: str) -> None: ...
     def add_turn(self, turn: EvidenceTurn) -> EvidenceTurn: ...
     def list_turns(self, owner_id: str, session_id: str) -> list[EvidenceTurn]: ...
+    # 멀티턴 맥락용 — 최근 N턴만(오래된 세션 전체를 역직렬화하지 않는다). 시간순 반환.
+    def recent_turns(
+        self, owner_id: str, session_id: str, limit: int
+    ) -> list[EvidenceTurn]: ...
+    def get_turn(self, owner_id: str, turn_id: str) -> EvidenceTurn: ...
     def get_turn_by_job_id(self, owner_id: str, job_id: str) -> EvidenceTurn: ...
     def update_turn_result(self, owner_id: str, turn_id: str, result: TurnResult) -> None: ...
     def append_trace(self, owner_id: str, turn_id: str, row: dict) -> None: ...
@@ -167,6 +172,19 @@ class InMemoryEvidenceRepository:
     def list_turns(self, owner_id: str, session_id: str) -> list[EvidenceTurn]:
         self.get_session(owner_id, session_id)
         return list(self._turns.get(session_id, []))
+
+    def recent_turns(
+        self, owner_id: str, session_id: str, limit: int
+    ) -> list[EvidenceTurn]:
+        return self.list_turns(owner_id, session_id)[-limit:]
+
+    def get_turn(self, owner_id: str, turn_id: str) -> EvidenceTurn:
+        with self._lock:
+            for turns in self._turns.values():
+                for turn in turns:
+                    if turn.turn_id == turn_id and turn.owner_id == owner_id:
+                        return turn
+        raise KeyError(turn_id)
 
     def get_turn_by_job_id(self, owner_id: str, job_id: str) -> EvidenceTurn:
         with self._lock:
@@ -359,6 +377,28 @@ class SqlEvidenceRepository:
             .all()
         )
         return [_turn_from_row(row) for row in rows]
+
+    def recent_turns(
+        self, owner_id: str, session_id: str, limit: int
+    ) -> list[EvidenceTurn]:
+        self.get_session(owner_id, session_id)
+        rows = (
+            self._s.query(EvidenceTurnTable)
+            .filter(
+                EvidenceTurnTable.owner_id == owner_id,
+                EvidenceTurnTable.session_id == session_id,
+            )
+            .order_by(EvidenceTurnTable.created_at.desc(), EvidenceTurnTable.turn_id.desc())
+            .limit(limit)
+            .all()
+        )
+        return [_turn_from_row(row) for row in reversed(rows)]
+
+    def get_turn(self, owner_id: str, turn_id: str) -> EvidenceTurn:
+        row = self._s.get(EvidenceTurnTable, turn_id)
+        if row is None or row.owner_id != str(owner_id):
+            raise KeyError(turn_id)
+        return _turn_from_row(row)
 
     def get_turn_by_job_id(self, owner_id: str, job_id: str) -> EvidenceTurn:
         row = (

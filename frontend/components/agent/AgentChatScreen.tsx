@@ -653,6 +653,11 @@ function useStreamingText(content: string, enabled: boolean): string {
 
 function EvidenceResultView({ result }: { result: EvidenceResultPayload }) {
   if (result.claims.length === 0) {
+    // answer만 있는 응답(대화체 요약)은 그 문장을 그대로 보여준다 — 근거 카드가
+    // 없다고 기권 문구로 덮으면 실제 답변이 사라진다.
+    if (result.answer) {
+      return <p className={styles.evidenceIntro}>{result.answer}</p>;
+    }
     return <p className={styles.abstainNotice}>제시할 수 있는 근거를 찾지 못했습니다.</p>;
   }
   return (

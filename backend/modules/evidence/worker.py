@@ -29,9 +29,9 @@ from typing import Any
 
 from docsuri_shared._generated.dtos.evidence_schema import EvidenceRequest, EvidenceScope
 
-from .domain.models import AgentRunContext as LoopRunContext
 from .models import AgentRunContext, EvidenceTurn, TurnErrorResult, TurnPendingResult
 from .repository import EvidenceRepository
+from .service import build_run_context, trace_row
 
 log = logging.getLogger('docsuri.evidence.worker')
 
@@ -186,7 +186,8 @@ def process_job(
         paperIds=paper_ids or [],
         attachments=attachments or [],
     )
-    loop_ctx = LoopRunContext(
+    loop_ctx = build_run_context(
+        repo,
         owner_id=owner_id,
         session_id=session_id,
         turn_id=turn_id,
@@ -380,15 +381,11 @@ if __name__ == '__main__':
 
 
 def _append_trace(repo, owner_id: str, turn_id: str, record) -> None:
-    """트레이스 append — 실패해도 잡을 깨지 않는다(NFR-O1, advisory)."""
+    """트레이스 append — 실패해도 잡을 깨지 않는다(NFR-O1, advisory).
+
+    row 형태는 service.trace_row가 소유한다 — 여기서 손으로 다시 만들면
+    필드가 갈라진다(실제로 갈라졌었다)."""
     try:
-        repo.append_trace(owner_id, turn_id, {
-            'seq': record.seq,
-            'tool': record.tool,
-            'argsSummary': record.args_summary,
-            'outcome': record.outcome.value,
-            'resultSummary': record.result_summary,
-            'costUsd': record.cost_usd,
-        })
+        repo.append_trace(owner_id, turn_id, trace_row(record))
     except Exception:  # noqa: BLE001
         log.warning('evidence job trace append failed (turn=%s)', turn_id, exc_info=True)
