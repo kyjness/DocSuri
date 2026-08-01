@@ -1070,7 +1070,23 @@ _Resiliency 옵트인은 `requirements.md` 확정 전에 필수 요구사항 명
   (functional-design 4 / nfr-requirements 2 / nfr-design 2). `u11-evidence-agent/`는 frozen 원본 보존.
   신설 규칙: INV-EV-6(근거 단일 유입 경로)·INV-EV-7(DocModel 단일 writer)·BR-EV-13~20(루프 상한·승격 비용·
   확인 범위·트레이스·신뢰 경계·수리 지시성·범위 표기·payload 경계), PBT-EV-6~8 신설.
-- 다음: 브랜치 `feature/u11-evidence-agent-v2`에서 구현 착수(로드맵 절차 2단계).
+- **구현 완료 (2026-08-01)** — 브랜치 `feature/u11-evidence-agent-v2`, 커밋 12개.
+  공유 계약 개정 → 도메인 코어 → 도구·어댑터 → 표면·저장소 교체 → 프론트 → 실스택 검증.
+  `research` 모듈·`orchestrator.py`·`intent.py` 제거, `/api/evidence` 한 벌만 남음.
+  자산 리더는 `backend/modules/paper_assets.py`로 공용화(`shared/python`은 pydantic만
+  의존하는 계약 패키지라 런타임 부품을 넣지 않는다).
+- **실스택 검증 (2026-08-01)** — 로컬 스택 + 실 코퍼스. 코퍼스 질의가 근거표까지
+  도달(state=ok, 실논문 원문 인용 + 실재 블록 앵커, anchorType·sourceScope 표기),
+  예산 소진은 부분 성공 + 확인 범위(examined 3 / candidates 18)로 표면화, 승격 실패는
+  초록 범위로 수렴. **단위 테스트로는 못 잡은 결함 6건**이 여기서 드러났다:
+  마이그레이션 목록이 evidence를 안 가리킴 · 동기 경로의 빈 문자열 job_id(UUID 컬럼) ·
+  기본 모델이 Bedrock 프로파일명 · **DocModel 버전 해석이 bare id에 v1을 가정**(코퍼스
+  논문이 전부 초록 범위로 떨어지던 치명적 건) · 게이트가 잘못된 LLM 출력에 터짐 ·
+  응답 직렬화가 v2 필드 누락. 전건 수리 후 재검증.
+- 구현 중 잡은 v1 결함 3건(설계에 없던 것): 캡션 표기 불일치(프롬프트 vs 투영) ·
+  식별자 속 숫자를 측정값으로 오인(`CASP14`의 14) · 블록 id 미노출로 유효 앵커 작성 불가.
+  셋 다 "게이트가 맞는 걸 조용히 버리는" 부류였다.
+- 다음: 리뷰 3종(`/simplify` → `/code-review` → `/security-review`) 후 push·PR 승인 요청.
 
 ## ⑤ 3단계 — 멀티모달 `view_figure`
 
