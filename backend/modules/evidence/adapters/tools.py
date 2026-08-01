@@ -77,8 +77,10 @@ class CorpusSearchTool:
     spec = ToolSpec(
         name=TOOL_CORPUS_SEARCH,
         description=(
-            "내부 코퍼스(arXiv AI/ML)를 검색한다. mode=\"phrase\"를 주면 그 문구가 "
-            "원문에 그대로 있는 논문만 찾는다. 결과는 제목·초록까지이며, 본문 근거가 "
+            "내부 코퍼스(arXiv AI/ML)를 검색한다. **기본은 의미 검색(semantic)이다** — "
+            "mode를 생략하라. mode=\"phrase\"는 사용자가 특정 문장을 그대로 찾아달라고 "
+            "했을 때만 쓴다: 그 문구가 원문에 글자 그대로 있는 논문만 찾으므로 일반 "
+            "질문에는 거의 0건이 나온다. 결과는 제목·초록까지이며, 본문 근거가 "
             "필요하면 fetch_paper로 본문을 확보해야 한다."
         ),
         parameters={
@@ -162,7 +164,13 @@ def _register(
     if not hits:
         return ToolResult(
             ok=True,
-            content={"hits": [], "note": "결과가 없다 — 다른 검색어를 시도하라"},
+            content={
+                "hits": [],
+                "note": (
+                    "결과가 없다 — 다른 검색어를 시도하라. phrase 모드였다면 "
+                    "mode를 빼고 의미 검색으로 다시 하라."
+                ),
+            },
             result_summary=f"{tool}: 0 hits",
         )
     return ToolResult(

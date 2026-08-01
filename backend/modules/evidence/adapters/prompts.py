@@ -51,7 +51,18 @@ _EXTRACT_SYSTEM = """당신은 논문에서 근거를 추출한다. 새로운 �
 4. 인용을 지어내거나 다듬지 마라. 원문 문자열을 그대로 복사하라.
 5. 관련 근거가 없으면 빈 목록을 돌려라.
 
-JSON만 출력한다: {"items": [...]}"""
+JSON만 출력한다. supporting/conflicting의 각 항목은 **객체**이며 문자열이 아니다:
+
+{"items": [
+  {"statement": "AlphaFold2는 CASP14에서 GDT 92.4를 기록했다",
+   "supporting": [
+     {"paperId": "2107.06xxx", "anchor": "s4.tbl1",
+      "quote": "AlphaFold2 | 92.4 | 87.0", "sourceScope": "fulltext"}],
+   "conflicting": []}
+]}
+
+paperId는 위 [PAPER ...] 머리글의 값을 **그대로** 쓴다. anchor는 [블록id · 종류]
+머리글의 블록 id다. quote는 그 블록에 있는 문자열을 그대로 복사한다."""
 
 
 def _render_paper(handle: Any) -> str:

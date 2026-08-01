@@ -394,3 +394,36 @@ def test_real_measurement_still_has_to_be_grounded():
     )
 
     assert outcome.rejections[RejectReason.NUMBER_NOT_GROUNDED] == 1
+
+
+def test_malformed_refs_are_rejected_not_crashed():
+    """모델이 출처를 문자열로 돌려주는 일이 실제로 있다(로컬 실측).
+
+    게이트가 여기서 터지면 턴 전체가 죽는다 — 잘못된 LLM 출력은 예상 입력이다.
+    """
+    outcome = run_gate(
+        [
+            {"statement": "s", "supporting": ["2107.06xxx", 42, None], "conflicting": []},
+            "이 항목 자체가 문자열",
+        ],
+        {PAPER: _source()},
+    )
+
+    assert outcome.items == ()
+    assert outcome.rejections[RejectReason.MALFORMED_REF] >= 3
+
+
+def test_paper_id_notation_drift_is_absorbed_but_unknown_papers_are_not():
+    """접두어·버전 표기가 흔들려도 확보한 논문이면 인용이 산다 — 없는 논문은 여전히 없다."""
+    for written in (PAPER, f"arxiv:{PAPER}", f"{PAPER}v3", PAPER.upper()):
+        item = _item(anchor="s4.tbl1", quote=TABLE_ROW)
+        item["supporting"][0]["paperId"] = written
+        accepted = run_gate([item], {PAPER: _source()}).items
+
+        assert len(accepted) == 1, written
+        # 표기가 무엇이든 결과는 확보분의 id로 정규화된다.
+        assert accepted[0].supporting[0].paperId == PAPER
+
+    ghost = _item(anchor="s4.tbl1", quote=TABLE_ROW)
+    ghost["supporting"][0]["paperId"] = "9999.99999"
+    assert run_gate([ghost], {PAPER: _source()}).rejections[RejectReason.UNKNOWN_PAPER] == 1

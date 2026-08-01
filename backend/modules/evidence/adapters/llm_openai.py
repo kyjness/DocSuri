@@ -6,6 +6,10 @@
 프로바이더는 어댑터 안에만 있다(TD-EV2-2). 도메인은 `EvidenceLlmPort` /
 `EvidenceExtractionPort`만 알고, 교체는 여기 형제 파일을 하나 더 두는 일이다.
 
+SDK 대신 **HTTP를 직접 친다** — novelty가 이미 그렇게 하고 있고(`urllib.request`),
+백엔드 의존성 closure를 늘리지 않는다. 전송은 주입 가능하므로 테스트는 네트워크
+없이 돈다.
+
 이미지는 도구 결과 구획 **뒤에** 실린다(BR-EV-17) — 그림 안의 문구가 지시로
 읽히지 않도록 시스템 프롬프트가 경계를 명시하고, 배치도 그 뒤다.
 """
@@ -14,6 +18,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import urllib.request
+from collections.abc import Callable
 from typing import Any
 
 from docsuri_shared.resilience import CircuitBreaker
@@ -35,6 +42,10 @@ log = logging.getLogger("docsuri.evidence.llm")
 _FINISH_TOOL = "finish"
 _CB_FAILURES = 5
 _CB_RECOVERY = 30.0
+_ENDPOINT = "https://api.openai.com/v1/chat/completions"
+_TIMEOUT_S = 120.0
+
+Transport = Callable[[dict[str, Any]], dict[str, Any]]
 
 
 def _finish_spec() -> dict[str, Any]:
@@ -66,29 +77,54 @@ def _tool_schema(spec: ToolSpec) -> dict[str, Any]:
 
 
 class _OpenAiBase:
-    def __init__(self, *, client: Any, model: str, name: str) -> None:
-        self._client = client
+    def __init__(
+        self,
+        *,
+        model: str,
+        api_key: str | None = None,
+        transport: Transport | None = None,
+        name: str,
+    ) -> None:
         self._model = model
+        self._api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
+        self._transport = transport or self._http_post
         self._cb = CircuitBreaker(name, failure_threshold=_CB_FAILURES,
                                   recovery_seconds=_CB_RECOVERY)
 
-    def _complete(self, **kwargs: Any) -> Any:
+    def _complete(self, **kwargs: Any) -> dict[str, Any]:
         with self._cb.guard() as permit:
             if permit is None:
                 raise LlmUnavailable(f"{self._model}: circuit breaker OPEN")
             try:
-                response = self._client.chat.completions.create(model=self._model, **kwargs)
+                response = self._transport({"model": self._model, **kwargs})
             except Exception as exc:  # noqa: BLE001 — 프로바이더 오류를 포트 계약으로 좁힌다
                 raise LlmUnavailable(str(exc)[:300]) from exc
             permit.success()
             return response
 
+    def _http_post(self, request: dict[str, Any]) -> dict[str, Any]:
+        req = urllib.request.Request(  # noqa: S310 — 고정 상수 엔드포인트
+            _ENDPOINT,
+            data=json.dumps(request).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self._api_key}",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=_TIMEOUT_S) as resp:  # noqa: S310
+            return json.loads(resp.read().decode("utf-8"))
+
 
 class OpenAiDecider(_OpenAiBase):
     """루프의 `decide` — 다음 도구·인자 또는 종료."""
 
-    def __init__(self, *, client: Any, model: str) -> None:
-        super().__init__(client=client, model=model, name="evidence-decide")
+    def __init__(
+        self, *, model: str, api_key: str | None = None, transport: Transport | None = None
+    ) -> None:
+        super().__init__(
+            model=model, api_key=api_key, transport=transport, name="evidence-decide"
+        )
 
     def decide(self, observation: LoopObservation, tools: tuple[ToolSpec, ...]) -> LlmDecision:
         messages = build_decide_messages(observation)
@@ -115,8 +151,12 @@ class OpenAiDecider(_OpenAiBase):
 class OpenAiExtractor(_OpenAiBase):
     """`extract_evidence` 뒤의 추출 — 검증 전 원시 항목을 돌려준다."""
 
-    def __init__(self, *, client: Any, model: str) -> None:
-        super().__init__(client=client, model=model, name="evidence-extract")
+    def __init__(
+        self, *, model: str, api_key: str | None = None, transport: Transport | None = None
+    ) -> None:
+        super().__init__(
+            model=model, api_key=api_key, transport=transport, name="evidence-extract"
+        )
 
     def extract(
         self, *, topic: str, focus: str, papers: tuple[Any, ...]
@@ -152,29 +192,26 @@ def _attach_images(messages: list[dict], observation: LoopObservation) -> list[d
     return [*messages, {"role": "user", "content": blocks}]
 
 
-def _first_tool_call(response: Any) -> tuple[str, dict[str, Any]] | None:
-    choices = getattr(response, "choices", None) or []
+def _first_tool_call(response: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
+    choices = (response or {}).get("choices") or []
     if not choices:
         return None
-    message = getattr(choices[0], "message", None)
-    calls = getattr(message, "tool_calls", None) or []
+    calls = (choices[0].get("message") or {}).get("tool_calls") or []
     if not calls:
         return None
-    function = getattr(calls[0], "function", None)
-    name = str(getattr(function, "name", "") or "")
-    raw_args = getattr(function, "arguments", "") or "{}"
+    function = calls[0].get("function") or {}
     try:
-        args = json.loads(raw_args)
+        args = json.loads(function.get("arguments") or "{}")
     except (TypeError, ValueError):
         args = {}
-    return name, args if isinstance(args, dict) else {}
+    return str(function.get("name") or ""), args if isinstance(args, dict) else {}
 
 
-def _first_text(response: Any) -> str:
-    choices = getattr(response, "choices", None) or []
+def _first_text(response: dict[str, Any]) -> str:
+    choices = (response or {}).get("choices") or []
     if not choices:
         return ""
-    return str(getattr(getattr(choices[0], "message", None), "content", "") or "")
+    return str((choices[0].get("message") or {}).get("content") or "")
 
 
 def _parse_json(text: str) -> dict[str, Any]:
@@ -196,12 +233,12 @@ _USD_PER_1K_INPUT = 0.00015
 _USD_PER_1K_OUTPUT = 0.0006
 
 
-def _usage_cost(response: Any) -> float | None:
-    usage = getattr(response, "usage", None)
-    if usage is None:
+def _usage_cost(response: dict[str, Any]) -> float | None:
+    usage = (response or {}).get("usage")
+    if not usage:
         return None
-    prompt = int(getattr(usage, "prompt_tokens", 0) or 0)
-    completion = int(getattr(usage, "completion_tokens", 0) or 0)
+    prompt = int(usage.get("prompt_tokens") or 0)
+    completion = int(usage.get("completion_tokens") or 0)
     if not prompt and not completion:
         return None
     return prompt / 1000 * _USD_PER_1K_INPUT + completion / 1000 * _USD_PER_1K_OUTPUT

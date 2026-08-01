@@ -125,9 +125,8 @@ def build_evidence_runner(
     # --- LLM (결정 + 추출) ---
     from .adapters.llm_openai import OpenAiDecider, OpenAiExtractor
 
-    client = _build_llm_client(settings)
-    decider = OpenAiDecider(client=client, model=settings.model_id)
-    extractor = OpenAiExtractor(client=client, model=settings.model_id)
+    decider = OpenAiDecider(model=settings.model_id)
+    extractor = OpenAiExtractor(model=settings.model_id)
 
     # --- 선택 도구: 없으면 등록되지 않고 도구 목록이 자연 축소된다 ---
     external_search = None
@@ -158,12 +157,6 @@ def build_evidence_runner(
 # 각 헬퍼는 설정이 없으면 None을 돌려주고, None인 도구는 레지스트리에 등록되지
 # 않는다. "기능이 조용히 죽는" 것과 다르다 — 등록되지 않은 도구는 모델에게
 # 보이지도 않으므로 에이전트가 그 경로를 시도하지 않는다.
-
-
-def _build_llm_client(settings: EvidenceSettings) -> object:
-    from openai import OpenAI
-
-    return OpenAI()
 
 
 def _external_enabled() -> bool:

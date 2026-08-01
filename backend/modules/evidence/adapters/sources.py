@@ -116,21 +116,51 @@ class CorpusSearch:
         return [record for record, _score in hits]
 
 
+# 버전 없는 id로 최신을 찾을 때 훑는 범위. arXiv 개정이 이보다 많은 논문은 드물고,
+# 넘어가면 초록 범위로 수렴하므로 답이 사라지지는 않는다.
+_MAX_VERSION_PROBE = 12
+
+
 class DocModelReader:
-    """확보된 DocModel 읽기. 개별 실패는 '없음'과 같이 다룬다(부분 실패 허용)."""
+    """확보된 DocModel 읽기. 개별 실패는 '없음'과 같이 다룬다(부분 실패 허용).
+
+    **버전 해석이 이 어댑터의 본체다.** U1은 doc-model을 `.../v{N}.json`으로 키잉하는데
+    id가 두 형태로 들어온다:
+
+    - 버전 붙은 arxivId(`2304.10557v3`) — 멀티턴에서 이어지는 값. 그 버전을 읽는다.
+    - **버전 없는 bare id**(`1706.03762`) — 색인이 돌려주는 값. 여기서 v1로 가정하면
+      개정된 논문이 전부 미스가 되고, 그러면 코퍼스 논문이 통째로 초록 범위로
+      떨어진다(로컬 실측: `1706.03762`의 실제 저장분은 v7).
+    """
 
     def __init__(self, reader: Any) -> None:
         self._reader = reader
 
     def get_doc_model(self, paper_id: str) -> Any | None:
-        # evidence가 나르는 것은 버전 붙은 arxivId다 — 버전을 복원하지 않으면
-        # 개정판(v2+)이 영원히 v1 미스가 되어 근거가 하나도 안 나온다.
-        version = paper_version(paper_id)
+        explicit = _explicit_version(paper_id)
+        if explicit is not None:
+            return self._read(paper_id, explicit)
+        # 최신부터 내려오며 처음 잡히는 것을 쓴다. 저장소가 버전 목록을 주지 않으므로
+        # 탐색이 유일한 방법이고, 성공하면 대개 첫 시도에서 끝난다.
+        for version in range(_MAX_VERSION_PROBE, 0, -1):
+            found = self._read(paper_id, version)
+            if found is not None:
+                return found
+        return None
+
+    def _read(self, paper_id: str, version: int) -> Any | None:
         try:
             return self._reader.get_doc_model(paper_id, version)
         except Exception:  # noqa: BLE001 — 논문 1편 실패로 턴을 깨지 않는다
             log.warning("docmodel read failed for %s v%s", paper_id, version, exc_info=True)
             return None
+
+
+def _explicit_version(paper_id: str) -> int | None:
+    """id가 버전을 **명시**했을 때만 그 값. bare id는 None(=최신 해석 대상)."""
+    sentinel = -1
+    version = paper_version(paper_id, default=sentinel)
+    return None if version == sentinel else version
 
 
 class ArxivExternalSearch:

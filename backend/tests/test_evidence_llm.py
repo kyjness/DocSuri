@@ -76,39 +76,32 @@ def _observation(**overrides) -> LoopObservation:
     return LoopObservation(**base)
 
 
-class FakeCompletions:
+class FakeTransport:
+    """HTTP 전송 대역 — 네트워크 없이 어댑터 계약만 본다."""
+
     def __init__(self, response=None, error: Exception | None = None) -> None:
-        self.response = response
+        self.response = response or {}
         self.error = error
         self.calls: list[dict] = []
 
-    def create(self, **kwargs):
-        self.calls.append(kwargs)
+    def __call__(self, request):
+        self.calls.append(request)
         if self.error:
             raise self.error
         return self.response
 
 
-class FakeClient:
-    def __init__(self, response=None, error=None) -> None:
-        self.completions = FakeCompletions(response, error)
-        self.chat = SimpleNamespace(completions=self.completions)
-
-
 def _tool_response(name: str, arguments: str, *, usage=(100, 50)):
-    call = SimpleNamespace(function=SimpleNamespace(name=name, arguments=arguments))
-    message = SimpleNamespace(tool_calls=[call], content=None)
-    return SimpleNamespace(
-        choices=[SimpleNamespace(message=message)],
-        usage=SimpleNamespace(prompt_tokens=usage[0], completion_tokens=usage[1]),
-    )
+    return {
+        "choices": [
+            {"message": {"tool_calls": [{"function": {"name": name, "arguments": arguments}}]}}
+        ],
+        "usage": {"prompt_tokens": usage[0], "completion_tokens": usage[1]},
+    }
 
 
 def _text_response(text: str):
-    return SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content=text, tool_calls=None))],
-        usage=None,
-    )
+    return {"choices": [{"message": {"content": text}}]}
 
 
 # --- 프롬프트 정합 (v1 결함 재발 방지) ----------------------------------------
@@ -165,9 +158,9 @@ def test_decide_prompt_marks_tool_results_as_data_not_instructions():
 # --- decide ------------------------------------------------------------------
 
 
-def _decider(response=None, error=None) -> tuple[OpenAiDecider, FakeClient]:
-    client = FakeClient(response, error)
-    return OpenAiDecider(client=client, model="gpt-x"), client
+def _decider(response=None, error=None) -> tuple[OpenAiDecider, FakeTransport]:
+    transport = FakeTransport(response, error)
+    return OpenAiDecider(model="gpt-x", transport=transport), transport
 
 
 def test_decide_returns_a_tool_call():
@@ -218,11 +211,11 @@ def test_images_are_attached_after_the_tool_result_section():
     """그림 안의 문구가 지시로 읽히지 않도록 데이터 구획 뒤에 붙인다(BR-EV-17)."""
     image = ImageAttachment(media_type="image/webp", data_b64="AAA", asset_id="fig1")
     view = ToolResultView(seq=1, tool_name="view_figure", ok=True, images=(image,))
-    decider, client = _decider(_tool_response("finish", "{}"))
+    decider, transport = _decider(_tool_response("finish", "{}"))
 
     decider.decide(_observation(recent_results=(view,)), ())
 
-    messages = client.completions.calls[0]["messages"]
+    messages = transport.calls[0]["messages"]
     assert messages[-1]["role"] == "user"
     kinds = [block["type"] for block in messages[-1]["content"]]
     assert kinds == ["text", "image_url"]
@@ -233,7 +226,7 @@ def test_images_are_attached_after_the_tool_result_section():
 
 def test_extractor_returns_raw_items_for_the_gate_to_judge():
     payload = '{"items": [{"statement": "s", "supporting": [], "conflicting": []}]}'
-    extractor = OpenAiExtractor(client=FakeClient(_text_response(payload)), model="gpt-x")
+    extractor = OpenAiExtractor(model="gpt-x", transport=FakeTransport(_text_response(payload)))
 
     items = extractor.extract(topic="q", focus="", papers=(_handle(_doc_model()),))
 
@@ -242,6 +235,6 @@ def test_extractor_returns_raw_items_for_the_gate_to_judge():
 
 @pytest.mark.parametrize("payload", ["", "not json", '{"items": "nope"}', "{}"])
 def test_unparseable_extraction_yields_no_items_instead_of_raising(payload):
-    extractor = OpenAiExtractor(client=FakeClient(_text_response(payload)), model="gpt-x")
+    extractor = OpenAiExtractor(model="gpt-x", transport=FakeTransport(_text_response(payload)))
 
     assert extractor.extract(topic="q", focus="", papers=()) == []

@@ -103,6 +103,9 @@ class SourceRefOut(BaseModel):
     record_ref: str = Field(alias='recordRef')
     anchor: str | None = None
     quote: str | None = None
+    # v2(FR-47) — 인용 객체 종류와 근거 범위. 화면이 칩 라벨·배지를 고르는 근거다.
+    anchor_type: str | None = Field(None, alias='anchorType')
+    source_scope: str | None = Field(None, alias='sourceScope')
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -116,6 +119,10 @@ class EvidenceItemOut(BaseModel):
 class EvidenceCoverageOut(BaseModel):
     paper_count: int = Field(alias='paperCount')
     query_used: str | None = Field(None, alias='queryUsed')
+    # v2 — 확인 범위. 탐색이 완결되지 않았을 때 화면이 한 줄로 알린다.
+    examined: int | None = None
+    candidates: int | None = None
+    stopped_reason: str | None = Field(None, alias='stoppedReason')
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -125,6 +132,7 @@ class TurnResultOut(BaseModel):
     state: Literal['ok', 'abstain', 'pending', 'error']
     claims: list[EvidenceItemOut] | None = None
     coverage: EvidenceCoverageOut | None = None
+    answer: str | None = None
     abstain_reason: str | None = Field(None, alias='abstainReason')
     job_id: str | None = Field(None, alias='jobId')
     started_at: datetime | None = Field(None, alias='startedAt')
@@ -464,21 +472,11 @@ def _serialize_result(result: Any) -> TurnResultOut:
                 EvidenceItemOut(
                     statement=item.statement,
                     supporting=[
-                        SourceRefOut(
-                            paperId=ref.paperId,
-                            recordRef=ref.recordRef,
-                            anchor=ref.anchor,
-                            quote=ref.quote,
-                        )
+                        _source_ref_out(ref)
                         for ref in item.supporting
                     ],
                     conflicting=[
-                        SourceRefOut(
-                            paperId=ref.paperId,
-                            recordRef=ref.recordRef,
-                            anchor=ref.anchor,
-                            quote=ref.quote,
-                        )
+                        _source_ref_out(ref)
                         for ref in item.conflicting
                     ],
                 )
@@ -487,7 +485,11 @@ def _serialize_result(result: Any) -> TurnResultOut:
             coverage=EvidenceCoverageOut(
                 paperCount=outcome.coverage.paperCount,
                 queryUsed=outcome.coverage.queryUsed,
+                examined=getattr(outcome.coverage, 'examined', None),
+                candidates=getattr(outcome.coverage, 'candidates', None),
+                stoppedReason=_enum_value(getattr(outcome.coverage, 'stoppedReason', None)),
             ),
+            answer=getattr(outcome, 'answer', None),
         )
 
     if isinstance(result, TurnAbstainResult):
@@ -530,3 +532,19 @@ def _attachment_docs(
 
 
 routers = (router,)
+
+
+def _source_ref_out(ref: Any) -> SourceRefOut:
+    """SourceRef → 응답 DTO. v2 필드를 빠뜨리면 화면이 종류·범위를 모른다."""
+    return SourceRefOut(
+        paperId=ref.paperId,
+        recordRef=ref.recordRef,
+        anchor=ref.anchor,
+        quote=ref.quote,
+        anchorType=_enum_value(getattr(ref, 'anchorType', None)),
+        sourceScope=_enum_value(getattr(ref, 'sourceScope', None)),
+    )
+
+
+def _enum_value(value: Any) -> str | None:
+    return None if value is None else str(getattr(value, 'value', value))

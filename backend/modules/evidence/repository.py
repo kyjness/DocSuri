@@ -336,7 +336,9 @@ class SqlEvidenceRepository:
                 topic=turn.topic,
                 status=status,
                 result=payload,
-                job_id=turn.job_id or job_id,
+                # 빈 문자열을 UUID 컬럼에 넣으면 실 DB만 터진다(인메모리·SQLite는
+                # 통과시킨다). 동기 경로의 pending 자리표시자가 그 형태였다.
+                job_id=(turn.job_id or job_id) or None,
                 attachments=list(turn.attachments or []),
                 created_at=turn.created_at,
             )

@@ -64,6 +64,7 @@ class RejectReason:
     """탈락 사유 코드 — 집계·트레이스용. 사용자에게는 개별 사유를 노출하지 않는다."""
 
     UNKNOWN_PAPER = "unknown_paper"
+    MALFORMED_REF = "malformed_ref"
     MISSING_QUOTE = "missing_quote"
     QUOTE_TOO_SHORT = "quote_too_short"
     QUOTE_NOT_VERBATIM = "quote_not_verbatim"
@@ -110,6 +111,33 @@ def _numbers(text: str) -> set[str]:
     return set(_NUMBER.findall(text))
 
 
+def _resolve_source(
+    paper_id: str, sources: dict[str, PaperEvidenceSource]
+) -> PaperEvidenceSource | None:
+    """확보한 논문 중에서 찾는다 — 표기 흔들림만 흡수하고 없는 논문은 없는 것이다.
+
+    모델이 프롬프트의 id를 그대로 베끼지 않고 접두어(`arxiv:`)를 붙이거나 버전
+    suffix를 떼는 일이 있다. 그때마다 근거를 통째로 버리면 실제로 확보한 논문의
+    인용이 사라진다 — 실재성 판정은 유지하면서 표기만 맞춘다.
+    """
+    if not paper_id:
+        return None
+    direct = sources.get(paper_id)
+    if direct is not None:
+        return direct
+    wanted = _id_key(paper_id)
+    for key, source in sources.items():
+        if _id_key(key) == wanted:
+            return source
+    return None
+
+
+def _id_key(paper_id: str) -> str:
+    value = paper_id.strip().lower().removeprefix("arxiv:")
+    head, sep, tail = value.rpartition("v")
+    return head if sep and head and tail.isdigit() else value
+
+
 def _scope_of(raw: dict[str, Any], source: PaperEvidenceSource) -> str:
     """모델이 범위를 선언할 수 있지만, **논문이 실제로 확보된 범위를 넘을 수 없다.**
 
@@ -132,8 +160,14 @@ def _validate_ref(
     rejections: Counter[str],
 ) -> tuple[SourceRef, str] | None:
     """유효하면 (SourceRef, 검증에 쓰인 quote 텍스트)."""
+    if not isinstance(raw, dict):
+        # 모델이 출처를 객체가 아니라 문자열로 돌려주는 일이 실제로 있다.
+        # 잘못된 출력은 예상 입력이다 — 게이트가 여기서 터지면 턴 전체가 죽는다.
+        rejections[RejectReason.MALFORMED_REF] += 1
+        return None
+
     paper_id = str(raw.get("paperId") or "").strip()
-    source = sources.get(paper_id)
+    source = _resolve_source(paper_id, sources)
     if source is None:
         rejections[RejectReason.UNKNOWN_PAPER] += 1
         return None
@@ -226,6 +260,9 @@ def run_gate(
     items: list[EvidenceItem] = []
 
     for raw in raw_items or []:
+        if not isinstance(raw, dict):
+            rejections[RejectReason.MALFORMED_REF] += 1
+            continue
         statement = normalize(raw.get("statement"))
         if not statement:
             rejections[RejectReason.EMPTY_STATEMENT] += 1

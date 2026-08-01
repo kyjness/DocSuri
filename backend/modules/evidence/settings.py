@@ -11,8 +11,10 @@ from dataclasses import dataclass
 
 from docsuri_shared.env import env_flag as _env_flag
 
-# Bedrock inference profile (TD-E3 / infrastructure-design §1)
-DEFAULT_EVIDENCE_MODEL = 'global.anthropic.claude-sonnet-4-6'
+# v2 어댑터는 OpenAI 호환 HTTP를 친다(TD-EV2-2) — 기본값도 그 어휘여야 한다.
+# v1의 Bedrock 추론 프로파일명을 그대로 두면 실경로가 마운트되고도 매 호출이
+# 모델 미존재로 실패해 llm_unavailable로만 수렴한다(로컬 실측에서 드러났다).
+DEFAULT_EVIDENCE_MODEL = 'gpt-4o-mini'
 
 
 @dataclass(frozen=True, slots=True)
