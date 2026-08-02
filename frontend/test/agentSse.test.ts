@@ -118,7 +118,24 @@ describe('streamAgentTurn (US-EV2 sync SSE)', () => {
 
     const outcome = await streamAgentTurn({ path: '/api/evidence/turns', body: {} });
 
-    expect(outcome).toEqual({ kind: 'failed', jobId: 'job-7' });
+    expect(outcome).toEqual({ kind: 'failed', jobId: 'job-7', started: true });
+  });
+
+  it('reports failed with the accepted sessionId when a sync turn (no jobId) breaks', async () => {
+    // 동기 턴에는 jobId가 없다 — 서버의 'accepted' 신호가 복구 좌표(sessionId)를 준다.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        sseResponse([
+          progressFrame('e1', 'started'),
+          progressFrame('e2', 'accepted', { sessionId: 'sess-5', turnId: 't1' }),
+        ]),
+      ),
+    );
+
+    const outcome = await streamAgentTurn({ path: '/api/evidence/turns', body: {} });
+
+    expect(outcome).toEqual({ kind: 'failed', sessionId: 'sess-5', started: true });
   });
 
   it('maps an error frame to failed (fail-soft, no crash)', async () => {
@@ -134,7 +151,7 @@ describe('streamAgentTurn (US-EV2 sync SSE)', () => {
 
     const outcome = await streamAgentTurn({ path: '/api/evidence/turns', body: {} });
 
-    expect(outcome).toEqual({ kind: 'failed', jobId: 'job-3' });
+    expect(outcome).toEqual({ kind: 'failed', jobId: 'job-3', started: true });
   });
 
   it('parses split frames across chunk boundaries', async () => {
@@ -265,6 +282,45 @@ describe('ApiClient.sendAgentMessage streaming integration', () => {
 
     expect(result.session.id).toBe('evidence:job-9');
     // 백엔드는 턴을 계속 완결하므로 재전송하지 않는다(비용 이중 지출 금지).
+    expect(t.calls.filter((req) => req.method === 'POST')).toHaveLength(0);
+  });
+
+  it('recovers a broken sync turn via the accepted sessionId without resending', async () => {
+    // 동기 턴(jobId 없음)이 중간에 끊겨도, accepted가 준 sessionId로 스냅샷 복구한다.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        sseResponse([
+          progressFrame('e1', 'started'),
+          progressFrame('e2', 'accepted', { sessionId: 'job-9', turnId: 't1' }),
+        ]),
+      ),
+    );
+    const t = snapshotTransport();
+    const client = new ApiClient(t, { timeoutMs: 1000, retryBackoffMs: 1 });
+
+    const result = await client.sendAgentMessage('agent-evidence-local', {
+      content: 'q',
+      mode: 'evidence',
+    });
+
+    expect(result.session.id).toBe('evidence:job-9');
+    expect(t.calls.filter((req) => req.method === 'POST')).toHaveLength(0);
+  });
+
+  it('surfaces an error instead of resending when the stream breaks without coordinates', async () => {
+    // 서버가 턴을 돌리기 시작했는데(started) 좌표(jobId·sessionId)를 못 받은 창 —
+    // JSON 폴백으로 재전송하면 같은 턴이 두 번 실행되므로 오류로 멈춘다.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => sseResponse([progressFrame('e1', 'started')])),
+    );
+    const t = snapshotTransport();
+    const client = new ApiClient(t, { timeoutMs: 1000, retryBackoffMs: 1 });
+
+    await expect(
+      client.sendAgentMessage('agent-evidence-local', { content: 'q', mode: 'evidence' }),
+    ).rejects.toThrow('연결이 끊겼습니다');
     expect(t.calls.filter((req) => req.method === 'POST')).toHaveLength(0);
   });
 });

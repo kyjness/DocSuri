@@ -135,6 +135,14 @@ class EvidenceChatService:
             # 동안 append하려면 부모 행이 있어야 한다.
             turn.result = TurnPendingResult(job_id='', started_at=_utc_now())
             self._repo.add_turn(turn)
+            if on_progress is not None:
+                # 수락 신호 — 클라이언트가 스트림 단절 시 **재전송 없이** 이 세션으로
+                # 복구할 좌표다. 동기 턴에는 jobId가 없어서, 이 신호가 없으면 단절이
+                # "시작도 못 함"과 구분되지 않아 JSON 폴백이 턴을 이중 실행한다.
+                on_progress(
+                    'accepted',
+                    {'sessionId': session.session_id, 'turnId': turn.turn_id},
+                )
 
             def _sink(record: Any) -> None:
                 # 진행 표시는 advisory다(NFR-O1) — 실패가 근거형성을 막지 않는다.

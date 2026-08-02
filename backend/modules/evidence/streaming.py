@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 # v1의 고정 4단계(scope_resolved→…→validating)는 발신자가 사라졌다.
 STAGE_LABELS = {
     'started': '근거형성 시작',
+    'accepted': '질문 접수',
     'tool': '도구 실행',
 }
 

@@ -903,7 +903,9 @@ export class ApiClient {
    * 동기 evidence 턴 SSE 시도(US-EV2). 반환 규약:
    * - terminal → JSON 경로와 동일한 응답 본문(검증 후 최종 결과만).
    * - json → 서버가 JSON으로 응답(비동기 pending 등) — 재전송 없이 그대로 사용.
-   * - failed + jobId → 백엔드는 턴을 계속 완결하므로(PR #338) 재전송 대신 스냅샷 복구.
+   * - failed + jobId → 백엔드는 턴을 계속 완결하므로(PR #338) 재전송 대신 잡 폴링 복구.
+   * - failed + sessionId(동기 턴 — jobId 없음) → 재전송 대신 세션 스냅샷 복구.
+   * - failed + started(좌표 없음) → 재전송하면 이중 실행이므로 오류로 알리고 멈춘다.
    * - null → JSON 경로 폴백(스트림이 시작조차 못 한 경우만 — 이중 실행 없음).
    */
   private async trySendEvidenceTurnStream(
@@ -924,8 +926,23 @@ export class ApiClient {
           idempotent: true,
         });
       }
+      if (outcome.sessionId) {
+        // 동기 턴에는 jobId가 없다 — 서버의 'accepted' 신호가 준 sessionId로 복구한다.
+        // 세션 스냅샷을 다시 읽으면 완결된(또는 진행 중인) 턴이 그대로 보인다.
+        return { status: 200, body: { sessionId: outcome.sessionId } };
+      }
+      if (outcome.started) {
+        // 서버가 턴을 돌리기 시작한 뒤 좌표 없이 끊겼다(accepted 도착 전 밀리초 창).
+        // 여기서 JSON 폴백으로 넘어가면 같은 턴이 두 번 실행된다 — 재전송 대신
+        // 사용자에게 재시도를 맡긴다(수동 재시도는 사용자의 결정이다).
+        throw new UserFacingError(
+          'server',
+          '연결이 끊겼습니다. 분석은 계속 진행되니 잠시 후 세션을 다시 열어 주세요.',
+        );
+      }
       return null;
-    } catch {
+    } catch (error) {
+      if (error instanceof UserFacingError) throw error;
       return null;
     }
   }

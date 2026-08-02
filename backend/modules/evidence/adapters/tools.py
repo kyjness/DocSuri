@@ -496,6 +496,9 @@ class ExtractEvidenceTool:
                 "extract_evidence: no papers",
                 "paper_ids는 필수다 — 확보한 논문의 paperId를 넣어라",
             )
+        # 스키마 maxItems는 권고일 뿐 모델이 넘겨도 막히지 않는다 — 추출 프롬프트가
+        # 논문 수에 비례해 커지므로 여기서 상한을 강제한다(초과분은 다음 호출로).
+        requested = requested[:10]
 
         handles = []
         unknown = []

@@ -134,8 +134,11 @@ def test_sse_turn_streams_stages_then_validated_terminal(monkeypatch) -> None:
     stages = [data.get('stage') for event, data in frames if event == 'progress']
     # v2: 고정 4단계가 사라지고 활동 피드가 결정 트레이스에서 파생된다(FD 게이트 Q7=A).
     # 루프는 몇 번 돌지 정해져 있지 않으므로 단계 이름을 고정할 수 없다.
-    assert stages[0] == 'started'
-    assert set(stages[1:]) == {'tool'}
+    # 'accepted'는 턴 저장 직후의 복구 좌표(sessionId·turnId) — 단절 시 재전송 방지.
+    assert stages[:2] == ['started', 'accepted']
+    assert set(stages[2:]) == {'tool'}
+    accepted = next(data for _, data in frames if data.get('stage') == 'accepted')
+    assert accepted['payload']['sessionId'] and accepted['payload']['turnId']
 
     feed = [data for event, data in frames if event == 'progress' and data.get('stage') == 'tool']
     assert [item['payload']['tool'] for item in feed] == ['corpus_search', 'extract_evidence']

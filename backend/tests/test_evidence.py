@@ -638,3 +638,35 @@ def test_sync_turn_crash_leaves_a_terminal_turn_not_a_phantom_pending() -> None:
     turns = repo.list_turns('o1', sessions[0].session_id)
     assert isinstance(turns[0].result, TurnErrorResult)
     assert turns[0].result.error_code == 'internal_error'
+
+
+def test_sync_turn_emits_accepted_coordinates_before_running() -> None:
+    """동기 경로는 러너 실행 전에 'accepted'(sessionId·turnId)를 흘린다.
+
+    동기 턴에는 jobId가 없다 — 이 신호가 없으면 클라이언트는 스트림 단절을
+    "시작도 못 함"과 구분하지 못해 JSON 폴백으로 같은 턴을 두 번 실행한다.
+    """
+    from docsuri_shared._generated.dtos.evidence_schema import EvidenceRequest
+
+    from backend.modules.evidence.models import TurnErrorResult as _Err
+    from backend.modules.evidence.repository import InMemoryEvidenceRepository
+    from backend.modules.evidence.service import EvidenceChatService
+
+    events: list[tuple[str, dict]] = []
+
+    class _Runner:
+        def run(self, ctx, request, *, budget_signal=None, attachments=(), on_trace=None):
+            # 러너 도착 시점에 이미 accepted가 나가 있어야 한다(단절 창 최소화).
+            assert [stage for stage, _ in events] == ['accepted']
+            return _Err(error_code='internal_error')
+
+    service = EvidenceChatService(repo=InMemoryEvidenceRepository(), runner=_Runner())
+    resp = service.run_turn(
+        owner_id='o1',
+        request=EvidenceRequest(topic='q'),
+        on_progress=lambda stage, payload: events.append((stage, payload)),
+    )
+
+    stage, payload = events[0]
+    assert stage == 'accepted'
+    assert payload == {'sessionId': resp.session_id, 'turnId': resp.turn_id}

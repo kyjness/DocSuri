@@ -88,7 +88,7 @@ export function timelineDetail(payload?: Record<string, unknown>): string | unde
 export type AgentTurnStreamOutcome =
   | { kind: 'terminal'; payload: unknown }
   | { kind: 'json'; status: number; body: unknown }
-  | { kind: 'failed'; jobId?: string };
+  | { kind: 'failed'; jobId?: string; sessionId?: string; started?: boolean };
 
 /**
  * 동기 evidence 턴 SSE 소비(US-EV2) — POST + Accept: text/event-stream.
@@ -130,6 +130,10 @@ export async function streamAgentTurn(options: {
   const decoder = new TextDecoder();
   let buffer = '';
   let jobId: string | undefined;
+  let sessionId: string | undefined;
+  // 이벤트를 하나라도 받았다 = 서버가 턴을 돌리기 시작했다. 이 뒤의 단절에서
+  // JSON 폴백으로 재전송하면 같은 턴이 두 번 실행된다(이중 과금).
+  let started = false;
 
   const handleBlock = (block: SseBlock): AgentTurnStreamOutcome | null => {
     if (block.event === 'progress') {
@@ -139,7 +143,9 @@ export async function streamAgentTurn(options: {
       } catch {
         return null;
       }
+      started = true;
       jobId = extractJobId(raw) ?? jobId;
+      sessionId = extractSessionId(raw) ?? sessionId;
       const event = mapProgressEvent(raw);
       if (event) options.onEvents?.([event]);
       return null;
@@ -148,10 +154,10 @@ export async function streamAgentTurn(options: {
       try {
         return { kind: 'terminal', payload: JSON.parse(block.data) };
       } catch {
-        return { kind: 'failed', jobId };
+        return { kind: 'failed', jobId, sessionId, started };
       }
     }
-    if (block.event === 'error') return { kind: 'failed', jobId };
+    if (block.event === 'error') return { kind: 'failed', jobId, sessionId, started };
     return null;
   };
 
@@ -170,10 +176,17 @@ export async function streamAgentTurn(options: {
       if (done) break;
     }
   } catch {
-    return { kind: 'failed', jobId };
+    return { kind: 'failed', jobId, sessionId, started };
   }
   // 터미널 없이 스트림 종료 — 백엔드가 계속 완결하므로 호출자 복구에 맡긴다.
-  return { kind: 'failed', jobId };
+  return { kind: 'failed', jobId, sessionId, started };
+}
+
+function extractSessionId(raw: unknown): string | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const payload = (raw as Record<string, unknown>).payload;
+  if (!payload || typeof payload !== 'object') return undefined;
+  return stringValue((payload as Record<string, unknown>).sessionId);
 }
 
 function extractJobId(raw: unknown): string | undefined {
