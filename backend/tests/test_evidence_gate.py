@@ -371,6 +371,55 @@ def test_real_measurement_still_has_to_be_grounded():
     assert outcome.rejections[RejectReason.NUMBER_NOT_GROUNDED] == 1
 
 
+# --- 숫자 표기 정규화 (u7 grounding 규칙 이식) --------------------------------
+#
+# 인용문(TABLE_ROW)의 92.4에 대해 statement가 어떤 표기까지 쓸 수 있는가.
+# 등가 표기(정확 ×100/÷100)와 같은 스케일의 반올림은 인정하고, 스케일을
+# 건너뛴 반올림은 u7의 반례(정수 "20" ↔ 연도 "2020")대로 계속 막는다.
+
+
+def test_fraction_notation_of_a_quoted_percent_is_grounded():
+    """논문이 92.4로 적은 값을 statement가 0.924로 써도 같은 수다."""
+    outcome = run_gate(
+        [_item(statement="It reaches a GDT fraction of 0.924",
+               anchor="s4.tbl1", quote=TABLE_ROW)],
+        {PAPER: _source()},
+    )
+
+    assert len(outcome.items) == 1
+
+
+def test_percent_sign_variant_of_a_quoted_number_is_grounded():
+    outcome = run_gate(
+        [_item(statement="It reaches 92.4% on the benchmark",
+               anchor="s4.tbl1", quote=TABLE_ROW)],
+        {PAPER: _source()},
+    )
+
+    assert len(outcome.items) == 1
+
+
+def test_rounding_at_the_statements_own_precision_is_grounded():
+    """정수로 쓴 92는 인용문의 92.4에 근거한다(자릿수 기반 허용 폭)."""
+    outcome = run_gate(
+        [_item(statement="It reaches roughly 92 GDT", anchor="s4.tbl1", quote=TABLE_ROW)],
+        {PAPER: _source()},
+    )
+
+    assert len(outcome.items) == 1
+
+
+def test_cross_scale_rounding_stays_rejected():
+    """0.92는 92.4의 ÷100 반올림 — 스케일 교차에 허용 폭을 얹으면 무관한 값이
+    우연 매칭되므로(u7 반례: "20" ↔ "2020") 계속 fail-closed다."""
+    outcome = run_gate(
+        [_item(statement="It reaches a fraction of 0.92", anchor="s4.tbl1", quote=TABLE_ROW)],
+        {PAPER: _source()},
+    )
+
+    assert outcome.rejections[RejectReason.NUMBER_NOT_GROUNDED] == 1
+
+
 def test_malformed_refs_are_rejected_not_crashed():
     """모델이 출처를 문자열로 돌려주는 일이 실제로 있다(로컬 실측).
 

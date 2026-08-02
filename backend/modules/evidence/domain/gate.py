@@ -111,6 +111,71 @@ def _numbers(text: str) -> set[str]:
     return set(_NUMBER.findall(text))
 
 
+def _to_float(token: str) -> float | None:
+    try:
+        return float(token.rstrip("%"))
+    except ValueError:
+        return None
+
+
+def _decimals(token: str) -> int:
+    """토큰이 적힌 소수 자릿수 — 반올림 허용 폭을 결정한다."""
+    _, _, frac = token.rstrip("%").partition(".")
+    return len(frac)
+
+
+def _normalize_number(token: str) -> set[str]:
+    """같은 수의 등가 표기 집합 — u7 grounding의 `_normalize_number` 이식.
+
+    "0.953"과 "95.3%"는 같은 값이다. 정확 ×100/÷100 변환만 등가로 본다 —
+    이 규칙은 u7 QT-1 eval 코퍼스(라벨 32건)에서 오통과 0으로 검증된 것이다.
+    """
+    forms = {token}
+    value = _to_float(token)
+    if value is None:
+        return forms
+    forms.add(f"{value:g}")
+    if value > 1:  # percentage ↔ fraction
+        forms.add(f"{value / 100:g}")
+    else:
+        forms.add(f"{value * 100:g}")
+    return forms
+
+
+@dataclass(slots=True)
+class _NumberPool:
+    """statement 숫자의 대조 대상 — 등가 표기 집합 + 같은 스케일의 원값 목록.
+
+    반올림 허용(95.3은 95.34에 근거)은 **같은 스케일에서만** 적용한다. ×100/÷100
+    재스케일에 허용 폭을 얹으면 정수 statement "20"이 무관한 연도 "2020"
+    (÷100=20.2, 정수 폭 0.5 안)에 근거해 버린다 — u7이 반례와 함께 금지한
+    조합이라 그대로 따른다(스케일 교차는 위의 정확 변환으로만).
+    """
+
+    forms: set[str] = field(default_factory=set)
+    values: list[float] = field(default_factory=list)
+
+    def add_tokens(self, tokens: set[str]) -> None:
+        for token in tokens:
+            self.forms |= _normalize_number(token)
+            value = _to_float(token)
+            if value is not None:
+                self.values.append(value)
+
+    def merge(self, other: _NumberPool) -> None:
+        self.forms |= other.forms
+        self.values.extend(other.values)
+
+    def grounds(self, token: str) -> bool:
+        if _normalize_number(token) & self.forms:
+            return True
+        value = _to_float(token)
+        if value is None:
+            return False
+        band = 0.5 * 10 ** (-_decimals(token)) + 1e-9
+        return any(abs(v - value) <= band for v in self.values)
+
+
 def _resolve_source(
     paper_id: str, sources: dict[str, PaperEvidenceSource]
 ) -> PaperEvidenceSource | None:
@@ -233,31 +298,34 @@ def _validate_ref(
     return ref, quote
 
 
-def _grounded_numbers(
+def _grounded_pool(
     refs: list[tuple[SourceRef, str]],
     sources: dict[str, PaperEvidenceSource],
-    text_numbers: dict[str, set[str]],
-) -> set[str]:
-    """statement가 쓸 수 있는 숫자 집합.
+    text_pools: dict[str, _NumberPool],
+) -> _NumberPool:
+    """statement가 쓸 수 있는 숫자의 대조 풀.
 
     인용문의 숫자 + **그림 해석 출처가 있으면 그 논문 텍스트 전체의 숫자**.
     후자가 BLM §3의 검사 6이다 — 차트에서 눈으로 읽은 값이 논문 어디에도 없으면
     그것이 날조다. 정성 서술(추세·구조)은 숫자가 없어 이 규칙에 걸리지 않고,
     검증 강도 차이는 `sourceScope=figure` 표시로 드러낸다.
 
-    전문 숫자 집합은 `run_gate` 호출당 논문마다 1회만 센다(`text_numbers` 캐시) —
-    항목마다 전문 정규식을 다시 돌리지 않는다.
+    전문 숫자 풀은 `run_gate` 호출당 논문마다 1회만 만든다(`text_pools` 캐시) —
+    항목마다 전문 정규식·정규화를 다시 돌리지 않는다.
     """
-    allowed: set[str] = set()
+    pool = _NumberPool()
     for ref, quote in refs:
-        allowed |= _numbers(quote)
+        pool.add_tokens(_numbers(quote))
         if ref.sourceScope == SourceScope.figure:
             source = sources.get(ref.paperId)
             if source is not None:
-                if ref.paperId not in text_numbers:
-                    text_numbers[ref.paperId] = _numbers(source.text)
-                allowed |= text_numbers[ref.paperId]
-    return allowed
+                cached = text_pools.get(ref.paperId)
+                if cached is None:
+                    cached = _NumberPool()
+                    cached.add_tokens(_numbers(source.text))
+                    text_pools[ref.paperId] = cached
+                pool.merge(cached)
+    return pool
 
 
 def run_gate(
@@ -267,7 +335,7 @@ def run_gate(
     """LLM이 제안한 근거 항목 → 검증을 통과한 `EvidenceItem`만."""
     rejections: Counter[str] = Counter()
     items: list[EvidenceItem] = []
-    text_numbers: dict[str, set[str]] = {}
+    text_pools: dict[str, _NumberPool] = {}
 
     for raw in raw_items or []:
         if not isinstance(raw, dict):
@@ -298,10 +366,11 @@ def run_gate(
             continue
 
         statement_numbers = _numbers(statement)
-        grounded = _grounded_numbers(supporting, sources, text_numbers)
-        if statement_numbers and not statement_numbers <= grounded:
-            rejections[RejectReason.NUMBER_NOT_GROUNDED] += 1
-            continue
+        if statement_numbers:
+            pool = _grounded_pool(supporting, sources, text_pools)
+            if not all(pool.grounds(token) for token in statement_numbers):
+                rejections[RejectReason.NUMBER_NOT_GROUNDED] += 1
+                continue
 
         items.append(
             EvidenceItem(
