@@ -25,12 +25,12 @@ from uuid import uuid4
 logger = logging.getLogger(__name__)
 
 # orchestrator 단계 → FE timeline 라벨(novelty progress처럼 message가 곧 라벨).
+# v2가 실제로 흘리는 단계는 둘뿐이다 — 'started'(접수)와 'tool'(활동 피드 항목).
+# v1의 고정 4단계(scope_resolved→…→validating)는 발신자가 사라졌다.
 STAGE_LABELS = {
     'started': '근거형성 시작',
-    'scope_resolved': '질문 범위 결정',
-    'papers_fetched': '관련 논문 검색',
-    'extracting': '근거 추출',
-    'validating': '근거 검증',
+    'accepted': '질문 접수',
+    'tool': '도구 실행',
 }
 
 # (stage, payload) — payload는 단계명·건수 등 비텍스트 신호만(C-2).

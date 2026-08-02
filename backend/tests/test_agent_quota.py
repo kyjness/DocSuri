@@ -78,7 +78,7 @@ def _route_dependency_names(app) -> dict[tuple[str, str], list[str]]:
 
 
 def test_bedrock_incurring_routes_are_all_quota_gated(monkeypatch) -> None:
-    """NFR-C1 회귀 방지 — PR #364 병합 시 POST /api/research/jobs(첫 메시지도
+    """NFR-C1 회귀 방지 — 비용이 드는 경로는 전부 일일 쿼터로 게이트된다(첫 턴도
     orchestrator.run()을 실행해 Bedrock을 호출)가 쿼터 없이 병합돼, 매번 새 세션을
     만들기만 하면 일일 한도를 완전히 우회할 수 있었다. 라우트 배선 자체를 검증해
     같은 종류의 누락(단위 테스트로는 못 잡는 배선 문제)을 앞으로 잡는다."""
@@ -87,8 +87,7 @@ def test_bedrock_incurring_routes_are_all_quota_gated(monkeypatch) -> None:
     dependencies = _route_dependency_names(app)
 
     must_be_evidence_gated = {
-        ("POST", "/api/research/jobs"),  # create_job → add_message → orchestrator.run()
-        ("POST", "/api/research/jobs/{job_id}/messages"),
+        ("POST", "/api/evidence/turns"),  # create_job → add_message → orchestrator.run()
         ("POST", "/api/evidence/turns"),
     }
     for route in must_be_evidence_gated:

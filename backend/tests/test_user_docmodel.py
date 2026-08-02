@@ -111,6 +111,43 @@ def test_ref_from_attachment_accepts_server_issued_evidence_object_key() -> None
     assert hydrated.record_ref == ref.record_ref
 
 
+def test_ref_from_attachment_rejects_another_owners_paper_id() -> None:
+    """남의 userdoc 식별자를 자기 recordRef와 짝지어 보낼 수 없다.
+
+    예전에는 supplied paperId에서 job_id를 뽑아 recordRef와 **자기정합**만 봤다 —
+    공격자가 피해자 paperId + 자기 owner_id로 만든 recordRef를 함께 보내면 통과했고,
+    그 문서를 읽고(poll) 자기 PDF로 덮어쓰는(enqueue) 경로가 열렸다. 신원은 인증된
+    owner_id에서만 나와야 한다(보안 리뷰 후속).
+    """
+    victim = user_docmodel_ref(
+        owner_id="acct-victim",
+        scope_id="att-1",
+        attachment_id="att-1",
+        object_key="uploads/evidence/acct-victim/att-1/att-1/doc.pdf",
+        module="evidence",
+    )
+    attacker_key = object_key_for_upload(
+        module="evidence",
+        owner_id="acct-attacker",
+        scope_id="att-1",
+        attachment_id="att-1",
+        file_name="doc.pdf",
+    )
+    # 공격자가 자기 owner_id로 만든, 피해자 paperId와 자기정합인 recordRef.
+    forged_record_ref = f"upload:acct-attacker:{victim.job_id}:att-1"
+
+    with pytest.raises(ValueError, match="identity"):
+        ref_from_attachment(
+            owner_id="acct-attacker",
+            scope_id="request-1",
+            attachment_id="att-1",
+            object_key=attacker_key,
+            module="evidence",
+            paper_id=victim.paper_id,
+            record_ref=forged_record_ref,
+        )
+
+
 def test_ref_from_attachment_rejects_cross_owner_evidence_object_key() -> None:
     object_key = object_key_for_upload(
         module="evidence",

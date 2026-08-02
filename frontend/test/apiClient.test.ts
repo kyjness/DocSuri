@@ -129,7 +129,7 @@ describe('ApiClient outcome mapping', () => {
 describe('ApiClient agent chat mapping', () => {
   it('keeps sessions from the healthy agent mode when the other mode fails', async () => {
     const t = transportOf(async (req) => {
-      if (req.path === '/api/research/jobs?limit=20') return { status: 500, body: null };
+      if (req.path === '/api/evidence/sessions?limit=20') return { status: 500, body: null };
       if (req.path === '/api/novelty/jobs?limit=20') {
         return {
           status: 200,
@@ -163,9 +163,9 @@ describe('ApiClient agent chat mapping', () => {
 
   it('blocks real research sends until the research worker is enabled', async () => {
     const previousReal = process.env.NEXT_PUBLIC_DOCSURI_REAL_API;
-    const previousResearch = process.env.NEXT_PUBLIC_DOCSURI_RESEARCH_AGENT_ENABLED;
+    const previousEvidenceFlag = process.env.NEXT_PUBLIC_DOCSURI_EVIDENCE_AGENT_ENABLED;
     process.env.NEXT_PUBLIC_DOCSURI_REAL_API = '1';
-    delete process.env.NEXT_PUBLIC_DOCSURI_RESEARCH_AGENT_ENABLED;
+    delete process.env.NEXT_PUBLIC_DOCSURI_EVIDENCE_AGENT_ENABLED;
     const t = transportOf(async () => ({ status: 200, body: null }));
     try {
       await expect(
@@ -180,10 +180,10 @@ describe('ApiClient agent chat mapping', () => {
     } finally {
       if (previousReal === undefined) delete process.env.NEXT_PUBLIC_DOCSURI_REAL_API;
       else process.env.NEXT_PUBLIC_DOCSURI_REAL_API = previousReal;
-      if (previousResearch === undefined) {
-        delete process.env.NEXT_PUBLIC_DOCSURI_RESEARCH_AGENT_ENABLED;
+      if (previousEvidenceFlag === undefined) {
+        delete process.env.NEXT_PUBLIC_DOCSURI_EVIDENCE_AGENT_ENABLED;
       } else {
-        process.env.NEXT_PUBLIC_DOCSURI_RESEARCH_AGENT_ENABLED = previousResearch;
+        process.env.NEXT_PUBLIC_DOCSURI_EVIDENCE_AGENT_ENABLED = previousEvidenceFlag;
       }
     }
   });
@@ -265,31 +265,40 @@ describe('ApiClient agent chat mapping', () => {
     };
     const t = transportOf(async (req) => {
       requests.push(req);
-      if (req.path.startsWith('/api/research/attachments?')) {
+      if (req.path.startsWith('/api/evidence/attachments?')) {
         expect(isBinaryTransportBody(req.body)).toBe(true);
         return { status: 200, body: uploadRef };
       }
-      if (req.path === '/api/research/jobs') {
-        const body = req.body as { attachments?: unknown[] };
+      if (req.path === '/api/evidence/turns') {
+        const body = req.body as { topic?: string; attachments?: unknown[] };
+        expect(body.topic).toBe('PDF evidence');
         expect(body.attachments?.[0]).toMatchObject({
           objectKey: uploadRef.objectKey,
           paperId: uploadRef.paperId,
           recordRef: uploadRef.recordRef,
         });
         expect(body.attachments?.[0]).not.toHaveProperty('sourceFile');
-        return { status: 201, body: { jobId: 'r1', state: 'active' } };
-      }
-      if (req.path === '/api/research/jobs/r1') {
+        // v2 TurnOut — 클라이언트는 sessionId로 세션을 잇는다.
         return {
           status: 200,
           body: {
-            job: {
-              jobId: 'r1',
-              title: 'PDF evidence',
-              state: 'completed',
-              updatedAt: '2026-07-01T00:00:00Z',
-            },
-            messages: [],
+            sessionId: 'r1',
+            turnId: 't1',
+            topic: 'PDF evidence',
+            result: { state: 'ok', claims: [], coverage: { paperCount: 0 } },
+            createdAt: '2026-07-01T00:00:00Z',
+          },
+        };
+      }
+      if (req.path === '/api/evidence/sessions/r1') {
+        return {
+          status: 200,
+          body: {
+            id: 'r1',
+            title: 'PDF evidence',
+            createdAt: '2026-07-01T00:00:00Z',
+            updatedAt: '2026-07-01T00:00:00Z',
+            turns: [],
           },
         };
       }
@@ -312,9 +321,9 @@ describe('ApiClient agent chat mapping', () => {
     });
 
     expect(requests.map((req) => req.path.split('?')[0])).toEqual([
-      '/api/research/attachments',
-      '/api/research/jobs',
-      '/api/research/jobs/r1',
+      '/api/evidence/attachments',
+      '/api/evidence/turns',
+      '/api/evidence/sessions/r1',
     ]);
   });
 

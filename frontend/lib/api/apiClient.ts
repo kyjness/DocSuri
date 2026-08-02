@@ -105,13 +105,33 @@ const SEARCH_TIMEOUT_MS = 30_000;
 // 실질 상한이라 그에 맞춘다. BFF 홉(SUMMARIZE_GATEWAY_TIMEOUT_MS)과 함께 움직여야 한다.
 const SUMMARIZE_TIMEOUT_MS = 30_000;
 
-type BackendResearchJob = {
-  jobId: string;
-  title: string;
-  state: 'active' | 'completed' | 'failed' | 'cancelled';
+// v2 /api/evidence 계약(SessionOut·SessionDetailOut·TurnOut) — 서버 controller.py가 SSOT.
+type BackendEvidenceSession = {
+  id: string;
+  title?: string | null;
+  createdAt: string;
   updatedAt: string;
 };
-type BackendResearchMessage = {
+type BackendEvidenceTurnResult = {
+  state: 'ok' | 'abstain' | 'pending' | 'error';
+  claims?: unknown[];
+  coverage?: Record<string, unknown>;
+  answer?: string | null;
+  abstainReason?: string | null;
+  jobId?: string | null;
+  errorCode?: string | null;
+};
+type BackendEvidenceTurn = {
+  sessionId: string;
+  turnId: string;
+  topic?: string;
+  result: BackendEvidenceTurnResult;
+  createdAt: string;
+};
+type BackendEvidenceSessionDetail = BackendEvidenceSession & {
+  turns?: BackendEvidenceTurn[];
+};
+type BackendAgentMessage = {
   messageId: string;
   role: 'user' | 'assistant' | 'system' | 'agent';
   content: string;
@@ -127,7 +147,7 @@ type BackendNoveltyJob = {
   state: string;
   updatedAt: string;
 };
-type BackendNoveltyMessage = BackendResearchMessage;
+type BackendNoveltyMessage = BackendAgentMessage;
 type BackendNoveltyEvent = {
   eventId: string;
   state: string;
@@ -158,14 +178,52 @@ function parseAgentSessionId(
   return { mode: fallback, rawId: id };
 }
 
-function mapResearchJob(job: BackendResearchJob): AgentSessionSummary {
+function mapEvidenceSession(session: BackendEvidenceSession): AgentSessionSummary {
   return {
-    id: encodeAgentSessionId('evidence', job.jobId),
-    title: job.title,
+    id: encodeAgentSessionId('evidence', session.id),
+    title: session.title || '근거 세션',
     mode: 'evidence',
-    state: mapResearchState(job.state),
-    updatedAt: job.updatedAt,
+    // v2 세션은 잡이 아니라 채팅 세션이라 상태 개념이 없다 — 목록에서는 완료로 표시.
+    state: 'completed',
+    updatedAt: session.updatedAt,
   };
+}
+
+/**
+ * 턴 결과 → 메시지 본문. `parseAgentContent`가 이해하는 프로토콜의 **생산자**다
+ * (ok=EvidenceResult JSON, abstain=`[abstain] reason`, error=`[error] code`).
+ */
+function contentFromTurnResult(result: BackendEvidenceTurnResult): string {
+  if (result.state === 'ok') {
+    return JSON.stringify({
+      state: 'ok',
+      claims: result.claims ?? [],
+      coverage: result.coverage ?? { paperCount: 0 },
+      ...(result.answer ? { answer: result.answer } : {}),
+    });
+  }
+  if (result.state === 'abstain') return `[abstain] ${result.abstainReason ?? ''}`.trim();
+  if (result.state === 'error') return `[error] ${result.errorCode ?? ''}`.trim();
+  return '분석이 진행 중입니다. 잠시 후 세션을 다시 열어 주세요.';
+}
+
+function messagesFromTurns(turns: BackendEvidenceTurn[]): AgentMessage[] {
+  return turns.flatMap((turn): AgentMessage[] => [
+    {
+      id: `${turn.turnId}-user`,
+      role: 'user',
+      content: turn.topic ?? '',
+      createdAt: turn.createdAt,
+      status: 'sent',
+    },
+    {
+      id: `${turn.turnId}-agent`,
+      role: 'agent',
+      content: contentFromTurnResult(turn.result),
+      createdAt: turn.createdAt,
+      status: 'sent',
+    },
+  ]);
 }
 
 function mapNoveltyJob(job: BackendNoveltyJob): AgentSessionSummary {
@@ -176,12 +234,6 @@ function mapNoveltyJob(job: BackendNoveltyJob): AgentSessionSummary {
     state: mapNoveltyState(job.state),
     updatedAt: job.updatedAt,
   };
-}
-
-function mapResearchState(state: BackendResearchJob['state']): AgentJobState {
-  if (state === 'active') return 'running';
-  if (state === 'cancelled') return 'failed';
-  return state;
 }
 
 function mapNoveltyState(state: string): AgentJobState {
@@ -205,7 +257,7 @@ const AGENT_MESSAGE_KINDS: readonly AgentMessageKind[] = [
   'notice',
 ];
 
-function mapAgentMessage(message: BackendResearchMessage): AgentMessage {
+function mapAgentMessage(message: BackendAgentMessage): AgentMessage {
   const role = message.role === 'user' ? 'user' : 'agent';
   const kind = AGENT_MESSAGE_KINDS.find((candidate) => candidate === message.kind);
   return {
@@ -303,18 +355,20 @@ function attachmentKind(value: unknown, contentType?: string, name?: string): Ag
   return 'unknown';
 }
 
-function toResearchBody(req: AgentSendMessageRequest) {
+function toEvidenceTurnBody(req: AgentSendMessageRequest, sessionId: string | null) {
   if (
     process.env.NEXT_PUBLIC_DOCSURI_REAL_API &&
-    process.env.NEXT_PUBLIC_DOCSURI_RESEARCH_AGENT_ENABLED !== '1'
+    process.env.NEXT_PUBLIC_DOCSURI_EVIDENCE_AGENT_ENABLED !== '1'
   ) {
     throw new UserFacingError('unknown', 'Research는 아직 실배포에서 사용할 수 없습니다.');
   }
-  return toChatBody(req);
-}
-
-function toChatBody(req: AgentSendMessageRequest) {
-  return { content: req.content, attachments: attachmentsForJson(req.attachments) };
+  // 서버 TurnCreateRequest는 extra=forbid — content가 아니라 topic이고, 후속 턴은
+  // 경로가 아니라 본문의 sessionId로 세션을 잇는다(v2: 첫 턴과 같은 엔드포인트).
+  return {
+    topic: req.content,
+    ...(sessionId ? { sessionId } : {}),
+    attachments: attachmentsForJson(req.attachments),
+  };
 }
 
 function toNoveltyBody(req: AgentSendMessageRequest, created: boolean) {
@@ -629,19 +683,20 @@ export class ApiClient {
   }
 
   private async listAgentSessionsForMode(mode: AgentMode): Promise<AgentSessionSummary[]> {
-    const path = mode === 'evidence' ? '/api/research/jobs?limit=20' : '/api/novelty/jobs?limit=20';
+    const path = mode === 'evidence' ? '/api/evidence/sessions?limit=20' : '/api/novelty/jobs?limit=20';
     const res = await this.request({
       method: 'GET',
       path,
       idempotent: true,
     });
     if (res.status === 200) {
+      if (mode === 'evidence') {
+        // v2: SessionOut 배열이 그대로 온다({jobs} 봉투가 아니다).
+        const sessions = Array.isArray(res.body) ? (res.body as BackendEvidenceSession[]) : [];
+        return sessions.map(mapEvidenceSession);
+      }
       const jobs = (res.body as { jobs?: unknown[] }).jobs ?? [];
-      return jobs.map((job) =>
-        mode === 'evidence'
-          ? mapResearchJob(job as BackendResearchJob)
-          : mapNoveltyJob(job as BackendNoveltyJob),
-      );
+      return jobs.map((job) => mapNoveltyJob(job as BackendNoveltyJob));
     }
     throw normalizeHttpError(res.status, serverMessage(res.body));
   }
@@ -649,20 +704,20 @@ export class ApiClient {
   async loadAgentSession(id: string): Promise<AgentSessionSnapshot> {
     const target = parseAgentSessionId(id);
     if (target.mode === 'novelty') return this.loadNoveltySession(target.rawId);
-    return this.loadResearchSession(target.rawId);
+    return this.loadEvidenceSession(target.rawId);
   }
 
-  private async loadResearchSession(id: string): Promise<AgentSessionSnapshot> {
+  private async loadEvidenceSession(id: string): Promise<AgentSessionSnapshot> {
     const res = await this.request({
       method: 'GET',
-      path: `/api/research/jobs/${encodeURIComponent(id)}`,
+      path: `/api/evidence/sessions/${encodeURIComponent(id)}`,
       idempotent: true,
     });
     if (res.status === 200) {
-      const body = res.body as { job: BackendResearchJob; messages?: BackendResearchMessage[] };
+      const body = res.body as BackendEvidenceSessionDetail;
       return {
-        session: mapResearchJob(body.job),
-        messages: (body.messages ?? []).map((message) => mapAgentMessage(message)),
+        session: mapEvidenceSession(body),
+        messages: messagesFromTurns(body.turns ?? []),
         events: [],
       };
     }
@@ -733,7 +788,7 @@ export class ApiClient {
     const query = new URLSearchParams({ fileName: attachment.name, id: attachment.id });
     const uploaded = await this.request({
       method: 'POST',
-      path: `/api/research/attachments?${query.toString()}`,
+      path: `/api/evidence/attachments?${query.toString()}`,
       body: binaryBody(attachment.sourceFile, 'application/pdf'),
       idempotent: false,
     });
@@ -775,14 +830,15 @@ export class ApiClient {
       target.mode === 'evidence' ? await this.withUploadedResearchAttachments(req) : req;
     const path =
       target.mode === 'evidence'
-        ? created
-          ? '/api/research/jobs'
-          : `/api/research/jobs/${encodeURIComponent(target.rawId)}/messages`
+        ? // v2: 첫 턴과 후속 턴이 같은 엔드포인트다. 세션은 본문의 sessionId로 갈린다.
+          '/api/evidence/turns'
         : created
           ? '/api/novelty/jobs'
           : `/api/novelty/jobs/${encodeURIComponent(target.rawId)}/messages`;
     const body =
-      target.mode === 'evidence' ? toResearchBody(sendReq) : toNoveltyBody(sendReq, created);
+      target.mode === 'evidence'
+        ? toEvidenceTurnBody(sendReq, created ? null : target.rawId)
+        : toNoveltyBody(sendReq, created);
     // US-EV2/NFR-P6 — 동기 evidence 턴은 SSE 스트리밍 우선(진행 단계 점진 렌더링).
     // 실패하면 기존 JSON 경로로 폴백한다(fail-soft — 턴을 깨지 않는다).
     const streamed =
@@ -821,9 +877,12 @@ export class ApiClient {
       }
     }
     const nextId =
-      created && target.mode === 'evidence'
-        ? encodeAgentSessionId('evidence', (res.body as { jobId: string }).jobId)
-        : created && target.mode === 'novelty'
+      target.mode === 'evidence'
+        ? encodeAgentSessionId(
+            'evidence',
+            (res.body as { sessionId?: string }).sessionId ?? target.rawId,
+          )
+        : created
           ? encodeAgentSessionId('novelty', (res.body as { jobId: string }).jobId)
           : sessionId;
     const snapshot = await this.loadAgentSession(nextId);
@@ -844,7 +903,9 @@ export class ApiClient {
    * 동기 evidence 턴 SSE 시도(US-EV2). 반환 규약:
    * - terminal → JSON 경로와 동일한 응답 본문(검증 후 최종 결과만).
    * - json → 서버가 JSON으로 응답(비동기 pending 등) — 재전송 없이 그대로 사용.
-   * - failed + jobId → 백엔드는 턴을 계속 완결하므로(PR #338) 재전송 대신 스냅샷 복구.
+   * - failed + jobId → 백엔드는 턴을 계속 완결하므로(PR #338) 재전송 대신 잡 폴링 복구.
+   * - failed + sessionId(동기 턴 — jobId 없음) → 재전송 대신 세션 스냅샷 복구.
+   * - failed + started(좌표 없음) → 재전송하면 이중 실행이므로 오류로 알리고 멈춘다.
    * - null → JSON 경로 폴백(스트림이 시작조차 못 한 경우만 — 이중 실행 없음).
    */
   private async trySendEvidenceTurnStream(
@@ -857,10 +918,31 @@ export class ApiClient {
       if (outcome.kind === 'terminal') return { status: 200, body: outcome.payload };
       if (outcome.kind === 'json') return { status: outcome.status, body: outcome.body };
       if (outcome.jobId) {
-        return { status: 200, body: { jobId: outcome.jobId, state: 'completed' } };
+        // 스트림이 끊겨도 백엔드는 턴을 완결한다 — 잡 폴링(TurnOut)이 sessionId까지
+        // 담고 있으므로 재전송 없이 그 응답으로 복구한다.
+        return await this.request({
+          method: 'GET',
+          path: `/api/evidence/jobs/${encodeURIComponent(outcome.jobId)}`,
+          idempotent: true,
+        });
+      }
+      if (outcome.sessionId) {
+        // 동기 턴에는 jobId가 없다 — 서버의 'accepted' 신호가 준 sessionId로 복구한다.
+        // 세션 스냅샷을 다시 읽으면 완결된(또는 진행 중인) 턴이 그대로 보인다.
+        return { status: 200, body: { sessionId: outcome.sessionId } };
+      }
+      if (outcome.started) {
+        // 서버가 턴을 돌리기 시작한 뒤 좌표 없이 끊겼다(accepted 도착 전 밀리초 창).
+        // 여기서 JSON 폴백으로 넘어가면 같은 턴이 두 번 실행된다 — 재전송 대신
+        // 사용자에게 재시도를 맡긴다(수동 재시도는 사용자의 결정이다).
+        throw new UserFacingError(
+          'server',
+          '연결이 끊겼습니다. 분석은 계속 진행되니 잠시 후 세션을 다시 열어 주세요.',
+        );
       }
       return null;
-    } catch {
+    } catch (error) {
+      if (error instanceof UserFacingError) throw error;
       return null;
     }
   }
@@ -871,7 +953,7 @@ export class ApiClient {
       method: 'DELETE',
       path:
         target.mode === 'evidence'
-          ? `/api/research/jobs/${encodeURIComponent(target.rawId)}`
+          ? `/api/evidence/sessions/${encodeURIComponent(target.rawId)}`
           : `/api/novelty/jobs/${encodeURIComponent(target.rawId)}`,
       idempotent: false,
     });
@@ -882,7 +964,7 @@ export class ApiClient {
   /** 전체 세션 초기화 — US-EV8(#272). 두 에이전트 모듈의 소유 세션을 모두 비운다(멱등). */
   async resetAgentSessions(): Promise<void> {
     await Promise.all(
-      ['/api/research/jobs', '/api/novelty/jobs'].map(async (path) => {
+      ['/api/evidence/sessions', '/api/novelty/jobs'].map(async (path) => {
         const res = await this.request({ method: 'DELETE', path, idempotent: false });
         if (res.status !== 200 && res.status !== 204) {
           throw normalizeHttpError(res.status, serverMessage(res.body));

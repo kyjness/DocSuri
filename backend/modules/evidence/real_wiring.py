@@ -1,4 +1,4 @@
-"""build_evidence_orchestrator — U11 실 어댑터 조립 (real-first, TD-E1~E11).
+"""build_evidence_runner — U11 v2 실 어댑터 조립 (real-first).
 
 Discovery(U2) 어댑터 재사용:
   BedrockCohereQueryEmbedder → EvidencePaperSearchTool.EmbeddingPort
@@ -15,20 +15,13 @@ Summarization(U7) 어댑터 재사용:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import os
 from typing import Any
 
-from .assembler import EvidenceComparisonAssembler
-from .extractor import EvidenceExtractor
-from .orchestrator import EvidenceAgentOrchestrator
+from docsuri_shared.env import env_float
+
+from .runner import EvidenceTurnRunner, RunnerDeps
 from .settings import EvidenceSettings
-from .tools import EvidenceDocModelTool, EvidencePaperSearchTool
-
-
-@dataclass(frozen=True)
-class EvidenceBundle:
-    orchestrator: EvidenceAgentOrchestrator
-    settings: EvidenceSettings
 
 
 def _build_guarded_query_embedder(
@@ -45,7 +38,7 @@ def _build_guarded_query_embedder(
     Returns the real embedder when the space matches (or can't be verified — logged), else a
     MismatchedSpaceEmbedder that raises EmbeddingUnavailable per request; EvidencePaperSearchTool.
     _hybrid_search catches that and degrades to lexical-only instead of scoring a foreign space.
-    Extracted from build_evidence_orchestrator so the guard wiring is unit-testable in isolation.
+    Extracted from build_evidence_runner so the guard wiring is unit-testable in isolation.
     """
     from discovery.adapters.bedrock_embedding import BedrockCohereQueryEmbedder
     from discovery.adapters.openai_embedding import OpenAIQueryEmbedder
@@ -74,20 +67,22 @@ def _build_guarded_query_embedder(
     return guard_embedding_space(os_client, d_settings.opensearch_index, reader_identity, embedding)
 
 
-def build_evidence_orchestrator(
-    settings: EvidenceSettings, cost_guard: object | None = None
-) -> EvidenceBundle:
+def build_evidence_runner(
+    settings: EvidenceSettings,
+    *,
+    cost_guard: Any | None = None,
+    session_factory: Any | None = None,
+) -> EvidenceTurnRunner:
     """실 어댑터 조립 — DOCSURI_DOCMODEL_BUCKET + OpenSearch 설정 필요.
 
-    cost_guard(U6 단일 권위)를 주면 orchestrator 비용 게이트 + extractor 지출 기록에
+    cost_guard(U6 단일 권위)를 주면 턴 실행의 비용 게이트에
     연결된다(NFR-C1).
     """
     # --- Discovery 어댑터 (U2 재사용) ---
     from discovery.adapters.opensearch_index import (
         OpenSearchClientFactory,
         OpenSearchLexicalIndexAdapter,
-        OpenSearchPaperLookupAdapter,
-        OpenSearchVectorStoreAdapter,
+            OpenSearchVectorStoreAdapter,
     )
     from discovery.adapters.settings import DiscoverySettings
 
@@ -107,13 +102,13 @@ def build_evidence_orchestrator(
     embedding = _build_guarded_query_embedder(d_settings, os_client, settings.region_name)
     vector_store = OpenSearchVectorStoreAdapter(os_client, d_settings.opensearch_index)
     lexical_index = OpenSearchLexicalIndexAdapter(os_client, d_settings.opensearch_index)
-    paper_lookup = OpenSearchPaperLookupAdapter(os_client, d_settings.opensearch_index)
 
-    search_tool = EvidencePaperSearchTool(
+    from .adapters.sources import ArxivExternalSearch, CorpusSearch, DocModelReader
+
+    corpus_search = CorpusSearch(
         embedding=embedding,
         vector_store=vector_store,
         lexical_index=lexical_index,
-        paper_lookup=paper_lookup,
     )
 
     # --- S3 DocModel 리더 (U7 재사용) ---
@@ -123,23 +118,110 @@ def build_evidence_orchestrator(
         bucket=settings.docmodel_bucket,
         region_name=settings.region_name,
     )
-    doc_model_tool = EvidenceDocModelTool(doc_model_reader=doc_model_reader)
+    doc_models = DocModelReader(doc_model_reader)
 
-    # --- EvidenceExtractor (Bedrock Sonnet 4.6) ---
-    extractor = EvidenceExtractor(
-        model_id=settings.model_id,
-        region_name=settings.region_name,
-        cost_guard=cost_guard,
+    # --- LLM (결정 + 추출) ---
+    from .adapters.llm_openai import OpenAiDecider, OpenAiExtractor
+
+    rates = {
+        "input_usd_per_mtok": settings.input_usd_per_mtok,
+        "output_usd_per_mtok": settings.output_usd_per_mtok,
+    }
+    decider = OpenAiDecider(model=settings.model_id, **rates)
+    extractor = OpenAiExtractor(model=settings.model_id, **rates)
+
+    # --- 선택 도구: 없으면 등록되지 않고 도구 목록이 자연 축소된다 ---
+    external_search = None
+    promotion = None
+    if _external_enabled():
+        external_search = ArxivExternalSearch(_build_arxiv_client())
+        promotion = _build_promotion(doc_models)
+
+    assets = _build_asset_reader(session_factory)
+
+    runner = EvidenceTurnRunner(
+        RunnerDeps(
+            llm=decider,
+            extractor=extractor,
+            corpus_search=corpus_search,
+            external_search=external_search,
+            doc_models=doc_models,
+            promotion=promotion,
+            assets=assets,
+            cost_guard=cost_guard,
+            budget_factory=settings.build_loop_budget,
+        )
+    )
+    return runner
+
+
+# --- 선택 의존성 조립 --------------------------------------------------------
+#
+# 각 헬퍼는 설정이 없으면 None을 돌려주고, None인 도구는 레지스트리에 등록되지
+# 않는다. "기능이 조용히 죽는" 것과 다르다 — 등록되지 않은 도구는 모델에게
+# 보이지도 않으므로 에이전트가 그 경로를 시도하지 않는다.
+
+
+def _external_enabled() -> bool:
+    from docsuri_shared.env import env_flag
+
+    return env_flag('DOCSURI_EVIDENCE_EXTERNAL_SEARCH_ENABLED')
+
+
+def _build_arxiv_client() -> object:
+    """evidence 자체의 arXiv 검색 클라이언트.
+
+    초안은 u1 `ArxivAdapter` 재사용을 적었지만 둘 다 성립하지 않았다: 그 어댑터에는
+    search()가 없고(수확·전문 취득용), `docsuri_ingestion`은 backend 의존성이 아니라
+    import 자체가 마운트를 죽인다. "질의 → 제목·초록"은 표준 라이브러리로 닫힌다.
+    """
+    from .adapters.sources import ArxivApiClient
+
+    return ArxivApiClient()
+
+
+def _build_promotion(doc_models: object) -> object | None:
+    from .adapters.promotion import QueuedPaperPromotion
+
+    queue = _build_build_queue()
+    if queue is None:
+        return None
+    return QueuedPaperPromotion(
+        build_queue=queue,
+        doc_models=doc_models,
+        poll_timeout_seconds=env_float('DOCSURI_EVIDENCE_PROMOTION_TIMEOUT_MS', 20000) / 1000,
     )
 
-    # --- Assembler & Orchestrator ---
-    assembler = EvidenceComparisonAssembler()
-    orchestrator = EvidenceAgentOrchestrator(
-        search_tool=search_tool,
-        doc_model_tool=doc_model_tool,
-        extractor=extractor,
-        assembler=assembler,
-        cost_guard=cost_guard,
-    )
 
-    return EvidenceBundle(orchestrator=orchestrator, settings=settings)
+def _build_build_queue() -> object | None:
+    """u7이 쓰는 것과 같은 BUILD_DOC_MODEL 큐 어댑터를 재사용한다(TD-EV2-5)."""
+    queue_url = os.environ.get('DOCSURI_DOCMODEL_BUILD_QUEUE_URL')
+    if not queue_url:
+        return None
+    from summarization.adapters.sqs_docmodel_build import SqsDocModelBuildQueue
+
+    return SqsDocModelBuildQueue(queue_url=queue_url)
+
+
+def _build_asset_reader(session_factory: object | None) -> object | None:
+    """자산 리더 — 앱쉘이 이미 가진 세션 팩토리를 재사용한다.
+
+    여기서 엔진을 새로 만들면 같은 프로세스에 같은 Postgres로 향하는 커넥션 풀이
+    두 벌 생긴다. 팩토리가 없을 때(단독 워커)만 직접 만든다.
+    """
+    from backend.modules.paper_assets import SqlS3FigureReader
+
+    if session_factory is not None:
+        return SqlS3FigureReader(session_factory)
+    # 단독 워커 경로 — DB 접속은 config가 소유한 해석(DATABASE_URL/DB_HOST 조합)을
+    # 그대로 쓴다. 별도 env 이름을 지어내면 아무도 안 세팅해 view_figure가 워커에서만
+    # 조용히 빠진다(리뷰 지적 — DOCSURI_DATABASE_URL은 저장소 어디에도 없는 이름이었다).
+    from backend.config import Settings
+    from backend.db import make_engine, make_session_factory
+
+    database_url = Settings.from_env().database_url
+    if not database_url.startswith(("postgresql://", "postgresql+psycopg://", "postgres://")):
+        return None  # paper_asset은 Postgres에만 있다
+    engine = make_engine(database_url)
+    return SqlS3FigureReader(make_session_factory(engine))
+

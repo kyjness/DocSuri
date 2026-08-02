@@ -60,6 +60,11 @@ TurnResult = TurnSuccessResult | TurnAbstainResult | TurnPendingResult | TurnErr
 class EvidenceTurn:
     turn_id: str = field(default_factory=_new_id)
     session_id: str = ''
+    # v2: 소유자를 턴에도 싣는다 — 잡 폴링은 세션을 거치지 않고 턴을 직접 찾으므로
+    # 그 경로에도 owner 격리가 필요하다(INV-EV-1).
+    owner_id: str = ''
+    topic: str = ''
+    attachments: list = field(default_factory=list)
     request: EvidenceRequest | None = None
     result: TurnResult | None = None
     created_at: datetime = field(default_factory=_utc_now)
@@ -95,51 +100,3 @@ class AttachmentInput:
     doc_model: Any | None = None
 
 
-@dataclass(frozen=True)
-class AgentRunContext:
-    session: EvidenceSession
-    current_turn: EvidenceTurn
-    owner_id: str
-    request_id: str
-    budget_signal: dict[str, Any] = field(default_factory=dict)
-    # 멀티턴 검색 맥락화용 — 같은 세션의 이전 턴 topic들(PR #338 리뷰 Blocking #2/FR-37).
-    # 단발 경로(U12 form_evidence)·새 세션은 비어 있다.
-    prior_topics: tuple[str, ...] = ()
-    # US-EV4(#268) 2차 — 이 턴에 동봉된 첨부 문서들(연구 경로가 채운다).
-    attachment_docs: tuple[AttachmentInput, ...] = ()
-    # 꼬리질문 좁히기용 — 직전 턴이 실제로 근거로 쓴 논문 id 집합(TurnSuccessResult.
-    # resolved_paper_ids가 그대로 이어진다). "그 중에서" 류 후속 질문 감지 시에만
-    # explicit scope로 전환해 이 집합으로 검색을 제한한다. 단발 경로·새 세션은 비어 있다.
-    prior_paper_ids: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class PaperSearchResult:
-    records: tuple[Any, ...]  # IndexRecord[]
-    query_used: str | None
-    scope: str  # EvidenceScope value
-
-
-@dataclass(frozen=True)
-class LiteralMatch:
-    """정확 문구가 발견된 위치 하나 — LLM을 거치지 않으므로 그 자체로 grounded."""
-
-    paper_id: str
-    # DocModel Section/Block id(문단 단위) — 실제 "줄 번호"는 DocModel 계약상 존재하지
-    # 않는다(docmodel_schema.py: "page numbers are intentionally out of scope"). 문단
-    # 단위가 이 시스템에서 낼 수 있는 최선의 위치 표현이다.
-    anchor: str | None
-    quote: str
-
-
-@dataclass(frozen=True)
-class LiteralSearchResult:
-    phrase: str
-    matches: tuple[LiteralMatch, ...]
-
-
-@dataclass(frozen=True)
-class AttachmentHandle:
-    attachment_id: str
-    mime_type: str
-    size_bytes: int

@@ -85,20 +85,23 @@ def ref_from_attachment(
     if paper_id or record_ref:
         if not paper_id or not record_ref:
             raise ValueError("paperId and recordRef must be supplied together")
-        clean_attachment_id = _handle(attachment_id, fallback="attachment")
-        job_id = _job_id_from_paper_id(paper_id)
-        ref = UserDocModelRef(
-            job_id=job_id,
-            paper_id=paper_id,
-            version=USER_DOCMODEL_VERSION,
+        # 클라이언트가 보낸 식별자는 **재유도한 값과 대조만** 한다. 예전에는 supplied
+        # paperId에서 job_id를 뽑아 recordRef와 자기정합만 확인했는데, 그러면 남의
+        # userdoc uuid를 자기 recordRef와 짝지어 보내는 것을 막지 못한다 — 그 문서를
+        # 읽고(poll) 자기 PDF로 덮어쓰는(enqueue) 경로가 열린다. 신원은 인증된
+        # owner_id에서만 나온다. 업로드 표면이 scope_id=attachment_id로 발급하므로
+        # 재유도도 같은 규약을 쓴다.
+        expected = user_docmodel_ref(
+            owner_id=owner_id,
+            scope_id=attachment_id,
+            attachment_id=attachment_id,
             object_key=object_key,
             module=module,
-            owner_id=owner_id,
-            record_ref=record_ref,
-            attachment_id=clean_attachment_id,
         )
-        _validate_userdoc_ref(ref, validate_object_key=True)
-        return ref
+        if paper_id != expected.paper_id or record_ref != expected.record_ref:
+            raise ValueError("invalid user document identity")
+        _validate_userdoc_ref(expected, validate_object_key=True)
+        return expected
 
     ref = user_docmodel_ref(
         owner_id=owner_id,

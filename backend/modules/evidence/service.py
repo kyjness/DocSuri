@@ -13,20 +13,22 @@ from docsuri_shared._generated.dtos.evidence_schema import (
     EvidenceResult,
 )
 
+from .domain.models import AgentRunContext as LoopRunContext
+from .domain.models import ToolCallRecord
 from .models import (
-    AgentRunContext,
     AttachmentInput,
     EvidenceSession,
     EvidenceTurn,
     TurnAbstainResult,
+    TurnErrorResult,
     TurnPendingResult,
     TurnResult,
     TurnSuccessResult,
     _new_id,
     _utc_now,
 )
-from .orchestrator import EvidenceAgentOrchestrator
 from .repository import EvidenceRepository
+from .runner import EvidenceTurnRunner
 
 logger = logging.getLogger(__name__)
 
@@ -67,11 +69,11 @@ class EvidenceChatService:
         self,
         *,
         repo: EvidenceRepository,
-        orchestrator: EvidenceAgentOrchestrator,
+        runner: EvidenceTurnRunner,
         sqs_enqueue: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self._repo = repo
-        self._orchestrator = orchestrator
+        self._runner = runner
         self._sqs_enqueue = sqs_enqueue
 
     def run_turn(
@@ -92,15 +94,20 @@ class EvidenceChatService:
         경로에서만 의미가 있다 — 비동기 잡은 폴링으로 진행을 본다.
         """
         session = self._load_or_create_session(owner_id, request, session_id)
-        turn = EvidenceTurn(session_id=session.session_id, request=request)
-        ctx = AgentRunContext(
-            session=session,
-            current_turn=turn,
+        turn = EvidenceTurn(
+            session_id=session.session_id,
             owner_id=owner_id,
+            topic=request.topic,
+            # FR-38: 첨부 핸들도 턴에 영속한다 — 원시 파일이 아니라 참조 id다(INV-EV-4).
+            attachments=list(request.attachments or []),
+            request=request,
+        )
+        loop_ctx = build_run_context(
+            self._repo,
+            owner_id=owner_id,
+            session_id=session.session_id,
+            turn_id=turn.turn_id,
             request_id=request_id,
-            budget_signal=budget_signal or {},
-            prior_topics=_prior_topics(self._repo, owner_id, session),
-            attachment_docs=attachment_docs,
         )
 
         if self._sqs_enqueue is not None:
@@ -124,13 +131,49 @@ class EvidenceChatService:
             # 동기 경로: async 분기와 달리 add_turn을 빠뜨려 저장된 턴이 0건이었다 —
             # 응답의 turnId를 이후 세션 이력(list_turns)에서 되찾을 수 없었다
             # (PR #338 리뷰 Blocking #1/FR-38).
-            # on_progress 미지정 시 2-인자 호출 유지 — 기존 테스트 스텁 호환.
-            if on_progress is None:
-                result = self._orchestrator.run(ctx, request)
-            else:
-                result = self._orchestrator.run(ctx, request, on_progress=on_progress)
-            turn.result = result
+            # 턴 행을 **먼저** 저장한다 — 트레이스가 턴을 참조하므로 루프가 도는
+            # 동안 append하려면 부모 행이 있어야 한다.
+            turn.result = TurnPendingResult(job_id='', started_at=_utc_now())
             self._repo.add_turn(turn)
+            if on_progress is not None:
+                # 수락 신호 — 클라이언트가 스트림 단절 시 **재전송 없이** 이 세션으로
+                # 복구할 좌표다. 동기 턴에는 jobId가 없어서, 이 신호가 없으면 단절이
+                # "시작도 못 함"과 구분되지 않아 JSON 폴백이 턴을 이중 실행한다.
+                on_progress(
+                    'accepted',
+                    {'sessionId': session.session_id, 'turnId': turn.turn_id},
+                )
+
+            def _sink(record: Any) -> None:
+                # 진행 표시는 advisory다(NFR-O1) — 실패가 근거형성을 막지 않는다.
+                row = trace_row(record)
+                try:
+                    self._repo.append_trace(owner_id, turn.turn_id, row)
+                except Exception:  # noqa: BLE001
+                    logger.warning('evidence trace append failed', exc_info=True)
+                if on_progress is not None:
+                    on_progress('tool', row)
+
+            try:
+                result = self._runner.run(
+                    loop_ctx,
+                    request,
+                    budget_signal=budget_signal or {},
+                    attachments=attachment_docs,
+                    on_trace=_sink,
+                )
+            except Exception:
+                # 예상 밖 실패에도 턴을 terminal로 남긴다 — 그냥 던지면 SQL 경로는
+                # 트랜잭션 롤백으로 턴 기록이 통째로 사라지고, 인메모리 경로는 pending
+                # 유령 턴이 영원히 남는다(워커 경로의 error 전이와 같은 규칙).
+                # SEC-9: 원인 상세는 로그로만, 사용자에겐 비기술 코드만.
+                logger.exception('evidence sync turn failed unexpectedly')
+                turn.result = TurnErrorResult(error_code='internal_error')
+                self._repo.update_turn_result(owner_id, turn.turn_id, turn.result)
+                self._repo.commit()
+                raise
+            turn.result = result
+            self._repo.update_turn_result(owner_id, turn.turn_id, result)
 
         self._repo.commit()
         return TurnResponse(
@@ -210,8 +253,8 @@ class EvidenceFormationService:
     순환 차단: U12 → shared/ports ← U11(구현). Trace: D5.
     """
 
-    def __init__(self, *, orchestrator: EvidenceAgentOrchestrator) -> None:
-        self._orchestrator = orchestrator
+    def __init__(self, *, runner: EvidenceTurnRunner) -> None:
+        self._runner = runner
 
     async def form_evidence(
         self,
@@ -227,18 +270,17 @@ class EvidenceFormationService:
         owner_id = getattr(ctx, 'owner_id', '')
         request_id = getattr(ctx, 'request_id', '')
 
-        # 임시 세션·턴으로 AgentRunContext 구성 (U12 경로 — 세션 저장 없음)
-        session = EvidenceSession(owner_id=owner_id)
-        turn = EvidenceTurn(session_id=session.session_id, request=request)
-        agent_ctx = AgentRunContext(
-            session=session,
-            current_turn=turn,
+        # U12 경로는 세션을 저장하지 않는다 — 호출자의 잡이 산출물을 소유한다.
+        loop_ctx = LoopRunContext(
             owner_id=owner_id,
+            session_id=f'port:{owner_id or "anon"}',
+            turn_id=_new_id(),
             request_id=request_id,
-            budget_signal=budget_signal,
         )
 
-        result = await asyncio.to_thread(self._orchestrator.run, agent_ctx, request)
+        result = await asyncio.to_thread(
+            lambda: self._runner.run(loop_ctx, request, budget_signal=budget_signal)
+        )
 
         if isinstance(result, TurnSuccessResult):
             return result.outcome
@@ -260,21 +302,75 @@ def _derive_title(topic: str) -> str:
     return stripped[:_TITLE_MAX_LEN - 1] + '…'
 
 
-def _prior_topics(
-    repo: EvidenceRepository, owner_id: str, session: EvidenceSession
-) -> tuple[str, ...]:
-    """세션의 이전 턴 topic들 — 멀티턴 검색 맥락화(PR #338 리뷰 Blocking #2/FR-37).
-    현재 턴은 아직 add_turn 전이라 list_turns에 없다. 새 세션·조회 실패는 ()."""
+# 멀티턴 맥락으로 되짚는 이전 턴 수 — 검색 맥락이지 대화 전체 기억이 아니다.
+_PRIOR_TURNS = 3
+
+
+def build_run_context(
+    repo: EvidenceRepository,
+    *,
+    owner_id: str,
+    session_id: str,
+    turn_id: str,
+    request_id: str = '',
+) -> LoopRunContext:
+    """루프 실행 컨텍스트 조립 — 동기(service)·비동기(worker) **양쪽이 이 하나를 쓴다**.
+
+    두 벌로 두면 갈라진다: 실제로 워커 사본이 prior_topics를 빠뜨려 비동기 턴만
+    멀티턴이 안 되는 상태였다. 맥락 필드가 늘어나면 여기만 고친다.
+
+    prior 맥락은 저장 컬럼에서 읽는다 — `t.request`는 SQL 복원 턴에서 None이라
+    (요청 원문은 영속하지 않는다) 그걸 읽으면 인메모리에서만 동작한다.
+    """
     try:
-        prior = repo.list_turns(owner_id, session.session_id)
+        # +1로 읽고 현재 턴을 걸러낸다 — 동기 경로는 add_turn 전에 조립하지만
+        # 워커 경로는 pending 턴이 이미 저장된 뒤라, 거르지 않으면 현재 질문이
+        # "이전 턴 질문"으로 자기 자신에게 다시 보인다.
+        prior = [
+            t
+            for t in repo.recent_turns(owner_id, session_id, _PRIOR_TURNS + 1)
+            if t.turn_id != turn_id
+        ][-_PRIOR_TURNS:]
     except KeyError:
-        return ()
-    return tuple(
-        t.request.topic for t in prior if t.request is not None and t.request.topic
+        prior = []
+    paper_ids: dict[str, None] = {}
+    for t in prior:
+        for pid in _cited_paper_ids(t.result):
+            paper_ids.setdefault(pid, None)
+    return LoopRunContext(
+        owner_id=owner_id,
+        session_id=session_id,
+        turn_id=turn_id,
+        request_id=request_id,
+        prior_topics=tuple(t.topic for t in prior if t.topic),
+        prior_paper_ids=tuple(paper_ids),
     )
+
+
+def _cited_paper_ids(result: TurnResult | None) -> tuple[str, ...]:
+    """이전 턴이 실제로 인용한 논문 — "그중에서" 류 후속 질문의 좁히기 재료."""
+    if not isinstance(result, TurnSuccessResult):
+        return ()
+    seen: dict[str, None] = {}
+    for item in result.outcome.claims:
+        for ref in (*item.supporting, *item.conflicting):
+            seen.setdefault(ref.paperId, None)
+    return tuple(seen)
 
 
 def _attachment_doc_payloads(attachment_docs: tuple[AttachmentInput, ...]) -> list[dict[str, Any]]:
     from .attachments import attachment_inputs_to_payloads
 
     return attachment_inputs_to_payloads(attachment_docs)
+
+
+def trace_row(record: ToolCallRecord) -> dict[str, Any]:
+    """트레이스 저장·전송 형태 — service와 worker가 공유한다. sanitized 요약만(INV-EV-5)."""
+    return {
+        'seq': record.seq,
+        'tool': record.tool,
+        'argsSummary': record.args_summary,
+        'outcome': record.outcome.value,
+        'resultSummary': record.result_summary,
+        'costUsd': record.cost_usd,
+    }

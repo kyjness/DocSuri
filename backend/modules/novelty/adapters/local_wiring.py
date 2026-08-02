@@ -11,13 +11,15 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+from backend.modules.paper_assets import SqlS3FigureReader
+
 from ..ports.tools import ToolRegistry
 from ..settings import NoveltySettings
 from .corpus import CorpusSearchTool
 from .evidence import FormEvidenceTool
 from .external.datasets import DatasetSearchTool
 from .external.github import GithubSearchTool
-from .figures import SqlS3FigureReader, ViewFigureTool
+from .figures import ViewFigureTool
 from .memory import InMemoryNoveltyStore
 from .store_sql import SqlNoveltyStore
 

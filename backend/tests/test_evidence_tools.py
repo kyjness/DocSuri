@@ -1,99 +1,306 @@
-"""evidence/tools.py — EvidencePaperSearchTool 예외 변환 회귀 테스트.
+"""도구 6종 — 포트 대역 위에서 상태 갱신·거부 안내·게이트 연결을 본다.
 
-배경: real_wiring.py는 OpenSearch 어댑터를 최상위 discovery.* 경로에서 import하는데,
-tools.py는 IndexUnavailable을 backend.modules.discovery.src.discovery.* (중첩 경로)에서
-import하고 있었다. 소스는 동일해도 Python은 두 경로를 별개 모듈로 취급해 두 IndexUnavailable
-클래스가 서로 다른 객체가 되고, tools.py의 `except IndexUnavailable`이 실제로 발생한
-예외와 매칭에 실패해 raw 500으로 새어나갔다(프로덕션에서 OpenSearch 콜드 그래프 로드로
-재현·확인됨). 이 테스트는 real_wiring.py와 동일한 최상위 경로에서 IndexUnavailable을
-raise하는 fake 어댑터로 이 클래스 불일치가 재발하지 않는지 검증한다.
+v1의 같은 이름 파일(고정 파이프라인의 검색·DocModel 도구 테스트)을 대체한다.
 """
 
 from __future__ import annotations
 
-import pytest
-from discovery.ports.search_ports import IndexUnavailable
+from typing import Any
 
-from backend.modules.evidence.tools import (
-    EvidenceDocModelTool,
-    EvidencePaperSearchTool,
-    PaperSearchUnavailable,
+from backend.modules.evidence.adapters.tools import (
+    CorpusSearchTool,
+    ExternalSearchTool,
+    ExtractEvidenceTool,
+    FetchPaperTool,
+    ReadPaperTool,
+)
+from backend.modules.evidence.domain.models import (
+    LoopState,
+    PaperHandle,
+    PaperOrigin,
+    PromotionOutcome,
+)
+from backend.modules.evidence.ports.llm import LlmUnavailable
+from backend.modules.evidence.ports.sources import (
+    PaperCandidate,
+    PromotionResult,
+    SearchUnavailable,
+)
+from backend.modules.evidence.ports.tools import ToolContext
+from backend.tests.evidence_fakes import (
+    TABLE_ROW,
+    doc_model,
 )
 
-
-class _FailingVectorStore:
-    def knn_search(self, *args, **kwargs):
-        raise IndexUnavailable('search after 3 attempt(s)')
+CTX = ToolContext(owner_id="o1", session_id="s1", turn_id="t1")
 
 
-class _FailingLexicalIndex:
-    def bm25_search(self, *args, **kwargs):
-        raise IndexUnavailable('search after 3 attempt(s)')
 
 
-class _NoEmbedding:
-    def embed_query(self, text: str) -> list[float]:
-        raise RuntimeError('embedding backend unavailable')
+
+class FakeSearch:
+    def __init__(self, hits=(), error: Exception | None = None) -> None:
+        self.hits = hits
+        self.error = error
+        self.calls: list[tuple[str, bool]] = []
+
+    def search(self, query: str, *, phrase: bool = False):
+        self.calls.append((query, phrase))
+        if self.error:
+            raise self.error
+        return self.hits
 
 
-def _search_tool() -> EvidencePaperSearchTool:
-    return EvidencePaperSearchTool(
-        embedding=_NoEmbedding(),
-        vector_store=_FailingVectorStore(),
-        lexical_index=_FailingLexicalIndex(),
-        paper_lookup=None,
+class FakeExternal(FakeSearch):
+    def search(self, query: str):  # type: ignore[override]
+        return super().search(query)
+
+
+class FakeDocModels:
+    def __init__(self, doc_model=None) -> None:
+        self.doc_model = doc_model
+
+    def get_doc_model(self, paper_id: str):
+        return self.doc_model
+
+
+class FakePromotion:
+    def __init__(self, result: PromotionResult) -> None:
+        self.result = result
+        self.calls: list[str] = []
+
+    def promote(self, paper_id: str) -> PromotionResult:
+        self.calls.append(paper_id)
+        return self.result
+
+
+class FakeExtraction:
+    def __init__(self, items: list[dict[str, Any]] | None = None, error=None) -> None:
+        self.items = items or []
+        self.error = error
+        self.calls: list[dict] = []
+
+    def extract(self, *, topic: str, focus: str, papers):
+        self.calls.append({"topic": topic, "focus": focus, "papers": papers})
+        if self.error:
+            raise self.error
+        return self.items
+
+
+def _candidate(pid="2107.06xxx") -> PaperCandidate:
+    return PaperCandidate(
+        paper_id=pid,
+        record_ref=f"rec-{pid}",
+        title="AlphaFold2",
+        abstract="We present AlphaFold2.",
     )
 
 
-def test_index_unavailable_from_top_level_discovery_path_is_caught() -> None:
-    """real_wiring.py가 실제로 쓰는 최상위 discovery.ports.search_ports.IndexUnavailable을
-    그대로 raise해도 PaperSearchUnavailable로 정상 변환돼야 한다(raw로 새면 안 됨)."""
-    with pytest.raises(PaperSearchUnavailable):
-        _search_tool().search(topic='self-attention', scope=None, paper_ids=None)
+# --- 검색 -------------------------------------------------------------------
 
 
-def test_index_unavailable_never_escapes_as_itself() -> None:
-    """IndexUnavailable 자체가 그대로 호출자까지 전파되면 안 된다 — 반드시
-    PaperSearchUnavailable로 변환된 채로만 나가야 orchestrator가 abstain으로 잡을 수 있다."""
-    try:
-        _search_tool().search(topic='self-attention', scope=None, paper_ids=None)
-    except IndexUnavailable:
-        pytest.fail('IndexUnavailable leaked raw — tools.py의 except가 매칭에 실패함')
-    except PaperSearchUnavailable:
-        pass
+def test_corpus_search_registers_candidates_without_marking_them_examined():
+    """검색은 '발견'이지 '확인'이 아니다 — 확인 범위 수치가 부풀지 않는다."""
+    state = LoopState(topic="q")
+    tool = CorpusSearchTool(FakeSearch(hits=(_candidate(),)), state)
+
+    result = tool.invoke({"query": "protein"}, CTX)
+
+    assert result.ok
+    assert state.candidates == 1
+    assert state.examined == 0
 
 
-# --- EvidenceDocModelTool: arXiv 버전 배선 회귀 ---------------------------------------------
-#
-# 배경: evidence orchestrator는 versioned arxivId만 들고 get_doc_model(paper_id)를 버전 없이
-# 호출했고, 예전 기본값 version=1 탓에 개정판(v2+) 논문은 S3에 doc-model(v{N}.json)이 있어도
-# 항상 v1을 읽어 perpetual miss → grounded 근거 0 → "문서 카드만 나오고 설명이 없음"
-# (프로덕션 novelty 워커에서 재현·확인). tool이 paper_id의 arXiv 버전을 reader에 그대로
-# 넘기는지 검증한다.
+def test_corpus_search_passes_phrase_mode_through():
+    """정확 문구 검색이 별도 도구가 아니라 인자로 흡수됐다(v1 intent.py 대체)."""
+    state = LoopState(topic="q")
+    port = FakeSearch(hits=())
+    CorpusSearchTool(port, state).invoke({"query": "attention is all", "mode": "phrase"}, CTX)
+
+    assert port.calls == [("attention is all", True)]
 
 
-class _RecordingDocModelReader:
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, int]] = []
+def test_search_failure_tells_the_agent_what_to_do_next():
+    state = LoopState(topic="q")
+    tool = CorpusSearchTool(FakeSearch(error=SearchUnavailable("down")), state)
 
-    def get_doc_model(self, paper_id: str, version: int):
-        self.calls.append((paper_id, version))
-        return None  # miss는 무관 — 넘어간 version만 검증
+    result = tool.invoke({"query": "q"}, CTX)
 
-
-def test_doc_model_tool_uses_arxiv_version_from_paper_id() -> None:
-    reader = _RecordingDocModelReader()
-    EvidenceDocModelTool(doc_model_reader=reader).get_doc_model('2309.15039v4')  # 개정판
-    assert reader.calls == [('2309.15039v4', 4)]  # v1 아님 → 실제 v4를 읽어야 함
+    assert not result.ok
+    assert "반복하지 말고" in (result.error or "")
 
 
-def test_doc_model_tool_bare_id_defaults_to_v1() -> None:
-    reader = _RecordingDocModelReader()
-    EvidenceDocModelTool(doc_model_reader=reader).get_doc_model('2309.15039')
-    assert reader.calls == [('2309.15039', 1)]  # 버전 없는 id → v1 유지
+def test_external_search_marks_origin_so_promotion_takes_the_right_path():
+    state = LoopState(topic="q")
+    ExternalSearchTool(FakeExternal(hits=(_candidate("arxiv:2401.1v2"),)), state).invoke(
+        {"query": "q"}, CTX
+    )
+
+    assert state.discovered["arxiv:2401.1v2"].origin is PaperOrigin.EXTERNAL
 
 
-def test_doc_model_tool_explicit_version_wins() -> None:
-    reader = _RecordingDocModelReader()
-    EvidenceDocModelTool(doc_model_reader=reader).get_doc_model('2309.15039v4', 2)
-    assert reader.calls == [('2309.15039v4', 2)]  # 명시 버전이 우선
+# --- 본문 확보 ---------------------------------------------------------------
+
+
+def test_fetch_paper_reads_docmodel_for_corpus_papers():
+    state = LoopState(topic="q")
+    state.discovered["p1"] = PaperHandle("p1", "r1", PaperOrigin.CORPUS, abstract_text="abs")
+    tool = FetchPaperTool(doc_models=FakeDocModels(doc_model()), promotion=None, state=state)
+
+    result = tool.invoke({"paper_id": "p1"}, CTX)
+
+    assert result.ok
+    assert state.papers["p1"].scope == "fulltext"
+    assert result.content["blockKinds"]["table"] == 1
+
+
+def test_fetch_paper_promotes_external_papers():
+    state = LoopState(topic="q")
+    state.discovered["x1"] = PaperHandle("x1", "external:x1", PaperOrigin.EXTERNAL)
+    promotion = FakePromotion(
+        PromotionResult(outcome=PromotionOutcome.PROMOTED, doc_model=doc_model())
+    )
+    tool = FetchPaperTool(doc_models=FakeDocModels(), promotion=promotion, state=state)
+
+    result = tool.invoke({"paper_id": "x1"}, CTX)
+
+    assert result.ok
+    assert promotion.calls == ["x1"]
+    assert state.papers["x1"].scope == "fulltext"
+
+
+def test_promotion_failure_is_a_normal_result_not_an_error():
+    """실패가 예외면 루프가 깨진다 — 초록 범위로 계속하는 것이 설계다(BLM §4)."""
+    state = LoopState(topic="q")
+    state.discovered["x1"] = PaperHandle(
+        "x1", "external:x1", PaperOrigin.EXTERNAL, abstract_text="a"
+    )
+    tool = FetchPaperTool(
+        doc_models=FakeDocModels(),
+        promotion=FakePromotion(PromotionResult(outcome=PromotionOutcome.LICENSE_BLOCKED)),
+        state=state,
+    )
+
+    result = tool.invoke({"paper_id": "x1"}, CTX)
+
+    assert result.ok
+    assert state.papers["x1"].scope == "abstract"
+    assert "초록 범위" in result.content["note"]
+
+
+def test_fetch_unknown_paper_points_at_the_search_results():
+    state = LoopState(topic="q")
+    tool = FetchPaperTool(doc_models=FakeDocModels(), promotion=None, state=state)
+
+    result = tool.invoke({"paper_id": "nope"}, CTX)
+
+    assert not result.ok
+    assert "corpus_search" in (result.error or "")
+
+
+# --- 본문 읽기 ---------------------------------------------------------------
+
+
+def test_read_paper_exposes_block_ids():
+    """v1은 블록 id를 감춰 모델이 유효한 anchor를 쓸 방법이 없었다."""
+    state = LoopState(topic="q")
+    state.papers["p1"] = PaperHandle("p1", "r1", PaperOrigin.CORPUS, doc_model=doc_model())
+
+    result = ReadPaperTool(state).invoke({"paper_id": "p1"}, CTX)
+
+    ids = [block["id"] for block in result.content["blocks"]]
+    assert "s4.tbl1" in ids
+    assert {block["type"] for block in result.content["blocks"]} == {
+        "paragraph", "table", "figure", "formula",
+    }
+
+
+def test_read_paper_without_full_text_says_how_to_get_it():
+    state = LoopState(topic="q")
+    state.papers["p1"] = PaperHandle("p1", "r1", PaperOrigin.CORPUS, abstract_text="abs")
+
+    result = ReadPaperTool(state).invoke({"paper_id": "p1"}, CTX)
+
+    assert not result.ok
+    assert "fetch_paper" in (result.error or "")
+
+
+def test_read_paper_keyword_filters_blocks():
+    state = LoopState(topic="q")
+    state.papers["p1"] = PaperHandle("p1", "r1", PaperOrigin.CORPUS, doc_model=doc_model())
+
+    result = ReadPaperTool(state).invoke({"paper_id": "p1", "keyword": "CASP"}, CTX)
+
+    assert [b["id"] for b in result.content["blocks"]] == ["s4.tbl1"]
+
+
+# --- 근거 추출 ---------------------------------------------------------------
+
+
+def _raw_item(anchor="s4.tbl1", quote=TABLE_ROW) -> dict:
+    return {
+        "statement": "AlphaFold2 reaches 92.4 GDT",
+        "supporting": [
+            {"paperId": "p1", "anchor": anchor, "quote": quote, "sourceScope": "fulltext"}
+        ],
+        "conflicting": [],
+    }
+
+
+def _state_with_full_text() -> LoopState:
+    state = LoopState(topic="q")
+    state.papers["p1"] = PaperHandle("p1", "r1", PaperOrigin.CORPUS, doc_model=doc_model())
+    return state
+
+
+def test_extract_evidence_accumulates_only_gate_survivors():
+    state = _state_with_full_text()
+    port = FakeExtraction(items=[_raw_item(), _raw_item(quote="fabricated text not in the paper")])
+
+    result = ExtractEvidenceTool(port, state).invoke({"paper_ids": ["p1"]}, CTX)
+
+    assert result.content["accepted"] == 1
+    assert result.content["rejected"] == 2  # 인용 1건 + 그 항목의 supporting 0
+    assert len(state.accumulator.items) == 1
+
+
+def test_extract_evidence_returns_reason_distribution_not_details():
+    """INV-EV-5 — 어떤 인용이 왜 떨어졌는지는 내부에 둔다. 분포와 수리 지시만 준다."""
+    state = _state_with_full_text()
+    port = FakeExtraction(items=[_raw_item(anchor="s9.nope")])
+
+    result = ExtractEvidenceTool(port, state).invoke({"paper_ids": ["p1"]}, CTX)
+
+    assert result.content["rejectedReasons"] == {"anchor_not_found": 1, "no_supporting": 1}
+    assert "read_paper" in result.content["hint"]
+    assert TABLE_ROW not in str(result.content)
+
+
+def test_extract_evidence_marks_papers_as_examined():
+    state = _state_with_full_text()
+    state.discovered["p2"] = PaperHandle("p2", "r2", PaperOrigin.CORPUS, abstract_text="a")
+
+    ExtractEvidenceTool(FakeExtraction(), state).invoke({"paper_ids": ["p1", "p2"]}, CTX)
+
+    assert state.examined == 2
+
+
+def test_extract_evidence_reports_unknown_papers_without_failing():
+    state = _state_with_full_text()
+
+    result = ExtractEvidenceTool(FakeExtraction(), state).invoke(
+        {"paper_ids": ["p1", "ghost"]}, CTX
+    )
+
+    assert result.ok
+    assert result.content["unknownPapers"] == ["ghost"]
+
+
+def test_extraction_llm_failure_is_reported_as_a_tool_failure():
+    state = _state_with_full_text()
+    port = FakeExtraction(error=LlmUnavailable("down"))
+
+    result = ExtractEvidenceTool(port, state).invoke({"paper_ids": ["p1"]}, CTX)
+
+    assert not result.ok
+    assert "근거 추출 모델" in (result.error or "")

@@ -10,21 +10,22 @@ from collections import deque
 from collections.abc import Callable, Iterable
 from typing import Any
 
-from backend.modules.novelty.adapters.figures import _LIST_LIMIT, _SERVED_TYPES
+from backend.modules.novelty.adapters.figures import _LIST_LIMIT
 from backend.modules.novelty.adapters.memory import (
     InMemoryJobQueue,
     InMemoryNoveltyStore,
-)
-from backend.modules.novelty.ports.assets import (
-    AssetStoreUnavailable,
-    FigureAsset,
-    FigureManifest,
 )
 from backend.modules.novelty.ports.llm import (
     LlmDecision,
     LoopObservation,
 )
 from backend.modules.novelty.ports.tools import ToolContext, ToolResult, ToolSpec
+from backend.modules.paper_assets import (
+    _SERVED_TYPES,
+    AssetStoreUnavailable,
+    FigureAsset,
+    FigureManifest,
+)
 
 __all__ = [
     "FakeFigureAssetPort",

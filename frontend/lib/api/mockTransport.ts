@@ -360,14 +360,17 @@ export class MockTransport implements Transport {
   }
 
   private routeAgent(req: TransportRequest, path: string): TransportResponse | null {
-    if (path === '/api/research/jobs' && req.method === 'GET') {
-      return { status: 200, body: { jobs: mockListAgentSessions('evidence').map(researchJob) } };
+    // 목록은 정확 매치여야 한다 — prefix로 두면 아래 세션 상세 조회까지 삼킨다.
+    if (path === '/api/evidence/sessions' && req.method === 'GET') {
+      // v2 SessionOut 배열 — 실 컨트롤러가 봉투 없이 배열을 준다. mock의 일은
+      // 서버를 흉내내는 것이지 클라이언트의 옛 파서를 지켜주는 것이 아니다.
+      return { status: 200, body: mockListAgentSessions('evidence').map(evidenceSession) };
     }
     if (path === '/api/novelty/jobs' && req.method === 'GET') {
       return { status: 200, body: { jobs: mockListAgentSessions('novelty').map(noveltyJob) } };
     }
     // US-EV8(#272) 전체 초기화 — 모듈별 소유 세션 일괄 삭제(멱등 204).
-    if (path === '/api/research/jobs' && req.method === 'DELETE') {
+    if (path === '/api/evidence/sessions' && req.method === 'DELETE') {
       mockResetAgentSessions('evidence');
       return { status: 204, body: null };
     }
@@ -375,7 +378,7 @@ export class MockTransport implements Transport {
       mockResetAgentSessions('novelty');
       return { status: 204, body: null };
     }
-    if (path === '/api/research/attachments' && req.method === 'POST') {
+    if (path === '/api/evidence/attachments' && req.method === 'POST') {
       const qIdx = req.path.indexOf('?');
       const sp = new URLSearchParams(qIdx >= 0 ? req.path.slice(qIdx + 1) : '');
       const attachmentId = sp.get('id') ?? `att-${Date.now()}`;
@@ -394,14 +397,31 @@ export class MockTransport implements Transport {
         },
       };
     }
-    if (path === '/api/research/jobs' && req.method === 'POST') {
-      const body = req.body as { content?: string; attachments?: AgentAttachment[] };
-      const result = mockSendAgentMessage(`agent-evidence-${Date.now()}`, {
-        content: String(body.content ?? ''),
+    if (path === '/api/evidence/turns' && req.method === 'POST') {
+      // v2: 첫 턴과 후속 턴이 같은 엔드포인트 — 서버 계약(TurnCreateRequest)은 topic이고,
+      // 응답은 TurnOut이다(sessionId·turnId·result).
+      const body = req.body as {
+        topic?: string;
+        sessionId?: string;
+        attachments?: AgentAttachment[];
+      };
+      const result = mockSendAgentMessage(body.sessionId || `agent-evidence-${Date.now()}`, {
+        content: String(body.topic ?? ''),
         mode: 'evidence',
         attachments: body.attachments,
       });
-      return { status: 201, body: { jobId: result.session.id, state: 'active' } };
+      const turns = turnsFromMessages(result.session.id, result.messages);
+      const last = turns.at(-1);
+      return {
+        status: 200,
+        body: last ?? {
+          sessionId: result.session.id,
+          turnId: `turn-${Date.now()}`,
+          topic: String(body.topic ?? ''),
+          result: { state: 'error', errorCode: 'internal_error' },
+          createdAt: new Date().toISOString(),
+        },
+      };
     }
     if (path === '/api/novelty/jobs' && req.method === 'POST') {
       const body = req.body as {
@@ -413,33 +433,24 @@ export class MockTransport implements Transport {
       });
       return { status: 201, body: { jobId: result.session.id, state: 'queued' } };
     }
-    const research = path.match(/^\/api\/research\/jobs\/([^/]+)$/);
-    if (research && req.method === 'GET') {
-      const snapshot = mockLoadAgentSession(decodeURIComponent(research[1]));
+    const evidenceSessionMatch = path.match(/^\/api\/evidence\/sessions\/([^/]+)$/);
+    if (evidenceSessionMatch && req.method === 'GET') {
+      const snapshot = mockLoadAgentSession(decodeURIComponent(evidenceSessionMatch[1]));
       return snapshot
         ? {
             status: 200,
+            // v2 SessionDetailOut{turns} — 저장된 메시지 쌍을 턴으로 접는다.
             body: {
-              job: researchJob(snapshot.session),
-              messages: snapshot.messages.map(backendMessage),
+              ...evidenceSession(snapshot.session),
+              turns: turnsFromMessages(snapshot.session.id, snapshot.messages),
             },
           }
         : { status: 404, body: null };
     }
-    if (research && req.method === 'DELETE') {
-      return mockDeleteAgentSession(decodeURIComponent(research[1]))
+    if (evidenceSessionMatch && req.method === 'DELETE') {
+      return mockDeleteAgentSession(decodeURIComponent(evidenceSessionMatch[1]))
         ? { status: 204, body: null }
         : { status: 404, body: null };
-    }
-    const researchMessage = path.match(/^\/api\/research\/jobs\/([^/]+)\/messages$/);
-    if (researchMessage && req.method === 'POST') {
-      const body = req.body as { content?: string; attachments?: AgentAttachment[] };
-      const result = mockSendAgentMessage(decodeURIComponent(researchMessage[1]), {
-        content: String(body.content ?? ''),
-        mode: 'evidence',
-        attachments: body.attachments,
-      });
-      return { status: 201, body: backendMessage(result.messages.at(-1)!) };
     }
     const novelty = path.match(/^\/api\/novelty\/jobs\/([^/]+)$/);
     if (novelty && req.method === 'GET') {
@@ -558,14 +569,68 @@ export class MockTransport implements Transport {
   }
 }
 
-function researchJob(session: AgentSessionSummary) {
+function evidenceSession(session: AgentSessionSummary) {
+  // v2 SessionOut — 세션에는 잡 상태가 없다.
   return {
-    jobId: session.id,
+    id: session.id,
     title: session.title,
-    state: session.state === 'completed' || session.state === 'failed' ? session.state : 'active',
-    updatedAt: session.updatedAt,
     createdAt: session.updatedAt,
+    updatedAt: session.updatedAt,
   };
+}
+
+/**
+ * 저장된 메시지 열 → v2 TurnOut 열. 사용자 메시지가 턴을 열고, 뒤따르는 agent
+ * 메시지가 그 턴의 결과가 된다. JSON이면 EvidenceResult로, `[abstain]`이면 기권으로,
+ * 평문이면 answer로 접는다(실 서버의 answer 필드에 대응).
+ */
+function turnsFromMessages(sessionId: string, messages: AgentMessage[]) {
+  const turns: Array<{
+    sessionId: string;
+    turnId: string;
+    topic: string;
+    result: Record<string, unknown>;
+    createdAt: string;
+  }> = [];
+  let current: (typeof turns)[number] | null = null;
+  let pendingAnswer: string | null = null;
+
+  for (const message of messages) {
+    if (message.role === 'user') {
+      current = {
+        sessionId,
+        turnId: `turn-${message.id}`,
+        topic: message.content,
+        result: { state: 'pending' },
+        createdAt: message.createdAt,
+      };
+      turns.push(current);
+      pendingAnswer = null;
+      continue;
+    }
+    if (!current) continue;
+    const content = message.content.trim();
+    if (content.startsWith('[abstain]')) {
+      current.result = { state: 'abstain', abstainReason: content.slice(9).trim() };
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(content) as Record<string, unknown>;
+      if (parsed && parsed.state === 'ok') {
+        current.result = pendingAnswer && !parsed.answer ? { ...parsed, answer: pendingAnswer } : parsed;
+        pendingAnswer = null;
+        continue;
+      }
+    } catch {
+      // 평문 — 아래에서 answer로 처리
+    }
+    // 평문 agent 메시지: 결과가 아직 없으면 answer-only ok로, JSON이 뒤따르면 병합된다.
+    pendingAnswer = content;
+    if ((current.result as { state?: string }).state === 'pending') {
+      current.result = { state: 'ok', claims: [], coverage: { paperCount: 0 }, answer: content };
+    }
+  }
+  return turns;
 }
 
 function noveltyJob(session: AgentSessionSummary) {

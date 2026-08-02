@@ -29,9 +29,9 @@ from typing import Any
 
 from docsuri_shared._generated.dtos.evidence_schema import EvidenceRequest, EvidenceScope
 
-from .models import AgentRunContext, EvidenceTurn, TurnErrorResult, TurnPendingResult
-from .orchestrator import EvidenceAgentOrchestrator
+from .models import EvidenceTurn, TurnErrorResult, TurnPendingResult
 from .repository import EvidenceRepository
+from .service import build_run_context, trace_row
 
 log = logging.getLogger('docsuri.evidence.worker')
 
@@ -117,17 +117,17 @@ def process_sqs_payload(
     repo: EvidenceRepository,
     body: str | bytes | dict[str, Any],
     *,
-    orchestrator: EvidenceAgentOrchestrator,
+    runner: Any,
     user_docmodel: Any = None,
 ) -> None:
     fields = parse_sqs_payload(body)
-    process_job(repo, orchestrator=orchestrator, user_docmodel=user_docmodel, **fields)
+    process_job(repo, runner=runner, user_docmodel=user_docmodel, **fields)
 
 
 def process_job(
     repo: EvidenceRepository,
     *,
-    orchestrator: EvidenceAgentOrchestrator,
+    runner: Any,
     owner_id: str,
     session_id: str,
     turn_id: str,
@@ -139,9 +139,9 @@ def process_job(
     attachment_docs: list[dict[str, Any]] | None = None,
     user_docmodel: Any = None,
 ) -> None:
-    # 세션 조회 (INV-EV-1: 소유권 확인)
+    # 세션 조회 (INV-EV-1: 소유권 확인) — 존재·소유 확인이 목적이라 반환값은 안 쓴다.
     try:
-        session = repo.get_session(owner_id, session_id)
+        repo.get_session(owner_id, session_id)
     except KeyError:
         log.warning('evidence job %s: session %s not found or wrong owner', job_id, session_id)
         # turn을 pending으로 방치하면 GET /jobs/{job_id}가 영원히 pending을 반환한다
@@ -158,9 +158,12 @@ def process_job(
             )
         return
 
-    # turn 조회 — 이미 완료 상태면 스킵
-    turns = repo.list_turns(owner_id, session_id)
-    turn: EvidenceTurn | None = next((t for t in turns if t.turn_id == turn_id), None)
+    # turn 조회 — 이미 완료 상태면 스킵. PK 조회 하나면 되는 일에 세션 전체를
+    # 역직렬화하지 않는다(긴 세션에서 잡마다 선형 비용이 붙는다).
+    try:
+        turn: EvidenceTurn | None = repo.get_turn(owner_id, turn_id)
+    except KeyError:
+        turn = None
     if turn is None:
         log.warning('evidence job %s: turn %s not found', job_id, turn_id)
         return
@@ -186,25 +189,31 @@ def process_job(
         paperIds=paper_ids or [],
         attachments=attachments or [],
     )
-    ctx = AgentRunContext(
-        session=session,
-        current_turn=turn,
+    loop_ctx = build_run_context(
+        repo,
         owner_id=owner_id,
+        session_id=session_id,
+        turn_id=turn_id,
         request_id=job_id,
-        budget_signal={},
-        attachment_docs=_attachment_inputs(
-            owner_id=owner_id,
-            scope_id=job_id,
-            attachment_docs=attachment_docs or [],
-            user_docmodel=user_docmodel,
-        ),
+    )
+    docs = _attachment_inputs(
+        owner_id=owner_id,
+        scope_id=job_id,
+        attachment_docs=attachment_docs or [],
+        user_docmodel=user_docmodel,
     )
 
     try:
-        result = orchestrator.run(ctx, request)
+        result = runner.run(
+            loop_ctx,
+            request,
+            budget_signal={},
+            attachments=docs,
+            on_trace=lambda record: _append_trace(repo, owner_id, turn_id, record),
+        )
     except Exception as exc:
-        log.exception('evidence job %s: orchestrator failed', job_id)
-        # 검색/LLM 실패는 orchestrator.run() 내부에서 이미 abstain으로 잡아낸다 — 여기까지
+        log.exception('evidence job %s: turn runner failed', job_id)
+        # 검색/LLM 실패는 루프 안에서 이미 abstain으로 잡아낸다 — 여기까지
         # 올라오는 건 분류되지 않은 예상 밖 실패다. 그런데도 항상 'llm_unavailable'로
         # 못박아 놓으면 원인이 LLM이 아닌 경우에도 사용자에게 오도된 코드가 노출된다
         # (PR #338 리뷰 Medium #11). SEC-9상 원본 예외 메시지는 노출 불가하므로, 비기술
@@ -220,7 +229,7 @@ def process_job(
 def run_worker(
     *,
     repo_factory: Callable[[], EvidenceRepository],
-    orchestrator: EvidenceAgentOrchestrator,
+    runner: Any,
     receive: Callable[[], Iterable[_Message]],
     ack: Callable[[_Message], None],
     should_stop: Callable[[], bool],
@@ -233,7 +242,7 @@ def run_worker(
                 process_sqs_payload(
                     repo,
                     message.body,
-                    orchestrator=orchestrator,
+                    runner=runner,
                     user_docmodel=user_docmodel,
                 )
                 commit = getattr(repo, 'commit', None)
@@ -281,7 +290,7 @@ def main(argv: list[str] | None = None) -> int:
     from backend.config import Settings
     from backend.db import make_engine, make_session_factory
 
-    from .real_wiring import build_evidence_orchestrator
+    from .real_wiring import build_evidence_runner
     from .repository import SqlEvidenceRepository
     from .settings import EvidenceSettings
 
@@ -294,8 +303,7 @@ def main(argv: list[str] | None = None) -> int:
     # ponytail: 프로세스별 근사 카운터 — 공유 예산 권위가 생기면 교체.
     from docsuri_ops.cost_guard import CostGuardCircuitBreaker
 
-    bundle = build_evidence_orchestrator(ev_settings, cost_guard=CostGuardCircuitBreaker())
-    orchestrator = bundle.orchestrator
+    runner = build_evidence_runner(ev_settings, cost_guard=CostGuardCircuitBreaker())
 
     settings = Settings.from_env()
     engine = make_engine(settings.database_url)
@@ -331,7 +339,7 @@ def main(argv: list[str] | None = None) -> int:
     log.info('evidence agent worker started; polling queue')
     run_worker(
         repo_factory=repo_factory,
-        orchestrator=orchestrator,
+        runner=runner,
         receive=receive,
         ack=ack,
         should_stop=_shutdown.is_set,
@@ -364,5 +372,20 @@ def _build_user_docmodel():
     return build_default_user_docmodel_coordinator()
 
 
+def _append_trace(repo, owner_id: str, turn_id: str, record) -> None:
+    """트레이스 append — 실패해도 잡을 깨지 않는다(NFR-O1, advisory).
+
+    row 형태는 service.trace_row가 소유한다 — 여기서 손으로 다시 만들면
+    필드가 갈라진다(실제로 갈라졌었다)."""
+    try:
+        repo.append_trace(owner_id, turn_id, trace_row(record))
+    except Exception:  # noqa: BLE001
+        log.warning('evidence job trace append failed (turn=%s)', turn_id, exc_info=True)
+
+
+# 엔트리포인트는 반드시 파일 끝이어야 한다 — `python -m`으로 실행하면 이 지점에서
+# main()이 (무한 폴링으로) 돌기 시작하므로, 이 아래에 정의된 이름은 영원히 바인딩되지
+# 않는다. 실제로 _append_trace가 이 블록 뒤에 있어 배포 경로에서만 NameError가 났고,
+# advisory except가 삼켜 트레이스가 0건이 되는데 잡은 성공으로 보였다.
 if __name__ == '__main__':
     raise SystemExit(main(sys.argv[1:]))

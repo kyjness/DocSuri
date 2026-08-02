@@ -74,7 +74,7 @@ describe('streamAgentTurn (US-EV2 sync SSE)', () => {
 
     const events: AgentTimelineEvent[] = [];
     const outcome = await streamAgentTurn({
-      path: '/api/research/jobs',
+      path: '/api/evidence/turns',
       body: { content: 'q' },
       onEvents: (incoming) => {
         events.push(...incoming);
@@ -100,7 +100,7 @@ describe('streamAgentTurn (US-EV2 sync SSE)', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    const outcome = await streamAgentTurn({ path: '/api/research/jobs', body: {} });
+    const outcome = await streamAgentTurn({ path: '/api/evidence/turns', body: {} });
 
     expect(outcome).toEqual({
       kind: 'json',
@@ -116,9 +116,26 @@ describe('streamAgentTurn (US-EV2 sync SSE)', () => {
       vi.fn(async () => sseResponse([progressFrame('e1', 'started', { jobId: 'job-7' })])),
     );
 
-    const outcome = await streamAgentTurn({ path: '/api/research/jobs', body: {} });
+    const outcome = await streamAgentTurn({ path: '/api/evidence/turns', body: {} });
 
-    expect(outcome).toEqual({ kind: 'failed', jobId: 'job-7' });
+    expect(outcome).toEqual({ kind: 'failed', jobId: 'job-7', started: true });
+  });
+
+  it('reports failed with the accepted sessionId when a sync turn (no jobId) breaks', async () => {
+    // 동기 턴에는 jobId가 없다 — 서버의 'accepted' 신호가 복구 좌표(sessionId)를 준다.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        sseResponse([
+          progressFrame('e1', 'started'),
+          progressFrame('e2', 'accepted', { sessionId: 'sess-5', turnId: 't1' }),
+        ]),
+      ),
+    );
+
+    const outcome = await streamAgentTurn({ path: '/api/evidence/turns', body: {} });
+
+    expect(outcome).toEqual({ kind: 'failed', sessionId: 'sess-5', started: true });
   });
 
   it('maps an error frame to failed (fail-soft, no crash)', async () => {
@@ -132,9 +149,9 @@ describe('streamAgentTurn (US-EV2 sync SSE)', () => {
       ),
     );
 
-    const outcome = await streamAgentTurn({ path: '/api/research/jobs', body: {} });
+    const outcome = await streamAgentTurn({ path: '/api/evidence/turns', body: {} });
 
-    expect(outcome).toEqual({ kind: 'failed', jobId: 'job-3' });
+    expect(outcome).toEqual({ kind: 'failed', jobId: 'job-3', started: true });
   });
 
   it('parses split frames across chunk boundaries', async () => {
@@ -163,23 +180,38 @@ describe('ApiClient.sendAgentMessage streaming integration', () => {
       streamsAgentTurns: true,
       async send(req: TransportRequest): Promise<TransportResponse> {
         t.calls.push(req);
-        if (req.method === 'GET' && req.path === '/api/research/jobs/job-9') {
+        if (req.method === 'GET' && req.path === '/api/evidence/sessions/job-9') {
+          // v2 SessionDetailOut — 실 컨트롤러 형태를 그대로 흉내낸다.
           return {
             status: 200,
             body: {
-              job: { jobId: 'job-9', title: 'q', state: 'completed', updatedAt: '2026-07-10' },
-              messages: [
+              id: 'job-9',
+              title: 'q',
+              createdAt: '2026-07-10',
+              updatedAt: '2026-07-10',
+              turns: [
                 {
-                  messageId: 'm1',
-                  role: 'assistant',
-                  content: JSON.stringify({ state: 'ok', claims: [] }),
+                  sessionId: 'job-9',
+                  turnId: 't1',
+                  topic: 'q',
+                  result: { state: 'ok', claims: [], coverage: { paperCount: 0 } },
                   createdAt: '2026-07-10',
                 },
               ],
             },
           };
         }
-        return { status: 200, body: { jobId: 'job-9', state: 'completed' } };
+        // v2 TurnOut — 턴 생성·잡 폴링 응답.
+        return {
+          status: 200,
+          body: {
+            sessionId: 'job-9',
+            turnId: 't1',
+            topic: 'q',
+            result: { state: 'ok', claims: [], coverage: { paperCount: 0 } },
+            createdAt: '2026-07-10',
+          },
+        };
       },
     };
     return t;
@@ -192,7 +224,7 @@ describe('ApiClient.sendAgentMessage streaming integration', () => {
         sseResponse([
           progressFrame('e1', 'started', { jobId: 'job-9' }),
           progressFrame('e2', 'validating', { claimCount: 1 }),
-          frame('result', { jobId: 'job-9', state: 'completed' }),
+          frame('result', { sessionId: 'job-9', turnId: 't1', result: { state: 'ok', claims: [], coverage: { paperCount: 0 } } }),
         ]),
       ),
     );
@@ -230,7 +262,7 @@ describe('ApiClient.sendAgentMessage streaming integration', () => {
     });
 
     expect(result.session.id).toBe('evidence:job-9');
-    expect(t.calls.some((req) => req.method === 'POST' && req.path === '/api/research/jobs')).toBe(
+    expect(t.calls.some((req) => req.method === 'POST' && req.path === '/api/evidence/turns')).toBe(
       true,
     );
   });
@@ -250,6 +282,45 @@ describe('ApiClient.sendAgentMessage streaming integration', () => {
 
     expect(result.session.id).toBe('evidence:job-9');
     // 백엔드는 턴을 계속 완결하므로 재전송하지 않는다(비용 이중 지출 금지).
+    expect(t.calls.filter((req) => req.method === 'POST')).toHaveLength(0);
+  });
+
+  it('recovers a broken sync turn via the accepted sessionId without resending', async () => {
+    // 동기 턴(jobId 없음)이 중간에 끊겨도, accepted가 준 sessionId로 스냅샷 복구한다.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        sseResponse([
+          progressFrame('e1', 'started'),
+          progressFrame('e2', 'accepted', { sessionId: 'job-9', turnId: 't1' }),
+        ]),
+      ),
+    );
+    const t = snapshotTransport();
+    const client = new ApiClient(t, { timeoutMs: 1000, retryBackoffMs: 1 });
+
+    const result = await client.sendAgentMessage('agent-evidence-local', {
+      content: 'q',
+      mode: 'evidence',
+    });
+
+    expect(result.session.id).toBe('evidence:job-9');
+    expect(t.calls.filter((req) => req.method === 'POST')).toHaveLength(0);
+  });
+
+  it('surfaces an error instead of resending when the stream breaks without coordinates', async () => {
+    // 서버가 턴을 돌리기 시작했는데(started) 좌표(jobId·sessionId)를 못 받은 창 —
+    // JSON 폴백으로 재전송하면 같은 턴이 두 번 실행되므로 오류로 멈춘다.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => sseResponse([progressFrame('e1', 'started')])),
+    );
+    const t = snapshotTransport();
+    const client = new ApiClient(t, { timeoutMs: 1000, retryBackoffMs: 1 });
+
+    await expect(
+      client.sendAgentMessage('agent-evidence-local', { content: 'q', mode: 'evidence' }),
+    ).rejects.toThrow('연결이 끊겼습니다');
     expect(t.calls.filter((req) => req.method === 'POST')).toHaveLength(0);
   });
 });

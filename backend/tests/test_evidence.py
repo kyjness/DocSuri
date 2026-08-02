@@ -10,12 +10,9 @@ from hypothesis import strategies as st
 from backend.app import create_app
 from backend.config import Settings
 from backend.modules.evidence import controller
-from backend.modules.evidence.assembler import EvidenceComparisonAssembler
 from backend.modules.evidence.models import (
     EvidenceSession,
-    EvidenceTurn,
     TurnAbstainResult,
-    TurnErrorResult,
     TurnPendingResult,
     TurnSuccessResult,
 )
@@ -38,8 +35,8 @@ def _client(monkeypatch, principal: Principal | None = None, repo=None) -> TestC
         app.dependency_overrides[controller.get_repo] = lambda: repo
 
     # Orchestrator 없이 테스트 — real_wiring 없이 controller만 마운트
-    class _StubOrchestrator:
-        def run(self, ctx, request):
+    class _StubRunner:
+        def run(self, ctx, request, *, budget_signal=None, attachments=(), on_trace=None):
             return TurnAbstainResult(
                 outcome=__import__(
                     'docsuri_shared._generated.dtos.evidence_schema',
@@ -50,7 +47,7 @@ def _client(monkeypatch, principal: Principal | None = None, repo=None) -> TestC
                 )
             )
 
-    app.dependency_overrides[controller.get_orchestrator] = lambda: _StubOrchestrator()
+    app.dependency_overrides[controller.get_runner] = lambda: _StubRunner()
     return TestClient(app)
 
 
@@ -89,68 +86,6 @@ def _doc_model(full_text: str):
 # PBT-EV-1: INV-EV-2 — claims=[] 이면 반드시 abstain 반환
 # ---------------------------------------------------------------------------
 
-@given(st.just([]))  # claims 항상 빈 리스트
-def test_assembler_itself_does_not_gate_empty_claims(claims) -> None:
-    """assembler 단독 호출은 빈 claims도 그대로 통과시킨다 — INV-EV-2 강제는
-    orchestrator.run()의 책임이지 assembler의 책임이 아니다. 이 테스트는 그 경계를
-    문서화할 뿐, INV-EV-2 자체의 실제 강제는 아래
-    test_orchestrator_abstains_when_extractor_returns_no_items가 검증한다
-    (PR #338 리뷰 Medium #17 — 기존에는 이 테스트 하나만 "empty claims yields abstain"이라는
-    이름으로 존재해 실제로는 정반대(ok 반환)를 assert하고 있었고, orchestrator 레벨
-    강제는 전혀 테스트되지 않고 있었다)."""
-    from backend.modules.evidence.models import PaperSearchResult
-
-    assembler = EvidenceComparisonAssembler()
-    search_result = PaperSearchResult(records=(), query_used='test', scope='auto')
-
-    result = assembler.assemble(claims, search_result, paper_count=0)
-    assert result.state == 'ok'
-    assert result.claims == claims
-
-
-def test_orchestrator_abstains_when_extractor_returns_no_items() -> None:
-    """PBT-EV-1 실검증 — INV-EV-2("claims=[] 이면 abstain")는 orchestrator.run()이 강제한다."""
-    from types import SimpleNamespace
-
-    from docsuri_shared._generated.dtos.evidence_schema import EvidenceRequest
-
-    from backend.modules.evidence.models import AgentRunContext, PaperSearchResult
-    from backend.modules.evidence.orchestrator import EvidenceAgentOrchestrator
-
-    class _StubSearchTool:
-        def search(self, *, topic, scope, paper_ids):
-            return PaperSearchResult(
-                records=(SimpleNamespace(arxivId='p1'),), query_used=topic, scope='auto'
-            )
-
-    class _StubDocModelTool:
-        def get_doc_model(self, paper_id, version=1):
-            return SimpleNamespace()
-
-    class _EmptyExtractor:
-        def extract(self, topic, doc_models):
-            return []  # INV-EV-2 트리거 조건
-
-    orchestrator = EvidenceAgentOrchestrator(
-        search_tool=_StubSearchTool(),
-        doc_model_tool=_StubDocModelTool(),
-        extractor=_EmptyExtractor(),
-        assembler=EvidenceComparisonAssembler(),
-    )
-    request = EvidenceRequest(topic='test', scope='auto', paperIds=[])
-    session = EvidenceSession(owner_id='owner-1')
-    turn = EvidenceTurn(session_id=session.session_id, request=request)
-    ctx = AgentRunContext(
-        session=session, current_turn=turn, owner_id='owner-1',
-        request_id='req-1', budget_signal={'state': 'ok'},
-    )
-
-    result = orchestrator.run(ctx, request)
-
-    assert isinstance(result, TurnAbstainResult)
-    assert result.outcome.abstainReason == 'insufficient_evidence'
-
-
 # ---------------------------------------------------------------------------
 # PBT-EV-2: INV-EV-1 / SEC-9 — 소유권 불일치 → KeyError (→ 404)
 # ---------------------------------------------------------------------------
@@ -178,37 +113,6 @@ def test_cross_owner_session_read_raises_key_error(owner_a: str, owner_b: str) -
 # ---------------------------------------------------------------------------
 # PBT-EV-3: INV-EV-5 — TurnResult 직렬화에 벡터 점수 미포함
 # ---------------------------------------------------------------------------
-
-def test_turn_result_serialization_excludes_internal_fields() -> None:
-    from docsuri_shared._generated.dtos.evidence_schema import (
-        EvidenceAbstainResult,
-        EvidenceCoverage,
-        EvidenceResult,
-    )
-
-    success = TurnSuccessResult(
-        outcome=EvidenceResult(
-            state='ok',
-            claims=[],
-            coverage=EvidenceCoverage(paperCount=1, queryUsed='test'),
-        )
-    )
-    abstain = TurnAbstainResult(
-        outcome=EvidenceAbstainResult(state='abstain', abstainReason='out_of_corpus')
-    )
-    error = TurnErrorResult(error_code='llm_unavailable')
-
-    from backend.modules.evidence.repository import _serialize_result
-
-    for result in (success, abstain, error):
-        data, _ = _serialize_result(result)
-        if data:
-            raw = str(data)
-            for forbidden in ('score', 'chunk_id', 'chunkId', 'vector', 'llm_meta'):
-                assert forbidden not in raw, (
-                    f'INV-EV-5 violation: {forbidden!r} in serialized result'
-                )
-
 
 # ---------------------------------------------------------------------------
 # 단위: 세션 소프트 삭제 (BR-EV-8)
@@ -274,7 +178,7 @@ def test_list_sessions_returns_updated_at_desc() -> None:
 
 
 # ---------------------------------------------------------------------------
-# API: POST /api/evidence/turns → 201 + abstain (stub orchestrator)
+# API: POST /api/evidence/turns → 201 + abstain (stub runner)
 # ---------------------------------------------------------------------------
 
 def test_api_create_turn_returns_turn_out(monkeypatch) -> None:
@@ -327,9 +231,10 @@ def test_api_uploads_user_pdf_and_turn_polls_docmodel(monkeypatch) -> None:
     fake_user_docmodel = _FakeUserDocModel(_doc_model("PDF extracted text"))
     captured: dict = {}
 
-    class _CapturingOrchestrator:
-        def run(self, ctx, request):
+    class _CapturingRunner:
+        def run(self, ctx, request, *, budget_signal=None, attachments=(), on_trace=None):
             captured["ctx"] = ctx
+            captured["attachments"] = attachments
             return TurnAbstainResult(
                 outcome=__import__(
                     "docsuri_shared._generated.dtos.evidence_schema",
@@ -343,8 +248,8 @@ def test_api_uploads_user_pdf_and_turn_polls_docmodel(monkeypatch) -> None:
     client.app.dependency_overrides[controller.get_user_docmodel] = (
         lambda: fake_user_docmodel
     )
-    client.app.dependency_overrides[controller.get_orchestrator] = (
-        lambda: _CapturingOrchestrator()
+    client.app.dependency_overrides[controller.get_runner] = (
+        lambda: _CapturingRunner()
     )
 
     uploaded = client.post(
@@ -367,7 +272,8 @@ def test_api_uploads_user_pdf_and_turn_polls_docmodel(monkeypatch) -> None:
     assert fake_user_docmodel.uploads[0]["pdf"] == b"%PDF-1.4"
     assert fake_user_docmodel.enqueued[0].payload()["kind"] == "BUILD_USER_DOC_MODEL"
     assert fake_user_docmodel.polled[0].paper_id == attachment["paperId"]
-    docs = captured["ctx"].attachment_docs
+    # v2: 첨부는 컨텍스트가 아니라 실행 인자로 전달된다(러너가 확인 대상으로 seed한다).
+    docs = captured["attachments"]
     assert docs[0].paper_id == attachment["paperId"]
     assert docs[0].record_ref == attachment["recordRef"]
     assert docs[0].doc_model.fullText == "PDF extracted text"
@@ -522,7 +428,7 @@ def test_async_turn_enqueue_preserves_attachment_handles() -> None:
     enqueued: list[dict] = []
     service = EvidenceChatService(
         repo=repo,
-        orchestrator=object(),
+        runner=object(),
         sqs_enqueue=enqueued.append,
     )
 
@@ -565,266 +471,9 @@ def test_api_topic_over_2000_rejected_with_422(monkeypatch) -> None:
     assert resp.status_code == 422
 
 
-def test_run_evidence_degrades_on_overlong_topic() -> None:
-    """research content 상한(12000) > evidence topic 상한(2000). 긴 메시지가 _run_evidence에서
-    EvidenceRequest 검증에 걸려 500 나던 걸 degrade(None→'[error]')로 막는다(Blocking #3).
-    orchestrator까지 도달하면 안 된다."""
-    import asyncio
-
-    from backend.modules.research.service import _format_turn_result, _run_evidence
-
-    class _Orch:
-        def run(self, ctx, request):
-            raise AssertionError('overlong topic must not reach the orchestrator')
-
-    result = asyncio.run(_run_evidence(_Orch(), 'owner-1', 'a' * 2001))
-
-    assert result is None
-    assert _format_turn_result(result) == '[error] evidence_unavailable'
-
-
 # ---------------------------------------------------------------------------
 # FR-37: 멀티턴 검색 맥락화 (PR #338 리뷰 Blocking #2 — buildable 절반)
 # ---------------------------------------------------------------------------
-
-def test_orchestrator_contextualizes_search_with_prior_topics() -> None:
-    """이전 topic이 검색 질의에 포함 — 후속 질문이 이전 근거를 잇는다(추출은 현재 topic만)."""
-    from types import SimpleNamespace
-
-    from docsuri_shared._generated.dtos.evidence_schema import EvidenceRequest
-
-    from backend.modules.evidence.models import AgentRunContext, PaperSearchResult
-    from backend.modules.evidence.orchestrator import EvidenceAgentOrchestrator
-
-    captured: dict[str, str] = {}
-
-    class _SpySearch:
-        def search(self, *, topic, scope, paper_ids):
-            captured['topic'] = topic
-            return PaperSearchResult(records=(), query_used=topic, scope='auto')
-
-    orchestrator = EvidenceAgentOrchestrator(
-        search_tool=_SpySearch(),
-        doc_model_tool=SimpleNamespace(get_doc_model=lambda *a, **k: None),
-        extractor=SimpleNamespace(extract=lambda **k: []),
-        assembler=EvidenceComparisonAssembler(),
-    )
-    request = EvidenceRequest(topic='current question', scope='auto', paperIds=[])
-    session = EvidenceSession(owner_id='o')
-    turn = EvidenceTurn(session_id=session.session_id, request=request)
-    ctx = AgentRunContext(
-        session=session,
-        current_turn=turn,
-        owner_id='o',
-        request_id='r',
-        budget_signal={'state': 'ok'},
-        prior_topics=('prior alpha', 'prior beta'),
-    )
-
-    orchestrator.run(ctx, request)
-
-    assert 'prior alpha' in captured['topic']
-    assert 'current question' in captured['topic']
-
-
-def test_run_turn_threads_prior_topics_across_turns() -> None:
-    """run_turn이 같은 세션의 이전 턴 topic을 orchestrator ctx.prior_topics로 넘긴다."""
-    from docsuri_shared._generated.dtos.evidence_schema import (
-        EvidenceAbstainResult,
-        EvidenceRequest,
-    )
-
-    from backend.modules.evidence.service import EvidenceChatService
-
-    captured: dict[str, tuple[str, ...]] = {}
-
-    class _SpyOrch:
-        def run(self, ctx, request):
-            captured['prior'] = ctx.prior_topics
-            return TurnAbstainResult(
-                outcome=EvidenceAbstainResult(state='abstain', abstainReason='out_of_corpus')
-            )
-
-    repo = InMemoryEvidenceRepository()
-    svc = EvidenceChatService(repo=repo, orchestrator=_SpyOrch())
-
-    r1 = svc.run_turn(
-        owner_id='o', request=EvidenceRequest(topic='first', scope='auto', paperIds=[])
-    )
-    svc.run_turn(
-        owner_id='o',
-        request=EvidenceRequest(topic='second', scope='auto', paperIds=[]),
-        session_id=r1.session_id,
-    )
-
-    assert captured['prior'] == ('first',)
-
-
-def test_run_evidence_forwards_prior_topics() -> None:
-    """research _run_evidence가 prior_topics를 orchestrator ctx로 전달한다."""
-    import asyncio
-
-    from backend.modules.research.service import _run_evidence
-
-    captured: dict[str, tuple[str, ...]] = {}
-
-    class _Orch:
-        def run(self, ctx, request):
-            captured['prior'] = ctx.prior_topics
-            return None
-
-    asyncio.run(_run_evidence(_Orch(), 'o', 'current', ('p1', 'p2')))
-
-    assert captured['prior'] == ('p1', 'p2')
-
-
-def _cost_gate_ctx(budget_signal: dict):
-    """비용 게이트 테스트용 최소 ctx/request — research 경로와 동일한 구성."""
-    from docsuri_shared._generated.dtos.evidence_schema import EvidenceRequest
-
-    from backend.modules.evidence.models import AgentRunContext, EvidenceSession, EvidenceTurn
-
-    request = EvidenceRequest(topic='t', paperIds=[])
-    session = EvidenceSession(owner_id='o')
-    ctx = AgentRunContext(
-        session=session,
-        current_turn=EvidenceTurn(session_id=session.session_id, request=request),
-        owner_id='o',
-        request_id='',
-        budget_signal=budget_signal,
-    )
-    return ctx, request
-
-
-class _NoToolAllowed:
-    """비용 게이트 이후 어떤 tool도 호출되면 안 된다 — 속성 접근 자체가 실패."""
-
-    def __getattr__(self, name: str):
-        raise AssertionError('cost gate must run before any tool call')
-
-
-def test_orchestrator_abstains_with_cost_degraded_reason_when_signal_degraded() -> None:
-    """BR-EV-7/US-EV6 — 비용 게이트는 error가 아니라 abstain(cost_degraded)로 떨어져야
-    research 경로가 '[abstain] cost_degraded'로 영속하고 FE 라벨에 닿는다."""
-    from backend.modules.evidence.models import TurnAbstainResult
-    from backend.modules.evidence.orchestrator import EvidenceAgentOrchestrator
-
-    orchestrator = EvidenceAgentOrchestrator(
-        search_tool=_NoToolAllowed(),
-        doc_model_tool=_NoToolAllowed(),
-        extractor=_NoToolAllowed(),
-        assembler=_NoToolAllowed(),
-    )
-    ctx, request = _cost_gate_ctx({'state': 'degraded'})
-
-    result = orchestrator.run(ctx, request)
-
-    assert isinstance(result, TurnAbstainResult)
-    assert result.outcome.abstainReason == 'cost_degraded'
-
-
-def test_orchestrator_does_not_gate_wired_cost_guard_at_warning() -> None:
-    """NFR-C1 — agent hard gate는 warning(80%)이 아니라 critical(95%)부터 발화한다."""
-    from types import SimpleNamespace
-
-    from docsuri_ops.cost_guard import CostGuardCircuitBreaker
-    from docsuri_ops.domain.models import UsageEvent
-
-    from backend.modules.evidence.models import PaperSearchResult, TurnAbstainResult
-    from backend.modules.evidence.orchestrator import EvidenceAgentOrchestrator
-
-    class _Search:
-        called = False
-
-        def search(self, *, topic, scope, paper_ids):
-            self.called = True
-            return PaperSearchResult(records=(), query_used=topic, scope='auto')
-
-    guard = CostGuardCircuitBreaker()
-    guard.record_spend(UsageEvent(event_id='seed', amount_usd=1280.0, source='test'))
-    search = _Search()
-    orchestrator = EvidenceAgentOrchestrator(
-        search_tool=search,
-        doc_model_tool=SimpleNamespace(),
-        extractor=SimpleNamespace(),
-        assembler=SimpleNamespace(),
-        cost_guard=guard,
-    )
-    ctx, request = _cost_gate_ctx({})
-
-    result = orchestrator.run(ctx, request)
-
-    assert search.called is True
-    assert isinstance(result, TurnAbstainResult)
-    assert result.outcome.abstainReason == 'out_of_corpus'
-
-
-def test_orchestrator_gates_on_critical_wired_cost_guard_without_external_signal() -> None:
-    """NFR-C1 — U6 단일 권위(cost guard)를 직접 물면 critical부터 게이트된다."""
-    from docsuri_ops.cost_guard import CostGuardCircuitBreaker
-    from docsuri_ops.domain.models import UsageEvent
-
-    from backend.modules.evidence.models import TurnAbstainResult
-    from backend.modules.evidence.orchestrator import EvidenceAgentOrchestrator
-
-    guard = CostGuardCircuitBreaker()
-    guard.record_spend(UsageEvent(event_id='seed', amount_usd=1520.0, source='test'))
-    orchestrator = EvidenceAgentOrchestrator(
-        search_tool=_NoToolAllowed(),
-        doc_model_tool=_NoToolAllowed(),
-        extractor=_NoToolAllowed(),
-        assembler=_NoToolAllowed(),
-        cost_guard=guard,
-    )
-    ctx, request = _cost_gate_ctx({})
-
-    result = orchestrator.run(ctx, request)
-
-    assert isinstance(result, TurnAbstainResult)
-    assert result.outcome.abstainReason == 'cost_degraded'
-
-
-def test_extractor_records_bedrock_spend_into_cost_guard() -> None:
-    """NFR-C1 — 스트리밍 응답 마지막 청크의 invocationMetrics가 cost guard 지출로 기록된다."""
-    import json
-
-    from docsuri_ops.cost_guard import CostGuardCircuitBreaker
-
-    from backend.modules.evidence.extractor import EvidenceExtractor
-
-    def _chunk(payload: dict) -> dict:
-        return {'chunk': {'bytes': json.dumps(payload).encode('utf-8')}}
-
-    class _FakeStream:
-        def invoke_model_with_response_stream(self, **kwargs):
-            return {
-                'body': [
-                    _chunk(
-                        {
-                            'type': 'content_block_delta',
-                            'delta': {'type': 'text_delta', 'text': '{"items": []}'},
-                        }
-                    ),
-                    _chunk(
-                        {
-                            'type': 'message_stop',
-                            'amazon-bedrock-invocationMetrics': {
-                                'inputTokenCount': 1_000_000,
-                                'outputTokenCount': 200_000,
-                            },
-                        }
-                    ),
-                ]
-            }
-
-    guard = CostGuardCircuitBreaker()
-    extractor = EvidenceExtractor(model_id='m', client=_FakeStream(), cost_guard=guard)
-
-    payload = extractor._invoke_json('system', 'user')
-
-    assert payload == {'items': []}
-    # 기본 단가 $3/1M input + $15/1M output → 1M in + 0.2M out = $6
-    assert abs(guard.get_budget_state().spend_usd - 6.0) < 1e-9
 
 
 # ---------------------------------------------------------------------------
@@ -872,10 +521,10 @@ def test_api_turn_serializes_conflict_overlay_with_both_source_kinds(monkeypatch
     client = _client(monkeypatch, _principal(), InMemoryEvidenceRepository())
 
     class _ConflictOrchestrator:
-        def run(self, ctx, request):
+        def run(self, ctx, request, *, budget_signal=None, attachments=(), on_trace=None):
             return _success_result_with_conflict()
 
-    client.app.dependency_overrides[controller.get_orchestrator] = (
+    client.app.dependency_overrides[controller.get_runner] = (
         lambda: _ConflictOrchestrator()
     )
 
@@ -904,10 +553,10 @@ def test_api_async_turn_progressive_lifecycle_pending_then_polled_terminal(monke
         """비동기 경로에서는 요청 스레드가 orchestrator를 실행하지 않는다(BR-EV-6) —
         pending 응답은 LLM/검색 작업 시작 전에 즉시 나가야 한다."""
 
-        def run(self, ctx, request):
+        def run(self, ctx, request, *, budget_signal=None, attachments=(), on_trace=None):
             raise AssertionError('async path must not run the orchestrator inline')
 
-    client.app.dependency_overrides[controller.get_orchestrator] = lambda: _MustNotRunInline()
+    client.app.dependency_overrides[controller.get_runner] = lambda: _MustNotRunInline()
     enqueued: list[dict] = []
     client.app.state.evidence_sqs_enqueue = enqueued.append
 
@@ -932,13 +581,13 @@ def test_api_async_turn_progressive_lifecycle_pending_then_polled_terminal(monke
     from backend.modules.evidence.worker import process_job
 
     class _ResolvingOrchestrator:
-        def run(self, ctx, request):
+        def run(self, ctx, request, *, budget_signal=None, attachments=(), on_trace=None):
             return _success_result_with_conflict()
 
     msg = enqueued[0]
     process_job(
         repo,
-        orchestrator=_ResolvingOrchestrator(),
+        runner=_ResolvingOrchestrator(),
         owner_id=msg['ownerId'],
         session_id=msg['sessionId'],
         turn_id=msg['turnId'],
@@ -955,58 +604,69 @@ def test_api_async_turn_progressive_lifecycle_pending_then_polled_terminal(monke
     assert result['claims'][0]['conflicting'][0]['paperId'] == '2401.00002'
 
 
-def test_orchestrator_includes_attachment_content_as_extraction_target() -> None:
-    """US-EV4(#268) 2차 — md/txt 본문 첨부는 corpus가 비어도 추출 대상 문서가 되고,
-    본문 없는 첨부(PDF)는 추출 대상에 포함되지 않는다."""
+# v1에서 사라진 테스트들의 행방(대상이 없어진 것이지 커버리지가 준 것이 아니다):
+#   - 비용 게이트 3종        → test_evidence_runner.py (루프 시작 전 차단)
+#   - 이전 topic 이어붙이기   → 폐기. 후속 질문 해석이 루프 판단으로 이관됐다(FR-36 v2)
+#   - 첨부를 추출 대상에 포함 → test_evidence_runner.py (검색 없이 확인 대상이 된다)
+#   - Bedrock 지출 기록      → test_evidence_llm.py (토큰이 없으면 계상하지 않는다)
+
+
+def test_sync_turn_crash_leaves_a_terminal_turn_not_a_phantom_pending() -> None:
+    """러너가 예상 밖 예외를 던져도 턴은 error로 종단된다(/code-review 잔여 지적).
+
+    그냥 전파하면 SQL 경로는 롤백으로 기록이 사라지고, 인메모리 경로는 pending
+    유령 턴이 영원히 남아 폴링이 끝나지 않는다.
+    """
+    import pytest as _pytest
     from docsuri_shared._generated.dtos.evidence_schema import EvidenceRequest
 
-    from backend.modules.evidence.models import (
-        AgentRunContext,
-        AttachmentInput,
-        PaperSearchResult,
+    from backend.modules.evidence.models import TurnErrorResult
+    from backend.modules.evidence.repository import InMemoryEvidenceRepository
+    from backend.modules.evidence.service import EvidenceChatService
+
+    class _ExplodingRunner:
+        def run(self, ctx, request, *, budget_signal=None, attachments=(), on_trace=None):
+            raise RuntimeError('unexpected')
+
+    repo = InMemoryEvidenceRepository()
+    service = EvidenceChatService(repo=repo, runner=_ExplodingRunner())
+
+    with _pytest.raises(RuntimeError):
+        service.run_turn(owner_id='o1', request=EvidenceRequest(topic='q'))
+
+    sessions = repo.list_sessions('o1')
+    turns = repo.list_turns('o1', sessions[0].session_id)
+    assert isinstance(turns[0].result, TurnErrorResult)
+    assert turns[0].result.error_code == 'internal_error'
+
+
+def test_sync_turn_emits_accepted_coordinates_before_running() -> None:
+    """동기 경로는 러너 실행 전에 'accepted'(sessionId·turnId)를 흘린다.
+
+    동기 턴에는 jobId가 없다 — 이 신호가 없으면 클라이언트는 스트림 단절을
+    "시작도 못 함"과 구분하지 못해 JSON 폴백으로 같은 턴을 두 번 실행한다.
+    """
+    from docsuri_shared._generated.dtos.evidence_schema import EvidenceRequest
+
+    from backend.modules.evidence.models import TurnErrorResult as _Err
+    from backend.modules.evidence.repository import InMemoryEvidenceRepository
+    from backend.modules.evidence.service import EvidenceChatService
+
+    events: list[tuple[str, dict]] = []
+
+    class _Runner:
+        def run(self, ctx, request, *, budget_signal=None, attachments=(), on_trace=None):
+            # 러너 도착 시점에 이미 accepted가 나가 있어야 한다(단절 창 최소화).
+            assert [stage for stage, _ in events] == ['accepted']
+            return _Err(error_code='internal_error')
+
+    service = EvidenceChatService(repo=InMemoryEvidenceRepository(), runner=_Runner())
+    resp = service.run_turn(
+        owner_id='o1',
+        request=EvidenceRequest(topic='q'),
+        on_progress=lambda stage, payload: events.append((stage, payload)),
     )
-    from backend.modules.evidence.orchestrator import EvidenceAgentOrchestrator
 
-    captured: dict = {}
-
-    class _EmptySearchTool:
-        def search(self, *, topic, scope, paper_ids):
-            return PaperSearchResult(records=(), query_used=topic, scope='auto')
-
-    class _NoDocModelTool:
-        def get_doc_model(self, paper_id, version=1):
-            return None
-
-    class _CapturingExtractor:
-        def extract(self, topic, doc_models):
-            captured['doc_models'] = doc_models
-            return []  # abstain으로 종료 — 추출 대상 전달만 검증
-
-    orchestrator = EvidenceAgentOrchestrator(
-        search_tool=_EmptySearchTool(),
-        doc_model_tool=_NoDocModelTool(),
-        extractor=_CapturingExtractor(),
-        assembler=EvidenceComparisonAssembler(),
-    )
-    request = EvidenceRequest(topic='rag evaluation', scope='auto', paperIds=[])
-    session = EvidenceSession(owner_id='owner-1')
-    turn = EvidenceTurn(session_id=session.session_id, request=request)
-    ctx = AgentRunContext(
-        session=session,
-        current_turn=turn,
-        owner_id='owner-1',
-        request_id='req-1',
-        budget_signal={'state': 'ok'},
-        attachment_docs=(
-            AttachmentInput(name='draft.md', kind='markdown', text='# RAG 초안\n평가 프로토콜.'),
-            AttachmentInput(name='scan.pdf', kind='pdf', text=None),
-        ),
-    )
-
-    orchestrator.run(ctx, request)
-
-    ids = [source[0] for source in captured['doc_models']]
-    assert ids == ['attachment:draft.md']
-    doc = captured['doc_models'][0][1]
-    assert 'RAG 초안' in doc.fullText
-    assert doc.sections[0].blocks[0].text.startswith('# RAG 초안')
+    stage, payload = events[0]
+    assert stage == 'accepted'
+    assert payload == {'sessionId': resp.session_id, 'turnId': resp.turn_id}

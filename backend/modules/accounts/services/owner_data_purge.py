@@ -31,8 +31,12 @@ class OwnerScopedTable:
 
 # Child tables first, then parent/summary rows.
 OWNER_SCOPED_TABLES: tuple[OwnerScopedTable, ...] = (
-    OwnerScopedTable("research_messages"),
-    OwnerScopedTable("research_jobs"),
+    # evidence v2 — 세 테이블 모두 owner_id를 갖는다. FK CASCADE(trace→turns→sessions)가
+    # 있지만 명시 삭제가 안전하다: 스키마 조회로 존재하는 테이블만 지우는 구조라
+    # 이름이 틀리면 조용히 건너뛰기 때문이다(research_* 잔재가 정확히 그랬다).
+    OwnerScopedTable("evidence_trace"),
+    OwnerScopedTable("evidence_turns"),
+    OwnerScopedTable("evidence_sessions"),
     OwnerScopedTable("novelty_messages"),
     OwnerScopedTable("novelty_artifacts"),
     OwnerScopedTable("novelty_notion_exports"),

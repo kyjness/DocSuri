@@ -41,6 +41,29 @@ class S3DocModelReader:
         self._bucket = bucket
         self._prefix = prefix.strip("/")
 
+    def latest_version(self, paper_id: str) -> int | None:
+        """저장된 최고 버전 — 프리픽스 목록 1회로 답한다.
+
+        색인은 bare id를 나르는데 스토어는 ``.../v{N}.json``으로 키잉한다. 이 간극을
+        메우는 곳은 레이아웃을 소유한 여기여야 한다 — 소비자가 버전을 추측하면
+        v1→vN 순차 GET(전형적으로 수 회~십수 회 왕복)이 되고, 레이아웃이 바뀌면
+        소비자 쪽 추측이 조용히 깨진다.
+        """
+        from botocore.exceptions import ClientError
+
+        prefix = f"{self._prefix}/{bare_paper_id(paper_id)}/v"
+        try:
+            page = self._s3.list_objects_v2(Bucket=self._bucket, Prefix=prefix)
+        except ClientError:
+            return None
+        best: int | None = None
+        for item in page.get("Contents") or []:
+            tail = str(item.get("Key", "")).rsplit("/v", 1)[-1]
+            number = tail.removesuffix(".json")
+            if number.isdigit():
+                best = max(best or 0, int(number))
+        return best
+
     def get_doc_model(self, paper_id: str, version: int) -> DocModel | None:
         from botocore.exceptions import ClientError
 

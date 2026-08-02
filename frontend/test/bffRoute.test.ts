@@ -103,7 +103,7 @@ describe('BFF proxy (app/bff/[...path]/route)', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const { POST } = await import('@/app/bff/[...path]/route');
-    const req = new NextRequest('http://localhost/bff/api/research/jobs', {
+    const req = new NextRequest('http://localhost/bff/api/evidence/turns', {
       method: 'POST',
       body: JSON.stringify({ content: '근거 질문' }),
       headers: {
@@ -113,12 +113,12 @@ describe('BFF proxy (app/bff/[...path]/route)', () => {
       },
     });
     const res = await POST(req, {
-      params: Promise.resolve({ path: ['api', 'research', 'jobs'] }),
+      params: Promise.resolve({ path: ['api', 'evidence', 'turns'] }),
     });
     const [url, init] = fetchMock.mock.calls[0];
     const headers = init?.headers as Headers;
 
-    expect(String(url)).toBe('https://api.example.test/api/research/jobs');
+    expect(String(url)).toBe('https://api.example.test/api/evidence/turns');
     expect(init?.method).toBe('POST');
     expect(headers.get('accept')).toBe('text/event-stream');
     expect(headers.get('content-type')).toBe('application/json');
@@ -130,13 +130,13 @@ describe('BFF proxy (app/bff/[...path]/route)', () => {
 
   it('falls through to the JSON proxy for turn SSE requests when no gateway is set (mock mode)', async () => {
     const { POST } = await import('@/app/bff/[...path]/route');
-    const req = new NextRequest('http://localhost/bff/api/research/jobs', {
+    const req = new NextRequest('http://localhost/bff/api/evidence/turns', {
       method: 'POST',
       body: JSON.stringify({ content: 'mock turn' }),
       headers: { accept: 'text/event-stream', 'content-type': 'application/json' },
     });
     const res = await POST(req, {
-      params: Promise.resolve({ path: ['api', 'research', 'jobs'] }),
+      params: Promise.resolve({ path: ['api', 'evidence', 'turns'] }),
     });
 
     // 스텁 MockTransport는 204를 돌려준다 — 핵심은 SSE 홉이 아니라 일반 proxy로 갔다는 것.

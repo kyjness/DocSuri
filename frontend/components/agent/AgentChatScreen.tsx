@@ -28,7 +28,12 @@ import {
   parseAgentContent,
   type EvidenceResultPayload,
   type EvidenceSourceRef,
+  anchorTypeLabel,
+  canJumpToSource,
+  examinedRangeMessage,
+  sourceScopeBadge,
 } from '@/lib/agentChat/evidenceResult';
+import type { EvidenceCoverage } from '@/lib/agentChat/evidenceResult';
 import {
   SIMILAR_WORK_COLUMNS,
   confidenceLabel,
@@ -67,7 +72,7 @@ const STREAM_CHAR_MS = 8;
 const SSE_FETCH_TIMEOUT_MS = 5000;
 const RESEARCH_MODE_ENABLED =
   !process.env.NEXT_PUBLIC_DOCSURI_REAL_API ||
-  process.env.NEXT_PUBLIC_DOCSURI_RESEARCH_AGENT_ENABLED === '1';
+  process.env.NEXT_PUBLIC_DOCSURI_EVIDENCE_AGENT_ENABLED === '1';
 
 export function AgentChatScreen() {
   const api = useMemo(() => getApiClient(), []);
@@ -649,6 +654,11 @@ function useStreamingText(content: string, enabled: boolean): string {
 
 function EvidenceResultView({ result }: { result: EvidenceResultPayload }) {
   if (result.claims.length === 0) {
+    // answer만 있는 응답(대화체 요약)은 그 문장을 그대로 보여준다 — 근거 카드가
+    // 없다고 기권 문구로 덮으면 실제 답변이 사라진다.
+    if (result.answer) {
+      return <p className={styles.evidenceIntro}>{result.answer}</p>;
+    }
     return <p className={styles.abstainNotice}>제시할 수 있는 근거를 찾지 못했습니다.</p>;
   }
   return (
@@ -683,7 +693,45 @@ function EvidenceResultView({ result }: { result: EvidenceResultPayload }) {
         {' '}참고 논문 {result.coverage.paperCount}편
         {result.coverage.queryUsed ? ` · 검색어: ${result.coverage.queryUsed}` : ''}
       </p>
+      <ExaminedRange coverage={result.coverage} />
     </div>
+  );
+}
+
+function ExaminedRange({ coverage }: { coverage: EvidenceCoverage }) {
+  // 확인 범위(FR-37 v2) — 탐색이 완결되지 않았을 때만 나온다.
+  const message = examinedRangeMessage(coverage);
+  if (!message) return null;
+  return (
+    <p className={styles.evidenceExamined} data-testid="evidence-examined-range">
+      {message}
+    </p>
+  );
+}
+
+function SourceRefChips({ refKey: ref }: { refKey: EvidenceSourceRef }) {
+  const typeLabel = anchorTypeLabel(ref);
+  const badge = sourceScopeBadge(ref);
+  return (
+    <>
+      {/* 앵커 없는 출처(초록 범위)는 이동 대상이 없어 칩도 렌더하지 않는다. */}
+      {canJumpToSource(ref) ? (
+        <span className={styles.evidenceAnchor}>
+          {typeLabel ? `${typeLabel} · ` : '§ '}
+          {ref.anchor}
+        </span>
+      ) : null}
+      {/* 근거 범위 배지 — fulltext에는 붙이지 않는다(대다수라 소음이 된다). */}
+      {badge ? (
+        <span
+          className={styles.evidenceScopeBadge}
+          title={badge.hint}
+          data-testid="evidence-scope-badge"
+        >
+          {badge.label}
+        </span>
+      ) : null}
+    </>
   );
 }
 
@@ -696,8 +744,9 @@ function EvidenceRefList({ refs }: { refs: EvidenceSourceRef[] }) {
           <span className={styles.evidenceSource}>
             <span className={styles.evidenceSourceLabel}>출처 논문</span>
             <span className={styles.evidencePaperId}>{ref.paperId}</span>
-            {/* 인용 앵커(#339). recordRef는 내부 식별자라 노출하지 않는다. */}
-            {ref.anchor ? <span className={styles.evidenceAnchor}>§ {ref.anchor}</span> : null}
+            {/* 인용 앵커(#339). recordRef는 내부 식별자라 노출하지 않는다.
+                앵커가 없는 출처(초록 범위)는 이동 대상이 없어 칩도 렌더하지 않는다. */}
+            <SourceRefChips refKey={ref} />
           </span>
           {ref.quote ? (
             <>
