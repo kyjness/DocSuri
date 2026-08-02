@@ -168,6 +168,18 @@ def test_worker_polls_user_pdf_attachment_docmodel() -> None:
             self.refs.append(ref)
             return SimpleNamespace(fullText='PDF worker text', sections=[])
 
+    # 식별자는 업로드 표면이 발급한 그대로여야 한다 — 임의 uuid는 거부된다
+    # (서버가 인증된 owner_id에서 재유도해 대조한다).
+    from backend.modules.user_docmodel import user_docmodel_ref
+
+    issued = user_docmodel_ref(
+        owner_id='owner-1',
+        scope_id='att-1',
+        attachment_id='att-1',
+        object_key='uploads/evidence/owner-1/att-1/att-1/scan.pdf',
+        module='evidence',
+    )
+
     process_job(
         repo,
         runner=runner,
@@ -181,19 +193,16 @@ def test_worker_polls_user_pdf_attachment_docmodel() -> None:
                 'id': 'att-1',
                 'name': 'scan.pdf',
                 'kind': 'pdf',
-                'objectKey': 'uploads/evidence/owner-1/att-1/att-1/scan.pdf',
-                'paperId': 'userdoc:11111111-1111-4111-8111-111111111111',
-                'recordRef': (
-                    'upload:owner-1:'
-                    'userdoc-11111111-1111-4111-8111-111111111111:att-1'
-                ),
+                'objectKey': issued.object_key,
+                'paperId': issued.paper_id,
+                'recordRef': issued.record_ref,
             },
         ],
         user_docmodel=_FakeUserDocModel(),
     )
 
     docs = runner.attachments[0]
-    assert docs[0].paper_id == 'userdoc:11111111-1111-4111-8111-111111111111'
+    assert docs[0].paper_id == issued.paper_id
     assert docs[0].doc_model.fullText == 'PDF worker text'
 
 
