@@ -20,6 +20,7 @@ from .models import (
     EvidenceSession,
     EvidenceTurn,
     TurnAbstainResult,
+    TurnErrorResult,
     TurnPendingResult,
     TurnResult,
     TurnSuccessResult,
@@ -145,13 +146,24 @@ class EvidenceChatService:
                 if on_progress is not None:
                     on_progress('tool', row)
 
-            result = self._runner.run(
-                loop_ctx,
-                request,
-                budget_signal=budget_signal or {},
-                attachments=attachment_docs,
-                on_trace=_sink,
-            )
+            try:
+                result = self._runner.run(
+                    loop_ctx,
+                    request,
+                    budget_signal=budget_signal or {},
+                    attachments=attachment_docs,
+                    on_trace=_sink,
+                )
+            except Exception:
+                # 예상 밖 실패에도 턴을 terminal로 남긴다 — 그냥 던지면 SQL 경로는
+                # 트랜잭션 롤백으로 턴 기록이 통째로 사라지고, 인메모리 경로는 pending
+                # 유령 턴이 영원히 남는다(워커 경로의 error 전이와 같은 규칙).
+                # SEC-9: 원인 상세는 로그로만, 사용자에겐 비기술 코드만.
+                logger.exception('evidence sync turn failed unexpectedly')
+                turn.result = TurnErrorResult(error_code='internal_error')
+                self._repo.update_turn_result(owner_id, turn.turn_id, turn.result)
+                self._repo.commit()
+                raise
             turn.result = result
             self._repo.update_turn_result(owner_id, turn.turn_id, result)
 

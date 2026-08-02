@@ -609,3 +609,32 @@ def test_api_async_turn_progressive_lifecycle_pending_then_polled_terminal(monke
 #   - 이전 topic 이어붙이기   → 폐기. 후속 질문 해석이 루프 판단으로 이관됐다(FR-36 v2)
 #   - 첨부를 추출 대상에 포함 → test_evidence_runner.py (검색 없이 확인 대상이 된다)
 #   - Bedrock 지출 기록      → test_evidence_llm.py (토큰이 없으면 계상하지 않는다)
+
+
+def test_sync_turn_crash_leaves_a_terminal_turn_not_a_phantom_pending() -> None:
+    """러너가 예상 밖 예외를 던져도 턴은 error로 종단된다(/code-review 잔여 지적).
+
+    그냥 전파하면 SQL 경로는 롤백으로 기록이 사라지고, 인메모리 경로는 pending
+    유령 턴이 영원히 남아 폴링이 끝나지 않는다.
+    """
+    import pytest as _pytest
+    from docsuri_shared._generated.dtos.evidence_schema import EvidenceRequest
+
+    from backend.modules.evidence.models import TurnErrorResult
+    from backend.modules.evidence.repository import InMemoryEvidenceRepository
+    from backend.modules.evidence.service import EvidenceChatService
+
+    class _ExplodingRunner:
+        def run(self, ctx, request, *, budget_signal=None, attachments=(), on_trace=None):
+            raise RuntimeError('unexpected')
+
+    repo = InMemoryEvidenceRepository()
+    service = EvidenceChatService(repo=repo, runner=_ExplodingRunner())
+
+    with _pytest.raises(RuntimeError):
+        service.run_turn(owner_id='o1', request=EvidenceRequest(topic='q'))
+
+    sessions = repo.list_sessions('o1')
+    turns = repo.list_turns('o1', sessions[0].session_id)
+    assert isinstance(turns[0].result, TurnErrorResult)
+    assert turns[0].result.error_code == 'internal_error'
