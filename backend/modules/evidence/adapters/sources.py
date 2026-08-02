@@ -22,6 +22,7 @@ from backend.modules.paper_assets import parse_record_ref
 from ..ports.sources import PaperCandidate, SearchUnavailable
 
 __all__ = [
+    "ArxivApiClient",
     "ArxivExternalSearch",
     "CorpusSearch",
     "DocModelReader",
@@ -139,15 +140,21 @@ class DocModelReader:
         self._reader = reader
 
     def get_doc_model(self, paper_id: str) -> Any | None:
-        version = _explicit_version(paper_id)
+        # 외부 후보는 `arxiv:2304.10557v1` 형태로 들어온다. 하류의 bare_paper_id는
+        # 꼬리 vN만 떼므로 접두어가 그대로 S3 키에 박혀 영구 미스가 된다 — 접두어와
+        # 버전을 **여기서 한 번** 벗긴다(parse_record_ref가 정확히 그 파서다).
+        parsed = parse_record_ref(paper_id)
+        if parsed is None:
+            return None
+        bare, version = parsed
         if version is None:
-            version = self._latest(paper_id)
+            version = self._latest(bare)
         if version is None:
             return None
         try:
-            return self._reader.get_doc_model(paper_id, version)
+            return self._reader.get_doc_model(bare, version)
         except Exception:  # noqa: BLE001 — 논문 1편 실패로 턴을 깨지 않는다
-            log.warning("docmodel read failed for %s v%s", paper_id, version, exc_info=True)
+            log.warning("docmodel read failed for %s v%s", bare, version, exc_info=True)
             return None
 
     def _latest(self, paper_id: str) -> int | None:
@@ -160,15 +167,6 @@ class DocModelReader:
             log.warning("docmodel version lookup failed for %s", paper_id, exc_info=True)
             return None
 
-
-def _explicit_version(paper_id: str) -> int | None:
-    """id가 버전을 **명시**했을 때만 그 값. bare id는 None(=최신 해석 대상).
-
-    `parse_record_ref`가 정확히 version-or-None 의미라 재사용한다 — paper_version의
-    기본값 센티널로 같은 것을 흉내내던 우회를 없앤다.
-    """
-    parsed = parse_record_ref(paper_id)
-    return parsed[1] if parsed else None
 
 
 class ArxivExternalSearch:
@@ -211,6 +209,64 @@ class ArxivExternalSearch:
         return tuple(out)
 
 
+class ArxivApiClient:
+    """arXiv Atom API 클라이언트 — `ArxivExternalSearch`가 기대하는 `search()` 구현.
+
+    u1의 `ArxivAdapter`를 재사용하지 않는 이유: 그 어댑터는 수확·전문 취득용이라
+    검색 메서드가 없고, `docsuri_ingestion`은 backend 의존성도 아니다(별도 uv 프로젝트).
+    여기 필요한 것은 "질의 → 제목·초록 목록" 하나뿐이라 표준 라이브러리로 닫는다.
+
+    **허용 호스트는 상수다**(BR-EV-20 내부망 접근 방지) — 모델이 쓴 값은 query뿐이고
+    URL 조립에 관여할 수 없다.
+    """
+
+    _ENDPOINT = "https://export.arxiv.org/api/query"
+    _TIMEOUT_S = 20.0
+    _NS = {"atom": "http://www.w3.org/2005/Atom"}
+
+    def search(self, *, query: str, max_results: int = 10) -> list[dict[str, str]]:
+        import urllib.parse
+        import urllib.request
+        from xml.etree import ElementTree
+
+        params = urllib.parse.urlencode(
+            {
+                "search_query": f"all:{query}",
+                "start": 0,
+                "max_results": max(1, min(int(max_results), 25)),
+            }
+        )
+        request = urllib.request.Request(  # noqa: S310 — 고정 상수 엔드포인트
+            f"{self._ENDPOINT}?{params}",
+            headers={"User-Agent": "docsuri-evidence/1.0"},
+        )
+        with urllib.request.urlopen(request, timeout=self._TIMEOUT_S) as resp:  # noqa: S310
+            # 외부 XML은 신뢰 경계 밖이다 — 표준 파서는 외부 엔티티를 해석하지 않지만
+            # 크기 상한은 여기서 건다.
+            payload = resp.read(2_000_000)
+        root = ElementTree.fromstring(payload)
+
+        out: list[dict[str, str]] = []
+        for entry in root.findall("atom:entry", self._NS):
+            raw_id = (entry.findtext("atom:id", default="", namespaces=self._NS) or "").strip()
+            # 'http://arxiv.org/abs/2304.10557v1' → '2304.10557v1'
+            arxiv_id = raw_id.rsplit("/abs/", 1)[-1] if "/abs/" in raw_id else raw_id
+            if not arxiv_id:
+                continue
+            out.append(
+                {
+                    "arxiv_id": arxiv_id,
+                    "title": (
+                        entry.findtext("atom:title", default="", namespaces=self._NS) or ""
+                    ).strip(),
+                    "summary": (
+                        entry.findtext("atom:summary", default="", namespaces=self._NS) or ""
+                    ).strip(),
+                }
+            )
+        return out
+
+
 def _attr(obj: Any, *names: str) -> Any:
     for name in names:
         value = getattr(obj, name, None)
@@ -228,8 +284,10 @@ def _candidate_from_record(record: Any) -> PaperCandidate | None:
     paper_id = str(paper_id)
     return PaperCandidate(
         paper_id=paper_id,
-        # 색인의 recordRef는 bare id 기준이다 — 실재성 핸들이므로 색인 형태를 따른다.
-        record_ref=str(_attr(record, "recordRef", "chunkId") or bare_paper_id(paper_id)),
+        # recordRef = bare 논문 id. chunkId 폴백은 금지다 — 내부 청크 식별자가
+        # 모델·API 응답으로 새고(INV-EV-5), view_figure의 record_ref 파서가
+        # '1706.03762#4'를 논문 id로 읽어 자산 조회가 전량 미스가 된다.
+        record_ref=bare_paper_id(paper_id),
         title=str(_attr(record, "title") or paper_id),
         abstract=str(_attr(record, "abstract") or ""),
     )

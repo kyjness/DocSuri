@@ -303,7 +303,14 @@ def build_run_context(
     (요청 원문은 영속하지 않는다) 그걸 읽으면 인메모리에서만 동작한다.
     """
     try:
-        prior = repo.recent_turns(owner_id, session_id, _PRIOR_TURNS)
+        # +1로 읽고 현재 턴을 걸러낸다 — 동기 경로는 add_turn 전에 조립하지만
+        # 워커 경로는 pending 턴이 이미 저장된 뒤라, 거르지 않으면 현재 질문이
+        # "이전 턴 질문"으로 자기 자신에게 다시 보인다.
+        prior = [
+            t
+            for t in repo.recent_turns(owner_id, session_id, _PRIOR_TURNS + 1)
+            if t.turn_id != turn_id
+        ][-_PRIOR_TURNS:]
     except KeyError:
         prior = []
     paper_ids: dict[str, None] = {}

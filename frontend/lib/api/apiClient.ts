@@ -358,7 +358,7 @@ function attachmentKind(value: unknown, contentType?: string, name?: string): Ag
 function toEvidenceTurnBody(req: AgentSendMessageRequest, sessionId: string | null) {
   if (
     process.env.NEXT_PUBLIC_DOCSURI_REAL_API &&
-    process.env.NEXT_PUBLIC_DOCSURI_RESEARCH_AGENT_ENABLED !== '1'
+    process.env.NEXT_PUBLIC_DOCSURI_EVIDENCE_AGENT_ENABLED !== '1'
   ) {
     throw new UserFacingError('unknown', 'Research는 아직 실배포에서 사용할 수 없습니다.');
   }

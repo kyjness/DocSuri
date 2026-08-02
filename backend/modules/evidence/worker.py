@@ -372,10 +372,6 @@ def _build_user_docmodel():
     return build_default_user_docmodel_coordinator()
 
 
-if __name__ == '__main__':
-    raise SystemExit(main(sys.argv[1:]))
-
-
 def _append_trace(repo, owner_id: str, turn_id: str, record) -> None:
     """트레이스 append — 실패해도 잡을 깨지 않는다(NFR-O1, advisory).
 
@@ -385,3 +381,11 @@ def _append_trace(repo, owner_id: str, turn_id: str, record) -> None:
         repo.append_trace(owner_id, turn_id, trace_row(record))
     except Exception:  # noqa: BLE001
         log.warning('evidence job trace append failed (turn=%s)', turn_id, exc_info=True)
+
+
+# 엔트리포인트는 반드시 파일 끝이어야 한다 — `python -m`으로 실행하면 이 지점에서
+# main()이 (무한 폴링으로) 돌기 시작하므로, 이 아래에 정의된 이름은 영원히 바인딩되지
+# 않는다. 실제로 _append_trace가 이 블록 뒤에 있어 배포 경로에서만 NameError가 났고,
+# advisory except가 삼켜 트레이스가 0건이 되는데 잡은 성공으로 보였다.
+if __name__ == '__main__':
+    raise SystemExit(main(sys.argv[1:]))

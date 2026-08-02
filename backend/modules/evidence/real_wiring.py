@@ -169,10 +169,15 @@ def _external_enabled() -> bool:
 
 
 def _build_arxiv_client() -> object:
-    """u1의 arXiv 클라이언트를 재사용한다 — 별도 클라이언트를 만들지 않는다."""
-    from docsuri_ingestion.adapters.arxiv import ArxivAdapter
+    """evidence 자체의 arXiv 검색 클라이언트.
 
-    return ArxivAdapter()
+    초안은 u1 `ArxivAdapter` 재사용을 적었지만 둘 다 성립하지 않았다: 그 어댑터에는
+    search()가 없고(수확·전문 취득용), `docsuri_ingestion`은 backend 의존성이 아니라
+    import 자체가 마운트를 죽인다. "질의 → 제목·초록"은 표준 라이브러리로 닫힌다.
+    """
+    from .adapters.sources import ArxivApiClient
+
+    return ArxivApiClient()
 
 
 def _build_promotion(doc_models: object) -> object | None:
@@ -208,10 +213,15 @@ def _build_asset_reader(session_factory: object | None) -> object | None:
 
     if session_factory is not None:
         return SqlS3FigureReader(session_factory)
-    if not os.environ.get('DOCSURI_DATABASE_URL'):
-        return None
+    # 단독 워커 경로 — DB 접속은 config가 소유한 해석(DATABASE_URL/DB_HOST 조합)을
+    # 그대로 쓴다. 별도 env 이름을 지어내면 아무도 안 세팅해 view_figure가 워커에서만
+    # 조용히 빠진다(리뷰 지적 — DOCSURI_DATABASE_URL은 저장소 어디에도 없는 이름이었다).
+    from backend.config import Settings
     from backend.db import make_engine, make_session_factory
 
-    engine = make_engine(os.environ['DOCSURI_DATABASE_URL'])
+    database_url = Settings.from_env().database_url
+    if not database_url.startswith(("postgresql://", "postgresql+psycopg://", "postgres://")):
+        return None  # paper_asset은 Postgres에만 있다
+    engine = make_engine(database_url)
     return SqlS3FigureReader(make_session_factory(engine))
 

@@ -217,3 +217,38 @@ def test_trace_sink_receives_every_executed_call():
     runner.run(CTX, _request(), on_trace=seen.append)
 
     assert [r.tool for r in seen] == ["corpus_search"]
+
+
+def test_explicit_scope_never_exposes_search_tools():
+    """BR-EV-2/PBT-EV-4 — 명시 집합만 사용, 자동 검색 금지는 구조로 강제된다.
+
+    v1의 격리는 오케스트레이터 분기였고 삭제와 함께 사라졌었다(리뷰 지적).
+    """
+    llm = ScriptedLlm([])
+    runner = EvidenceTurnRunner(
+        RunnerDeps(
+            llm=llm,
+            extractor=Extractor(),
+            corpus_search=Search(),
+            external_search=Search(),
+            doc_models=DocModels(),
+        )
+    )
+
+    runner.run(CTX, _request(scope="explicit", paperIds=["2401.00001"]))
+
+    assert "corpus_search" not in llm.seen_tools[0]
+    assert "external_search" not in llm.seen_tools[0]
+    # 명시 논문의 본문 확보·추출 경로는 열려 있다.
+    assert {"fetch_paper", "read_paper", "extract_evidence"} <= llm.seen_tools[0]
+
+
+def test_auto_scope_keeps_search_tools():
+    llm = ScriptedLlm([])
+    runner = EvidenceTurnRunner(
+        RunnerDeps(llm=llm, extractor=Extractor(), corpus_search=Search())
+    )
+
+    runner.run(CTX, _request())
+
+    assert "corpus_search" in llm.seen_tools[0]

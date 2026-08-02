@@ -246,13 +246,18 @@ async def create_turn(
         )
 
     try:
-        turn_resp: TurnResponse = service.run_turn(
-            owner_id=principal.user_id,
-            request=ev_request,
-            session_id=body.session_id,
-            budget_signal=budget_signal,
-            request_id=request_id,
-            attachment_docs=attachment_docs,
+        # 루프는 동기다(urllib LLM 호출 + 승격 폴링 sleep). 이벤트 루프에서 직접
+        # 돌리면 턴 하나가 앱 전체(검색·요약·헬스체크)를 분 단위로 멈춘다 — SSE
+        # 분기가 to_thread를 쓰는 것과 같은 이유로 여기도 스레드풀로 내린다.
+        turn_resp: TurnResponse = await run_in_threadpool(
+            lambda: service.run_turn(
+                owner_id=principal.user_id,
+                request=ev_request,
+                session_id=body.session_id,
+                budget_signal=budget_signal,
+                request_id=request_id,
+                attachment_docs=attachment_docs,
+            )
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail='session not found') from exc

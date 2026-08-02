@@ -107,7 +107,7 @@ class EvidenceTurnRunner:
         budget = (
             self._deps.budget_factory() if self._deps.budget_factory else _default_budget()
         )
-        registry = self._build_registry(state)
+        registry = self._build_registry(state, scope=_effective_scope(request))
         outcome = run_loop(
             state,
             LoopDeps(
@@ -126,14 +126,21 @@ class EvidenceTurnRunner:
             )
         return TurnAbstainResult(outcome=result)
 
-    def _build_registry(self, state: LoopState) -> ToolRegistry:
-        """설정이 없는 도구는 등록되지 않는다 — 도구 목록이 자연 축소된다."""
+    def _build_registry(self, state: LoopState, *, scope: str) -> ToolRegistry:
+        """설정이 없는 도구는 등록되지 않는다 — 도구 목록이 자연 축소된다.
+
+        **explicit scope는 검색 도구를 아예 등록하지 않는다**(BR-EV-2, PBT-EV-4).
+        "명시 집합만 사용, 자동 검색 금지"를 프롬프트 당부가 아니라 구조로 강제한다 —
+        도구가 목록에 없으면 모델이 그 경로를 시도할 방법 자체가 없다. 명시 논문의
+        본문 확보(fetch/read)와 근거 추출은 그대로 열려 있다.
+        """
         registry = ToolRegistry()
         deps = self._deps
+        searchable = scope != "explicit"
 
-        if deps.corpus_search is not None:
+        if searchable and deps.corpus_search is not None:
             registry.register(CorpusSearchTool(deps.corpus_search, state))
-        if deps.external_search is not None:
+        if searchable and deps.external_search is not None:
             registry.register(ExternalSearchTool(deps.external_search, state))
         if deps.doc_models is not None:
             registry.register(
@@ -164,6 +171,11 @@ def _seed_attachments(state: LoopState, attachments: tuple[Any, ...]) -> None:
                 abstract_text=getattr(doc, "text", "") or "",
             )
         )
+
+
+def _effective_scope(request: EvidenceRequest) -> str:
+    value = getattr(request, "scope", None)
+    return str(getattr(value, "value", value) or "auto")
 
 
 def _seed_explicit(state: LoopState, request: EvidenceRequest) -> None:

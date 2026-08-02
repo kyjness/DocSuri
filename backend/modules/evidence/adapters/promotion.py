@@ -79,9 +79,21 @@ class QueuedPaperPromotion:
         )
 
     def _enqueue(self, paper_id: str) -> bool:
-        """enqueue 실패는 승격 실패이지 턴 실패가 아니다."""
+        """enqueue 실패는 승격 실패이지 턴 실패가 아니다.
+
+        큐 계약(`SqsDocModelBuildQueue.enqueue_build`)은 **버전이 필수**다 — 워커의
+        BUILD_DOC_MODEL 잡이 `{bare}v{N}` arxivRef를 나른다. 접두어를 벗기고 버전이
+        없으면 v1로 요청한다(외부 검색이 버전을 박아 보내므로 대개 명시돼 있다).
+        """
+        from backend.modules.paper_assets import parse_record_ref
+
+        parsed = parse_record_ref(paper_id)
+        if parsed is None:
+            log.warning("evidence promotion: unparsable paper id %r", paper_id)
+            return False
+        bare, version = parsed
         try:
-            self._queue.enqueue_build(paper_id)
+            self._queue.enqueue_build(bare, version or 1)
         except Exception:  # noqa: BLE001 — 큐 장애를 초록 범위 폴백으로 흡수
             log.warning("evidence promotion enqueue failed for %s", paper_id, exc_info=True)
             return False

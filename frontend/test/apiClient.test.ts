@@ -163,9 +163,9 @@ describe('ApiClient agent chat mapping', () => {
 
   it('blocks real research sends until the research worker is enabled', async () => {
     const previousReal = process.env.NEXT_PUBLIC_DOCSURI_REAL_API;
-    const previousResearch = process.env.NEXT_PUBLIC_DOCSURI_RESEARCH_AGENT_ENABLED;
+    const previousEvidenceFlag = process.env.NEXT_PUBLIC_DOCSURI_EVIDENCE_AGENT_ENABLED;
     process.env.NEXT_PUBLIC_DOCSURI_REAL_API = '1';
-    delete process.env.NEXT_PUBLIC_DOCSURI_RESEARCH_AGENT_ENABLED;
+    delete process.env.NEXT_PUBLIC_DOCSURI_EVIDENCE_AGENT_ENABLED;
     const t = transportOf(async () => ({ status: 200, body: null }));
     try {
       await expect(
@@ -180,10 +180,10 @@ describe('ApiClient agent chat mapping', () => {
     } finally {
       if (previousReal === undefined) delete process.env.NEXT_PUBLIC_DOCSURI_REAL_API;
       else process.env.NEXT_PUBLIC_DOCSURI_REAL_API = previousReal;
-      if (previousResearch === undefined) {
-        delete process.env.NEXT_PUBLIC_DOCSURI_RESEARCH_AGENT_ENABLED;
+      if (previousEvidenceFlag === undefined) {
+        delete process.env.NEXT_PUBLIC_DOCSURI_EVIDENCE_AGENT_ENABLED;
       } else {
-        process.env.NEXT_PUBLIC_DOCSURI_RESEARCH_AGENT_ENABLED = previousResearch;
+        process.env.NEXT_PUBLIC_DOCSURI_EVIDENCE_AGENT_ENABLED = previousEvidenceFlag;
       }
     }
   });

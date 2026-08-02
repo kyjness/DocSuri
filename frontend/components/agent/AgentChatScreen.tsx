@@ -72,7 +72,7 @@ const STREAM_CHAR_MS = 8;
 const SSE_FETCH_TIMEOUT_MS = 5000;
 const RESEARCH_MODE_ENABLED =
   !process.env.NEXT_PUBLIC_DOCSURI_REAL_API ||
-  process.env.NEXT_PUBLIC_DOCSURI_RESEARCH_AGENT_ENABLED === '1';
+  process.env.NEXT_PUBLIC_DOCSURI_EVIDENCE_AGENT_ENABLED === '1';
 
 export function AgentChatScreen() {
   const api = useMemo(() => getApiClient(), []);

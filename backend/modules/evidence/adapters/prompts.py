@@ -96,6 +96,12 @@ def _render_observation(observation: Any) -> str:
     parts = [f"질문: {observation.topic}"]
     if observation.prior_topics:
         parts.append("이전 턴 질문: " + " / ".join(observation.prior_topics[-3:]))
+    if observation.prior_paper_ids:
+        # "그중에서" 류 후속 질문의 좁히기 재료 — 배선만 하고 렌더를 빠뜨리면
+        # 모델은 이 정보가 있는 줄도 모른다.
+        parts.append(
+            "이전 턴에서 인용한 논문: " + ", ".join(observation.prior_paper_ids[:10])
+        )
     parts.append(
         f"확보 근거 {observation.evidence_count}건 "
         f"(인용 논문 {observation.cited_paper_count}편, "
@@ -108,7 +114,8 @@ def _render_observation(observation: Any) -> str:
         parts.append(f"확인한 논문:\n{listed}")
     parts.append(
         f"남은 예산: 반복 {observation.iterations_left} · "
-        f"도구 호출 {observation.tool_calls_left}"
+        f"도구 호출 {observation.tool_calls_left} · "
+        f"비용 ${observation.cost_left_usd:.2f}"
     )
     if observation.notes:
         parts.append("시스템 안내:\n" + "\n".join(f"- {n}" for n in observation.notes))

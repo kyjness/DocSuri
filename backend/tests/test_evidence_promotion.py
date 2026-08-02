@@ -11,12 +11,17 @@ from backend.modules.evidence.domain.models import PromotionOutcome
 
 
 class FakeQueue:
+    """실계약(`SqsDocModelBuildQueue.enqueue_build(paper_id, version)`)과 같은 시그니처.
+
+    단일 인자 대역은 시그니처 불일치 TypeError를 가려 실스택에서만 터지게 했다 —
+    대역은 반드시 실계약의 모양을 따라야 한다."""
+
     def __init__(self, raises: Exception | None = None) -> None:
-        self.calls: list[str] = []
+        self.calls: list[tuple[str, int]] = []
         self.raises = raises
 
-    def enqueue_build(self, paper_id: str) -> None:
-        self.calls.append(paper_id)
+    def enqueue_build(self, paper_id: str, version: int) -> None:
+        self.calls.append((paper_id, version))
         if self.raises:
             raise self.raises
 
@@ -77,7 +82,7 @@ def test_enqueues_then_polls_until_the_worker_finishes():
     result = _promotion(queue, reader).promote("2401.00001")
 
     assert result.outcome == PromotionOutcome.PROMOTED
-    assert queue.calls == ["2401.00001"]
+    assert queue.calls == [("2401.00001", 1)]
     assert result.doc_model == {"paperId": "2401.00001"}
 
 
@@ -114,3 +119,12 @@ def test_zero_timeout_does_not_poll_forever():
     assert result.outcome == PromotionOutcome.TIMED_OUT
     # 사전 확인 1회만 — 폴링 루프에 들어가지 않는다.
     assert reader.reads == 1
+
+
+def test_prefixed_external_id_is_normalized_before_enqueue():
+    """'arxiv:2304.10557v2' — 접두어는 벗고 버전은 잡에 실린다(실스택 결함 재발 방지)."""
+    queue = FakeQueue()
+
+    _promotion(queue, FakeReader(ready_after=None)).promote("arxiv:2304.10557v2")
+
+    assert queue.calls == [("2304.10557", 2)]
