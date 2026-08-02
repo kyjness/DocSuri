@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 from ..ports.llm import (
     EvidenceLlmPort,
@@ -139,20 +140,22 @@ def _act(state: LoopState, deps: LoopDeps, proposal: ToolCallProposal) -> LoopOu
     return None
 
 
+def _paper_view(handle: Any) -> PaperView:
+    return PaperView(
+        paper_id=handle.paper_id,
+        record_ref=handle.record_ref,
+        title=handle.title,
+        origin=handle.origin.value,
+        scope=handle.scope,
+    )
+
+
 def _observe(state: LoopState, deps: LoopDeps) -> LoopObservation:
     consumed = deps.budget.consumed
     return LoopObservation(
         topic=state.topic,
-        papers=tuple(
-            PaperView(
-                paper_id=handle.paper_id,
-                record_ref=handle.record_ref,
-                title=handle.title,
-                origin=handle.origin.value,
-                scope=handle.scope,
-            )
-            for handle in state.papers.values()
-        ),
+        papers=tuple(_paper_view(handle) for handle in state.papers.values()),
+        pending_papers=tuple(_paper_view(handle) for handle in state.discovered.values()),
         recent_results=tuple(state.recent_results),
         evidence_count=len(state.accumulator.items),
         cited_paper_count=len(state.accumulator.cited_paper_ids),

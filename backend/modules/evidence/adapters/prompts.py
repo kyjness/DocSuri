@@ -112,6 +112,14 @@ def _render_observation(observation: Any) -> str:
             f"- {p.paper_id} [{p.scope}] {p.title[:80]}" for p in observation.papers[:20]
         )
         parts.append(f"확인한 논문:\n{listed}")
+    if observation.pending_papers:
+        # 사용자가 지정했거나 검색으로 찾았지만 아직 열지 않은 논문. 이 목록이
+        # 없으면 검색 도구가 없는 explicit scope에서 모델이 부를 id를 알 수 없어
+        # 존재하지 않는 id를 지어낸다(실스택에서 재현).
+        listed = "\n".join(
+            f"- {p.paper_id} {p.title[:80]}" for p in observation.pending_papers[:20]
+        )
+        parts.append(f"확인 대기 논문 (fetch_paper로 본문을 확보할 수 있다):\n{listed}")
     parts.append(
         f"남은 예산: 반복 {observation.iterations_left} · "
         f"도구 호출 {observation.tool_calls_left} · "

@@ -81,6 +81,9 @@ class LoopObservation:
     prior_topics: tuple[str, ...] = ()
     prior_paper_ids: tuple[str, ...] = ()
     notes: tuple[str, ...] = ()
+    # 아직 확인하지 않은 후보 — **모델에게 보여야 부를 수 있다**. 검색 도구가 없는
+    # explicit scope에서는 이 목록이 유일한 id 출처라, 빠지면 모델이 id를 지어낸다.
+    pending_papers: tuple[PaperView, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

@@ -129,6 +129,21 @@ def test_decide_prompt_carries_call_arguments_with_results():
     assert "query=protein folding" in messages[-1]["content"]
 
 
+def test_decide_prompt_lists_pending_papers_so_ids_are_not_invented():
+    """확보했지만 아직 열지 않은 논문이 관찰에 보여야 모델이 그 id를 부를 수 있다.
+
+    검색 도구가 없는 explicit scope에서는 이 목록이 **유일한 id 출처**다. 빠져 있으면
+    모델은 부를 id를 몰라 존재하지 않는 값을 지어내고(실스택에서 `WJ-23-347` 등으로
+    재현), 사용자가 지정한 논문은 한 번도 열리지 않는다.
+    """
+    pending = PaperView("2201.13299", "2201.13299", "Orientation-Aware GNNs", "corpus", "unknown")
+    messages = build_decide_messages(_observation(papers=(), pending_papers=(pending,)))
+
+    body = messages[-1]["content"]
+    assert "2201.13299" in body
+    assert "fetch_paper" in body
+
+
 def test_decide_prompt_marks_tool_results_as_data_not_instructions():
     view = ToolResultView(seq=1, tool_name="read_paper", ok=True, content={"blocks": []})
     messages = build_decide_messages(_observation(recent_results=(view,)))
