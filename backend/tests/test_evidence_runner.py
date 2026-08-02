@@ -58,7 +58,11 @@ class Search:
 
 
 class DocModels:
+    def __init__(self) -> None:
+        self.reads: list[str] = []
+
     def get_doc_model(self, paper_id):
+        self.reads.append(paper_id)
         return doc_model()
 
 
@@ -252,3 +256,39 @@ def test_auto_scope_keeps_search_tools():
     runner.run(CTX, _request())
 
     assert "corpus_search" in llm.seen_tools[0]
+
+
+def test_auto_scope_ignores_explicit_paper_ids():
+    """계약대로 auto에서는 paperIds를 무시한다(schema 설명 + BR-EV-2).
+
+    씨앗으로 올리면 사용자가 고르지도 않은 논문이 확인 대상 수치에 섞인다.
+    """
+    llm = ScriptedLlm([ToolCallProposal("fetch_paper", {"paper_id": "2401.00001"})])
+    runner = EvidenceTurnRunner(
+        RunnerDeps(
+            llm=llm, extractor=Extractor(), corpus_search=Search(), doc_models=DocModels()
+        )
+    )
+
+    runner.run(CTX, _request(paperIds=["2401.00001"]))
+
+    # 씨앗이 없으므로 fetch_paper는 "모르는 논문"으로 실패한다 — 검색으로 찾아야 한다.
+    assert "corpus_search" in llm.seen_tools[0]
+
+
+def test_explicit_scope_rejects_private_namespace_paper_ids():
+    """업로드 문서(`userdoc:`)는 코퍼스 id로 위장해 들어올 수 없다.
+
+    첨부는 소유권이 확인되는 경로(_seed_attachments)로만 근거 대상이 된다 —
+    호출자가 준 id를 그대로 코퍼스 논문으로 올리면 그 경로를 우회하게 된다.
+    """
+    llm = ScriptedLlm([ToolCallProposal("fetch_paper", {"paper_id": "userdoc:victim"})])
+    docs = DocModels()
+    runner = EvidenceTurnRunner(
+        RunnerDeps(llm=llm, extractor=Extractor(), doc_models=docs)
+    )
+
+    runner.run(CTX, _request(scope="explicit", paperIds=["userdoc:victim"]))
+
+    # 씨앗이 안 올라갔으므로 doc-model 저장소를 건드리지 않는다.
+    assert docs.reads == []

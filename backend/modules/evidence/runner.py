@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -42,6 +43,9 @@ from .models import TurnAbstainResult, TurnResult, TurnSuccessResult
 from .ports.tools import ToolRegistry
 
 log = logging.getLogger("docsuri.evidence.runner")
+
+# 사적 문서 네임스페이스 — 코퍼스 논문 id로 위장해 들어올 수 없다(_seed_explicit).
+_RESERVED_ID_PREFIXES = re.compile(r"^(?:userdoc|upload|attachment):", re.IGNORECASE)
 
 __all__ = ["EvidenceTurnRunner", "RunnerDeps"]
 
@@ -102,12 +106,13 @@ class EvidenceTurnRunner:
 
         state = LoopState(topic=request.topic)
         _seed_attachments(state, attachments)
-        _seed_explicit(state, request)
+        scope = _effective_scope(request)
+        _seed_explicit(state, request, scope)
 
         budget = (
             self._deps.budget_factory() if self._deps.budget_factory else _default_budget()
         )
-        registry = self._build_registry(state, scope=_effective_scope(request))
+        registry = self._build_registry(state, scope=scope)
         outcome = run_loop(
             state,
             LoopDeps(
@@ -178,14 +183,27 @@ def _effective_scope(request: EvidenceRequest) -> str:
     return str(getattr(value, "value", value) or "auto")
 
 
-def _seed_explicit(state: LoopState, request: EvidenceRequest) -> None:
+def _seed_explicit(state: LoopState, request: EvidenceRequest, scope: str) -> None:
     """explicit·mixed scope의 명시 논문은 후보로 미리 올린다(BR-EV-2).
 
     scope는 v2에서도 **탐색 대상 집합의 제약**으로 남는다 — 질의 문구 설계만
     루프 판단으로 옮겼다.
+
+    `auto`에서는 무시한다 — 계약(`evidence.schema.json`의 paperIds 설명)과
+    BR-EV-2가 정한 바다. 씨앗으로 올리면 사용자가 고르지도 않은 논문이 확인
+    대상 수치(candidates)에 섞인다.
+
+    호출자가 준 id는 **코퍼스 논문 id로만** 받는다. 업로드 문서 네임스페이스
+    (`userdoc:`)는 코퍼스 검색으로 도달할 수 없는 사적 영역이라, 여기로 들어오면
+    본인 문서라도 첨부 경로(소유권이 확인되는 경로)를 우회하게 된다.
     """
+    if scope == "auto":
+        return
     for paper_id in getattr(request, "paperIds", None) or []:
         pid = str(paper_id)
+        if _RESERVED_ID_PREFIXES.match(pid):
+            log.warning("evidence: rejected reserved-namespace paperId")
+            continue
         if state.handle(pid) is None:
             state.discovered[pid] = PaperHandle(
                 paper_id=pid, record_ref=pid, origin=PaperOrigin.CORPUS
