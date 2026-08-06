@@ -243,3 +243,111 @@ def test_an_algorithm_mention_after_a_listing_is_not_dropped() -> None:
     assert "1: init" in codes[0].text
     assert "Algorithm 2 gives the details" in codes[0].text
     assert "Algorithm 2 gives the details" in doc.fullText
+
+
+def _blocks_of(doc, kind: str) -> list:
+    """Body blocks of one kind. ``s0`` is the abstract ``_parse`` synthesises, not parsed TEI."""
+    return [
+        b.root for s in doc.sections if s.id != "s0" for b in s.blocks if b.root.type == kind
+    ]
+
+
+def test_a_pseudocode_listing_grobid_filed_as_a_paragraph_becomes_code() -> None:
+    """GROBID classifies a float as <formula> only when it reads as maths.
+
+    A pseudocode listing usually reads as prose to it and lands in <p> instead — across the audit
+    sample that is where 43 of 44 listings arrived. Inspecting formulas alone therefore left
+    nearly every listing typed as a paragraph: present in fullText, but indistinguishable from
+    surrounding prose for a reader and for anything quoting it.
+    """
+    listing = (
+        "Algorithm 1 Joint SVD for QK Projections Input: pre-conditioning matrix P, "
+        "query projection heads Wq, key projection heads Wk, number of heads h, rank r, "
+        "iteration count N Initialize: Wq = Wq P for each head i do compute the factorisation "
+        "and update the running estimate end for return the factors"
+    )
+    tei = (
+        f"<TEI {_NS}><text><body><div><head>Method</head>"
+        f"<p>{listing}</p></div></body></text></TEI>"
+    )
+    doc = _parse(tei)
+    codes = _blocks_of(doc, "code")
+    assert len(codes) == 1, "a listing GROBID filed as <p> stayed typed as prose"
+    assert codes[0].text.startswith("Algorithm 1 Joint SVD")
+    assert not _blocks_of(doc, "paragraph")
+    # Promotion must not cost the text — it is the same characters under a truer type.
+    assert "Initialize: Wq = Wq P" in doc.fullText
+
+
+def test_input_colon_is_pseudocode_vocabulary_even_when_a_space_follows() -> None:
+    """``Input:`` is the ordinary spelling; ``Input:x`` is not.
+
+    The vocabulary alternation used to close on a word boundary that applied to every branch, so
+    a trailing ``\\b`` after ``Input\\s*:`` demanded a word character immediately after the colon.
+    That is exactly what a real listing does NOT write, which silently weakened both this path and
+    the headless-formula detector.
+    """
+    listing = (
+        "Algorithm 2 Sampling Input: dataset D, budget B, tolerance eps, seed s, "
+        "and the initial estimate theta drawn from the prior over the parameter space "
+        "which the routine then refines until the budget is exhausted"
+    )
+    tei = (
+        f"<TEI {_NS}><text><body><div><head>Method</head>"
+        f"<p>{listing}</p></div></body></text></TEI>"
+    )
+    assert len(_blocks_of(_parse(tei), "code")) == 1
+
+
+def test_a_verbatim_listing_caption_promotes_without_pseudocode_vocabulary() -> None:
+    """LaTeX's lstlisting float carries neither numbered steps nor control-flow words.
+
+    An RDF/Turtle or config snippet is code all the same, so that family leans on the captioned
+    heading ("Listing 6:") anchored at the paragraph start.
+    """
+    listing = (
+        "Listing 6: Example of SGP-based KG wd:Q1968853 wd:P166#1 wd:Q3703462 . "
+        "wd:P166#1 :singletonPropertyOf wd:P166 ; wd:P585 wd:Q3703462 . "
+        "wd:Q1968853 wd:P166 wd:Q3703462 ."
+    )
+    tei = (
+        f"<TEI {_NS}><text><body><div><head>Data</head>"
+        f"<p>{listing}</p></div></body></text></TEI>"
+    )
+    assert len(_blocks_of(_parse(tei), "code")) == 1
+
+
+def test_prose_that_merely_cites_an_algorithm_stays_a_paragraph() -> None:
+    """The cost of a false positive is real prose retyped as code, which is worse than the
+    lossless status quo — so a heading alone never promotes, and a mid-sentence mention never
+    matches at all."""
+    cites = (
+        "Algorithm 1 achieves a tighter regret bound than the baseline, and we discuss below "
+        "why the improvement carries over to the misspecified setting studied in Section 4, "
+        "where the same argument applies with only minor changes to the constants involved."
+    )
+    mid = (
+        "In the CSV data format used as input for StarE (Listing 10), the qualifier triples are "
+        "not represented as entities, so the conversion drops them entirely and the downstream "
+        "evaluation compares models over a strictly smaller relation vocabulary than intended."
+    )
+    tei = (
+        f"<TEI {_NS}><text><body><div><head>Results</head>"
+        f"<p>{cites}</p><p>{mid}</p></div></body></text></TEI>"
+    )
+    doc = _parse(tei)
+    assert not _blocks_of(doc, "code")
+    assert len(_blocks_of(doc, "paragraph")) == 2
+
+
+def test_a_listing_caption_split_from_its_body_is_not_promoted_alone() -> None:
+    """GROBID sometimes emits the caption as its own <p>. A caption is not a listing, and typing
+    a bare one as code would put a sentence of prose under a code block."""
+    tei = (
+        f"<TEI {_NS}><text><body><div><head>Data</head>"
+        "<p>Listing 10: Example of CSV data for RDR-based WD50K</p>"
+        "</div></body></text></TEI>"
+    )
+    doc = _parse(tei)
+    assert not _blocks_of(doc, "code")
+    assert len(_blocks_of(doc, "paragraph")) == 1

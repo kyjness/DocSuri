@@ -40,12 +40,18 @@ def counts(doc: dict) -> dict:
     sections = list(walk_sections(doc))
     blocks = [b for s in sections for b in (s.get("blocks") or [])]
     kinds: dict[str, int] = {}
+    # Block COUNT and block TEXT move independently: the PDF path emits the right number of
+    # formula blocks while their text is empty, which a kind tally alone reads as healthy. Split
+    # body_chars by kind so a sweep names which kind lost the characters.
+    chars: dict[str, int] = {}
     for block in blocks:
         kinds[block["type"]] = kinds.get(block["type"], 0) + 1
+        chars[block["type"]] = chars.get(block["type"], 0) + len(block_text(block))
     return {
         "sections": len(sections),
         "blocks": len(blocks),
         "kinds": kinds,
+        "chars_by_kind": chars,
         "body_chars": sum(len(block_text(b)) for b in blocks),
         "captions": sum(1 for b in blocks if b.get("caption")),
         "empty_sections": sum(

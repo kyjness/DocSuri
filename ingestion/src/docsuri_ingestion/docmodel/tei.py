@@ -66,11 +66,29 @@ _ALGORITHM_HEAD_RE = re.compile(r"^\s*Algorithm\s+\d+")
 # Without a heading, numbered steps alone would also match a numbered derivation, so the listing
 # has to speak pseudocode as well — and show more steps than the headed case needs.
 _HEADLESS_MIN_STEPS = 3
+# The colon-terminated keywords are matched separately: a trailing \b after ``Input\s*:`` demands a
+# word character right after the colon, so the ordinary "Input: x" spelling failed to match while
+# "Input:x" did. Only the alternatives that end in a word character can carry that boundary.
 _PSEUDOCODE_RE = re.compile(
-    r"\b(end\s+(?:for|while|if|procedure|function)|for\s+each|repeat|until"
-    r"|procedure|Require|Ensure|Input\s*:|Output\s*:)\b",
+    r"\b(?:end\s+(?:for|while|if|procedure|function)|for\s+each|repeat|until"
+    r"|procedure|Require|Ensure)\b"
+    r"|\b(?:Input|Output)\s*:",
     re.IGNORECASE,
 )
+# A listing that opens a <p> rather than a <formula>. GROBID classifies a float as <formula> only
+# when it reads as maths; a pseudocode or verbatim listing usually looks like prose to it and lands
+# in <p> instead — measured across the audit sample, 43 listings arrived that way against 1 as a
+# formula, so inspecting formulas alone left nearly every listing typed as a paragraph.
+_LISTING_HEAD_RE = re.compile(
+    r"^\s*(?:Algorithm|Listing|Procedure|Pseudocode)\s+\d+", re.IGNORECASE
+)
+# "Listing 3: ..." is LaTeX's lstlisting caption — verbatim code, which carries neither numbered
+# steps nor pseudocode vocabulary, so the heading has to stand on its own for that family.
+_VERBATIM_HEAD_RE = re.compile(r"^\s*Listing\s+\d+\s*[:.]", re.IGNORECASE)
+# Below this a "listing" is a caption GROBID split from its body, not a float. Swept over the audit
+# sample: at 150 exactly one more block promotes (a four-triple RDF listing) and nothing further
+# appears down to 100, so the gate is not what bounds recall here.
+_LISTING_MIN_CHARS = 150
 
 
 def _local(tag: object) -> str:
@@ -195,7 +213,27 @@ def _paragraph_block(p: ET.Element, sec_ctx: _SectionCtx) -> dict | None:
     text = _text(p)
     if not text:
         return None
+    if _is_paragraph_listing(text):
+        # Same text either way — what changes is that the listing stops being indistinguishable
+        # from prose, so a reader sees it as code and an agent can tell it apart when quoting.
+        return {"id": sec_ctx.next_id("code"), "type": "code", "text": text}
     return {"id": sec_ctx.next_id("paragraph"), "type": "paragraph", "text": text}
+
+
+def _is_paragraph_listing(text: str) -> bool:
+    """Whether a ``<p>`` is a listing float GROBID failed to recognise as one.
+
+    Anchored at the paragraph start and gated on length, because the cost of a false positive is
+    real prose retyped as code. "Algorithm 2 achieves a better bound" opens the same way, so a
+    heading alone never suffices for the pseudocode family — the body has to show numbered steps
+    or control-flow vocabulary too. Verbatim listings carry neither, so that family leans on the
+    stricter captioned heading ("Listing 3:") instead.
+    """
+    if len(text) < _LISTING_MIN_CHARS or not _LISTING_HEAD_RE.match(text):
+        return False
+    if _VERBATIM_HEAD_RE.match(text):
+        return True
+    return _is_listing(text) or _PSEUDOCODE_RE.search(text) is not None
 
 
 def _formula_or_algorithm_blocks(
