@@ -22,7 +22,7 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
-from _common import counts
+from _common import counts, same_paper
 from docsuri_shared.dtos import SourceTier
 
 from docsuri_ingestion.adapters.grobid import GrobidHttpClient
@@ -68,6 +68,13 @@ def main() -> None:
                 row["pdf"] = counts(pdf_doc)
                 row["crops"] = len(crops)
                 html = (args.cache / "html" / f"{key}.html").read_text(errors="replace")
+                if not same_paper(_tei_for(key, args.cache, client), html):
+                    # ar5iv built a different version — its parse is not a yardstick for this PDF.
+                    row["version_mismatch"] = True
+                    fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+                    print(f"[{i}/{len(targets)}] {key} version mismatch, ar5iv side dropped",
+                          flush=True)
+                    continue
                 ar5iv_doc = parse_html_to_docmodel(
                     html, paper_id=target["paper_id"], version=target["version"], title="",
                     abstract=None, source_tier=SourceTier.ar5iv, parser_version="audit",

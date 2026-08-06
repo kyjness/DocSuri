@@ -34,7 +34,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from _common import counts
+from _common import counts, same_paper
 from docsuri_shared.dtos import DocModel, SourceTier
 
 from docsuri_ingestion.adapters.grobid import GrobidHttpClient
@@ -141,9 +141,14 @@ def main() -> None:
                 row["pipeline"] = counts(doc)
                 row["crops"] = len(crops)
                 html_path = args.cache / "html" / f"{key}.html"
-                if html_path.exists():
+                html = html_path.read_text(errors="replace") if html_path.exists() else ""
+                # ar5iv builds whatever version it has, so the two sources can be different papers.
+                if html and not same_paper(_tei_for(key, args.cache, client), html):
+                    row["version_mismatch"] = True
+                    html = ""
+                if html:
                     ar5iv = parse_html_to_docmodel(
-                        html_path.read_text(errors="replace"),
+                        html,
                         paper_id=paper_id, version=version, title="", abstract=None,
                         source_tier=SourceTier.ar5iv, parser_version="audit",
                         schema_version="audit", generated_at=_TS,

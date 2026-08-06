@@ -7,7 +7,38 @@ and its merge base), so the yardstick must not depend on helpers that exist in o
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
+
+_HTML_TITLE_RE = re.compile(r"<title>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+_TEI_TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+_TAG_RE = re.compile(r"<[^>]+>")
+_NON_ALNUM_RE = re.compile(r"[^0-9a-z]+", re.IGNORECASE)
+
+
+def _title_key(markup: str, pattern: re.Pattern[str]) -> str:
+    match = pattern.search(markup or "")
+    if match is None:
+        return ""
+    text = _TAG_RE.sub(" ", match.group(1))
+    # ar5iv prefixes the arXiv id ("[2507.21184] EvoSLD: …"); the id is not part of the title.
+    return _NON_ALNUM_RE.sub("", re.sub(r"^\s*\[?\d{4}\.\d{4,5}\]?", "", text)).lower()
+
+
+def same_paper(tei: str, html: str) -> bool:
+    """Whether a TEI and an ar5iv page are the SAME paper, by title.
+
+    ar5iv serves whatever version it has built and ignores the ``v5`` in the requested URL, so a
+    cross-source comparison can silently line up two different papers — 4 of 12 in one sweep, where
+    the PDF was "CAN LANGUAGE MODELS DISCOVER SCALING LAWS?" and ar5iv "EvoSLD: Automated Neural
+    Scaling Law Discovery". Every ratio measured against that pair is noise, and it looks exactly
+    like a parser regression. Comparing an opening stretch, since the two renderings disagree about
+    subtitles and trailing punctuation.
+    """
+    a, b = _title_key(tei, _TEI_TITLE_RE), _title_key(html, _HTML_TITLE_RE)
+    if not a or not b:
+        return True  # cannot tell — do not drop the paper on a missing title
+    return a[:30] in b or b[:30] in a
 
 
 def walk_sections(doc: dict) -> Iterator[dict]:
