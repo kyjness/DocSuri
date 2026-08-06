@@ -189,19 +189,39 @@ def _violations(sig: dict) -> list[str]:
     return v
 
 
-def _audit_one(paper_id: str, version: int, tei: str, pdf: bytes) -> dict:
-    model = parse_tei_to_docmodel(
-        tei,
-        paper_id=paper_id,
-        version=version,
-        title="",
-        abstract=None,
-        source_tier=SourceTier.pdf,
-        parser_version="audit",
-        schema_version="audit",
-        generated_at=_TS,
-        crops=[],
-    )
+def _build(paper_id: str, version: int, tei: str, pdf: bytes, builder: object | None):
+    """The doc-model to judge — the parser's, or the whole pipeline's when a builder is given.
+
+    They differ, and the difference has fooled this sweep twice: table re-extraction and formula
+    OCR run AFTER ``parse_tei_to_docmodel`` inside ``DocModelBuilder.build_from_tei``, so a
+    parser-only reading reports their absence as parser defects (it counted six empty tables where
+    the pipeline delivers four). Parser-only stays the default because the recovery stages run
+    vision models and cost minutes per paper; ``--pipeline`` is what a verdict about what READERS
+    receive has to use.
+    """
+    if builder is None:
+        return parse_tei_to_docmodel(
+            tei,
+            paper_id=paper_id,
+            version=version,
+            title="",
+            abstract=None,
+            source_tier=SourceTier.pdf,
+            parser_version="audit",
+            schema_version="audit",
+            generated_at=_TS,
+            crops=[],
+        )
+    return builder.build_from_tei(  # type: ignore[attr-defined]
+        paper_id, version, "", "", tei, "",
+        source_tier=SourceTier.pdf, crops=[], pdf=pdf,
+    ).docModel
+
+
+def _audit_one(
+    paper_id: str, version: int, tei: str, pdf: bytes, builder: object | None = None
+) -> dict:
+    model = _build(paper_id, version, tei, pdf, builder)
     doc = model.model_dump(mode="json")
     source = pdf_to_text(pdf)
     src = {kind: _contiguous(nums) for kind, nums in _floats_in(source).items()}
@@ -246,12 +266,58 @@ def _audit_one(paper_id: str, version: int, tei: str, pdf: bytes) -> dict:
     }
 
 
+def _pipeline_builder():
+    """A builder wired exactly as ingestion wires it, writing nothing.
+
+    The readers come from ``runtime``'s own resolvers so a missing optional extra degrades here the
+    way it would in ingestion, and the store always misses so a cache hit cannot skip the very
+    stages this mode exists to measure.
+    """
+    from docsuri_ingestion.docmodel.builder import DocModelBuilder
+    from docsuri_ingestion.runtime import _formula_reader, _table_extractor
+    from docsuri_ingestion.settings import IngestionSettings
+
+    class _NoStore:
+        def get(self, paper_id: str, version: int):  # noqa: ARG002
+            return None
+
+        def put(self, doc) -> None:
+            """Drop it — an audit measures, it does not populate the corpus."""
+
+        def remove(self, paper_id: str) -> None:
+            """Never called; present so the object satisfies the store port."""
+
+    class _FixedClock:
+        def now(self):
+            return _TS
+
+    settings = IngestionSettings()
+    return DocModelBuilder(
+        source=None,  # type: ignore[arg-type]  # build_from_tei never reaches the HTML ladder
+        store=_NoStore(),
+        table_extractor=_table_extractor(settings),
+        formula_reader=_formula_reader(settings),
+        clock=_FixedClock(),
+        parser_version="audit",
+        schema_version="audit",
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cache", type=Path, required=True, help="cache dir from corpus_sample.py")
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--targets", default="targets.json")
+    parser.add_argument(
+        "--pipeline",
+        action="store_true",
+        help="judge the WHOLE builder (table re-read + formula OCR), not the parser alone — "
+             "slower by minutes per paper, but this is what a reader actually receives",
+    )
     args = parser.parse_args()
+
+    builder = _pipeline_builder() if args.pipeline else None
+    print(f"judging: {'whole pipeline' if builder else 'parser only'}", flush=True)
 
     targets = json.loads((args.cache / args.targets).read_text())
     by_type: Counter[str] = Counter()
@@ -265,6 +331,7 @@ def main() -> None:
                     target["version"],
                     (args.cache / "tei" / f"{key}.tei.xml").read_text(encoding="utf-8"),
                     (args.cache / "pdf" / f"{key}.pdf").read_bytes(),
+                    builder,
                 )
             except Exception as exc:  # noqa: BLE001 - a crash is itself a preservation failure
                 row = {**target, "error": f"{type(exc).__name__}: {exc}",
