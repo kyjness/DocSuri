@@ -114,8 +114,13 @@ class ExtractedTable:
     ``page`` is 1-based (as GROBID's coordinates are) and ``bbox`` is (x0, y0, x1, y1) in PDF
     points, top-left origin — the same frame the TEI crop specs use, so a rebuilt grid can be
     matched to the doc-model table that occupies that region.
+
+    ``caption`` is the second way to make that match, and the only one left when GROBID's own box
+    collapses to the caption strip — a region that overlaps no table at all. Empty when the reader
+    could not attribute one.
     """
 
     page: int
     bbox: tuple[float, float, float, float]
     rows: tuple[tuple[str, ...], ...]
+    caption: str = ""

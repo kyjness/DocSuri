@@ -178,3 +178,105 @@ def test_a_rebuild_of_an_emptied_table_still_has_to_be_printed_on_the_page() -> 
         ["Method", "C-index", "Brier"],
         ["ADA", "0.696 ± 0.015", "0.011 ± 0.000"],
     ]
+
+
+# --- the caption fallback: matching when GROBID's box collapsed onto the caption strip ---
+
+# The box GROBID leaves when its reconstruction fails: a caption-height strip that sits BETWEEN
+# the tables on the page and so overlaps neither (observed at 21pt on 1909.03716 page 5).
+_COLLAPSED = AssetCropSpec(
+    asset_id=_ASSET, type=AssetType.TABLE, ordinal=0, page=3, bbox=(72.0, 258.0, 526.0, 279.0)
+)
+_CAPTION = (
+    "Performance comparison of the proposed model on the test set of both datasets. "
+    "The term 'best' refers to the best performance on the development set."
+)
+_EMPTIED = {
+    "id": "s1.tbl1",
+    "type": "table",
+    "assetRef": {"assetId": _ASSET, "type": "table", "ordinal": 0},
+    "caption": _CAPTION,
+    "anchorLabel": "Table 2 :",
+    "rows": [],
+}
+# The grid the caption names, 11pt above the strip — and the one 12pt below that it does not.
+_ABOVE = ExtractedTable(
+    page=3,
+    bbox=(71.0, 62.0, 526.0, 247.0),
+    rows=(("Method", "C-index", "Brier"), ("ADA", "0.696 ± 0.015", "0.011 ± 0.000")),
+    caption=f"Table 2: {_CAPTION}",
+)
+_BELOW = ExtractedTable(
+    page=3,
+    bbox=(71.0, 291.0, 526.0, 393.0),
+    rows=(("Method", "C-index"), ("FINRISK", "0.702")),
+    caption=(
+        "Table 3: Performance comparison of the proposed model on the dev set of both datasets."
+    ),
+)
+
+
+def test_the_caption_picks_the_grid_when_the_collapsed_box_overlaps_none() -> None:
+    """Distance cannot choose between a grid 11pt above and one 12pt below, and choosing wrong
+    files one table's numbers under another's caption — numbers that ARE printed on the page, so
+    the verification downstream would not catch it. The caption chooses."""
+    doc = _doc(_EMPTIED)
+    repaired = apply_repairs(
+        doc, [_COLLAPSED], [_ABOVE, _BELOW], _printed("0.696 0.015 0.011 0.000 0.702")
+    )
+
+    assert repaired == 1
+    assert _rows(doc) == [
+        ["Method", "C-index", "Brier"],
+        ["ADA", "0.696 ± 0.015", "0.011 ± 0.000"],
+    ]
+
+
+def test_a_label_rendered_differently_by_each_reader_still_matches() -> None:
+    """GROBID writes "Table 2 :" where Docling writes "Table 2:" — the label is dropped from both
+    before comparing, because what identifies the table is the sentence after it."""
+    doc = _doc(_EMPTIED)
+    labelled = ExtractedTable(
+        page=_ABOVE.page, bbox=_ABOVE.bbox, rows=_ABOVE.rows, caption=f"TABLE II. {_CAPTION}"
+    )
+    assert apply_repairs(doc, [_COLLAPSED], [labelled], _printed("0.696 0.015 0.011 0.000")) == 1
+
+
+def test_two_grids_matching_the_same_caption_leave_the_table_alone() -> None:
+    """The fallback runs where geometry has already failed, so it gets no second chance to be
+    checked — an ambiguous page is left unrepaired rather than guessed at."""
+    doc = _doc(_EMPTIED)
+    twin = ExtractedTable(
+        page=_BELOW.page, bbox=_BELOW.bbox, rows=_BELOW.rows, caption=f"Table 5: {_CAPTION}"
+    )
+    assert apply_repairs(doc, [_COLLAPSED], [_ABOVE, twin], _printed("0.696 0.015 0.011")) == 0
+    assert doc["sections"][0]["blocks"][0]["rows"] == []
+
+
+def test_a_caption_too_generic_to_identify_a_table_is_not_used() -> None:
+    """"Results" names half the tables in a paper; a caption has to carry enough to single one
+    out before it may stand in for the region."""
+    generic = dict(_EMPTIED)
+    generic["caption"] = "Results"
+    short = ExtractedTable(
+        page=_ABOVE.page, bbox=_ABOVE.bbox, rows=_ABOVE.rows, caption="Table 2: Results"
+    )
+    doc = _doc(generic)
+    assert apply_repairs(doc, [_COLLAPSED], [short], _printed("0.696 0.015 0.011 0.000")) == 0
+
+
+def test_a_region_that_does_overlap_is_still_matched_by_region() -> None:
+    """The fallback is additive: where GROBID's box survived, the proven signal decides and a
+    caption that happens to name a different grid never overrides it."""
+    doc = _doc()
+    misleading = ExtractedTable(
+        page=3, bbox=(71.0, 500.0, 526.0, 600.0), rows=(("x", "1"),), caption=f"Table 2: {_CAPTION}"
+    )
+    merged_block = _doc()["sections"][0]["blocks"][0]
+    merged_block["caption"] = _CAPTION
+    doc = {"sections": [{"id": "s1", "blocks": [merged_block]}]}
+    repaired = apply_repairs(
+        doc, [_SPEC], [_REBUILT, misleading], _printed("0.696 0.015 0.011 0.000")
+    )
+    assert repaired == 1
+    assert _rows(doc)[0] == ["Method", "C-index", "Brier"]

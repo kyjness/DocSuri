@@ -36,6 +36,12 @@ _INNER_SPACE_RE = re.compile(r"(?<=\.)\s+(?=\d)|(?<=\d)\s+(?=\.)")
 PrintedNumbers = Callable[[int, tuple[float, float, float, float]], "tuple[str, ...]"]
 # A cell holding several numbers is the tell-tale of a merged row ("0.696 ± 0.015 0.011 ± 0.000").
 _MERGED_CELL_NUMBERS = 3
+# The label each reader renders its own way ("Table 2 :" against "Table 2:"), dropped before the
+# two captions are compared — what identifies the table is the sentence after it.
+_CAPTION_LABEL_RE = re.compile(r"^\s*(?:table|tab\.?)\s*[IVXLC\d]+\s*[:.]?\s*", re.IGNORECASE)
+_WS_RE = re.compile(r"\s+")
+# Under this a caption is too generic to identify a table on its own ("Results", "Ablation").
+_CAPTION_MIN_CHARS = 30
 
 
 def tables_needing_repair(doc: dict, crops: Sequence[AssetCropSpec]) -> list[AssetCropSpec]:
@@ -86,7 +92,7 @@ def apply_repairs(
         spec = by_asset.get(ref.get("assetId", ""))
         if spec is None or not _needs_repair(rows):
             continue
-        rebuilt = _best_match(spec, tables)
+        rebuilt = _best_match(spec, tables) or _caption_match(block, spec, tables)
         if rebuilt is None:
             continue
         # Verify against the region the rebuilt rows were actually READ from — the extractor's own
@@ -130,6 +136,41 @@ def _best_match(spec: AssetCropSpec, tables: Sequence[ExtractedTable]) -> Extrac
         if area > best_area:
             best, best_area = table, area
     return best
+
+
+def _caption_match(
+    block: dict, spec: AssetCropSpec, tables: Sequence[ExtractedTable]
+) -> ExtractedTable | None:
+    """The re-read table this block's CAPTION names, when its region names none.
+
+    The failure that empties a table's cells also collapses GROBID's box onto the caption strip,
+    and that strip lies BETWEEN the tables it sits among — overlapping neither. Observed on
+    ``1909.03716`` page 5: an 21pt box at y 258-279 against real tables at y 62-247 and y 291-393,
+    11pt above and 12pt below. Distance cannot choose there, and choosing wrong would file one
+    table's numbers under another's caption — numbers that ARE printed on the page, so the C-2
+    check downstream would not catch the misattribution. The caption does choose: it matched
+    "Table 2 ..." exactly and separated it from the "Table 3 ..." grid 12pt away.
+
+    Demanded strictly, because this runs precisely where geometry has already failed: the block's
+    whole caption must appear in the candidate's, and exactly one candidate on the page may match.
+    An ambiguous page is left unrepaired.
+    """
+    caption = _normalise(block.get("caption"))
+    if len(caption) < _CAPTION_MIN_CHARS:
+        return None
+    hits = [
+        table
+        for table in tables
+        if table.page == spec.page and caption in _normalise(table.caption)
+    ]
+    return hits[0] if len(hits) == 1 else None
+
+
+def _normalise(text: object) -> str:
+    """Caption text reduced to what two readers can agree on: case, spacing, and the label they
+    each render differently ("Table 2 :" against "Table 2:")."""
+    stripped = _CAPTION_LABEL_RE.sub("", str(text or ""), count=1)
+    return _WS_RE.sub(" ", stripped).strip().lower()
 
 
 def _cell_numbers(text: str) -> list[str]:

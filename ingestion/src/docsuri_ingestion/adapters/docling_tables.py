@@ -62,8 +62,18 @@ def _tables_of(document: object, page: int) -> list[ExtractedTable]:
         bbox = _bbox_of(table, document, page)
         if bbox is None:
             continue
-        tables.append(ExtractedTable(page=page, bbox=bbox, rows=rows))
+        tables.append(
+            ExtractedTable(page=page, bbox=bbox, rows=rows, caption=_caption_of(table, document))
+        )
     return tables
+
+
+def _caption_of(table: object, document: object) -> str:
+    """The caption Docling attributed to this table, or "" — best-effort, never fatal."""
+    try:
+        return str(table.caption_text(document) or "").strip()  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - a missing caption only costs the fallback match
+        return ""
 
 
 def _bbox_of(
