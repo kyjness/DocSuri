@@ -41,6 +41,7 @@ from pathlib import Path
 from _common import counts, walk_sections
 from docsuri_shared.dtos import SourceTier
 
+from docsuri_ingestion.adapters.grobid import GrobidHttpClient
 from docsuri_ingestion.docmodel.tei import parse_tei_to_docmodel
 from docsuri_ingestion.full_text_extraction import pdf_to_text
 
@@ -266,6 +267,19 @@ def _audit_one(
     }
 
 
+def _tei_for(key: str, cache: Path, client: GrobidHttpClient | None) -> str:
+    """Cached TEI, extracting it once when the cache has none and a GROBID is reachable."""
+    path = cache / "tei" / f"{key}.tei.xml"
+    if path.exists():
+        return path.read_text(encoding="utf-8")
+    if client is None:
+        raise FileNotFoundError(f"no cached TEI for {key} and no --grobid-url given")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tei = client.extract_tei((cache / "pdf" / f"{key}.pdf").read_bytes())
+    path.write_text(tei, encoding="utf-8")
+    return tei
+
+
 def _pipeline_builder():
     """A builder wired exactly as ingestion wires it, writing nothing.
 
@@ -309,6 +323,12 @@ def main() -> None:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--targets", default="targets.json")
     parser.add_argument(
+        "--grobid-url",
+        default=None,
+        help="extract any TEI the cache is missing (the sweep is otherwise read-only)",
+    )
+    parser.add_argument("--timeout-seconds", type=float, default=900.0)
+    parser.add_argument(
         "--pipeline",
         action="store_true",
         help="judge the WHOLE builder (table re-read + formula OCR), not the parser alone — "
@@ -316,6 +336,11 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    client = (
+        GrobidHttpClient(base_url=args.grobid_url, timeout_seconds=args.timeout_seconds)
+        if args.grobid_url
+        else None
+    )
     builder = _pipeline_builder() if args.pipeline else None
     print(f"judging: {'whole pipeline' if builder else 'parser only'}", flush=True)
 
@@ -329,7 +354,7 @@ def main() -> None:
                 row = _audit_one(
                     target["paper_id"],
                     target["version"],
-                    (args.cache / "tei" / f"{key}.tei.xml").read_text(encoding="utf-8"),
+                    _tei_for(key, args.cache, client),
                     (args.cache / "pdf" / f"{key}.pdf").read_bytes(),
                     builder,
                 )
