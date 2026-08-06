@@ -488,6 +488,15 @@ def _table_block(figure_el: ET.Element, sec_ctx: _SectionCtx, doc_ctx: _DocCtx) 
     label, caption = _figure_label_caption(figure_el)
     if not rows and not caption:
         return None
+    if not rows and not label:
+        # Neither cells nor a "Table N" head: GROBID did not identify a table here, it swept a
+        # stretch of prose into a table element. Across the audit sample every one of these was
+        # running text — a references tail, an acknowledgements paragraph, a bulleted item, a
+        # sentence that merely cites Table 1 — and the reader got a phantom empty table whose
+        # "caption" was that paragraph (523 chars at the median) plus a page crop picturing it.
+        # Caption LENGTH cannot separate the two: real captioned tables run to 1,142 chars here.
+        # The head can, so keep the text and drop the table typing rather than the other way round.
+        return {"id": sec_ctx.next_id("paragraph"), "type": "paragraph", "text": caption}
     ordinal = doc_ctx.table_ordinal
     doc_ctx.table_ordinal += 1
     block: dict = {"id": sec_ctx.next_id("table"), "type": "table", "rows": rows}

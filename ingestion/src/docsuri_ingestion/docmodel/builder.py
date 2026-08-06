@@ -27,7 +27,7 @@ from docsuri_ingestion.docmodel.parser import (
 )
 from docsuri_ingestion.docmodel.table_repair import (
     apply_repairs,
-    printed_numbers,
+    printed_text,
     tables_needing_repair,
 )
 from docsuri_ingestion.docmodel.tei import parse_tei_to_docmodel
@@ -321,7 +321,7 @@ class DocModelBuilder:
             if not suspect:
                 return doc
             tables = self._table_extractor.extract_tables(pdf, [s.page for s in suspect])
-            repaired = apply_repairs(payload, crops, tables, printed_numbers(pdf))
+            repaired = apply_repairs(payload, crops, tables, printed_text(pdf))
             if not repaired:
                 return doc
             # Rows changed, so the fullText projection made at parse time no longer matches the

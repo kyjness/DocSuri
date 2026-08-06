@@ -444,3 +444,45 @@ def test_an_intervening_block_ends_a_list_rather_than_being_swallowed() -> None:
         "first item of the closing list",
         "second item of the closing list",
     ]
+
+
+def test_prose_grobid_swept_into_a_table_element_stays_prose() -> None:
+    """GROBID files stretches of running text as ``<figure type="table">`` with no cells and no
+    head. Keeping those as tables gave the reader a phantom empty table whose "caption" was the
+    paragraph itself, plus a page crop picturing prose — 17 of them in a 50-paper sweep, every one
+    a references tail, an acknowledgements note, a bulleted item or a sentence citing a table."""
+    prose = (
+        "NK was supported by a research grant from a foundation, partly funded by the national "
+        "programme, and the authors thank the reviewers for their comments on an earlier draft."
+    )
+    tei = (
+        f"<TEI {_NS}><text><body><div><head>Results</head>"
+        f'<figure type="table" coords="2,10,20,100,50"><figDesc>{prose}</figDesc></figure>'
+        "</div></body></text></TEI>"
+    )
+    doc = _parse(tei)
+    assert not _blocks_of(doc, "table"), "prose with no cells and no head stayed a table"
+    paragraphs = _blocks_of(doc, "paragraph")
+    assert len(paragraphs) == 1
+    assert paragraphs[0].text == prose
+    # The text is what mattered — it still reaches the searchable projection.
+    assert "thank the reviewers" in doc.fullText
+
+
+def test_a_headed_table_with_no_cells_is_still_a_table() -> None:
+    """The distinction is the head, not the length: a table GROBID named but could not reconstruct
+    keeps its block, its caption and its crop (BR-S3). Real captions here run to 1,142 chars, so
+    caption length cannot tell the two apart."""
+    tei = (
+        f"<TEI {_NS}><text><body><div><head>Results</head>"
+        '<figure type="table" coords="2,10,20,100,50"><head>Table 4</head>'
+        "<figDesc>Ablation over the three encoders, averaged across five seeds and reported "
+        "with standard deviations for every configuration we evaluated in this study.</figDesc>"
+        "<table /></figure></div></body></text></TEI>"
+    )
+    doc = _parse(tei)
+    tables = _blocks_of(doc, "table")
+    assert len(tables) == 1
+    assert tables[0].anchorLabel == "Table 4"
+    assert tables[0].rows == []
+    assert tables[0].assetRef is not None

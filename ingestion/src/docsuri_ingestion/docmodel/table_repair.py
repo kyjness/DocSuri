@@ -32,8 +32,10 @@ _NUMBER_RE = re.compile(r"(?<![A-Za-z\d.])-?\d+(?:\.\d+)?(?![A-Za-z\d])")
 # A space that splits a DECIMAL, e.g. "4. 69%" — healed before reading a cell. Only around the
 # point: joining any digit-space-digit would fuse the neighbouring values of "0.771 0.775".
 _INNER_SPACE_RE = re.compile(r"(?<=\.)\s+(?=\d)|(?<=\d)\s+(?=\.)")
-# Reads the numbers printed in one page region: (page, bbox) -> numbers.
-PrintedNumbers = Callable[[int, tuple[float, float, float, float]], "tuple[str, ...]"]
+# Reads the text printed in one page region: (page, bbox) -> text.
+PrintedText = Callable[[int, tuple[float, float, float, float]], str]
+# Tokens a word-level check compares. One-character cells ("N", "-") carry no evidence either way.
+_WORD_RE = re.compile(r"[0-9a-z]{2,}", re.IGNORECASE)
 # A cell holding several numbers is the tell-tale of a merged row ("0.696 ± 0.015 0.011 ± 0.000").
 _MERGED_CELL_NUMBERS = 3
 # The label each reader renders its own way ("Table 2 :" against "Table 2:"), dropped before the
@@ -82,11 +84,11 @@ def apply_repairs(
     doc: dict,
     crops: Sequence[AssetCropSpec],
     tables: Sequence[ExtractedTable],
-    printed: PrintedNumbers,
+    printed: PrintedText,
 ) -> int:
     """Replace merged TEI cells with a verified rebuild. Returns how many tables were repaired.
 
-    ``printed`` reads the numbers actually printed in a region of the PDF — the ground truth a
+    ``printed`` reads the text actually printed in a region of the PDF — the ground truth a
     rebuild is checked against."""
     by_asset = {spec.asset_id: spec for spec in crops}
     repaired = 0
@@ -193,37 +195,71 @@ def _overlap(a: tuple[float, ...], b: tuple[float, ...]) -> float:
     return width * height if width > 0 and height > 0 else 0.0
 
 
-def _verified(
-    rows: Sequence[Any], rebuilt: Sequence[Sequence[str]], printed: Sequence[str]
-) -> bool:
+def _verified(rows: Sequence[Any], rebuilt: Sequence[Sequence[str]], printed: str) -> bool:
     """Whether a rebuilt grid may replace the TEI cells.
 
-    Two conditions, and they are the whole safety argument. Every number the rebuild places in a
-    cell must be PRINTED in the table's region — so a second reader cannot introduce a figure the
-    paper does not contain. And the rebuild must not read fewer numbers than GROBID did, so a
-    repair never trades merged-but-complete data for tidy-but-partial data.
+    Two conditions, and they are the whole safety argument. Everything the rebuild places in a cell
+    must be PRINTED in the table's region — so a second reader cannot introduce content the paper
+    does not contain. And the rebuild must not read LESS than GROBID did, so a repair never trades
+    merged-but-complete data for tidy-but-partial data.
+
+    What gets compared depends on what the table holds. Numbers are the sharper evidence and stay
+    the test wherever there are any. But judging on numbers ALONE meant a table without them could
+    never be verified and so was never repaired — and plenty of tables in these papers are text
+    ("Attack Type | Example", ablation descriptions, dataset overviews). Those are compared on
+    words instead, under the same two conditions.
     """
-    if not printed:
+    if not printed.strip():
         return False
+    new = Counter(n for row in rebuilt for cell in row for n in _cell_numbers(cell))
+    if not new:
+        return _verified_words(rows, rebuilt, printed)
     old = Counter(
         n
         for row in rows
         for cell in (row.get("cells") or [])
         for n in _cell_numbers(str(cell.get("text") or ""))
     )
-    new = Counter(n for row in rebuilt for cell in row for n in _cell_numbers(cell))
-    if not new or sum(new.values()) < sum(old.values()):
+    if sum(new.values()) < sum(old.values()):
         return False
-    available = Counter(printed)
+    available = Counter(_NUMBER_RE.findall(_INNER_SPACE_RE.sub("", printed)))
     return all(available[value] >= count for value, count in new.items())
 
 
-def printed_numbers(pdf: bytes) -> PrintedNumbers:
-    """A reader of the numbers actually printed in a region of the PDF.
+def _verified_words(rows: Sequence[Any], rebuilt: Sequence[Sequence[str]], printed: str) -> bool:
+    """The same argument for a table that holds no numbers, compared word by word.
+
+    A rebuild with nothing to compare is refused rather than waved through — verifying against an
+    empty set would let any grid pass, which is the one outcome this check exists to prevent.
+    """
+    new = Counter(w for row in rebuilt for cell in row for w in _words(cell))
+    if not new:
+        return False
+    old = Counter(
+        w
+        for row in rows
+        for cell in (row.get("cells") or [])
+        for w in _words(str(cell.get("text") or ""))
+    )
+    if sum(new.values()) < sum(old.values()):
+        return False
+    available = Counter(_words(printed))
+    return all(available[word] >= count for word, count in new.items())
+
+
+def _words(text: str) -> list[str]:
+    return [w.lower() for w in _WORD_RE.findall(text)]
+
+
+def printed_text(pdf: bytes) -> PrintedText:
+    """A reader of the text actually printed in a region of the PDF.
 
     This is the yardstick a rebuild is checked against, read straight off the page with the same
-    library the crop pipeline already uses. An unreadable page yields no numbers, which the
+    library the crop pipeline already uses. An unreadable page yields nothing, which the
     verification treats as "cannot be checked" and therefore refuses to repair.
+
+    The region's whole text is returned rather than just its numbers: the numbers were always
+    derived from it, and a table that holds none still has to be checkable against something.
     """
 
     # The PDF is opened once, lazily, and reused across every table on the page — apply_repairs
@@ -232,14 +268,14 @@ def printed_numbers(pdf: bytes) -> PrintedNumbers:
     # released with the closure when the repair pass ends.
     pages: list = []
 
-    def read(page_no: int, bbox: tuple[float, float, float, float]) -> tuple[str, ...]:
+    def read(page_no: int, bbox: tuple[float, float, float, float]) -> str:
         try:
             if not pages:
                 import pdfplumber
 
                 pages.extend(pdfplumber.open(io.BytesIO(pdf)).pages)
             if not 1 <= page_no <= len(pages):
-                return ()
+                return ""
             page = pages[page_no - 1]
             region = (
                 max(0.0, bbox[0]),
@@ -247,8 +283,8 @@ def printed_numbers(pdf: bytes) -> PrintedNumbers:
                 min(float(page.width), bbox[2]),
                 min(float(page.height), bbox[3]),
             )
-            return tuple(_NUMBER_RE.findall(page.crop(region).extract_text() or ""))
+            return page.crop(region).extract_text() or ""
         except Exception:  # noqa: BLE001 - unreadable page -> no yardstick -> no repair
-            return ()
+            return ""
 
     return read

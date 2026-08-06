@@ -36,8 +36,9 @@ def _doc(table: dict | None = None) -> dict:
     return {"sections": [{"id": "s1", "blocks": [dict(table or _MERGED)]}]}
 
 
-def _printed(numbers: str):
-    return lambda page, bbox: tuple(numbers.split())
+def _printed(text: str):
+    """The region's printed text, as the pdfplumber reader hands it back."""
+    return lambda page, bbox: text
 
 
 def _rows(doc: dict) -> list[list[str]]:
@@ -94,9 +95,9 @@ def test_verification_reads_the_extractors_own_region() -> None:
     doc = _doc()
     seen: list[tuple[float, float, float, float]] = []
 
-    def printed(page: int, bbox: tuple[float, float, float, float]) -> tuple[str, ...]:
+    def printed(page: int, bbox: tuple[float, float, float, float]) -> str:
         seen.append(bbox)
-        return ("0.696", "0.015", "0.011", "0.000")
+        return "0.696 0.015 0.011 0.000"
 
     assert apply_repairs(doc, [_SPEC], [_REBUILT], printed) == 1
     assert seen == [_REBUILT.bbox]  # not a union with _SPEC.bbox
@@ -115,7 +116,7 @@ def test_an_unreadable_page_refuses_the_rebuild() -> None:
     """With no yardstick there is no verification, and an unverified rebuild is not applied."""
     doc = _doc()
 
-    assert apply_repairs(doc, [_SPEC], [_REBUILT], lambda page, bbox: ()) == 0
+    assert apply_repairs(doc, [_SPEC], [_REBUILT], lambda page, bbox: "") == 0
 
 
 def test_a_grid_from_another_region_is_not_used() -> None:
@@ -309,3 +310,79 @@ def test_a_caption_the_readers_truncate_differently_still_matches() -> None:
     long_tail["caption"] = _CAPTION + " And then a whole paragraph the other reader never saw."
     doc = _doc(long_tail)
     assert apply_repairs(doc, [_COLLAPSED], [_ABOVE], _printed("0.696 0.015 0.011 0.000")) == 1
+
+
+# --- text tables: the ones a number-only check could never verify ---
+
+_TEXT_TABLE = {
+    "id": "s1.tbl1",
+    "type": "table",
+    "assetRef": {"assetId": _ASSET, "type": "table", "ordinal": 0},
+    "caption": "Attack taxonomy with one worked example per row of the evaluation suite.",
+    "rows": [],
+}
+_TEXT_REBUILT = ExtractedTable(
+    page=3,
+    bbox=_REBUILT.bbox,
+    rows=(("Attack Type", "Example"), ("Prompt injection", "Ignore prior instructions")),
+)
+_TEXT_PRINTED = "Attack Type Example Prompt injection Ignore prior instructions"
+
+
+def test_a_table_holding_no_numbers_can_be_verified_on_its_words() -> None:
+    """Judging only on numbers meant a table without any could never be checked, so it was never
+    repaired — and the check refused it for having nothing to compare, not for being wrong. Plenty
+    of tables here are text: attack taxonomies, ablation descriptions, dataset overviews."""
+    doc = _doc(_TEXT_TABLE)
+
+    assert apply_repairs(doc, [_SPEC], [_TEXT_REBUILT], _printed(_TEXT_PRINTED)) == 1
+    assert _rows(doc) == [
+        ["Attack Type", "Example"],
+        ["Prompt injection", "Ignore prior instructions"],
+    ]
+
+
+def test_a_word_not_printed_on_the_page_refuses_the_whole_rebuild() -> None:
+    """The safety argument is unchanged, only what it compares: a second reader may re-divide what
+    the page prints and nothing else (C-2)."""
+    doc = _doc(_TEXT_TABLE)
+    invented = ExtractedTable(
+        page=3,
+        bbox=_REBUILT.bbox,
+        rows=(("Attack Type", "Example"), ("Prompt injection", "Exfiltrate the private key")),
+    )
+
+    assert apply_repairs(doc, [_SPEC], [invented], _printed(_TEXT_PRINTED)) == 0
+    assert doc["sections"][0]["blocks"][0]["rows"] == []
+
+
+def test_a_word_rebuild_that_reads_less_than_grobid_is_refused() -> None:
+    """Merged-but-complete beats tidy-but-partial on the word path too."""
+    merged_text = dict(_TEXT_TABLE)
+    merged_text["rows"] = [
+        {"cells": [{"text": "Attack Type Example Prompt injection Ignore prior instructions"}]}
+    ]
+    partial = ExtractedTable(page=3, bbox=_REBUILT.bbox, rows=(("Attack Type", "Example"),))
+
+    doc = _doc(merged_text)
+    assert apply_repairs(doc, [_SPEC], [partial], _printed(_TEXT_PRINTED)) == 0
+
+
+def test_a_rebuild_with_nothing_comparable_is_refused() -> None:
+    """Single characters carry no evidence, so a grid made only of them would verify against an
+    empty set — which would let ANY grid through. Refused rather than waved past."""
+    doc = _doc(_TEXT_TABLE)
+    noise = ExtractedTable(page=3, bbox=_REBUILT.bbox, rows=(("-", "|"), ("*", "")))
+
+    assert apply_repairs(doc, [_SPEC], [noise], _printed(_TEXT_PRINTED)) == 0
+
+
+def test_a_numeric_table_is_still_judged_on_its_numbers() -> None:
+    """The word path opens only where there are no numbers. A numeric rebuild whose words all
+    appear on the page must still fail when one of its NUMBERS does not."""
+    doc = _doc()
+    wrong_number = ExtractedTable(
+        page=3, bbox=_REBUILT.bbox, rows=(("Method", "C-index"), ("ADA", "0.842"))
+    )
+
+    assert apply_repairs(doc, [_SPEC], [wrong_number], _printed("Method C-index ADA 0.696")) == 0

@@ -26,7 +26,7 @@ from docsuri_shared.dtos import SourceTier
 from docsuri_ingestion.adapters.docling_tables import DoclingTableExtractor
 from docsuri_ingestion.docmodel.table_repair import (
     apply_repairs,
-    printed_numbers,
+    printed_text,
     tables_needing_repair,
 )
 from docsuri_ingestion.docmodel.tei import parse_tei_to_docmodel
@@ -68,7 +68,7 @@ def main() -> None:
                 row.update(tables=empty0 + filled0, candidates=len(candidates), repaired=0)
                 if candidates:
                     read = extractor.extract_tables(pdf, sorted({c.page for c in candidates}))
-                    row["repaired"] = apply_repairs(doc, crops, read, printed_numbers(pdf))
+                    row["repaired"] = apply_repairs(doc, crops, read, printed_text(pdf))
                     row["empty_after"], row["filled_after"] = _table_stats(doc)
             except Exception as exc:  # noqa: BLE001 - a crash is the loudest datum here
                 row["error"] = f"{type(exc).__name__}: {exc}"
