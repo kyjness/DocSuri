@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -86,6 +87,11 @@ def main() -> None:
         help="only needed when the TEI cache is missing entries",
     )
     parser.add_argument("--timeout-seconds", type=float, default=900.0)
+    parser.add_argument(
+        "--targets",
+        default="targets.json",
+        help="target list inside --cache; point at a subset to sample the sweep",
+    )
     args = parser.parse_args()
 
     settings = IngestionSettings()
@@ -111,7 +117,8 @@ def main() -> None:
         else None
     )
 
-    targets = json.loads((args.cache / "targets.json").read_text())
+    targets = json.loads((args.cache / args.targets).read_text())
+    started = time.monotonic()
     with args.out.open("w", encoding="utf-8") as fh:
         for i, target in enumerate(targets, start=1):
             paper_id, version = target["paper_id"], target["version"]
@@ -145,7 +152,15 @@ def main() -> None:
             except Exception as exc:  # noqa: BLE001 - a crash is the loudest datum here
                 row["error"] = f"{type(exc).__name__}: {exc}"
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
-            print(f"[{i}/{len(targets)}] {key} {row.get('error', '')}", flush=True)
+            # Flushed per paper: formula OCR runs a model over every crop, so a paper can take
+            # minutes and a buffered run looks indistinguishable from a hung one.
+            fh.flush()
+            print(
+                f"[{i}/{len(targets)}] {key} {time.monotonic() - started:.0f}s "
+                f"{row.get('error', '')}",
+                flush=True,
+            )
+            started = time.monotonic()
     print(f"wrote {args.out}")
 
 

@@ -39,15 +39,33 @@ _MERGED_CELL_NUMBERS = 3
 
 
 def tables_needing_repair(doc: dict, crops: Sequence[AssetCropSpec]) -> list[AssetCropSpec]:
-    """The crop specs of tables whose TEI cells look merged — the pages worth re-reading."""
+    """The crop specs of tables worth re-reading — merged cells, or no cells at all."""
     by_asset = {spec.asset_id: spec for spec in crops}
     out: list[AssetCropSpec] = []
     for block in iter_blocks(doc, "table"):
         ref = block.get("assetRef") or {}
         spec = by_asset.get(ref.get("assetId", ""))
-        if spec is not None and _looks_merged(block.get("rows") or []):
+        if spec is not None and _needs_repair(block.get("rows") or []):
             out.append(spec)
     return out
+
+
+def _needs_repair(rows: Sequence[Any]) -> bool:
+    """Whether a re-read could improve this table.
+
+    Two distinct GROBID failures, and only the first was ever routed here. Cells can come out
+    GLUED — several columns run into one — which ``_looks_merged`` names. They can also come out
+    EMPTY, when reconstruction fails outright and the block keeps its caption with no rows at all
+    (the case ``test_a_table_grobid_could_not_reconstruct_keeps_its_caption`` pins). That is the
+    worse of the two — the whole grid is gone, not merely mis-split — yet ``_looks_merged`` reads
+    it as healthy because it has no cell holding several numbers, so the repair never ran on
+    exactly the tables that needed it most.
+
+    Sending an empty table through is safe for the same reason a merged one is: the rebuild still
+    has to place only numbers printed in the region (C-2), and a table with genuinely no data
+    finds no overlapping re-read and is left alone.
+    """
+    return not _cells_of(rows) or _looks_merged(rows)
 
 
 def apply_repairs(
@@ -66,7 +84,7 @@ def apply_repairs(
         rows = block.get("rows") or []
         ref = block.get("assetRef") or {}
         spec = by_asset.get(ref.get("assetId", ""))
-        if spec is None or not _looks_merged(rows):
+        if spec is None or not _needs_repair(rows):
             continue
         rebuilt = _best_match(spec, tables)
         if rebuilt is None:
@@ -87,15 +105,19 @@ def apply_repairs(
 
 def _looks_merged(rows: Sequence[Any]) -> bool:
     """Whether the reconstructed cells read as glued-together rows rather than real columns."""
-    cells = [
+    cells = _cells_of(rows)
+    if not cells:
+        return False
+    return any(len(_cell_numbers(cell)) >= _MERGED_CELL_NUMBERS for cell in cells)
+
+
+def _cells_of(rows: Sequence[Any]) -> list[str]:
+    return [
         str(cell.get("text") or "")
         for row in rows
         if isinstance(row, dict)
         for cell in (row.get("cells") or [])
     ]
-    if not cells:
-        return False
-    return any(len(_cell_numbers(cell)) >= _MERGED_CELL_NUMBERS for cell in cells)
 
 
 def _best_match(spec: AssetCropSpec, tables: Sequence[ExtractedTable]) -> ExtractedTable | None:

@@ -144,3 +144,37 @@ def test_spacing_inside_a_value_does_not_look_like_two_numbers() -> None:
 
     assert apply_repairs(doc, [_SPEC], [rebuilt], _printed("4.69 0.771 0.775")) == 1
     assert _rows(doc) == [["HbA1c < 4. 69%", "0.771", "0.775"]]
+
+
+def test_a_table_grobid_emptied_is_re_read_too() -> None:
+    """The other GROBID failure, and the one that was never routed here.
+
+    Cells can come out glued, which the merge signature names — or they can come out EMPTY, when
+    reconstruction fails outright and the block keeps its caption with no rows at all. That is the
+    worse of the two: the whole grid is gone rather than mis-split. The merge check read it as
+    healthy (no cell holds several numbers), so the repair skipped exactly the tables that had
+    lost everything.
+    """
+    emptied = dict(_MERGED)
+    emptied["rows"] = []
+
+    assert tables_needing_repair(_doc(emptied), [_SPEC]) == [_SPEC]
+
+
+def test_a_rebuild_of_an_emptied_table_still_has_to_be_printed_on_the_page() -> None:
+    """Routing an empty table in must not relax the safety argument: with no TEI numbers to fall
+    short of, the printed-numbers check is the only thing standing between the block and a
+    fabricated grid (C-2)."""
+    emptied = dict(_MERGED)
+    emptied["rows"] = []
+
+    doc = _doc(emptied)
+    assert apply_repairs(doc, [_SPEC], [_REBUILT], _printed("0.696 0.015")) == 0
+    assert doc["sections"][0]["blocks"][0]["rows"] == []
+
+    doc = _doc(emptied)
+    assert apply_repairs(doc, [_SPEC], [_REBUILT], _printed("0.696 0.015 0.011 0.000")) == 1
+    assert _rows(doc) == [
+        ["Method", "C-index", "Brier"],
+        ["ADA", "0.696 ± 0.015", "0.011 ± 0.000"],
+    ]
