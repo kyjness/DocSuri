@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import re
 import xml.etree.ElementTree as ET
-from collections.abc import Sequence
+from collections.abc import MutableSequence, Sequence
 from datetime import UTC, datetime
 
 from docsuri_shared.dtos import DocModel, SourceTier
@@ -89,6 +89,8 @@ _VERBATIM_HEAD_RE = re.compile(r"^\s*Listing\s+\d+\s*[:.]", re.IGNORECASE)
 # sample: at 150 exactly one more block promotes (a four-triple RDF listing) and nothing further
 # appears down to 100, so the gate is not what bounds recall here.
 _LISTING_MIN_CHARS = 150
+# The bullet glyphs LaTeX's itemize renders and pdfalto carries through into GROBID's text.
+_BULLET_RE = re.compile(r"[•▪‣◦]")
 
 
 def _local(tag: object) -> str:
@@ -164,9 +166,7 @@ def _parse_div(div: ET.Element, section_id: str, doc_ctx: _DocCtx) -> dict:
         if name == "head" and not title:
             title = _text(child)
         elif name == "p":
-            block = _paragraph_block(child, sec_ctx)
-            if block:
-                blocks.append(block)
+            blocks.extend(_paragraph_blocks(child, sec_ctx, blocks))
         elif name == "formula":
             blocks.extend(
                 _formula_or_algorithm_blocks(
@@ -209,15 +209,92 @@ def _trailing_figure_section(
 # --------------------------------------------------------------------------- blocks
 
 
-def _paragraph_block(p: ET.Element, sec_ctx: _SectionCtx) -> dict | None:
+def _paragraph_blocks(
+    p: ET.Element, sec_ctx: _SectionCtx, section_blocks: MutableSequence[dict] | None = None
+) -> list[dict]:
+    """A ``<p>`` -> paragraph, or the listing / bulleted list GROBID flattened into one.
+
+    TEI has no list element on this path at all: GROBID emits neither ``<list>`` nor ``<item>``
+    anywhere in the body, so a bulleted list arrives as prose carrying its bullet glyphs. Usually
+    it arrives as one ``<p>`` PER ITEM (64 such paragraphs against 19 multi-bullet ones across the
+    audit sample), which is why a run of them has to be rejoined rather than each split alone.
+    """
     text = _text(p)
     if not text:
-        return None
+        return []
     if _is_paragraph_listing(text):
         # Same text either way — what changes is that the listing stops being indistinguishable
         # from prose, so a reader sees it as code and an agent can tell it apart when quoting.
-        return {"id": sec_ctx.next_id("code"), "type": "code", "text": text}
-    return {"id": sec_ctx.next_id("paragraph"), "type": "paragraph", "text": text}
+        return [{"id": sec_ctx.next_id("code"), "type": "code", "text": text}]
+    items = _split_bullets(text)
+    if not items:
+        return [{"id": sec_ctx.next_id("paragraph"), "type": "paragraph", "text": text}]
+    if len(items) == 1:
+        # One bulleted line is one ITEM of a list GROBID split across sibling paragraphs. Join the
+        # open list, or start one by absorbing the bulleted paragraph immediately before — that
+        # first item cannot know a second is coming, so it lands as a paragraph and is reclaimed
+        # here. With neither neighbour the paragraph stays verbatim: a lone bullet is not a list,
+        # and inventing a one-item list where the source had a sentence is the worse error.
+        blocks = section_blocks if section_blocks is not None else []
+        host = _open_list(blocks)
+        if host is not None:
+            host["items"].append({"text": items[0]})
+            return []
+        first = _trailing_bullet_paragraph(blocks)
+        if first is not None:
+            blocks.pop()
+            return [_list_block(sec_ctx, [*_split_bullets(first["text"]), items[0]])]
+        return [{"id": sec_ctx.next_id("paragraph"), "type": "paragraph", "text": text}]
+    return [_list_block(sec_ctx, items)]
+
+
+def _list_block(sec_ctx: _SectionCtx, items: Sequence[str]) -> dict:
+    """``ordered`` stays False: the glyph that survived is a bullet, and a numbered list keeps its
+    numerals inside the item text where they are still readable."""
+    return {
+        "id": sec_ctx.next_id("list"),
+        "type": "list",
+        "ordered": False,
+        "items": [{"text": item} for item in items],
+    }
+
+
+def _trailing_bullet_paragraph(blocks: Sequence[dict]) -> dict | None:
+    """The bulleted paragraph a following bullet turns into a list, or None."""
+    last = blocks[-1] if blocks else None
+    if last is None or last.get("type") != "paragraph":
+        return None
+    return last if _split_bullets(last.get("text") or "") else None
+
+
+def _open_list(blocks: Sequence[dict]) -> dict | None:
+    """The list a following bulleted paragraph continues — only when it is the LAST block.
+
+    Anything in between (a formula, a figure, a plain paragraph) ends the list; a later bullet
+    then starts its own rather than reaching back across unrelated content.
+    """
+    last = blocks[-1] if blocks else None
+    return last if last is not None and last.get("type") == "list" else None
+
+
+def _split_bullets(text: str) -> list[str]:
+    """Bullet items of a paragraph that IS a list, else empty. Pure.
+
+    Anchored at the paragraph start, because a bullet glyph mid-sentence is maths, not a list:
+    papers write "\\([\\bullet]\\) denotes the truncated SVD" and "\\((\\bullet)^+\\) denotes the
+    pseudo inverse", which an unanchored split tore into fragments beginning with a bracket. Only
+    a paragraph that OPENS with the glyph is an itemised one.
+    """
+    if not _BULLET_RE.match(text.lstrip()):
+        return []
+    parts = [part.strip(" \t:;,") for part in _BULLET_RE.split(text)]
+    return [part for part in parts if part]
+
+
+def _paragraph_block(p: ET.Element, sec_ctx: _SectionCtx) -> dict | None:
+    """Single-block form kept for callers that cannot take a list (trailing float sections)."""
+    blocks = _paragraph_blocks(p, sec_ctx)
+    return blocks[0] if blocks else None
 
 
 def _is_paragraph_listing(text: str) -> bool:

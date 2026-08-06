@@ -1,6 +1,6 @@
 {
-  "fullTextLen": 26335,
-  "fullTextSha": "cdb2c0830982fa3a",
+  "fullTextLen": 26329,
+  "fullTextSha": "29c5b71616d5afd7",
   "sections": [
     {
       "blocks": [
@@ -41,22 +41,10 @@
           "type": "paragraph"
         },
         {
-          "id": "s1.p7",
-          "textLen": 248,
-          "textSha": "99d71ba68c50f26a",
-          "type": "paragraph"
-        },
-        {
-          "id": "s1.p8",
-          "textLen": 298,
-          "textSha": "3fc2bdcbd3c5714c",
-          "type": "paragraph"
-        },
-        {
-          "id": "s1.p9",
-          "textLen": 378,
-          "textSha": "aa4e833f3779c449",
-          "type": "paragraph"
+          "id": "s1.list1",
+          "items": 3,
+          "ordered": false,
+          "type": "list"
         }
       ],
       "id": "s1",

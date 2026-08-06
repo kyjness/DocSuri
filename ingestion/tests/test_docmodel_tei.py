@@ -351,3 +351,96 @@ def test_a_listing_caption_split_from_its_body_is_not_promoted_alone() -> None:
     doc = _parse(tei)
     assert not _blocks_of(doc, "code")
     assert len(_blocks_of(doc, "paragraph")) == 1
+
+
+def test_consecutive_bulleted_paragraphs_become_one_list() -> None:
+    """GROBID emits no <list> or <item> anywhere in the body — a bulleted list arrives as prose
+    carrying its bullet glyphs, usually one <p> PER ITEM. The first item cannot know a second is
+    coming, so it lands as a paragraph and is reclaimed when the next bullet arrives."""
+    tei = (
+        f"<TEI {_NS}><text><body><div><head>Contributions</head>"
+        "<p>We make the following contributions.</p>"
+        "<p>• We leverage the time-frequency duality for explanations.</p>"
+        "<p>• We show the method transfers to unseen sampling rates.</p>"
+        "<p>• We release the benchmark and the evaluation harness.</p>"
+        "</div></body></text></TEI>"
+    )
+    doc = _parse(tei)
+    lists = _blocks_of(doc, "list")
+    assert len(lists) == 1, "items split across sibling paragraphs did not rejoin"
+    assert [i.text for i in lists[0].items] == [
+        "We leverage the time-frequency duality for explanations.",
+        "We show the method transfers to unseen sampling rates.",
+        "We release the benchmark and the evaluation harness.",
+    ]
+    # The lead-in is prose and stays one.
+    lead = "We make the following contributions."
+    assert [b.text for b in _blocks_of(doc, "paragraph")] == [lead]
+
+
+def test_a_single_paragraph_holding_every_bullet_becomes_one_list() -> None:
+    """The other shape the same list arrives in — all items flattened into one <p>."""
+    tei = (
+        f"<TEI {_NS}><text><body><div><head>Inputs</head>"
+        "<p>• 3-axis acceleration • 4-axis quaternions • 3-axis angular velocity</p>"
+        "</div></body></text></TEI>"
+    )
+    lists = _blocks_of(_parse(tei), "list")
+    assert len(lists) == 1
+    assert [i.text for i in lists[0].items] == [
+        "3-axis acceleration",
+        "4-axis quaternions",
+        "3-axis angular velocity",
+    ]
+
+
+def test_a_bullet_used_as_a_maths_placeholder_is_not_a_list() -> None:
+    """Papers write "[•] denotes the truncated SVD" and "(•)+ denotes the pseudo inverse".
+
+    An unanchored split tore those into fragments beginning with a bracket, inventing list items
+    out of one sentence. Only a paragraph that OPENS with the glyph is an itemised one.
+    """
+    tei = (
+        f"<TEI {_NS}><text><body><div><head>Notation</head>"
+        "<p>Here [•] denotes the rank-r truncated SVD and (•)+ denotes the pseudo inverse.</p>"
+        "</div></body></text></TEI>"
+    )
+    doc = _parse(tei)
+    assert not _blocks_of(doc, "list")
+    assert len(_blocks_of(doc, "paragraph")) == 1
+
+
+def test_a_lone_bulleted_paragraph_stays_a_paragraph() -> None:
+    """A one-item list is not what the source had, and inventing one is the worse error."""
+    tei = (
+        f"<TEI {_NS}><text><body><div><head>Note</head>"
+        "<p>• The dataset is released under CC-BY.</p>"
+        "<p>We now turn to the evaluation protocol.</p>"
+        "</div></body></text></TEI>"
+    )
+    doc = _parse(tei)
+    assert not _blocks_of(doc, "list")
+    assert len(_blocks_of(doc, "paragraph")) == 2
+
+
+def test_an_intervening_block_ends_a_list_rather_than_being_swallowed() -> None:
+    """A later bullet starts its own list instead of reaching back across unrelated content."""
+    tei = (
+        f"<TEI {_NS}><text><body><div><head>Setup</head>"
+        "<p>• first item of the opening list</p>"
+        "<p>• second item of the opening list</p>"
+        "<p>Prose that separates the two lists entirely.</p>"
+        "<p>• first item of the closing list</p>"
+        "<p>• second item of the closing list</p>"
+        "</div></body></text></TEI>"
+    )
+    lists = _blocks_of(_parse(tei), "list")
+    assert len(lists) == 2, "the two lists were merged across the intervening paragraph"
+    assert [i.text for i in lists[0].items] == [
+        "first item of the opening list",
+        "second item of the opening list",
+    ]
+    assert [i.text for i in lists[1].items] == [
+        "first item of the closing list",
+        "second item of the closing list",
+    ]
