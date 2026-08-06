@@ -39,9 +39,13 @@ _MERGED_CELL_NUMBERS = 3
 # The label each reader renders its own way ("Table 2 :" against "Table 2:"), dropped before the
 # two captions are compared — what identifies the table is the sentence after it.
 _CAPTION_LABEL_RE = re.compile(r"^\s*(?:table|tab\.?)\s*[IVXLC\d]+\s*[:.]?\s*", re.IGNORECASE)
-_WS_RE = re.compile(r"\s+")
+_NON_ALNUM_RE = re.compile(r"[^0-9a-z]+", re.IGNORECASE)
 # Under this a caption is too generic to identify a table on its own ("Results", "Ablation").
 _CAPTION_MIN_CHARS = 30
+# Compare an OPENING stretch, not the whole caption: the two readers agree on where a caption
+# starts but not where it ends — one truncates a long one, the other runs it into the following
+# paragraph — so demanding the whole of it made a matching caption look like a mismatch.
+_CAPTION_PROBE_CHARS = 60
 
 
 def tables_needing_repair(doc: dict, crops: Sequence[AssetCropSpec]) -> list[AssetCropSpec]:
@@ -155,7 +159,7 @@ def _caption_match(
     whole caption must appear in the candidate's, and exactly one candidate on the page may match.
     An ambiguous page is left unrepaired.
     """
-    caption = _normalise(block.get("caption"))
+    caption = _normalise(block.get("caption"))[:_CAPTION_PROBE_CHARS]
     if len(caption) < _CAPTION_MIN_CHARS:
         return None
     hits = [
@@ -167,10 +171,15 @@ def _caption_match(
 
 
 def _normalise(text: object) -> str:
-    """Caption text reduced to what two readers can agree on: case, spacing, and the label they
-    each render differently ("Table 2 :" against "Table 2:")."""
+    """Caption text reduced to what two readers can agree on.
+
+    Letters and digits only. The two readers render the same caption with different punctuation —
+    GROBID gave `"bounded by m " means … r ∼ p(•` where the re-read gave `'bounded by m ' means …
+    r ∼ p (` — so quotes, spacing and brackets have to go before the comparison, not just case and
+    the label each spells its own way ("Table 2 :" against "Table 2:").
+    """
     stripped = _CAPTION_LABEL_RE.sub("", str(text or ""), count=1)
-    return _WS_RE.sub(" ", stripped).strip().lower()
+    return _NON_ALNUM_RE.sub("", stripped).lower()
 
 
 def _cell_numbers(text: str) -> list[str]:

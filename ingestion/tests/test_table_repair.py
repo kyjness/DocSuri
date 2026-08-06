@@ -280,3 +280,32 @@ def test_a_region_that_does_overlap_is_still_matched_by_region() -> None:
     )
     assert repaired == 1
     assert _rows(doc)[0] == ["Method", "C-index", "Brier"]
+
+
+def test_two_readers_punctuating_the_same_caption_differently_still_match() -> None:
+    """The same caption comes back with different punctuation from each reader.
+
+    GROBID gave `"bounded by M " means … r ∼ p(•` where the re-read gave `'bounded by M ' means …
+    r ∼ p (` — same sentence, different quotes and bracket spacing. Comparing the raw text made a
+    caption that names the table look like a mismatch, so the fallback refused a repair it should
+    have made. Only letters and digits survive normalisation now.
+    """
+    quoted = dict(_EMPTIED)
+    quoted["caption"] = 'Instantiations of L t "bounded by M " means for any x and r ~ p(*)'
+    rebuilt = ExtractedTable(
+        page=_ABOVE.page,
+        bbox=_ABOVE.bbox,
+        rows=_ABOVE.rows,
+        caption="Table 1: Instantiations of L t 'bounded by M ' means for any x and r ~ p (*)",
+    )
+    doc = _doc(quoted)
+    assert apply_repairs(doc, [_COLLAPSED], [rebuilt], _printed("0.696 0.015 0.011 0.000")) == 1
+
+
+def test_a_caption_the_readers_truncate_differently_still_matches() -> None:
+    """One reader stops at the caption, the other runs on into the paragraph below it. Comparing
+    the whole of either against the other fails on that tail, so an opening stretch is compared."""
+    long_tail = dict(_EMPTIED)
+    long_tail["caption"] = _CAPTION + " And then a whole paragraph the other reader never saw."
+    doc = _doc(long_tail)
+    assert apply_repairs(doc, [_COLLAPSED], [_ABOVE], _printed("0.696 0.015 0.011 0.000")) == 1
