@@ -9,10 +9,16 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from docsuri_shared.dtos import AssetRef as AssetRefDTO
+
 from summarization.adapters.rds_assets import RdsS3AssetReader, _split_s3_ref
 from summarization.api.router import build_router
 from summarization.domain.models import AssetRef, StoredAsset
 from summarization.service.orchestrator import SummarizationOrchestrationService
+
+# The schema SSOT's kind enum, reached through the generated DTO rather than restated here —
+# a literal copy would keep passing after the contract grew a kind the query never learned.
+AssetKind = AssetRefDTO.model_fields["type"].annotation
 
 
 class _FakeState:
@@ -177,15 +183,17 @@ class _FakeS3:
         return f"https://signed/{Params['Key']}?e={ExpiresIn}"
 
 
-def test_list_assets_query_excludes_formula_crops() -> None:
-    """The manifest query must restrict to AssetView kinds (figure | table). U1 also writes
-    type="formula" page-crop rows (doc-model viewer display assets) into paper_asset; surfacing
-    them here breaks GET /assets validation and pollutes the U5 figure gallery."""
+def test_list_assets_query_carries_every_kind_the_contract_declares() -> None:
+    """This manifest is the only route from an assetId to a signed url, so a kind the query
+    omits is a doc-model assetRef the viewer can never resolve. Excluding "formula" once left
+    every PDF-path equation rendering as a placeholder over a crop that was sitting in S3.
+    Read the kinds off the DTO enum, not a literal, so narrowing the contract fails here."""
     conn = _FakeConn([])
     reader = RdsS3AssetReader(connection=conn, s3_client=_FakeS3())
     list(reader.list_assets("2401.00001", 1))
     sql = conn._cur.executed[0]
-    assert "type IN ('figure', 'table')" in sql
+    for kind in AssetKind:
+        assert f"'{kind.value}'" in sql, f"{kind.value} assets can never be resolved by the viewer"
 
 
 def test_reader_lists_and_presigns() -> None:
