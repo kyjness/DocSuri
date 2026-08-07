@@ -290,6 +290,31 @@ def test_real_tei_crop_specs_stay_inside_their_pages() -> None:
         assert len(ordinals) == len(set(ordinals)), f"duplicate {asset_type} ordinals: {ordinals}"
 
 
+def test_a_crop_spec_carries_the_same_caption_as_the_block_it_belongs_to() -> None:
+    """``table_repair._caption_match`` identifies a table by the caption on its CROP SPEC.
+
+    That only works because the two are the same string: ``_table_block`` hands the caption it
+    puts on the block straight to ``_record_crop``. Nothing else enforces it — the block and the
+    spec are separate objects that travel separately — so a change that filled one and not the
+    other would silently disable the caption fallback on the very tables it exists for (the ones
+    whose box collapsed onto the caption strip), with no test failing anywhere near it.
+    """
+    doc = _parse_tei()
+    specs = {s.asset_id: s.caption for s in tei_crop_specs(_load_tei(), paper_id=TRIPLE, version=1)}
+    checked = 0
+    for section in doc.sections:
+        for block in section.blocks:
+            ref = getattr(block.root, "assetRef", None)
+            caption = getattr(block.root, "caption", None)
+            if ref is None or not caption:
+                continue
+            assert specs.get(ref.assetId) == caption, (
+                f"{ref.assetId}: block caption and crop spec caption have diverged"
+            )
+            checked += 1
+    assert checked, "no captioned block with a crop spec to check"
+
+
 def test_tei_text_projection_covers_the_structured_text() -> None:
     """``tei_to_text`` (withdrawal scan) and the doc-model must read the same document.
 

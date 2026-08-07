@@ -7,6 +7,8 @@ refused, not how the cells were read.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from docsuri_ingestion.docmodel.table_repair import apply_repairs, tables_needing_repair
 from docsuri_ingestion.domain.assets import AssetCropSpec, ExtractedTable
 from docsuri_ingestion.domain.enums import AssetType
@@ -183,14 +185,20 @@ def test_a_rebuild_of_an_emptied_table_still_has_to_be_printed_on_the_page() -> 
 
 # --- the caption fallback: matching when GROBID's box collapsed onto the caption strip ---
 
-# The box GROBID leaves when its reconstruction fails: a caption-height strip that sits BETWEEN
-# the tables on the page and so overlaps neither (observed at 21pt on 1909.03716 page 5).
-_COLLAPSED = AssetCropSpec(
-    asset_id=_ASSET, type=AssetType.TABLE, ordinal=0, page=3, bbox=(72.0, 258.0, 526.0, 279.0)
-)
 _CAPTION = (
     "Performance comparison of the proposed model on the test set of both datasets. "
     "The term 'best' refers to the best performance on the development set."
+)
+# The box GROBID leaves when its reconstruction fails: a caption-height strip that sits BETWEEN
+# the tables on the page and so overlaps neither (observed at 21pt on 1909.03716 page 5). The
+# caption rides on the spec, where the parser writes it — the same string it puts on the block.
+_COLLAPSED = AssetCropSpec(
+    asset_id=_ASSET,
+    type=AssetType.TABLE,
+    ordinal=0,
+    page=3,
+    bbox=(72.0, 258.0, 526.0, 279.0),
+    caption=_CAPTION,
 )
 _EMPTIED = {
     "id": "s1.tbl1",
@@ -257,27 +265,26 @@ def test_two_grids_matching_the_same_caption_leave_the_table_alone() -> None:
 def test_a_caption_too_generic_to_identify_a_table_is_not_used() -> None:
     """"Results" names half the tables in a paper; a caption has to carry enough to single one
     out before it may stand in for the region."""
-    generic = dict(_EMPTIED)
-    generic["caption"] = "Results"
+    generic = replace(_COLLAPSED, caption="Results")
     short = ExtractedTable(
         page=_ABOVE.page, bbox=_ABOVE.bbox, rows=_ABOVE.rows, caption="Table 2: Results"
     )
-    doc = _doc(generic)
-    assert apply_repairs(doc, [_COLLAPSED], [short], _printed("0.696 0.015 0.011 0.000")) == 0
+    doc = _doc(_EMPTIED)
+    assert apply_repairs(doc, [generic], [short], _printed("0.696 0.015 0.011 0.000")) == 0
 
 
 def test_a_region_that_does_overlap_is_still_matched_by_region() -> None:
     """The fallback is additive: where GROBID's box survived, the proven signal decides and a
     caption that happens to name a different grid never overrides it."""
-    doc = _doc()
     misleading = ExtractedTable(
         page=3, bbox=(71.0, 500.0, 526.0, 600.0), rows=(("x", "1"),), caption=f"Table 2: {_CAPTION}"
     )
-    merged_block = _doc()["sections"][0]["blocks"][0]
-    merged_block["caption"] = _CAPTION
-    doc = {"sections": [{"id": "s1", "blocks": [merged_block]}]}
+    doc = _doc()
     repaired = apply_repairs(
-        doc, [_SPEC], [_REBUILT, misleading], _printed("0.696 0.015 0.011 0.000")
+        doc,
+        [replace(_SPEC, caption=_CAPTION)],
+        [_REBUILT, misleading],
+        _printed("0.696 0.015 0.011 0.000"),
     )
     assert repaired == 1
     assert _rows(doc)[0] == ["Method", "C-index", "Brier"]
@@ -291,25 +298,28 @@ def test_two_readers_punctuating_the_same_caption_differently_still_match() -> N
     caption that names the table look like a mismatch, so the fallback refused a repair it should
     have made. Only letters and digits survive normalisation now.
     """
-    quoted = dict(_EMPTIED)
-    quoted["caption"] = 'Instantiations of L t "bounded by M " means for any x and r ~ p(*)'
+    quoted = replace(
+        _COLLAPSED,
+        caption='Instantiations of L t "bounded by M " means for any x and r ~ p(*)',
+    )
     rebuilt = ExtractedTable(
         page=_ABOVE.page,
         bbox=_ABOVE.bbox,
         rows=_ABOVE.rows,
         caption="Table 1: Instantiations of L t 'bounded by M ' means for any x and r ~ p (*)",
     )
-    doc = _doc(quoted)
-    assert apply_repairs(doc, [_COLLAPSED], [rebuilt], _printed("0.696 0.015 0.011 0.000")) == 1
+    doc = _doc(_EMPTIED)
+    assert apply_repairs(doc, [quoted], [rebuilt], _printed("0.696 0.015 0.011 0.000")) == 1
 
 
 def test_a_caption_the_readers_truncate_differently_still_matches() -> None:
     """One reader stops at the caption, the other runs on into the paragraph below it. Comparing
     the whole of either against the other fails on that tail, so an opening stretch is compared."""
-    long_tail = dict(_EMPTIED)
-    long_tail["caption"] = _CAPTION + " And then a whole paragraph the other reader never saw."
-    doc = _doc(long_tail)
-    assert apply_repairs(doc, [_COLLAPSED], [_ABOVE], _printed("0.696 0.015 0.011 0.000")) == 1
+    long_tail = replace(
+        _COLLAPSED, caption=_CAPTION + " And then a whole paragraph the other reader never saw."
+    )
+    doc = _doc(_EMPTIED)
+    assert apply_repairs(doc, [long_tail], [_ABOVE], _printed("0.696 0.015 0.011 0.000")) == 1
 
 
 # --- text tables: the ones a number-only check could never verify ---

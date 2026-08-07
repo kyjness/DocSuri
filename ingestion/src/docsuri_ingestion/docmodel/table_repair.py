@@ -73,19 +73,20 @@ def tables_needing_repair(doc: dict, crops: Sequence[AssetCropSpec]) -> list[Ass
 def _needs_repair(rows: Sequence[Any]) -> bool:
     """Whether a re-read could improve this table.
 
-    Two distinct GROBID failures, and only the first was ever routed here. Cells can come out
-    GLUED — several columns run into one — which ``_looks_merged`` names. They can also come out
+    Two distinct GROBID failures, and only the second was ever routed here. Cells can come out
     EMPTY, when reconstruction fails outright and the block keeps its caption with no rows at all
-    (the case ``test_a_table_grobid_could_not_reconstruct_keeps_its_caption`` pins). That is the
-    worse of the two — the whole grid is gone, not merely mis-split — yet ``_looks_merged`` reads
-    it as healthy because it has no cell holding several numbers, so the repair never ran on
-    exactly the tables that needed it most.
+    (the case ``test_a_table_grobid_could_not_reconstruct_keeps_its_caption`` pins). Or they come
+    out GLUED — several columns run into one, which a cell holding several numbers gives away.
+    The empty case is the worse of the two — the whole grid is gone, not merely mis-split — yet
+    the merged-cell test alone reads it as healthy, so the repair never ran on exactly the tables
+    that needed it most.
 
     Sending an empty table through is safe for the same reason a merged one is: the rebuild still
     has to place only numbers printed in the region (C-2), and a table with genuinely no data
     finds no overlapping re-read and is left alone.
     """
-    return not _cells_of(rows) or _looks_merged(rows)
+    cells = _cells_of(rows)
+    return not cells or any(len(_cell_numbers(cell)) >= _MERGED_CELL_NUMBERS for cell in cells)
 
 
 def apply_repairs(
@@ -106,7 +107,7 @@ def apply_repairs(
         spec = by_asset.get(ref.get("assetId", ""))
         if spec is None or not _needs_repair(rows):
             continue
-        rebuilt = _best_match(spec, tables) or _caption_match(block, spec, tables)
+        rebuilt = _best_match(spec, tables) or _caption_match(spec, tables)
         if rebuilt is None:
             continue
         # Verify against the region the rebuilt rows were actually READ from — the extractor's own
@@ -121,14 +122,6 @@ def apply_repairs(
         ]
         repaired += 1
     return repaired
-
-
-def _looks_merged(rows: Sequence[Any]) -> bool:
-    """Whether the reconstructed cells read as glued-together rows rather than real columns."""
-    cells = _cells_of(rows)
-    if not cells:
-        return False
-    return any(len(_cell_numbers(cell)) >= _MERGED_CELL_NUMBERS for cell in cells)
 
 
 def _cells_of(rows: Sequence[Any]) -> list[str]:
@@ -152,9 +145,7 @@ def _best_match(spec: AssetCropSpec, tables: Sequence[ExtractedTable]) -> Extrac
     return best
 
 
-def _caption_match(
-    block: dict, spec: AssetCropSpec, tables: Sequence[ExtractedTable]
-) -> ExtractedTable | None:
+def _caption_match(spec: AssetCropSpec, tables: Sequence[ExtractedTable]) -> ExtractedTable | None:
     """The re-read table this block's CAPTION names, when its region names none.
 
     The failure that empties a table's cells also collapses GROBID's box onto the caption strip,
@@ -168,8 +159,12 @@ def _caption_match(
     Demanded strictly, because this runs precisely where geometry has already failed: the block's
     whole caption must appear in the candidate's, and exactly one candidate on the page may match.
     An ambiguous page is left unrepaired.
+
+    The caption comes off the crop spec rather than the block: they are the same string, written
+    from the same variable in the same walk (``tei._table_block`` hands it to ``_record_crop``),
+    and taking it here keeps both matchers to one ``(spec, tables)`` shape.
     """
-    caption = _normalise(block.get("caption"))[:_CAPTION_PROBE_CHARS]
+    caption = _normalise(spec.caption)[:_CAPTION_PROBE_CHARS]
     if len(caption) < _CAPTION_MIN_CHARS:
         return None
     hits = [
@@ -215,52 +210,47 @@ def _verified(rows: Sequence[Any], rebuilt: Sequence[Sequence[str]], printed: st
     the test wherever there are any. But judging on numbers ALONE meant a table without them could
     never be verified and so was never repaired — and plenty of tables in these papers are text
     ("Attack Type | Example", ablation descriptions, dataset overviews). Those are compared on
-    words instead, under the same two conditions.
+    words instead, under the same two conditions — this function chooses between them, and
+    ``_proven`` holds the conditions themselves so a future tightening cannot reach one and miss
+    the other.
+
+    The two paths heal the printed text differently, and the asymmetry is deliberate. The numeric
+    pool needs ``_INNER_SPACE_RE`` first, to rejoin a decimal the extractor split across a space
+    ("4. 69%") before any number can be read out of it; doing that to the word pool would fuse
+    neighbouring words instead of repairing anything. Both then get ``_UNIT_GLUE_RE``, which
+    re-cuts the seams pdfplumber closes ("30-60meters", "Giannacopoulos2022").
     """
     if not printed.strip():
         return False
-    new = Counter(n for row in rebuilt for cell in row for n in _cell_numbers(cell))
+    if any(_cell_numbers(cell) for row in rebuilt for cell in row):
+        healed = _UNIT_GLUE_RE.sub(" ", _INNER_SPACE_RE.sub("", printed))
+        return _proven(rows, rebuilt, _cell_numbers, set(_NUMBER_RE.findall(healed)))
+    return _proven(rows, rebuilt, _words, set(_words(_UNIT_GLUE_RE.sub(" ", printed))))
+
+
+def _proven(
+    rows: Sequence[Any],
+    rebuilt: Sequence[Sequence[str]],
+    tokens: Callable[[str], list[str]],
+    available: set[str],
+) -> bool:
+    """The two conditions of ``_verified``, over whichever tokens that path compares.
+
+    A rebuild with nothing to compare is refused rather than waved through — verifying against an
+    empty set would let any grid pass, which is the one outcome this check exists to prevent.
+    """
+    new = Counter(t for row in rebuilt for cell in row for t in tokens(cell))
     if not new:
-        return _verified_words(rows, rebuilt, printed)
-    old = Counter(
-        n
-        for row in rows
-        for cell in (row.get("cells") or [])
-        for n in _cell_numbers(str(cell.get("text") or ""))
-    )
+        return False
+    old = Counter(t for cell in _cells_of(rows) for t in tokens(cell))
     if sum(new.values()) < sum(old.values()):
         return False
-    healed = _UNIT_GLUE_RE.sub(" ", _INNER_SPACE_RE.sub("", printed))
-    available = set(_NUMBER_RE.findall(healed))
     # Containment, not multiplicity: a cell spanning seven columns is printed ONCE but lands in
     # the grid seven times ("1.12 (210)" across every header column), and demanding seven printed
     # copies refused real tables wholesale. Fabrication is still impossible — a value the region
     # never prints stays refused — and replication of a printed value is colspan flattening, not
     # invented content.
-    return all(value in available for value in new)
-
-
-def _verified_words(rows: Sequence[Any], rebuilt: Sequence[Sequence[str]], printed: str) -> bool:
-    """The same argument for a table that holds no numbers, compared word by word.
-
-    A rebuild with nothing to compare is refused rather than waved through — verifying against an
-    empty set would let any grid pass, which is the one outcome this check exists to prevent.
-    """
-    new = Counter(w for row in rebuilt for cell in row for w in _words(cell))
-    if not new:
-        return False
-    old = Counter(
-        w
-        for row in rows
-        for cell in (row.get("cells") or [])
-        for w in _words(str(cell.get("text") or ""))
-    )
-    if sum(new.values()) < sum(old.values()):
-        return False
-    available = set(_words(_UNIT_GLUE_RE.sub(" ", printed)))
-    # Containment for the same reason as the numeric path: colspan flattening replicates a
-    # printed word per spanned column.
-    return all(word in available for word in new)
+    return all(token in available for token in new)
 
 
 def _words(text: str) -> list[str]:
@@ -283,24 +273,33 @@ def printed_text(pdf: bytes) -> PrintedText:
     # module does real repeated I/O. pdfplumber over BytesIO holds no OS handle, so the document is
     # released with the closure when the repair pass ends.
     pages: list = []
+    # Two suspect blocks can resolve to the SAME re-read table — GROBID tends to fail on every
+    # table of a page at once, and the caption fallback is a second route to a table the region
+    # match may also find — so the same (page, box) is cropped and extracted twice. The reading is
+    # a pure function of those two, and this memo dies with the closure exactly as ``pages`` does.
+    seen: dict[tuple[int, tuple[float, float, float, float]], str] = {}
 
     def read(page_no: int, bbox: tuple[float, float, float, float]) -> str:
+        if (page_no, bbox) in seen:
+            return seen[(page_no, bbox)]
+        text = ""
         try:
             if not pages:
                 import pdfplumber
 
                 pages.extend(pdfplumber.open(io.BytesIO(pdf)).pages)
-            if not 1 <= page_no <= len(pages):
-                return ""
-            page = pages[page_no - 1]
-            region = (
-                max(0.0, bbox[0]),
-                max(0.0, bbox[1]),
-                min(float(page.width), bbox[2]),
-                min(float(page.height), bbox[3]),
-            )
-            return page.crop(region).extract_text() or ""
+            if 1 <= page_no <= len(pages):
+                page = pages[page_no - 1]
+                region = (
+                    max(0.0, bbox[0]),
+                    max(0.0, bbox[1]),
+                    min(float(page.width), bbox[2]),
+                    min(float(page.height), bbox[3]),
+                )
+                text = page.crop(region).extract_text() or ""
         except Exception:  # noqa: BLE001 - unreadable page -> no yardstick -> no repair
-            return ""
+            text = ""
+        seen[(page_no, bbox)] = text
+        return text
 
     return read
