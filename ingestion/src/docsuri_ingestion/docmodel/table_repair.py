@@ -32,6 +32,14 @@ _NUMBER_RE = re.compile(r"(?<![A-Za-z\d.])-?\d+(?:\.\d+)?(?![A-Za-z\d])")
 # A space that splits a DECIMAL, e.g. "4. 69%" — healed before reading a cell. Only around the
 # point: joining any digit-space-digit would fuse the neighbouring values of "0.771 0.775".
 _INNER_SPACE_RE = re.compile(r"(?<=\.)\s+(?=\d)|(?<=\d)\s+(?=\.)")
+# Glue pdfplumber's region text leaves at word seams, healed before reading the pool. Both
+# directions occur: "30-60 meters" comes back "30-60meters" (digit->letter, the unit) and
+# "Giannacopoulos 2022" comes back "Giannacopoulos2022" (letter->digit, the citation year) — in
+# each case a value the page plainly prints fails the number pattern's boundary and a rebuild's
+# perfectly-spaced copy reads as "not printed". The letter->digit split demands two digits or
+# more so identifiers stay protected: "HbA1c" keeps its single digit glued and vouches for
+# nothing.
+_UNIT_GLUE_RE = re.compile(r"(?<=\d)(?=[A-Za-z])|(?<=[A-Za-z])(?=\d{2,})")
 # Reads the text printed in one page region: (page, bbox) -> text.
 PrintedText = Callable[[int, tuple[float, float, float, float]], str]
 # Tokens a word-level check compares. One-character cells ("N", "-") carry no evidence either way.
@@ -222,8 +230,14 @@ def _verified(rows: Sequence[Any], rebuilt: Sequence[Sequence[str]], printed: st
     )
     if sum(new.values()) < sum(old.values()):
         return False
-    available = Counter(_NUMBER_RE.findall(_INNER_SPACE_RE.sub("", printed)))
-    return all(available[value] >= count for value, count in new.items())
+    healed = _UNIT_GLUE_RE.sub(" ", _INNER_SPACE_RE.sub("", printed))
+    available = set(_NUMBER_RE.findall(healed))
+    # Containment, not multiplicity: a cell spanning seven columns is printed ONCE but lands in
+    # the grid seven times ("1.12 (210)" across every header column), and demanding seven printed
+    # copies refused real tables wholesale. Fabrication is still impossible — a value the region
+    # never prints stays refused — and replication of a printed value is colspan flattening, not
+    # invented content.
+    return all(value in available for value in new)
 
 
 def _verified_words(rows: Sequence[Any], rebuilt: Sequence[Sequence[str]], printed: str) -> bool:
@@ -243,8 +257,10 @@ def _verified_words(rows: Sequence[Any], rebuilt: Sequence[Sequence[str]], print
     )
     if sum(new.values()) < sum(old.values()):
         return False
-    available = Counter(_words(printed))
-    return all(available[word] >= count for word, count in new.items())
+    available = set(_words(_UNIT_GLUE_RE.sub(" ", printed)))
+    # Containment for the same reason as the numeric path: colspan flattening replicates a
+    # printed word per spanned column.
+    return all(word in available for word in new)
 
 
 def _words(text: str) -> list[str]:

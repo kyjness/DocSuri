@@ -386,3 +386,77 @@ def test_a_numeric_table_is_still_judged_on_its_numbers() -> None:
     )
 
     assert apply_repairs(doc, [_SPEC], [wrong_number], _printed("Method C-index ADA 0.696")) == 0
+
+
+def test_a_unit_glued_onto_its_value_by_the_page_reader_still_verifies() -> None:
+    """pdfplumber's region text drops spaces: "30-60 meters" comes back "30-60meters", where the
+    trailing 60 fails the number pattern's letter lookahead. A rebuild's perfectly-spaced 60 then
+    read as "not printed" and real parameter tables were refused wholesale. Splitting the
+    digit->letter seam heals the pool without unprotecting identifiers — HbA1c is guarded by the
+    letter BEFORE its digit."""
+    emptied = dict(_MERGED)
+    emptied["rows"] = []
+    rebuilt = ExtractedTable(
+        page=3,
+        bbox=_REBUILT.bbox,
+        rows=(("Parameter", "Value Range"), ("Stack Height", "30-60 meters")),
+    )
+    doc = _doc(emptied)
+    glued = "Parameter ValueRange\nStackHeight 30-60meters"
+
+    assert apply_repairs(doc, [_SPEC], [rebuilt], _printed(glued)) == 1
+
+    # The identifier guard is untouched: a bare "1" is still not vouched for by "HbA1c".
+    doc = _doc(emptied)
+    invented = ExtractedTable(page=3, bbox=_REBUILT.bbox, rows=(("Metric", "1"),))
+    assert apply_repairs(doc, [_SPEC], [invented], _printed("Metric HbA1c")) == 0
+
+
+def test_a_spanned_cell_replicated_per_column_still_verifies() -> None:
+    """A cell spanning seven columns is printed once but lands in the extractor's grid seven
+    times. Demanding seven printed copies refused real tables wholesale; what fabrication-safety
+    needs is only that every value IS printed in the region."""
+    emptied = dict(_MERGED)
+    emptied["rows"] = []
+    spanned = ExtractedTable(
+        page=3,
+        bbox=_REBUILT.bbox,
+        rows=(
+            ("Standard", "1.12 (210)", "1.12 (210)", "1.12 (210)"),
+            ("", "Polynomial degree", "Polynomial degree", "Polynomial degree"),
+        ),
+    )
+    doc = _doc(emptied)
+    assert apply_repairs(
+        doc, [_SPEC], [spanned], _printed("Standard 1.12 (210) Polynomial degree")
+    ) == 1
+
+    # A value the region never prints is still refused — replication is not a licence to invent.
+    doc = _doc(emptied)
+    foreign = ExtractedTable(
+        page=3, bbox=_REBUILT.bbox, rows=(("Standard", "1.12 (210)", "9.99"),)
+    )
+    assert apply_repairs(
+        doc, [_SPEC], [foreign], _printed("Standard 1.12 (210) Polynomial degree")
+    ) == 0
+
+
+def test_a_citation_year_glued_onto_an_author_name_still_verifies() -> None:
+    """The other direction of the same seam: "Giannacopoulos 2022" comes back
+    "Giannacopoulos2022", so the year a rebuild spaces correctly read as "not printed". The
+    letter->digit split demands two digits or more, so HbA1c keeps its single digit glued and a
+    bare "1" still cannot be vouched for by it."""
+    emptied = dict(_MERGED)
+    emptied["rows"] = []
+    rebuilt = ExtractedTable(
+        page=3,
+        bbox=_REBUILT.bbox,
+        rows=(("Model", "Year"), ("PhysGNN (Salehi and Giannacopoulos 2022)", "1.71")),
+    )
+    doc = _doc(emptied)
+    glued = "Model Year\nPhysGNN(SalehiandGiannacopoulos2022) 1.71"
+    assert apply_repairs(doc, [_SPEC], [rebuilt], _printed(glued)) == 1
+
+    doc = _doc(emptied)
+    invented = ExtractedTable(page=3, bbox=_REBUILT.bbox, rows=(("Metric", "1"),))
+    assert apply_repairs(doc, [_SPEC], [invented], _printed("Metric HbA1c")) == 0
