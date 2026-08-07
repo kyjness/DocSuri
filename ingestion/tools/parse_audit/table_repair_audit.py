@@ -17,11 +17,10 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import UTC, datetime
 from pathlib import Path
 
 from _common import walk_sections
-from docsuri_shared.dtos import SourceTier
+from _pipeline import build_doc, tei_for
 
 from docsuri_ingestion.adapters.docling_tables import DoclingTableExtractor
 from docsuri_ingestion.docmodel.table_repair import (
@@ -29,9 +28,6 @@ from docsuri_ingestion.docmodel.table_repair import (
     printed_text,
     tables_needing_repair,
 )
-from docsuri_ingestion.docmodel.tei import parse_tei_to_docmodel
-
-_TS = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 def _table_stats(doc: dict) -> tuple[int, int]:
@@ -55,13 +51,13 @@ def main() -> None:
             key = f"{target['paper_id']}v{target['version']}"
             row: dict = {"paper_id": target["paper_id"], "version": target["version"]}
             try:
-                tei = (args.cache / "tei" / f"{key}.tei.xml").read_text()
+                tei = tei_for(key, args.cache, None)
                 pdf = (args.cache / "pdf" / f"{key}.pdf").read_bytes()
                 crops: list = []
-                doc = parse_tei_to_docmodel(
-                    tei, paper_id=target["paper_id"], version=target["version"], title="",
-                    abstract=None, source_tier=SourceTier.pdf, parser_version="audit",
-                    schema_version="audit", generated_at=_TS, crops=crops,
+                # Parser-only (``builder=None``) on purpose: this audit measures what the repair
+                # stage itself adds, so the doc it starts from must NOT already have been repaired.
+                doc = build_doc(
+                    target["paper_id"], target["version"], tei, pdf, None, crops
                 ).model_dump(mode="json")
                 empty0, filled0 = _table_stats(doc)
                 candidates = tables_needing_repair(doc, crops)

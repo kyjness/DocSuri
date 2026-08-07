@@ -33,13 +33,12 @@ Usage::
 from __future__ import annotations
 
 import argparse
-import json
 import re
-from collections import Counter
 from pathlib import Path
 
-from _common import counts, walk_sections
+from _common import caption_probe, counts, figures_without_assetref, strip_ws, walk_sections
 from _pipeline import build_doc, pipeline_builder, tei_for
+from _sweep import run_sweep
 
 from docsuri_ingestion.adapters.grobid import GrobidHttpClient
 from docsuri_ingestion.full_text_extraction import pdf_to_text
@@ -63,7 +62,6 @@ _KIND_OF = {"fig": "figure", "figure": "figure", "table": "table",
 _ROMAN = {"i": 1, "v": 5, "x": 10, "l": 50}
 # The glyphs an itemize renders into the text layer.
 _BULLET_RE = re.compile(r"[•▪‣◦]")
-_WS_RE = re.compile(r"\s+")
 # Past this a float number is too commonly a year/section reference to trust ("Table 2020").
 _MAX_FLOAT_NUMBER = 40
 
@@ -136,26 +134,22 @@ def _doc_floats(doc: dict) -> dict[str, set[int]]:
     return out
 
 
-def _strip_ws(text: str) -> str:
-    return _WS_RE.sub("", text).lower()
-
-
 def _caption_text_dropped(doc: dict, full_text: str) -> int:
     """Captions the doc-model holds that never reached ``fullText`` — a projection loss.
 
-    Mirrors the ar5iv audit's check: content-based, whitespace-stripped so the comparison does not
-    trip on the rendering difference between a block field and the projected text.
+    The probe rule is the ar5iv audit's, taken from ``_common`` rather than restated: the two
+    numbers are compared against each other, so they have to be measured to the same threshold.
+    What differs here is only where the captions are read from — the doc-model's own blocks,
+    there being no source markup on this path to read them out of.
     """
-    ft = _strip_ws(full_text)
+    ft = strip_ws(full_text)
     dropped = 0
     for section in walk_sections(doc):
         for block in section.get("blocks") or []:
             if block.get("type") not in ("figure", "table"):
                 continue
-            probe = _strip_ws(str(block.get("caption") or ""))[:60]
-            if len(probe) < 20:
-                continue  # too little caption text to judge reliably
-            if probe not in ft:
+            probe = caption_probe(str(block.get("caption") or ""))
+            if probe and probe not in ft:
                 dropped += 1
     return dropped
 
@@ -197,7 +191,6 @@ def _audit_one(
     source = pdf_to_text(pdf)
     src = {kind: _contiguous(nums) for kind, nums in _floats_in(source).items()}
     got = _doc_floats(doc)
-    blocks = [b for s in walk_sections(doc) for b in (s.get("blocks") or [])]
     sig = dict(counts(doc))
     # A code block is where an algorithm listing lands; a figure block also stands in for a float
     # GROBID could not classify, so both count toward what the doc-model holds.
@@ -214,9 +207,7 @@ def _audit_one(
             "unmatched_figures": sorted(src["figure"] - got["figure"]),
             "unmatched_tables": sorted(src["table"] - got["table"]),
             "unmatched_algorithms": sorted(src["algorithm"] - got["algorithm"]),
-            "doc_figures_no_assetref": sum(
-                1 for b in blocks if b.get("type") == "figure" and not b.get("assetRef")
-            ),
+            **figures_without_assetref(doc),
             "source_chars": len(source),
             "caption_text_dropped": _caption_text_dropped(doc, model.fullText),
         }
@@ -259,37 +250,17 @@ def main() -> None:
     builder = pipeline_builder() if args.pipeline else None
     print(f"judging: {'whole pipeline' if builder else 'parser only'}", flush=True)
 
-    targets = json.loads((args.cache / args.targets).read_text())
-    by_type: Counter[str] = Counter()
-    papers = errors = 0
-    with args.out.open("w", encoding="utf-8") as fh:
-        for i, target in enumerate(targets, start=1):
-            key = f"{target['paper_id']}v{target['version']}"
-            try:
-                row = _audit_one(
-                    target["paper_id"],
-                    target["version"],
-                    tei_for(key, args.cache, client),
-                    (args.cache / "pdf" / f"{key}.pdf").read_bytes(),
-                    builder,
-                )
-            except Exception as exc:  # noqa: BLE001 - a crash is itself a preservation failure
-                row = {**target, "error": f"{type(exc).__name__}: {exc}",
-                       "violations": ["parse_error"]}
-                errors += 1
-            papers += 1
-            for kind in row["violations"]:
-                by_type[kind] += 1
-            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
-            fh.flush()
-            print(f"[{i}/{len(targets)}] {key} {row.get('error', '')}", flush=True)
-
-    print(f"\nwrote {args.out}  ({papers} papers, {errors} parse errors)")
-    print("\n=== defect types by frequency (papers affected) ===")
-    for kind, n in by_type.most_common():
-        print(f"  {kind:28s} {n:5d}  ({n / papers:.1%})" if papers else f"  {kind}")
-    if not by_type:
-        print("  (none — every source signal accounted for)")
+    run_sweep(
+        args.cache / args.targets,
+        args.out,
+        lambda target, key: _audit_one(
+            target["paper_id"],
+            target["version"],
+            tei_for(key, args.cache, client),
+            (args.cache / "pdf" / f"{key}.pdf").read_bytes(),
+            builder,
+        ),
+    )
 
 
 if __name__ == "__main__":

@@ -94,3 +94,46 @@ def counts(doc: dict) -> dict:
             1 for b in blocks if b["type"] == "table" and not (b.get("rows") or [])
         ),
     }
+
+
+_WS_ONLY_RE = re.compile(r"\s+")
+# How much of a caption is compared, and how much is enough to compare at all. Both sweeps judge
+# "did this caption reach fullText" the same way, and they are read side by side as PDF-path
+# against ar5iv-path preservation — so the yardstick has to be one yardstick. Tuning the probe in
+# one file and not the other leaves nothing failing and the comparison quietly wrong.
+_CAPTION_PROBE_CHARS = 60
+_CAPTION_PROBE_MIN_CHARS = 20
+
+
+def strip_ws(text: str) -> str:
+    """Whitespace removed and lowercased — how both sides of a text-preservation check compare.
+
+    Stripping rather than normalizing, because a block field and the fullText projection disagree
+    about where the spaces go; on the stripped forms a preserved caption is an exact substring.
+    """
+    return _WS_ONLY_RE.sub("", text or "").lower()
+
+
+def caption_probe(caption: str) -> str:
+    """The stripped leading slice used to look a caption up in fullText, or "" if too short.
+
+    A short caption cannot be judged reliably: an eight-character probe finds itself somewhere in
+    almost any body text, so it would report every caption preserved.
+    """
+    probe = strip_ws(caption)[:_CAPTION_PROBE_CHARS]
+    return probe if len(probe) >= _CAPTION_PROBE_MIN_CHARS else ""
+
+
+def figures_without_assetref(doc: dict) -> dict:
+    """``{"doc_figures_no_assetref": n}`` — figures the parser landed with no asset reference.
+
+    The one doc-side signal ``counts()`` does not yield and both sweeps' ``_violations`` consume.
+    Shared rather than derived twice: the two sweeps publish this number under the same key and it
+    is read as PDF-path against ar5iv-path, so one definition of "has a reference" is the point.
+    """
+    blocks = [b for s in walk_sections(doc) for b in (s.get("blocks") or [])]
+    return {
+        "doc_figures_no_assetref": sum(
+            1 for b in blocks if b.get("type") == "figure" and not b.get("assetRef")
+        ),
+    }

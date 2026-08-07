@@ -114,7 +114,7 @@ def main() -> None:
             fh.flush()
             print(
                 f"[{i}/{len(targets)}] {key} {time.monotonic() - started:.0f}s "
-                f"{row.get('version_mismatch') and 'version mismatch, ar5iv side dropped' or ''}"
+                f"{'version mismatch, ar5iv side dropped' if row.get('version_mismatch') else ''}"
                 f"{row.get('error', '')}",
                 flush=True,
             )
