@@ -1066,3 +1066,49 @@ def test_uncaptioned_logo_strip_is_still_dropped_by_the_text_float_path() -> Non
         generated_at=_FIXED_TS,
     )
     assert [b for s in doc.sections for b in s.blocks if s.id != "s0"] == []
+
+
+def test_a_table_float_latexml_left_class_less_still_reads_as_a_table() -> None:
+    """LaTeXML does not always write ``ltx_table``: arXiv:2504.11054 emits a bare ``<figure>`` for
+    its Table 22 while every sibling table carries the class. A class-only gate made that float
+    invisible to the parser — its rows never became a table, and the numbering ran 21 to 23 with
+    nothing in between. The caption declares the role, which is how tables are already routed."""
+    html = (
+        '<html><body><div class="ltx_document">'
+        '<section class="ltx_section"><h2>1 Results</h2>'
+        "<figure>"  # no class at all — the shape under test
+        '<table class="ltx_tabular"><tr><td>Dataset</td><td>Score</td></tr>'
+        "<tr><td>AMASS</td><td>0.65</td></tr></table>"
+        '<figcaption class="ltx_caption"><span class="ltx_tag">Table 22: </span>'
+        "Humanoid Environment.</figcaption></figure>"
+        "</section></div></body></html>"
+    )
+    tables = [b.root for s in _parse_custom(html).sections for b in s.blocks
+              if isinstance(b.root, TableBlock)]
+    assert len(tables) == 1
+    assert tables[0].anchorLabel == "Table 22"
+    assert [c.text for c in tables[0].rows[1].cells] == ["AMASS", "0.65"]
+
+
+def test_a_panel_holding_a_tabular_is_not_dropped_for_lacking_a_graphic() -> None:
+    """A numbered panel qualified on holding an ``<img>``, so a tabular panel set beside a plot
+    (arXiv:2504.11054's Figure 16 shares its group with Figure 15) fell out of the group's panel
+    list and nothing else reached it — the float went whole, caption and cells alike."""
+    html = (
+        '<html><body><div class="ltx_document">'
+        '<section class="ltx_section"><h2>1 Results</h2>'
+        '<figure class="ltx_figure">'
+        '<figure class="ltx_figure ltx_figure_panel"><img src="emd.png"/>'
+        '<figcaption class="ltx_caption"><span class="ltx_tag">Figure 15: </span>'
+        "EMD distance</figcaption></figure>"
+        '<figure class="ltx_figure ltx_figure_panel">'
+        '<table class="ltx_tabular"><tr><td>FB-CPR</td><td>4.70 (0.66)</td></tr></table>'
+        '<figcaption class="ltx_caption"><span class="ltx_tag">Figure 16: </span>'
+        "Average diversity.</figcaption></figure>"
+        "</figure></section></div></body></html>"
+    )
+    doc = _parse_custom(html)
+    assert "Average diversity" in doc.fullText
+    assert "4.70 (0.66)" in doc.fullText
+    figures = [b.root for s in doc.sections for b in s.blocks if isinstance(b.root, FigureBlock)]
+    assert [f.anchorLabel for f in figures] == ["Figure 15"]
