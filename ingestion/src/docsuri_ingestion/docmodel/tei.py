@@ -39,8 +39,10 @@ from __future__ import annotations
 
 import re
 import xml.etree.ElementTree as ET
-from collections.abc import MutableSequence, Sequence
+from collections.abc import Mapping, MutableSequence, Sequence
 from datetime import UTC, datetime
+from types import MappingProxyType
+from typing import NamedTuple
 
 from docsuri_shared.dtos import DocModel, SourceTier
 
@@ -170,14 +172,21 @@ def parse_tei_to_docmodel(
     sections: list[dict] = []
     trailing_figures: list[ET.Element] = []
     if body is not None:
-        idx = 0
-        for child in list(body):
-            name = _local(child.tag)
-            if name == "div":
-                idx += 1
-                sections.append(_parse_div(child, f"s{idx}", doc_ctx))
-            elif name == "figure":
-                trailing_figures.append(child)
+        divs = [c for c in body if _local(c.tag) == "div"]
+        floats = [c for c in body if _local(c.tag) == "figure"]
+        placement = _place_floats(divs, floats)
+        trailing_figures = placement.leftover
+        for idx, div in enumerate(divs, start=1):
+            sections.append(
+                _parse_div(
+                    div,
+                    f"s{idx}",
+                    doc_ctx,
+                    after_para=placement.after_para,
+                    leading=placement.at_section_start.get(id(div), ()),
+                    trailing=placement.at_section_end.get(id(div), ()),
+                )
+            )
 
     figure_section = _trailing_figure_section(trailing_figures, len(sections) + 1, doc_ctx)
     if figure_section is not None:
@@ -200,17 +209,39 @@ def parse_tei_to_docmodel(
 # --------------------------------------------------------------------------- sections
 
 
-def _parse_div(div: ET.Element, section_id: str, doc_ctx: _DocCtx) -> dict:
-    """A ``<div>`` -> Section: ``<head>`` title + ``<p>``/``<formula>``/nested ``<figure>``."""
+def _parse_div(
+    div: ET.Element,
+    section_id: str,
+    doc_ctx: _DocCtx,
+    *,
+    after_para: Mapping[int, Sequence[ET.Element]] = MappingProxyType({}),
+    leading: Sequence[ET.Element] = (),
+    trailing: Sequence[ET.Element] = (),
+) -> dict:
+    """A ``<div>`` -> Section: ``<head>`` title + ``<p>``/``<formula>``/nested ``<figure>``.
+
+    ``leading``/``after_para``/``trailing`` carry the body-level floats ``_place_floats`` assigned
+    here — opening the section, following the paragraph that cites them, or closing it. They are
+    built with this section's own ``_SectionCtx`` so their block ids belong to the section they
+    read in, which is also why placement is decided before the walk rather than after it.
+    """
     sec_ctx = _SectionCtx(section_id=section_id)
     title = ""
     blocks: list[dict] = []
+    for placed in leading:
+        block = _figure_or_table_block(placed, sec_ctx, doc_ctx)
+        if block:
+            blocks.append(block)
     for child in list(div):
         name = _local(child.tag)
         if name == "head" and not title:
             title = _text(child)
         elif name == "p":
             blocks.extend(_paragraph_blocks(child, sec_ctx, blocks))
+            for placed in after_para.get(id(child), ()):
+                block = _figure_or_table_block(placed, sec_ctx, doc_ctx)
+                if block:
+                    blocks.append(block)
         elif name == "formula":
             blocks.extend(
                 _formula_or_algorithm_blocks(
@@ -228,7 +259,132 @@ def _parse_div(div: ET.Element, section_id: str, doc_ctx: _DocCtx) -> dict:
             block = _figure_or_table_block(child, sec_ctx, doc_ctx)
             if block:
                 blocks.append(block)
+    for placed in trailing:
+        block = _figure_or_table_block(placed, sec_ctx, doc_ctx)
+        if block:
+            blocks.append(block)
     return {"id": section_id, "title": title, "blocks": blocks}
+
+
+class _FloatPlacement(NamedTuple):
+    """Where each body-level float goes, keyed by ``id()`` of its host element.
+
+    Identity keys, not the elements themselves: ``ElementTree`` nodes hash by identity anyway and
+    comparing them by value would be wrong for two floats with the same markup.
+    """
+
+    after_para: dict[int, list[ET.Element]]
+    at_section_start: dict[int, list[ET.Element]]
+    at_section_end: dict[int, list[ET.Element]]
+    leftover: list[ET.Element]
+
+
+def _place_floats(divs: list[ET.Element], floats: list[ET.Element]) -> _FloatPlacement:
+    """Decide where each body-level float belongs.
+
+    GROBID files every ``<figure>`` after every ``<div>``, so TEI order carries no position and
+    reading the body left every float stranded in a trailing dump — measured at 616 of 616 floats
+    across 50 papers, i.e. a reader saw no figure anywhere in the text. Two signals put them back:
+
+    1. **The text that cites it.** A float goes right after the first paragraph naming its number,
+       which is where a reader wants it and what the ar5iv path effectively gives.
+    2. **Its coordinates.** With no citation, the section whose ``<head>`` last precedes the float
+       on the page owns it. Coarser than (1) — the float lands at the section's end — but it still
+       reads inside the matter it belongs to.
+
+    A float printed ABOVE the first heading is the teaser authors put on the title page, and it
+    opens the first section rather than closing it — the same hoist the ar5iv path already does
+    for a float that precedes every section there.
+
+    Anything with neither signal is returned for the trailing section, which is also what happens
+    wholesale on TEI predating the ``head`` coordinate request (older caches stay parseable).
+    """
+    after_para: dict[int, list[ET.Element]] = {}
+    at_section_start: dict[int, list[ET.Element]] = {}
+    at_section_end: dict[int, list[ET.Element]] = {}
+    leftover: list[ET.Element] = []
+
+    paragraphs = [(div, p) for div in divs for p in div if _local(p.tag) == "p"]
+    para_text = [(div, p, _text(p)) for div, p in paragraphs]
+    div_anchors = sorted(
+        ((_coord_sort_key(head), div) for div in divs for head in _head_coord_source(div)),
+        key=lambda pair: pair[0],
+    )
+
+    for figure_el in sorted(floats, key=_coord_sort_key):
+        cite = _first_citing_paragraph(figure_el, para_text)
+        if cite is not None:
+            after_para.setdefault(id(cite), []).append(figure_el)
+            continue
+        owner = _section_by_coords(figure_el, div_anchors)
+        if owner is not None:
+            at_section_end.setdefault(id(owner), []).append(figure_el)
+            continue
+        if div_anchors and _coord_sort_key(figure_el) < div_anchors[0][0]:
+            at_section_start.setdefault(id(div_anchors[0][1]), []).append(figure_el)
+            continue
+        leftover.append(figure_el)
+    return _FloatPlacement(after_para, at_section_start, at_section_end, leftover)
+
+
+def _head_coord_source(div: ET.Element) -> list[ET.Element]:
+    """The div's own ``<head>`` when it carries coordinates — at most one, never a figure's."""
+    for child in div:
+        if _local(child.tag) == "head":
+            return [child] if child.get("coords") else []
+    return []
+
+
+def _first_citing_paragraph(
+    figure_el: ET.Element, para_text: list[tuple[ET.Element, ET.Element, str]]
+) -> ET.Element | None:
+    """The first paragraph naming this float's number, or None when the body never cites it."""
+    patterns = _float_mention_patterns(figure_el)
+    if not patterns:
+        return None
+    for _div, p, text in para_text:
+        if any(pattern.search(text) for pattern in patterns):
+            return p
+    return None
+
+
+def _float_mention_patterns(figure_el: ET.Element) -> list[re.Pattern[str]]:
+    """Regexes matching a body reference to this float ("Figure 7", "Tab. 3").
+
+    Numbers come from the label the block itself will carry, so the caption rules live in one
+    place. A merged head ("Figure 4 :Figure 5 :") legitimately claims several numbers. Roman
+    labels ("TABLE III") yield none and fall through to the coordinate signal.
+    """
+    label, caption = _figure_label_caption(figure_el)
+    is_table = (figure_el.get("type") or "").lower() == "table"
+    word = r"(?:Table|Tab)" if is_table else r"(?:Figure|Fig)"
+    numbers = {int(n) for n in re.findall(rf"{word}\.?\s*(\d+)", label, re.IGNORECASE)}
+    if not numbers:
+        # No numbered head — GROBID files the whole caption into figDesc instead. Only a LEADING
+        # number names this float; later ones are the caption citing other floats.
+        lead = re.match(rf"\s*{word}\.?\s*(\d+)", caption, re.IGNORECASE)
+        if lead:
+            numbers = {int(lead.group(1))}
+    if not numbers:
+        numbers = {int(n) for n in re.findall(r"^\s*(\d+)\s*$", label)}
+    return [
+        re.compile(rf"\b{word}\.?\s*{n}(?!\d)", re.IGNORECASE) for n in sorted(numbers)
+    ]
+
+
+def _section_by_coords(
+    figure_el: ET.Element, div_anchors: list[tuple[tuple[float, float], ET.Element]]
+) -> ET.Element | None:
+    """The div whose head last precedes the float on the page, or None without coordinates."""
+    position = _coord_sort_key(figure_el)
+    if position[0] == float("inf") or not div_anchors:
+        return None
+    owner = None
+    for anchor, div in div_anchors:
+        if anchor > position:
+            break
+        owner = div
+    return owner
 
 
 def _trailing_figure_section(
