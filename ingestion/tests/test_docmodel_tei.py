@@ -543,3 +543,139 @@ def test_a_headed_table_with_no_cells_is_still_a_table() -> None:
     assert tables[0].anchorLabel == "Table 4"
     assert tables[0].rows == []
     assert tables[0].assetRef is not None
+
+
+# --- body-level float placement (GROBID files every figure after every div) ----------------
+
+_PLACED_TEI = f"""
+<TEI {_NS}>
+  <text><body>
+    <div>
+      <head coords="1,10,100,300,10">1. Introduction</head>
+      <p>We follow the pipeline of Figure 2 throughout.</p>
+    </div>
+    <div>
+      <head coords="4,10,100,300,10">2. Results</head>
+      <p>Scores are reported per split.</p>
+    </div>
+    <figure coords="4,10,300,200,80">
+      <head>Figure 2</head><figDesc>The pipeline.</figDesc>
+    </figure>
+    <figure type="table" coords="4,10,400,200,80">
+      <head>Table 9</head><figDesc>Per-split scores.</figDesc>
+      <table><row><cell>split</cell><cell>score</cell></row></table>
+    </figure>
+  </body></text>
+</TEI>
+"""
+# Both floats print on page 4, so coordinates alone would file BOTH under "2. Results". Only the
+# citation pulls Figure 2 back to the introduction — which is what makes the two tests below
+# distinguish the signals instead of both passing on the coordinate path.
+
+
+def _float_labels(section) -> list[str]:
+    return [b.root.anchorLabel for b in section.blocks if b.root.type in ("figure", "table")]
+
+
+def test_a_float_the_text_cites_lands_next_to_the_sentence_that_cites_it() -> None:
+    """A float whose number a paragraph names belongs beside that paragraph, not in a dump at the
+    end. Figure 2 is cited from the introduction while sitting on page 1, and it reads there."""
+    body = [s for s in _parse(_PLACED_TEI).sections if s.id != "s0"]
+    intro = next(s for s in body if s.title.startswith("1."))
+    assert _float_labels(intro) == ["Figure 2"]
+    # Right after the citing paragraph, and carrying that section's id.
+    assert [b.root.type for b in intro.blocks] == ["paragraph", "figure"]
+    assert intro.blocks[1].root.id.startswith(f"{intro.id}.")
+
+
+def test_an_uncited_float_falls_to_the_section_its_page_position_sits_in() -> None:
+    """Nothing names Table 9, so its coordinates decide: page 4 puts it under the head that last
+    precedes it. Coarser than a citation — it lands at the section's end — but it reads in place."""
+    body = [s for s in _parse(_PLACED_TEI).sections if s.id != "s0"]
+    results = next(s for s in body if s.title.startswith("2."))
+    assert _float_labels(results) == ["Table 9"]
+    assert [b.root.type for b in results.blocks] == ["paragraph", "table"]
+    assert not any(s.title == "그림 및 표" for s in body)
+
+
+def test_floats_with_neither_signal_keep_the_trailing_section() -> None:
+    """TEI predating the ``head`` coordinate request has no anchors and no citations here, so the
+    old grouped section must still be produced — an older cache stays parseable, not empty."""
+    body = [s for s in _parse(_TEI).sections if s.id != "s0"]
+    trailing = body[-1]
+    assert trailing.title == "그림 및 표"
+    assert sorted(_float_labels(trailing)) == ["Figure 1", "Table 1"]
+
+
+def test_a_merged_head_is_placed_by_any_of_the_numbers_it_claims() -> None:
+    """GROBID fuses adjacent floats into one element whose head claims several numbers
+    ("Figure 4 :Figure 5 :"). A citation of either number is a citation of that element."""
+    tei = f"""
+    <TEI {_NS}>
+      <text><body>
+        <div>
+          <head coords="1,10,100,300,10">1. Setup</head>
+          <p>The decision regions appear in Figure 5.</p>
+        </div>
+        <div>
+          <head coords="9,10,100,300,10">2. Appendix</head>
+          <p>Further material follows.</p>
+        </div>
+        <figure coords="9,10,300,200,80">
+          <head>Figure 4 :Figure 5 :</head><figDesc>Decision regions.</figDesc>
+        </figure>
+      </body></text>
+    </TEI>
+    """
+    body = [s for s in _parse(tei).sections if s.id != "s0"]
+    assert _float_labels(body[0]) == ["Figure 4 :Figure 5 :"]
+    assert not any(s.title == "그림 및 표" for s in body)
+
+
+def test_a_citation_of_a_longer_number_does_not_claim_the_shorter_float() -> None:
+    """"Figure 12" must not read as a citation of Figure 1 — that would drag a float to the first
+    paragraph mentioning any number starting with its digits."""
+    tei = f"""
+    <TEI {_NS}>
+      <text><body>
+        <div>
+          <head coords="1,10,100,300,10">1. Setup</head>
+          <p>See Figure 12 for the ablation.</p>
+        </div>
+        <div>
+          <head coords="2,10,100,300,10">2. Details</head>
+          <p>Figure 1 shows the overview.</p>
+        </div>
+        <figure coords="1,10,300,200,80">
+          <head>Figure 1</head><figDesc>Overview.</figDesc>
+        </figure>
+      </body></text>
+    </TEI>
+    """
+    body = [s for s in _parse(tei).sections if s.id != "s0"]
+    assert _float_labels(body[0]) == []
+    assert _float_labels(body[1]) == ["Figure 1"]
+
+
+def test_a_teaser_printed_above_the_first_heading_opens_the_first_section() -> None:
+    """A float on the title page sits above every heading, so no head precedes it and the
+    coordinate rule owns nothing — it was the one shape left stranded in the trailing dump.
+    It is the overview figure authors put there, and it reads at the front, not the back."""
+    tei = f"""
+    <TEI {_NS}>
+      <text><body>
+        <div>
+          <head coords="1,10,400,300,10">1. Introduction</head>
+          <p>The method is described below.</p>
+        </div>
+        <figure coords="1,10,150,200,80">
+          <head>Figure 1</head><figDesc>Overview of the system.</figDesc>
+        </figure>
+      </body></text>
+    </TEI>
+    """
+    body = [s for s in _parse(tei).sections if s.id != "s0"]
+    assert not any(s.title == "그림 및 표" for s in body)
+    intro = body[0]
+    assert [b.root.type for b in intro.blocks] == ["figure", "paragraph"]
+    assert intro.blocks[0].root.anchorLabel == "Figure 1"

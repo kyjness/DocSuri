@@ -396,12 +396,25 @@ def test_real_pdf_crops_render_for_every_tei_spec() -> None:
 # GROBID emits a <graphic> only for RASTER figures, so a vector figure arrives with coordinates
 # covering nothing but its caption's text lines. Cropping those verbatim yields an image of the
 # caption sentence — the figure itself is missing, while every structural assertion still passes.
-# Maps asset id -> the caption-strip height (pt) GROBID supplied, measured from the fixture TEI.
+# Maps a caption prefix -> the caption-strip height (pt) GROBID supplied, measured from the TEI.
+# Keyed by caption, not asset id: the id embeds a visit ordinal, so it renumbers whenever float
+# placement changes, and an assertion keyed on it reports an unrelated placement fix as a bbox
+# regression. The caption names the same physical float under any ordering.
 _VECTOR_FIGURES = {
-    f"{TRIPLE}:v1:figure:1": 44.6,  # p8, Figure 1 — architecture diagram
-    f"{TRIPLE}:v1:figure:2": 20.7,  # p15, Figure 2 — decision curve plot
-    f"{TRIPLE}:v1:figure:3": 68.5,  # p16, Figure 3 — value-of-information plot
+    "Figure 1: Overview": 44.6,  # p8 — architecture diagram
+    "Figure2: Decision curve": 20.7,  # p15 — decision curve plot
+    "Figure 3: Value of information": 68.5,  # p16 — value-of-information plot
 }
+
+
+def _figure_ids_by_caption(paper_id: str = TRIPLE) -> dict[str, str]:
+    """Asset ids of a paper's figure crops, keyed by the caption prefixes named above."""
+    ids = {}
+    for spec in tei_crop_specs(_load_tei(paper_id), paper_id=paper_id, version=1):
+        for prefix in _VECTOR_FIGURES:
+            if (spec.caption or "").startswith(prefix):
+                ids[prefix] = spec.asset_id
+    return ids
 
 
 def _rendered_bboxes() -> dict[str, tuple]:
@@ -423,15 +436,18 @@ def test_vector_figures_recover_the_graphic_grobid_did_not_locate() -> None:
     pytest.importorskip("PIL")
     boxes = _rendered_bboxes()
 
-    for aid, caption_height in _VECTOR_FIGURES.items():
-        assert aid in boxes, f"{aid} produced no asset at all"
+    ids = _figure_ids_by_caption()
+    assert set(ids) == set(_VECTOR_FIGURES), f"fixture drifted: resolved {sorted(ids)}"
+    for prefix, caption_height in _VECTOR_FIGURES.items():
+        aid = ids[prefix]
+        assert aid in boxes, f"{prefix} produced no asset at all"
         x0, y0, x1, y1 = boxes[aid]
         height = y1 - y0
         assert height > caption_height * 2.5, (
-            f"{aid}: crop is {height:.1f}pt tall against a {caption_height}pt caption strip — "
+            f"{prefix}: crop is {height:.1f}pt tall against a {caption_height}pt caption strip — "
             "the graphic above the caption was not recovered"
         )
-        assert 0 <= x0 < x1 and 0 <= y0 < y1, f"{aid}: degenerate bbox after recovery"
+        assert 0 <= x0 < x1 and 0 <= y0 < y1, f"{prefix}: degenerate bbox after recovery"
 
 
 def test_figures_grobid_located_and_all_tables_keep_their_coordinates() -> None:
@@ -446,7 +462,8 @@ def test_figures_grobid_located_and_all_tables_keep_their_coordinates() -> None:
     specs = {s.asset_id: s.bbox for s in tei_crop_specs(_load_tei(), paper_id=TRIPLE, version=1)}
     boxes = _rendered_bboxes()
 
-    untouched = [aid for aid in specs if aid not in _VECTOR_FIGURES]
+    recovered = set(_figure_ids_by_caption().values())
+    untouched = [aid for aid in specs if aid not in recovered]
     assert len(untouched) == 9, f"fixture drifted: expected 9 untouched specs, got {untouched}"
     for aid in untouched:
         assert boxes[aid] == specs[aid], f"{aid}: bbox changed but GROBID's coordinates were sound"
@@ -675,7 +692,11 @@ def test_recovery_ignores_decorative_vector_glyphs() -> None:
     the "Proposition 3" block above one as a figure. Without a size floor the recovery latched
     onto that glyph and dragged the tail of the preceding proof into the crop — the exact
     "widened into unrelated content" failure the recovery is supposed to refuse. Verified by eye:
-    figure:3 is a real heatmap and must still be recovered, figure:0 must not move.
+    the "(a) R: speedup" panel is a real heatmap and must still be recovered; the proposition
+    block GROBID mislabelled must not move.
+
+    Identified by caption rather than asset id — the id embeds a visit ordinal that renumbers with
+    float placement, which would make a placement change read as a recovery regression.
     """
     pytest.importorskip("pypdfium2")
     pytest.importorskip("PIL")
@@ -683,13 +704,14 @@ def test_recovery_ignores_decorative_vector_glyphs() -> None:
 
     specs = tei_crop_specs(_load_tei(FORMULA_PAPER), paper_id=FORMULA_PAPER, version=1)
     by_spec = {s.asset_id: s.bbox for s in specs}
+    captions = {s.asset_id: (s.caption or "") for s in specs}
     assets = crop_assets_from_specs(
         _load_pdf(FORMULA_PAPER), specs, paper_id=FORMULA_PAPER, version=1
     )
     widened = {a.meta.asset_id for a in assets if a.meta.bbox != by_spec[a.meta.asset_id]}
 
-    assert widened == {f"{FORMULA_PAPER}:v1:figure:3"}, (
-        f"recovery fired on the wrong blocks: {sorted(widened)}"
+    assert [captions[aid] for aid in widened] == ["(a) R: speedup for K ˆA (NumPy, CPU)."], (
+        f"recovery fired on the wrong blocks: {sorted(captions[a][:40] for a in widened)}"
     )
 
 
