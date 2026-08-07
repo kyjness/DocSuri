@@ -755,6 +755,70 @@ def test_a_caption_that_merely_cites_a_table_is_still_demoted() -> None:
     assert [b.root.type for b in section.blocks] == ["paragraph", "paragraph"]
 
 
+def test_a_tei_with_no_body_still_parses_to_an_empty_doc_model() -> None:
+    """GROBID can return TEI with no ``<body>`` at all. The builder degrades such a parse to the
+    flat-text doc-model, which only works if the parse RETURNS rather than raising — and page
+    layout is read on the trailing-section path that a body-less document still reaches."""
+    doc = _parse(f"<TEI {_NS}><text></text></TEI>")
+    assert [s for s in doc.sections if s.id != "s0"] == []
+
+
+def test_a_two_column_page_is_ordered_by_column_before_height() -> None:
+    """On a two-column page, ``y`` alone is not reading order: a heading opening the RIGHT column
+    near the top sorts above a float sitting lower in the LEFT column, so the coordinate rule hands
+    that float to the wrong section. Taken from arXiv:2502.11386 page 9 — a left-column float at
+    y=347 under "B. QoE Modeling" (left, y=161), with "C. Algorithm Overview" opening the right
+    column at y=186. The float is read before anyone reaches column two."""
+    tei = f"""
+    <TEI {_NS}>
+      <facsimile><surface n="9" ulx="0.0" uly="0.0" lrx="612.0" lry="792.0"/></facsimile>
+      <text><body>
+        <div>
+          <head coords="9,48.96,161.38,73.49,8.58">B. QoE Modeling</head>
+          <p>Body of the left column.</p>
+        </div>
+        <div>
+          <head coords="9,311.98,185.68,96.04,8.58">C. Algorithm Overview</head>
+          <p>Body of the right column.</p>
+        </div>
+        <figure coords="9,48.96,346.95,251.05,90.00">
+          <head>Figure 4</head><figDesc>A left-column float.</figDesc>
+        </figure>
+      </body></text>
+    </TEI>
+    """
+    body = [s for s in _parse(tei).sections if s.id != "s0"]
+    assert _float_labels(body[0]) == ["Figure 4"]  # B. QoE Modeling, the column it is printed in
+    assert _float_labels(body[1]) == []
+
+
+def test_a_single_column_paper_keeps_its_height_only_ordering() -> None:
+    """The column rule must not fire where there is no second column. A single-column paper puts
+    every heading at the left margin, and a narrow float indented right of centre is still simply
+    below the heading above it — giving it a column would invent an order the page never had."""
+    tei = f"""
+    <TEI {_NS}>
+      <facsimile><surface n="3" ulx="0.0" uly="0.0" lrx="612.0" lry="792.0"/></facsimile>
+      <text><body>
+        <div>
+          <head coords="3,72.00,100.00,120.00,10.00">1. Setup</head>
+          <p>Body text.</p>
+        </div>
+        <div>
+          <head coords="3,72.00,500.00,120.00,10.00">2. Results</head>
+          <p>More body text.</p>
+        </div>
+        <figure coords="3,330.00,300.00,120.00,60.00">
+          <head>Figure 4</head><figDesc>An indented narrow float.</figDesc>
+        </figure>
+      </body></text>
+    </TEI>
+    """
+    body = [s for s in _parse(tei).sections if s.id != "s0"]
+    assert _float_labels(body[0]) == ["Figure 4"]  # y=300 is under "1. Setup", not "2. Results"
+    assert _float_labels(body[1]) == []
+
+
 def test_a_teaser_printed_above_the_first_heading_opens_the_first_section() -> None:
     """A float on the title page sits above every heading, so no head precedes it and the
     coordinate rule owns nothing — it was the one shape left stranded in the trailing dump.
