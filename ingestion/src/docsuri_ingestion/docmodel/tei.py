@@ -91,6 +91,10 @@ _VERBATIM_HEAD_RE = re.compile(r"^\s*Listing\s+\d+\s*[:.]", re.IGNORECASE)
 _LISTING_MIN_CHARS = 150
 # The bullet glyphs LaTeX's itemize renders and pdfalto carries through into GROBID's text.
 _BULLET_RE = re.compile(r"[•▪‣◦]")
+# The same glyphs anchored at the paragraph start, leading whitespace folded into the pattern:
+# this is tested against every <p> in the corpus, and ``.lstrip()`` first would copy the whole
+# paragraph to look at one character.
+_BULLET_START_RE = re.compile(r"\s*[•▪‣◦]")
 
 
 def _local(tag: object) -> str:
@@ -210,7 +214,7 @@ def _trailing_figure_section(
 
 
 def _paragraph_blocks(
-    p: ET.Element, sec_ctx: _SectionCtx, section_blocks: MutableSequence[dict] | None = None
+    p: ET.Element, sec_ctx: _SectionCtx, section_blocks: MutableSequence[dict]
 ) -> list[dict]:
     """A ``<p>`` -> paragraph, or the listing / bulleted list GROBID flattened into one.
 
@@ -225,27 +229,33 @@ def _paragraph_blocks(
     if _is_paragraph_listing(text):
         # Same text either way — what changes is that the listing stops being indistinguishable
         # from prose, so a reader sees it as code and an agent can tell it apart when quoting.
-        return [{"id": sec_ctx.next_id("code"), "type": "code", "text": text}]
+        return [_text_block(sec_ctx, "code", text)]
     items = _split_bullets(text)
     if not items:
-        return [{"id": sec_ctx.next_id("paragraph"), "type": "paragraph", "text": text}]
+        return [_text_block(sec_ctx, "paragraph", text)]
     if len(items) == 1:
         # One bulleted line is one ITEM of a list GROBID split across sibling paragraphs. Join the
         # open list, or start one by absorbing the bulleted paragraph immediately before — that
         # first item cannot know a second is coming, so it lands as a paragraph and is reclaimed
         # here. With neither neighbour the paragraph stays verbatim: a lone bullet is not a list,
         # and inventing a one-item list where the source had a sentence is the worse error.
-        blocks = section_blocks if section_blocks is not None else []
-        host = _open_list(blocks)
+        host = _open_list(section_blocks)
         if host is not None:
             host["items"].append({"text": items[0]})
             return []
-        first = _trailing_bullet_paragraph(blocks)
+        first = _trailing_bullet_items(section_blocks)
         if first is not None:
-            blocks.pop()
-            return [_list_block(sec_ctx, [*_split_bullets(first["text"]), items[0]])]
-        return [{"id": sec_ctx.next_id("paragraph"), "type": "paragraph", "text": text}]
+            section_blocks.pop()
+            return [_list_block(sec_ctx, [*first, items[0]])]
+        return [_text_block(sec_ctx, "paragraph", text)]
     return [_list_block(sec_ctx, items)]
+
+
+def _text_block(sec_ctx: _SectionCtx, kind: str, text: str) -> dict:
+    """A paragraph or code block, minted the one way — the shape ``_list_block`` and
+    ``_algorithm_block`` beside it already have, so a field added to text blocks later cannot land
+    on some of the six call sites and not the others."""
+    return {"id": sec_ctx.next_id(kind), "type": kind, "text": text}
 
 
 def _list_block(sec_ctx: _SectionCtx, items: Sequence[str]) -> dict:
@@ -259,12 +269,16 @@ def _list_block(sec_ctx: _SectionCtx, items: Sequence[str]) -> dict:
     }
 
 
-def _trailing_bullet_paragraph(blocks: Sequence[dict]) -> dict | None:
-    """The bulleted paragraph a following bullet turns into a list, or None."""
+def _trailing_bullet_items(blocks: Sequence[dict]) -> list[str] | None:
+    """The ITEMS of the bulleted paragraph a following bullet turns into a list, or None.
+
+    Returns the split rather than the block it came from: the caller wants those items, and
+    running the split once as a predicate and again for its value is how the two drift apart.
+    """
     last = blocks[-1] if blocks else None
     if last is None or last.get("type") != "paragraph":
         return None
-    return last if _split_bullets(last.get("text") or "") else None
+    return _split_bullets(last.get("text") or "") or None
 
 
 def _open_list(blocks: Sequence[dict]) -> dict | None:
@@ -285,16 +299,10 @@ def _split_bullets(text: str) -> list[str]:
     pseudo inverse", which an unanchored split tore into fragments beginning with a bracket. Only
     a paragraph that OPENS with the glyph is an itemised one.
     """
-    if not _BULLET_RE.match(text.lstrip()):
+    if not _BULLET_START_RE.match(text):
         return []
     parts = [part.strip(" \t:;,") for part in _BULLET_RE.split(text)]
     return [part for part in parts if part]
-
-
-def _paragraph_block(p: ET.Element, sec_ctx: _SectionCtx) -> dict | None:
-    """Single-block form kept for callers that cannot take a list (trailing float sections)."""
-    blocks = _paragraph_blocks(p, sec_ctx)
-    return blocks[0] if blocks else None
 
 
 def _is_paragraph_listing(text: str) -> bool:
@@ -359,7 +367,7 @@ def _formula_or_algorithm_blocks(
         if host is not None and _ALGORITHM_STEP_RE.search(lead):
             _append_to_listing(host, lead)
         else:
-            blocks.append({"id": sec_ctx.next_id("code"), "type": "code", "text": lead})
+            blocks.append(_text_block(sec_ctx, "code", lead))
     # Walk the headings in document order. A "Algorithm N" whose body is a real listing becomes a
     # code block; one that is only a cross-reference GROBID swept into the float ("Algorithm 2 for
     # details") is still text the paper contains, so it is kept — joined to the listing it follows
@@ -373,7 +381,7 @@ def _formula_or_algorithm_blocks(
             if host is not None:
                 _append_to_listing(host, segment)
             else:
-                blocks.append({"id": sec_ctx.next_id("code"), "type": "code", "text": segment})
+                blocks.append(_text_block(sec_ctx, "code", segment))
     return blocks
 
 
@@ -496,7 +504,7 @@ def _table_block(figure_el: ET.Element, sec_ctx: _SectionCtx, doc_ctx: _DocCtx) 
         # "caption" was that paragraph (523 chars at the median) plus a page crop picturing it.
         # Caption LENGTH cannot separate the two: real captioned tables run to 1,142 chars here.
         # The head can, so keep the text and drop the table typing rather than the other way round.
-        return {"id": sec_ctx.next_id("paragraph"), "type": "paragraph", "text": caption}
+        return _text_block(sec_ctx, "paragraph", caption)
     ordinal = doc_ctx.table_ordinal
     doc_ctx.table_ordinal += 1
     block: dict = {"id": sec_ctx.next_id("table"), "type": "table", "rows": rows}
