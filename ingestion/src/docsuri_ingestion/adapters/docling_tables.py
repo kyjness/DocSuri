@@ -26,18 +26,37 @@ class DoclingTableExtractor:
         # A page costs seconds; a pathological paper must not stall the pipeline behind a
         # best-effort repair, so only the first N suspect pages are re-read.
         self._max_pages = max_pages
+        self._converter: object | None = None
+
+    def _make_converter(self) -> object:
+        """The converter, built once and reused for the life of this extractor.
+
+        Constructing it loads the TableFormer model stack, which is seconds of work that does not
+        depend on the document. Building one per call meant paying that per PAPER — tolerable while
+        only merged-cell tables were routed here, but empty tables are routed too now and they are
+        far more common (52% of papers against 25% in the audit sample), so a corpus-scale reparse
+        would spend most of this path's time re-loading the same weights. Built lazily so importing
+        the adapter, or configuring it and never hitting a suspect table, still costs nothing.
+        """
+        if self._converter is None:
+            from docling.document_converter import DocumentConverter
+
+            self._converter = DocumentConverter()
+        return self._converter
 
     def extract_tables(self, pdf: bytes, pages: Sequence[int]) -> Sequence[ExtractedTable]:
         try:
             from docling.datamodel.base_models import DocumentStream
-            from docling.document_converter import DocumentConverter
         except ImportError as exc:  # pragma: no cover - optional extra
             raise RuntimeError(_DOCLING_MISSING) from exc
 
         wanted = sorted({int(p) for p in pages if p and p > 0})[: self._max_pages]
         if not wanted:
             return ()
-        converter = DocumentConverter()
+        try:
+            converter = self._make_converter()
+        except ImportError as exc:  # pragma: no cover - optional extra
+            raise RuntimeError(_DOCLING_MISSING) from exc
         out: list[ExtractedTable] = []
         for page in wanted:
             try:
