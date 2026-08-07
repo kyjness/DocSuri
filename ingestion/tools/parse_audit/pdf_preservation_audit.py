@@ -20,8 +20,9 @@ The verdicts follow the ar5iv audit's contract — content reaching ``fullText``
 A listing the parser keeps as a paragraph still delivers its words, so it is reported as a structure
 signal for drill-down, never as a violation.
 
-Parser only: no network, no GROBID, no embedding. Reads the PDF and TEI caches written by
-``corpus_sample.py --pdf`` and ``pdf_grobid_audit.py``.
+Reads the PDF and TEI caches written by ``corpus_sample.py --pdf`` and ``pdf_grobid_audit.py``. No
+embedding, no cloud. With the caches populated it needs no network at all; ``--grobid-url`` only
+fills TEI the cache is missing, and ``--pipeline`` runs the local recovery stages.
 
 Usage::
 
@@ -35,17 +36,16 @@ import argparse
 import json
 import re
 from collections import Counter
-from datetime import UTC, datetime
 from pathlib import Path
 
 from _common import counts, walk_sections
+from _pipeline import TS as _TS
+from _pipeline import pipeline_builder, tei_for
 from docsuri_shared.dtos import SourceTier
 
 from docsuri_ingestion.adapters.grobid import GrobidHttpClient
 from docsuri_ingestion.docmodel.tei import parse_tei_to_docmodel
 from docsuri_ingestion.full_text_extraction import pdf_to_text
-
-_TS = datetime(2026, 1, 1, tzinfo=UTC)
 
 # Body text this far short of the PDF's own text layer is gross loss. Set well below 1.0 on
 # purpose: the denominator includes the title block, authors, affiliations and the whole reference
@@ -67,7 +67,7 @@ _ROMAN = {"i": 1, "v": 5, "x": 10, "l": 50}
 # The glyphs an itemize renders into the text layer.
 _BULLET_RE = re.compile(r"[•▪‣◦]")
 _WS_RE = re.compile(r"\s+")
-# Below this a float number is too commonly a year/section reference to trust ("Table 2020").
+# Past this a float number is too commonly a year/section reference to trust ("Table 2020").
 _MAX_FLOAT_NUMBER = 40
 
 
@@ -128,10 +128,12 @@ def _doc_floats(doc: dict) -> dict[str, set[int]]:
             kind = block.get("type")
             if kind not in ("figure", "table", "code"):
                 continue
-            named = _floats_in(f"{block.get('anchorLabel') or ''} {block.get('caption') or ''}")
             # A code block carries its listing heading in the text, not a caption.
-            if kind == "code":
-                named = _floats_in(str(block.get("text") or "")[:120])
+            named = (
+                _floats_in(str(block.get("text") or "")[:120])
+                if kind == "code"
+                else _floats_in(f"{block.get('anchorLabel') or ''} {block.get('caption') or ''}")
+            )
             for k, numbers in named.items():
                 out[k] |= numbers
     return out
@@ -228,24 +230,19 @@ def _audit_one(
     src = {kind: _contiguous(nums) for kind, nums in _floats_in(source).items()}
     got = _doc_floats(doc)
     blocks = [b for s in walk_sections(doc) for b in (s.get("blocks") or [])]
-    kinds = counts(doc)["kinds"]
+    sig = dict(counts(doc))
     # A code block is where an algorithm listing lands; a figure block also stands in for a float
     # GROBID could not classify, so both count toward what the doc-model holds.
-    held = {
-        "figure": kinds.get("figure", 0),
-        "table": kinds.get("table", 0),
-        "algorithm": kinds.get("code", 0),
-    }
-    sig = dict(counts(doc))
+    kinds = sig["kinds"]
     sig.update(
         {
             "src_figures": len(src["figure"]),
             "src_tables": len(src["table"]),
             "src_algorithms": len(src["algorithm"]),
             "src_bullets": len(_BULLET_RE.findall(source)),
-            "lost_figures": max(0, len(src["figure"]) - held["figure"]),
-            "lost_tables": max(0, len(src["table"]) - held["table"]),
-            "lost_algorithms": max(0, len(src["algorithm"]) - held["algorithm"]),
+            "lost_figures": max(0, len(src["figure"]) - kinds.get("figure", 0)),
+            "lost_tables": max(0, len(src["table"]) - kinds.get("table", 0)),
+            "lost_algorithms": max(0, len(src["algorithm"]) - kinds.get("code", 0)),
             "unmatched_figures": sorted(src["figure"] - got["figure"]),
             "unmatched_tables": sorted(src["table"] - got["table"]),
             "unmatched_algorithms": sorted(src["algorithm"] - got["algorithm"]),
@@ -265,56 +262,6 @@ def _audit_one(
         "violations": _violations(sig),
         "signals": sig,
     }
-
-
-def _tei_for(key: str, cache: Path, client: GrobidHttpClient | None) -> str:
-    """Cached TEI, extracting it once when the cache has none and a GROBID is reachable."""
-    path = cache / "tei" / f"{key}.tei.xml"
-    if path.exists():
-        return path.read_text(encoding="utf-8")
-    if client is None:
-        raise FileNotFoundError(f"no cached TEI for {key} and no --grobid-url given")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tei = client.extract_tei((cache / "pdf" / f"{key}.pdf").read_bytes())
-    path.write_text(tei, encoding="utf-8")
-    return tei
-
-
-def _pipeline_builder():
-    """A builder wired exactly as ingestion wires it, writing nothing.
-
-    The readers come from ``runtime``'s own resolvers so a missing optional extra degrades here the
-    way it would in ingestion, and the store always misses so a cache hit cannot skip the very
-    stages this mode exists to measure.
-    """
-    from docsuri_ingestion.docmodel.builder import DocModelBuilder
-    from docsuri_ingestion.runtime import _formula_reader, _table_extractor
-    from docsuri_ingestion.settings import IngestionSettings
-
-    class _NoStore:
-        def get(self, paper_id: str, version: int):  # noqa: ARG002
-            return None
-
-        def put(self, doc) -> None:
-            """Drop it — an audit measures, it does not populate the corpus."""
-
-        def remove(self, paper_id: str) -> None:
-            """Never called; present so the object satisfies the store port."""
-
-    class _FixedClock:
-        def now(self):
-            return _TS
-
-    settings = IngestionSettings()
-    return DocModelBuilder(
-        source=None,  # type: ignore[arg-type]  # build_from_tei never reaches the HTML ladder
-        store=_NoStore(),
-        table_extractor=_table_extractor(settings),
-        formula_reader=_formula_reader(settings),
-        clock=_FixedClock(),
-        parser_version="audit",
-        schema_version="audit",
-    )
 
 
 def main() -> None:
@@ -341,7 +288,7 @@ def main() -> None:
         if args.grobid_url
         else None
     )
-    builder = _pipeline_builder() if args.pipeline else None
+    builder = pipeline_builder() if args.pipeline else None
     print(f"judging: {'whole pipeline' if builder else 'parser only'}", flush=True)
 
     targets = json.loads((args.cache / args.targets).read_text())
@@ -354,7 +301,7 @@ def main() -> None:
                 row = _audit_one(
                     target["paper_id"],
                     target["version"],
-                    _tei_for(key, args.cache, client),
+                    tei_for(key, args.cache, client),
                     (args.cache / "pdf" / f"{key}.pdf").read_bytes(),
                     builder,
                 )

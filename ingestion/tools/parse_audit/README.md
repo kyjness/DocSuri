@@ -63,6 +63,19 @@ uv run python tools/parse_audit/pdf_grobid_audit.py --cache $CACHE --out pdf_aud
 uv run --extra tables python tools/parse_audit/table_repair_audit.py --cache $CACHE --out repair_audit.jsonl
 ```
 
+**`--pipeline`: judging what a reader receives.** Both PDF audits take this flag, and a verdict
+about tables or formulas needs it. `DocModelBuilder.build_from_tei` runs table re-extraction
+(Docling) and formula OCR (pix2tex) *after* `parse_tei_to_docmodel`, and both stages exist only on
+this path — so measuring the parser alone reports their absence as parser defects. It cost this
+audit two wrong conclusions (six empty tables where the pipeline delivers four; 0% formula
+characters where the pipeline delivers 80%). Parser-only stays the default because the recovery
+stages run vision models at minutes per paper.
+
+```bash
+uv run --all-extras python tools/parse_audit/pdf_preservation_audit.py \
+    --cache $CACHE --out pdf_preserve.jsonl --pipeline
+```
+
 ## Files
 
 | file | what it does |
@@ -74,5 +87,6 @@ uv run --extra tables python tools/parse_audit/table_repair_audit.py --cache $CA
 | `pdf_grobid_audit.py` | TEI → DocModel vs the same paper's ar5iv parse (needs GROBID) |
 | `table_repair_audit.py` | real Docling repair path — merged/empty tables before vs after (needs GROBID + `tables` extra) |
 | `_common.py` | shared metric helpers (kept self-contained so both checkouts measure identically) |
+| `_pipeline.py` | the TEI cache reader and the `--pipeline` builder, wired as ingestion wires it |
 
 The `corpus_sample.py` cache and all `*.jsonl` outputs are scratch — write them outside the repo.

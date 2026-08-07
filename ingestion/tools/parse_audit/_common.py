@@ -83,7 +83,9 @@ def counts(doc: dict) -> dict:
         "blocks": len(blocks),
         "kinds": kinds,
         "chars_by_kind": chars,
-        "body_chars": sum(len(block_text(b)) for b in blocks),
+        # Derived, not re-walked: the loop above already totalled it per kind, and two independent
+        # sums of the same thing can only ever disagree by being wrong.
+        "body_chars": sum(chars.values()),
         "captions": sum(1 for b in blocks if b.get("caption")),
         "empty_sections": sum(
             1 for s in sections if not (s.get("blocks") or []) and not (s.get("sections") or [])
