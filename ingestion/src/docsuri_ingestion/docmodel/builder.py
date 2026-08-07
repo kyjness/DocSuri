@@ -11,7 +11,8 @@ The build is deterministic (D1) — the only non-deterministic input is ``proven
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from collections.abc import Iterator
+from typing import Any, Protocol, runtime_checkable
 
 from docsuri_shared.docmodel_contract import DOCMODEL_PARSER_VERSION, DOCMODEL_SCHEMA_VERSION
 from docsuri_shared.dtos import DocModel, DocModelResultDTO, SourceTier, SourceUnavailableDTO
@@ -22,7 +23,6 @@ from docsuri_ingestion.docmodel.macros import extract_macros
 from docsuri_ingestion.docmodel.parser import (
     _project_full_text,
     block_text_parts,
-    iter_blocks,
     parse_html_to_docmodel,
     parse_text_to_docmodel,
 )
@@ -79,6 +79,15 @@ def _block_text_len(block: dict) -> int:
     Measures exactly the fragments the fullText projection emits, so the gate cannot drift from
     what the doc-model actually carries."""
     return sum(len(part) for part in block_text_parts(block))
+
+
+def _walk_sections(sections: object) -> Iterator[Any]:
+    """Every section depth-first, on the MODEL form. ``parser.iter_blocks`` answers the same
+    question on the dict form; using it here would mean dumping the doc-model to JSON first, which
+    is exactly the cost the one caller is avoiding."""
+    for section in sections or []:
+        yield section
+        yield from _walk_sections(section.sections)
 
 
 def _non_abstract_body_len(doc: DocModel) -> int:
@@ -317,18 +326,25 @@ class DocModelBuilder:
         against a stale cache would all degrade the whole corpus while every existing signal
         stayed green. These two counters are how that shows up, and they sit beside
         ``tei_fallback`` for the same reason it exists.
+
+        Guarded and dump-free, because this is pure observability standing in front of the two
+        recovery stages: a fault here must not cost a paper that parsed cleanly, and a second full
+        ``model_dump`` of every doc-model is real cost on a corpus-scale reparse for two counters.
         """
-        payload = doc.model_dump(mode="json")
-        dumped = sum(
-            1
-            for section in payload.get("sections") or []
-            if section.get("title") == TRAILING_FLOAT_SECTION_TITLE
-            for block in section.get("blocks") or []
-            if block.get("type") in ("figure", "table")
-        )
-        total = sum(len(list(iter_blocks(payload, kind))) for kind in ("figure", "table"))
-        emit_metric(self._observability, "ingestion.docmodel.floats_placed", float(total - dumped))
-        emit_metric(self._observability, "ingestion.docmodel.floats_trailing", float(dumped))
+        try:
+            placed = dumped = 0
+            for section in _walk_sections(doc.sections):
+                trailing = section.title == TRAILING_FLOAT_SECTION_TITLE
+                for block in section.blocks:
+                    if block.root.type in ("figure", "table"):
+                        if trailing:
+                            dumped += 1
+                        else:
+                            placed += 1
+            emit_metric(self._observability, "ingestion.docmodel.floats_placed", float(placed))
+            emit_metric(self._observability, "ingestion.docmodel.floats_trailing", float(dumped))
+        except Exception:  # noqa: BLE001 - a counter must never cost us the doc-model we have
+            emit_metric(self._observability, "ingestion.docmodel.float_census_failed", 1.0)
 
     def _repair_tables(
         self, doc: DocModel, pdf: bytes | None, crops: list[AssetCropSpec] | None

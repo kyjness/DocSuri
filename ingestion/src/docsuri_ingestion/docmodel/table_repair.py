@@ -18,6 +18,7 @@ Pure: given a doc-model and the tables an extractor read, the outcome is the sam
 from __future__ import annotations
 
 import io
+import logging
 import re
 from collections import Counter
 from collections.abc import Callable, Sequence
@@ -25,6 +26,8 @@ from typing import Any
 
 from docsuri_ingestion.docmodel.parser import iter_blocks
 from docsuri_ingestion.domain.assets import AssetCropSpec, ExtractedTable
+
+log = logging.getLogger("docsuri.ingestion.tables")
 
 # A number as a table reports one — never the digit inside an identifier like "HbA1c", which
 # would otherwise have to be found on the page for the rebuild to verify.
@@ -137,7 +140,23 @@ def _cells_of(rows: Sequence[Any]) -> list[str]:
 
 
 def _best_match(spec: AssetCropSpec, tables: Sequence[ExtractedTable]) -> ExtractedTable | None:
-    """The re-read table that overlaps this block's region most, if any does."""
+    """The re-read table that overlaps this block's region most, if any does.
+
+    Any overlap wins, with no minimum. That looks unsafe — geometry always beating the caption
+    fallback means a GROBID box clipping a NEIGHBOURING grid would file that neighbour's rows under
+    this table's caption, and ``_verified`` cannot catch it because it checks against the matched
+    table's own region, where those numbers genuinely are printed. Measured on 89 repair candidates
+    across the 50-paper sample, the shape does not occur: overlap is bimodal, never marginal.
+
+        geometric match found         39 / 89     no match at all   50 / 89
+        cover (overlap / GROBID box)  min 0.114   median 0.648      max 1.000
+        cover < 0.10                  0 / 39
+
+    The collapsed-caption-strip failure ``_caption_match`` exists for produces ZERO overlap, not a
+    sliver — which is why the fallback is reachable and in fact decides the majority (50 of 89).
+    Only 3 candidates had geometry and caption disagree, all at cover 0.63-0.79 where geometry is
+    the better witness. A minimum-cover threshold would therefore change 0 of 89 decisions at any
+    value the data supports, while costing recall if set higher. Left as it is, on evidence."""
     best, best_area = None, 0.0
     for table in tables:
         if table.page != spec.page:
@@ -333,6 +352,17 @@ def printed_text(pdf: bytes) -> PrintedText:
                 )
                 words = page.crop(region).extract_words(x_tolerance_ratio=_GAP_RATIO) or ()
                 text = " ".join(str(w.get("text") or "") for w in words)
+        except TypeError:
+            # Not an unreadable page — the extractor did not accept the call. ``x_tolerance_ratio``
+            # arrived in pdfplumber 0.11.1, so an environment resolving lower raises here on EVERY
+            # region. That failure is indistinguishable from "nothing needed repair" downstream:
+            # empty printed text reads as "refuse", ``table_repair_failed`` only fires on a raised
+            # exception, and ``tables_repaired`` simply never appears. Table repair would be a
+            # silent no-op for the whole corpus. Logged loudly because it is an environment fault,
+            # not a property of this paper. The dependency floor is pinned to match.
+            log.error("pdfplumber rejected the word-extraction call — table repair is inert",
+                      exc_info=True)
+            text = ""
         except Exception:  # noqa: BLE001 - unreadable page -> no yardstick -> no repair
             text = ""
         seen[(page_no, bbox)] = text
