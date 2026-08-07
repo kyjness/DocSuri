@@ -1112,3 +1112,59 @@ def test_a_panel_holding_a_tabular_is_not_dropped_for_lacking_a_graphic() -> Non
     assert "4.70 (0.66)" in doc.fullText
     figures = [b.root for s in doc.sections for b in s.blocks if isinstance(b.root, FigureBlock)]
     assert [f.anchorLabel for f in figures] == ["Figure 15"]
+    # And the recovered panel keeps its grid AS a grid. Falling back to the float's text sends it
+    # through ``_blocks_from``, which has no tabular branch and emits one paragraph per cell —
+    # a 34-row table would become 34 paragraphs and take that many block ids with it.
+    tables = [b.root for s in doc.sections for b in s.blocks if isinstance(b.root, TableBlock)]
+    assert [t.anchorLabel for t in tables] == ["Figure 16"]
+    assert [[c.text for c in r.cells] for t in tables for r in t.rows] == [
+        ["FB-CPR", "4.70 (0.66)"]
+    ]
+
+
+def test_an_unnumbered_panel_does_not_collapse_the_group_it_joins() -> None:
+    """The panel gate is all-or-nothing: a panel that enters ``panels`` without entering
+    ``numbered`` breaks the equality and the WHOLE group becomes one container-level float.
+    Admitting every panel with content of its own did that to a numbered plot standing beside an
+    "(a)"-marked legend — the plot's label and caption vanished, so the body's cross-reference had
+    no float to reach. Only numbered panels may join, and those cannot break the equality."""
+    html = (
+        '<html><body><div class="ltx_document">'
+        '<section class="ltx_section"><h2>1 Results</h2>'
+        '<figure class="ltx_figure">'
+        '<figure class="ltx_figure ltx_figure_panel"><img src="plot.png"/>'
+        '<figcaption class="ltx_caption"><span class="ltx_tag">Figure 7: </span>'
+        "Speedup of the solver</figcaption></figure>"
+        '<figure class="ltx_figure ltx_figure_panel"><div class="ltx_p">legend text</div>'
+        '<figcaption class="ltx_caption"><span class="ltx_tag">(a) </span>'
+        "panel a</figcaption></figure>"
+        "</figure></section></div></body></html>"
+    )
+    doc = _parse_custom(html)
+    figures = [b.root for s in doc.sections for b in s.blocks if isinstance(b.root, FigureBlock)]
+    assert [f.anchorLabel for f in figures] == ["Figure 7"]
+    assert "Speedup of the solver" in doc.fullText
+
+
+def test_a_class_less_figure_needs_a_NUMBERED_caption_to_be_promoted() -> None:
+    """Promoting a class-less ``<figure>`` rests on the promotion being rare (of 56 across 50
+    papers exactly one qualified, and that one read "Table 22:"), and the float NUMBER is what
+    keeps it rare. A caption tag reading a bare "Table" is not a float label, and admitting it
+    widens the gate past anything the sweep that justified it measured.
+
+    Not promoting means this element stays invisible to the parser entirely — that is the standing
+    behaviour for a class-less ``<figure>``, the gap the promotion opened a NARROW door in, not a
+    loss this rule introduces. Widening the door to close it would mint floats the document cannot
+    reference, each with an anchor label and a page crop it has no number for."""
+    html = (
+        '<html><body><div class="ltx_document">'
+        '<section class="ltx_section"><h2>1 Results</h2>'
+        "<figure>"
+        '<table class="ltx_tabular"><tr><td>cell</td></tr></table>'
+        '<figcaption class="ltx_caption"><span class="ltx_tag">Table </span>'
+        "of contents</figcaption></figure>"
+        "</section></div></body></html>"
+    )
+    doc = _parse_custom(html)
+    tables = [b.root for s in doc.sections for b in s.blocks if isinstance(b.root, TableBlock)]
+    assert tables == []  # not a referenceable float, so never promoted to one

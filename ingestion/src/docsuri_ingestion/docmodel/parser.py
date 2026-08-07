@@ -32,6 +32,7 @@ from typing import Any
 from bs4 import BeautifulSoup, NavigableString, Tag
 from docsuri_shared.dtos import DocModel, SourceTier
 
+from docsuri_ingestion.asset_extraction import caption_kind_and_number
 from docsuri_ingestion.docmodel.mathml import mathml_to_latex
 from docsuri_ingestion.domain.assets import FigureSpec, asset_id
 from docsuri_ingestion.domain.enums import AssetType
@@ -576,10 +577,25 @@ def _figure_blocks(figure_el: Tag, sec_ctx: _SectionCtx, doc_ctx: _DocCtx) -> li
 
 
 def _float_content_blocks(figure_el: Tag, sec_ctx: _SectionCtx, doc_ctx: _DocCtx) -> list[dict]:
-    """A float's graphic block, or its text when it has no graphic to show."""
+    """A float's graphic block, its grid when it has no graphic but holds one, else its text.
+
+    The grid case is the same "route on role, not class" rule ``_blocks_from`` states for a
+    ``\\captionof{table}`` minipage, applied one step further in. A float with no graphic and a
+    tabular inside is a table whatever its caption calls it, and the text fallback destroys it:
+    ``_text_float_blocks`` recurses through ``_blocks_from``, which has no branch for
+    ``table.ltx_tabular`` and so descends to every ``<td><span class="ltx_p">`` and emits ONE
+    PARAGRAPH PER CELL. A 2x2 grid came out as four paragraphs; arXiv:2504.11054's 34-row Figure 16
+    would fill a section's block-id space with 34 of them — and those ids are what u7 citations and
+    evidence anchors resolve against. Keeping the rows as rows costs the figure typing, which is
+    the lesser thing: ``_is_table_float`` declines to retype such a float precisely because it
+    still LOOKS like a figure, but nothing in that decision wanted the grid shredded."""
     block = _figure_block(figure_el, sec_ctx, doc_ctx)
     if block:
         return [block]
+    if _tabular_roots(figure_el):
+        table = _table_block(figure_el, sec_ctx)
+        if table:
+            return [table]
     return _text_float_blocks(figure_el, sec_ctx, doc_ctx)
 
 
@@ -688,18 +704,31 @@ def _text_float_blocks(figure_el: Tag, sec_ctx: _SectionCtx, doc_ctx: _DocCtx) -
 def _numbered_figure_panels(figure_el: Tag) -> list[Tag]:
     """Panels of ``figure_el`` that are separate numbered figures rather than sub-panels. Pure.
 
-    A panel qualifies on having content of its own, not on holding a graphic. Authors float a
-    tabular under a "Figure N" caption and set it beside a plot (arXiv:2504.11054's Figure 16
-    shares its group with Figure 15), and requiring an ``<img>`` dropped that panel out of the
-    group's panel list — after which nothing else reached it and the float was lost whole.
-    Caption-only floats stay excluded: those are LaTeXML's detached captions, and
-    ``_adopted_caption_float`` is what reads them."""
+    A graphic is not required. Authors float a tabular under a "Figure N" caption and set it
+    beside a plot (arXiv:2504.11054's Figure 16 shares its group with Figure 15), and demanding an
+    ``<img>`` dropped that panel out of the group's panel list — after which nothing else reached
+    it and the float was lost whole.
+
+    But a graphic-less panel is admitted ONLY when it carries a float number of its own, and that
+    restraint is load-bearing: the gate below is all-or-nothing, so a panel that joins ``panels``
+    without joining ``numbered`` breaks the equality and collapses the WHOLE group into a single
+    container-level float. Admitting every non-caption-only panel did exactly that to a group
+    holding a numbered plot beside an "(a)"-captioned legend — the plot's ``anchorLabel`` and
+    caption went from "Figure 7" to nothing, so the body's cross-reference had no float to reach
+    and the caption-number-to-page-crop match in ``asset_extraction`` had nothing to match on.
+    That is the same loss this widening was written to repair, moved to a different paper. Numbered
+    panels cannot break an equality they are on both sides of.
+
+    Caption-only floats stay excluded whatever their number: those are LaTeXML's detached
+    captions, and ``_adopted_caption_float`` is what reads them."""
     if _own_figcaption(figure_el) is not None:
         return []  # the container captions itself, so its panels belong to it
     panels = [
         panel
         for panel in figure_el.find_all("figure")
-        if _nearest_figure_ancestor(panel) is figure_el and not _caption_only_float(panel)
+        if _nearest_figure_ancestor(panel) is figure_el
+        and not _caption_only_float(panel)
+        and (panel.find_all("img") or _numbered_figure_label(_own_figcaption(panel)))
     ]
     numbered = [p for p in panels if _numbered_figure_label(_own_figcaption(p))]
     return numbered if len(numbered) == len(panels) else []
@@ -956,6 +985,14 @@ def _numbered_own_caption(figure_el: Tag) -> Tag | None:
     Deliberately duplicates ``_own_figcaption``'s ownership walk instead of calling it: that helper
     resolves ownership through ``_is_figure_container``, and this runs inside it. The walk here
     tests the tag name alone, which is what makes it safe to recurse into.
+
+    The NUMBER is what keeps this narrow, and narrowness is the whole argument for promoting a
+    class-less ``<figure>`` at all (of 56 across 50 papers exactly one qualified). ``_TABLE_TAG_RE``
+    cannot serve here because it is ``^table\\b`` with no numeral — a caption tag reading a bare
+    "Table" would promote a float the sweep that justified this never counted. ``caption_kind_and_
+    number`` demands one and reads the roman spelling too, so an IEEE "TABLE III" still qualifies;
+    ``_TABLE_TAG_RE`` itself stays as it is, since its other caller judges a float already known to
+    be one, where a bare "Table" is a legitimate disguise signal.
     """
     for figcaption in figure_el.find_all("figcaption", class_="ltx_caption"):
         parent = figcaption.parent
@@ -965,7 +1002,7 @@ def _numbered_own_caption(figure_el: Tag) -> Tag | None:
             continue
         tag = figcaption.find("span", class_="ltx_tag")
         text = _WS_RE.sub(" ", tag.get_text()).strip() if tag is not None else ""
-        if _FIGURE_TAG_RE.match(text) or _TABLE_TAG_RE.match(text):
+        if caption_kind_and_number(text) is not None:
             return figcaption
     return None
 
