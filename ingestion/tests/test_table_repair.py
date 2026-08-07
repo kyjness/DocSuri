@@ -549,3 +549,24 @@ def test_a_citation_year_beside_an_author_name_verifies() -> None:
     doc = _doc(emptied)
     region = "Model Year PhysGNN (Salehi and Giannacopoulos 2022) 1.71"
     assert apply_repairs(doc, [_SPEC], [rebuilt], _printed(region)) == 1
+
+
+def test_a_grid_whose_cells_are_all_blank_is_re_read_too() -> None:
+    """The third shape of the same GROBID failure, and it was slipping past the routing.
+
+    Reconstruction can fail with no rows at all, or it can recover the grid's SHAPE and none of its
+    contents — ``<row><cell/><cell/></row>``. A reader gets a blank grid either way, but a check
+    that only asked whether rows existed read the second as healthy and skipped the re-read.
+    """
+    blank = dict(_MERGED)
+    blank["rows"] = [
+        {"cells": [{"text": ""}, {"text": "  "}]},
+        {"cells": [{"text": ""}, {"text": ""}]},
+    ]
+
+    assert tables_needing_repair(_doc(blank), [_SPEC]) == [_SPEC]
+
+    # A grid that holds real text is still left alone — blankness is the signal, not row count.
+    filled = dict(_MERGED)
+    filled["rows"] = [{"cells": [{"text": "Method"}, {"text": "0.696"}]}]
+    assert tables_needing_repair(_doc(filled), [_SPEC]) == []

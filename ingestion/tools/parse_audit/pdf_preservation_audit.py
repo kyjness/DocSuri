@@ -39,12 +39,9 @@ from collections import Counter
 from pathlib import Path
 
 from _common import counts, walk_sections
-from _pipeline import TS as _TS
-from _pipeline import pipeline_builder, tei_for
-from docsuri_shared.dtos import SourceTier
+from _pipeline import build_doc, pipeline_builder, tei_for
 
 from docsuri_ingestion.adapters.grobid import GrobidHttpClient
-from docsuri_ingestion.docmodel.tei import parse_tei_to_docmodel
 from docsuri_ingestion.full_text_extraction import pdf_to_text
 
 # Body text this far short of the PDF's own text layer is gross loss. Set well below 1.0 on
@@ -94,7 +91,7 @@ def _floats_in(text: str) -> dict[str, set[int]]:
     for word, raw in _FLOAT_RE.findall(text or ""):
         n = _number(raw)
         if n is not None:
-            out[_KIND_OF[word.lower().rstrip(".")]].add(n)
+            out[_KIND_OF[word.lower()]].add(n)
     return out
 
 
@@ -192,39 +189,10 @@ def _violations(sig: dict) -> list[str]:
     return v
 
 
-def _build(paper_id: str, version: int, tei: str, pdf: bytes, builder: object | None):
-    """The doc-model to judge — the parser's, or the whole pipeline's when a builder is given.
-
-    They differ, and the difference has fooled this sweep twice: table re-extraction and formula
-    OCR run AFTER ``parse_tei_to_docmodel`` inside ``DocModelBuilder.build_from_tei``, so a
-    parser-only reading reports their absence as parser defects (it counted six empty tables where
-    the pipeline delivers four). Parser-only stays the default because the recovery stages run
-    vision models and cost minutes per paper; ``--pipeline`` is what a verdict about what READERS
-    receive has to use.
-    """
-    if builder is None:
-        return parse_tei_to_docmodel(
-            tei,
-            paper_id=paper_id,
-            version=version,
-            title="",
-            abstract=None,
-            source_tier=SourceTier.pdf,
-            parser_version="audit",
-            schema_version="audit",
-            generated_at=_TS,
-            crops=[],
-        )
-    return builder.build_from_tei(  # type: ignore[attr-defined]
-        paper_id, version, "", "", tei, "",
-        source_tier=SourceTier.pdf, crops=[], pdf=pdf,
-    ).docModel
-
-
 def _audit_one(
     paper_id: str, version: int, tei: str, pdf: bytes, builder: object | None = None
 ) -> dict:
-    model = _build(paper_id, version, tei, pdf, builder)
+    model = build_doc(paper_id, version, tei, pdf, builder)
     doc = model.model_dump(mode="json")
     source = pdf_to_text(pdf)
     src = {kind: _contiguous(nums) for kind, nums in _floats_in(source).items()}

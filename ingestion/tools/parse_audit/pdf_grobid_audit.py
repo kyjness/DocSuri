@@ -34,31 +34,11 @@ from pathlib import Path
 from typing import Any
 
 from _common import counts, same_paper
-from _pipeline import TS, pipeline_builder, tei_for
+from _pipeline import TS, build_doc, pipeline_builder, tei_for
 from docsuri_shared.dtos import SourceTier
 
 from docsuri_ingestion.adapters.grobid import GrobidHttpClient
 from docsuri_ingestion.docmodel.parser import parse_html_to_docmodel
-from docsuri_ingestion.docmodel.tei import parse_tei_to_docmodel
-
-
-def _pdf_doc(paper_id: str, version: int, tei: str, pdf: bytes, builder, crops: list) -> dict:
-    """The PDF-side doc-model: the parser's, or the whole builder's under ``--pipeline``.
-
-    ``crops`` is the parser's out-param; both recovery stages page-crop through it, so passing it
-    is what makes them run at all.
-    """
-    if builder is None:
-        return parse_tei_to_docmodel(
-            tei,
-            paper_id=paper_id, version=version, title="", abstract=None,
-            source_tier=SourceTier.pdf, parser_version="audit", schema_version="audit",
-            generated_at=TS, crops=crops,
-        ).model_dump(mode="json")
-    return builder.build_from_tei(
-        paper_id, version, "", "", tei, "",
-        source_tier=SourceTier.pdf, crops=crops, pdf=pdf,
-    ).docModel.model_dump(mode="json")
 
 
 def main() -> None:
@@ -98,17 +78,23 @@ def main() -> None:
                 tei = tei_for(key, args.cache, client)
                 crops: list = []
                 pdf_path = args.cache / "pdf" / f"{key}.pdf"
-                doc = _pdf_doc(
+                doc = build_doc(
                     paper_id, version, tei,
                     pdf_path.read_bytes() if builder else b"",
                     builder, crops,
-                )
+                ).model_dump(mode="json")
                 row["pdf"] = counts(doc)
                 row["crops"] = len(crops)
                 html_path = args.cache / "html" / f"{key}.html"
                 html = html_path.read_text(errors="replace") if html_path.exists() else ""
+                # Marked, not silent. A cache populated by `corpus_sample.py --pdf` alone has no
+                # HTML at all, and an unmarked row is indistinguishable from one where the two
+                # sources were compared — a sweep would then average ratios over zero pairs and
+                # report a clean-looking result that measured nothing.
+                if not html:
+                    row["ar5iv_missing"] = True
                 # ar5iv built a different version -> its parse is not a yardstick for this PDF.
-                if html and not same_paper(tei, html):
+                elif not same_paper(tei, html):
                     row["version_mismatch"] = True
                     html = ""
                 if html:
