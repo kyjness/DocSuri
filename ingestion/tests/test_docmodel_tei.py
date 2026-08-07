@@ -657,6 +657,104 @@ def test_a_citation_of_a_longer_number_does_not_claim_the_shorter_float() -> Non
     assert _float_labels(body[1]) == ["Figure 1"]
 
 
+def test_a_roman_numbered_table_is_placed_by_the_text_that_cites_it() -> None:
+    """IEEE styling numbers tables "TABLE III" throughout. Reading only arabic numerals lost the
+    citation signal for every table in such a paper and dropped the whole style onto the coarser
+    coordinate rule — here that would put the table two sections away from the sentence using it.
+    """
+    tei = f"""
+    <TEI {_NS}>
+      <text><body>
+        <div>
+          <head coords="1,10,100,300,10">1. Setup</head>
+          <p>The configurations are listed in Table III.</p>
+        </div>
+        <div>
+          <head coords="7,10,100,300,10">2. Appendix</head>
+          <p>Further material follows.</p>
+        </div>
+        <figure type="table" coords="7,10,300,200,80">
+          <head>TABLE III</head><figDesc>Selected model configurations</figDesc>
+          <table><row><cell>lr</cell><cell>0.01</cell></row></table>
+        </figure>
+      </body></text>
+    </TEI>
+    """
+    body = [s for s in _parse(tei).sections if s.id != "s0"]
+    assert _float_labels(body[0]) == ["TABLE III"]
+    assert _float_labels(body[1]) == []
+
+
+def test_theorem_furniture_does_not_claim_the_number_of_a_real_float() -> None:
+    """GROBID files a paper's theorem headings under ``<figure>`` too — "Challenge 1 .",
+    "Proposition 3 .". Those name a proposition, not a figure, so reading a number out of them
+    hands the element Figure 1's citation and prints it at a sentence that never mentioned it.
+    Only a KEYWORD-anchored number counts; anything else falls through to the coordinate rule."""
+    tei = f"""
+    <TEI {_NS}>
+      <text><body>
+        <div>
+          <head coords="1,10,100,300,10">1. Setup</head>
+          <p>The overview is given in Figure 1.</p>
+        </div>
+        <div>
+          <head coords="8,10,100,300,10">2. Appendix</head>
+          <p>Further material follows.</p>
+        </div>
+        <figure coords="8,10,300,200,80">
+          <head>Challenge 1 .</head><figDesc>Developing powerful ML pipelines.</figDesc>
+        </figure>
+      </body></text>
+    </TEI>
+    """
+    body = [s for s in _parse(tei).sections if s.id != "s0"]
+    assert _float_labels(body[0]) == []  # not dragged to Figure 1's citation
+    assert _float_labels(body[1]) == ["Challenge 1 ."]  # placed by its page-8 coordinates
+
+
+def test_a_table_captioned_without_a_colon_keeps_its_table_typing() -> None:
+    """A rows-less ``<figure type="table">`` is demoted to a paragraph unless its caption NAMES a
+    table, because GROBID sweeps stray prose into table elements. IEEE captions carry no colon —
+    "TABLE IV RESULTS OF THE ABLATION STUDY" — and a delimiter-only rule read them as prose,
+    demoting real tables and taking their crop and repair eligibility with them."""
+    tei = f"""
+    <TEI {_NS}>
+      <text><body>
+        <div>
+          <head coords="1,10,100,300,10">1. Setup</head>
+          <p>Body text.</p>
+          <figure type="table" coords="1,10,300,200,80">
+            <figDesc>TABLE IV RESULTS OF THE ABLATION STUDY</figDesc>
+          </figure>
+        </div>
+      </body></text>
+    </TEI>
+    """
+    section = next(s for s in _parse(tei).sections if s.id != "s0")
+    assert [b.root.type for b in section.blocks] == ["paragraph", "table"]
+
+
+def test_a_caption_that_merely_cites_a_table_is_still_demoted() -> None:
+    """The other side of the same rule: GROBID swept a paragraph that CITES Table 1 into a table
+    element. A caption punctuates after its label; a sentence runs straight on to a verb, so this
+    stays prose rather than becoming a phantom empty table with a page crop picturing it."""
+    tei = f"""
+    <TEI {_NS}>
+      <text><body>
+        <div>
+          <head coords="1,10,100,300,10">1. Setup</head>
+          <p>Body text.</p>
+          <figure type="table" coords="1,10,300,200,80">
+            <figDesc>Table 1 displays the selected hyperparameters.</figDesc>
+          </figure>
+        </div>
+      </body></text>
+    </TEI>
+    """
+    section = next(s for s in _parse(tei).sections if s.id != "s0")
+    assert [b.root.type for b in section.blocks] == ["paragraph", "paragraph"]
+
+
 def test_a_teaser_printed_above_the_first_heading_opens_the_first_section() -> None:
     """A float on the title page sits above every heading, so no head precedes it and the
     coordinate rule owns nothing — it was the one shape left stranded in the trailing dump.

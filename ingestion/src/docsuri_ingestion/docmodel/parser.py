@@ -112,6 +112,19 @@ class _SectionCtx:
         self.counters[block_type] = n
         return f"{self.section_id}.{_ABBREV[block_type]}{n}"
 
+    def release(self, block_type: str) -> None:
+        """Hand back the id a block that is being absorbed had already taken.
+
+        Without this the absorbed block's number stays spent and every later block of that type in
+        the section shifts up one. Block ids are what u7 citations and evidence anchors point at,
+        so a section that renumbers for a reason no reader can see is a needless way to move them.
+
+        Lives here rather than beside its caller because it is the inverse of ``next_id`` and has
+        to stay that way: a change to how ids are minted has to be a change to both, and a caller
+        reaching into ``counters`` from outside would go on compiling while quietly disagreeing.
+        """
+        self.counters[block_type] = max(0, self.counters.get(block_type, 0) - 1)
+
 
 def parse_html_to_docmodel(
     html: str,

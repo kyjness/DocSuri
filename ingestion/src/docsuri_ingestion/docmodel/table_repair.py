@@ -211,14 +211,6 @@ def _words(text: str) -> list[str]:
     return [w.lower() for w in _WORD_RE.findall(text)]
 
 
-# What a rebuilt cell may claim, and how the same kind of token is read off the page. Both kinds
-# are checked whenever the rebuild emits them; see ``_verified``.
-_TOKEN_KINDS: tuple[tuple[Callable[[str], list[str]], Callable[[str], list[str]]], ...] = (
-    (_cell_numbers, _page_numbers),
-    (_words, _words),
-)
-
-
 def _overlap(a: tuple[float, ...], b: tuple[float, ...]) -> float:
     width = min(a[2], b[2]) - max(a[0], b[0])
     height = min(a[3], b[3]) - max(a[1], b[1])
@@ -249,9 +241,12 @@ def _verified(rows: Sequence[Any], rebuilt: Sequence[Sequence[str]], printed: st
     """
     if not printed.strip():
         return False
+    # Each kind of token a rebuilt cell may claim, paired with how the same kind is read off the
+    # page. Words are read identically on both sides; numbers are not, because a cell and a page
+    # line disagree about what a numeral is glued to.
     checks = [
         (in_cell, set(on_page(printed)))
-        for in_cell, on_page in _TOKEN_KINDS
+        for in_cell, on_page in ((_cell_numbers, _page_numbers), (_words, _words))
         if any(in_cell(cell) for row in rebuilt for cell in row)
     ]
     return bool(checks) and all(

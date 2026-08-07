@@ -29,7 +29,11 @@ What each TEI node maps to (and the honest fidelity limits of the PDF path):
 
 Figure/table position: GROBID groups ``<figure>`` elements (typically at body end), so their
 exact inline position is not in TEI order. Figures nested inside a ``<div>`` keep that section;
-body-level figures are appended in coordinate order (page, y) — approximate but deterministic.
+a body-level one is put back by ``_place_floats`` on the first of three signals — the paragraph
+that cites its number, else the section its page coordinates fall in, else a trailing section.
+TEI predating the ``head`` coordinate request keeps only the first signal, so every float its body
+never names lands in that trailing section; ``ingestion.docmodel.floats_trailing`` counts them
+rather than letting a stale cache degrade the corpus unseen.
 
 Deterministic: same TEI -> same DocModel, ids included (P7). No LLM (D1). Built as dicts and
 validated through the generated ``DocModel`` binding, so drift from the schema fails loudly.
@@ -39,13 +43,14 @@ from __future__ import annotations
 
 import re
 import xml.etree.ElementTree as ET
-from collections.abc import Mapping, MutableSequence, Sequence
+from collections import defaultdict
+from collections.abc import MutableSequence, Sequence
 from datetime import UTC, datetime
-from types import MappingProxyType
 from typing import NamedTuple
 
 from docsuri_shared.dtos import DocModel, SourceTier
 
+from docsuri_ingestion.asset_extraction import caption_kind, caption_number
 from docsuri_ingestion.docmodel.parser import (
     _DocCtx,
     _finish_docmodel,
@@ -58,6 +63,10 @@ from docsuri_ingestion.domain.errors import PermanentIngestionError
 from docsuri_ingestion.xmlsafe import safe_fromstring
 
 _WS_RE = re.compile(r"\s+")
+# The section holding floats ``_place_floats`` found no home for. Named rather than spelled at the
+# one site that builds it, because the builder counts what lands here: this is the shape the whole
+# path degrades to when GROBID stops coordinating <head>, and it degrades silently otherwise.
+TRAILING_FLOAT_SECTION_TITLE = "그림 및 표"
 # An algorithm float's heading is CAPITALISED — "Algorithm 1", or "ALGORITHM 1" where IEEE styling
 # puts the whole float head in caps. Spelled out rather than matched with re.IGNORECASE, because
 # the split below runs UNANCHORED over a formula's whole text and a lowercase "algorithm 2"
@@ -114,16 +123,27 @@ _VERBATIM_HEAD_RE = re.compile(r"^\s*Listing\s+\d+\s*[:.]", re.IGNORECASE)
 # sample: at 150 exactly one more block promotes (a four-triple RDF listing) and nothing further
 # appears down to 100, so the gate is not what bounds recall here.
 _LISTING_MIN_CHARS = 150
-# A caption that names the float it belongs to, as a LABEL rather than a mention. GROBID normally
-# files that name in <head>, but it does not always finish splitting it out, so a table can carry
-# its label at the front of the caption instead.
-#
-# The delimiter after the number is what makes this safe, and it was not optional: without it the
-# pattern also matched "Table 1 displays the selected training hyperparameters …", a paragraph
-# GROBID had swept into a <figure type="table"> on 2503.09504 that merely CITES Table 1 — so the
-# guard against losing a real table would have restored exactly the phantom table this parser
-# learned to demote. A caption punctuates after its label; a sentence goes straight on to a verb.
-_TABLE_CAPTION_HEAD_RE = re.compile(r"\s*(?:TABLE|Table|Tab\.?)\s*[IVXLC\d]+\s*[:.\-–—]")
+# How a float is numbered, in both spellings a paper uses: arabic, or the uppercase roman IEEE
+# styling runs on ("TABLE III"). Roman is uppercase-only — under IGNORECASE the letter class sits
+# inside ordinary lowercase words ("in", "vi", "mix") — and both spellings are keyword-anchored
+# wherever this is used, so a string that merely contains letters cannot be read as a numeral.
+_FLOAT_NUMERAL = r"(\d+|(?-i:[IVXLCDM]+)\b)"
+# A body reference to a float ("Figure 7", "Fig.3", "Tab. XII"), scanned over every paragraph ONCE
+# to index which float each one cites. One combined pattern rather than one per float per number:
+# the numeral is captured instead of spelled into the pattern, so the whole document's citations
+# come out of a single pass. ``\d+`` is greedy, which is what keeps "Figure 15" from reading as a
+# citation of Figure 1 — a shorter number is never matched inside a longer one.
+_FLOAT_MENTION_RE = re.compile(
+    rf"\b(Fig(?:ure)?|Tab(?:le)?)\.?\s*{_FLOAT_NUMERAL}", re.IGNORECASE
+)
+# The same grammar anchored for reading a float's OWN number off its label or caption, one per
+# kind so the keyword is fixed: a table must not claim a number only "Figure" carries.
+_FLOAT_NUM_RE = {
+    False: re.compile(rf"\s*(?:Figure|Fig)\.?\s*{_FLOAT_NUMERAL}", re.IGNORECASE),
+    True: re.compile(rf"\s*(?:Table|Tab)\.?\s*{_FLOAT_NUMERAL}", re.IGNORECASE),
+}
+# A label GROBID reduced to the bare numeral, the keyword having stayed with the caption.
+_BARE_NUMBER_LABEL_RE = re.compile(r"^\s*(\d+)\s*$")
 # The bullet glyphs LaTeX's itemize renders and pdfalto carries through into GROBID's text.
 _BULLET_CHARS = "•▪‣◦"
 # Anchored at the paragraph start, leading whitespace folded into the pattern: this is tested
@@ -177,16 +197,7 @@ def parse_tei_to_docmodel(
         placement = _place_floats(divs, floats)
         trailing_figures = placement.leftover
         for idx, div in enumerate(divs, start=1):
-            sections.append(
-                _parse_div(
-                    div,
-                    f"s{idx}",
-                    doc_ctx,
-                    after_para=placement.after_para,
-                    leading=placement.at_section_start.get(id(div), ()),
-                    trailing=placement.at_section_end.get(id(div), ()),
-                )
-            )
+            sections.append(_parse_div(div, f"s{idx}", doc_ctx, placement))
 
     figure_section = _trailing_figure_section(trailing_figures, len(sections) + 1, doc_ctx)
     if figure_section is not None:
@@ -210,38 +221,26 @@ def parse_tei_to_docmodel(
 
 
 def _parse_div(
-    div: ET.Element,
-    section_id: str,
-    doc_ctx: _DocCtx,
-    *,
-    after_para: Mapping[int, Sequence[ET.Element]] = MappingProxyType({}),
-    leading: Sequence[ET.Element] = (),
-    trailing: Sequence[ET.Element] = (),
+    div: ET.Element, section_id: str, doc_ctx: _DocCtx, placement: _FloatPlacement
 ) -> dict:
     """A ``<div>`` -> Section: ``<head>`` title + ``<p>``/``<formula>``/nested ``<figure>``.
 
-    ``leading``/``after_para``/``trailing`` carry the body-level floats ``_place_floats`` assigned
-    here — opening the section, following the paragraph that cites them, or closing it. They are
-    built with this section's own ``_SectionCtx`` so their block ids belong to the section they
-    read in, which is also why placement is decided before the walk rather than after it.
+    ``placement`` carries the body-level floats ``_place_floats`` assigned here — opening the
+    section, following the paragraph that cites them, or closing it. They are built with this
+    section's own ``_SectionCtx`` so their block ids belong to the section they read in, which is
+    also why placement is decided before the walk rather than after it.
     """
     sec_ctx = _SectionCtx(section_id=section_id)
     title = ""
-    blocks: list[dict] = []
-    for placed in leading:
-        block = _figure_or_table_block(placed, sec_ctx, doc_ctx)
-        if block:
-            blocks.append(block)
+    opening = placement.at_section_start.get(id(div), ())
+    blocks: list[dict] = _float_blocks(opening, sec_ctx, doc_ctx)
     for child in list(div):
         name = _local(child.tag)
         if name == "head" and not title:
             title = _text(child)
         elif name == "p":
-            blocks.extend(_paragraph_blocks(child, sec_ctx, blocks))
-            for placed in after_para.get(id(child), ()):
-                block = _figure_or_table_block(placed, sec_ctx, doc_ctx)
-                if block:
-                    blocks.append(block)
+            blocks.extend(_paragraph_blocks(placement.text_of(child), sec_ctx, blocks))
+            blocks.extend(_float_blocks(placement.after_para.get(id(child), ()), sec_ctx, doc_ctx))
         elif name == "formula":
             blocks.extend(
                 _formula_or_algorithm_blocks(
@@ -256,14 +255,21 @@ def _parse_div(
                 )
             )
         elif name == "figure":
-            block = _figure_or_table_block(child, sec_ctx, doc_ctx)
-            if block:
-                blocks.append(block)
-    for placed in trailing:
-        block = _figure_or_table_block(placed, sec_ctx, doc_ctx)
-        if block:
-            blocks.append(block)
+            blocks.extend(_float_blocks((child,), sec_ctx, doc_ctx))
+    blocks.extend(_float_blocks(placement.at_section_end.get(id(div), ()), sec_ctx, doc_ctx))
     return {"id": section_id, "title": title, "blocks": blocks}
+
+
+def _float_blocks(
+    floats: Sequence[ET.Element], sec_ctx: _SectionCtx, doc_ctx: _DocCtx
+) -> list[dict]:
+    """Blocks for floats reading here, dropping any that turns out to carry nothing to show.
+
+    One helper for all four positions a float can reach a section from (opening it, after the
+    paragraph citing it, nested in the TEI already, closing it) — the ar5iv path has just had to
+    teach one float to yield two blocks, and four hand-written copies of this loop is four places
+    that change would have to land."""
+    return [b for el in floats if (b := _figure_or_table_block(el, sec_ctx, doc_ctx))]
 
 
 class _FloatPlacement(NamedTuple):
@@ -271,12 +277,27 @@ class _FloatPlacement(NamedTuple):
 
     Identity keys, not the elements themselves: ``ElementTree`` nodes hash by identity anyway and
     comparing them by value would be wrong for two floats with the same markup.
+
+    ``para_text`` carries the paragraph text placement already had to build. Deciding placement
+    needs every paragraph's text and so does the walk that follows, and ``_text`` joins
+    ``itertext()`` then whitespace-substitutes the result — computing it twice walked the whole
+    body twice for nothing.
     """
 
     after_para: dict[int, list[ET.Element]]
     at_section_start: dict[int, list[ET.Element]]
     at_section_end: dict[int, list[ET.Element]]
     leftover: list[ET.Element]
+    para_text: dict[int, str]
+
+    def text_of(self, p: ET.Element) -> str:
+        """This paragraph's text, from the placement pass when it ran, else read now.
+
+        The fallback is the float-less paper: placement returns early there, so nothing has read
+        the body yet and this is the first (and only) read.
+        """
+        cached = self.para_text.get(id(p))
+        return cached if cached is not None else _text(p)
 
 
 def _place_floats(divs: list[ET.Element], floats: list[ET.Element]) -> _FloatPlacement:
@@ -296,80 +317,117 @@ def _place_floats(divs: list[ET.Element], floats: list[ET.Element]) -> _FloatPla
     opens the first section rather than closing it — the same hoist the ar5iv path already does
     for a float that precedes every section there.
 
-    Anything with neither signal is returned for the trailing section, which is also what happens
-    wholesale on TEI predating the ``head`` coordinate request (older caches stay parseable).
+    Anything with neither signal is returned for the trailing section. TEI predating the ``head``
+    coordinate request keeps signal (1) — citations are read from paragraph text and need no
+    coordinates — so an older cache stays parseable and loses only its uncited floats.
     """
-    after_para: dict[int, list[ET.Element]] = {}
-    at_section_start: dict[int, list[ET.Element]] = {}
-    at_section_end: dict[int, list[ET.Element]] = {}
+    if not floats:
+        # Nothing to place, so nothing to read the body for. Without this a float-less paper pays
+        # a full ``_text`` pass over every paragraph and an anchor sort to decide nothing.
+        return _FloatPlacement({}, {}, {}, [], {})
+
+    after_para: defaultdict[int, list[ET.Element]] = defaultdict(list)
+    at_section_start: defaultdict[int, list[ET.Element]] = defaultdict(list)
+    at_section_end: defaultdict[int, list[ET.Element]] = defaultdict(list)
     leftover: list[ET.Element] = []
 
-    paragraphs = [(div, p) for div in divs for p in div if _local(p.tag) == "p"]
-    para_text = [(div, p, _text(p)) for div, p in paragraphs]
+    paragraphs = [p for div in divs for p in div if _local(p.tag) == "p"]
+    para_text = {id(p): _text(p) for p in paragraphs}
+    first_mention = _first_mentions(paragraphs, para_text)
     div_anchors = sorted(
-        ((_coord_sort_key(head), div) for div in divs for head in _head_coord_source(div)),
+        ((key, div) for div in divs if (key := _head_coord(div)) is not None),
         key=lambda pair: pair[0],
     )
 
     for figure_el in sorted(floats, key=_coord_sort_key):
-        cite = _first_citing_paragraph(figure_el, para_text)
+        cite = _citing_paragraph(figure_el, paragraphs, first_mention)
         if cite is not None:
-            after_para.setdefault(id(cite), []).append(figure_el)
+            after_para[id(cite)].append(figure_el)
             continue
         owner = _section_by_coords(figure_el, div_anchors)
         if owner is not None:
-            at_section_end.setdefault(id(owner), []).append(figure_el)
+            at_section_end[id(owner)].append(figure_el)
             continue
         if div_anchors and _coord_sort_key(figure_el) < div_anchors[0][0]:
-            at_section_start.setdefault(id(div_anchors[0][1]), []).append(figure_el)
+            at_section_start[id(div_anchors[0][1])].append(figure_el)
             continue
         leftover.append(figure_el)
-    return _FloatPlacement(after_para, at_section_start, at_section_end, leftover)
+    return _FloatPlacement(after_para, at_section_start, at_section_end, leftover, para_text)
 
 
-def _head_coord_source(div: ET.Element) -> list[ET.Element]:
-    """The div's own ``<head>`` when it carries coordinates — at most one, never a figure's."""
+def _head_coord(div: ET.Element) -> tuple[float, float] | None:
+    """Sort key of the div's own ``<head>`` when it carries coordinates — never a figure's."""
     for child in div:
         if _local(child.tag) == "head":
-            return [child] if child.get("coords") else []
-    return []
-
-
-def _first_citing_paragraph(
-    figure_el: ET.Element, para_text: list[tuple[ET.Element, ET.Element, str]]
-) -> ET.Element | None:
-    """The first paragraph naming this float's number, or None when the body never cites it."""
-    patterns = _float_mention_patterns(figure_el)
-    if not patterns:
-        return None
-    for _div, p, text in para_text:
-        if any(pattern.search(text) for pattern in patterns):
-            return p
+            return _coord_sort_key(child) if child.get("coords") else None
     return None
 
 
-def _float_mention_patterns(figure_el: ET.Element) -> list[re.Pattern[str]]:
-    """Regexes matching a body reference to this float ("Figure 7", "Tab. 3").
+def _first_mentions(
+    paragraphs: list[ET.Element], para_text: dict[int, str]
+) -> dict[tuple[bool, int], int]:
+    """``(is_table, number)`` -> index of the FIRST paragraph citing it. One pass over the body.
+
+    Built once for the whole document rather than asking each float to find itself. Searching per
+    float re-read every paragraph once per float per number it claims, which on a 13-float paper
+    was a third of the entire TEI parse — and the floats that most need the answer, the uncited
+    ones the coordinate fallback exists for, paid the full scan to learn nothing.
+    """
+    first: dict[tuple[bool, int], int] = {}
+    for index, p in enumerate(paragraphs):
+        for match in _FLOAT_MENTION_RE.finditer(para_text[id(p)]):
+            number = caption_number(match.group(2))
+            if number is not None:
+                first.setdefault((match.group(1).lower().startswith("tab"), number), index)
+    return first
+
+
+def _citing_paragraph(
+    figure_el: ET.Element,
+    paragraphs: list[ET.Element],
+    first_mention: dict[tuple[bool, int], int],
+) -> ET.Element | None:
+    """The first paragraph naming this float's number, or None when the body never cites it."""
+    is_table = _is_table_float(figure_el)
+    hits = [
+        first_mention[(is_table, number)]
+        for number in _float_numbers(figure_el, is_table)
+        if (is_table, number) in first_mention
+    ]
+    return paragraphs[min(hits)] if hits else None
+
+
+def _is_table_float(figure_el: ET.Element) -> bool:
+    """Whether GROBID typed this ``<figure>`` as a table — which block it becomes, and which
+    keyword the body cites it by."""
+    return (figure_el.get("type") or "").lower() == "table"
+
+
+def _float_numbers(figure_el: ET.Element, is_table: bool) -> set[int]:
+    """The float numbers this element claims ({7} for "Figure 7"), read off its own label.
 
     Numbers come from the label the block itself will carry, so the caption rules live in one
-    place. A merged head ("Figure 4 :Figure 5 :") legitimately claims several numbers. Roman
-    labels ("TABLE III") yield none and fall through to the coordinate signal.
+    place. A merged head ("Figure 4 :Figure 5 :") legitimately claims several.
+
+    Every read here is KEYWORD-ANCHORED, and the bare-numeral fallback demands the label be
+    nothing but the numeral. GROBID files a paper's theorem furniture under ``<figure>`` too —
+    "Challenge 1 .", "Proposition 3 ." — so a rule that took the first number it found in a head
+    handed those elements the numbers of Figure 1 and Figure 3 and printed them at those figures'
+    citations. Anything not named as a float falls through to the coordinate signal instead.
     """
     label, caption = _figure_label_caption(figure_el)
-    is_table = (figure_el.get("type") or "").lower() == "table"
-    word = r"(?:Table|Tab)" if is_table else r"(?:Figure|Fig)"
-    numbers = {int(n) for n in re.findall(rf"{word}\.?\s*(\d+)", label, re.IGNORECASE)}
+    numbered = _FLOAT_NUM_RE[is_table]
+    numbers = {n for n in map(caption_number, numbered.findall(label)) if n is not None}
     if not numbers:
         # No numbered head — GROBID files the whole caption into figDesc instead. Only a LEADING
         # number names this float; later ones are the caption citing other floats.
-        lead = re.match(rf"\s*{word}\.?\s*(\d+)", caption, re.IGNORECASE)
-        if lead:
-            numbers = {int(lead.group(1))}
+        lead = numbered.match(caption)
+        value = caption_number(lead.group(1)) if lead else None
+        if value is not None:
+            numbers = {value}
     if not numbers:
-        numbers = {int(n) for n in re.findall(r"^\s*(\d+)\s*$", label)}
-    return [
-        re.compile(rf"\b{word}\.?\s*{n}(?!\d)", re.IGNORECASE) for n in sorted(numbers)
-    ]
+        numbers = {int(n) for n in _BARE_NUMBER_LABEL_RE.findall(label)}
+    return numbers
 
 
 def _section_by_coords(
@@ -393,24 +451,19 @@ def _trailing_figure_section(
     """Group body-level figures/tables into a trailing section, ordered by page/y coordinates."""
     if not figures:
         return None
-    ordered = sorted(figures, key=_coord_sort_key)
     section_id = f"s{section_index}"
     sec_ctx = _SectionCtx(section_id=section_id)
-    blocks: list[dict] = []
-    for fig in ordered:
-        block = _figure_or_table_block(fig, sec_ctx, doc_ctx)
-        if block:
-            blocks.append(block)
+    blocks = _float_blocks(sorted(figures, key=_coord_sort_key), sec_ctx, doc_ctx)
     if not blocks:
         return None
-    return {"id": section_id, "title": "그림 및 표", "blocks": blocks}
+    return {"id": section_id, "title": TRAILING_FLOAT_SECTION_TITLE, "blocks": blocks}
 
 
 # --------------------------------------------------------------------------- blocks
 
 
 def _paragraph_blocks(
-    p: ET.Element, sec_ctx: _SectionCtx, section_blocks: MutableSequence[dict]
+    text: str, sec_ctx: _SectionCtx, section_blocks: MutableSequence[dict]
 ) -> list[dict]:
     """A ``<p>`` -> paragraph, or the listing / bulleted list GROBID flattened into one.
 
@@ -419,7 +472,6 @@ def _paragraph_blocks(
     it arrives as one ``<p>`` PER ITEM (64 such paragraphs against 19 multi-bullet ones across the
     audit sample), which is why a run of them has to be rejoined rather than each split alone.
     """
-    text = _text(p)
     if not text:
         return []
     if _is_paragraph_listing(text):
@@ -442,23 +494,13 @@ def _paragraph_blocks(
     first = _trailing_bullet_items(section_blocks)
     if first is not None:
         section_blocks.pop()
-        _release_id(sec_ctx, "paragraph")
+        sec_ctx.release("paragraph")
         return [_list_block(sec_ctx, [*first, *items])]
     if len(items) == 1:
         # With neither neighbour a lone bullet is not a list, and inventing a one-item list where
         # the source had a sentence is the worse error — the paragraph stays verbatim.
         return [_text_block(sec_ctx, "paragraph", text)]
     return [_list_block(sec_ctx, items)]
-
-
-def _release_id(sec_ctx: _SectionCtx, kind: str) -> None:
-    """Hand back the id a block that is being absorbed had already taken.
-
-    Without this the absorbed paragraph's number stays spent and every later paragraph in the
-    section shifts up one. Block ids are what u7 citations and evidence anchors point at, so a
-    section that renumbers for a reason no reader can see is a needless way to move them.
-    """
-    sec_ctx.counters[kind] = max(0, sec_ctx.counters.get(kind, 0) - 1)
 
 
 def _text_block(sec_ctx: _SectionCtx, kind: str, text: str) -> dict:
@@ -679,7 +721,7 @@ def _formula_block(formula: ET.Element, sec_ctx: _SectionCtx, doc_ctx: _DocCtx) 
 def _figure_or_table_block(
     figure_el: ET.Element, sec_ctx: _SectionCtx, doc_ctx: _DocCtx
 ) -> dict | None:
-    if (figure_el.get("type") or "").lower() == "table":
+    if _is_table_float(figure_el):
         return _table_block(figure_el, sec_ctx, doc_ctx)
     return _figure_block(figure_el, sec_ctx, doc_ctx)
 
@@ -708,7 +750,7 @@ def _table_block(figure_el: ET.Element, sec_ctx: _SectionCtx, doc_ctx: _DocCtx) 
     label, caption = _figure_label_caption(figure_el)
     if not rows and not caption:
         return None
-    if not rows and not label and not _TABLE_CAPTION_HEAD_RE.match(caption):
+    if not rows and not label and caption_kind(caption) is not AssetType.TABLE:
         # Neither cells nor a "Table N" head: GROBID did not identify a table here, it swept a
         # stretch of prose into a table element. Across the audit sample every one of these was
         # running text — a references tail, an acknowledgements paragraph, a bulleted item, a
@@ -722,6 +764,14 @@ def _table_block(figure_el: ET.Element, sec_ctx: _SectionCtx, doc_ctx: _DocCtx) 
         # captions — and demoting one of those would take a real table's rows, crop and repair
         # eligibility with it. No such shape occurs in the audit sample (0 of 210 table figures),
         # so this costs nothing here; it is a guard against an irreversible loss, not a fix.
+        #
+        # ``caption_kind`` is that guard rather than a pattern of our own, because the label-vs-
+        # mention rule is exactly what it already decides for the ar5iv path: it demands a
+        # delimiter, end-of-string, or a capitalised follower after the number, so "Table 1
+        # displays the selected hyperparameters …" (the 2503.09504 paragraph GROBID swept into a
+        # <figure type="table">) stays a mention. A private copy of that rule accepted only the
+        # delimiter, which silently excluded the colon-less IEEE styling — "TABLE IV RESULTS OF
+        # THE ABLATION STUDY" — and so disarmed the guard on the very captions it exists for.
         return _text_block(sec_ctx, "paragraph", caption)
     ordinal = doc_ctx.table_ordinal
     doc_ctx.table_ordinal += 1

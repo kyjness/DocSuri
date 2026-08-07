@@ -22,6 +22,7 @@ from docsuri_ingestion.docmodel.macros import extract_macros
 from docsuri_ingestion.docmodel.parser import (
     _project_full_text,
     block_text_parts,
+    iter_blocks,
     parse_html_to_docmodel,
     parse_text_to_docmodel,
 )
@@ -30,7 +31,7 @@ from docsuri_ingestion.docmodel.table_repair import (
     printed_text,
     tables_needing_repair,
 )
-from docsuri_ingestion.docmodel.tei import parse_tei_to_docmodel
+from docsuri_ingestion.docmodel.tei import TRAILING_FLOAT_SECTION_TITLE, parse_tei_to_docmodel
 from docsuri_ingestion.domain.assets import AssetCropSpec, FigureSpec
 from docsuri_ingestion.domain.models import MetadataRecord
 from docsuri_ingestion.ports import (
@@ -300,10 +301,34 @@ class DocModelBuilder:
             return self.build_from_paper(
                 paper_id, version, title, abstract, fallback_text, source_tier=source_tier
             )
+        self._emit_float_placement(doc)
         doc = self._repair_tables(doc, pdf, crops)
         doc = self._read_formulas(doc, pdf, crops)
         self._store.put(doc)
         return DocModelResultDTO(status="ok", cached=False, docModel=doc)
+
+    def _emit_float_placement(self, doc: DocModel) -> None:
+        """Count the floats that read inline against those left in the trailing dump.
+
+        The coordinate signal rests on GROBID coordinating ``<head>``; lose it and every float the
+        body never names by number is stranded in the dump, where a reader browsing the text never
+        meets it. That fallback is deliberately silent so an older TEI cache stays parseable, which
+        means a GROBID upgrade, a proxy dropping the ``teiCoordinates`` form field, or a run
+        against a stale cache would all degrade the whole corpus while every existing signal
+        stayed green. These two counters are how that shows up, and they sit beside
+        ``tei_fallback`` for the same reason it exists.
+        """
+        payload = doc.model_dump(mode="json")
+        dumped = sum(
+            1
+            for section in payload.get("sections") or []
+            if section.get("title") == TRAILING_FLOAT_SECTION_TITLE
+            for block in section.get("blocks") or []
+            if block.get("type") in ("figure", "table")
+        )
+        total = sum(len(list(iter_blocks(payload, kind))) for kind in ("figure", "table"))
+        emit_metric(self._observability, "ingestion.docmodel.floats_placed", float(total - dumped))
+        emit_metric(self._observability, "ingestion.docmodel.floats_trailing", float(dumped))
 
     def _repair_tables(
         self, doc: DocModel, pdf: bytes | None, crops: list[AssetCropSpec] | None
