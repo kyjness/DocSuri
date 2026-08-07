@@ -165,7 +165,9 @@ export type SummarizeResponseDTO =
  * by U7. Anchors (AnchorVM.target = figure|table) link by matching label/caption + ordinal. */
 export interface AssetRef {
   assetId: string;
-  type: 'figure' | 'table';
+  /** Mirrors DocAssetRef — a block resolves its assetRef here by assetId, so every kind U1
+   *  writes an assetRef for must be carried, `formula` page-crops included. */
+  type: 'figure' | 'table' | 'formula';
   ordinal: number;
   caption: string;
   sourceMode: 'structured' | 'page-crop';

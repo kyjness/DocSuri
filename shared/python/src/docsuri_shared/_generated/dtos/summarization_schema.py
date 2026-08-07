@@ -247,11 +247,12 @@ class SourceUnavailableDTO(BaseModel):
 
 class Type(StrEnum):
     """
-    Asset kind. Trace: FR-17.
+    Asset kind. `formula` is the page-crop equation image a FormulaBlock falls back to when the PDF path yields no LaTeX. Trace: FR-17.
     """
 
     figure = 'figure'
     table = 'table'
+    formula = 'formula'
 
 
 class SourceMode(StrEnum):
@@ -265,14 +266,17 @@ class SourceMode(StrEnum):
 
 class AssetRef(BaseModel):
     """
-    FR-17 figure/table view-model (display-only). Produced by U1 ingestion (paper_asset), presigned by U7. SEC-9: a short-lived signed `url` only — the S3 object_ref and internal manifest columns are NEVER exposed.
+    FR-17 asset view-model (display-only). Produced by U1 ingestion (paper_asset), presigned by U7. SEC-9: a short-lived signed `url` only — the S3 object_ref and internal manifest columns are NEVER exposed. The kinds mirror DocAssetRef: a doc-model block that carries an assetRef resolves it here by assetId, so any kind U1 writes an assetRef for must be listed.
     """
 
     model_config = ConfigDict(
         extra='forbid',
     )
     assetId: str = Field(..., description='Deterministic asset id. Trace: FR-17.')
-    type: Type = Field(..., description='Asset kind. Trace: FR-17.')
+    type: Type = Field(
+        ...,
+        description='Asset kind. `formula` is the page-crop equation image a FormulaBlock falls back to when the PDF path yields no LaTeX. Trace: FR-17.',
+    )
     ordinal: int = Field(
         ..., description='Display order within its type. Trace: FR-17.'
     )
