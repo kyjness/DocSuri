@@ -76,10 +76,21 @@ _HEADLESS_MIN_STEPS = 3
 # The colon-terminated keywords are matched separately: a trailing \b after ``Input\s*:`` demands a
 # word character right after the colon, so the ordinary "Input: x" spelling failed to match while
 # "Input:x" did. Only the alternatives that end in a word character can carry that boundary.
+#
+# Two strengths, because the two callers stand on different ground. A phrase like "end for" or a
+# "Require:" line is pseudocode notation and essentially never appears in a sentence; "repeat",
+# "until" and "procedure" are ordinary English that any paper describing an iterative method will
+# use. Where the vocabulary is only corroborating evidence — a headless <formula> that already
+# shows three or more numbered steps — the wide set is safe and catches more. Where it is the SOLE
+# evidence, as on the <p> path, the wide set would retype a real paragraph as code: "Algorithm 1
+# proceeds in rounds until the loss stops improving …" opens like a listing and says "until".
+_STRUCTURAL_PSEUDOCODE = (
+    r"\b(?:end\s+(?:for|while|if|procedure|function)|for\s+each|Require|Ensure)\b"
+    r"|\b(?:Input|Output)\s*:"
+)
+_STRUCTURAL_PSEUDOCODE_RE = re.compile(_STRUCTURAL_PSEUDOCODE, re.IGNORECASE)
 _PSEUDOCODE_RE = re.compile(
-    r"\b(?:end\s+(?:for|while|if|procedure|function)|for\s+each|repeat|until"
-    r"|procedure|Require|Ensure)\b"
-    r"|\b(?:Input|Output)\s*:",
+    rf"{_STRUCTURAL_PSEUDOCODE}|\b(?:repeat|until|procedure)\b",
     re.IGNORECASE,
 )
 # A listing that opens a <p> rather than a <formula>. GROBID classifies a float as <formula> only
@@ -101,12 +112,29 @@ _VERBATIM_HEAD_RE = re.compile(r"^\s*Listing\s+\d+\s*[:.]", re.IGNORECASE)
 # sample: at 150 exactly one more block promotes (a four-triple RDF listing) and nothing further
 # appears down to 100, so the gate is not what bounds recall here.
 _LISTING_MIN_CHARS = 150
+# A caption that names the float it belongs to, as a LABEL rather than a mention. GROBID normally
+# files that name in <head>, but it does not always finish splitting it out, so a table can carry
+# its label at the front of the caption instead.
+#
+# The delimiter after the number is what makes this safe, and it was not optional: without it the
+# pattern also matched "Table 1 displays the selected training hyperparameters …", a paragraph
+# GROBID had swept into a <figure type="table"> on 2503.09504 that merely CITES Table 1 — so the
+# guard against losing a real table would have restored exactly the phantom table this parser
+# learned to demote. A caption punctuates after its label; a sentence goes straight on to a verb.
+_TABLE_CAPTION_HEAD_RE = re.compile(r"\s*(?:TABLE|Table|Tab\.?)\s*[IVXLC\d]+\s*[:.\-–—]")
 # The bullet glyphs LaTeX's itemize renders and pdfalto carries through into GROBID's text.
-_BULLET_RE = re.compile(r"[•▪‣◦]")
-# The same glyphs anchored at the paragraph start, leading whitespace folded into the pattern:
-# this is tested against every <p> in the corpus, and ``.lstrip()`` first would copy the whole
-# paragraph to look at one character.
-_BULLET_START_RE = re.compile(r"\s*[•▪‣◦]")
+_BULLET_CHARS = "•▪‣◦"
+# Anchored at the paragraph start, leading whitespace folded into the pattern: this is tested
+# against every <p> in the corpus, and ``.lstrip()`` first would copy the whole paragraph to look
+# at one character.
+_BULLET_START_RE = re.compile(rf"\s*[{_BULLET_CHARS}]")
+# A glyph that OPENS AN ITEM: at the start or after whitespace, and FOLLOWED BY whitespace. The
+# same glyph is also mathematical notation that papers put mid-item — "r ∼ p(•)", "Ψ(•, •)",
+# "[•] denotes the truncated SVD" — and splitting on every occurrence shredded a real item into
+# fragments beginning with a bracket. The trailing-space rule separates the two cleanly: swept over
+# the audit sample, all 464 glyphs followed by a space are list markers and all 125 that are not
+# are maths (every one inside brackets — "β(•)", "ϕ(•)", "P n (•)"), with no list marker among them.
+_ITEM_BULLET_RE = re.compile(rf"(?:(?<=\s)|^)[{_BULLET_CHARS}]\s")
 
 
 def _local(tag: object) -> str:
@@ -245,22 +273,36 @@ def _paragraph_blocks(
     items = _split_bullets(text)
     if not items:
         return [_text_block(sec_ctx, "paragraph", text)]
+    # These items belong to whatever list is already running, regardless of how many arrived in
+    # this one <p>. GROBID splits a single list both ways in the same document — one paragraph per
+    # item, and a tail of several run together — so joining only the one-item case left a stray
+    # bullet paragraph in front of a list holding the rest.
+    host = _open_list(section_blocks)
+    if host is not None:
+        host["items"].extend({"text": item} for item in items)
+        return []
+    # No open list: start one by absorbing the bulleted paragraph immediately before. That first
+    # item could not know a second was coming, so it landed as a paragraph and is reclaimed here.
+    first = _trailing_bullet_items(section_blocks)
+    if first is not None:
+        section_blocks.pop()
+        _release_id(sec_ctx, "paragraph")
+        return [_list_block(sec_ctx, [*first, *items])]
     if len(items) == 1:
-        # One bulleted line is one ITEM of a list GROBID split across sibling paragraphs. Join the
-        # open list, or start one by absorbing the bulleted paragraph immediately before — that
-        # first item cannot know a second is coming, so it lands as a paragraph and is reclaimed
-        # here. With neither neighbour the paragraph stays verbatim: a lone bullet is not a list,
-        # and inventing a one-item list where the source had a sentence is the worse error.
-        host = _open_list(section_blocks)
-        if host is not None:
-            host["items"].append({"text": items[0]})
-            return []
-        first = _trailing_bullet_items(section_blocks)
-        if first is not None:
-            section_blocks.pop()
-            return [_list_block(sec_ctx, [*first, items[0]])]
+        # With neither neighbour a lone bullet is not a list, and inventing a one-item list where
+        # the source had a sentence is the worse error — the paragraph stays verbatim.
         return [_text_block(sec_ctx, "paragraph", text)]
     return [_list_block(sec_ctx, items)]
+
+
+def _release_id(sec_ctx: _SectionCtx, kind: str) -> None:
+    """Hand back the id a block that is being absorbed had already taken.
+
+    Without this the absorbed paragraph's number stays spent and every later paragraph in the
+    section shifts up one. Block ids are what u7 citations and evidence anchors point at, so a
+    section that renumbers for a reason no reader can see is a needless way to move them.
+    """
+    sec_ctx.counters[kind] = max(0, sec_ctx.counters.get(kind, 0) - 1)
 
 
 def _text_block(sec_ctx: _SectionCtx, kind: str, text: str) -> dict:
@@ -313,7 +355,7 @@ def _split_bullets(text: str) -> list[str]:
     """
     if not _BULLET_START_RE.match(text):
         return []
-    parts = [part.strip(" \t:;,") for part in _BULLET_RE.split(text)]
+    parts = [part.strip(f" \t:;,{_BULLET_CHARS}") for part in _ITEM_BULLET_RE.split(text)]
     return [part for part in parts if part]
 
 
@@ -330,7 +372,9 @@ def _is_paragraph_listing(text: str) -> bool:
         return False
     if _VERBATIM_HEAD_RE.match(text):
         return True
-    return _is_listing(text) or _PSEUDOCODE_RE.search(text) is not None
+    # Structural vocabulary only: here the words ARE the evidence, so "until" in a sentence
+    # describing an iterative method must not be enough to retype the paragraph as code.
+    return _is_listing(text) or _STRUCTURAL_PSEUDOCODE_RE.search(text) is not None
 
 
 def _formula_or_algorithm_blocks(
@@ -508,7 +552,7 @@ def _table_block(figure_el: ET.Element, sec_ctx: _SectionCtx, doc_ctx: _DocCtx) 
     label, caption = _figure_label_caption(figure_el)
     if not rows and not caption:
         return None
-    if not rows and not label:
+    if not rows and not label and not _TABLE_CAPTION_HEAD_RE.match(caption):
         # Neither cells nor a "Table N" head: GROBID did not identify a table here, it swept a
         # stretch of prose into a table element. Across the audit sample every one of these was
         # running text — a references tail, an acknowledgements paragraph, a bulleted item, a
@@ -516,6 +560,12 @@ def _table_block(figure_el: ET.Element, sec_ctx: _SectionCtx, doc_ctx: _DocCtx) 
         # "caption" was that paragraph (523 chars at the median) plus a page crop picturing it.
         # Caption LENGTH cannot separate the two: real captioned tables run to 1,142 chars here.
         # The head can, so keep the text and drop the table typing rather than the other way round.
+        #
+        # Unless the caption names the float itself. GROBID does sometimes fail to split the label
+        # out of the caption — ``table_repair._CAPTION_LABEL_RE`` exists because labels ride inside
+        # captions — and demoting one of those would take a real table's rows, crop and repair
+        # eligibility with it. No such shape occurs in the audit sample (0 of 210 table figures),
+        # so this costs nothing here; it is a guard against an irreversible loss, not a fix.
         return _text_block(sec_ctx, "paragraph", caption)
     ordinal = doc_ctx.table_ordinal
     doc_ctx.table_ordinal += 1
