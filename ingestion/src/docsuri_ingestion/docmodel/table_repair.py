@@ -29,17 +29,15 @@ from docsuri_ingestion.domain.assets import AssetCropSpec, ExtractedTable
 # A number as a table reports one — never the digit inside an identifier like "HbA1c", which
 # would otherwise have to be found on the page for the rebuild to verify.
 _NUMBER_RE = re.compile(r"(?<![A-Za-z\d.])-?\d+(?:\.\d+)?(?![A-Za-z\d])")
-# A space that splits a DECIMAL, e.g. "4. 69%" — healed before reading a cell. Only around the
-# point: joining any digit-space-digit would fuse the neighbouring values of "0.771 0.775".
+# A space that splits a DECIMAL, e.g. "4. 69%" — healed before reading a CELL, where an extractor
+# has already decided where the value ends. Only around the point: joining any digit-space-digit
+# would fuse the neighbouring values of "0.771 0.775". This is never applied to the printed pool:
+# there the spacing is the page's own, and rewriting it invents values the page does not print.
 _INNER_SPACE_RE = re.compile(r"(?<=\.)\s+(?=\d)|(?<=\d)\s+(?=\.)")
-# Glue pdfplumber's region text leaves at word seams, healed before reading the pool. Both
-# directions occur: "30-60 meters" comes back "30-60meters" (digit->letter, the unit) and
-# "Giannacopoulos 2022" comes back "Giannacopoulos2022" (letter->digit, the citation year) — in
-# each case a value the page plainly prints fails the number pattern's boundary and a rebuild's
-# perfectly-spaced copy reads as "not printed". The letter->digit split demands two digits or
-# more so identifiers stay protected: "HbA1c" keeps its single digit glued and vouches for
-# nothing.
-_UNIT_GLUE_RE = re.compile(r"(?<=\d)(?=[A-Za-z])|(?<=[A-Za-z])(?=\d{2,})")
+# Word-gap tolerance as a fraction of font size, for reading the printed pool. pdfplumber's own
+# default is an absolute 3pt, which is wider than the space of a 9-10pt paper and glued whole
+# regions into one token; a space is proportional to the font, so the threshold should be too.
+_GAP_RATIO = 0.15
 # Reads the text printed in one page region: (page, bbox) -> text.
 PrintedText = Callable[[int, tuple[float, float, float, float]], str]
 # Tokens a word-level check compares. One-character cells ("N", "-") carry no evidence either way.
@@ -81,11 +79,16 @@ def _needs_repair(rows: Sequence[Any]) -> bool:
     the merged-cell test alone reads it as healthy, so the repair never ran on exactly the tables
     that needed it most.
 
+    "Empty" is judged on cell TEXT, not on whether rows exist. GROBID fails these two ways too:
+    it emits no rows at all, or it recovers the grid's shape and none of its contents, leaving
+    ``<row><cell/><cell/></row>``. The second carries exactly as little as the first — a reader
+    gets a blank grid — but a structure-only check reads it as healthy and skips the re-read.
+
     Sending an empty table through is safe for the same reason a merged one is: the rebuild still
     has to place only numbers printed in the region (C-2), and a table with genuinely no data
     finds no overlapping re-read and is left alone.
     """
-    cells = _cells_of(rows)
+    cells = [cell for cell in _cells_of(rows) if cell.strip()]
     return not cells or any(len(_cell_numbers(cell)) >= _MERGED_CELL_NUMBERS for cell in cells)
 
 
@@ -192,6 +195,30 @@ def _cell_numbers(text: str) -> list[str]:
     return _NUMBER_RE.findall(_INNER_SPACE_RE.sub("", text))
 
 
+def _page_numbers(text: str) -> list[str]:
+    """Numbers a page region prints, read exactly as printed.
+
+    The cell reader's decimal healing is deliberately absent. A cell is one value an extractor has
+    already delimited, so rejoining "4. 69" there recovers what it meant; the region is running
+    text where "avg. 0.85" and "4. 69 patients" are ordinary, and healing them either destroys a
+    printed value or manufactures one that was never on the page.
+    """
+    return _NUMBER_RE.findall(text)
+
+
+def _words(text: str) -> list[str]:
+    """Word tokens, read the same way in a cell and on the page — neither side is rewritten."""
+    return [w.lower() for w in _WORD_RE.findall(text)]
+
+
+# What a rebuilt cell may claim, and how the same kind of token is read off the page. Both kinds
+# are checked whenever the rebuild emits them; see ``_verified``.
+_TOKEN_KINDS: tuple[tuple[Callable[[str], list[str]], Callable[[str], list[str]]], ...] = (
+    (_cell_numbers, _page_numbers),
+    (_words, _words),
+)
+
+
 def _overlap(a: tuple[float, ...], b: tuple[float, ...]) -> float:
     width = min(a[2], b[2]) - max(a[0], b[0])
     height = min(a[3], b[3]) - max(a[1], b[1])
@@ -206,26 +233,30 @@ def _verified(rows: Sequence[Any], rebuilt: Sequence[Sequence[str]], printed: st
     does not contain. And the rebuild must not read LESS than GROBID did, so a repair never trades
     merged-but-complete data for tidy-but-partial data.
 
-    What gets compared depends on what the table holds. Numbers are the sharper evidence and stay
-    the test wherever there are any. But judging on numbers ALONE meant a table without them could
-    never be verified and so was never repaired — and plenty of tables in these papers are text
-    ("Attack Type | Example", ablation descriptions, dataset overviews). Those are compared on
-    words instead, under the same two conditions — this function chooses between them, and
-    ``_proven`` holds the conditions themselves so a future tightening cannot reach one and miss
-    the other.
+    EVERY kind of token the rebuild emits is checked, not just the sharpest one. Numbers used to
+    be the whole test wherever the grid held any, which left two holes at once: a table with no
+    numbers could never be verified and so was never repaired (and plenty of tables in these papers
+    are text — "Attack Type | Example", ablation descriptions, dataset overviews), while a mostly-
+    text grid carrying a single stray digit had all of its text waved through on the strength of
+    that one number. Both are closed by running the check per token kind and requiring all of them,
+    with ``_proven`` holding the conditions once so a future tightening cannot reach one kind and
+    miss the other.
 
-    The two paths heal the printed text differently, and the asymmetry is deliberate. The numeric
-    pool needs ``_INNER_SPACE_RE`` first, to rejoin a decimal the extractor split across a space
-    ("4. 69%") before any number can be read out of it; doing that to the word pool would fuse
-    neighbouring words instead of repairing anything. Both then get ``_UNIT_GLUE_RE``, which
-    re-cuts the seams pdfplumber closes ("30-60meters", "Giannacopoulos2022").
+    Neither pool is rewritten before comparison. The reader hands back the page's own words
+    (``printed_text``), so a seam this used to patch with regexes never forms — and patching it
+    was worse than the seam: splitting "ResNet50" to heal a glued unit also minted a standalone
+    "50" that the page never prints as a value, which is exactly the fabrication C-2 forbids.
     """
     if not printed.strip():
         return False
-    if any(_cell_numbers(cell) for row in rebuilt for cell in row):
-        healed = _UNIT_GLUE_RE.sub(" ", _INNER_SPACE_RE.sub("", printed))
-        return _proven(rows, rebuilt, _cell_numbers, set(_NUMBER_RE.findall(healed)))
-    return _proven(rows, rebuilt, _words, set(_words(_UNIT_GLUE_RE.sub(" ", printed))))
+    checks = [
+        (in_cell, set(on_page(printed)))
+        for in_cell, on_page in _TOKEN_KINDS
+        if any(in_cell(cell) for row in rebuilt for cell in row)
+    ]
+    return bool(checks) and all(
+        _proven(rows, rebuilt, in_cell, available) for in_cell, available in checks
+    )
 
 
 def _proven(
@@ -253,10 +284,6 @@ def _proven(
     return all(token in available for token in new)
 
 
-def _words(text: str) -> list[str]:
-    return [w.lower() for w in _WORD_RE.findall(text)]
-
-
 def printed_text(pdf: bytes) -> PrintedText:
     """A reader of the text actually printed in a region of the PDF.
 
@@ -266,6 +293,19 @@ def printed_text(pdf: bytes) -> PrintedText:
 
     The region's whole text is returned rather than just its numbers: the numbers were always
     derived from it, and a table that holds none still has to be checkable against something.
+
+    Built from word boxes read at a FONT-RELATIVE gap tolerance, joined by single spaces. Both
+    parts matter, and the second is the one that was wrong before.
+
+    pdfplumber decides where a word ends by a horizontal gap, and its default 3pt is wider than the
+    space of an ordinary paper: measured on 2410.04309 the inter-word gap is 2.24pt, so a whole
+    page came back as "ComprehensiveMonitoringofAirPollution…" and a table region as "ValueRange",
+    "30-60meters". That glue was previously patched afterwards by re-splitting the string at
+    digit/letter boundaries — a cure worse than the disease, because splitting "ResNet50" to heal a
+    glued unit also minted a standalone "50" the page never prints AS A VALUE, and a rebuild could
+    place that "50" in a cell and still verify. ``x_tolerance_ratio`` scales the gap with the font
+    size instead, which is the quantity a space is actually proportional to, so the words separate
+    at the source and neither side of the comparison needs rewriting.
     """
 
     # The PDF is opened once, lazily, and reused across every table on the page — apply_repairs
@@ -296,7 +336,8 @@ def printed_text(pdf: bytes) -> PrintedText:
                     min(float(page.width), bbox[2]),
                     min(float(page.height), bbox[3]),
                 )
-                text = page.crop(region).extract_text() or ""
+                words = page.crop(region).extract_words(x_tolerance_ratio=_GAP_RATIO) or ()
+                text = " ".join(str(w.get("text") or "") for w in words)
         except Exception:  # noqa: BLE001 - unreadable page -> no yardstick -> no repair
             text = ""
         seen[(page_no, bbox)] = text

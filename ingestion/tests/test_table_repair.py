@@ -32,6 +32,10 @@ _REBUILT = ExtractedTable(
     bbox=(100.0, 100.0, 400.0, 260.0),
     rows=(("Method", "C-index", "Brier"), ("ADA", "0.696 ± 0.015", "0.011 ± 0.000")),
 )
+# What the page prints in _REBUILT's region — its WORDS as well as its numbers. Every kind of
+# token a rebuild emits has to be found here, so a fixture listing numbers alone would refuse the
+# rebuild's own headers.
+_REGION = "Method C-index Brier ADA 0.696 ± 0.015 0.011 ± 0.000"
 
 
 def _doc(table: dict | None = None) -> dict:
@@ -60,7 +64,7 @@ def test_only_tables_with_glued_numbers_are_re_read() -> None:
 
 def test_a_verified_rebuild_replaces_the_merged_cells() -> None:
     doc = _doc()
-    repaired = apply_repairs(doc, [_SPEC], [_REBUILT], _printed("0.696 0.015 0.011 0.000"))
+    repaired = apply_repairs(doc, [_SPEC], [_REBUILT], _printed(_REGION))
 
     assert repaired == 1
     assert _rows(doc) == [
@@ -77,7 +81,7 @@ def test_a_number_not_printed_on_the_page_refuses_the_whole_rebuild() -> None:
         page=3, bbox=_REBUILT.bbox, rows=(("ADA", "0.696 ± 0.015", "0.842 ± 0.000"),)
     )
 
-    assert apply_repairs(doc, [_SPEC], [invented], _printed("0.696 0.015 0.011 0.000")) == 0
+    assert apply_repairs(doc, [_SPEC], [invented], _printed(_REGION)) == 0
     assert _rows(doc) == [["Method", "C-index"], ["ADA", "0.696 ± 0.015 0.011 ± 0.000"]]
 
 
@@ -86,7 +90,7 @@ def test_a_rebuild_that_reads_fewer_numbers_is_refused() -> None:
     doc = _doc()
     partial = ExtractedTable(page=3, bbox=_REBUILT.bbox, rows=(("ADA", "0.696"),))
 
-    assert apply_repairs(doc, [_SPEC], [partial], _printed("0.696 0.015 0.011 0.000")) == 0
+    assert apply_repairs(doc, [_SPEC], [partial], _printed(_REGION)) == 0
     assert _rows(doc)[1] == ["ADA", "0.696 ± 0.015 0.011 ± 0.000"]
 
 
@@ -99,7 +103,7 @@ def test_verification_reads_the_extractors_own_region() -> None:
 
     def printed(page: int, bbox: tuple[float, float, float, float]) -> str:
         seen.append(bbox)
-        return "0.696 0.015 0.011 0.000"
+        return _REGION
 
     assert apply_repairs(doc, [_SPEC], [_REBUILT], printed) == 1
     assert seen == [_REBUILT.bbox]  # not a union with _SPEC.bbox
@@ -127,7 +131,7 @@ def test_a_grid_from_another_region_is_not_used() -> None:
     doc = _doc()
     elsewhere = ExtractedTable(page=3, bbox=(100.0, 500.0, 400.0, 600.0), rows=_REBUILT.rows)
 
-    assert apply_repairs(doc, [_SPEC], [elsewhere], _printed("0.696 0.015 0.011 0.000")) == 0
+    assert apply_repairs(doc, [_SPEC], [elsewhere], _printed(_REGION)) == 0
 
 
 def test_spacing_inside_a_value_does_not_look_like_two_numbers() -> None:
@@ -145,7 +149,7 @@ def test_spacing_inside_a_value_does_not_look_like_two_numbers() -> None:
         page=3, bbox=_REBUILT.bbox, rows=(("HbA1c < 4. 69%", "0.771", "0.775"),)
     )
 
-    assert apply_repairs(doc, [_SPEC], [rebuilt], _printed("4.69 0.771 0.775")) == 1
+    assert apply_repairs(doc, [_SPEC], [rebuilt], _printed("HbA1c < 4.69% 0.771 0.775")) == 1
     assert _rows(doc) == [["HbA1c < 4. 69%", "0.771", "0.775"]]
 
 
@@ -172,11 +176,12 @@ def test_a_rebuild_of_an_emptied_table_still_has_to_be_printed_on_the_page() -> 
     emptied["rows"] = []
 
     doc = _doc(emptied)
-    assert apply_repairs(doc, [_SPEC], [_REBUILT], _printed("0.696 0.015")) == 0
+    short = "Method C-index Brier ADA 0.696 ± 0.015"
+    assert apply_repairs(doc, [_SPEC], [_REBUILT], _printed(short)) == 0
     assert doc["sections"][0]["blocks"][0]["rows"] == []
 
     doc = _doc(emptied)
-    assert apply_repairs(doc, [_SPEC], [_REBUILT], _printed("0.696 0.015 0.011 0.000")) == 1
+    assert apply_repairs(doc, [_SPEC], [_REBUILT], _printed(_REGION)) == 1
     assert _rows(doc) == [
         ["Method", "C-index", "Brier"],
         ["ADA", "0.696 ± 0.015", "0.011 ± 0.000"],
@@ -231,7 +236,7 @@ def test_the_caption_picks_the_grid_when_the_collapsed_box_overlaps_none() -> No
     the verification downstream would not catch it. The caption chooses."""
     doc = _doc(_EMPTIED)
     repaired = apply_repairs(
-        doc, [_COLLAPSED], [_ABOVE, _BELOW], _printed("0.696 0.015 0.011 0.000 0.702")
+        doc, [_COLLAPSED], [_ABOVE, _BELOW], _printed(_REGION + " Method C-index FINRISK 0.702")
     )
 
     assert repaired == 1
@@ -248,7 +253,7 @@ def test_a_label_rendered_differently_by_each_reader_still_matches() -> None:
     labelled = ExtractedTable(
         page=_ABOVE.page, bbox=_ABOVE.bbox, rows=_ABOVE.rows, caption=f"TABLE II. {_CAPTION}"
     )
-    assert apply_repairs(doc, [_COLLAPSED], [labelled], _printed("0.696 0.015 0.011 0.000")) == 1
+    assert apply_repairs(doc, [_COLLAPSED], [labelled], _printed(_REGION)) == 1
 
 
 def test_two_grids_matching_the_same_caption_leave_the_table_alone() -> None:
@@ -270,7 +275,7 @@ def test_a_caption_too_generic_to_identify_a_table_is_not_used() -> None:
         page=_ABOVE.page, bbox=_ABOVE.bbox, rows=_ABOVE.rows, caption="Table 2: Results"
     )
     doc = _doc(_EMPTIED)
-    assert apply_repairs(doc, [generic], [short], _printed("0.696 0.015 0.011 0.000")) == 0
+    assert apply_repairs(doc, [generic], [short], _printed(_REGION)) == 0
 
 
 def test_a_region_that_does_overlap_is_still_matched_by_region() -> None:
@@ -284,7 +289,7 @@ def test_a_region_that_does_overlap_is_still_matched_by_region() -> None:
         doc,
         [replace(_SPEC, caption=_CAPTION)],
         [_REBUILT, misleading],
-        _printed("0.696 0.015 0.011 0.000"),
+        _printed(_REGION),
     )
     assert repaired == 1
     assert _rows(doc)[0] == ["Method", "C-index", "Brier"]
@@ -309,7 +314,7 @@ def test_two_readers_punctuating_the_same_caption_differently_still_match() -> N
         caption="Table 1: Instantiations of L t 'bounded by M ' means for any x and r ~ p (*)",
     )
     doc = _doc(_EMPTIED)
-    assert apply_repairs(doc, [quoted], [rebuilt], _printed("0.696 0.015 0.011 0.000")) == 1
+    assert apply_repairs(doc, [quoted], [rebuilt], _printed(_REGION)) == 1
 
 
 def test_a_caption_the_readers_truncate_differently_still_matches() -> None:
@@ -319,7 +324,7 @@ def test_a_caption_the_readers_truncate_differently_still_matches() -> None:
         _COLLAPSED, caption=_CAPTION + " And then a whole paragraph the other reader never saw."
     )
     doc = _doc(_EMPTIED)
-    assert apply_repairs(doc, [long_tail], [_ABOVE], _printed("0.696 0.015 0.011 0.000")) == 1
+    assert apply_repairs(doc, [long_tail], [_ABOVE], _printed(_REGION)) == 1
 
 
 # --- text tables: the ones a number-only check could never verify ---
@@ -398,12 +403,70 @@ def test_a_numeric_table_is_still_judged_on_its_numbers() -> None:
     assert apply_repairs(doc, [_SPEC], [wrong_number], _printed("Method C-index ADA 0.696")) == 0
 
 
-def test_a_unit_glued_onto_its_value_by_the_page_reader_still_verifies() -> None:
-    """pdfplumber's region text drops spaces: "30-60 meters" comes back "30-60meters", where the
-    trailing 60 fails the number pattern's letter lookahead. A rebuild's perfectly-spaced 60 then
-    read as "not printed" and real parameter tables were refused wholesale. Splitting the
-    digit->letter seam heals the pool without unprotecting identifiers — HbA1c is guarded by the
-    letter BEFORE its digit."""
+def test_one_number_does_not_wave_the_rest_of_a_grid_through() -> None:
+    """Judging on numbers ALONE meant a single digit disabled every other check on the grid.
+
+    An emptied table has no TEI cells to fall short of, so the "no fewer than GROBID" condition is
+    vacuous there and the printed-token check is the only thing left. With a text grid carrying one
+    stray number — a citation year, a version — that check saw the year, passed, and the extractor's
+    misread text cells were written into the block unexamined. Every kind of token the rebuild
+    emits is now checked, so the fabricated headers are refused.
+    """
+    emptied = dict(_MERGED)
+    emptied["rows"] = []
+    doc = _doc(emptied)
+    fabricated = ExtractedTable(
+        page=3,
+        bbox=_REBUILT.bbox,
+        rows=(("2022", "Completely Fabricated Header"), ("Another Invention", "Never Printed")),
+    )
+    assert apply_repairs(
+        doc, [_SPEC], [fabricated], _printed("Reference year 2022 appears here")
+    ) == 0
+    assert doc["sections"][0]["blocks"][0]["rows"] == []
+
+
+def test_a_word_the_page_prints_is_not_refused_by_a_reader_seam() -> None:
+    """The word path compares cells against the pool, so both sides must be read the same way.
+
+    The pool used to be re-split at digit boundaries while the cells were not, which made an
+    identifier unmatchable against itself: the page prints "ResNet50", the pool held "resnet" and
+    "50", the cell held "resnet50", and a perfectly good repair of a table full of model names was
+    refused. Neither side is rewritten now.
+    """
+    emptied = dict(_MERGED)
+    emptied["rows"] = []
+    doc = _doc(emptied)
+    rebuilt = ExtractedTable(
+        page=3, bbox=_REBUILT.bbox, rows=(("Model", "Backbone"), ("ours", "ResNet50"))
+    )
+    assert apply_repairs(
+        doc, [_SPEC], [rebuilt], _printed("Model Backbone ours ResNet50")
+    ) == 1
+
+
+def test_an_abbreviation_dot_does_not_swallow_the_value_after_it() -> None:
+    """The decimal healing belongs to a CELL, where an extractor has already delimited one value.
+
+    Applied to the whole region it rewrote the page's own spacing: "avg. 0.85" became "avg.0.85",
+    where the number pattern's lookbehind refuses both halves, so a value plainly printed vanished
+    from the pool and the correct rebuild was refused. The pool is read exactly as printed.
+    """
+    emptied = dict(_MERGED)
+    emptied["rows"] = []
+    doc = _doc(emptied)
+    rebuilt = ExtractedTable(page=3, bbox=_REBUILT.bbox, rows=(("avg", "0.85"),))
+    assert apply_repairs(doc, [_SPEC], [rebuilt], _printed("avg. 0.85 reported")) == 1
+
+
+def test_a_value_the_page_spaces_normally_verifies_without_healing_the_pool() -> None:
+    """The seam these fixtures used to carry is the reader's, not the page's.
+
+    ``extract_text()`` closes word gaps below its tolerance — "30-60 meters" came back
+    "30-60meters" — and the pool was patched afterwards by re-splitting digit/letter boundaries.
+    ``printed_text`` now reads the page's own word boxes, so the seam never forms and no rewriting
+    is needed on either side.
+    """
     emptied = dict(_MERGED)
     emptied["rows"] = []
     rebuilt = ExtractedTable(
@@ -412,14 +475,32 @@ def test_a_unit_glued_onto_its_value_by_the_page_reader_still_verifies() -> None
         rows=(("Parameter", "Value Range"), ("Stack Height", "30-60 meters")),
     )
     doc = _doc(emptied)
-    glued = "Parameter ValueRange\nStackHeight 30-60meters"
+    assert apply_repairs(
+        doc, [_SPEC], [rebuilt], _printed("Parameter Value Range Stack Height 30-60 meters")
+    ) == 1
 
-    assert apply_repairs(doc, [_SPEC], [rebuilt], _printed(glued)) == 1
 
-    # The identifier guard is untouched: a bare "1" is still not vouched for by "HbA1c".
-    doc = _doc(emptied)
-    invented = ExtractedTable(page=3, bbox=_REBUILT.bbox, rows=(("Metric", "1"),))
-    assert apply_repairs(doc, [_SPEC], [invented], _printed("Metric HbA1c")) == 0
+def test_an_identifier_does_not_vouch_for_the_digits_inside_it() -> None:
+    """C-2's sharpest edge, and where the old seam-healing broke it.
+
+    Re-splitting the pool to heal a glued unit also cut identifiers apart: "ResNet50" became
+    "ResNet 50", minting a standalone "50" the page never prints AS A VALUE, and a rebuild could
+    then place that "50" in a cell and still verify.
+
+    Two changes refuse it now and the test does not distinguish them, deliberately — the pool keeps
+    the identifier whole so the number pattern's boundary rejects the digits, AND a bare "50" is a
+    word token too, so the word check demands it be printed as its own word. Either alone would do;
+    both is what makes the hole hard to reopen by accident.
+    """
+    emptied = dict(_MERGED)
+    emptied["rows"] = []
+
+    for region, claim in (("Metric HbA1c", "1"), ("backbone ResNet50 was used", "50")):
+        doc = _doc(emptied)
+        invented = ExtractedTable(page=3, bbox=_REBUILT.bbox, rows=(("Metric", claim),))
+        assert apply_repairs(doc, [_SPEC], [invented], _printed(region)) == 0, (
+            f"{region!r} vouched for a bare {claim!r} it never prints as a value"
+        )
 
 
 def test_a_spanned_cell_replicated_per_column_still_verifies() -> None:
@@ -451,11 +532,13 @@ def test_a_spanned_cell_replicated_per_column_still_verifies() -> None:
     ) == 0
 
 
-def test_a_citation_year_glued_onto_an_author_name_still_verifies() -> None:
-    """The other direction of the same seam: "Giannacopoulos 2022" comes back
-    "Giannacopoulos2022", so the year a rebuild spaces correctly read as "not printed". The
-    letter->digit split demands two digits or more, so HbA1c keeps its single digit glued and a
-    bare "1" still cannot be vouched for by it."""
+def test_a_citation_year_beside_an_author_name_verifies() -> None:
+    """The other direction of the seam the old pool-healing existed for: "Giannacopoulos 2022".
+
+    Word boxes keep the year a separate token from the name, so the rebuild's correctly-spaced
+    copy is found without a letter->digit rule — and, unlike that rule, nothing here can invent a
+    number out of an identifier.
+    """
     emptied = dict(_MERGED)
     emptied["rows"] = []
     rebuilt = ExtractedTable(
@@ -464,9 +547,5 @@ def test_a_citation_year_glued_onto_an_author_name_still_verifies() -> None:
         rows=(("Model", "Year"), ("PhysGNN (Salehi and Giannacopoulos 2022)", "1.71")),
     )
     doc = _doc(emptied)
-    glued = "Model Year\nPhysGNN(SalehiandGiannacopoulos2022) 1.71"
-    assert apply_repairs(doc, [_SPEC], [rebuilt], _printed(glued)) == 1
-
-    doc = _doc(emptied)
-    invented = ExtractedTable(page=3, bbox=_REBUILT.bbox, rows=(("Metric", "1"),))
-    assert apply_repairs(doc, [_SPEC], [invented], _printed("Metric HbA1c")) == 0
+    region = "Model Year PhysGNN (Salehi and Giannacopoulos 2022) 1.71"
+    assert apply_repairs(doc, [_SPEC], [rebuilt], _printed(region)) == 1
