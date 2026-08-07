@@ -56,13 +56,20 @@ from docsuri_ingestion.domain.errors import PermanentIngestionError
 from docsuri_ingestion.xmlsafe import safe_fromstring
 
 _WS_RE = re.compile(r"\s+")
-# An algorithm float's own heading inside a GROBID <formula>. Capturing keeps the heading with the
-# listing it opens, and splitting on every occurrence separates two listings GROBID ran together.
-_ALGORITHM_SPLIT_RE = re.compile(r"(Algorithm\s+\d+)")
+# An algorithm float's heading is CAPITALISED — "Algorithm 1", or "ALGORITHM 1" where IEEE styling
+# puts the whole float head in caps. Spelled out rather than matched with re.IGNORECASE, because
+# the split below runs UNANCHORED over a formula's whole text and a lowercase "algorithm 2"
+# mid-sentence is a cross-reference, not a heading: ignoring case there tore a real listing in half
+# at exactly such a mention (2607.16138, where the second listing's body became its own block).
+# The anchored uses further down can afford to ignore case; this one cannot.
+_ALGORITHM_HEAD_TEXT = r"(?:ALGORITHM|Algorithm)\s+\d+"
+# Capturing keeps the heading with the listing it opens, and splitting on every occurrence
+# separates two listings GROBID ran together.
+_ALGORITHM_SPLIT_RE = re.compile(rf"({_ALGORITHM_HEAD_TEXT})")
 # A listing numbers its steps ("1:", "2:"); a sentence that merely cites an algorithm does not.
 _ALGORITHM_STEP_RE = re.compile(r"(?<!\d)\d+\s*:")
 _ALGORITHM_MIN_STEPS = 2
-_ALGORITHM_HEAD_RE = re.compile(r"^\s*Algorithm\s+\d+")
+_ALGORITHM_HEAD_RE = re.compile(rf"^\s*{_ALGORITHM_HEAD_TEXT}")
 # Without a heading, numbered steps alone would also match a numbered derivation, so the listing
 # has to speak pseudocode as well — and show more steps than the headed case needs.
 _HEADLESS_MIN_STEPS = 3
@@ -79,6 +86,11 @@ _PSEUDOCODE_RE = re.compile(
 # when it reads as maths; a pseudocode or verbatim listing usually looks like prose to it and lands
 # in <p> instead — measured across the audit sample, 43 listings arrived that way against 1 as a
 # formula, so inspecting formulas alone left nearly every listing typed as a paragraph.
+#
+# Wider vocabulary than the <formula> patterns above, and deliberately so: swept over the same
+# 50-paper sample the <formula> path has ZERO candidates for Listing/Procedure/Pseudocode (0 as a
+# section head, 0 inside a formula), while "Procedure" is an ordinary English word that would newly
+# match prose there. Anchored at the paragraph start, so it can afford to ignore case.
 _LISTING_HEAD_RE = re.compile(
     r"^\s*(?:Algorithm|Listing|Procedure|Pseudocode)\s+\d+", re.IGNORECASE
 )

@@ -245,6 +245,63 @@ def test_an_algorithm_mention_after_a_listing_is_not_dropped() -> None:
     assert "Algorithm 2 gives the details" in doc.fullText
 
 
+def test_a_listing_headed_in_caps_is_recognised_on_the_formula_path_too() -> None:
+    """IEEE styles a float's heading in caps ("ALGORITHM 1"), and the <formula> path used to test
+    for it case-sensitively while the <p> path did not.
+
+    Both halves of that gap show here. GROBID promotes an algorithm float's heading to the section
+    title and leaves the steps in a headless <formula>, and it is the TITLE match that tells the
+    parser those fragments are one listing — so with a caps title the fragments stayed formula
+    images. Where the heading survives inside the formula, the split has to see it as well, or two
+    listings run together into one block.
+
+    The 50-paper audit sample holds no caps heading, so nothing in the corpus measurements moves;
+    this is the only thing keeping the blind spot closed.
+    """
+    # Two steps and no control-flow vocabulary: too weak for the headless rule on its own, so the
+    # section title is the ONLY thing that can promote this — which is the point of the fixture.
+    steps = "<formula>1: initialise the running estimate 2: update the factor matrices</formula>"
+    titled = (
+        f"<TEI {_NS}><text><body><div><head>ALGORITHM 1 Joint SVD</head>"
+        f"{steps}</div></body></text></TEI>"
+    )
+    assert len(_blocks_of(_parse(titled), "code")) == 1
+    assert not _blocks_of(_parse(titled), "formula")
+    # The same fragment under an ordinary title stays a formula — the title is doing the work.
+    plain = f"<TEI {_NS}><text><body><div><head>Method</head>{steps}</div></body></text></TEI>"
+    assert not _blocks_of(_parse(plain), "code")
+
+    split = (
+        f"<TEI {_NS}><text><body><div><head>Method</head>"
+        "<formula>ALGORITHM 1 Training 1: init 2: loop end for "
+        "ALGORITHM 2 Sampling 1: draw 2: accept end for</formula>"
+        "</div></body></text></TEI>"
+    )
+    codes = _blocks_of(_parse(split), "code")
+    assert len(codes) == 2, "two caps-headed listings ran together into one block"
+    assert codes[0].text.startswith("ALGORITHM 1")
+    assert codes[1].text.startswith("ALGORITHM 2")
+
+
+def test_a_lowercase_algorithm_mention_does_not_cut_a_listing_in_two() -> None:
+    """The split runs unanchored over a formula's whole text, so it must NOT ignore case.
+
+    "algorithm 2" mid-sentence is a cross-reference to another float, not this one's heading.
+    Matching it case-insensitively cut a real listing in half at the mention and filed the tail as
+    a second listing — observed on 2607.16138 while widening the caps case. A heading is
+    capitalised; a mention in running prose is not, and that is the whole distinction.
+    """
+    tei = (
+        f"<TEI {_NS}><text><body><div><head>Method</head>"
+        "<formula>Algorithm 1 Training 1: init 2: update the estimate "
+        "3: refine as algorithm 2 does 4: return</formula>"
+        "</div></body></text></TEI>"
+    )
+    codes = _blocks_of(_parse(tei), "code")
+    assert len(codes) == 1, "a lowercase cross-reference was treated as a heading"
+    assert "as algorithm 2 does" in codes[0].text
+
+
 def _blocks_of(doc, kind: str) -> list:
     """Body blocks of one kind. ``s0`` is the abstract ``_parse`` synthesises, not parsed TEI."""
     return [
