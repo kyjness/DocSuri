@@ -34,7 +34,7 @@ def test_native_base_is_not_configured() -> None:
     # would answer, the adapter never asks it — the base is absent from the ladder entirely.
     src = _source_with({"https://arxiv.org/html": "<html>native</html>"})
     assert src.fetch_html_source("2401.00001v1") is None
-    assert all("ar5iv" in base for base in src._html_base_urls)
+    assert "ar5iv" in src._html_base_url
 
 
 def test_returns_none_when_no_html_rung_yields() -> None:
@@ -64,7 +64,6 @@ def test_only_mode_ignores_stale_native_raw_cache() -> None:
     src = ArxivHttpSource(raw_store=store, raw_cache_mode="only")
     md = MetadataRecord(arxiv_ref="2401.00001v1", title="t", authors=(), abstract="",
                         categories=(), updated_at=None, published_at=None)
-    html, url, tier = src._acquire_html(md)
+    html, _url = src._acquire_html(md)
     assert html is None
-    assert tier is SourceTier.ar5iv
     assert store.requested == [SourceTier.ar5iv.value]  # never asked for the native object
