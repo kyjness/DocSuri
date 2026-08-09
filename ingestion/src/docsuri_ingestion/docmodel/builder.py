@@ -71,6 +71,31 @@ _REBUILD_SOURCE_TIERS = frozenset({SourceTier.native_html})
 # fallback that actually recovers the body is a separate follow-up.)
 _MIN_BODY_TEXT_CHARS = 500
 
+# A LaTeXML run that died mid-conversion stamps `ltx_ERROR` nodes where content should be and
+# dumps raw TeX into what body it does emit. The length floor above misses this failure mode —
+# the observed break (2502.10208) still carried 8,905 chars of body and sailed through. Errors
+# are judged RELATIVE to paragraph count, not absolutely: a long paper accumulates sporadic
+# recoverable errors (corpus max measured 10 on a 322-paragraph paper) without being broken.
+# Measured on 39 corpus papers + the broken control (2026-08-10): normal error/paragraph ratio
+# tops out at 0.14 (8 errors / 59 paras), the broken conversion sits at 8.8 (167 / 19) — a
+# threshold of 1.0 ("an error marker per paragraph") has ~7x margin to both sides. Raw-TeX
+# leak counting was evaluated as a second signal and REJECTED: it does not separate (a normal
+# paper measured 6 pgfsys fragments inside legit math — a sanitizer gap, not a dead conversion —
+# while the broken control measured 2).
+_LATEXML_ERROR_MARKER = "ltx_ERROR"
+_LATEXML_PARA_MARKER = "ltx_para"
+_BROKEN_ERRORS_PER_PARA = 1.0
+
+
+def _conversion_is_broken(html: str) -> bool:
+    """Whether a LaTeXML build failed hard enough that its output must not become a doc-model.
+
+    Substring counts, not a DOM walk — `ltx_para` also matches longer class names
+    (`ltx_paragraph`), which only INFLATES the denominator; with an order-of-magnitude margin on
+    both sides of the threshold that imprecision cannot flip a verdict."""
+    errors = html.count(_LATEXML_ERROR_MARKER)
+    return errors >= _BROKEN_ERRORS_PER_PARA * max(html.count(_LATEXML_PARA_MARKER), 1)
+
 
 def _block_text_len(block: dict) -> int:
     """Length of a block's renderable text. Body prose lives in list items, table cells, and
@@ -172,6 +197,14 @@ class DocModelBuilder:
                 status="source_unavailable", reason=_SOURCE_UNAVAILABLE_REASON
             )
         html, source_tier = fetched
+        if _conversion_is_broken(html):
+            # Dead LaTeXML build (see _BROKEN_ERRORS_PER_PARA) — degrade BEFORE parsing so the
+            # next ladder rung takes over, and count it separately from truncations so the two
+            # failure modes stay distinguishable in metrics.
+            emit_metric(self._observability, "ingestion.docmodel.broken_conversion", 1.0)
+            return SourceUnavailableDTO(
+                status="source_unavailable", reason=_SOURCE_UNAVAILABLE_REASON
+            )
 
         doc = parse_html_to_docmodel(
             html,
