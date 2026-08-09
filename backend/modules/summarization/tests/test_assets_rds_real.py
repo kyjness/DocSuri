@@ -19,6 +19,7 @@ DSN = os.environ.get("DOCSURI_TEST_PG_DSN")
 pytestmark = pytest.mark.skipif(not DSN, reason="set DOCSURI_TEST_PG_DSN to a test Postgres")
 
 from docsuri_shared.dtos import AssetRef as AssetRefDTO  # noqa: E402
+
 from summarization.adapters.rds_assets import RdsS3AssetReader  # noqa: E402
 
 # The schema SSOT's kind enum, reached through the generated DTO — same source the endpoint test
