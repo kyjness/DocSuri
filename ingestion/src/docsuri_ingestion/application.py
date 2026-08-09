@@ -4,6 +4,7 @@ import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime
+from typing import NoReturn
 from uuid import uuid4
 
 from docsuri_shared.dtos import DocModel, DocModelResultDTO, SourceTier, SourceUnavailableDTO
@@ -152,19 +153,11 @@ class IngestionPipelineService:
             "fetch_metadata",
             lambda: self._arxiv.fetch_metadata(job.arxiv_ref or ""),
         )
-        result = self._doc_model_builder.build(metadata)
-        status = result.status
-        cached = str(getattr(result, "cached", "")).lower()
-        if isinstance(result, SourceUnavailableDTO):
-            # BR-30 2026-08-10: the ladder below ar5iv is PDF→GROBID, never a flat-text
-            # doc-model. When the rung is unwired or GROBID yields nothing, the result STAYS
-            # source_unavailable (viewer links out) — this lazy job serves already-indexed
-            # papers, so exclusion is the reingest batch's call, not this handler's.
-            recovered = self._grobid_doc_model(metadata)
-            if recovered is not None:
-                result, _ = recovered
-                status = "grobid_fallback"
-                cached = str(result.cached).lower()
+        # Same ladder as the eager path (ar5iv HTML → arXiv PDF→GROBID). Difference: when every
+        # rung fails the result STAYS source_unavailable (viewer links out) instead of excluding
+        # the paper — this lazy job serves already-indexed papers, so exclusion is the reingest
+        # batch's call, not this handler's.
+        result, status, cached, _ = self._walk_ladder(metadata)
         self._observability.emit_metric(
             "ingestion.docmodel.build",
             1.0,
@@ -257,7 +250,6 @@ class IngestionPipelineService:
             "User uploaded PDF",
             "",
             tei,
-            text,
             source_tier=SourceTier.pdf,
             # The crop specs are consumed inside the build (table repair / formula OCR need them
             # to map blocks to page regions); without a list those passes silently skip, leaving
@@ -265,6 +257,15 @@ class IngestionPipelineService:
             crops=[],
             pdf=pdf,
         )
+        if isinstance(result, SourceUnavailableDTO):
+            # Uploads are the ONE lenient caller (BR-30 2026-08-10): a corpus paper with no
+            # structure is excluded, but this document is the user's own and a GROBID hiccup must
+            # not take away the only view they have. Stated here, at the call site it applies to,
+            # rather than as a default buried in the shared builder.
+            result = self._doc_model_builder.build_from_paper(
+                job.paper_id, job.version, "User uploaded PDF", "", text,
+                source_tier=SourceTier.pdf,
+            )
         self._observability.emit_metric(
             "ingestion.docmodel.user_build",
             1.0,
@@ -500,8 +501,10 @@ class IngestionPipelineService:
         # FR-17 assets: best-effort, AFTER the index commit so it can never block (BR-27).
         if isinstance(asset_extra, _TeiAssetContext):
             # arXiv paper that took the GROBID rung: page-crops against the exact PDF bytes the
-            # TEI coordinates were computed on, not the e-print figure extractor.
-            self._store_crop_assets_best_effort(paper, asset_extra)
+            # TEI coordinates were computed on, not the e-print figure extractor. An empty ctx
+            # (doc-model cache hit) selects this branch deliberately and does nothing — the crops
+            # were stored by the build that populated the cache.
+            self._render_and_store_crops(paper, asset_extra.pdf, list(asset_extra.crops))
         elif asset_metadata is not None:
             self._store_assets_best_effort(paper, asset_metadata, asset_extra or ())
         elif record_asset_ctx is not None:
@@ -745,18 +748,20 @@ class IngestionPipelineService:
         except Exception as exc:  # noqa: BLE001 - best-effort: never block indexing (BR-27)
             self._report_asset_failure(paper.paper_id, reason, exc)
 
-    def _store_crop_assets_best_effort(self, paper, ctx: _TeiAssetContext) -> None:
-        """Page-crop assets for an arXiv paper built via the GROBID rung (FR-17, BR-27).
+    def _render_and_store_crops(self, paper, pdf: bytes, specs: list[AssetCropSpec]) -> None:
+        """Render TEI page-crop specs to WebP and persist them (FR-17). The one place that owns
+        the crop→store sequence, so both TEI paths (arXiv GROBID rung and non-arXiv source record)
+        share a single failure classification and a single ``assets.stored`` contract.
 
-        Same rendering as the non-arXiv record path — the crop specs' assetIds match the
-        doc-model blocks — but the inputs travel in ``_TeiAssetContext`` because there is no
-        SourcePaperRecord/CorpusTextCandidate for an arXiv paper. Best-effort, never raises."""
-        if self._asset_store is None or not ctx.crops:
+        Best-effort and never raises (BR-27): assets are a display-only side path, so a failure is
+        observed rather than propagated. Classified by WHERE it fails (§7.3): rendering →
+        EXTRACT, persistence → STORE."""
+        if self._asset_store is None or not specs:
             return
         reason = FailureReason.ASSET_EXTRACT_FAILURE
         try:
             extracted = crop_assets_from_specs(
-                ctx.pdf, list(ctx.crops), paper_id=paper.paper_id, version=paper.version
+                pdf, specs, paper_id=paper.paper_id, version=paper.version
             )
             reason = FailureReason.ASSET_STORE_FAILURE
             if extracted:
@@ -785,7 +790,6 @@ class IngestionPipelineService:
         never raises (BR-27)."""
         if self._asset_store is None or self._corpus_sources is None or not candidate.tei:
             return
-        reason = FailureReason.ASSET_EXTRACT_FAILURE
         try:
             specs = (
                 list(crops)
@@ -801,17 +805,10 @@ class IngestionPipelineService:
                 if candidate.pdf is not None
                 else self._corpus_sources.fetch_record_pdf(record)
             )
-            extracted = crop_assets_from_specs(
-                pdf, specs, paper_id=paper.paper_id, version=paper.version
-            )
-            reason = FailureReason.ASSET_STORE_FAILURE
-            if extracted:
-                self._asset_store.store_assets(paper.paper_id, paper.version, extracted)
-            self._observability.emit_metric(
-                "ingestion.assets.stored", float(len(extracted)), {"paperId": paper.paper_id}
-            )
-        except Exception as exc:  # noqa: BLE001 - best-effort: never block indexing (BR-27)
-            self._report_asset_failure(paper.paper_id, reason, exc)
+        except Exception as exc:  # noqa: BLE001 - resolving the inputs is still the EXTRACT phase
+            self._report_asset_failure(paper.paper_id, FailureReason.ASSET_EXTRACT_FAILURE, exc)
+            return
+        self._render_and_store_crops(paper, pdf, specs)
 
     def _report_asset_failure(
         self, paper_id: str, reason: FailureReason, exc: Exception
@@ -885,16 +882,61 @@ class IngestionPipelineService:
             metadata.title,
             metadata.abstract or "",
             tei,
-            "",
             source_tier=SourceTier.pdf,
             crops=crops,
             pdf=pdf,
-            allow_flat_fallback=False,
         )
         if isinstance(result, SourceUnavailableDTO):
             return None
-        ctx = None if result.cached else _TeiAssetContext(crops=tuple(crops), pdf=pdf)
+        # A cache hit parsed no TEI, so `crops` is empty — hand back an EMPTY context rather than
+        # None. None would fall through to the `asset_metadata` branch in _index_paper, whose
+        # e-print figure extractor re-downloads the tarball AND the PDF to produce assets this
+        # rung does not use. The crops were already stored by the build that filled the cache.
+        # Skip the context entirely when no asset store is wired: carrying multi-MB PDF bytes
+        # across chunking, embedding and the index upsert only to drop them is pure waste.
+        if self._asset_store is None:
+            return result, None
+        ctx = _TeiAssetContext(crops=() if result.cached else tuple(crops), pdf=pdf)
         return result, ctx
+
+    def _walk_ladder(
+        self, metadata: MetadataRecord, figure_specs: list[FigureSpec] | None = None
+    ) -> tuple[
+        DocModelResultDTO | SourceUnavailableDTO,
+        str,
+        str,
+        tuple[FigureSpec, ...] | _TeiAssetContext | None,
+    ]:
+        """Walk the arXiv Q6 ladder once: ar5iv HTML, then arXiv PDF→GROBID (BR-30 2026-08-10).
+
+        The single place that knows the rung ORDER and what each rung reports, so the eager
+        ingest path and the lazy BUILD_DOC_MODEL job cannot drift on it (they already had — the
+        same rung was reported as "grobid" by one and "grobid_fallback" by the other). Callers
+        differ only in what they do with a final ``SourceUnavailableDTO``: exclude, or stay
+        unavailable. Returns ``(result, status, cached, asset_extra)``; the metric NAME is the
+        caller's, since eager and lazy builds are counted separately.
+        """
+        builder = self._doc_model_builder
+        assert builder is not None  # callers check; keeps the type narrow
+        result = builder.build(metadata, figure_specs=figure_specs)
+        asset_extra: tuple[FigureSpec, ...] | _TeiAssetContext | None = tuple(figure_specs or ())
+        if not isinstance(result, SourceUnavailableDTO):
+            return result, result.status, str(result.cached).lower(), asset_extra
+        recovered = self._grobid_doc_model(metadata)
+        if recovered is None:
+            return result, result.status, "false", None
+        result, asset_extra = recovered
+        return result, "grobid", str(result.cached).lower(), asset_extra
+
+    def _raise_excluded(self, message: str) -> NoReturn:
+        """Fail a paper OUT of the corpus (BR-30 2026-08-10). One place so the exclusion metric
+        and the failure classification cannot drift between the ladder and the record path."""
+        self._observability.emit_metric(
+            "ingestion.docmodel.eager_build", 1.0, {"status": "excluded", "cached": "false"}
+        )
+        raise PermanentIngestionError(
+            message, reason=FailureReason.PARSE_FAILURE, stage="docmodel"
+        )
 
     def _build_doc_model_before_index(
         self, metadata
@@ -904,30 +946,14 @@ class IngestionPipelineService:
         Returns the doc-model plus the asset-step input matching the rung that built it:
         FigureSpecs (HTML path, document order) or a ``_TeiAssetContext`` (GROBID rung). When
         every rung fails the paper is EXCLUDED from the corpus (BR-30 2026-08-10) — this raises
-        instead of returning a flat-text doc-model, and ``_index_paper`` unwinds the already-
-        stored full text."""
+        instead of returning a flat-text doc-model, and ``_index_paper`` never stores its full
+        text."""
         if self._doc_model_builder is None:
             return None, ()
         figure_specs: list[FigureSpec] = []
-        result = self._doc_model_builder.build(metadata, figure_specs=figure_specs)
-        status = result.status
-        cached = str(getattr(result, "cached", "")).lower()
-        asset_extra: tuple[FigureSpec, ...] | _TeiAssetContext | None = tuple(figure_specs)
+        result, status, cached, asset_extra = self._walk_ladder(metadata, figure_specs)
         if isinstance(result, SourceUnavailableDTO):
-            recovered = self._grobid_doc_model(metadata)
-            if recovered is None:
-                self._observability.emit_metric(
-                    "ingestion.docmodel.eager_build", 1.0,
-                    {"status": "excluded", "cached": "false"},
-                )
-                raise PermanentIngestionError(
-                    "no ladder rung produced a structured doc-model — paper excluded",
-                    reason=FailureReason.PARSE_FAILURE,
-                    stage="docmodel",
-                )
-            result, asset_extra = recovered
-            status = "grobid"
-            cached = str(result.cached).lower()
+            self._raise_excluded("no ladder rung produced a structured doc-model — paper excluded")
         self._observability.emit_metric(
             "ingestion.docmodel.eager_build",
             1.0,
@@ -940,11 +966,11 @@ class IngestionPipelineService:
     ) -> tuple[DocModel | None, tuple[AssetCropSpec, ...] | None]:
         """Structured doc-model for a non-arXiv source record from its GROBID TEI.
 
-        ``allow_flat_fallback=False`` (BR-30 2026-08-10): TEI absent or parsed to nothing means
-        the record has no structured form — the paper is EXCLUDED from the corpus rather than
-        indexed as a flat text blob. The figure/formula crop specs are gathered during the single
-        TEI parse and returned, so the asset step reuses them instead of re-parsing. On a cache
-        hit no parse runs here, so crops is returned as None and the asset step re-derives them."""
+        TEI absent or parsed to nothing means the record has no structured form — the paper is
+        EXCLUDED from the corpus (BR-30 2026-08-10) rather than indexed as a flat text blob. The
+        figure/formula crop specs are gathered during the single TEI parse and returned, so the
+        asset step reuses them instead of re-parsing. On a cache hit no parse runs here, so crops
+        is returned as None and the asset step re-derives them."""
         if self._doc_model_builder is None:
             return None, None
         crops: list[AssetCropSpec] = []
@@ -954,23 +980,13 @@ class IngestionPipelineService:
             paper.title,
             paper.abstract,
             candidate.tei or "",
-            paper.full_text,
             source_tier=SourceTier.pdf,
             crops=crops,
             # The same PDF GROBID read, so a table it mangled can be re-read from the page.
             pdf=candidate.pdf,
-            allow_flat_fallback=False,
         )
         if isinstance(result, SourceUnavailableDTO):
-            self._observability.emit_metric(
-                "ingestion.docmodel.eager_build", 1.0,
-                {"status": "excluded", "cached": "false"},
-            )
-            raise PermanentIngestionError(
-                "source record has no parseable TEI — paper excluded",
-                reason=FailureReason.PARSE_FAILURE,
-                stage="docmodel",
-            )
+            self._raise_excluded("source record has no parseable TEI — paper excluded")
         self._observability.emit_metric(
             "ingestion.docmodel.eager_build",
             1.0,

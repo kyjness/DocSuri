@@ -284,22 +284,22 @@ class DocModelBuilder:
         title: str,
         abstract: str,
         tei: str,
-        fallback_text: str,
         *,
         source_tier: SourceTier = SourceTier.pdf,
         crops: list[AssetCropSpec] | None = None,
         pdf: bytes | None = None,
-        allow_flat_fallback: bool = True,
     ) -> DocModelResultDTO | SourceUnavailableDTO:
         """Structured doc-model from GROBID TEI (sections/tables/figures).
 
-        When TEI is missing or unparseable the behavior splits by caller (BR-30 2026-08-10):
-        corpus paths pass ``allow_flat_fallback=False`` and get ``SourceUnavailableDTO`` — a
-        structureless text blob must not enter the corpus as a doc-model, the paper is excluded
-        instead. User uploads keep the flat-text fallback (default): the upload is the user's own
-        document, not a corpus record, and failing it because GROBID hiccuped would take away the
-        only view they have. Either way the degradation emits a metric so a systematic TEI
-        regression is visible rather than silently downgrading every paper.
+        TEI missing or unparseable returns ``SourceUnavailableDTO`` — unconditionally. A
+        structureless text blob must not become a doc-model (BR-30 2026-08-10), and expressing
+        that as an opt-out flag would mean every future corpus caller has to remember the keyword
+        to avoid silently re-admitting flat text. The one caller that IS allowed to be lenient
+        (user uploads, where failing on a GROBID hiccup would take away the only view the user
+        has) does its own ``build_from_paper`` on this result, visibly, at its own call site.
+
+        The degradation emits a metric either way, so a systematic TEI regression is visible
+        rather than silently downgrading every paper.
 
         When ``crops`` is supplied, the figure/formula page-crop specs are collected during this
         single TEI parse (the parser's out-param) so the asset step need not re-parse the TEI.
@@ -331,12 +331,8 @@ class DocModelBuilder:
                 emit_metric(self._observability, "ingestion.docmodel.tei_fallback", 1.0)
                 doc = None
         if doc is None:
-            if not allow_flat_fallback:
-                return SourceUnavailableDTO(
-                    status="source_unavailable", reason=_SOURCE_UNAVAILABLE_REASON
-                )
-            return self.build_from_paper(
-                paper_id, version, title, abstract, fallback_text, source_tier=source_tier
+            return SourceUnavailableDTO(
+                status="source_unavailable", reason=_SOURCE_UNAVAILABLE_REASON
             )
         self._emit_float_placement(doc)
         doc = self._repair_tables(doc, pdf, crops)

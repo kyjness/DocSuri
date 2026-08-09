@@ -182,9 +182,47 @@ def test_build_doc_model_recovers_via_grobid_rung() -> None:
     assert [s.title for s in result.docModel.sections if s.title] != []  # structured, not flat
     assert len(store.put_calls) == 1
     assert any(
-        metric[0] == "ingestion.docmodel.build" and metric[2]["status"] == "grobid_fallback"
+        # Same rung name the eager path reports — one ladder, one vocabulary.
+        metric[0] == "ingestion.docmodel.build" and metric[2]["status"] == "grobid"
         for metric in observability.metrics
     )
+
+
+def test_grobid_rung_reports_an_empty_context_on_a_cache_hit() -> None:
+    # A cache hit parses no TEI, so the rung has no crop specs to hand over. Reporting that as
+    # "no asset context" (None) made _index_paper select the arXiv e-print branch instead, whose
+    # extractor re-downloads the tarball AND the PDF to build assets this rung never uses. An
+    # EMPTY context keeps the crop branch selected, and that branch correctly does nothing —
+    # the crops were already stored by the build that filled the cache.
+    class _AssetStore:
+        def store_assets(self, *a):  # pragma: no cover - must not be reached
+            raise AssertionError("a cache hit has nothing to store")
+
+        def remove_assets(self, paper_id):  # pragma: no cover - not exercised
+            pass
+
+    metadata = sample_metadata()
+    store = _FakeStore()
+    pipeline, _, _, _, _ = build_test_pipeline(
+        arxiv=FakeArxivSource([metadata], pdf=b"%PDF-fake"),
+        doc_model_builder=_builder(_FakeSource(None), store),
+        grobid=_FakeGrobid(_ARXIV_GROBID_TEI),
+        asset_store=_AssetStore(),
+    )
+
+    fresh = pipeline._grobid_doc_model(metadata)
+    assert fresh is not None
+    fresh_result, fresh_ctx = fresh
+    assert fresh_result.cached is False
+    assert fresh_ctx is not None and fresh_ctx.crops == ()  # this TEI carries no crop coords
+
+    store._cached = store.put_calls[0]  # the next build hits the cache
+    cached = pipeline._grobid_doc_model(metadata)
+    assert cached is not None
+    cached_result, cached_ctx = cached
+    assert cached_result.cached is True
+    # NOT None — None would hand the paper to the e-print figure extractor.
+    assert cached_ctx is not None and cached_ctx.crops == ()
 
 
 def test_build_doc_model_stays_unavailable_when_tei_has_no_body() -> None:

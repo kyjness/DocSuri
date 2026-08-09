@@ -126,34 +126,38 @@ _EMPTY_BODY_TEI = '<TEI xmlns="http://www.tei-c.org/ns/1.0"><text><body /></text
 def test_build_from_tei_produces_structured_sections() -> None:
     store = _FakeStore()
     builder = _builder(_FakeSource(None), store)
-    result = builder.build_from_tei("src-1", 1, "Title", "Abs", _TEI, "fallback text")
+    result = builder.build_from_tei("src-1", 1, "Title", "Abs", _TEI)
     assert result.cached is False
     titles = [s.title for s in result.docModel.sections]
     assert "Method" in titles
     assert store.put_calls  # cached for reuse
 
 
-def test_build_from_tei_falls_back_to_flat_text_on_bad_tei() -> None:
+def test_build_from_tei_reports_unavailable_on_bad_tei() -> None:
+    # Malformed TEI yields NO doc-model, unconditionally (BR-30 2026-08-10). Leniency is not an
+    # argument here — the one caller allowed to be lenient (user uploads) recovers on this result
+    # at its own call site, so a corpus caller cannot re-admit flat text by forgetting a keyword.
     store = _FakeStore()
     builder = _builder(_FakeSource(None), store)
-    result = builder.build_from_tei("src-2", 1, "Title", "Abs", "<TEI", "flat fallback body")
-    # malformed TEI -> flat-text doc-model carrying the fallback text as a single paragraph
-    assert "flat fallback body" in result.docModel.fullText
+    result = builder.build_from_tei("src-2", 1, "Title", "Abs", "<TEI")
+    assert isinstance(result, SourceUnavailableDTO)
+    assert store.put_calls == []  # nothing cached
 
 
-def test_build_from_tei_falls_back_to_flat_text_on_empty_body_tei() -> None:
+def test_build_from_tei_reports_unavailable_on_empty_body_tei() -> None:
     store = _FakeStore()
     builder = _builder(_FakeSource(None), store)
-    result = builder.build_from_tei(
-        "src-3", 1, "Title", "Abs", _EMPTY_BODY_TEI, "flat fallback body"
-    )
-
-    assert "flat fallback body" in result.docModel.fullText
-    assert store.put_calls[-1].fullText == result.docModel.fullText
+    result = builder.build_from_tei("src-3", 1, "Title", "Abs", _EMPTY_BODY_TEI)
+    assert isinstance(result, SourceUnavailableDTO)
+    assert store.put_calls == []
 
 
+# Prose alongside the formula: a formula block carries no body text of its own, and a TEI with
+# nothing else is (correctly) not a structured doc-model at all — see
+# test_build_from_tei_reports_unavailable_on_empty_body_tei.
 _TEI_FORMULA = (
     '<TEI xmlns="http://www.tei-c.org/ns/1.0"><text><body><div><head>M</head>'
+    "<p>Prose body.</p>"
     '<formula coords="1,5,6,30,12"><label>(2)</label>x=y</formula>'
     "</div></body></text></TEI>"
 )
@@ -165,7 +169,7 @@ def test_build_from_tei_collects_crop_specs_in_one_parse() -> None:
     store = _FakeStore()
     builder = _builder(_FakeSource(None), store)
     crops: list = []
-    result = builder.build_from_tei("src-9", 1, "T", "A", _TEI_FORMULA, "fb", crops=crops)
+    result = builder.build_from_tei("src-9", 1, "T", "A", _TEI_FORMULA, crops=crops)
     assert result.cached is False
     assert [c.asset_id for c in crops] == ["src-9:v1:formula:0"]
 
@@ -176,7 +180,7 @@ def test_build_from_tei_skips_crop_collection_on_cache_hit() -> None:
     store = _FakeStore(cached=_doc())
     builder = _builder(_FakeSource(None), store)
     crops: list = []
-    result = builder.build_from_tei("src-1", 1, "T", "A", _TEI_FORMULA, "fb", crops=crops)
+    result = builder.build_from_tei("src-1", 1, "T", "A", _TEI_FORMULA, crops=crops)
     assert result.cached is True
     assert crops == []
 
@@ -212,7 +216,7 @@ def test_a_table_repair_reprojects_full_text(monkeypatch) -> None:
     builder = _builder(_FakeSource(None), _FakeStore(), table_extractor=_FakeTableExtractor())
 
     result = builder.build_from_tei(
-        "src-r", 1, "T", "A", _MERGED_TABLE_TEI, "fb", crops=[], pdf=b"%PDF-fake"
+        "src-r", 1, "T", "A", _MERGED_TABLE_TEI, crops=[], pdf=b"%PDF-fake"
     )
 
     assert "ADA | 0.696 ± 0.015 | 0.011 ± 0.000" in result.docModel.fullText
@@ -241,7 +245,7 @@ def test_a_formula_ocr_read_reprojects_full_text(monkeypatch) -> None:
         "</div></body></text></TEI>"
     )
 
-    result = builder.build_from_tei("src-o", 1, "T", "A", tei, "fb", crops=[], pdf=b"%PDF-fake")
+    result = builder.build_from_tei("src-o", 1, "T", "A", tei, crops=[], pdf=b"%PDF-fake")
 
     assert r"E = mc^{2}" in result.docModel.fullText
 
@@ -572,7 +576,7 @@ def test_build_from_tei_counts_floats_that_read_inline() -> None:
     builder = DocModelBuilder(
         source=_FakeSource(None), store=_FakeStore(), observability=obs, clock=_FixedClock()
     )
-    builder.build_from_tei("src-p", 1, "T", "A", _TEI_WITH_COORDS, "flat")
+    builder.build_from_tei("src-p", 1, "T", "A", _TEI_WITH_COORDS)
     assert ("ingestion.docmodel.floats_placed", 1.0) in obs.metrics
     assert ("ingestion.docmodel.floats_trailing", 0.0) in obs.metrics
 
@@ -585,7 +589,7 @@ def test_build_from_tei_counts_floats_stranded_in_the_trailing_dump() -> None:
     builder = DocModelBuilder(
         source=_FakeSource(None), store=_FakeStore(), observability=obs, clock=_FixedClock()
     )
-    builder.build_from_tei("src-q", 1, "T", "A", _TEI_WITHOUT_COORDS, "flat")
+    builder.build_from_tei("src-q", 1, "T", "A", _TEI_WITHOUT_COORDS)
     assert ("ingestion.docmodel.floats_trailing", 1.0) in obs.metrics
     assert ("ingestion.docmodel.floats_placed", 0.0) in obs.metrics
 
