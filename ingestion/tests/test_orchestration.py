@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
-from docsuri_shared.dtos import DocModel, SourceTier
+from docsuri_shared.dtos import DocModel
 from docsuri_shared.vector_spec import DIMENSIONS, IndexRecord
 
 import docsuri_ingestion.worker as worker_module
@@ -36,22 +36,6 @@ class _NoHtmlDocModelSource:
     def fetch_html_source(self, arxiv_id: str):
         del arxiv_id
         return None
-
-
-class _HtmlDocModelSource:
-    """Builder source whose HTML rung succeeds — for tests about dedup/replacement, where the
-    ladder itself is not under test but a structured build must land (the flat-text doc-model
-    fallback is gone, BR-30 2026-08-10)."""
-
-    def fetch_html_source(self, arxiv_id: str):
-        del arxiv_id
-        body = "Deterministic body prose for the completeness floor. " * 12
-        html = (
-            '<article class="ltx_document"><section class="ltx_section" id="S1">'
-            '<h2 class="ltx_title ltx_title_section">Introduction</h2>'
-            f'<div class="ltx_para"><p class="ltx_p">{body}</p></div></section></article>'
-        )
-        return html, SourceTier.ar5iv
 
 
 class _DocModelStore:
@@ -1003,7 +987,7 @@ def test_arxiv_replaces_lower_priority_canonical_winner() -> None:
     old_paper_id = "src-old-openalex"
     arxiv_key = "arxiv:2401.00001"
     store = _DocModelStore()
-    builder = DocModelBuilder(source=_HtmlDocModelSource(), store=store)
+    builder = DocModelBuilder(source=FakeArxivSource([]), store=store)
     asset_store = _AssetStore()
     pipeline, control, index, _, _ = build_test_pipeline(
         doc_model_builder=builder,
@@ -1253,7 +1237,7 @@ def test_duplicate_redelivery_skips_doc_model_build() -> None:
     # BR-4/BR-22 + BLM §0.2–0.3: a DUPLICATE redelivery short-circuits before the doc-model
     # build, so an at-least-once event replay pays no build cost (not even a cache round-trip).
     builder = _CountingBuilder(
-        DocModelBuilder(source=_HtmlDocModelSource(), store=_DocModelStore())
+        DocModelBuilder(source=FakeArxivSource([]), store=_DocModelStore())
     )
     pipeline, _, _, _, _ = build_test_pipeline(doc_model_builder=builder)
     job = IngestionJob(job_id="job-1", kind=JobKind.EVENT, arxiv_ref="2401.00001v1")

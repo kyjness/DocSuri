@@ -50,9 +50,11 @@ class _FakeGrobid:
     def __init__(self, tei: str) -> None:
         self._tei = tei
         self.seen_pdf: bytes | None = None
+        self.calls = 0
 
     def extract_tei(self, pdf: bytes) -> str:
         self.seen_pdf = pdf
+        self.calls += 1
         return self._tei
 
 
@@ -421,15 +423,7 @@ def test_build_user_doc_model_uses_grobid_when_configured(monkeypatch) -> None:
     monkeypatch.setattr(application_module, "pdf_to_text", lambda pdf: "INTRODUCTION\nBody text.")
     store = _FakeStore(cached=None)
 
-    class _FakeGrobid:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def extract_tei(self, pdf: bytes) -> str:
-            self.calls += 1
-            return _USERDOC_TEI
-
-    grobid = _FakeGrobid()
+    grobid = _FakeGrobid(_USERDOC_TEI)
     pipeline, _, _, _, _ = build_test_pipeline(
         doc_model_builder=_builder(_FakeSource(None), store),
         user_document_source=_FakeUserDocumentSource(),
@@ -471,14 +465,10 @@ def test_build_user_doc_model_passes_the_crop_channel(monkeypatch) -> None:
         def __getattr__(self, name):
             return getattr(inner, name)
 
-    class _FakeGrobid:
-        def extract_tei(self, pdf: bytes) -> str:
-            return _USERDOC_TEI
-
     pipeline, _, _, _, _ = build_test_pipeline(
         doc_model_builder=_RecordingBuilder(),
         user_document_source=_FakeUserDocumentSource(),
-        grobid=_FakeGrobid(),
+        grobid=_FakeGrobid(_USERDOC_TEI),
     )
     job = IngestionJob(
         job_id=_USERDOC_JOB_ID,

@@ -68,8 +68,8 @@ _REBUILD_SOURCE_TIERS = frozenset({SourceTier.native_html})
 # stored as a "complete" doc-model. Gate on the non-abstract body length: a real paper has
 # thousands of characters of body prose, so a floor this low never trips a genuinely complete paper
 # but reliably catches the abstract-only truncations. A tripped gate degrades to source_unavailable
-# (arXiv link-out) — honest — rather than shipping a fragment as the full text. (A PDF→GROBID
-# fallback that actually recovers the body is a separate follow-up.)
+# so the next ladder rung (PDF→GROBID) can recover the body, rather than shipping a fragment as
+# the full text.
 _MIN_BODY_TEXT_CHARS = 500
 
 # The absolute floor above catches an abstract-only truncation, but not a conversion that dies

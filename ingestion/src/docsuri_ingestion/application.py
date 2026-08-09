@@ -225,8 +225,9 @@ class IngestionPipelineService:
             )
 
         # GROBID structure extraction when a sidecar is wired (DOCSURI_GROBID_URL); otherwise the
-        # TEI is empty and build_from_tei degrades to the pdfplumber flat-text doc-model. A GROBID
-        # timeout/HTTP fault also degrades to flat text — GROBID must never block the user's build.
+        # TEI stays empty, build_from_tei reports source_unavailable, and the recovery below hands
+        # the user the pdfplumber flat-text doc-model. A GROBID timeout/HTTP fault takes the same
+        # route — GROBID must never block the user's build.
         tei = ""
         grobid = self._grobid
         if grobid is not None:
