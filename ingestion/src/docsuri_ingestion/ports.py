@@ -48,6 +48,16 @@ class ArxivSourcePort(Protocol):
 
     def fetch_full_text(self, metadata: MetadataRecord) -> RawDocument: ...
 
+    def fetch_pdf(self, metadata: MetadataRecord) -> bytes | None:
+        """The paper's PDF bytes, or ``None`` when the cache mode forbids a fetch.
+
+        On the port because the doc-model's PDF→GROBID rung (BR-30 2026-08-10) needs the same
+        bytes the plain-text rung already fetches. Reaching for the FR-17 asset source instead
+        would put a parsing rung behind a display-only feature flag, outside the arXiv rate
+        limiter, and outside the failure taxonomy — a permanently missing PDF must raise, not
+        arrive as ``None``."""
+        ...
+
 
 @runtime_checkable
 class FullTextStorePort(Protocol):

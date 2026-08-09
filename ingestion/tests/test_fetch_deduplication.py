@@ -44,6 +44,33 @@ def test_full_text_and_doc_model_share_one_html_fetch(monkeypatch) -> None:
     assert len(calls) == after_full_text, f"doc-model rung re-fetched HTML: {calls}"
 
 
+def test_full_text_and_grobid_rung_share_one_pdf_fetch(monkeypatch) -> None:
+    # A paper with NO ar5iv build asks for its PDF twice in one ingest: fetch_full_text falls
+    # through to the PDF text rung, then the doc-model ladder's PDF→GROBID rung wants the same
+    # bytes. That is exactly the population the GROBID rung exists for, so a second multi-MB
+    # download here is paid on every such paper of a re-parse batch.
+    from docsuri_ingestion.adapters import arxiv as arxiv_mod
+
+    source = ArxivHttpSource()
+    downloads: list[str] = []
+
+    def _count_bytes(url: str, *, params, stage) -> bytes:
+        downloads.append(url)
+        return b"%PDF-fake"
+
+    monkeypatch.setattr(source, "_fetch_html_at", lambda base, arxiv_id: None)  # no ar5iv build
+    monkeypatch.setattr(source, "_get_bytes", _count_bytes)
+    monkeypatch.setattr(arxiv_mod, "pdf_to_text", lambda pdf: "Recovered PDF body. " * 200)
+    metadata = sample_metadata()
+
+    raw = source.fetch_full_text(metadata)
+    assert "Recovered PDF body." in raw.text
+    assert len(downloads) == 1
+
+    assert source.fetch_pdf(metadata) == b"%PDF-fake"  # the GROBID rung's read
+    assert len(downloads) == 1, f"GROBID rung re-downloaded the PDF: {downloads}"
+
+
 def test_a_missing_ar5iv_build_is_not_requested_again(monkeypatch) -> None:
     # A paper with no ar5iv build is the common case for the doc-model rung; re-asking on every
     # call would spend the politeness budget on a known miss.

@@ -32,10 +32,17 @@ from docsuri_ingestion.domain.models import (
 
 class FakeArxivSource:
     def __init__(
-        self, metadata: list[MetadataRecord], full_text: dict[str, str] | None = None
+        self,
+        metadata: list[MetadataRecord],
+        full_text: dict[str, str] | None = None,
+        pdf: bytes | None = None,
     ) -> None:
         self._metadata = {record.arxiv_ref: record for record in metadata}
         self._full_text = full_text or {}
+        self._pdf = pdf
+        # Every fetch_pdf call, so a test can assert the PDF is downloaded ONCE per paper even
+        # when both the plain-text rung and the doc-model's GROBID rung ask for it.
+        self.pdf_calls: list[str] = []
 
     def harvest_seed(self, category_filter: CategoryFilter):
         for record in self._metadata.values():
@@ -57,6 +64,12 @@ class FakeArxivSource:
                 f"INTRODUCTION\n{metadata.abstract}\nMETHOD\nThis is deterministic local full text."
             )
         return RawDocument(metadata=metadata, text=text, source_url=f"local://{metadata.arxiv_ref}")
+
+    def fetch_pdf(self, metadata: MetadataRecord) -> bytes | None:
+        """PDF bytes for the doc-model's GROBID rung. ``None`` (the default) means this paper has
+        no PDF, which is what the local runtime wants — it drives the HTML rung end-to-end."""
+        self.pdf_calls.append(metadata.identifier.arxiv_id)
+        return self._pdf
 
     def fetch_html_source(self, arxiv_id: str):
         # A deterministic COMPLETE ar5iv-style page: the local runtime drives the real HTML rung

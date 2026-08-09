@@ -858,21 +858,37 @@ class IngestionPipelineService:
     ) -> tuple[DocModelResultDTO, _TeiAssetContext | None] | None:
         """arXiv PDF → GROBID rung of the Q6 ladder (BR-30 2026-08-10).
 
-        Returns ``None`` when the rung cannot produce a structured doc-model: the sidecar or the
-        PDF source is unwired, or the TEI parsed to nothing (``allow_flat_fallback=False`` — a
-        flat-text doc-model is exactly what this revision removed). Transport faults propagate
-        through the resilience taxonomy so a transient GROBID blip retries instead of silently
-        excluding the paper. The second element carries the crop specs + PDF for the asset step;
-        ``None`` on a cache hit (no parse ran, the asset step re-derives)."""
-        grobid, source, builder = self._grobid, self._asset_source, self._doc_model_builder
-        if grobid is None or source is None or builder is None:
+        Returns ``None`` when the rung cannot produce a structured doc-model: the sidecar is
+        unwired, the PDF is permanently gone, or the TEI parsed to nothing
+        (``allow_flat_fallback=False`` — a flat-text doc-model is exactly what this revision
+        removed). Transport faults propagate through the resilience taxonomy so a transient GROBID
+        blip retries instead of silently excluding the paper. The second element carries the crop
+        specs + PDF for the asset step; ``None`` on a cache hit (no parse ran, the asset step
+        re-derives).
+
+        The PDF comes from the arXiv source, NOT the FR-17 asset source: same bytes
+        ``fetch_full_text`` already pulled for this paper (one memoized download), behind the
+        arXiv rate limiter, and inside the failure taxonomy."""
+        grobid, builder = self._grobid, self._doc_model_builder
+        if grobid is None or builder is None:
             self._observability.emit_metric(
                 "ingestion.docmodel.grobid_rung_unwired", 1.0, {}
             )
             return None
-        pdf = self._resilience.dependency_call(
-            "arxiv", "fetch_pdf", lambda: source.fetch_pdf(metadata)
-        )
+        try:
+            pdf = self._resilience.dependency_call(
+                "arxiv", "fetch_pdf", lambda: self._arxiv.fetch_pdf(metadata)
+            )
+        except PermanentIngestionError:
+            # No HTML rung AND no PDF — the rung genuinely cannot run. Report it as "no structured
+            # form" (the caller decides exclude vs. stay-unavailable) rather than letting a fetch
+            # error masquerade as a parse failure.
+            self._observability.emit_metric("ingestion.docmodel.grobid_rung_no_pdf", 1.0, {})
+            return None
+        if pdf is None:
+            # `only` cache mode with a miss — no bytes, no rung. Not an error.
+            self._observability.emit_metric("ingestion.docmodel.grobid_rung_no_pdf", 1.0, {})
+            return None
         tei = self._resilience.dependency_call(
             "grobid", "extract_tei", lambda: grobid.extract_tei(pdf)
         )

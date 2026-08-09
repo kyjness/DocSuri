@@ -56,13 +56,6 @@ class _FakeGrobid:
         return self._tei
 
 
-class _FakePdfSource:
-    """Asset-source double: just the fetch_pdf the GROBID rung needs."""
-
-    def fetch_pdf(self, metadata) -> bytes:
-        return b"%PDF-fake"
-
-
 _ARXIV_GROBID_TEI = (
     '<TEI xmlns="http://www.tei-c.org/ns/1.0"><text><body>'
     "<div><head>Method</head><p>Structured body recovered from the PDF via GROBID.</p></div>"
@@ -175,10 +168,9 @@ def test_build_doc_model_recovers_via_grobid_rung() -> None:
     metadata = sample_metadata()
     store = _FakeStore()
     pipeline, _, _, _, observability = build_test_pipeline(
-        arxiv=FakeArxivSource([metadata]),
+        arxiv=FakeArxivSource([metadata], pdf=b"%PDF-fake"),
         doc_model_builder=_builder(_FakeSource(None), store),  # ar5iv miss → SourceUnavailable
         grobid=_FakeGrobid(_ARXIV_GROBID_TEI),
-        asset_source=_FakePdfSource(),
     )
 
     result = pipeline.build_doc_model(
@@ -201,10 +193,9 @@ def test_build_doc_model_stays_unavailable_when_tei_has_no_body() -> None:
     metadata = sample_metadata()
     store = _FakeStore()
     pipeline, _, _, _, _ = build_test_pipeline(
-        arxiv=FakeArxivSource([metadata]),
+        arxiv=FakeArxivSource([metadata], pdf=b"%PDF-fake"),
         doc_model_builder=_builder(_FakeSource(None), store),
         grobid=_FakeGrobid(_USERDOC_EMPTY_BODY_TEI),
-        asset_source=_FakePdfSource(),
     )
 
     result = pipeline.build_doc_model(
@@ -613,10 +604,11 @@ def test_ingest_one_recovers_via_grobid_rung_and_indexes() -> None:
     # ar5iv missing but GROBID wired: the paper lands with a STRUCTURED doc-model and its index
     # records reference that doc-model's blocks.
     store = _FakeStore()
+    arxiv = FakeArxivSource([sample_metadata()], pdf=b"%PDF-fake")
     pipeline, _, index, _, observability = build_test_pipeline(
+        arxiv=arxiv,
         doc_model_builder=_builder(_FakeSource(None), store),
         grobid=_FakeGrobid(_ARXIV_GROBID_TEI),
-        asset_source=_FakePdfSource(),
     )
 
     result = pipeline.ingest_one(
@@ -630,3 +622,7 @@ def test_ingest_one_recovers_via_grobid_rung_and_indexes() -> None:
         metric[0] == "ingestion.docmodel.eager_build" and metric[2]["status"] == "grobid"
         for metric in observability.metrics
     )
+    # The plain-text rung and the GROBID rung want the SAME bytes. Routing both through the arXiv
+    # source (memoized) makes that one download; reaching for the FR-17 asset source instead
+    # fetched the PDF a second time on exactly the papers this rung exists for.
+    assert len(arxiv.pdf_calls) == 1, arxiv.pdf_calls

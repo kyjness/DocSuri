@@ -89,6 +89,12 @@ class ArxivHttpSource:
         # 1 request per 3s that second GET doubled the wall-clock cost of every fresh paper.
         # A miss is memoized too, so a paper with no ar5iv build is not re-requested.
         self._html_memo: tuple[tuple[str, str], str | None] | None = None
+        # Single-entry PDF memo, keyed arxiv_id. A paper with no ar5iv build asks for its PDF
+        # twice within one ingest: fetch_full_text takes the PDF text rung, then the doc-model
+        # ladder's PDF→GROBID rung wants the same bytes. That is exactly the population the GROBID
+        # rung exists for, so the duplicate multi-MB download was paid on every such paper.
+        # Bounded to one PDF in memory — replaced when a different paper is fetched.
+        self._pdf_memo: tuple[str, bytes | None] | None = None
 
     def harvest_seed(self, category_filter: CategoryFilter) -> Iterable[MetadataRecord]:
         for category in category_filter.categories:
@@ -159,7 +165,7 @@ class ArxivHttpSource:
         is produced/stored (the viewer renders plain text with anchor highlighting). Never
         decodes a compressed payload as text (the #139 e-print defect). The B3 raw cache is
         transparent: ``off`` fetches from arXiv exactly as before; ``prefer``/``only`` read the S3
-        raw cache first (``only`` never fetches) — see ``_acquire_html`` / ``_acquire_pdf``.
+        raw cache first (``only`` never fetches) — see ``_acquire_html`` / ``fetch_pdf``.
         """
         arxiv_id = metadata.identifier.arxiv_id
         html, html_url = self._acquire_html(metadata)
@@ -175,7 +181,7 @@ class ArxivHttpSource:
 
         pdf_url = f"{self._pdf_base_url}/{arxiv_id}"
         try:
-            pdf = self._acquire_pdf(metadata)
+            pdf = self.fetch_pdf(metadata)
             # pdf is None only for an ``only``-mode cache miss — treat it as the PDF-unavailable
             # branch (empty text → short-HTML fallback, else the terminal empty-text error).
             text = pdf_to_text(pdf) if pdf is not None else ""
@@ -245,25 +251,41 @@ class ArxivHttpSource:
             )
         return html, url
 
-    def _acquire_pdf(self, metadata: MetadataRecord) -> bytes | None:
+    def fetch_pdf(self, metadata: MetadataRecord) -> bytes | None:
         """PDF bytes honoring the raw cache mode (B3). ``only`` never hits the network (returns
         ``None`` on a miss); ``prefer`` reads cache→HTTP and caches a fetch; ``off`` fetches exactly
-        as before, letting _get_bytes' exceptions propagate to fetch_full_text's fallback ladder."""
+        as before, letting _get_bytes' exceptions propagate to fetch_full_text's fallback ladder.
+
+        Public because the doc-model's PDF→GROBID rung needs the SAME bytes this method already
+        fetches for the plain-text rung (BR-30 2026-08-10). Routing that rung here rather than to
+        the FR-17 asset source keeps it behind the arXiv rate limiter and inside the failure
+        taxonomy, and lets the memo below collapse the two reads into one download.
+        """
+        arxiv_id = metadata.identifier.arxiv_id
+        # Load the slot ONCE — same reasoning as _get_html_at: one read of the immutable tuple
+        # keeps the key and the bytes belonging together under a concurrent writer.
+        memo = self._pdf_memo
+        if memo is not None and memo[0] == arxiv_id:
+            return memo[1]
         mode, store = self._raw_cache_mode, self._raw_store
         pid, ver = metadata.paper_id, metadata.version
         if mode in ("prefer", "only") and store is not None:
             cached = store.get_raw(pid, ver, "pdf")
             if cached:
+                self._pdf_memo = (arxiv_id, cached)
                 return cached
             if mode == "only":
+                # A miss is NOT memoized here: "only" means the caller asked for cache-or-nothing,
+                # and remembering the miss would mask a later cache write within the same paper.
                 return None
         pdf = self._get_bytes(
-            f"{self._pdf_base_url}/{metadata.identifier.arxiv_id}",
+            f"{self._pdf_base_url}/{arxiv_id}",
             params=None,
             stage="fetch_full_text",
         )
         if mode == "prefer" and store is not None:
             store.put_raw(pid, ver, "pdf", pdf, content_type="application/pdf")
+        self._pdf_memo = (arxiv_id, pdf)
         return pdf
 
     def fetch_html_source(self, arxiv_id: str) -> tuple[str, SourceTier] | None:
