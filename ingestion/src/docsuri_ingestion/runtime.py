@@ -151,21 +151,15 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
         timeout_seconds=settings.dependency_timeout_seconds,
     )
     failure_handler = IngestFailureHandler(queue, observability)
-    # FR-17 multimodal assets (display-only). Wired only when the flag is on — the three
-    # adapters are injected together (the pipeline gates extraction on all three being
-    # present), so the base worker is unaffected when off. Best-effort: never blocks indexing.
+    # FR-17 multimodal assets (display-only). Extraction/storage are wired only when the flag is
+    # on — the pipeline gates extraction on all three adapters being present, so the base worker
+    # is unaffected when off. The PDF SOURCE alone is additionally wired whenever GROBID is: the
+    # arXiv PDF→GROBID rung (BR-30 2026-08-10) needs PDF bytes, and hanging that on the
+    # multimodal flag would silently exclude every ar5iv-less paper on an assets-off worker.
     asset_extractor = asset_store = asset_source = None
-    if settings.multimodal_assets_enabled:
-        from .adapters.assets import ArxivAssetSource, S3RdsAssetStore
-        from .asset_extraction import AssetExtractor, ImageNormalizer
+    if settings.multimodal_assets_enabled or grobid is not None:
+        from .adapters.assets import ArxivAssetSource
 
-        asset_extractor = AssetExtractor(
-            normalizer=ImageNormalizer(
-                max_longest_side=settings.asset_max_longest_side,
-                max_pixels=settings.asset_max_pixels,
-                webp_quality=settings.asset_webp_quality,
-            )
-        )
         asset_source = ArxivAssetSource(
             timeout_seconds=settings.asset_fetch_timeout_seconds,
             # Share the raw cache with the full-text source so an assets-enabled paper does not
@@ -180,6 +174,17 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
                 else None
             ),
             raw_cache_mode=settings.raw_cache_mode if raw_cache_on else "off",
+        )
+    if settings.multimodal_assets_enabled:
+        from .adapters.assets import S3RdsAssetStore
+        from .asset_extraction import AssetExtractor, ImageNormalizer
+
+        asset_extractor = AssetExtractor(
+            normalizer=ImageNormalizer(
+                max_longest_side=settings.asset_max_longest_side,
+                max_pixels=settings.asset_max_pixels,
+                webp_quality=settings.asset_webp_quality,
+            )
         )
         asset_store = S3RdsAssetStore(
             bucket=settings.s3_bucket or "",
