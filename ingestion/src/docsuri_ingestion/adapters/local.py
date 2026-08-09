@@ -6,7 +6,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
-from docsuri_shared.dtos import DocModel
+from docsuri_shared.dtos import DocModel, SourceTier
 from docsuri_shared.events import NewArxivEvent
 from docsuri_shared.vector_spec import DIMENSIONS, IndexRecord
 
@@ -59,8 +59,17 @@ class FakeArxivSource:
         return RawDocument(metadata=metadata, text=text, source_url=f"local://{metadata.arxiv_ref}")
 
     def fetch_html_source(self, arxiv_id: str):
+        # A deterministic COMPLETE ar5iv-style page: the local runtime drives the real HTML rung
+        # end-to-end. (Returning None here would demand a wired GROBID rung for every local
+        # ingest since the flat-text doc-model fallback was removed — BR-30 2026-08-10.)
         del arxiv_id
-        return None
+        body = "Deterministic local body prose for the completeness floor. " * 12
+        html = (
+            '<article class="ltx_document"><section class="ltx_section" id="S1">'
+            '<h2 class="ltx_title ltx_title_section">Introduction</h2>'
+            f'<div class="ltx_para"><p class="ltx_p">{body}</p></div></section></article>'
+        )
+        return html, SourceTier.ar5iv
 
 
 def _winner_supersedes(new: CanonicalDedupState, old: CanonicalDedupState) -> bool:
@@ -270,6 +279,9 @@ class InMemoryFullTextStore:
         ref = f"memory://full-text/{paper.paper_id}/v{paper.version}.txt"
         self.objects[ref] = paper.full_text
         return ref
+
+    def delete_full_text(self, paper_id: str, version: int) -> None:
+        self.objects.pop(f"memory://full-text/{paper_id}/v{version}.txt", None)
 
 
 class InMemoryDocModelStore:

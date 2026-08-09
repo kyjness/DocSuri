@@ -246,23 +246,6 @@ class DocModelBuilder:
             emit_metric(self._observability, "ingestion.docmodel.macros_failed", 1.0)
             return {}
 
-    def build_from_text(
-        self,
-        metadata: MetadataRecord,
-        text: str,
-        *,
-        source_tier: SourceTier = SourceTier.pdf,
-    ) -> DocModelResultDTO:
-        """Return/cache a minimal doc-model from already-fetched PDF/GROBID text."""
-        return self.build_from_paper(
-            metadata.paper_id,
-            metadata.version,
-            metadata.title,
-            metadata.abstract or "",
-            text,
-            source_tier=source_tier,
-        )
-
     def build_from_paper(
         self,
         paper_id: str,
@@ -303,12 +286,17 @@ class DocModelBuilder:
         source_tier: SourceTier = SourceTier.pdf,
         crops: list[AssetCropSpec] | None = None,
         pdf: bytes | None = None,
-    ) -> DocModelResultDTO:
-        """Structured doc-model from GROBID TEI for non-arXiv sources (sections/tables/figures).
+        allow_flat_fallback: bool = True,
+    ) -> DocModelResultDTO | SourceUnavailableDTO:
+        """Structured doc-model from GROBID TEI (sections/tables/figures).
 
-        Falls back to the flat-text doc-model when TEI is missing or unparseable, so a GROBID
-        quirk never blocks ingestion (best-effort, BR-27-style). The fallback emits a metric so
-        a systematic TEI regression is visible rather than silently degrading every paper.
+        When TEI is missing or unparseable the behavior splits by caller (BR-30 2026-08-10):
+        corpus paths pass ``allow_flat_fallback=False`` and get ``SourceUnavailableDTO`` — a
+        structureless text blob must not enter the corpus as a doc-model, the paper is excluded
+        instead. User uploads keep the flat-text fallback (default): the upload is the user's own
+        document, not a corpus record, and failing it because GROBID hiccuped would take away the
+        only view they have. Either way the degradation emits a metric so a systematic TEI
+        regression is visible rather than silently downgrading every paper.
 
         When ``crops`` is supplied, the figure/formula page-crop specs are collected during this
         single TEI parse (the parser's out-param) so the asset step need not re-parse the TEI.
@@ -340,6 +328,10 @@ class DocModelBuilder:
                 emit_metric(self._observability, "ingestion.docmodel.tei_fallback", 1.0)
                 doc = None
         if doc is None:
+            if not allow_flat_fallback:
+                return SourceUnavailableDTO(
+                    status="source_unavailable", reason=_SOURCE_UNAVAILABLE_REASON
+                )
             return self.build_from_paper(
                 paper_id, version, title, abstract, fallback_text, source_tier=source_tier
             )

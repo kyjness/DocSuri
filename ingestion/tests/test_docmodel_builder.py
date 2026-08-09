@@ -299,10 +299,12 @@ def test_get_cached_rejects_native_html_even_at_current_version() -> None:
     assert _builder(_FakeSource(None), store).get_cached("2401.00001", 1) is None
 
 
-def test_stale_schema_cache_hit_rebuilds_text_doc_model() -> None:
+def test_stale_schema_cache_hit_rebuilds_flat_doc_model() -> None:
+    # build_from_paper is the surviving flat-text entry (user uploads via build_from_tei's
+    # degrade); build_from_text was removed with the corpus flat-text fallback (BR-30 2026-08-10).
     store = _FakeStore(cached=_doc(schema_version="0.9.0"))
-    result = _builder(_FakeSource(None), store).build_from_text(
-        sample_metadata("2401.00001v1"), "PDF fallback text."
+    result = _builder(_FakeSource(None), store).build_from_paper(
+        "2401.00001", 1, "T", "A", "PDF fallback text."
     )
     assert result.cached is False
     assert len(store.put_calls) == 1
