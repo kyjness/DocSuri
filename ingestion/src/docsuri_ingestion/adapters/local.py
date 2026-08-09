@@ -293,9 +293,6 @@ class InMemoryFullTextStore:
         self.objects[ref] = paper.full_text
         return ref
 
-    def delete_full_text(self, paper_id: str, version: int) -> None:
-        self.objects.pop(f"memory://full-text/{paper_id}/v{version}.txt", None)
-
 
 class InMemoryDocModelStore:
     def __init__(self) -> None:

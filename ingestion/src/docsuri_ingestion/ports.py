@@ -63,12 +63,6 @@ class ArxivSourcePort(Protocol):
 class FullTextStorePort(Protocol):
     def put_full_text(self, paper: ParsedPaper) -> str: ...
 
-    def delete_full_text(self, paper_id: str, version: int) -> None:
-        """Drop a stored full text. Exists for corpus exclusion (BR-30 2026-08-10): the text is
-        stored before the doc-model build, so a paper whose build fails has to take its already-
-        written object back out — a full text without an indexed paper is unreachable garbage."""
-        ...
-
 
 @runtime_checkable
 class RawContentStorePort(Protocol):

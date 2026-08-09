@@ -54,13 +54,6 @@ class S3FullTextStore:
             },
         )
 
-    def delete_full_text(self, paper_id: str, version: int) -> None:
-        # Same key shape as put_full_text — corpus exclusion takes back the exact object the
-        # failed ingest just wrote. delete_object is idempotent (S3 204s on a missing key).
-        self._client.delete_object(
-            Bucket=self._bucket, Key=f"{self._prefix}/{paper_id}/v{version}.txt"
-        )
-
 
 class S3DocModelStore:
     """BR-30 doc-model cache on S3 (Infra §1.1b): ``doc-model/{paperId}/v{version}.json``.

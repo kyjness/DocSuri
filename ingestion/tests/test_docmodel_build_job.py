@@ -580,7 +580,8 @@ def test_ingest_one_eager_doc_model_new_and_changed_smoke() -> None:
 
 def test_ingest_one_excludes_the_paper_when_every_rung_fails() -> None:
     # BR-30 2026-08-10: no rung produced a structured doc-model → the paper does NOT enter the
-    # corpus. Nothing is indexed, and the full text stored ahead of the build is taken back out.
+    # corpus. Nothing is indexed, and no full text is written — the build runs BEFORE the store,
+    # so the exclusion path costs zero S3 round trips instead of a write followed by a delete.
     store = _FakeStore()
     pipeline, _, index, _, observability = build_test_pipeline(
         doc_model_builder=_builder(_FakeSource(None), store)
@@ -592,7 +593,7 @@ def test_ingest_one_excludes_the_paper_when_every_rung_fails() -> None:
         )
 
     assert index.bulk_calls == 0  # nothing reached the index
-    assert pipeline._full_text_store.objects == {}  # stored full text was unwound
+    assert pipeline._full_text_store.objects == {}  # never written, not written-then-deleted
     assert any(m[0] == "ingestion.paper.excluded" for m in observability.metrics)
     assert any(
         metric[0] == "ingestion.docmodel.eager_build" and metric[2]["status"] == "excluded"

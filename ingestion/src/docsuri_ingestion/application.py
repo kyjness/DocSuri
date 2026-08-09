@@ -432,35 +432,35 @@ class IngestionPipelineService:
             self._control_plane.record_job_finished(job.job_id, success=True, detail="stale")
             return DedupDecision.STALE
 
-        object_ref = self._resilience.dependency_call(
-            "s3",
-            "put_full_text",
-            lambda: self._full_text_store.put_full_text(paper),
-        )
-        paper = replace(paper, stored_full_text_ref=object_ref)
         # BLM §0.3 order — the doc-model is built only after the dedup short-circuit and the
         # begin_upsert claim, so DUPLICATE/STALE redeliveries and withdrawn papers never pay the
         # build (BR-4/BR-22 zero-cost duplicates); it still lands before index exposure.
+        #
+        # It also runs BEFORE the full text is stored. Corpus exclusion (BR-30 2026-08-10) means a
+        # paper whose every rung failed must leave no full text behind, and never writing beats
+        # write-then-delete: the exclusion path costs zero S3 round trips, a flaky GROBID stops
+        # multiplying writes by its redelivery count, and — the reason that matters — a re-parse
+        # of an ALREADY INDEXED paper can no longer delete the text of a paper whose old chunks
+        # are still being served. Nothing between here and the store reads
+        # ``stored_full_text_ref``, so the two are free to swap.
+        #
         # ``asset_extra`` is pair-typed with the caller's asset context: FigureSpecs or a
         # _TeiAssetContext (GROBID rung) alongside ``asset_metadata`` (arXiv), crop specs
         # (None = cache hit, re-derive) alongside ``record_asset_ctx``.
         try:
             doc_model, asset_extra = build_doc_model()
         except PermanentIngestionError:
-            # Corpus exclusion (BR-30 2026-08-10): the full text was stored above, and a full
-            # text without an indexed paper is unreachable garbage — take it back out. Metric'd
-            # so the reingest batch can watch its exclusion rate.
+            # Metric'd so the reingest batch can watch its exclusion rate.
             self._observability.emit_metric(
                 "ingestion.paper.excluded", 1.0, {"kind": job.kind.value}
             )
-            self._delete_full_text_best_effort(paper)
             raise
-        except BaseException:
-            # Transient faults (a GROBID 5xx, a fetch timeout) redeliver and re-store the full
-            # text idempotently — still clean up, so a paper that ultimately never lands does
-            # not leave its text behind.
-            self._delete_full_text_best_effort(paper)
-            raise
+        object_ref = self._resilience.dependency_call(
+            "s3",
+            "put_full_text",
+            lambda: self._full_text_store.put_full_text(paper),
+        )
+        paper = replace(paper, stored_full_text_ref=object_ref)
         # ``doc_model is None`` means the builder component is UNWIRED (minimal runtimes/tests),
         # not that a build failed — failures raise above. Only that wiring gap flat-chunks.
         chunks = (
@@ -744,20 +744,6 @@ class IngestionPipelineService:
             )
         except Exception as exc:  # noqa: BLE001 - best-effort: never block indexing (BR-27)
             self._report_asset_failure(paper.paper_id, reason, exc)
-
-    def _delete_full_text_best_effort(self, paper) -> None:
-        """Unwind the full text stored ahead of a doc-model build that then failed. Best-effort:
-        exclusion must not be masked by a cleanup fault — the original failure propagates."""
-        try:
-            self._full_text_store.delete_full_text(paper.paper_id, paper.version)
-        except Exception as exc:  # noqa: BLE001 - cleanup only; the build failure is the story
-            self._observability.emit_log(
-                {
-                    "type": "full_text_cleanup_failure",
-                    "paperId": paper.paper_id,
-                    "error": str(exc),
-                }
-            )
 
     def _store_crop_assets_best_effort(self, paper, ctx: _TeiAssetContext) -> None:
         """Page-crop assets for an arXiv paper built via the GROBID rung (FR-17, BR-27).
