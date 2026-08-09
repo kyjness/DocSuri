@@ -206,8 +206,8 @@ def test_a_table_repair_reprojects_full_text(monkeypatch) -> None:
     """Repaired cells must reach every representation: the blocks AND the root fullText, which
     was projected before the repair ran and would otherwise keep the merged numbers."""
     monkeypatch.setattr(
-        "docsuri_ingestion.docmodel.builder.printed_numbers",
-        lambda pdf: lambda page, bbox: ("0.696", "0.015", "0.011", "0.000"),
+        "docsuri_ingestion.docmodel.builder.printed_text",
+        lambda pdf: lambda page, bbox: "ADA 0.696 ± 0.015 0.011 ± 0.000",
     )
     builder = _builder(_FakeSource(None), _FakeStore(), table_extractor=_FakeTableExtractor())
 
@@ -487,6 +487,46 @@ def test_build_emits_macro_count_metric() -> None:
     )
     builder.build(sample_metadata("2401.00001v1"))
     assert ("ingestion.docmodel.macros", 1.0) in obs.metrics
+
+
+_TEI_WITH_COORDS = (
+    '<TEI xmlns="http://www.tei-c.org/ns/1.0"><text><body>'
+    '<div><head coords="1,10,100,300,10">Method</head>'
+    "<p>The overview is given in Figure 1.</p></div>"
+    '<figure coords="1,10,300,200,80"><head>Figure 1</head>'
+    "<figDesc>Overview.</figDesc></figure>"
+    "</body></text></TEI>"
+)
+# The same paper with the head coordinates stripped AND the citation removed — what GROBID
+# returned before the parser asked for coordinates, on a float the body never names. Both have to
+# go: the citation signal reads paragraph text and does not depend on coordinates at all, so
+# losing them strands the uncited floats only, not every float.
+_TEI_WITHOUT_COORDS = _TEI_WITH_COORDS.replace(
+    ' coords="1,10,100,300,10"', ""
+).replace("The overview is given in Figure 1.", "The overview is given below.")
+
+
+def test_build_from_tei_counts_floats_that_read_inline() -> None:
+    obs = _CapturingMetrics()
+    builder = DocModelBuilder(
+        source=_FakeSource(None), store=_FakeStore(), observability=obs, clock=_FixedClock()
+    )
+    builder.build_from_tei("src-p", 1, "T", "A", _TEI_WITH_COORDS, "flat")
+    assert ("ingestion.docmodel.floats_placed", 1.0) in obs.metrics
+    assert ("ingestion.docmodel.floats_trailing", 0.0) in obs.metrics
+
+
+def test_build_from_tei_counts_floats_stranded_in_the_trailing_dump() -> None:
+    """A float with neither signal falls back to the trailing section, where a reader browsing the
+    body never meets it. That degradation is deliberately silent so an older TEI cache stays
+    parseable — so it has to be counted, or losing the coordinates corpus-wide reads as clean."""
+    obs = _CapturingMetrics()
+    builder = DocModelBuilder(
+        source=_FakeSource(None), store=_FakeStore(), observability=obs, clock=_FixedClock()
+    )
+    builder.build_from_tei("src-q", 1, "T", "A", _TEI_WITHOUT_COORDS, "flat")
+    assert ("ingestion.docmodel.floats_trailing", 1.0) in obs.metrics
+    assert ("ingestion.docmodel.floats_placed", 0.0) in obs.metrics
 
 
 def test_build_emits_failure_metric_on_eprint_error() -> None:

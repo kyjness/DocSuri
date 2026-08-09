@@ -1,6 +1,6 @@
 {
-  "fullTextLen": 26335,
-  "fullTextSha": "cdb2c0830982fa3a",
+  "fullTextLen": 26329,
+  "fullTextSha": "424f08d8063571bb",
   "sections": [
     {
       "blocks": [
@@ -41,22 +41,17 @@
           "type": "paragraph"
         },
         {
-          "id": "s1.p7",
-          "textLen": 248,
-          "textSha": "99d71ba68c50f26a",
-          "type": "paragraph"
+          "id": "s1.list1",
+          "items": 3,
+          "ordered": false,
+          "type": "list"
         },
         {
-          "id": "s1.p8",
-          "textLen": 298,
-          "textSha": "3fc2bdcbd3c5714c",
-          "type": "paragraph"
-        },
-        {
-          "id": "s1.p9",
-          "textLen": 378,
-          "textSha": "aa4e833f3779c449",
-          "type": "paragraph"
+          "anchorLabel": "Figure 1 .",
+          "assetRef": "assetId='2112.01799:v1:figure:0' type=<Type.figure: 'figure'> ordinal=0 caption='Figure 1. FID v.s. Operations and Parameters. The size of the blobs is proportional to the number of network parameters, the X-axis indicates FLOPs on a log scale and the Y-axis is the FID score.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "Figure 1. FID v.s. Operations and Parameters. The size of th",
+          "id": "s1.fig1",
+          "type": "figure"
         }
       ],
       "id": "s1",
@@ -279,6 +274,13 @@
           "textLen": 841,
           "textSha": "c7da897f09476688",
           "type": "paragraph"
+        },
+        {
+          "anchorLabel": "Figure 2 .",
+          "assetRef": "assetId='2112.01799:v1:figure:1' type=<Type.figure: 'figure'> ordinal=1 caption='Figure 2. The proposed VQ-DDM pipeline contains 2 stages: (1) Compress the image into discrete variables via discrete VAE. (2) Fit a prior distribution over discrete coding by a diffusion model. Black squares in the diffusion diagram illustrate states when the underlying distributions are uninformative, but which become progressively more specific during the reverse process. The bar chart at the bottom of the image represents the probability of a particular discrete variable being sampled.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "Figure 2. The proposed VQ-DDM pipeline contains 2 stages: (1",
+          "id": "s5.fig1",
+          "type": "figure"
         }
       ],
       "id": "s5",
@@ -512,6 +514,21 @@
           "type": "paragraph"
         },
         {
+          "anchorLabel": "Table 1 .",
+          "caption": "FID between reconstructed images and original images on Cele",
+          "cols": 7,
+          "id": "s10.tbl1",
+          "rows": 9,
+          "type": "table"
+        },
+        {
+          "anchorLabel": "Figure 4 .",
+          "assetRef": "assetId='2112.01799:v1:figure:2' type=<Type.figure: 'figure'> ordinal=2 caption='Figure 4. Reconstruction images of CelebA HQ 256 \u00d7 256 from VQ-GAN and ReFiT.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "Figure 4. Reconstruction images of CelebA HQ 256 \u00d7 256 from ",
+          "id": "s10.fig1",
+          "type": "figure"
+        },
+        {
           "id": "s10.p4",
           "textLen": 501,
           "textSha": "f4b65862258584a8",
@@ -537,10 +554,24 @@
           "type": "paragraph"
         },
         {
+          "anchorLabel": "Figure 6 .",
+          "assetRef": "assetId='2112.01799:v1:figure:3' type=<Type.figure: 'figure'> ordinal=3 caption='Figure 6. Hours to sampling 50k latent codes by VQ-DDM and generating 50k images with VQ-DDM and DDPM' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "Figure 6. Hours to sampling 50k latent codes by VQ-DDM and g",
+          "id": "s11.fig1",
+          "type": "figure"
+        },
+        {
           "id": "s11.p3",
           "textLen": 442,
           "textSha": "2bc4be8d1b050361",
           "type": "paragraph"
+        },
+        {
+          "anchorLabel": "9 Figure 7 .",
+          "assetRef": "assetId='2112.01799:v1:figure:4' type=<Type.figure: 'figure'> ordinal=4 caption='Figure 7. Samples from VQ-DDM models.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "Figure 7. Samples from VQ-DDM models.",
+          "id": "s11.fig2",
+          "type": "figure"
         },
         {
           "id": "s11.p4",
@@ -585,6 +616,13 @@
           "textLen": 943,
           "textSha": "2e9e4c1303f85e27",
           "type": "paragraph"
+        },
+        {
+          "anchorLabel": "Figure 8 .",
+          "assetRef": "assetId='2112.01799:v1:figure:5' type=<Type.figure: 'figure'> ordinal=5 caption='Figure 8. Completions with the arbitrary masks.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "Figure 8. Completions with the arbitrary masks.",
+          "id": "s12.fig1",
+          "type": "figure"
         }
       ],
       "id": "s12",
@@ -658,88 +696,38 @@
     {
       "blocks": [
         {
-          "anchorLabel": "Figure 1 .",
-          "assetRef": "assetId='2112.01799:v1:figure:0' type=<Type.figure: 'figure'> ordinal=0 caption='Figure 1. FID v.s. Operations and Parameters. The size of the blobs is proportional to the number of network parameters, the X-axis indicates FLOPs on a log scale and the Y-axis is the FID score.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
-          "caption": "Figure 1. FID v.s. Operations and Parameters. The size of th",
+          "anchorLabel": "Figure 3 .",
+          "assetRef": "assetId='2112.01799:v1:figure:6' type=<Type.figure: 'figure'> ordinal=6 caption='Figure 3. Reconstruction images 384 \u00d7 384 from ImageNet based VQ-GAN and ReFiT' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "Figure 3. Reconstruction images 384 \u00d7 384 from ImageNet base",
           "id": "s18.fig1",
           "type": "figure"
         },
         {
-          "anchorLabel": "Figure 2 .",
-          "assetRef": "assetId='2112.01799:v1:figure:1' type=<Type.figure: 'figure'> ordinal=1 caption='Figure 2. The proposed VQ-DDM pipeline contains 2 stages: (1) Compress the image into discrete variables via discrete VAE. (2) Fit a prior distribution over discrete coding by a diffusion model. Black squares in the diffusion diagram illustrate states when the underlying distributions are uninformative, but which become progressively more specific during the reverse process. The bar chart at the bottom of the image represents the probability of a particular discrete variable being sampled.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
-          "caption": "Figure 2. The proposed VQ-DDM pipeline contains 2 stages: (1",
-          "id": "s18.fig2",
-          "type": "figure"
-        },
-        {
-          "anchorLabel": "Table 1 .",
-          "caption": "FID between reconstructed images and original images on Cele",
-          "cols": 7,
-          "id": "s18.tbl1",
-          "rows": 9,
-          "type": "table"
-        },
-        {
-          "anchorLabel": "Figure 3 .",
-          "assetRef": "assetId='2112.01799:v1:figure:2' type=<Type.figure: 'figure'> ordinal=2 caption='Figure 3. Reconstruction images 384 \u00d7 384 from ImageNet based VQ-GAN and ReFiT' sourceMode=<SourceMode.page_crop: 'page-crop'>",
-          "caption": "Figure 3. Reconstruction images 384 \u00d7 384 from ImageNet base",
-          "id": "s18.fig3",
-          "type": "figure"
-        },
-        {
-          "anchorLabel": "Figure 4 .",
-          "assetRef": "assetId='2112.01799:v1:figure:3' type=<Type.figure: 'figure'> ordinal=3 caption='Figure 4. Reconstruction images of CelebA HQ 256 \u00d7 256 from VQ-GAN and ReFiT.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
-          "caption": "Figure 4. Reconstruction images of CelebA HQ 256 \u00d7 256 from ",
-          "id": "s18.fig4",
-          "type": "figure"
-        },
-        {
           "anchorLabel": "Figure 5 .",
-          "assetRef": "assetId='2112.01799:v1:figure:4' type=<Type.figure: 'figure'> ordinal=4 caption='Figure 5. Steps and corresponding FID during the sampling. The text annotations are hours to sample 50k latent feature maps on 1 NVIDIA 2080Ti GPU' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "assetRef": "assetId='2112.01799:v1:figure:7' type=<Type.figure: 'figure'> ordinal=7 caption='Figure 5. Steps and corresponding FID during the sampling. The text annotations are hours to sample 50k latent feature maps on 1 NVIDIA 2080Ti GPU' sourceMode=<SourceMode.page_crop: 'page-crop'>",
           "caption": "Figure 5. Steps and corresponding FID during the sampling. T",
-          "id": "s18.fig5",
-          "type": "figure"
-        },
-        {
-          "anchorLabel": "Figure 6 .",
-          "assetRef": "assetId='2112.01799:v1:figure:5' type=<Type.figure: 'figure'> ordinal=5 caption='Figure 6. Hours to sampling 50k latent codes by VQ-DDM and generating 50k images with VQ-DDM and DDPM' sourceMode=<SourceMode.page_crop: 'page-crop'>",
-          "caption": "Figure 6. Hours to sampling 50k latent codes by VQ-DDM and g",
-          "id": "s18.fig6",
-          "type": "figure"
-        },
-        {
-          "anchorLabel": "9 Figure 7 .",
-          "assetRef": "assetId='2112.01799:v1:figure:6' type=<Type.figure: 'figure'> ordinal=6 caption='Figure 7. Samples from VQ-DDM models.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
-          "caption": "Figure 7. Samples from VQ-DDM models.",
-          "id": "s18.fig7",
-          "type": "figure"
-        },
-        {
-          "anchorLabel": "Figure 8 .",
-          "assetRef": "assetId='2112.01799:v1:figure:7' type=<Type.figure: 'figure'> ordinal=7 caption='Figure 8. Completions with the arbitrary masks.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
-          "caption": "Figure 8. Completions with the arbitrary masks.",
-          "id": "s18.fig8",
+          "id": "s18.fig2",
           "type": "figure"
         },
         {
           "anchorLabel": "Figure 9 .",
           "assetRef": "assetId='2112.01799:v1:figure:8' type=<Type.figure: 'figure'> ordinal=8 caption='Figure 9. Additional samples on LSUN-Church.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
           "caption": "Figure 9. Additional samples on LSUN-Church.",
-          "id": "s18.fig9",
+          "id": "s18.fig3",
           "type": "figure"
         },
         {
           "anchorLabel": "Figure 10 .",
           "assetRef": "assetId='2112.01799:v1:figure:9' type=<Type.figure: 'figure'> ordinal=9 caption='Figure 10. Additional samples on CelebA-HQ.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
           "caption": "Figure 10. Additional samples on CelebA-HQ.",
-          "id": "s18.fig10",
+          "id": "s18.fig4",
           "type": "figure"
         },
         {
           "anchorLabel": "Figure 12 .",
           "assetRef": "assetId='2112.01799:v1:figure:10' type=<Type.figure: 'figure'> ordinal=10 caption='Figure 12. Nearest Neighbours for CelebA-HQ 256 \u00d7 256 model. The left column are the images generated by our model, and the remaining images are the nearest neighbors(with minimum LPIPS distance) from the training set.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
           "caption": "Figure 12. Nearest Neighbours for CelebA-HQ 256 \u00d7 256 model.",
-          "id": "s18.fig11",
+          "id": "s18.fig5",
           "type": "figure"
         }
       ],

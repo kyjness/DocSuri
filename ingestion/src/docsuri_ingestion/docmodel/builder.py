@@ -11,7 +11,8 @@ The build is deterministic (D1) — the only non-deterministic input is ``proven
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from collections.abc import Iterator
+from typing import Any, Protocol, runtime_checkable
 
 from docsuri_shared.docmodel_contract import DOCMODEL_PARSER_VERSION, DOCMODEL_SCHEMA_VERSION
 from docsuri_shared.dtos import DocModel, DocModelResultDTO, SourceTier, SourceUnavailableDTO
@@ -27,10 +28,10 @@ from docsuri_ingestion.docmodel.parser import (
 )
 from docsuri_ingestion.docmodel.table_repair import (
     apply_repairs,
-    printed_numbers,
+    printed_text,
     tables_needing_repair,
 )
-from docsuri_ingestion.docmodel.tei import parse_tei_to_docmodel
+from docsuri_ingestion.docmodel.tei import TRAILING_FLOAT_SECTION_TITLE, parse_tei_to_docmodel
 from docsuri_ingestion.domain.assets import AssetCropSpec, FigureSpec
 from docsuri_ingestion.domain.models import MetadataRecord
 from docsuri_ingestion.ports import (
@@ -78,6 +79,15 @@ def _block_text_len(block: dict) -> int:
     Measures exactly the fragments the fullText projection emits, so the gate cannot drift from
     what the doc-model actually carries."""
     return sum(len(part) for part in block_text_parts(block))
+
+
+def _walk_sections(sections: object) -> Iterator[Any]:
+    """Every section depth-first, on the MODEL form. ``parser.iter_blocks`` answers the same
+    question on the dict form; using it here would mean dumping the doc-model to JSON first, which
+    is exactly the cost the one caller is avoiding."""
+    for section in sections or []:
+        yield section
+        yield from _walk_sections(section.sections)
 
 
 def _non_abstract_body_len(doc: DocModel) -> int:
@@ -300,10 +310,41 @@ class DocModelBuilder:
             return self.build_from_paper(
                 paper_id, version, title, abstract, fallback_text, source_tier=source_tier
             )
+        self._emit_float_placement(doc)
         doc = self._repair_tables(doc, pdf, crops)
         doc = self._read_formulas(doc, pdf, crops)
         self._store.put(doc)
         return DocModelResultDTO(status="ok", cached=False, docModel=doc)
+
+    def _emit_float_placement(self, doc: DocModel) -> None:
+        """Count the floats that read inline against those left in the trailing dump.
+
+        The coordinate signal rests on GROBID coordinating ``<head>``; lose it and every float the
+        body never names by number is stranded in the dump, where a reader browsing the text never
+        meets it. That fallback is deliberately silent so an older TEI cache stays parseable, which
+        means a GROBID upgrade, a proxy dropping the ``teiCoordinates`` form field, or a run
+        against a stale cache would all degrade the whole corpus while every existing signal
+        stayed green. These two counters are how that shows up, and they sit beside
+        ``tei_fallback`` for the same reason it exists.
+
+        Guarded and dump-free, because this is pure observability standing in front of the two
+        recovery stages: a fault here must not cost a paper that parsed cleanly, and a second full
+        ``model_dump`` of every doc-model is real cost on a corpus-scale reparse for two counters.
+        """
+        try:
+            placed = dumped = 0
+            for section in _walk_sections(doc.sections):
+                trailing = section.title == TRAILING_FLOAT_SECTION_TITLE
+                for block in section.blocks:
+                    if block.root.type in ("figure", "table"):
+                        if trailing:
+                            dumped += 1
+                        else:
+                            placed += 1
+            emit_metric(self._observability, "ingestion.docmodel.floats_placed", float(placed))
+            emit_metric(self._observability, "ingestion.docmodel.floats_trailing", float(dumped))
+        except Exception:  # noqa: BLE001 - a counter must never cost us the doc-model we have
+            emit_metric(self._observability, "ingestion.docmodel.float_census_failed", 1.0)
 
     def _repair_tables(
         self, doc: DocModel, pdf: bytes | None, crops: list[AssetCropSpec] | None
@@ -321,7 +362,7 @@ class DocModelBuilder:
             if not suspect:
                 return doc
             tables = self._table_extractor.extract_tables(pdf, [s.page for s in suspect])
-            repaired = apply_repairs(payload, crops, tables, printed_numbers(pdf))
+            repaired = apply_repairs(payload, crops, tables, printed_text(pdf))
             if not repaired:
                 return doc
             # Rows changed, so the fullText projection made at parse time no longer matches the

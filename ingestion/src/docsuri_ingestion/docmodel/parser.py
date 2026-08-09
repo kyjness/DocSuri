@@ -32,6 +32,7 @@ from typing import Any
 from bs4 import BeautifulSoup, NavigableString, Tag
 from docsuri_shared.dtos import DocModel, SourceTier
 
+from docsuri_ingestion.asset_extraction import caption_kind_and_number
 from docsuri_ingestion.docmodel.mathml import mathml_to_latex
 from docsuri_ingestion.domain.assets import FigureSpec, asset_id
 from docsuri_ingestion.domain.enums import AssetType
@@ -111,6 +112,19 @@ class _SectionCtx:
         n = self.counters.get(block_type, 0) + 1
         self.counters[block_type] = n
         return f"{self.section_id}.{_ABBREV[block_type]}{n}"
+
+    def release(self, block_type: str) -> None:
+        """Hand back the id a block that is being absorbed had already taken.
+
+        Without this the absorbed block's number stays spent and every later block of that type in
+        the section shifts up one. Block ids are what u7 citations and evidence anchors point at,
+        so a section that renumbers for a reason no reader can see is a needless way to move them.
+
+        Lives here rather than beside its caller because it is the inverse of ``next_id`` and has
+        to stay that way: a change to how ids are minted has to be a change to both, and a caller
+        reaching into ``counters`` from outside would go on compiling while quietly disagreeing.
+        """
+        self.counters[block_type] = max(0, self.counters.get(block_type, 0) - 1)
 
 
 def parse_html_to_docmodel(
@@ -550,13 +564,38 @@ def _figure_blocks(figure_el: Tag, sec_ctx: _SectionCtx, doc_ctx: _DocCtx) -> li
     sub-panels of ONE figure — and are left alone, as is any container with a caption of its own.
 
     Reached only from ``_blocks_from`` after ``_mixed_float_blocks`` already returned None, so a
-    caption-less panel grid never arrives here — this is the single-figure / numbered-panel case."""
+    caption-less panel grid never arrives here — this is the single-figure / numbered-panel case.
+
+    A numbered panel that yields no figure block falls back to its text the same way a lone float
+    does. Dropping it instead lost arXiv:2504.11054's "Figure 16" whole — a tabular captioned as a
+    figure, sharing its group with a graphic panel — caption, rows and all, leaving a numbered
+    float the body cross-references with nothing behind it and a hole at 16 in the sequence."""
     panels = _numbered_figure_panels(figure_el)
     if panels:
-        return [b for b in (_figure_block(p, sec_ctx, doc_ctx) for p in panels) if b]
+        return [b for p in panels for b in _float_content_blocks(p, sec_ctx, doc_ctx)]
+    return _float_content_blocks(figure_el, sec_ctx, doc_ctx)
+
+
+def _float_content_blocks(figure_el: Tag, sec_ctx: _SectionCtx, doc_ctx: _DocCtx) -> list[dict]:
+    """A float's graphic block, its grid when it has no graphic but holds one, else its text.
+
+    The grid case is the same "route on role, not class" rule ``_blocks_from`` states for a
+    ``\\captionof{table}`` minipage, applied one step further in. A float with no graphic and a
+    tabular inside is a table whatever its caption calls it, and the text fallback destroys it:
+    ``_text_float_blocks`` recurses through ``_blocks_from``, which has no branch for
+    ``table.ltx_tabular`` and so descends to every ``<td><span class="ltx_p">`` and emits ONE
+    PARAGRAPH PER CELL. A 2x2 grid came out as four paragraphs; arXiv:2504.11054's 34-row Figure 16
+    would fill a section's block-id space with 34 of them — and those ids are what u7 citations and
+    evidence anchors resolve against. Keeping the rows as rows costs the figure typing, which is
+    the lesser thing: ``_is_table_float`` declines to retype such a float precisely because it
+    still LOOKS like a figure, but nothing in that decision wanted the grid shredded."""
     block = _figure_block(figure_el, sec_ctx, doc_ctx)
     if block:
         return [block]
+    if _tabular_roots(figure_el):
+        table = _table_block(figure_el, sec_ctx)
+        if table:
+            return [table]
     return _text_float_blocks(figure_el, sec_ctx, doc_ctx)
 
 
@@ -566,13 +605,17 @@ def _is_table_float(node: Tag) -> bool:
     A ``\\captionof{table}`` minipage inside a figure environment comes out as
     ``figure.ltx_figure`` holding tabulars and a "TABLE III"-tagged caption, with no graphic
     (arXiv:2510.23156). The caption tag TEXT is the deciding signal (see ``_TABLE_TAG_RE``);
-    requiring it keeps a "Figure N"-captioned tabular-only minipage a figure, as today."""
+    requiring it keeps a "Figure N"-captioned tabular-only minipage a figure, as today.
+
+    A float LaTeXML gave no class at all (arXiv:2504.11054's Table 22) takes the same disguise
+    test. It has strictly less to go on than an ``ltx_figure``, so refusing it here would send a
+    34-row table down the figure path, which has no graphic to render and drops it."""
     if node.name != "figure":
         return False
     classes = _classes(node)
     if "ltx_table" in classes:
         return True
-    if "ltx_figure" not in classes:
+    if classes and "ltx_figure" not in classes:
         return False
     if node.find("img") is not None or node.find("svg") is not None:
         return False
@@ -659,13 +702,33 @@ def _text_float_blocks(figure_el: Tag, sec_ctx: _SectionCtx, doc_ctx: _DocCtx) -
 
 
 def _numbered_figure_panels(figure_el: Tag) -> list[Tag]:
-    """Panels of ``figure_el`` that are separate numbered figures rather than sub-panels. Pure."""
+    """Panels of ``figure_el`` that are separate numbered figures rather than sub-panels. Pure.
+
+    A graphic is not required. Authors float a tabular under a "Figure N" caption and set it
+    beside a plot (arXiv:2504.11054's Figure 16 shares its group with Figure 15), and demanding an
+    ``<img>`` dropped that panel out of the group's panel list — after which nothing else reached
+    it and the float was lost whole.
+
+    But a graphic-less panel is admitted ONLY when it carries a float number of its own, and that
+    restraint is load-bearing: the gate below is all-or-nothing, so a panel that joins ``panels``
+    without joining ``numbered`` breaks the equality and collapses the WHOLE group into a single
+    container-level float. Admitting every non-caption-only panel did exactly that to a group
+    holding a numbered plot beside an "(a)"-captioned legend — the plot's ``anchorLabel`` and
+    caption went from "Figure 7" to nothing, so the body's cross-reference had no float to reach
+    and the caption-number-to-page-crop match in ``asset_extraction`` had nothing to match on.
+    That is the same loss this widening was written to repair, moved to a different paper. Numbered
+    panels cannot break an equality they are on both sides of.
+
+    Caption-only floats stay excluded whatever their number: those are LaTeXML's detached
+    captions, and ``_adopted_caption_float`` is what reads them."""
     if _own_figcaption(figure_el) is not None:
         return []  # the container captions itself, so its panels belong to it
     panels = [
         panel
         for panel in figure_el.find_all("figure")
-        if _nearest_figure_ancestor(panel) is figure_el and panel.find_all("img")
+        if _nearest_figure_ancestor(panel) is figure_el
+        and not _caption_only_float(panel)
+        and (panel.find_all("img") or _numbered_figure_label(_own_figcaption(panel)))
     ]
     numbered = [p for p in panels if _numbered_figure_label(_own_figcaption(p))]
     return numbered if len(numbered) == len(panels) else []
@@ -897,11 +960,51 @@ def _inline_text(el: Tag) -> str:
 
 
 def _is_figure_container(node: object) -> bool:
-    return (
-        isinstance(node, Tag)
-        and node.name == "figure"
-        and bool({"ltx_figure", "ltx_table"} & _classes(node))
-    )
+    """Whether a ``<figure>`` is a float the document can reference.
+
+    Class is the usual signal, but LaTeXML does not always write one: arXiv:2504.11054 emits a bare
+    ``<figure>`` for its Table 22 (34 rows, its own "Table 22:" caption) while every sibling table
+    carries ``ltx_table``. A class-only gate made that float invisible to the whole parser — no
+    block, no caption, no crop — so the table vanished and the numbering ran 21 → 23.
+
+    So fall back to the role the caption declares, which is the same principle ``_blocks_from``
+    already routes tables by. Requiring a NUMBERED own-caption keeps this narrow: of 56 class-less
+    ``<figure>`` elements across 50 ar5iv papers exactly one qualified, and the other 55 are
+    sub-panel decoration that must stay invisible.
+    """
+    if not (isinstance(node, Tag) and node.name == "figure"):
+        return False
+    if {"ltx_figure", "ltx_table"} & _classes(node):
+        return True
+    return _numbered_own_caption(node) is not None
+
+
+def _numbered_own_caption(figure_el: Tag) -> Tag | None:
+    """``figure_el``'s own ``ltx_caption`` when it is tagged with a float NUMBER.
+
+    Deliberately duplicates ``_own_figcaption``'s ownership walk instead of calling it: that helper
+    resolves ownership through ``_is_figure_container``, and this runs inside it. The walk here
+    tests the tag name alone, which is what makes it safe to recurse into.
+
+    The NUMBER is what keeps this narrow, and narrowness is the whole argument for promoting a
+    class-less ``<figure>`` at all (of 56 across 50 papers exactly one qualified). ``_TABLE_TAG_RE``
+    cannot serve here because it is ``^table\\b`` with no numeral — a caption tag reading a bare
+    "Table" would promote a float the sweep that justified this never counted. ``caption_kind_and_
+    number`` demands one and reads the roman spelling too, so an IEEE "TABLE III" still qualifies;
+    ``_TABLE_TAG_RE`` itself stays as it is, since its other caller judges a float already known to
+    be one, where a bare "Table" is a legitimate disguise signal.
+    """
+    for figcaption in figure_el.find_all("figcaption", class_="ltx_caption"):
+        parent = figcaption.parent
+        while isinstance(parent, Tag) and parent.name != "figure":
+            parent = parent.parent
+        if parent is not figure_el:
+            continue
+        tag = figcaption.find("span", class_="ltx_tag")
+        text = _WS_RE.sub(" ", tag.get_text()).strip() if tag is not None else ""
+        if caption_kind_and_number(text) is not None:
+            return figcaption
+    return None
 
 
 def _nearest_figure_ancestor(node: Tag) -> Tag | None:

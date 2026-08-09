@@ -97,8 +97,12 @@ def _roman_to_int(token: str) -> int | None:
     return total or None
 
 
-def _caption_number(token: str) -> int | None:
-    """The number a caption regex captured — arabic ('3') or roman ('IV'). Pure."""
+def caption_number(token: str) -> int | None:
+    """The number a caption or label regex captured — arabic ('3') or roman ('IV'). Pure.
+
+    Shared with the TEI path, which reads the same two spellings out of a float's own head and out
+    of the sentences citing it. Takes an already-captured token rather than a whole string, so
+    each caller keeps its own keyword anchoring and only the numeral grammar is held in common."""
     return int(token) if token.isdigit() else _roman_to_int(token)
 
 
@@ -126,7 +130,7 @@ def caption_kind_and_number(text: str) -> tuple[AssetType, int] | None:
     if not match:
         return None
     kind = AssetType.TABLE if match.group(1).lower().startswith("table") else AssetType.FIGURE
-    number = _caption_number(match.group(2))
+    number = caption_number(match.group(2))
     if number is None:
         return None
     return kind, number

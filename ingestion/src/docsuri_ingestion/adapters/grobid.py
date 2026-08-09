@@ -14,6 +14,11 @@ class GrobidHttpClient:
     is the flattened-text projection (legacy/withdrawal-scan use). Both share one POST. The
     request asks GROBID for ``teiCoordinates`` on figures/formulas so the asset pipeline can
     page-crop them by bbox (FR-17); coordinates are additive — absent ones simply mean no crop.
+
+    ``head`` is asked for as well, and not for cropping: GROBID files every ``<figure>`` after
+    every ``<div>``, so TEI order says nothing about where a float belonged, and section-title
+    coordinates are what lets the parser put one back. ``p`` would be finer but 0.8.0 does not
+    coordinate it (asked for, none come back), so a section is as close as this path gets.
     """
 
     def __init__(
@@ -21,7 +26,7 @@ class GrobidHttpClient:
         *,
         base_url: str,
         timeout_seconds: float = 30.0,
-        coordinate_elements: tuple[str, ...] = ("figure", "formula"),
+        coordinate_elements: tuple[str, ...] = ("figure", "formula", "head"),
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout_seconds = timeout_seconds

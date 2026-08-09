@@ -18,7 +18,13 @@ psycopg = pytest.importorskip("psycopg")
 DSN = os.environ.get("DOCSURI_TEST_PG_DSN")
 pytestmark = pytest.mark.skipif(not DSN, reason="set DOCSURI_TEST_PG_DSN to a test Postgres")
 
+from docsuri_shared.dtos import AssetRef as AssetRefDTO  # noqa: E402
+
 from summarization.adapters.rds_assets import RdsS3AssetReader  # noqa: E402
+
+# The schema SSOT's kind enum, reached through the generated DTO — same source the endpoint test
+# derives from, so both fail together when the reader and the contract disagree.
+AssetKind = AssetRefDTO.model_fields["type"].annotation
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS paper_asset (
@@ -46,8 +52,10 @@ def seeded():
     with psycopg.connect(DSN) as c:
         c.execute(_DDL)
         c.execute("DELETE FROM paper_asset WHERE paper_id = %s", (_PAPER,))
-        # Seed a type="formula" page-crop alongside figure/table — the reader must filter it out
-        # (it belongs to the doc-model viewer, not the summary asset gallery / AssetView enum).
+        # Seed a type="formula" page-crop alongside figure/table — the reader must CARRY it.
+        # It belongs to the doc-model viewer's image-fallback equations rather than the summary
+        # gallery, but this manifest is the only place an assetId becomes a signed url, so
+        # filtering it here left those crops unreachable in S3.
         c.execute(
             "INSERT INTO paper_asset (paper_id,version,asset_id,type,caption,ordinal,"
             "source_mode,object_ref,page_ref,bbox) VALUES "
@@ -72,13 +80,18 @@ def test_list_assets_maps_rows_in_display_order(seeded):
     reader = RdsS3AssetReader(dsn=DSN, s3_client=_FakeS3())
     assets = reader.list_assets(_PAPER, 1)
 
-    assert [a.type for a in assets] == ["figure", "table"]  # ORDER BY type, ordinal
-    fig, tbl = assets
+    # Every kind the contract declares, read off the schema SSOT rather than restated here — a
+    # literal copy would keep passing after the reader stopped carrying a kind the DTO grew.
+    assert [a.type for a in assets] == sorted(k.value for k in AssetKind)  # ORDER BY type, ordinal
+    fig, formula, tbl = assets
     assert fig.asset_id == f"{_PAPER}:v1:figure:0"
     assert fig.ordinal == 0 and fig.source_mode == "page-crop"
     assert fig.page_ref == 3 and fig.bbox == [0, 0, 612, 92]  # JSONB → list
     assert fig.object_ref.startswith("s3://bkt/")  # internal — presigned before leaving U7
     assert tbl.page_ref is None and tbl.bbox is None  # nullable columns
+    # A formula crop carries no caption and still has to survive the mapping: the viewer resolves
+    # it by assetId alone, so an empty caption must not read as "nothing to return here".
+    assert formula.asset_id == f"{_PAPER}:v1:formula:0" and formula.page_ref == 4
 
 
 def test_presign_signs_s3_ref_and_drops_non_s3():

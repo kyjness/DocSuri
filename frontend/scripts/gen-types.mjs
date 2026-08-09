@@ -7,7 +7,7 @@
 // types, and reconcile on any schema change. The committed, build-consumed types
 // remain types/generated/*.ts.
 import { compileFromFile } from 'json-schema-to-typescript';
-import { writeFile, mkdir } from 'node:fs/promises';
+import { writeFile, mkdir, readFile } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -15,13 +15,29 @@ const here = dirname(fileURLToPath(import.meta.url));
 const sharedDtos = resolve(here, '../../shared/dtos');
 const rawDir = resolve(here, '../types/.schema-raw');
 
+// Every shared DTO schema the frontend carries a curated type for. Missing one costs nothing
+// visible and removes the only mechanical check there is: summarization was absent here, so when
+// its AssetRef.type enum grew a `formula` member the Python DTO picked it up through codegen and
+// the hand-curated TS stopped at the boundary, with nothing anywhere to notice.
 const SCHEMAS = [
   'search.schema.json',
   'accounts.schema.json',
   'library.schema.json',
   'docmodel.schema.json',
   'mypage.schema.json',
+  'summarization.schema.json',
 ];
+
+// A schema's $id is its canonical https://docsuri.dev/ URL, and cross-schema $refs use it —
+// summarization refs docmodel, library refs search. Left alone the resolver tries to FETCH those
+// over the network, which fails offline and in CI, so exactly the two schemas that share types
+// were the two that never produced a drift dump. Serve them from the checkout instead: the local
+// file is what we are auditing anyway, and a published copy would be the wrong answer.
+const localDtos = {
+  order: 1,
+  canRead: /^https:\/\/docsuri\.dev\/shared\/dtos\//,
+  read: (file) => readFile(resolve(sharedDtos, file.url.split('/').pop()), 'utf8'),
+};
 
 await mkdir(rawDir, { recursive: true });
 
@@ -34,6 +50,7 @@ for (const schema of SCHEMAS) {
       additionalProperties: false,
       unreachableDefinitions: true,
       declareExternallyReferenced: true,
+      $refOptions: { resolve: { localDtos } },
     });
     await writeFile(resolve(rawDir, out), ts, 'utf8');
     console.log(`drift-dump ${out}`);
@@ -45,6 +62,6 @@ for (const schema of SCHEMAS) {
 
 console.log(
   failures
-    ? `gen:types finished with ${failures} schema(s) skipped (root-less $defs). Curated types in types/generated/ are authoritative.`
+    ? `gen:types finished with ${failures} schema(s) skipped — see the reason above; a skipped schema has NO drift reference. Curated types in types/generated/ are authoritative.`
     : 'gen:types finished. Diff types/.schema-raw/ against types/generated/ to review drift.',
 );

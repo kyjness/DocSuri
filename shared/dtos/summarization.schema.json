@@ -309,10 +309,10 @@
     "AssetRef": {
       "type": "object",
       "title": "AssetRef",
-      "description": "FR-17 figure/table view-model (display-only). Produced by U1 ingestion (paper_asset), presigned by U7. SEC-9: a short-lived signed `url` only — the S3 object_ref and internal manifest columns are NEVER exposed.",
+      "description": "FR-17 asset view-model (display-only). Produced by U1 ingestion (paper_asset), presigned by U7. SEC-9: a short-lived signed `url` only — the S3 object_ref and internal manifest columns are NEVER exposed. The kinds mirror DocAssetRef: a doc-model block that carries an assetRef resolves it here by assetId, so any kind U1 writes an assetRef for must be listed.",
       "properties": {
         "assetId": { "type": "string", "description": "Deterministic asset id. Trace: FR-17." },
-        "type": { "type": "string", "enum": ["figure", "table"], "description": "Asset kind. Trace: FR-17." },
+        "type": { "type": "string", "enum": ["figure", "table", "formula"], "description": "Asset kind. `formula` is the page-crop equation image a FormulaBlock falls back to when the PDF path yields no LaTeX. Trace: FR-17." },
         "ordinal": { "type": "integer", "description": "Display order within its type. Trace: FR-17." },
         "caption": { "type": "string", "description": "Figure/table caption (escaped on render). Trace: FR-17." },
         "sourceMode": { "type": "string", "enum": ["structured", "page-crop"], "description": "How the asset was extracted (hybrid). Trace: FR-17." },

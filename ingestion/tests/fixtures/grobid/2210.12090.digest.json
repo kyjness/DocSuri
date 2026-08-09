@@ -1,6 +1,6 @@
 {
-  "fullTextLen": 38325,
-  "fullTextSha": "9468f2d6ea5ac1ce",
+  "fullTextLen": 38317,
+  "fullTextSha": "8bb880f1ffef87a7",
   "sections": [
     {
       "blocks": [
@@ -200,6 +200,13 @@
           "textLen": 667,
           "textSha": "51df70ab8fe65661",
           "type": "paragraph"
+        },
+        {
+          "anchorLabel": "Figure 1 :",
+          "assetRef": "assetId='2210.12090:v1:figure:0' type=<Type.figure: 'figure'> ordinal=0 caption='Figure 1: Overview of the AutoPrognosis 2.0 framework. AutoPrognosis takes either raw or curated medical datasets and provides an imputed dataset, a report detailing the optimized machine learning pipelines, a diagnostic or prognostic model, explanations, and a web-based interface for clinicians to interact with and use the derived model.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "Figure 1: Overview of the AutoPrognosis 2.0 framework. AutoP",
+          "id": "s12.fig1",
+          "type": "figure"
         }
       ],
       "id": "s12",
@@ -232,6 +239,14 @@
           "textLen": 1342,
           "textSha": "f0cd81b94d3562c0",
           "type": "paragraph"
+        },
+        {
+          "anchorLabel": "Table 2 :",
+          "caption": "List of algorithms currently included in AutoPrognosis 2.0, ",
+          "cols": 6,
+          "id": "s14.tbl1",
+          "rows": 18,
+          "type": "table"
         },
         {
           "id": "s14.p2",
@@ -310,31 +325,13 @@
           "type": "paragraph"
         },
         {
+          "id": "s18.list1",
+          "items": 4,
+          "ordered": false,
+          "type": "list"
+        },
+        {
           "id": "s18.p4",
-          "textLen": 212,
-          "textSha": "8b09f063f4de9554",
-          "type": "paragraph"
-        },
-        {
-          "id": "s18.p5",
-          "textLen": 306,
-          "textSha": "8461e02502d7fdfc",
-          "type": "paragraph"
-        },
-        {
-          "id": "s18.p6",
-          "textLen": 168,
-          "textSha": "02eb5fb65ea808c8",
-          "type": "paragraph"
-        },
-        {
-          "id": "s18.p7",
-          "textLen": 472,
-          "textSha": "177eaf6749eb781f",
-          "type": "paragraph"
-        },
-        {
-          "id": "s18.p8",
           "textLen": 369,
           "textSha": "23fb36164c65be24",
           "type": "paragraph"
@@ -366,10 +363,40 @@
           "type": "paragraph"
         },
         {
+          "anchorLabel": "Table 3 :",
+          "caption": "Diabetes risk prediction results. The risk scores automatica",
+          "cols": 4,
+          "id": "s20.tbl1",
+          "rows": 11,
+          "type": "table"
+        },
+        {
           "id": "s20.p2",
           "textLen": 3839,
           "textSha": "e9a95a194459331c",
           "type": "paragraph"
+        },
+        {
+          "anchorLabel": "Table 4 :",
+          "caption": "Quantifying the value of ML.",
+          "cols": 2,
+          "id": "s20.tbl2",
+          "rows": 8,
+          "type": "table"
+        },
+        {
+          "anchorLabel": "Figure 3 :",
+          "assetRef": "assetId='2210.12090:v1:figure:1' type=<Type.figure: 'figure'> ordinal=1 caption='Figure 3: Value of information. We evaluate AutoPrognosis using different numbers of features, corresponding to different effect size thresholds. The feature efficiency is compared to QDiabetes Model C, the best performing existing risk score.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "Figure 3: Value of information. We evaluate AutoPrognosis us",
+          "id": "s20.fig1",
+          "type": "figure"
+        },
+        {
+          "anchorLabel": "Figure 4 :",
+          "assetRef": "assetId='2210.12090:v1:figure:2' type=<Type.figure: 'figure'> ordinal=2 caption='Figure 4: SHAP values for the most important features.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "Figure 4: SHAP values for the most important features.",
+          "id": "s20.fig2",
+          "type": "figure"
         }
       ],
       "id": "s20",
@@ -389,6 +416,29 @@
           "textLen": 1577,
           "textSha": "ae48f2d5eeb6fc4a",
           "type": "paragraph"
+        },
+        {
+          "anchorLabel": "Table 5 :",
+          "caption": "Performance of diabetes risk scores for subgroups defined by",
+          "cols": 5,
+          "id": "s21.tbl1",
+          "rows": 6,
+          "type": "table"
+        },
+        {
+          "anchorLabel": "Table 6 :",
+          "caption": "The most important features for AutoPrognosis measured by ri",
+          "cols": 2,
+          "id": "s21.tbl2",
+          "rows": 15,
+          "type": "table"
+        },
+        {
+          "anchorLabel": "Figure 5 :",
+          "assetRef": "assetId='2210.12090:v1:figure:3' type=<Type.figure: 'figure'> ordinal=3 caption='Figure 5: Screenshot of an example clinical demonstrator produced by AutoPrognosis.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "Figure 5: Screenshot of an example clinical demonstrator pro",
+          "id": "s21.fig1",
+          "type": "figure"
         }
       ],
       "id": "s21",
@@ -418,7 +468,7 @@
       "blocks": [
         {
           "anchorLabel": "Challenge 1 .",
-          "assetRef": "assetId='2210.12090:v1:figure:0' type=<Type.figure: 'figure'> ordinal=0 caption='Developing powerful ML pipelines AutoPrognosis uses AutoML to automate pipeline configuration, performing missing value imputation, feature processing, model selection, and hyperparameter optimization. Challenge 2. Understanding the value of ML and when it is necessary AutoPrognosis compares a range of ML methods to traditional approaches and automatically identifies what approach is best. Challenge 3. Determining the value of information AutoPrognosis can quantify the value of including additional predictors, enabling systematic identification of optimal variables. Challenge 4. Understanding and debugging ML models AutoPrognosis incorporates seven state-of-the-art interpretability methods, allowing models to be understood and debugged as they are generated. Challenge 5. Making ML models accessible and usable AutoPrognosis provides a platform to share model outputs by automating the creation of web-based applications. Challenge 6. Deciding when and if to update clinical models AutoPrognosis can quantify the benefit of additional data or new predictive variables, and automatically determine the optimal system for the new dataset. Challenge 7. Transparent reproducibility AutoPrognosis provides a standardized, publicly available framework, facilitating reproducibility.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "assetRef": "assetId='2210.12090:v1:figure:4' type=<Type.figure: 'figure'> ordinal=4 caption='Developing powerful ML pipelines AutoPrognosis uses AutoML to automate pipeline configuration, performing missing value imputation, feature processing, model selection, and hyperparameter optimization. Challenge 2. Understanding the value of ML and when it is necessary AutoPrognosis compares a range of ML methods to traditional approaches and automatically identifies what approach is best. Challenge 3. Determining the value of information AutoPrognosis can quantify the value of including additional predictors, enabling systematic identification of optimal variables. Challenge 4. Understanding and debugging ML models AutoPrognosis incorporates seven state-of-the-art interpretability methods, allowing models to be understood and debugged as they are generated. Challenge 5. Making ML models accessible and usable AutoPrognosis provides a platform to share model outputs by automating the creation of web-based applications. Challenge 6. Deciding when and if to update clinical models AutoPrognosis can quantify the benefit of additional data or new predictive variables, and automatically determine the optimal system for the new dataset. Challenge 7. Transparent reproducibility AutoPrognosis provides a standardized, publicly available framework, facilitating reproducibility.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
           "caption": "Developing powerful ML pipelines AutoPrognosis uses AutoML t",
           "id": "s23.fig1",
           "type": "figure"
@@ -432,78 +482,10 @@
           "type": "table"
         },
         {
-          "anchorLabel": "Figure 1 :",
-          "assetRef": "assetId='2210.12090:v1:figure:1' type=<Type.figure: 'figure'> ordinal=1 caption='Figure 1: Overview of the AutoPrognosis 2.0 framework. AutoPrognosis takes either raw or curated medical datasets and provides an imputed dataset, a report detailing the optimized machine learning pipelines, a diagnostic or prognostic model, explanations, and a web-based interface for clinicians to interact with and use the derived model.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
-          "caption": "Figure 1: Overview of the AutoPrognosis 2.0 framework. AutoP",
-          "id": "s23.fig2",
-          "type": "figure"
-        },
-        {
-          "anchorLabel": "Table 2 :",
-          "caption": "List of algorithms currently included in AutoPrognosis 2.0, ",
-          "cols": 6,
-          "id": "s23.tbl2",
-          "rows": 18,
-          "type": "table"
-        },
-        {
-          "anchorLabel": "Table 3 :",
-          "caption": "Diabetes risk prediction results. The risk scores automatica",
-          "cols": 4,
-          "id": "s23.tbl3",
-          "rows": 11,
-          "type": "table"
-        },
-        {
           "anchorLabel": "Figure 2 :",
-          "assetRef": "assetId='2210.12090:v1:figure:2' type=<Type.figure: 'figure'> ordinal=2 caption='Figure2: Decision curve analysis. AutoPrognosis exhibits higher net benefit at all decision thresholds compared to existing risk scores and baseline treatment plans.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "assetRef": "assetId='2210.12090:v1:figure:5' type=<Type.figure: 'figure'> ordinal=5 caption='Figure2: Decision curve analysis. AutoPrognosis exhibits higher net benefit at all decision thresholds compared to existing risk scores and baseline treatment plans.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
           "caption": "Figure2: Decision curve analysis. AutoPrognosis exhibits hig",
-          "id": "s23.fig3",
-          "type": "figure"
-        },
-        {
-          "anchorLabel": "Table 4 :",
-          "caption": "Quantifying the value of ML.",
-          "cols": 2,
-          "id": "s23.tbl4",
-          "rows": 8,
-          "type": "table"
-        },
-        {
-          "anchorLabel": "Figure 3 :",
-          "assetRef": "assetId='2210.12090:v1:figure:3' type=<Type.figure: 'figure'> ordinal=3 caption='Figure 3: Value of information. We evaluate AutoPrognosis using different numbers of features, corresponding to different effect size thresholds. The feature efficiency is compared to QDiabetes Model C, the best performing existing risk score.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
-          "caption": "Figure 3: Value of information. We evaluate AutoPrognosis us",
-          "id": "s23.fig4",
-          "type": "figure"
-        },
-        {
-          "anchorLabel": "Table 5 :",
-          "caption": "Performance of diabetes risk scores for subgroups defined by",
-          "cols": 5,
-          "id": "s23.tbl5",
-          "rows": 6,
-          "type": "table"
-        },
-        {
-          "anchorLabel": "Figure 4 :",
-          "assetRef": "assetId='2210.12090:v1:figure:4' type=<Type.figure: 'figure'> ordinal=4 caption='Figure 4: SHAP values for the most important features.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
-          "caption": "Figure 4: SHAP values for the most important features.",
-          "id": "s23.fig5",
-          "type": "figure"
-        },
-        {
-          "anchorLabel": "Table 6 :",
-          "caption": "The most important features for AutoPrognosis measured by ri",
-          "cols": 2,
-          "id": "s23.tbl6",
-          "rows": 15,
-          "type": "table"
-        },
-        {
-          "anchorLabel": "Figure 5 :",
-          "assetRef": "assetId='2210.12090:v1:figure:5' type=<Type.figure: 'figure'> ordinal=5 caption='Figure 5: Screenshot of an example clinical demonstrator produced by AutoPrognosis.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
-          "caption": "Figure 5: Screenshot of an example clinical demonstrator pro",
-          "id": "s23.fig6",
+          "id": "s23.fig2",
           "type": "figure"
         }
       ],

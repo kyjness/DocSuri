@@ -3,7 +3,7 @@
 **비전 입력용 공용 부품**이다. u12 novelty와 u11 evidence가 같은 요구(바이트 반환,
 figure·formula)를 갖게 되어 novelty 안에서 꺼냈다(로드맵 ⑥ 항목 4).
 
-u7 `summarization/adapters/rds_assets.py`(서명 URL, `figure|table`, 표시 갤러리용)와는
+u7 `summarization/adapters/rds_assets.py`(서명 URL, 뷰어가 assetId로 해소하는 매니페스트)와는
 **합치지 않는다** — 반환 형태도 대상 타입도 목적이 다르고, 억지로 묶으면 두 소비자의
 요구가 충돌하는 추상이 굳는다.
 

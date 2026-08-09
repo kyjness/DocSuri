@@ -135,3 +135,23 @@ def test_empty_table_and_missing_assetref_and_low_coverage_flag() -> None:
            "doc_figures_no_assetref": 1, "coverage": 0.30}
     v = pa._violations(sig)
     assert {"empty_table", "figure_missing_assetref", "coverage_low"} <= set(v)
+
+
+def test_the_pdf_audits_bullet_alphabet_covers_the_parsers() -> None:
+    """The audit counts the bullet glyphs a PDF prints to judge whether the parser recovered them.
+
+    It writes that glyph set out independently — ``_common.py``'s charter is that the yardstick
+    must not inherit the parser's blind spots, and importing the parser's own set would mean a
+    glyph the parser cannot see is a glyph the audit cannot miss. Independent is not the same as
+    NARROWER, though: if the parser learns a glyph the audit does not count, the source signal
+    goes uncounted and the recovery looks complete when it is not. Superset, asserted here.
+    """
+    import pdf_preservation_audit as ppa
+
+    from docsuri_ingestion.docmodel.tei import _BULLET_CHARS
+
+    audit_glyphs = {c for c in _BULLET_CHARS if ppa._BULLET_RE.match(c)}
+    assert audit_glyphs == set(_BULLET_CHARS), (
+        f"the audit does not count {set(_BULLET_CHARS) - audit_glyphs}, "
+        "so lists using them would look fully recovered"
+    )

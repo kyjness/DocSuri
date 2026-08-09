@@ -1,6 +1,6 @@
 {
   "fullTextLen": 30655,
-  "fullTextSha": "cb8a3eaf4995839a",
+  "fullTextSha": "9f07e1581f399271",
   "sections": [
     {
       "blocks": [
@@ -788,10 +788,24 @@
           "type": "paragraph"
         },
         {
+          "anchorLabel": "Figure 1 :",
+          "assetRef": "assetId='2607.16138:v1:figure:0' type=<Type.figure: 'figure'> ordinal=0 caption='Figure 1: Heatmap showing the speedup of the computation of R of shape K \u02c6A by using the evaluation strategy of Equation (2) as opposed to the term-by-term accumulation strategy of Equation (1). Since A is upper-bounded by minpN, Kq, the cells with K \u0103 A are not computed.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "Figure 1: Heatmap showing the speedup of the computation of ",
+          "id": "s16.fig1",
+          "type": "figure"
+        },
+        {
           "id": "s16.p2",
           "textLen": 202,
           "textSha": "dd41465dcc1780d4",
           "type": "paragraph"
+        },
+        {
+          "anchorLabel": "Figure 2 :",
+          "assetRef": "assetId='2607.16138:v1:figure:1' type=<Type.figure: 'figure'> ordinal=1 caption='Figure 2: Heatmap showing the speedup of the computation of Q of shape M \u02c6A with A \" 10 by using Algorithm 3 as opposed to Algorithm 2. Each qa takes time independent of a, and so using A \" 10 simply takes 10 times longer than computing any single qa.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "Figure 2: Heatmap showing the speedup of the computation of ",
+          "id": "s16.fig2",
+          "type": "figure"
         },
         {
           "id": "s16.p3",
@@ -829,6 +843,13 @@
           "textLen": 311,
           "textSha": "9ebbfbe6de1b5733",
           "type": "paragraph"
+        },
+        {
+          "anchorLabel": "Figure 3 :",
+          "assetRef": "assetId='2607.16138:v1:figure:2' type=<Type.figure: 'figure'> ordinal=2 caption='Figure3: Time spent on full fits for the original and improved IKPLS algorithms. IKPLS algorithm 2 is only executed when N \u0105 K.2' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "Figure3: Time spent on full fits for the original and improv",
+          "id": "s17.fig1",
+          "type": "figure"
         },
         {
           "id": "s17.p2",
@@ -888,58 +909,44 @@
       "blocks": [
         {
           "anchorLabel": "Proposition 3 .",
-          "assetRef": "assetId='2607.16138:v1:figure:0' type=<Type.figure: 'figure'> ordinal=0 caption='Equation (2) requires 2Kpa\u00b41q multiplications to compute r a .' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "assetRef": "assetId='2607.16138:v1:figure:3' type=<Type.figure: 'figure'> ordinal=3 caption='Equation (2) requires 2Kpa\u00b41q multiplications to compute r a .' sourceMode=<SourceMode.page_crop: 'page-crop'>",
           "caption": "Equation (2) requires 2Kpa\u00b41q multiplications to compute r a",
           "id": "s19.fig1",
           "type": "figure"
         },
         {
           "anchorLabel": null,
-          "assetRef": "assetId='2607.16138:v1:figure:1' type=<Type.figure: 'figure'> ordinal=1 caption='14 with the NumPy (Harris et al. 13, version 2.5.1) and JAX (Bradbury et al. 6, version 0.10.2, CUDA version 12.9) implementations of IKPLS in ikpls (Engstr\u00f8m et al. 11, version 6.1.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "assetRef": "assetId='2607.16138:v1:figure:4' type=<Type.figure: 'figure'> ordinal=4 caption='14 with the NumPy (Harris et al. 13, version 2.5.1) and JAX (Bradbury et al. 6, version 0.10.2, CUDA version 12.9) implementations of IKPLS in ikpls (Engstr\u00f8m et al. 11, version 6.1.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
           "caption": "14 with the NumPy (Harris et al. 13, version 2.5.1) and JAX ",
           "id": "s19.fig2",
           "type": "figure"
         },
         {
           "anchorLabel": null,
-          "assetRef": "assetId='2607.16138:v1:figure:2' type=<Type.figure: 'figure'> ordinal=2 caption='(b) R: speedup for K \u02c6A (JAX, GPU).' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "assetRef": "assetId='2607.16138:v1:figure:5' type=<Type.figure: 'figure'> ordinal=5 caption='(b) R: speedup for K \u02c6A (JAX, GPU).' sourceMode=<SourceMode.page_crop: 'page-crop'>",
           "caption": "(b) R: speedup for K \u02c6A (JAX, GPU).",
           "id": "s19.fig3",
           "type": "figure"
         },
         {
           "anchorLabel": null,
-          "assetRef": "assetId='2607.16138:v1:figure:3' type=<Type.figure: 'figure'> ordinal=3 caption='(a) R: speedup for K \u02c6A (NumPy, CPU).' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "assetRef": "assetId='2607.16138:v1:figure:6' type=<Type.figure: 'figure'> ordinal=6 caption='(a) R: speedup for K \u02c6A (NumPy, CPU).' sourceMode=<SourceMode.page_crop: 'page-crop'>",
           "caption": "(a) R: speedup for K \u02c6A (NumPy, CPU).",
           "id": "s19.fig4",
           "type": "figure"
         },
         {
-          "anchorLabel": "Figure 1 :",
-          "assetRef": "assetId='2607.16138:v1:figure:4' type=<Type.figure: 'figure'> ordinal=4 caption='Figure 1: Heatmap showing the speedup of the computation of R of shape K \u02c6A by using the evaluation strategy of Equation (2) as opposed to the term-by-term accumulation strategy of Equation (1). Since A is upper-bounded by minpN, Kq, the cells with K \u0103 A are not computed.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
-          "caption": "Figure 1: Heatmap showing the speedup of the computation of ",
+          "anchorLabel": null,
+          "assetRef": "assetId='2607.16138:v1:figure:7' type=<Type.figure: 'figure'> ordinal=7 caption='Q: speedup for K \u02c6M, A \" 10 (NumPy, CPU).' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "caption": "Q: speedup for K \u02c6M, A \" 10 (NumPy, CPU).",
           "id": "s19.fig5",
           "type": "figure"
         },
         {
           "anchorLabel": null,
-          "assetRef": "assetId='2607.16138:v1:figure:5' type=<Type.figure: 'figure'> ordinal=5 caption='Q: speedup for K \u02c6M, A \" 10 (NumPy, CPU).' sourceMode=<SourceMode.page_crop: 'page-crop'>",
-          "caption": "Q: speedup for K \u02c6M, A \" 10 (NumPy, CPU).",
-          "id": "s19.fig6",
-          "type": "figure"
-        },
-        {
-          "anchorLabel": null,
-          "assetRef": "assetId='2607.16138:v1:figure:6' type=<Type.figure: 'figure'> ordinal=6 caption='Q: speedup for K \u02c6M, A \" 10 (JAX, GPU).' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "assetRef": "assetId='2607.16138:v1:figure:8' type=<Type.figure: 'figure'> ordinal=8 caption='Q: speedup for K \u02c6M, A \" 10 (JAX, GPU).' sourceMode=<SourceMode.page_crop: 'page-crop'>",
           "caption": "Q: speedup for K \u02c6M, A \" 10 (JAX, GPU).",
-          "id": "s19.fig7",
-          "type": "figure"
-        },
-        {
-          "anchorLabel": "Figure 2 :",
-          "assetRef": "assetId='2607.16138:v1:figure:7' type=<Type.figure: 'figure'> ordinal=7 caption='Figure 2: Heatmap showing the speedup of the computation of Q of shape M \u02c6A with A \" 10 by using Algorithm 3 as opposed to Algorithm 2. Each qa takes time independent of a, and so using A \" 10 simply takes 10 times longer than computing any single qa.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
-          "caption": "Figure 2: Heatmap showing the speedup of the computation of ",
-          "id": "s19.fig8",
+          "id": "s19.fig6",
           "type": "figure"
         },
         {
@@ -952,16 +959,9 @@
         },
         {
           "anchorLabel": null,
-          "assetRef": "assetId='2607.16138:v1:figure:8' type=<Type.figure: 'figure'> ordinal=8 caption='): 6.11ms \u2192 351\u00b5s Q (isolated): 256\u00b5s \u2192 189\u00b5s speedup (original / improved) 5.541 [5.476, 5.590] A=30, N=2 \u22c5 10 2 , K=10 2 , (=1 [(=1] ./ fit ,mproved ,KP./ fit (d) IKPLS Algorithm 2, JAX, GPU.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
+          "assetRef": "assetId='2607.16138:v1:figure:9' type=<Type.figure: 'figure'> ordinal=9 caption='): 6.11ms \u2192 351\u00b5s Q (isolated): 256\u00b5s \u2192 189\u00b5s speedup (original / improved) 5.541 [5.476, 5.590] A=30, N=2 \u22c5 10 2 , K=10 2 , (=1 [(=1] ./ fit ,mproved ,KP./ fit (d) IKPLS Algorithm 2, JAX, GPU.' sourceMode=<SourceMode.page_crop: 'page-crop'>",
           "caption": "): 6.11ms \u2192 351\u00b5s Q (isolated): 256\u00b5s \u2192 189\u00b5s speedup (origi",
-          "id": "s19.fig9",
-          "type": "figure"
-        },
-        {
-          "anchorLabel": "Figure 3 :",
-          "assetRef": "assetId='2607.16138:v1:figure:9' type=<Type.figure: 'figure'> ordinal=9 caption='Figure3: Time spent on full fits for the original and improved IKPLS algorithms. IKPLS algorithm 2 is only executed when N \u0105 K.2' sourceMode=<SourceMode.page_crop: 'page-crop'>",
-          "caption": "Figure3: Time spent on full fits for the original and improv",
-          "id": "s19.fig10",
+          "id": "s19.fig7",
           "type": "figure"
         }
       ],

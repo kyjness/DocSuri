@@ -27,13 +27,12 @@ Usage::
 from __future__ import annotations
 
 import argparse
-import json
 import re
-from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 
-from _common import counts, walk_sections
+from _common import caption_probe, counts, figures_without_assetref, strip_ws
+from _sweep import run_sweep
 from bs4 import BeautifulSoup, Tag
 from docsuri_shared.dtos import SourceTier
 
@@ -137,22 +136,6 @@ def _source_signals(soup: BeautifulSoup) -> dict:
     }
 
 
-def _docmodel_signals(doc: dict) -> dict:
-    """The one doc-side signal ``counts()`` does not yield and ``_violations`` consumes: figures
-    the parser landed without an asset reference. Block-kind tallies (``kinds``) and the empty-table
-    count come from ``counts()``, merged alongside in ``_audit_one`` — not re-derived here."""
-    blocks = [b for s in walk_sections(doc) for b in (s.get("blocks") or [])]
-    return {
-        "doc_figures_no_assetref": sum(
-            1 for b in blocks if b.get("type") == "figure" and not b.get("assetRef")
-        ),
-    }
-
-
-def _strip_ws(text: str) -> str:
-    return re.sub(r"\s+", "", text).lower()
-
-
 def _caption_text_dropped(soup: BeautifulSoup, full_text: str) -> int:
     """Numbered figure/table captions whose text did NOT reach fullText — real content loss.
 
@@ -163,7 +146,7 @@ def _caption_text_dropped(soup: BeautifulSoup, full_text: str) -> int:
     matching whitespace-stripped then makes a preserved caption an exact substring of fullText and a
     dropped one absent — the get_text-vs-parser rendering mismatch that fooled a plain-text probe is
     gone. Only numbered floats are judged (a ``(a)``/``(b)`` sub-panel folds into its parent)."""
-    ft = _strip_ws(full_text)
+    ft = strip_ws(full_text)
     dropped = 0
     for fl in soup.find_all("figure"):
         if not ({"ltx_figure", "ltx_table"} & _classes(fl)):
@@ -171,10 +154,8 @@ def _caption_text_dropped(soup: BeautifulSoup, full_text: str) -> int:
         label, caption = _parser_caption(fl)
         if not (_FIG_CAPTION_RE.match(label) or _TABLE_CAPTION_RE.match(label)):
             continue
-        probe = _strip_ws(caption)[:60]
-        if len(probe) < 20:
-            continue  # too little caption text to judge reliably
-        if probe not in ft:
+        probe = caption_probe(caption)
+        if probe and probe not in ft:
             dropped += 1
     return dropped
 
@@ -227,7 +208,7 @@ def _audit_one(paper_id: str, version: int, html: str) -> dict:
         generated_at=_TS,
     )
     doc = model.model_dump(mode="json")
-    sig = {**_source_signals(soup), **_docmodel_signals(doc)}
+    sig = {**_source_signals(soup), **figures_without_assetref(doc)}
     sig.update(counts(doc))
     source_chars = len(html_to_text(html))
     sig["source_chars"] = source_chars
@@ -247,44 +228,20 @@ def main() -> None:
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
 
-    targets = json.loads((args.cache / "targets.json").read_text())
-    by_type: Counter[str] = Counter()
-    papers = 0
-    errors = 0
-    unavailable = 0
-    with args.out.open("w", encoding="utf-8") as fh:
-        for i, target in enumerate(targets, start=1):
-            key = f"{target['paper_id']}v{target['version']}"
-            path = args.cache / "html" / f"{key}.html"
-            try:
-                row = _audit_one(
-                    target["paper_id"], target["version"], path.read_text(errors="replace")
-                )
-            except Exception as exc:  # noqa: BLE001 - a crash is itself a preservation failure
-                error = f"{type(exc).__name__}: {exc}"
-                row = {**target, "error": error, "violations": ["parse_error"]}
-                errors += 1
-            papers += 1
-            if row.get("source_unavailable"):
-                unavailable += 1
-            for kind in row["violations"]:
-                by_type[kind] += 1
-            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
-            if i % 50 == 0 or "error" in row:
-                print(f"[{i}/{len(targets)}] {key} {row.get('error', '')}", flush=True)
-
-    # Violation rates are over papers that actually carry ar5iv content — a source ar5iv could not
-    # build is out of the HTML parser's remit (real ingestion sends it down the PDF/GROBID path).
-    available = papers - unavailable
-    print(f"\nwrote {args.out}  ({papers} papers, {errors} parse errors)")
-    print(f"source_unavailable (ar5iv build failures, excluded): {unavailable}")
-    print(f"audited (has ar5iv content): {available}")
-    print("\n=== defect types by frequency (papers affected, of audited) ===")
-    for kind, n in by_type.most_common():
-        pct = f"{n / available:.1%}" if available else "n/a"
-        print(f"  {kind:28s} {n:5d}  ({pct})")
-    if not by_type:
-        print("  (none — every source signal accounted for)")
+    # Violation rates come out over papers that actually carry ar5iv content — a source ar5iv
+    # could not build is out of the HTML parser's remit (real ingestion sends it down the
+    # PDF/GROBID path). ``_audit_one`` marks those ``source_unavailable`` and the driver excludes
+    # them from the denominator.
+    run_sweep(
+        args.cache / "targets.json",
+        args.out,
+        lambda target, key: _audit_one(
+            target["paper_id"],
+            target["version"],
+            (args.cache / "html" / f"{key}.html").read_text(errors="replace"),
+        ),
+        excluded_note="source_unavailable (ar5iv build failures)",
+    )
 
 
 if __name__ == "__main__":

@@ -17,21 +17,17 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import UTC, datetime
 from pathlib import Path
 
 from _common import walk_sections
-from docsuri_shared.dtos import SourceTier
+from _pipeline import build_doc, tei_for
 
 from docsuri_ingestion.adapters.docling_tables import DoclingTableExtractor
 from docsuri_ingestion.docmodel.table_repair import (
     apply_repairs,
-    printed_numbers,
+    printed_text,
     tables_needing_repair,
 )
-from docsuri_ingestion.docmodel.tei import parse_tei_to_docmodel
-
-_TS = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 def _table_stats(doc: dict) -> tuple[int, int]:
@@ -55,20 +51,20 @@ def main() -> None:
             key = f"{target['paper_id']}v{target['version']}"
             row: dict = {"paper_id": target["paper_id"], "version": target["version"]}
             try:
-                tei = (args.cache / "tei" / f"{key}.tei.xml").read_text()
+                tei = tei_for(key, args.cache, None)
                 pdf = (args.cache / "pdf" / f"{key}.pdf").read_bytes()
                 crops: list = []
-                doc = parse_tei_to_docmodel(
-                    tei, paper_id=target["paper_id"], version=target["version"], title="",
-                    abstract=None, source_tier=SourceTier.pdf, parser_version="audit",
-                    schema_version="audit", generated_at=_TS, crops=crops,
+                # Parser-only (``builder=None``) on purpose: this audit measures what the repair
+                # stage itself adds, so the doc it starts from must NOT already have been repaired.
+                doc = build_doc(
+                    target["paper_id"], target["version"], tei, pdf, None, crops
                 ).model_dump(mode="json")
                 empty0, filled0 = _table_stats(doc)
                 candidates = tables_needing_repair(doc, crops)
                 row.update(tables=empty0 + filled0, candidates=len(candidates), repaired=0)
                 if candidates:
                     read = extractor.extract_tables(pdf, sorted({c.page for c in candidates}))
-                    row["repaired"] = apply_repairs(doc, crops, read, printed_numbers(pdf))
+                    row["repaired"] = apply_repairs(doc, crops, read, printed_text(pdf))
                     row["empty_after"], row["filled_after"] = _table_stats(doc)
             except Exception as exc:  # noqa: BLE001 - a crash is the loudest datum here
                 row["error"] = f"{type(exc).__name__}: {exc}"
