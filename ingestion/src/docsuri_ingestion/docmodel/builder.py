@@ -34,6 +34,7 @@ from docsuri_ingestion.docmodel.table_repair import (
 from docsuri_ingestion.docmodel.tei import TRAILING_FLOAT_SECTION_TITLE, parse_tei_to_docmodel
 from docsuri_ingestion.domain.assets import AssetCropSpec, FigureSpec
 from docsuri_ingestion.domain.models import MetadataRecord
+from docsuri_ingestion.full_text_extraction import html_to_text
 from docsuri_ingestion.ports import (
     ClockPort,
     DocModelSourcePort,
@@ -71,30 +72,30 @@ _REBUILD_SOURCE_TIERS = frozenset({SourceTier.native_html})
 # fallback that actually recovers the body is a separate follow-up.)
 _MIN_BODY_TEXT_CHARS = 500
 
-# A LaTeXML run that died mid-conversion stamps `ltx_ERROR` nodes where content should be and
-# dumps raw TeX into what body it does emit. The length floor above misses this failure mode —
-# the observed break (2502.10208) still carried 8,905 chars of body and sailed through. Errors
-# are judged RELATIVE to paragraph count, not absolutely: a long paper accumulates sporadic
-# recoverable errors (corpus max measured 10 on a 322-paragraph paper) without being broken.
-# Measured on 39 corpus papers + the broken control (2026-08-10): normal error/paragraph ratio
-# tops out at 0.14 (8 errors / 59 paras), the broken conversion sits at 8.8 (167 / 19) — a
-# threshold of 1.0 ("an error marker per paragraph") has ~7x margin to both sides. Raw-TeX
-# leak counting was evaluated as a second signal and REJECTED: it does not separate (a normal
-# paper measured 6 pgfsys fragments inside legit math — a sanitizer gap, not a dead conversion —
-# while the broken control measured 2).
-_LATEXML_ERROR_MARKER = "ltx_ERROR"
-_LATEXML_PARA_MARKER = "ltx_para"
-_BROKEN_ERRORS_PER_PARA = 1.0
-
-
-def _conversion_is_broken(html: str) -> bool:
-    """Whether a LaTeXML build failed hard enough that its output must not become a doc-model.
-
-    Substring counts, not a DOM walk — `ltx_para` also matches longer class names
-    (`ltx_paragraph`), which only INFLATES the denominator; with an order-of-magnitude margin on
-    both sides of the threshold that imprecision cannot flip a verdict."""
-    errors = html.count(_LATEXML_ERROR_MARKER)
-    return errors >= _BROKEN_ERRORS_PER_PARA * max(html.count(_LATEXML_PARA_MARKER), 1)
+# The absolute floor above catches an abstract-only truncation, but not a conversion that dies
+# PART-WAY: 2502.10208 was measured carrying 8,905 chars of body with most of the paper gone —
+# comfortably over any absolute floor worth setting. So judge RELATIVELY as well: of the readable
+# text the fetched page carries, how much did the parser actually recover?
+#
+# Measured on 61 corpus papers (2026-08-10), scored against LaTeXML's OWN truncation notice
+# ("This document may be truncated or damaged") as ground truth: pages it flags land at 0.27 and
+# below, healthy conversions start at 0.54 and cluster 0.64-0.96. Healthy papers never reach 1.0
+# by design — authors/affiliations/References sit outside the block tree, and a math-heavy paper
+# stores display math as compact LaTeX where the source renders long unicode. 0.40 sits in the
+# middle of the empty band between the two groups (1.5x above the worst damaged page, 1.35x below
+# the weakest healthy one); the 2502.10208 break reconstructs to ~0.08, far under it.
+#
+# Do NOT gate on the truncation notice itself: 2502.15015 carries it yet recovered 0.79 of its
+# text, so the notice over-rejects where coverage does not.
+#
+# REJECTED — counting `ltx_ERROR` nodes per paragraph (shipped earlier the same day, reverted
+# here): it does not separate the two. One unresolved macro used N times emits N error nodes while
+# the paragraph count stays fixed, so 2310.04047 (36,770 chars, 18 sections, 7 tables, zero TeX
+# leak; the author's own `\ourtool` macro used 74 times) measured 1.7 and 2501.08626 (23,705
+# chars; a proceedings style's `\Name`/`\Email`) measured 2.35 — both healthy, both above any
+# threshold that still catches a real break. 3.3% of the sample were false rejections, and every
+# genuine break it did flag was already caught by the absolute floor above.
+_MIN_SOURCE_COVERAGE = 0.40
 
 
 def _block_text_len(block: dict) -> int:
@@ -197,15 +198,6 @@ class DocModelBuilder:
                 status="source_unavailable", reason=_SOURCE_UNAVAILABLE_REASON
             )
         html, source_tier = fetched
-        if _conversion_is_broken(html):
-            # Dead LaTeXML build (see _BROKEN_ERRORS_PER_PARA) — degrade BEFORE parsing so the
-            # next ladder rung takes over, and count it separately from truncations so the two
-            # failure modes stay distinguishable in metrics.
-            emit_metric(self._observability, "ingestion.docmodel.broken_conversion", 1.0)
-            return SourceUnavailableDTO(
-                status="source_unavailable", reason=_SOURCE_UNAVAILABLE_REASON
-            )
-
         doc = parse_html_to_docmodel(
             html,
             paper_id=paper_id,
@@ -224,6 +216,17 @@ class DocModelBuilder:
             # doc-model as "complete"; degrade to source_unavailable so the viewer links out to
             # arXiv instead of showing a fragment. Observed so the truncation rate is trackable.
             emit_metric(self._observability, "ingestion.docmodel.truncated_source", 1.0)
+            return SourceUnavailableDTO(
+                status="source_unavailable", reason=_SOURCE_UNAVAILABLE_REASON
+            )
+        source_chars = len(html_to_text(html))
+        if source_chars and len(doc.fullText or "") < _MIN_SOURCE_COVERAGE * source_chars:
+            # The conversion died PART-WAY (see _MIN_SOURCE_COVERAGE): long enough to clear the
+            # absolute floor, but most of the page never became blocks. Degrade so the next rung
+            # (PDF→GROBID) takes over, and count it apart from abstract-only truncations so the
+            # two failure modes stay distinguishable — and so the reingest batch can watch this
+            # rate and retune the floor on corpus-wide evidence rather than a 61-paper sample.
+            emit_metric(self._observability, "ingestion.docmodel.broken_conversion", 1.0)
             return SourceUnavailableDTO(
                 status="source_unavailable", reason=_SOURCE_UNAVAILABLE_REASON
             )

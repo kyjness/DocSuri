@@ -350,9 +350,9 @@ def test_build_degrades_to_source_unavailable_when_conversion_is_truncated() -> 
     assert store.put_calls == []  # nothing cached
 
 
-# A LaTeXML build that died MID-RUN: plenty of body text survives (the 500-char floor passes),
-# but error markers outnumber paragraphs — the failure mode the 2026-08-10 gate exists for.
-# Modeled on the measured break (2502.10208: 167 ltx_ERROR / 19 paragraphs, 8,905 chars).
+# A LaTeXML build that died PART-WAY: 2,000+ chars of body survive (clearing the absolute floor),
+# but the bulk of the page's readable text never became blocks — it sits in prose the parser
+# cannot reach. Modeled on the measured break (2502.10208: 8,905 chars of body, ~0.08 coverage).
 _DEAD_CONVERSION_HTML = (
     '<article class="ltx_document"><section class="ltx_section" id="S1">'
     '<h2 class="ltx_title ltx_title_section">Intro</h2>'
@@ -360,13 +360,16 @@ _DEAD_CONVERSION_HTML = (
         f'<div class="ltx_para"><p class="ltx_p">Surviving prose number {i}. {"x" * 200}</p></div>'
         for i in range(5)
     )
-    + '<span class="ltx_ERROR undefined">\\includegraphics</span>' * 40
-    + "</section></article>"
+    + "</section>"
+    # Unreachable remainder: readable text on the page that produced no block at all.
+    + "".join(f"<span>Stranded body text {i}. {'z' * 400}</span>" for i in range(40))
+    + "</article>"
 )
 
 
-def test_build_degrades_when_the_conversion_died_midrun() -> None:
-    # Enough chars survive to pass the length floor — the ERROR/paragraph ratio has to catch it.
+def test_build_degrades_when_the_conversion_died_partway() -> None:
+    # Enough chars survive to clear the absolute floor, so only the RELATIVE coverage check can
+    # catch it: the parser recovered a small fraction of the text the page actually carries.
     obs = _CapturingMetrics()
     store = _FakeStore(cached=None)
     builder = DocModelBuilder(
@@ -382,17 +385,20 @@ def test_build_degrades_when_the_conversion_died_midrun() -> None:
     assert ("ingestion.docmodel.broken_conversion", 1.0) in obs.metrics
 
 
-def test_build_tolerates_sporadic_recoverable_errors() -> None:
-    # Long papers accumulate a few recoverable ltx_ERROR nodes (corpus max measured: 10 errors on
-    # 322 paragraphs). Those must build normally — only the died-mid-run ratio trips the gate.
+def test_build_tolerates_a_macro_the_converter_could_not_resolve() -> None:
+    # An unresolved macro emits one ltx_ERROR per USE, so a paper that names its own tool 74 times
+    # carries 74 error nodes while staying entirely readable (measured: 2310.04047 — 36,770 chars,
+    # 18 sections, 7 tables, zero TeX leak). Counting error nodes rejected papers like this one;
+    # coverage must not. Guards the 2026-08-10 false-rejection finding.
     html = (
         '<article class="ltx_document"><section class="ltx_section" id="S1">'
         '<h2 class="ltx_title ltx_title_section">Intro</h2>'
         + "".join(
-            f'<div class="ltx_para"><p class="ltx_p">Body prose {i}. {"y" * 200}</p></div>'
-            for i in range(8)
+            '<div class="ltx_para"><p class="ltx_p">Body prose about '
+            '<span class="ltx_ERROR undefined">\\ourtool</span> and its results. '
+            f'{"y" * 200}</p></div>'
+            for _ in range(8)
         )
-        + '<span class="ltx_ERROR undefined">\\qed</span>'
         + "</section></article>"
     )
     store = _FakeStore(cached=None)
