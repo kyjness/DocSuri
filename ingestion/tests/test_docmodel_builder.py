@@ -248,7 +248,7 @@ def test_a_formula_ocr_read_reprojects_full_text(monkeypatch) -> None:
 
 def test_cache_hit_returns_cached_without_fetching() -> None:
     store = _FakeStore(cached=_doc())
-    source = _FakeSource((_HTML, SourceTier.native_html))
+    source = _FakeSource((_HTML, SourceTier.ar5iv))
     result = _builder(source, store).build(sample_metadata("2401.00001v1"))
     assert isinstance(result, DocModelResultDTO)
     assert result.cached is True
@@ -270,7 +270,7 @@ def test_cache_miss_builds_caches_and_returns_fresh() -> None:
 
 def test_stale_parser_cache_hit_rebuilds_and_overwrites() -> None:
     store = _FakeStore(cached=_doc(parser_version="docmodel-parser@0"))
-    source = _FakeSource((_HTML, SourceTier.native_html))
+    source = _FakeSource((_HTML, SourceTier.ar5iv))
     result = _builder(source, store).build(sample_metadata("2401.00001v1"))
     assert isinstance(result, DocModelResultDTO)
     assert result.cached is False
@@ -436,7 +436,7 @@ def _eprint_tar(tex: str) -> bytes:
 
 def test_build_attaches_eprint_macros_to_meta() -> None:
     store = _FakeStore(cached=None)
-    source = _FakeSource((_HTML, SourceTier.native_html))
+    source = _FakeSource((_HTML, SourceTier.ar5iv))
     eprint = _FakeEprintSource(_eprint_tar(r"\newcommand{\R}{\mathbb{R}}"))
     builder = DocModelBuilder(
         source=source, store=store, eprint_source=eprint, clock=_FixedClock()
@@ -449,7 +449,7 @@ def test_build_attaches_eprint_macros_to_meta() -> None:
 
 def test_build_without_eprint_source_omits_macros() -> None:
     store = _FakeStore(cached=None)
-    source = _FakeSource((_HTML, SourceTier.native_html))
+    source = _FakeSource((_HTML, SourceTier.ar5iv))
     result = _builder(source, store).build(sample_metadata("2401.00001v1"))
     assert isinstance(result, DocModelResultDTO)
     assert result.docModel.meta.macros is None  # optional field omitted
@@ -457,7 +457,7 @@ def test_build_without_eprint_source_omits_macros() -> None:
 
 def test_build_survives_eprint_fetch_failure() -> None:
     store = _FakeStore(cached=None)
-    source = _FakeSource((_HTML, SourceTier.native_html))
+    source = _FakeSource((_HTML, SourceTier.ar5iv))
     eprint = _FakeEprintSource(None, raises=True)
     builder = DocModelBuilder(
         source=source, store=store, eprint_source=eprint, clock=_FixedClock()
@@ -479,7 +479,7 @@ def test_build_emits_macro_count_metric() -> None:
     obs = _CapturingMetrics()
     eprint = _FakeEprintSource(_eprint_tar(r"\newcommand{\R}{\mathbb{R}}"))
     builder = DocModelBuilder(
-        source=_FakeSource((_HTML, SourceTier.native_html)),
+        source=_FakeSource((_HTML, SourceTier.ar5iv)),
         store=_FakeStore(cached=None),
         eprint_source=eprint,
         observability=obs,
@@ -532,7 +532,7 @@ def test_build_from_tei_counts_floats_stranded_in_the_trailing_dump() -> None:
 def test_build_emits_failure_metric_on_eprint_error() -> None:
     obs = _CapturingMetrics()
     builder = DocModelBuilder(
-        source=_FakeSource((_HTML, SourceTier.native_html)),
+        source=_FakeSource((_HTML, SourceTier.ar5iv)),
         store=_FakeStore(cached=None),
         eprint_source=_FakeEprintSource(None, raises=True),
         observability=obs,

@@ -53,14 +53,13 @@ class ArxivHttpSource:
         oai_base_url: str = "https://oaipmh.arxiv.org/oai",
         pdf_base_url: str = "https://arxiv.org/pdf",
         html_base_urls: Sequence[str] = (
-            # ar5iv (LaTeXML) first: its HTML is what the doc-model parser's LaTeX/macro
-            # sanitizer is built and tested against. Native arXiv HTML (arxiv.org/html) is a
-            # different toolchain whose raw TeX/pgf markup (\ref, \begin{aligned},
-            # \pgfsys@color, {subsection}{toc} …) leaks through that sanitizer straight into
-            # fullText and breaks multi-panel figure wiring. Keep it only as a last-resort
-            # fallback for papers ar5iv cannot render, until the parser handles it natively.
+            # ar5iv (LaTeXML) ONLY: its HTML is what the doc-model parser's LaTeX/macro
+            # sanitizer is built and tested against. Native arXiv HTML (arxiv.org/html) was
+            # removed from BOTH ladders (doc-model and full text) on 2026-08-10 (BR-29/BR-30
+            # 개정): operational review kept finding broken renders, and when its LaTeXML run
+            # fails the raw TeX (\includegraphics, \thefigure …) lands verbatim in the plain
+            # text the search index chunks. Papers without an ar5iv build take the PDF rung.
             "https://ar5iv.labs.arxiv.org/html",
-            "https://arxiv.org/html",
         ),
         timeout_seconds: float = 30.0,
         rate_limiter: TokenBucket | None = None,
@@ -71,12 +70,9 @@ class ArxivHttpSource:
         self._atom_base_url = atom_base_url
         self._oai_base_url = oai_base_url
         self._pdf_base_url = pdf_base_url.rstrip("/")
+        # Every configured base serves the single HTML rung of the Q6 ladder, and that rung is
+        # ar5iv-tier by definition — the native_html tier has no producer since 2026-08-10.
         self._html_base_urls = tuple(base.rstrip("/") for base in html_base_urls)
-        # Map each HTML base to its doc-model source tier (Q6 ladder): ar5iv vs native arXiv HTML.
-        self._html_source_tiers = tuple(
-            (base, SourceTier.ar5iv if "ar5iv" in base else SourceTier.native_html)
-            for base in self._html_base_urls
-        )
         self._timeout_seconds = timeout_seconds
         self._rate_limiter = rate_limiter or TokenBucket(rate_per_second=0.33)
         # Harvest pagination is long-running (hours); tolerate transient arXiv blips with
@@ -222,33 +218,33 @@ class ArxivHttpSource:
     def _acquire_html(self, metadata: MetadataRecord) -> tuple[str | None, str, SourceTier]:
         """HTML source honoring the raw cache mode (B3). ``off`` is byte-identical to the old
         ``_try_get_html`` path; ``prefer`` reads cache→HTTP and writes back a fetch; ``only`` reads
-        cache and NEVER hits the network. Returns ``(html, source_url, tier)`` — the tier tags which
-        rung produced the text so a doc-model text-fallback keeps native arXiv HTML out of a
-        servable doc-model (its raw TeX/pgf leaks past the parser sanitizer)."""
+        cache and NEVER hits the network. The HTML rung is ar5iv-only (BR-29 2026-08-10), so the
+        returned tier is always ``ar5iv``; a raw cache written before the native removal may still
+        hold a ``native_html`` object, which is deliberately ignored — re-serving it would re-admit
+        the removed rung through the cache."""
         mode, store = self._raw_cache_mode, self._raw_store
         pid, ver = metadata.paper_id, metadata.version
         if mode in ("prefer", "only") and store is not None:
-            for tier in (SourceTier.ar5iv, SourceTier.native_html):
-                cached = store.get_raw(pid, ver, tier.value)
-                if cached:
-                    text = cached.decode("utf-8")
-                    # Prime the memo so the doc-model rung reads the cached bytes too; it calls
-                    # _get_html_at directly and would otherwise go to the network in cache mode.
-                    base = self._base_for_tier(tier)
-                    if base is not None:
-                        self._html_memo = ((base, metadata.identifier.arxiv_id), text)
-                    return text, f"cache://{tier.value}", tier
+            cached = store.get_raw(pid, ver, SourceTier.ar5iv.value)
+            if cached:
+                text = cached.decode("utf-8")
+                # Prime the memo so the doc-model rung reads the cached bytes too; it calls
+                # _get_html_at directly and would otherwise go to the network in cache mode.
+                if self._html_base_urls:
+                    self._html_memo = (
+                        (self._html_base_urls[0], metadata.identifier.arxiv_id),
+                        text,
+                    )
+                return text, f"cache://{SourceTier.ar5iv.value}", SourceTier.ar5iv
             if mode == "only":
-                return None, "", SourceTier.native_html
+                return None, "", SourceTier.ar5iv
         html, url = self._try_get_html(metadata.identifier.arxiv_id)
-        # Mirror the __init__ base→tier mapping ("ar5iv" in the base URL ⇒ ar5iv).
-        tier = SourceTier.ar5iv if "ar5iv" in url else SourceTier.native_html
         if html and mode == "prefer" and store is not None:
             store.put_raw(
-                pid, ver, tier.value, html.encode("utf-8"),
+                pid, ver, SourceTier.ar5iv.value, html.encode("utf-8"),
                 content_type="text/html; charset=utf-8",
             )
-        return html, url, tier
+        return html, url, SourceTier.ar5iv
 
     def _acquire_pdf(self, metadata: MetadataRecord) -> bytes | None:
         """PDF bytes honoring the raw cache mode (B3). ``only`` never hits the network (returns
@@ -274,22 +270,18 @@ class ArxivHttpSource:
     def fetch_html_source(self, arxiv_id: str) -> tuple[str, SourceTier] | None:
         """Fetch deterministic-parseable HTML for the doc-model (BR-30, Q6 ladder).
 
-        Doc-model source is **ar5iv only**. Native arXiv HTML is deliberately excluded here:
-        its raw TeX/pgf markup leaks through the parser's sanitizer into fullText and breaks
-        multi-panel figure wiring, so it must never become a doc-model source (it stays a
-        full-text plain-text rung in ``_try_get_html``). When ar5iv yields nothing this returns
-        ``None`` → the builder degrades to the PDF/text fallback rather than parsing native HTML.
+        Doc-model source is **ar5iv only** — since 2026-08-10 the same is true of the full-text
+        ladder, so there is no native rung anywhere for this to guard against. When ar5iv yields
+        nothing this returns ``None`` → the builder moves down the ladder (PDF/GROBID).
         """
-        for base, tier in self._html_source_tiers:
-            if tier is not SourceTier.ar5iv:
-                continue
+        for base in self._html_base_urls:
             html = self._get_html_at(base, arxiv_id)
             if html:
-                return html, tier
+                return html, SourceTier.ar5iv
         return None
 
     def _try_get_html(self, arxiv_id: str) -> tuple[str | None, str]:
-        """Best-effort HTML fetch across configured bases (ar5iv → arXiv native).
+        """Best-effort HTML fetch across the configured (ar5iv) bases.
 
         HTML is preferred-but-optional — not every paper compiles to HTML — so any non-200,
         non-HTML, or transport error degrades to ``None`` (→ PDF fallback) rather than raising.
@@ -315,9 +307,6 @@ class ArxivHttpSource:
         html = self._fetch_html_at(base, arxiv_id)
         self._html_memo = (key, html)
         return html
-
-    def _base_for_tier(self, tier: SourceTier) -> str | None:
-        return next((base for base, t in self._html_source_tiers if t is tier), None)
 
     def _fetch_html_at(self, base: str, arxiv_id: str) -> str | None:
         import httpx

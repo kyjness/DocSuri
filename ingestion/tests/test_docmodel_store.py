@@ -25,7 +25,7 @@ def _doc() -> DocModel:
         version=3,
         title="t",
         abstract=None,
-        source_tier=SourceTier.native_html,
+        source_tier=SourceTier.ar5iv,
         parser_version="docmodel-parser@1",
         schema_version="1.0.0",
         generated_at=datetime(2026, 6, 23, tzinfo=UTC),
