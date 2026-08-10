@@ -52,6 +52,14 @@ class IngestionSettings(BaseModel):
     reembed_shard_count: int = Field(default=1, alias="DOCSURI_REEMBED_SHARD_COUNT")
     reembed_batch_size: int = Field(default=96, alias="DOCSURI_REEMBED_BATCH_SIZE")  # <=96
     reembed_min_documents: int = Field(default=1, alias="DOCSURI_REEMBED_MIN_DOCUMENTS")
+    # reparse's loss budget (excluded + errored) / total. Over it the run exits nonzero so the
+    # finalize→cutover chain cannot make a silent corpus shrink permanent — a mis-tuned quality
+    # gate or a broken GROBID sidecar shows up as exactly this ratio. 5%: the gate's calibrated
+    # false-rejection rate is 0, so anything approaching this level is a systematic fault, while
+    # the genuinely-broken-source population (no ar5iv AND no parseable PDF) stays well under it.
+    reparse_max_failure_ratio: float = Field(
+        default=0.05, alias="DOCSURI_REPARSE_MAX_FAILURE_RATIO"
+    )
     reembed_copy_rps: int = Field(default=-1, alias="DOCSURI_REEMBED_COPY_RPS")  # -1 = unlimited
     # None → frozen spec width (1024). Set to Cohere v4's 1536 default for a dimension-changing
     # re-embed; the target index + embed both use it. Cutover then needs a coordinated vector-spec
