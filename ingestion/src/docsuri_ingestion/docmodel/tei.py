@@ -45,6 +45,7 @@ import re
 import xml.etree.ElementTree as ET
 from collections import defaultdict
 from collections.abc import MutableSequence, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import NamedTuple
 
@@ -620,7 +621,7 @@ def _formula_or_algorithm_blocks(
         if _is_headless_listing(text) or (in_algorithm_section and _is_listing(text)):
             host = _last_listing(section_blocks)
             if host is not None:
-                _append_to_listing(host, text)
+                _append_to_listing(host, text, formula, doc_ctx)
                 return []
             return [_algorithm_block(formula, text, sec_ctx, doc_ctx)]
         # No "Algorithm N" heading followed by numbered steps — an equation that merely cites one
@@ -654,9 +655,59 @@ def _formula_or_algorithm_blocks(
     return blocks
 
 
-def _append_to_listing(host: dict, text: str) -> None:
-    """Append a split-off fragment to the listing it belongs to, single-spaced."""
+def _append_to_listing(
+    host: dict, text: str, formula: ET.Element | None = None, doc_ctx: _DocCtx | None = None
+) -> None:
+    """Append a split-off fragment to the listing it belongs to, single-spaced.
+
+    The fragment's COORDINATES join the host's crop when ``formula`` is given. GROBID files one
+    algorithm float as several ``<formula>`` elements, and keeping only the first one's box
+    pictured a multi-line listing as its opening line — measured on 2607.16138, a 297-character
+    listing whose crop was 223x21pt. The text was already being rejoined here; the region follows.
+
+    The caller passes the element ONLY when the whole of it goes into this listing. An element
+    whose text is split across several blocks has no region attributable to one of them, and
+    unioning all of it made the first listing's crop swallow the next listing entirely (the same
+    fixture: 84pt -> 339pt, overlapping the block below it). Those fragments keep their text
+    merged and their coordinates behind, which is what they already did.
+    """
     host["text"] = f"{host['text']} {text}".strip()
+    if formula is not None and doc_ctx is not None:
+        _widen_crop(doc_ctx, (host.get("assetRef") or {}).get("assetId"), formula)
+
+
+def _widen_crop(doc_ctx: _DocCtx, aid: str | None, el: ET.Element) -> None:
+    """Grow the recorded crop spec ``aid`` to also cover ``el``, when they share page and column.
+
+    Regions on another page are ignored, the rule ``_union_regions`` already follows: a listing
+    continuing overleaf has no single rectangle and inventing one would crop the pages between.
+    Regions that do not overlap the spec HORIZONTALLY are ignored for the same reason one column
+    down — in a two-column paper the continuation sits beside the host, and unioning across the
+    gutter would drag the whole other column into the image.
+    """
+    if not aid or doc_ctx.crops is None:
+        return
+    for index in range(len(doc_ctx.crops) - 1, -1, -1):
+        spec = doc_ctx.crops[index]
+        if spec.asset_id != aid:
+            continue
+        x0, y0, x1, y1 = spec.bbox
+        regions = [
+            r
+            for r in _coord_regions(el)
+            if r.page == spec.page and r.x1 > x0 and r.x0 < x1
+        ]
+        if regions:
+            doc_ctx.crops[index] = replace(
+                spec,
+                bbox=(
+                    min([x0, *(r.x0 for r in regions)]),
+                    min([y0, *(r.y0 for r in regions)]),
+                    max([x1, *(r.x1 for r in regions)]),
+                    max([y1, *(r.y1 for r in regions)]),
+                ),
+            )
+        return
 
 
 def _last_listing(blocks: Sequence[dict]) -> dict | None:

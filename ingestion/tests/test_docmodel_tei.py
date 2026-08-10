@@ -272,6 +272,52 @@ def test_a_single_region_float_is_cropped_to_its_content_box() -> None:
     assert spec.bbox == (126.0, 160.0, 480.0, 225.0)
 
 
+# --- crop framing: an algorithm split across <formula> elements is cropped whole ---
+
+
+def _algorithm_tei(continuation_coords: str) -> str:
+    return (
+        f"<TEI {_NS}><text><body><div><head>Method</head>"
+        '<formula coords="2,50,100,200,40">Algorithm 1 Sort 1: for each x 2: swap</formula>'
+        f'<formula coords="{continuation_coords}">3: end for 4: return 5: Require: x</formula>'
+        "</div></body></text></TEI>"
+    )
+
+
+def _one_code_block(tei: str):
+    doc = _parse(tei)
+    blocks = [b.root for s in doc.sections for b in s.blocks if b.root.type == "code"]
+    assert len(blocks) == 1, f"expected one listing, got {len(blocks)}"
+    return blocks[0]
+
+
+def test_a_listing_continued_in_a_second_formula_is_cropped_whole() -> None:
+    # The continuation's text was already being rejoined; without its coordinates the crop pictured
+    # only the opening fragment.
+    tei = _algorithm_tei("2,50,150,200,60")
+    assert "end for" in _one_code_block(tei).text
+    spec = next(s for s in tei_crop_specs(tei, paper_id="p", version=1))
+    assert spec.bbox == (50.0, 100.0, 250.0, 210.0)
+
+
+def test_a_continuation_on_another_page_leaves_the_crop_where_it_was() -> None:
+    # A listing running overleaf has no single rectangle; cropping between the two pages would
+    # picture neither.
+    tei = _algorithm_tei("3,50,150,200,60")
+    assert "end for" in _one_code_block(tei).text
+    spec = next(s for s in tei_crop_specs(tei, paper_id="p", version=1))
+    assert spec.page == 2
+    assert spec.bbox == (50.0, 100.0, 250.0, 140.0)
+
+
+def test_a_continuation_in_the_other_column_leaves_the_crop_where_it_was() -> None:
+    # Unioning across the gutter would drag the whole neighbouring column into the image.
+    tei = _algorithm_tei("2,320,150,200,60")
+    assert "end for" in _one_code_block(tei).text
+    spec = next(s for s in tei_crop_specs(tei, paper_id="p", version=1))
+    assert spec.bbox == (50.0, 100.0, 250.0, 140.0)
+
+
 def test_a_float_with_no_content_element_keeps_its_own_coords() -> None:
     # Nothing to trim to. The bbox is unchanged from before this rule existed, and the spec says so
     # — a strip of caption text and a text float both land here, and only the PDF can tell them
