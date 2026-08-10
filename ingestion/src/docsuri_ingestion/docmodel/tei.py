@@ -621,7 +621,10 @@ def _formula_or_algorithm_blocks(
         if _is_headless_listing(text) or (in_algorithm_section and _is_listing(text)):
             host = _last_listing(section_blocks)
             if host is not None:
-                _append_to_listing(host, text, formula, doc_ctx)
+                _append_to_listing(host, text)
+                # The WHOLE element goes into this listing, so its region belongs to that crop too.
+                # This is the only call site that may say so — see ``_widen_crop``.
+                _widen_crop(doc_ctx, (host.get("assetRef") or {}).get("assetId"), formula)
                 return []
             return [_algorithm_block(formula, text, sec_ctx, doc_ctx)]
         # No "Algorithm N" heading followed by numbered steps — an equation that merely cites one
@@ -655,29 +658,24 @@ def _formula_or_algorithm_blocks(
     return blocks
 
 
-def _append_to_listing(
-    host: dict, text: str, formula: ET.Element | None = None, doc_ctx: _DocCtx | None = None
-) -> None:
-    """Append a split-off fragment to the listing it belongs to, single-spaced.
-
-    The fragment's COORDINATES join the host's crop when ``formula`` is given. GROBID files one
-    algorithm float as several ``<formula>`` elements, and keeping only the first one's box
-    pictured a multi-line listing as its opening line — measured on 2607.16138, a 297-character
-    listing whose crop was 223x21pt. The text was already being rejoined here; the region follows.
-
-    The caller passes the element ONLY when the whole of it goes into this listing. An element
-    whose text is split across several blocks has no region attributable to one of them, and
-    unioning all of it made the first listing's crop swallow the next listing entirely (the same
-    fixture: 84pt -> 339pt, overlapping the block below it). Those fragments keep their text
-    merged and their coordinates behind, which is what they already did.
-    """
+def _append_to_listing(host: dict, text: str) -> None:
+    """Append a split-off fragment to the listing it belongs to, single-spaced."""
     host["text"] = f"{host['text']} {text}".strip()
-    if formula is not None and doc_ctx is not None:
-        _widen_crop(doc_ctx, (host.get("assetRef") or {}).get("assetId"), formula)
 
 
 def _widen_crop(doc_ctx: _DocCtx, aid: str | None, el: ET.Element) -> None:
     """Grow the recorded crop spec ``aid`` to also cover ``el``, when they share page and column.
+
+    GROBID files one algorithm float as several ``<formula>`` elements, and keeping only the first
+    one's box pictured a multi-line listing as its opening line — measured on 2607.16138, a
+    297-character listing whose crop was 223x21pt. The text was already being rejoined by
+    ``_append_to_listing``; the region follows it here.
+
+    Only a caller putting the WHOLE element into one listing may say so. An element whose text is
+    split across several blocks has no region attributable to one of them, and unioning all of it
+    made the first listing's crop swallow the next listing entirely (the same fixture: 84pt ->
+    339pt, overlapping the block below it). Those fragments keep their text merged and their
+    coordinates behind, which is what they already did.
 
     Regions on another page are ignored, the rule ``_union_regions`` already follows: a listing
     continuing overleaf has no single rectangle and inventing one would crop the pages between.
@@ -1137,15 +1135,16 @@ def _page_layout(root: ET.Element, divs: list[ET.Element]) -> _PageLayout:
 
 
 def _coord_parts(el: ET.Element) -> tuple[float, float, float, float] | None:
-    """``(page, x, y, width)`` from GROBID's ``coords`` ("page,x,y,w,h;..."), or None."""
-    coords = el.get("coords")
-    if not coords:
+    """``(page, x, y, width)`` of the FIRST region GROBID's ``coords`` names, or None.
+
+    Ordering needs one anchor point, not the element's extent, which is why this reads the first
+    region rather than the union ``_parse_coords`` builds. Both read the attribute through
+    ``_coord_regions`` so the parse rules stay in one place."""
+    regions = _coord_regions(el)
+    if not regions:
         return None
-    first = coords.split(";", 1)[0].split(",")
-    try:
-        return (float(first[0]), float(first[1]), float(first[2]), float(first[3]))
-    except (ValueError, IndexError):
-        return None
+    first = regions[0]
+    return (float(first.page), first.x0, first.y0, first.x1 - first.x0)
 
 
 def _coord_sort_key(
