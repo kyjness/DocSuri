@@ -91,7 +91,10 @@ def test_pdf_to_text_raises_extraction_error_on_non_pdf_payload() -> None:
 
 def test_fetch_full_text_classifies_unparseable_pdf_as_permanent(monkeypatch) -> None:
     # End-to-end of Finding 2: HTML absent → PDF fallback → a 200 non-PDF payload must be
-    # classified (PermanentIngestionError / PARSE_FAILURE), never escape as a raw exception.
+    # classified (PermanentIngestionError), never escape as a raw exception. FETCH_FAILURE rather
+    # than PARSE_FAILURE since the magic-byte check: nothing was parsed, because the host did not
+    # hand us the file. Same reason the other sources give for the same answer, and permanent
+    # either way — the job is rejected once instead of circling the retry loop.
     import pytest
 
     from docsuri_ingestion.adapters.arxiv import ArxivHttpSource
@@ -106,8 +109,45 @@ def test_fetch_full_text_classifies_unparseable_pdf_as_permanent(monkeypatch) ->
 
     with pytest.raises(PermanentIngestionError) as excinfo:
         src.fetch_full_text(sample_metadata())
-    assert excinfo.value.reason == FailureReason.PARSE_FAILURE
+    assert excinfo.value.reason == FailureReason.FETCH_FAILURE
     assert excinfo.value.stage == "fetch_full_text"
+
+
+def test_a_landing_page_answered_as_a_pdf_is_never_written_to_the_raw_cache(monkeypatch) -> None:
+    """A host answering 200 with HTML must not leave that HTML in the cache labelled a PDF.
+
+    Worse than failing the fetch: a cached body is served to every later reparse of the paper, so
+    one bad response would keep producing GROBID 500s — and a 500 is retriable, which is how a
+    permanently broken paper reaches the DLQ by way of the retry loop instead of being rejected
+    once. The check also has to be memoized like any other permanent failure, so the doc-model
+    ladder's second ask for the same bytes does not spend another rate-limiter slot on it.
+    """
+    import pytest
+
+    from docsuri_ingestion.adapters.arxiv import ArxivHttpSource
+    from docsuri_ingestion.domain.errors import PermanentIngestionError
+
+    class _Store:
+        def get_raw(self, paper_id: str, version: int, kind: str) -> bytes | None:
+            return None
+
+        def put_raw(self, *a, **k) -> None:
+            raise AssertionError("a non-PDF body must never be cached as a PDF")
+
+    src = ArxivHttpSource(raw_store=_Store(), raw_cache_mode="prefer")
+    calls: list[str] = []
+
+    def _landing_page(url, *, params, stage):
+        calls.append(url)
+        return b"<!doctype html><title>Please wait</title>"
+
+    monkeypatch.setattr(src, "_get_bytes", _landing_page)
+
+    with pytest.raises(PermanentIngestionError):
+        src.fetch_pdf(sample_metadata())
+    with pytest.raises(PermanentIngestionError):
+        src.fetch_pdf(sample_metadata())
+    assert len(calls) == 1  # the second ask was answered from the memo, not the network
 
 
 def test_fetch_full_text_prefers_pdf_when_html_conversion_is_truncated(monkeypatch) -> None:

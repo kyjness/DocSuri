@@ -101,6 +101,7 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
         rate_limiter=TokenBucket(rate_per_second=settings.arxiv_rate_per_second),
         raw_store=raw_store,
         raw_cache_mode=settings.raw_cache_mode if raw_cache_on else "off",
+        contact=settings.outbound_contact,
     )
     grobid = None
     if settings.grobid_url:

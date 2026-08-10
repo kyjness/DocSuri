@@ -66,6 +66,7 @@ class ArxivHttpSource:
         oai_retry_policy: RetryPolicy | None = None,
         raw_store: RawContentStorePort | None = None,
         raw_cache_mode: str = "off",
+        contact: str | None = None,
     ) -> None:
         self._atom_base_url = atom_base_url
         self._oai_base_url = oai_base_url
@@ -74,6 +75,9 @@ class ArxivHttpSource:
         # has no producer since 2026-08-10.
         self._html_base_url = html_base_url.rstrip("/")
         self._timeout_seconds = timeout_seconds
+        # Who we say we are on the way out. arXiv and ar5iv ask harvesters to identify themselves,
+        # and it is the same identity the non-arXiv sources send — one app, one User-Agent.
+        self._contact = contact
         self._rate_limiter = rate_limiter or TokenBucket(rate_per_second=0.33)
         # Harvest pagination is long-running (hours); tolerate transient arXiv blips with
         # generous backoff before giving up. ~2,4,8,16,32s ≈ 62s total across 6 attempts.
@@ -297,6 +301,17 @@ class ArxivHttpSource:
                 params=None,
                 stage="fetch_full_text",
             )
+            # A 200 is not proof we were handed the file. A host that answers with its landing or
+            # error page instead sends HTML that reaches GROBID, which returns 500 — and a 500 is
+            # RETRIABLE, so the job circles the retry loop and lands in the DLQ rather than being
+            # rejected once. Worse here than on the other sources: without this the bytes would
+            # also be written to the raw cache AS a PDF and served to every later reparse.
+            if pdf.lstrip()[:5] != b"%PDF-":
+                raise PermanentIngestionError(
+                    "arXiv PDF URL served a non-PDF body",
+                    reason=FailureReason.FETCH_FAILURE,
+                    stage="fetch_full_text",
+                )
         except PermanentIngestionError as exc:
             self._pdf_memo = (arxiv_id, exc)
             raise
@@ -344,12 +359,16 @@ class ArxivHttpSource:
         import httpx
 
         url = f"{base}/{arxiv_id}"
-        from docsuri_ingestion.http_limits import ResponseTooLargeError, read_capped
+        from docsuri_ingestion.http_limits import ResponseTooLargeError, read_capped, user_agent
 
         self._rate_limiter.acquire()
         try:
             with (
-                httpx.Client(timeout=self._timeout_seconds, follow_redirects=True) as client,
+                httpx.Client(
+                    timeout=self._timeout_seconds,
+                    follow_redirects=True,
+                    headers={"User-Agent": user_agent(self._contact)},
+                ) as client,
                 client.stream("GET", url) as response,
             ):
                 content_type = response.headers.get("content-type", "").lower()
@@ -410,6 +429,7 @@ class ArxivHttpSource:
             http_failures_as_ingestion_errors,
             raise_for_fetch_status,
             read_capped,
+            user_agent,
         )
 
         self._rate_limiter.acquire()
@@ -420,7 +440,11 @@ class ArxivHttpSource:
             rejected_message="arXiv response exceeded size cap",
         ):
             with (
-                httpx.Client(timeout=self._timeout_seconds, follow_redirects=True) as client,
+                httpx.Client(
+                    timeout=self._timeout_seconds,
+                    follow_redirects=True,
+                    headers={"User-Agent": user_agent(self._contact)},
+                ) as client,
                 client.stream("GET", url, params=params) as response,
             ):
                 raise_for_fetch_status(response.status_code, stage=stage, source_label="arXiv")
