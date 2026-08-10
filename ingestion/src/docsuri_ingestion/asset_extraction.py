@@ -11,6 +11,7 @@ Pure helpers (``caption_kind``, ``finalize_assets``) are deterministic and unit/
 from __future__ import annotations
 
 import io
+import logging
 import re
 from collections.abc import Sequence
 from contextlib import suppress
@@ -27,6 +28,8 @@ from .domain.assets import (
 )
 from .domain.enums import AssetSourceMode, AssetType
 from .text_keys import alnum_key
+
+log = logging.getLogger("docsuri.ingestion.assets")
 
 # Caption detection — a line that STARTS with "Figure 3:", "Fig. 2.", "Table 1 —", or, in the
 # journal styles that punctuate nothing, "Fig. 1 The configuration of …". What must be rejected is
@@ -933,6 +936,7 @@ class _PageTextCache:
 
     def __init__(self) -> None:
         self._page_no: int | None = None
+        self._page = None
         self._textpage = None
         self._height = 0.0
 
@@ -957,17 +961,24 @@ class _PageTextCache:
         self.close()
         self._page_no = page_no  # stamped even on failure, so a bad page is not retried per crop
         try:
-            page = pdfium_doc[page_no]
-            self._height = page.get_size()[1]
-            self._textpage = page.get_textpage()
+            self._page = pdfium_doc[page_no]
+            self._height = self._page.get_size()[1]
+            self._textpage = self._page.get_textpage()
         except Exception:  # noqa: BLE001 - unreadable text layer simply offers no verdict
             self._textpage = None
 
     def close(self) -> None:
+        # BOTH handles, textpage first (it is the page's child) — leaving the page open would
+        # retain one FPDF page per visited page for the document's life, the very accumulation
+        # this cache exists to stop.
         if self._textpage is not None:
             with suppress(Exception):  # a handle we cannot close must not cost the caller a crop
                 self._textpage.close()
             self._textpage = None
+        if self._page is not None:
+            with suppress(Exception):
+                self._page.close()
+            self._page = None
 
 
 def _graphic_boxes(pdfium_doc, page_no: int) -> tuple[tuple[float, float, float, float], ...]:
@@ -1056,11 +1067,21 @@ def _is_caption_only(
     if not caption:
         return False  # nothing to compare the region against
     region = len(alnum_key(page_text.text_in(pdfium_doc, page_no, bbox)))
-    return (
+    refused = (
         len(caption) * _CAPTION_ONLY_MIN_RATIO
         <= region
         <= len(caption) * _CAPTION_ONLY_MAX_RATIO
     )
+    if refused:
+        # Every refusal is logged with its ratio, because the band was calibrated only on the
+        # specs graphic recovery could NOT move — a pure-vector figure whose axis text amounts to
+        # 1-2x its caption would land in the band and be dropped with no other trace. The reparse
+        # batch turns these lines into the evidence a recalibration would need.
+        log.info(
+            "caption-only crop refused: %s p%d ratio=%.2f", spec.asset_id, spec.page,
+            region / len(caption),
+        )
+    return refused
 
 
 def crop_bbox_for(
