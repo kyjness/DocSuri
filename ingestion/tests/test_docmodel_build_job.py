@@ -599,7 +599,7 @@ def test_build_user_doc_model_degrades_when_grobid_returns_empty_body(
         def extract_tei(self, pdf: bytes) -> str:
             return _USERDOC_EMPTY_BODY_TEI
 
-    pipeline, _, _, _, _ = build_test_pipeline(
+    pipeline, _, _, _, observability = build_test_pipeline(
         doc_model_builder=_builder(_FakeSource(None), store),
         user_document_source=_FakeUserDocumentSource(),
         grobid=_EmptyBodyGrobid(),
@@ -619,6 +619,12 @@ def test_build_user_doc_model_degrades_when_grobid_returns_empty_body(
 
     assert "Body text" in result.docModel.fullText
     assert "Structured body from GROBID" not in result.docModel.fullText
+    # The metric reports what the user RECEIVED: flat pdfplumber text, even though GROBID
+    # answered — labeling this "grobid" hid a systematic empty-TEI regression at 100% grobid.
+    assert any(
+        m[0] == "ingestion.docmodel.user_build" and m[2]["status"] == "pdf_fallback"
+        for m in observability.metrics
+    )
 
 
 def test_build_user_doc_model_degrades_when_grobid_faults(monkeypatch) -> None:

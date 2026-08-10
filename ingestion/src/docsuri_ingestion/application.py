@@ -266,7 +266,8 @@ class IngestionPipelineService:
             crops=[],
             pdf=pdf,
         )
-        if isinstance(result, SourceUnavailableDTO):
+        flat_recovery = isinstance(result, SourceUnavailableDTO)
+        if flat_recovery:
             # Uploads are the ONE lenient caller (BR-30 2026-08-10): a corpus paper with no
             # structure is excluded, but this document is the user's own and a GROBID hiccup must
             # not take away the only view they have. Stated here, at the call site it applies to,
@@ -279,7 +280,11 @@ class IngestionPipelineService:
             "ingestion.docmodel.user_build",
             1.0,
             {
-                "status": "grobid" if tei else "pdf_fallback",
+                # Status reports what the user actually RECEIVED. GROBID answering but its TEI
+                # parsing to nothing ships flat pdfplumber text — labeling that "grobid" would
+                # keep the dashboard at 100% grobid through a systematic TEI regression, exactly
+                # when the label matters.
+                "status": "grobid" if tei and not flat_recovery else "pdf_fallback",
                 "cached": str(result.cached).lower(),
                 "module": job.module or "unknown",
             },
