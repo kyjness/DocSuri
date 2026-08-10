@@ -304,40 +304,64 @@ def test_paged_harvest_retries_transient_429_then_succeeds(monkeypatch) -> None:
     assert records[0].source_id == "s2-1"
 
 
+def _openalex_work(locations: list[dict], primary: dict | None = None, **extra) -> dict:
+    """One ``results`` entry as OpenAlex sends it — the shape written once for this whole file."""
+    return {
+        "id": "https://openalex.org/W1",
+        "ids": {},
+        "display_name": "Paper",
+        "abstract_inverted_index": {"hello": [0]},
+        "authorships": [],
+        "publication_year": 2025,
+        "publication_date": "2025-01-01",
+        "primary_location": primary if primary is not None else locations[0],
+        "locations": locations,
+        **extra,
+    }
+
+
+def _openalex_source(handler) -> OpenAlexCorpusSource:
+    return OpenAlexCorpusSource(
+        base_url="https://example.test", transport=httpx.MockTransport(handler)
+    )
+
+
+def _harvest(source) -> list[SourcePaperRecord]:
+    return list(source.fetch_incremental(datetime(2024, 12, 31, tzinfo=UTC), ("cs.LG", "cs.CV")))
+
+
+def _oa_record(*pdf_urls: str) -> SourcePaperRecord:
+    """A harvested OpenAlex record carrying the given copies, primary first."""
+    return SourcePaperRecord(
+        source_name=SourceName.OPENALEX,
+        source_id="W1",
+        title="Paper",
+        pdf_url=pdf_urls[0],
+        alternate_pdf_urls=pdf_urls[1:],
+    )
+
+
 def test_openalex_provider_reconstructs_abstract_and_pdf_record() -> None:
+    work = _openalex_work(
+        [],
+        primary={
+            "pdf_url": "https://example.test/paper.pdf",
+            "landing_page_url": "https://example.test/paper",
+            "license": "cc-by",
+        },
+        ids={"arxiv": "https://arxiv.org/abs/2401.00001"},
+        doi="https://doi.org/10.1000/x",
+        abstract_inverted_index={"hello": [0], "world": [1]},
+        authorships=[{"author": {"display_name": "Ada"}}],
+        updated_date="2026-01-02T00:00:00Z",
+    )
+
     def handler(request: httpx.Request) -> httpx.Response:
         if str(request.url).endswith("paper.pdf"):
             return httpx.Response(200, content=b"%PDF-1.7 body")
-        return httpx.Response(
-            200,
-            json={
-                "meta": {"next_cursor": None},
-                "results": [
-                    {
-                        "id": "https://openalex.org/W1",
-                        "ids": {"arxiv": "https://arxiv.org/abs/2401.00001"},
-                        "doi": "https://doi.org/10.1000/x",
-                        "display_name": "Paper",
-                        "abstract_inverted_index": {"hello": [0], "world": [1]},
-                        "authorships": [{"author": {"display_name": "Ada"}}],
-                        "publication_year": 2025,
-                        "publication_date": "2025-01-01",
-                        "updated_date": "2026-01-02T00:00:00Z",
-                        "primary_location": {
-                            "pdf_url": "https://example.test/paper.pdf",
-                            "landing_page_url": "https://example.test/paper",
-                            "license": "cc-by",
-                        },
-                        "locations": [],
-                    }
-                ],
-            },
-        )
+        return httpx.Response(200, json={"meta": {"next_cursor": None}, "results": [work]})
 
-    source = OpenAlexCorpusSource(
-        base_url="https://example.test",
-        transport=httpx.MockTransport(handler),
-    )
+    source = _openalex_source(handler)
     # Windowed by publication_date (2025-01-01) now, not updated_date — since must precede it.
     records = list(source.fetch_incremental(datetime(2024, 12, 31, tzinfo=UTC), ("cs.LG",)))
 
@@ -353,30 +377,6 @@ def test_openalex_provider_reconstructs_abstract_and_pdf_record() -> None:
 #
 # The S2/OpenAlex path had never been run. Doing so end-to-end put 0 of 6 papers into a doc-model:
 # every failure was in how we talk to publishers, not in the parser. These pin the fixes.
-
-
-def _openalex_work(locations: list[dict], primary: dict | None = None) -> dict:
-    return {
-        "id": "https://openalex.org/W1",
-        "ids": {},
-        "display_name": "Paper",
-        "abstract_inverted_index": {"hello": [0]},
-        "authorships": [],
-        "publication_year": 2025,
-        "publication_date": "2025-01-01",
-        "primary_location": primary if primary is not None else locations[0],
-        "locations": locations,
-    }
-
-
-def _openalex_source(handler) -> OpenAlexCorpusSource:
-    return OpenAlexCorpusSource(
-        base_url="https://example.test", transport=httpx.MockTransport(handler)
-    )
-
-
-def _harvest(source) -> list[SourcePaperRecord]:
-    return list(source.fetch_incremental(datetime(2024, 12, 31, tzinfo=UTC), ("cs.LG", "cs.CV")))
 
 
 def test_outbound_requests_say_who_we_are() -> None:
@@ -429,15 +429,9 @@ def test_a_landing_page_served_as_a_pdf_is_a_permanent_failure() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=b"<!DOCTYPE html><html>not a paper</html>")
 
-    record = SourcePaperRecord(
-        source_name=SourceName.OPENALEX,
-        source_id="W1",
-        title="Paper",
-        pdf_url="https://example.test/paper.pdf",
-    )
     source = _openalex_source(handler)
     with pytest.raises(PermanentIngestionError):
-        source.fetch_pdf(record)
+        source.fetch_pdf(_oa_record("https://example.test/paper.pdf"))
 
 
 def test_a_refused_copy_falls_through_to_the_next_one() -> None:
@@ -449,13 +443,7 @@ def test_a_refused_copy_falls_through_to_the_next_one() -> None:
             return httpx.Response(200, content=b"%PDF-1.7 body")
         return httpx.Response(403)
 
-    record = SourcePaperRecord(
-        source_name=SourceName.OPENALEX,
-        source_id="W1",
-        title="Paper",
-        pdf_url="https://example.test/publisher.pdf",
-        alternate_pdf_urls=("https://example.test/repo.pdf",),
-    )
+    record = _oa_record("https://example.test/publisher.pdf", "https://example.test/repo.pdf")
     assert _openalex_source(handler).fetch_pdf(record) == b"%PDF-1.7 body"
     assert len(tried) == 2
 
@@ -469,13 +457,7 @@ def test_a_transient_failure_is_not_walked_past() -> None:
         tried.append(str(request.url))
         return httpx.Response(503)
 
-    record = SourcePaperRecord(
-        source_name=SourceName.OPENALEX,
-        source_id="W1",
-        title="Paper",
-        pdf_url="https://example.test/publisher.pdf",
-        alternate_pdf_urls=("https://example.test/repo.pdf",),
-    )
+    record = _oa_record("https://example.test/publisher.pdf", "https://example.test/repo.pdf")
     with pytest.raises(RetriableIngestionError):
         _openalex_source(handler).fetch_pdf(record)
     assert tried == ["https://example.test/publisher.pdf"]
@@ -515,13 +497,7 @@ def test_the_candidate_walk_is_bounded() -> None:
         tried.append(str(request.url))
         return httpx.Response(403)
 
-    record = SourcePaperRecord(
-        source_name=SourceName.OPENALEX,
-        source_id="W1",
-        title="Paper",
-        pdf_url="https://example.test/0.pdf",
-        alternate_pdf_urls=tuple(f"https://example.test/{i}.pdf" for i in range(1, 9)),
-    )
+    record = _oa_record(*(f"https://example.test/{i}.pdf" for i in range(9)))
     with pytest.raises(PermanentIngestionError):
         _openalex_source(handler).fetch_pdf(record)
     assert len(tried) == 3

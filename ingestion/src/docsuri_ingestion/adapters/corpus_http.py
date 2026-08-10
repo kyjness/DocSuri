@@ -51,8 +51,8 @@ _RETRY_BACKOFF_SECONDS = 2.0
 _SS_REQUEST_INTERVAL_SECONDS = 1.1
 
 
-def _headers(contact: str | None, extra: dict[str, str] | None = None) -> dict[str, str]:
-    """Outbound headers for a third-party request: who we are, plus whatever the caller adds.
+def _headers(contact: str | None) -> dict[str, str]:
+    """Outbound headers for a third-party request: who we are.
 
     Sending nothing left httpx's default ``python-httpx/x.y``, and several open-access publishers
     answer that with a 403 or with their landing page instead of the PDF (measured on Springer,
@@ -60,10 +60,7 @@ def _headers(contact: str | None, extra: dict[str, str] | None = None) -> dict[s
     """
     from docsuri_ingestion.http_limits import user_agent
 
-    headers = {"User-Agent": user_agent(contact), "Accept": "application/pdf,application/json,*/*"}
-    if extra:
-        headers.update(extra)
-    return headers
+    return {"User-Agent": user_agent(contact), "Accept": "application/pdf,application/json,*/*"}
 
 
 def _get_json_retrying(
@@ -214,9 +211,8 @@ class SemanticScholarCorpusSource:
             payload = _get_json_retrying(
                 f"{self._base_url}/paper/search/bulk",
                 params=params,
-                headers=_headers(
-                    self._contact, {"x-api-key": self._api_key} if self._api_key else None
-                ),
+                headers=_headers(self._contact)
+                | ({"x-api-key": self._api_key} if self._api_key else {}),
                 timeout_seconds=self._timeout_seconds,
                 transport=self._transport,
                 stage="semantic_scholar",
@@ -257,9 +253,8 @@ class OpenAlexCorpusSource:
         self._base_url = base_url.rstrip("/")
         self._timeout_seconds = timeout_seconds
         self._transport = transport
-        self._mailto = mailto
-        # The polite-pool mailto doubles as the contact when no separate one is configured.
-        self._contact = contact or mailto
+        self._mailto = mailto  # this API's polite-pool query parameter, nothing else
+        self._contact = contact
 
     def fetch_incremental(
         self,
@@ -367,7 +362,10 @@ def _openalex_record(item: dict[str, Any]) -> SourcePaperRecord | None:
     copies = _licensed_pdf_copies(location, item.get("locations") or [])
     if not copies:
         return None
-    (pdf_url, license_url), alternates = copies[0], tuple(url for url, _ in copies[1:])
+    # Only as many alternates as the fetch will ever walk. Everything past that would be
+    # serialised into the queue message, delivered and parsed for a candidate nobody tries.
+    (pdf_url, license_url) = copies[0]
+    alternates = tuple(url for url, _ in copies[1:_MAX_PDF_CANDIDATES])
     ids = item.get("ids") or {}
     return SourcePaperRecord(
         source_name=SourceName.OPENALEX,
@@ -604,15 +602,8 @@ def _response_json(raw: bytes, stage: str) -> dict[str, Any]:
     return payload
 
 
-def _query_terms(categories: Sequence[str]) -> list[str]:
-    """The corpus slice's category names as search phrases, deduplicated and ordered. Pure."""
-    return sorted({_QUERY_TERMS.get(category, category) for category in categories}) or [
-        "machine learning"
-    ]
-
-
 def _query(categories: Sequence[str], *, joiner: str) -> str:
-    """The slice's phrases joined as a DISJUNCTION, in the joining source's own syntax.
+    """The slice's category names as search phrases, joined as a DISJUNCTION in the API's syntax.
 
     Space-joining them, as this used to, is read by both APIs as "must contain all of these", so a
     paper had to be about artificial intelligence AND computer vision AND machine learning AND
@@ -620,7 +611,8 @@ def _query(categories: Sequence[str], *, joiner: str) -> str:
     Scholar 306 results where the disjunction returns 22,039 (2025), and OpenAlex 539 where a
     single term returns 9,305 (one week). The categories are alternatives, not a conjunction.
     """
-    return f" {joiner} ".join(_query_terms(categories))
+    terms = sorted({_QUERY_TERMS.get(category, category) for category in categories})
+    return f" {joiner} ".join(terms or ["machine learning"])
 
 
 def _in_window(
