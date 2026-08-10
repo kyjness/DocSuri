@@ -159,6 +159,25 @@ class PostgresControlPlaneStore:
             conn.commit()
         return row is not None
 
+    def mark_excluded(self, paper_id: str, version: int) -> None:
+        # Only the half-open claim this exclusion belongs to: same version, fingerprint still
+        # NULL (mark_ingested sets it), state still the claim's INDEXED. A completed ingest or a
+        # newer concurrent claim is untouched.
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE dedup_state
+                   SET state = 'EXCLUDED',
+                       updated_at = now()
+                 WHERE paper_id = %s
+                   AND current_version = %s
+                   AND fingerprint IS NULL
+                   AND state = 'INDEXED'
+                """,
+                (paper_id, version),
+            )
+            conn.commit()
+
     def mark_ingested(self, paper_id: str, version: int, fingerprint: str) -> None:
         with self._connect() as conn:
             conn.execute(

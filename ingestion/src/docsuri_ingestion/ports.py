@@ -112,6 +112,16 @@ class ControlPlaneStorePort(Protocol):
 
     def mark_ingested(self, paper_id: str, version: int, fingerprint: str) -> None: ...
 
+    def mark_excluded(self, paper_id: str, version: int) -> None:
+        """Flip a half-open ``try_claim_upsert`` claim to EXCLUDED (BR-30 2026-08-10).
+
+        Called when the doc-model build failed every rung AFTER the claim committed its version
+        bump — otherwise the ledger permanently reports INDEXED for a version that has no chunks,
+        no doc-model, and no full text, and audits/tier counts silently overcount. Must only
+        touch the half-open claim (fingerprint still NULL at this exact version), never a
+        completed ingest or a newer concurrent claim."""
+        ...
+
     def try_claim_tombstone(self, paper_id: str, version: int) -> bool: ...
 
     def get_canonical_dedup_state(

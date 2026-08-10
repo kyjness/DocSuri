@@ -470,10 +470,23 @@ class IngestionPipelineService:
         try:
             doc_model, asset_extra, full_text_swap = build_doc_model()
         except PermanentIngestionError:
-            # Metric'd so the reingest batch can watch its exclusion rate.
+            # Metric'd so the reingest batch can watch its exclusion rate, and the begin_upsert
+            # claim above — whose version bump already committed — is flipped to EXCLUDED so the
+            # ledger does not keep reporting INDEXED for a version that has no chunks, no
+            # doc-model, and no full text. Best-effort: the exclusion itself is the story.
             self._observability.emit_metric(
                 "ingestion.paper.excluded", 1.0, {"kind": job.kind.value}
             )
+            try:
+                self._control_plane.mark_excluded(paper.paper_id, paper.version)
+            except Exception as exc:  # noqa: BLE001 - ledger cleanup must not mask the exclusion
+                self._observability.emit_log(
+                    {
+                        "type": "exclusion_ledger_failure",
+                        "paperId": paper.paper_id,
+                        "error": str(exc),
+                    }
+                )
             raise
         if full_text_swap:
             # The doc-model gate rejected the ar5iv conversion this text was extracted from, but

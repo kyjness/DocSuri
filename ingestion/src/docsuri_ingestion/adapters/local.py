@@ -149,6 +149,24 @@ class InMemoryControlPlaneStore:
             )
             return True
 
+    def mark_excluded(self, paper_id: str, version: int) -> None:
+        with self._lock:
+            current = self._dedup.get(paper_id)
+            # Only the half-open claim (fingerprint None, INDEXED, same version) — see the port.
+            if (
+                current is None
+                or current.current_version != version
+                or current.fingerprint is not None
+                or current.state is not DedupStateKind.INDEXED
+            ):
+                return
+            self._dedup[paper_id] = DedupState(
+                paper_id=paper_id,
+                current_version=version,
+                fingerprint=None,
+                state=DedupStateKind.EXCLUDED,
+            )
+
     def mark_ingested(self, paper_id: str, version: int, fingerprint: str) -> None:
         with self._lock:
             current = self._dedup.get(paper_id)

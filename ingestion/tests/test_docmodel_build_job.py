@@ -657,6 +657,13 @@ def test_ingest_one_excludes_the_paper_when_every_rung_fails() -> None:
         metric[0] == "ingestion.docmodel.eager_build" and metric[2]["status"] == "excluded"
         for metric in observability.metrics
     )
+    # The begin_upsert claim committed its version bump before the build — the ledger must not
+    # keep claiming INDEXED for a version that has no chunks, no doc-model, and no full text.
+    from docsuri_ingestion.domain.enums import DedupStateKind
+
+    ledger = pipeline._control_plane._dedup["2401.00001"]
+    assert ledger.state is DedupStateKind.EXCLUDED
+    assert ledger.fingerprint is None  # still the half-open claim, retriable as CHANGED
 
 
 def test_ingest_one_recovers_via_grobid_rung_and_indexes() -> None:
