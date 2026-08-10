@@ -663,6 +663,14 @@ def _append_to_listing(host: dict, text: str) -> None:
     host["text"] = f"{host['text']} {text}".strip()
 
 
+# How far below (or above) a listing's crop a rejoined fragment's box may sit and still join the
+# image. Measured on the fixtures that motivated the widening: real continuation fragments sit at
+# gaps of 0.5, 0.6 and 46.3pt (2607.16138), while a distinct listing joined across intervening
+# paragraphs would sit at least two paragraph heights (~100pt+) away — an inch splits the two
+# populations with headroom on both sides.
+_WIDEN_MAX_GAP_PT = 72.0
+
+
 def _widen_crop(doc_ctx: _DocCtx, aid: str | None, el: ET.Element) -> None:
     """Grow the recorded crop spec ``aid`` to also cover ``el``, when they share page and column.
 
@@ -681,7 +689,12 @@ def _widen_crop(doc_ctx: _DocCtx, aid: str | None, el: ET.Element) -> None:
     continuing overleaf has no single rectangle and inventing one would crop the pages between.
     Regions that do not overlap the spec HORIZONTALLY are ignored for the same reason one column
     down — in a two-column paper the continuation sits beside the host, and unioning across the
-    gutter would drag the whole other column into the image.
+    gutter would drag the whole other column into the image. And a region VERTICALLY further than
+    ``_WIDEN_MAX_GAP_PT`` is ignored too: ``_last_listing`` reaches back across intervening blocks
+    (deliberately — GROBID interleaves a listing's fragments with paragraphs), so a SECOND
+    standalone listing lower in the same column can be textually joined to an earlier one, and
+    unioning its box would drag every line of prose between them into the image. The text join is
+    at worst a concatenation; the crop must not picture the gap.
     """
     if not aid or doc_ctx.crops is None:
         return
@@ -693,7 +706,10 @@ def _widen_crop(doc_ctx: _DocCtx, aid: str | None, el: ET.Element) -> None:
         regions = [
             r
             for r in _coord_regions(el)
-            if r.page == spec.page and r.x1 > x0 and r.x0 < x1
+            if r.page == spec.page
+            and r.x1 > x0
+            and r.x0 < x1
+            and max(r.y0 - y1, y0 - r.y1) <= _WIDEN_MAX_GAP_PT
         ]
         if regions:
             doc_ctx.crops[index] = replace(

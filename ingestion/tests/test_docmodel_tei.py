@@ -318,6 +318,18 @@ def test_a_continuation_in_the_other_column_leaves_the_crop_where_it_was() -> No
     assert spec.bbox == (50.0, 100.0, 250.0, 140.0)
 
 
+def test_a_listing_joined_from_far_down_the_column_leaves_the_crop_where_it_was() -> None:
+    # _last_listing reaches back across intervening blocks (deliberately — GROBID interleaves a
+    # listing's fragments with paragraphs), so a SECOND standalone listing lower in the column can
+    # be textually joined to an earlier one. The text join is at worst a concatenation; unioning
+    # the box would picture every line of prose in the gap. Measured continuation gaps run to
+    # 46.3pt (2607.16138); this fragment sits 160pt below and must not join the image.
+    tei = _algorithm_tei("2,50,300,200,60")
+    assert "end for" in _one_code_block(tei).text
+    spec = next(s for s in tei_crop_specs(tei, paper_id="p", version=1))
+    assert spec.bbox == (50.0, 100.0, 250.0, 140.0)
+
+
 def test_a_float_with_no_content_element_keeps_its_own_coords() -> None:
     # Nothing to trim to. The bbox is unchanged from before this rule existed, and the spec says so
     # — a strip of caption text and a text float both land here, and only the PDF can tell them
