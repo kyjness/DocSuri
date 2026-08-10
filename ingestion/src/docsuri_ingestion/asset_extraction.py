@@ -13,6 +13,7 @@ from __future__ import annotations
 import io
 import re
 from collections.abc import Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 
@@ -25,6 +26,7 @@ from .domain.assets import (
     asset_id,
 )
 from .domain.enums import AssetSourceMode, AssetType
+from .text_keys import alnum_key
 
 # Caption detection — a line that STARTS with "Figure 3:", "Fig. 2.", "Table 1 —", or, in the
 # journal styles that punctuate nothing, "Fig. 1 The configuration of …". What must be rejected is
@@ -503,7 +505,10 @@ _COLUMN_EDGE_MAX_CROSSED_FRAC = 0.6
 # Measured word gaps on real two-column papers: ordinary spaces 4-6pt, a column jump 10pt+.
 _COLUMN_MIN_GAP_PT = 8.0
 # How far a crop may reach across empty space before the next primitive counts as unrelated
-# content rather than another panel/rule of the same figure or table (1 inch).
+# content rather than another panel/rule of the same figure or table (1 inch). Not the same
+# quantity as ``_COLUMN_GUTTER_PT``, which happens to share the value: this bounds a reach across
+# any blank space on the HTML/primitive path, that one identifies a page's COLUMN GUTTER among the
+# gaps of a text row on the TEI path. Retune either without assuming the other follows.
 _CROP_PRIM_GAP_PT = 72.0
 # Recognising a table's unruled body rows. Measured on a real table: its rows carry five word gaps
 # of 12-28pt inside the table's width, while every prose row around it carries none.
@@ -891,24 +896,78 @@ class _PageBitmapCache:
         return self._pil
 
 
-class _PageGraphicCache:
-    """Bounding boxes of the graphic objects on the most recently inspected page.
+class _PageCache:
+    """One derived value for the most recently inspected page, held as a single entry.
 
-    Same single-entry shape as ``_PageBitmapCache`` and for the same reason: specs arrive in page
-    order, and a page can carry over a hundred objects that would otherwise be walked once per
-    spec. Boxes are converted to the top-left origin the specs use, so callers never meet pdfium's
-    bottom-up coordinates.
+    Same shape and reason as ``_PageBitmapCache``: reading a page is expensive — over a hundred
+    graphic objects to walk, or every character on it — and a page carrying five floats would
+    otherwise be read once per crop. Specs are walked in page order (``crop_assets_from_specs``
+    sorts them), so one entry removes the repeats without letting a long paper pin every page.
+
+    ``compute`` must be total: a page that cannot be read yields an empty value rather than
+    raising, so a single bad page costs its own crops and nothing else.
+    """
+
+    def __init__(self, compute) -> None:
+        self._compute = compute
+        self._page_no: int | None = None
+        self._value: tuple = ()
+
+    def of(self, doc, page_no: int) -> tuple:
+        if self._page_no != page_no:
+            self._value = self._compute(doc, page_no)
+            self._page_no = page_no
+        return self._value
+
+
+class _PageTextCache:
+    """The text layer of the most recently inspected page, held as a single entry.
+
+    Separate from ``_PageCache`` because the value is a live handle rather than a tuple.
+    ``pdfium_doc[page_no]`` is an ``FPDF_LoadPage`` and ``page.get_textpage()`` an
+    ``FPDFText_LoadPage``; pypdfium2 attaches both to the document and closes neither, so building
+    them per crop re-parses the page (measured 17x per call) AND accumulates handles for as long as
+    the document is open — unbounded in the number of candidates a page carries, which is exactly
+    the case that clusters, since GROBID fails per page.
     """
 
     def __init__(self) -> None:
         self._page_no: int | None = None
-        self._boxes: tuple[tuple[float, float, float, float], ...] = ()
+        self._textpage = None
+        self._height = 0.0
 
-    def boxes(self, pdfium_doc, page_no: int) -> tuple[tuple[float, float, float, float], ...]:
+    def text_in(self, pdfium_doc, page_no: int, bbox) -> str:
+        """The text the PDF draws inside a top-left-origin bbox, or "" if it cannot be read."""
         if self._page_no != page_no:
-            self._boxes = _graphic_boxes(pdfium_doc, page_no)
-            self._page_no = page_no
-        return self._boxes
+            self._load(pdfium_doc, page_no)
+        if self._textpage is None:
+            return ""
+        try:
+            # pdfium measures y upward from the page bottom; the bbox measures it downward.
+            return self._textpage.get_text_bounded(
+                left=bbox[0],
+                bottom=self._height - bbox[3],
+                right=bbox[2],
+                top=self._height - bbox[1],
+            )
+        except Exception:  # noqa: BLE001 - unreadable text layer simply offers no verdict
+            return ""
+
+    def _load(self, pdfium_doc, page_no: int) -> None:
+        self.close()
+        self._page_no = page_no  # stamped even on failure, so a bad page is not retried per crop
+        try:
+            page = pdfium_doc[page_no]
+            self._height = page.get_size()[1]
+            self._textpage = page.get_textpage()
+        except Exception:  # noqa: BLE001 - unreadable text layer simply offers no verdict
+            self._textpage = None
+
+    def close(self) -> None:
+        if self._textpage is not None:
+            with suppress(Exception):  # a handle we cannot close must not cost the caller a crop
+                self._textpage.close()
+            self._textpage = None
 
 
 def _graphic_boxes(pdfium_doc, page_no: int) -> tuple[tuple[float, float, float, float], ...]:
@@ -980,45 +1039,23 @@ def crop_is_renderable(bbox: tuple[float, float, float, float]) -> bool:
 _CAPTION_ONLY_MAX_RATIO = 2.0
 _CAPTION_ONLY_MIN_RATIO = 0.5
 
-_NON_ALNUM_RE = re.compile(r"[^0-9a-z]+")
-
-
-def _text_key(text: str) -> str:
-    """Comparison form of a string: lowercased, everything but letters and digits removed.
-
-    GROBID's caption and pdfium's text layer disagree about spacing, hyphenation and punctuation
-    for the very same sentence, and none of that changes whether the region says more than the
-    caption does. Pure."""
-    return _NON_ALNUM_RE.sub("", text.casefold())
-
-
-def _region_text(pdfium_doc, page_no: int, bbox: tuple[float, float, float, float]) -> str:
-    """The text the PDF draws inside a top-left-origin bbox, or "" if it cannot be read."""
-    try:
-        page = pdfium_doc[page_no]
-        height = page.get_size()[1]
-        # pdfium measures y upward from the page bottom; the bbox measures it downward from the top.
-        return page.get_textpage().get_text_bounded(
-            left=bbox[0], bottom=height - bbox[3], right=bbox[2], top=height - bbox[1]
-        )
-    except Exception:  # noqa: BLE001 - unreadable text layer simply offers no verdict
-        return ""
-
-
-def _is_caption_only(spec: AssetCropSpec, bbox, pdfium_doc, page_no: int) -> bool:
+def _is_caption_only(
+    spec: AssetCropSpec, bbox, page_text: _PageTextCache, pdfium_doc, page_no: int
+) -> bool:
     """Whether this crop would store a picture of the float's caption and nothing else.
 
     Only asked of the specs that can be one: a bbox taken from a ``<graphic>``/``<table>`` is the
-    content by construction, a recovered bbox has been moved onto a graphic, and a formula's
-    coordinates are the formula. Everything else is the float's own coords, which GROBID fills with
-    the caption's text lines whether or not it located anything else.
+    content by construction and a formula's coordinates are the formula. Everything else is the
+    float's own coords, which GROBID fills with the caption's text lines whether or not it located
+    anything else — and of those, the caller asks only about the ones nothing moved, because a
+    bbox that recovery relocated onto a graphic is the graphic.
     """
-    if spec.content_coords or spec.type is AssetType.FORMULA or bbox != spec.bbox:
+    if spec.content_coords or spec.type is AssetType.FORMULA:
         return False
-    caption = _text_key(spec.caption)
+    caption = alnum_key(spec.caption)
     if not caption:
         return False  # nothing to compare the region against
-    region = len(_text_key(_region_text(pdfium_doc, page_no, bbox)))
+    region = len(alnum_key(page_text.text_in(pdfium_doc, page_no, bbox)))
     return (
         len(caption) * _CAPTION_ONLY_MIN_RATIO
         <= region
@@ -1087,25 +1124,26 @@ def _recover_figure_bbox(
     return (min(x0, nearest[0]), nearest[1], max(x1, nearest[2]), nearest[3])
 
 
-class _PageWordCache:
-    """The words of the most recently inspected page, held as a single entry.
+def _page_words(plumber_doc, page_no: int) -> tuple[dict, ...]:
+    """Every word pdfplumber reads on a page — and the page released the moment it is read.
 
-    Same shape and reason as the bitmap and graphic caches: specs arrive in page order, and
-    ``extract_words`` walks every character on the page.
+    ``Page.objects`` memoises the page's whole char/rect/curve list on first use and
+    ``plumber_doc.pages`` holds every page for the life of the document, so dropping the word tuple
+    releases nothing on its own: measured over ten pages of arXiv:2210.12090, 37.8 MB stayed
+    retained until the document closed, against 1.1 MB with the page released here. Nothing in the
+    crop pass reads a plumber page again — rendering is all pdfium.
     """
-
-    def __init__(self) -> None:
-        self._page_no: int | None = None
-        self._words: tuple[dict, ...] = ()
-
-    def words(self, plumber_doc, page_no: int) -> tuple[dict, ...]:
-        if self._page_no != page_no:
-            try:
-                self._words = tuple(plumber_doc.pages[page_no].extract_words())
-            except Exception:  # noqa: BLE001 - a page we cannot read simply offers no recovery
-                self._words = ()
-            self._page_no = page_no
-        return self._words
+    try:
+        page = plumber_doc.pages[page_no]
+    except Exception:  # noqa: BLE001 - a page we cannot reach simply offers no recovery
+        return ()
+    try:
+        return tuple(page.extract_words())
+    except Exception:  # noqa: BLE001 - a page we cannot read simply offers no recovery
+        return ()
+    finally:
+        with suppress(Exception):
+            page.close()
 
 
 # A horizontal gap this wide inside a float is the page's COLUMN GUTTER, not a table column. A
@@ -1113,7 +1151,8 @@ class _PageWordCache:
 # neighbouring table and its prose in. Measured on the sweep's own offenders: the gutter of
 # arXiv:2404.03784 p6 is 152pt while the widest gap inside the table beside it is 52pt, and the
 # widest gap inside the sliver-boxed table of arXiv:2505.05549 is 34pt — an inch sits between the
-# two populations rather than beside either.
+# two populations rather than beside either. Shares its value with ``_CROP_PRIM_GAP_PT`` and not
+# its meaning; see the note there.
 _COLUMN_GUTTER_PT = 72.0
 
 
@@ -1255,20 +1294,38 @@ def crop_assets_from_specs(
             plumber_doc = None
 
     out: list[ExtractedAsset] = []
+    page_text = _PageTextCache()
     try:
         doc = pdfium.PdfDocument(pdf)
         page_count = len(doc)
         bitmaps = _PageBitmapCache()
-        graphics = _PageGraphicCache()
-        page_words = _PageWordCache()
-        for spec in specs:
+        graphics = _PageCache(_graphic_boxes)
+        page_words = _PageCache(_page_words)
+        # Page order, which the single-entry caches above assume and the TEI walk does not give:
+        # specs arrive in document order, so a paper whose floats interleave pages re-read one to
+        # three pages from scratch per cache. The output is keyed by ``asset_id`` at both callers,
+        # so only the work moves; a stable sort keeps document order inside a page.
+        for spec in sorted(specs, key=lambda s: s.page):
             page_idx = spec.page - 1  # GROBID coords are 1-based
             if page_idx < 0 or page_idx >= page_count:
                 continue
-            bbox = crop_bbox_for(spec, graphics.boxes(doc, page_idx))
-            if spec.type is AssetType.TABLE and plumber_doc is not None:
-                bbox = table_body_bbox(spec, page_words.words(plumber_doc, page_idx))
-            if not crop_is_renderable(bbox) or _is_caption_only(spec, bbox, doc, page_idx):
+            # Each branch pays for its own page scan, and only where the answer can be used: the
+            # figure recovery ignores its graphics unless the bbox is the float's own coords, and
+            # the table regrowth ignores its words unless there is a float box to bound them.
+            bbox, recovered = spec.bbox, False
+            if spec.type is AssetType.FIGURE and not spec.content_coords:
+                bbox = crop_bbox_for(spec, graphics.of(doc, page_idx))
+                recovered = bbox != spec.bbox
+            elif (
+                spec.type is AssetType.TABLE
+                and plumber_doc is not None
+                and spec.float_bbox is not None
+            ):
+                bbox = table_body_bbox(spec, page_words.of(plumber_doc, page_idx))
+            if not crop_is_renderable(bbox):
+                continue
+            # Asked only of a bbox nothing moved — a recovered one is the graphic, by construction.
+            if not recovered and _is_caption_only(spec, bbox, page_text, doc, page_idx):
                 continue
             raw = _render_bbox_to_png(doc, page_idx, bbox, bitmap_cache=bitmaps)
             image = normalizer.normalize(raw) if raw else None
@@ -1289,6 +1346,7 @@ def crop_assets_from_specs(
     except Exception:  # noqa: BLE001 - best-effort; skip assets for this paper
         return ()
     finally:
+        page_text.close()
         if plumber_doc is not None:
             plumber_doc.close()
     return tuple(out)
