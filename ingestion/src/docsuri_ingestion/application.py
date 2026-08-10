@@ -337,10 +337,22 @@ class IngestionPipelineService:
 
         keys = self._canonical_keys_for_metadata(metadata, paper.year)
         existing = self._canonical_state_for_keys(keys)
+        # Captures whether the build swapped the stored text off the discredited ar5iv page, so
+        # the canonical winner below is labeled with the tier the .txt ACTUALLY came from.
+        swapped = [False]
+
+        def build() -> tuple:
+            built = self._build_doc_model_before_index(
+                metadata,
+                html_text_stored=raw_document.source_tier is SourceTier.ar5iv,
+            )
+            swapped[0] = built[2] is not None
+            return built
+
         decision = self._index_paper(
             job,
             paper,
-            build_doc_model=lambda: self._build_doc_model_before_index(metadata),
+            build_doc_model=build,
             watermark_name="arxiv",
             asset_metadata=metadata,
         )
@@ -348,7 +360,7 @@ class IngestionPipelineService:
             self._record_canonical_winner(
                 keys,
                 paper,
-                arxiv_tier_label(raw_document.source_tier),
+                arxiv_tier_label(SourceTier.pdf if swapped[0] else raw_document.source_tier),
                 SourceName.ARXIV,
                 existing,
             )
@@ -406,7 +418,11 @@ class IngestionPipelineService:
         *,
         build_doc_model: Callable[
             [],
-            tuple[DocModel | None, tuple[FigureSpec, ...] | tuple[AssetCropSpec, ...] | None],
+            tuple[
+                DocModel | None,
+                tuple[FigureSpec, ...] | tuple[AssetCropSpec, ...] | _TeiAssetContext | None,
+                str | None,
+            ],
         ],
         watermark_name: str,
         asset_metadata,
@@ -448,15 +464,26 @@ class IngestionPipelineService:
         #
         # ``asset_extra`` is pair-typed with the caller's asset context: FigureSpecs or a
         # _TeiAssetContext (GROBID rung) alongside ``asset_metadata`` (arXiv), crop specs
-        # (None = cache hit, re-derive) alongside ``record_asset_ctx``.
+        # (None = cache hit, re-derive) alongside ``record_asset_ctx``. ``full_text_swap`` is the
+        # PDF-derived replacement text when the ladder discredited the HTML the full text came
+        # from (BR-29/BR-30 2026-08-10) — see _build_doc_model_before_index.
         try:
-            doc_model, asset_extra = build_doc_model()
+            doc_model, asset_extra, full_text_swap = build_doc_model()
         except PermanentIngestionError:
             # Metric'd so the reingest batch can watch its exclusion rate.
             self._observability.emit_metric(
                 "ingestion.paper.excluded", 1.0, {"kind": job.kind.value}
             )
             raise
+        if full_text_swap:
+            # The doc-model gate rejected the ar5iv conversion this text was extracted from, but
+            # the text cleared its own (length-only) floor. U7 summaries/translations read the
+            # stored .txt with no quality signal, so store the PDF text rung's output instead —
+            # the same text fetch_full_text would have produced had it known. Chunks are
+            # unaffected (they come from the doc-model).
+            paper = replace(
+                paper, full_text=full_text_swap, source_tier=arxiv_tier_label(SourceTier.pdf)
+            )
         object_ref = self._resilience.dependency_call(
             "s3",
             "put_full_text",
@@ -940,17 +967,26 @@ class IngestionPipelineService:
         )
 
     def _build_doc_model_before_index(
-        self, metadata
-    ) -> tuple[DocModel | None, tuple[FigureSpec, ...] | _TeiAssetContext | None]:
+        self, metadata, *, html_text_stored: bool = False
+    ) -> tuple[DocModel | None, tuple[FigureSpec, ...] | _TeiAssetContext | None, str | None]:
         """Eagerly build/cache the doc-model before index exposure (phase-1 Corpus).
 
-        Returns the doc-model plus the asset-step input matching the rung that built it:
-        FigureSpecs (HTML path, document order) or a ``_TeiAssetContext`` (GROBID rung). When
-        every rung fails the paper is EXCLUDED from the corpus (BR-30 2026-08-10) — this raises
-        instead of returning a flat-text doc-model, and ``_index_paper`` never stores its full
-        text."""
+        Returns the doc-model, the asset-step input matching the rung that built it (FigureSpecs
+        for the HTML path in document order, a ``_TeiAssetContext`` for the GROBID rung), and a
+        full-text replacement (see below). When every rung fails the paper is EXCLUDED from the
+        corpus (BR-30 2026-08-10) — this raises instead of returning a flat-text doc-model, and
+        ``_index_paper`` never stores its full text.
+
+        ``html_text_stored`` says the caller's full text was extracted from the ar5iv HTML. When
+        the ladder then falls past the HTML rung THIS pass (the gate discredited that same page),
+        the third element carries the PDF text rung's output so the caller stores that instead —
+        otherwise the discredited page's text (which clears its own length-only floor) becomes the
+        canonical ``.txt`` that U7 summaries read, labeled with the very tier the viewer just
+        refused. The PDF bytes are a memo hit — the GROBID rung just fetched them through the same
+        adapter. PDF unavailable/unparseable → ``None``: the fragment beats nothing, matching
+        ``fetch_full_text``'s own fallback philosophy."""
         if self._doc_model_builder is None:
-            return None, ()
+            return None, (), None
         figure_specs: list[FigureSpec] = []
         result, status, cached, asset_extra = self._walk_ladder(metadata, figure_specs)
         if isinstance(result, SourceUnavailableDTO):
@@ -960,11 +996,26 @@ class IngestionPipelineService:
             1.0,
             {"status": status, "cached": cached},
         )
-        return result.docModel, asset_extra
+        full_text_swap = None
+        if html_text_stored and status == "grobid":
+            full_text_swap = self._pdf_full_text_best_effort(metadata)
+        return result.docModel, asset_extra, full_text_swap
+
+    def _pdf_full_text_best_effort(self, metadata) -> str | None:
+        """The PDF text rung's output for a paper whose ar5iv text was discredited (BR-29). Best
+        effort — any failure keeps the caller's existing text rather than failing the paper."""
+        try:
+            pdf = self._resilience.dependency_call(
+                "arxiv", "fetch_pdf", lambda: self._arxiv.fetch_pdf(metadata)
+            )
+            text = normalize_text(pdf_to_text(pdf)) if pdf else ""
+        except (PermanentIngestionError, FullTextExtractionError):
+            return None
+        return text or None
 
     def _build_doc_model_from_record(
         self, paper: ParsedPaper, candidate: CorpusTextCandidate
-    ) -> tuple[DocModel | None, tuple[AssetCropSpec, ...] | None]:
+    ) -> tuple[DocModel | None, tuple[AssetCropSpec, ...] | None, None]:
         """Structured doc-model for a non-arXiv source record from its GROBID TEI.
 
         TEI absent or parsed to nothing means the record has no structured form — the paper is
@@ -973,7 +1024,7 @@ class IngestionPipelineService:
         asset step reuses them instead of re-parsing. On a cache hit no parse runs here, so crops
         is returned as None and the asset step re-derives them."""
         if self._doc_model_builder is None:
-            return None, None
+            return None, None, None
         crops: list[AssetCropSpec] = []
         result = self._doc_model_builder.build_from_tei(
             paper.paper_id,
@@ -996,7 +1047,8 @@ class IngestionPipelineService:
         # A cache hit skips the TEI parse, so an empty list there means "not derived" (not "no
         # crops"); signal None so the asset step parses the TEI itself.
         record_crops = None if result.cached else tuple(crops)
-        return result.docModel, record_crops
+        # No third element to give: the record path's text never came from ar5iv.
+        return result.docModel, record_crops, None
 
 
 class RefreshOrchestrationService:

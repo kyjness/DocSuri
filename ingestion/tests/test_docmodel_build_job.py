@@ -655,3 +655,57 @@ def test_ingest_one_recovers_via_grobid_rung_and_indexes() -> None:
     # source (memoized) makes that one download; reaching for the FR-17 asset source instead
     # fetched the PDF a second time on exactly the papers this rung exists for.
     assert len(arxiv.pdf_calls) == 1, arxiv.pdf_calls
+
+
+def test_ingest_one_swaps_discredited_ar5iv_text_for_pdf_text(monkeypatch) -> None:
+    # The doc-model gate rejects the ar5iv page, GROBID recovers the structure — but the FULL
+    # TEXT was extracted from that same rejected page and clears its own length-only floor. It
+    # must NOT become the stored .txt (U7 summaries read it with no quality signal): the pipeline
+    # re-derives the text from the PDF rung, and the canonical winner is labeled ARXIV_PDF.
+    from docsuri_ingestion.domain.canonical import ARXIV_PDF_TIER
+    from docsuri_ingestion.domain.models import RawDocument
+
+    metadata = sample_metadata()
+
+    class _Ar5ivTextSource(FakeArxivSource):
+        """Full text extracted from the (broken) ar5iv page — over the 3,000-char floor."""
+
+        def fetch_full_text(self, md):
+            return RawDocument(
+                metadata=md,
+                text="Leaked TeX prose includegraphics thefigure. " * 100,
+                source_url="html://x",
+                source_tier=SourceTier.ar5iv,
+            )
+
+    # The page the gate rejects: clears the 500-char absolute floor, fails relative coverage.
+    dead_html = (
+        '<article class="ltx_document"><section class="ltx_section" id="S1">'
+        '<h2 class="ltx_title ltx_title_section">Intro</h2>'
+        + "".join(
+            f'<div class="ltx_para"><p class="ltx_p">Surviving prose {i}. {"x" * 200}</p></div>'
+            for i in range(5)
+        )
+        + "</section>"
+        + "".join(f"<span>Stranded text {i}. {'z' * 400}</span>" for i in range(40))
+        + "</article>"
+    )
+    monkeypatch.setattr(application_module, "pdf_to_text", lambda pdf: "Clean PDF body. " * 60)
+    arxiv = _Ar5ivTextSource([metadata], pdf=b"%PDF-fake")
+    store = _FakeStore()
+    pipeline, control, index, _, _ = build_test_pipeline(
+        arxiv=arxiv,
+        doc_model_builder=_builder(_FakeSource((dead_html, SourceTier.ar5iv)), store),
+        grobid=_FakeGrobid(_ARXIV_GROBID_TEI),
+    )
+
+    result = pipeline.ingest_one(
+        IngestionJob(job_id="i-sw", kind=JobKind.INCREMENTAL, arxiv_ref=metadata.arxiv_ref)
+    )
+
+    assert result is DedupDecision.NEW
+    [stored_text] = pipeline._full_text_store.objects.values()
+    assert "Clean PDF body." in stored_text  # the PDF rung's text, not the rejected page's
+    assert "includegraphics" not in stored_text
+    winners = list(control._canonical.values())
+    assert winners and all(w.winning_source_tier == ARXIV_PDF_TIER for w in winners)
