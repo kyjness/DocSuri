@@ -804,7 +804,7 @@ def _caption_bbox(page, prims: dict[str, list], words: Sequence[dict], caption: 
 
 def _table_row_span(
     words: Sequence[dict],
-    caption: dict,
+    caption: dict | None,
     x_span: tuple[float, float],
     v_span: tuple[float, float],
 ) -> tuple[float, float]:
@@ -813,7 +813,10 @@ def _table_row_span(
     A ruled band is only where the journal drew lines — usually the header and the last row — so
     the rest of the body has to be recognised from the text itself. A table row is columnar: it
     carries several wide inter-word gaps within the table's width, which running prose never does.
-    Rows are taken while they keep coming (line spacing) and never past the caption. Pure."""
+    Rows are taken while they keep coming (line spacing) and never past the caption. Pure.
+
+    ``caption`` may be None, which is how the TEI path calls this: there the caption's geometry is
+    not known and growth is stopped by the float's own box instead."""
     gx0, gx1 = x_span
     top, bottom = v_span
     rows = sorted(
@@ -838,7 +841,7 @@ def _table_row_span(
                 continue  # already inside the span
             if abs(near - edge) > _TABLE_ROW_MAX_GAP_PT or not _is_columnar(row):
                 break
-            if caption["top"] <= near <= caption["bottom"]:
+            if caption is not None and caption["top"] <= near <= caption["bottom"]:
                 break  # reached the caption itself
             edge = far
         if direction == 1:
@@ -1084,6 +1087,103 @@ def _recover_figure_bbox(
     return (min(x0, nearest[0]), nearest[1], max(x1, nearest[2]), nearest[3])
 
 
+class _PageWordCache:
+    """The words of the most recently inspected page, held as a single entry.
+
+    Same shape and reason as the bitmap and graphic caches: specs arrive in page order, and
+    ``extract_words`` walks every character on the page.
+    """
+
+    def __init__(self) -> None:
+        self._page_no: int | None = None
+        self._words: tuple[dict, ...] = ()
+
+    def words(self, plumber_doc, page_no: int) -> tuple[dict, ...]:
+        if self._page_no != page_no:
+            try:
+                self._words = tuple(plumber_doc.pages[page_no].extract_words())
+            except Exception:  # noqa: BLE001 - a page we cannot read simply offers no recovery
+                self._words = ()
+            self._page_no = page_no
+        return self._words
+
+
+# A horizontal gap this wide inside a float is the page's COLUMN GUTTER, not a table column. A
+# two-column float box spans both columns, so widening a table's crop across one would pull the
+# neighbouring table and its prose in. Measured on the sweep's own offenders: the gutter of
+# arXiv:2404.03784 p6 is 152pt while the widest gap inside the table beside it is 52pt, and the
+# widest gap inside the sliver-boxed table of arXiv:2505.05549 is 34pt — an inch sits between the
+# two populations rather than beside either.
+_COLUMN_GUTTER_PT = 72.0
+
+
+def _connected_span(
+    row: Sequence[dict], span: tuple[float, float]
+) -> tuple[float, float]:
+    """How far ``span`` reaches along a text row before a column gutter breaks the run. Pure."""
+    ordered = sorted(row, key=lambda w: float(w["x0"]))
+    x0, x1 = span
+    inside = [w for w in ordered if float(w["x1"]) > x0 and float(w["x0"]) < x1]
+    if not inside:
+        return span
+    first, last = ordered.index(inside[0]), ordered.index(inside[-1])
+    for i in range(first - 1, -1, -1):
+        if x0 - float(ordered[i]["x1"]) > _COLUMN_GUTTER_PT:
+            break
+        x0 = min(x0, float(ordered[i]["x0"]))
+    for i in range(last + 1, len(ordered)):
+        if float(ordered[i]["x0"]) - x1 > _COLUMN_GUTTER_PT:
+            break
+        x1 = max(x1, float(ordered[i]["x1"]))
+    return x0, x1
+
+
+def table_body_bbox(
+    spec: AssetCropSpec, words: Sequence[dict]
+) -> tuple[float, float, float, float]:
+    """``spec``'s region grown back over the table GROBID's ``<table>`` box left outside it.
+
+    That box is the crop for every table, and GROBID gets it wrong in a specific way: it collapses
+    onto the ruled band, and where a journal rules only part of the header the box becomes a
+    fragment of one row. Measured over a 50-paper sweep, 80 of 211 table crops lost columnar rows
+    to it — one of them all 31, leaving a picture of two header words.
+
+    Width comes first, by running along the rows the box already sits on and stopping at a column
+    gutter. Then the vertical span grows over the rows that continue from it, recognised the way
+    ``_caption_bbox`` recognises them on the HTML path — a table row carries several wide
+    inter-word gaps and running prose does not — so growth stops of its own accord where the body
+    text below the table begins. The float's own box bounds both: whatever GROBID got wrong about
+    the table, it did place the float.
+    """
+    outer = spec.float_bbox
+    if outer is None or not words:
+        return spec.bbox
+    fx0, fy0, fx1, fy1 = outer
+    x0, y0, x1, y1 = spec.bbox
+    column = [
+        w
+        for w in words
+        if float(w["x0"]) >= fx0 - _TABLE_ROW_PAD_PT and float(w["x1"]) <= fx1 + _TABLE_ROW_PAD_PT
+    ]
+    for row in _text_rows(column):
+        if not any(float(w["bottom"]) > y0 and float(w["top"]) < y1 for w in row):
+            continue  # not a row the box sits on, so it says nothing about the table's width
+        rx0, rx1 = _connected_span(row, (x0, x1))
+        x0, x1 = min(x0, rx0), max(x1, rx1)
+    x0, x1 = max(fx0, x0 - _REGION_PAD), min(fx1, x1 + _REGION_PAD)
+    band = [w for w in column if float(w["x0"]) >= x0 and float(w["x1"]) <= x1]
+    top, bottom = _table_row_span(band, None, (x0, x1), (y0, y1))
+    # Unioned with what GROBID reported, so regrowth can only ever ADD: the float box is a bound
+    # on the search, not a licence to trim the table by the fraction of a point the two boxes
+    # disagree by at their edges.
+    return (
+        min(x0, spec.bbox[0]),
+        min(max(fy0, top), spec.bbox[1]),
+        max(x1, spec.bbox[2]),
+        max(min(fy1, bottom), spec.bbox[3]),
+    )
+
+
 def _render_bbox_to_png(
     pdfium_doc, page_no: int, bbox, *, plumber_page=None, bitmap_cache=None
 ) -> bytes | None:
@@ -1143,17 +1243,31 @@ def crop_assets_from_specs(
     except ImportError as exc:  # pragma: no cover - assets extra not installed
         raise RuntimeError(_ASSETS_EXTRA_MISSING) from exc
 
+    # pdfplumber is opened only when a table crop could actually need its rows back — it walks
+    # every character on a page, and most papers on this path have nothing for it to do.
+    plumber_doc = None
+    if any(s.type is AssetType.TABLE and s.float_bbox is not None for s in specs):
+        try:
+            import pdfplumber
+
+            plumber_doc = pdfplumber.open(io.BytesIO(pdf))
+        except Exception:  # noqa: BLE001 - without it tables simply keep GROBID's box
+            plumber_doc = None
+
     out: list[ExtractedAsset] = []
     try:
         doc = pdfium.PdfDocument(pdf)
         page_count = len(doc)
         bitmaps = _PageBitmapCache()
         graphics = _PageGraphicCache()
+        page_words = _PageWordCache()
         for spec in specs:
             page_idx = spec.page - 1  # GROBID coords are 1-based
             if page_idx < 0 or page_idx >= page_count:
                 continue
             bbox = crop_bbox_for(spec, graphics.boxes(doc, page_idx))
+            if spec.type is AssetType.TABLE and plumber_doc is not None:
+                bbox = table_body_bbox(spec, page_words.words(plumber_doc, page_idx))
             if not crop_is_renderable(bbox) or _is_caption_only(spec, bbox, doc, page_idx):
                 continue
             raw = _render_bbox_to_png(doc, page_idx, bbox, bitmap_cache=bitmaps)
@@ -1174,6 +1288,9 @@ def crop_assets_from_specs(
             out.append(ExtractedAsset(meta=meta, image=image))
     except Exception:  # noqa: BLE001 - best-effort; skip assets for this paper
         return ()
+    finally:
+        if plumber_doc is not None:
+            plumber_doc.close()
     return tuple(out)
 
 

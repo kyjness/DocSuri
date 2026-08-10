@@ -471,24 +471,53 @@ def test_vector_figures_recover_the_graphic_grobid_did_not_locate() -> None:
         assert 0 <= x0 < x1 and 0 <= y0 < y1, f"{prefix}: degenerate bbox after recovery"
 
 
-def test_figures_grobid_located_and_all_tables_keep_their_coordinates() -> None:
-    """The recovery must be inert wherever GROBID's coordinates were already right.
+def test_figures_grobid_located_keep_their_coordinates() -> None:
+    """The graphic recovery must be inert wherever GROBID's coordinates were already right.
 
-    Figures 4/5 carry a <graphic> and tables get their body coordinates, so their specs are the
-    content already. None may move — a recovery that widened these would be swallowing
-    neighbouring page content.
+    Figures 4/5 carry a <graphic>, so their specs are the picture already. Neither may move — a
+    recovery that widened these would be swallowing neighbouring page content.
     """
     pytest.importorskip("pypdfium2")
     pytest.importorskip("PIL")
-    specs = {s.asset_id: s.bbox for s in tei_crop_specs(_load_tei(), paper_id=TRIPLE, version=1)}
+    specs = {s.asset_id: s for s in tei_crop_specs(_load_tei(), paper_id=TRIPLE, version=1)}
     boxes = _rendered_bboxes()
 
     moved = set(_ids_by_caption(_VECTOR_FIGURES).values())
     refused = set(_ids_by_caption(_CAPTION_ONLY_FLOATS).values())
-    untouched = [aid for aid in specs if aid not in moved and aid not in refused]
-    assert len(untouched) == 7, f"fixture drifted: expected 7 untouched specs, got {untouched}"
-    for aid in untouched:
-        assert boxes[aid] == specs[aid], f"{aid}: bbox changed but GROBID's coordinates were sound"
+    located = [
+        aid
+        for aid, s in specs.items()
+        if s.type.value == "figure" and aid not in moved and aid not in refused
+    ]
+    assert len(located) == 2, f"fixture drifted: expected 2 located figures, got {located}"
+    for aid in located:
+        assert boxes[aid] == specs[aid].bbox, f"{aid}: bbox changed but the graphic was located"
+
+
+def test_table_crops_grow_only_inside_the_float_that_holds_them() -> None:
+    """Table crops are grown back over the rows GROBID's box left out — and no further.
+
+    That box collapses onto the ruled band often enough to matter (80 of 211 table crops on a
+    50-paper sweep held fewer columnar rows than the page did), so the renderer regrows it. The
+    float's own box is the bound that keeps the regrowth from reaching the next table over.
+    """
+    pytest.importorskip("pypdfium2")
+    pytest.importorskip("PIL")
+    pytest.importorskip("pdfplumber")
+    specs = {s.asset_id: s for s in tei_crop_specs(_load_tei(), paper_id=TRIPLE, version=1)}
+    boxes = _rendered_bboxes()
+
+    tables = [aid for aid, s in specs.items() if s.type.value == "table" and aid in boxes]
+    assert len(tables) == 5, f"fixture drifted: expected 5 rendered tables, got {tables}"
+    for aid in tables:
+        spec, box = specs[aid], boxes[aid]
+        assert spec.float_bbox is not None, f"{aid}: no float box to bound the regrowth"
+        fx0, fy0, fx1, fy1 = spec.float_bbox
+        assert fx0 - 0.5 <= box[0] and box[2] <= fx1 + 0.5, f"{aid}: grew past the float sideways"
+        assert fy0 - 0.5 <= box[1] and box[3] <= fy1 + 0.5, f"{aid}: grew past the float vertically"
+        # Never smaller than what GROBID reported: regrowth only ever adds.
+        assert box[0] <= spec.bbox[0] and box[1] <= spec.bbox[1], f"{aid}: lost GROBID's own box"
+        assert box[2] >= spec.bbox[2] and box[3] >= spec.bbox[3], f"{aid}: lost GROBID's own box"
 
 
 # ---------------------------------------------------------------------------------------

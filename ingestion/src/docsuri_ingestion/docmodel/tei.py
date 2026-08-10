@@ -927,16 +927,16 @@ def _record_crop(
     if parsed is None:
         return False  # no coordinates -> no crop possible (the block still renders its caption)
     if doc_ctx.crops is not None:
-        page, bbox, from_content = parsed
         doc_ctx.crops.append(
             AssetCropSpec(
                 asset_id=aid,
                 type=asset_type,
                 ordinal=ordinal,
-                page=page,
-                bbox=bbox,
+                page=parsed.page,
+                bbox=parsed.bbox,
                 caption=caption,
-                content_coords=from_content,
+                content_coords=parsed.from_content,
+                float_bbox=parsed.float_bbox,
             )
         )
     return True
@@ -1000,9 +1000,16 @@ def _parse_coords(el: ET.Element) -> tuple[int, tuple[float, float, float, float
 _CONTENT_TAG = {AssetType.FIGURE: "graphic", AssetType.TABLE: "table"}
 
 
-def _crop_region(
-    el: ET.Element, asset_type: AssetType
-) -> tuple[int, tuple[float, float, float, float], bool] | None:
+class _CropRegion(NamedTuple):
+    """Where a float's page-crop is, and what is known about how that was decided."""
+
+    page: int
+    bbox: tuple[float, float, float, float]
+    from_content: bool
+    float_bbox: tuple[float, float, float, float] | None
+
+
+def _crop_region(el: ET.Element, asset_type: AssetType) -> _CropRegion | None:
     """(page, bbox, from_content) for a float's page-crop: its content, caption lines trimmed off.
 
     A float's ``coords`` is the list of its caption's TEXT LINES plus its content region, and
@@ -1022,7 +1029,9 @@ def _crop_region(
 
     ``from_content`` is False when GROBID reported no content region: the bbox is then the float's
     own coords, which may be a picture's surroundings or nothing but the caption — a difference
-    only the PDF itself can settle, so the asset pipeline makes that call.
+    only the PDF itself can settle, so the asset pipeline makes that call. ``float_bbox`` carries
+    the float's own box along for the same reason: GROBID's ``<table>`` box sometimes collapses
+    onto a fragment of one row, and the renderer needs the float's extent to grow it back inside.
     """
     tag = _CONTENT_TAG.get(asset_type)
     content = (
@@ -1039,13 +1048,15 @@ def _crop_region(
     )
     if content is None:
         parsed = _parse_coords(el)
-        return None if parsed is None else (parsed[0], parsed[1], False)
+        return None if parsed is None else _CropRegion(parsed[0], parsed[1], False, None)
     page, (cx0, cy0, cx1, cy1) = content
     regions = [r for r in _coord_regions(el) if r.page == page]
+    float_box = _union_regions(regions)
+    outer = float_box[1] if float_box is not None else None
     body = [r for r in regions if r.y1 > cy0 and r.y0 < cy1]
     if len(body) == len(regions):
-        return page, (cx0, cy0, cx1, cy1), True
-    return (
+        return _CropRegion(page, (cx0, cy0, cx1, cy1), True, outer)
+    return _CropRegion(
         page,
         (
             min([r.x0 for r in regions] + [cx0]),
@@ -1054,6 +1065,7 @@ def _crop_region(
             max([r.y1 for r in body] + [cy1]),
         ),
         True,
+        outer,
     )
 
 

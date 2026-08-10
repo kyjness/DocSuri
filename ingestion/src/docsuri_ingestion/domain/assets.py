@@ -68,6 +68,11 @@ class AssetCropSpec:
     ``<graphic>``, a table's ``<table>``) or merely from the float's own coordinates. Only the
     latter can turn out to be a strip of caption text with no picture in it, so the renderer uses
     this to decide which crops still have to be checked against the PDF before being stored.
+
+    ``float_bbox`` is the whole float's own box on the same page, when it has one. It is the OUTER
+    bound for anything the renderer recovers: GROBID's ``<table>`` box sometimes collapses onto a
+    fragment of the header row, and growing that back over the rows below it must not run past
+    where the float itself ended.
     """
 
     asset_id: str
@@ -77,6 +82,7 @@ class AssetCropSpec:
     bbox: tuple[float, float, float, float]
     caption: str = ""
     content_coords: bool = False
+    float_bbox: tuple[float, float, float, float] | None = None
 
 
 @dataclass(frozen=True, slots=True)

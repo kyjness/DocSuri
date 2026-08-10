@@ -105,6 +105,78 @@ def test_a_page_with_no_graphics_leaves_the_caption_crop_untouched() -> None:
     """A text block GROBID mislabelled as a figure lands here: nothing to find, nothing lost."""
     assert crop_bbox_for(_spec(_CAPTION), []) == _CAPTION
 
+
+# ------------------------------------------------------- table_body_bbox (row regrowth)
+#
+# GROBID's <table> box collapses onto the ruled band, and where a journal rules only part of the
+# header it becomes a fragment of one row. These pin the regrowth: it runs along the row the box
+# sits on, stops at a page-column gutter, then follows the columnar rows below — all inside the
+# float that holds the table.
+
+
+def _word(text: str, x0: float, x1: float, top: float, bottom: float) -> dict:
+    return {"text": text, "x0": x0, "x1": x1, "top": top, "bottom": bottom}
+
+
+def _table_words() -> list[dict]:
+    """A four-column table, header at y 100 and three body rows 20pt apart."""
+    columns = [(60.0, 110.0), (150.0, 190.0), (230.0, 270.0), (310.0, 350.0)]
+    words = []
+    for row, top in enumerate((100.0, 120.0, 140.0, 160.0)):
+        for col, (x0, x1) in enumerate(columns):
+            words.append(_word(f"r{row}c{col}", x0, x1, top, top + 10.0))
+    return words
+
+
+def _table_spec(bbox, float_bbox) -> AssetCropSpec:
+    return AssetCropSpec(
+        asset_id="p:v1:table:0",
+        type=AssetType.TABLE,
+        ordinal=0,
+        page=1,
+        bbox=bbox,
+        caption="c",
+        content_coords=True,
+        float_bbox=float_bbox,
+    )
+
+
+def test_a_collapsed_table_box_regrows_over_the_rows_below_it() -> None:
+    from docsuri_ingestion.asset_extraction import table_body_bbox
+
+    # GROBID ruled only the last two header cells: a 40pt-wide, 10pt-tall sliver.
+    spec = _table_spec((230.0, 100.0, 350.0, 110.0), (50.0, 90.0, 400.0, 200.0))
+    x0, y0, x1, y1 = table_body_bbox(spec, _table_words())
+    assert x0 < 65.0 and x1 > 345.0, "the header row's full width was not recovered"
+    assert y0 <= 100.0 and y1 >= 170.0, "the body rows below the header were not recovered"
+
+
+def test_regrowth_stops_at_the_page_column_gutter() -> None:
+    """A two-column float box must not let a table's crop reach into the column beside it."""
+    from docsuri_ingestion.asset_extraction import table_body_bbox
+
+    words = _table_words() + [_word("prose", 600.0, 700.0, 100.0, 110.0)]  # 250pt away
+    spec = _table_spec((230.0, 100.0, 350.0, 110.0), (50.0, 90.0, 750.0, 200.0))
+    assert table_body_bbox(spec, words)[2] < 500.0
+
+
+def test_regrowth_never_leaves_the_float_that_holds_the_table() -> None:
+    from docsuri_ingestion.asset_extraction import table_body_bbox
+
+    # The float ends at y=130, cutting the last two rows off: whatever is below belongs to
+    # something else on the page.
+    spec = _table_spec((230.0, 100.0, 350.0, 110.0), (50.0, 90.0, 400.0, 130.0))
+    assert table_body_bbox(spec, _table_words())[3] <= 130.0
+
+
+def test_a_table_with_no_float_box_keeps_grobids_own() -> None:
+    """No outer bound, no regrowth — the caption sat on another page and there is nothing to grow
+    inside."""
+    from docsuri_ingestion.asset_extraction import table_body_bbox
+
+    spec = _table_spec((230.0, 100.0, 350.0, 110.0), None)
+    assert table_body_bbox(spec, _table_words()) == spec.bbox
+
 # ---------------------------------------------------------------- caption_kind
 
 
