@@ -93,8 +93,9 @@ class ArxivHttpSource:
         # twice within one ingest: fetch_full_text takes the PDF text rung, then the doc-model
         # ladder's PDF→GROBID rung wants the same bytes. That is exactly the population the GROBID
         # rung exists for, so the duplicate multi-MB download was paid on every such paper.
+        # A PERMANENT fetch failure (404) is memoized too and re-raised — see fetch_pdf.
         # Bounded to one PDF in memory — replaced when a different paper is fetched.
-        self._pdf_memo: tuple[str, bytes | None] | None = None
+        self._pdf_memo: tuple[str, bytes | None | PermanentIngestionError] | None = None
 
     def harvest_seed(self, category_filter: CategoryFilter) -> Iterable[MetadataRecord]:
         for category in category_filter.categories:
@@ -242,6 +243,11 @@ class ArxivHttpSource:
                 self._html_memo = ((self._html_base_url, metadata.identifier.arxiv_id), text)
                 return text, f"cache://{SourceTier.ar5iv.value}"
             if mode == "only":
+                # Prime the memo with the MISS too: the doc-model rung's fetch_html_source calls
+                # _get_html_at directly, and an unprimed memo there would fall through to a live
+                # network GET — breaking this function's own "only NEVER hits the network"
+                # contract from inside an offline batch.
+                self._html_memo = ((self._html_base_url, metadata.identifier.arxiv_id), None)
                 return None, ""
         html, url = self._try_get_html(metadata.identifier.arxiv_id)
         if html and mode == "prefer" and store is not None:
@@ -263,9 +269,16 @@ class ArxivHttpSource:
         """
         arxiv_id = metadata.identifier.arxiv_id
         # Load the slot ONCE — same reasoning as _get_html_at: one read of the immutable tuple
-        # keeps the key and the bytes belonging together under a concurrent writer.
+        # keeps the key and the value belonging together under a concurrent writer.
         memo = self._pdf_memo
         if memo is not None and memo[0] == arxiv_id:
+            if isinstance(memo[1], PermanentIngestionError):
+                # A 404'd PDF stays 404 within one job. Without this, fetch_full_text's swallowed
+                # attempt was followed by the GROBID rung re-taking a rate-limiter slot (~3s) for
+                # the same doomed request — on exactly the papers a reparse batch pays most for.
+                # Only PERMANENT failures are memoized; a retriable fault aborts the whole job
+                # before a second call could happen, and must stay retriable on redelivery.
+                raise memo[1]
             return memo[1]
         mode, store = self._raw_cache_mode, self._raw_store
         pid, ver = metadata.paper_id, metadata.version
@@ -278,11 +291,15 @@ class ArxivHttpSource:
                 # A miss is NOT memoized here: "only" means the caller asked for cache-or-nothing,
                 # and remembering the miss would mask a later cache write within the same paper.
                 return None
-        pdf = self._get_bytes(
-            f"{self._pdf_base_url}/{arxiv_id}",
-            params=None,
-            stage="fetch_full_text",
-        )
+        try:
+            pdf = self._get_bytes(
+                f"{self._pdf_base_url}/{arxiv_id}",
+                params=None,
+                stage="fetch_full_text",
+            )
+        except PermanentIngestionError as exc:
+            self._pdf_memo = (arxiv_id, exc)
+            raise
         if mode == "prefer" and store is not None:
             store.put_raw(pid, ver, "pdf", pdf, content_type="application/pdf")
         self._pdf_memo = (arxiv_id, pdf)
