@@ -14,6 +14,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from typing import Any, Protocol, runtime_checkable
 
+from bs4 import BeautifulSoup
 from docsuri_shared.docmodel_contract import DOCMODEL_PARSER_VERSION, DOCMODEL_SCHEMA_VERSION
 from docsuri_shared.dtos import DocModel, DocModelResultDTO, SourceTier, SourceUnavailableDTO
 from docsuri_shared.observability import emit_metric
@@ -77,16 +78,25 @@ _MIN_BODY_TEXT_CHARS = 500
 # comfortably over any absolute floor worth setting. So judge RELATIVELY as well: of the readable
 # text the fetched page carries, how much did the parser actually recover?
 #
-# Measured on 61 corpus papers (2026-08-10), scored against LaTeXML's OWN truncation notice
-# ("This document may be truncated or damaged") as ground truth: pages it flags land at 0.27 and
-# below, healthy conversions start at 0.54 and cluster 0.64-0.96. Healthy papers never reach 1.0
-# by design — authors/affiliations/References sit outside the block tree, and a math-heavy paper
-# stores display math as compact LaTeX where the source renders long unicode. 0.40 sits in the
-# middle of the empty band between the two groups (1.5x above the worst damaged page, 1.35x below
-# the weakest healthy one); the 2502.10208 break reconstructs to ~0.08, far under it.
+# The denominator is NOT the raw page text. Two structural biases are removed first (see
+# _comparable_source_len): the bibliography (`ltx_bibliography` — never projected into blocks by
+# design, and its share of a page is unbounded: a survey can be 20%+ references) and MathML
+# `<annotation>` elements (every formula's TeX source duplicated next to its rendered glyphs —
+# math-heavy fixtures measured up to 22% of raw text). Without the trim, a reference-heavy
+# math paper's ratio drifts toward the floor for reasons that have nothing to do with conversion
+# health — and the penalty here is corpus EXCLUSION, so drift is not tolerable.
 #
-# Do NOT gate on the truncation notice itself: 2502.15015 carries it yet recovered 0.79 of its
-# text, so the notice over-rejects where coverage does not.
+# Measured on 61 corpus papers (2026-08-10), scored against LaTeXML's OWN truncation notice
+# ("This document may be truncated or damaged") as ground truth. With the trimmed denominator the
+# only substantial damaged page (2506.01145) reconstructs to 0.27, while the healthy pass-set
+# starts at 0.81 and clusters 0.88-1.0. 0.50 sits in the empty band between them (1.85x above the
+# damaged page, 1.6x below the weakest healthy one) — false rejections: 0/61. The 2502.10208
+# break reconstructed to ~0.08 on the raw denominator, far under it. Tiny damaged shells
+# (2308.02452: 343 chars, trimmed ratio 0.70) are the ABSOLUTE floor's catch, not this gate's —
+# a ratio is meaningless at that size, which is why both gates exist.
+#
+# Do NOT gate on the truncation notice itself: 2502.15015 carries it yet recovered 0.81 of its
+# trimmed text, so the notice over-rejects where coverage does not.
 #
 # REJECTED — counting `ltx_ERROR` nodes per paragraph (shipped earlier the same day, reverted
 # here): it does not separate the two. One unresolved macro used N times emits N error nodes while
@@ -95,7 +105,23 @@ _MIN_BODY_TEXT_CHARS = 500
 # chars; a proceedings style's `\Name`/`\Email`) measured 2.35 — both healthy, both above any
 # threshold that still catches a real break. 3.3% of the sample were false rejections, and every
 # genuine break it did flag was already caught by the absolute floor above.
-_MIN_SOURCE_COVERAGE = 0.40
+_MIN_SOURCE_COVERAGE = 0.50
+
+
+def _comparable_source_len(html: str) -> int:
+    """Length of the source page's readable text that the block tree is EXPECTED to carry.
+
+    Strips, before ``html_to_text``: bibliography subtrees (``ltx_bibliography`` is not in the
+    parser's section classes, so its text can never appear in fullText) and MathML
+    ``<annotation>``/``<annotation-xml>`` (the TeX source of every formula, duplicated beside its
+    rendered glyphs — the doc-model stores one form, the raw page renders both). Gate-denominator
+    only; the stored full text is a different product with its own rules."""
+    soup = BeautifulSoup(html or "", "lxml")
+    for node in soup.find_all(class_="ltx_bibliography"):
+        node.decompose()
+    for node in soup.find_all(["annotation", "annotation-xml"]):
+        node.decompose()
+    return len(html_to_text(str(soup)))
 
 
 def _block_text_len(block: dict) -> int:
@@ -219,7 +245,7 @@ class DocModelBuilder:
             return SourceUnavailableDTO(
                 status="source_unavailable", reason=_SOURCE_UNAVAILABLE_REASON
             )
-        source_chars = len(html_to_text(html))
+        source_chars = _comparable_source_len(html)
         if source_chars and len(doc.fullText or "") < _MIN_SOURCE_COVERAGE * source_chars:
             # The conversion died PART-WAY (see _MIN_SOURCE_COVERAGE): long enough to clear the
             # absolute floor, but most of the page never became blocks. Degrade so the next rung

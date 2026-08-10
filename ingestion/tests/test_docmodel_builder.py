@@ -389,6 +389,43 @@ def test_build_degrades_when_the_conversion_died_partway() -> None:
     assert ("ingestion.docmodel.broken_conversion", 1.0) in obs.metrics
 
 
+def test_build_tolerates_a_reference_heavy_math_paper() -> None:
+    # The coverage denominator must NOT count text the block tree is designed to omit: the
+    # bibliography (never projected into blocks) and MathML <annotation> TeX sources (the
+    # doc-model stores one form of each formula, the raw page renders both). Here that structural
+    # residue outweighs the body several times over — with a raw denominator the ratio would sit
+    # far under any sane floor and EXCLUDE a perfectly healthy paper. Guards review #5 (2026-08-10).
+    body = "".join(
+        f'<div class="ltx_para"><p class="ltx_p">Body prose {i}. {"y" * 200}</p></div>'
+        for i in range(4)
+    )
+    bibliography = (
+        '<section class="ltx_bibliography" id="bib"><h2 class="ltx_title">References</h2>'
+        + "".join(
+            f'<li class="ltx_bibitem">[{i}] Author {i}. A cited paper title. {"r" * 120}</li>'
+            for i in range(40)
+        )
+        + "</section>"
+    )
+    tex_source = "\\alpha" * 300
+    annotations = (
+        "<math><semantics><mrow><mi>x</mi></mrow>"
+        f'<annotation encoding="application/x-tex">{tex_source}</annotation>'
+        "</semantics></math>"
+    )
+    html = (
+        '<article class="ltx_document"><section class="ltx_section" id="S1">'
+        '<h2 class="ltx_title ltx_title_section">Intro</h2>'
+        + body + annotations + "</section>" + bibliography + "</article>"
+    )
+    store = _FakeStore(cached=None)
+    result = _builder(_FakeSource((html, SourceTier.ar5iv)), store).build(
+        sample_metadata("2401.00001v1")
+    )
+    assert isinstance(result, DocModelResultDTO)  # NOT excluded
+    assert len(store.put_calls) == 1
+
+
 def test_build_tolerates_a_macro_the_converter_could_not_resolve() -> None:
     # An unresolved macro emits one ltx_ERROR per USE, so a paper that names its own tool 74 times
     # carries 74 error nodes while staying entirely readable (measured: 2310.04047 — 36,770 chars,
