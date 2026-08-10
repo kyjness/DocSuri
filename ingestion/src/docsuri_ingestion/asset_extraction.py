@@ -962,15 +962,77 @@ def crop_is_renderable(bbox: tuple[float, float, float, float]) -> bool:
     return (x1 - x0) * (y1 - y0) >= _MIN_CROP_AREA_PT2
 
 
+# When a float's own text is all the region holds, the image is a photograph of the caption the
+# viewer already renders beneath it, and storing it puts a sentence where the figure should be.
+# Measured over the TEI/PDF fixture pairs, region-text length against caption length for the specs
+# GROBID gave no content element and pdfium found no graphic for:
+#
+#   caption strips           1.00  1.00  1.00  1.05  1.12  1.24
+#   floats with real content 2.96  3.80  4.38  6.32
+#
+# so the upper bound sits in the gap rather than beside either group. The LOWER bound matters just
+# as much: a figure drawn entirely in vector paths carries no text at all (paths are excluded from
+# _graphic_boxes on purpose — every rule and table border is one), and "no text" is not evidence of
+# a caption strip. Below the floor the caption is not even inside the region, so the crop is kept.
+_CAPTION_ONLY_MAX_RATIO = 2.0
+_CAPTION_ONLY_MIN_RATIO = 0.5
+
+_NON_ALNUM_RE = re.compile(r"[^0-9a-z]+")
+
+
+def _text_key(text: str) -> str:
+    """Comparison form of a string: lowercased, everything but letters and digits removed.
+
+    GROBID's caption and pdfium's text layer disagree about spacing, hyphenation and punctuation
+    for the very same sentence, and none of that changes whether the region says more than the
+    caption does. Pure."""
+    return _NON_ALNUM_RE.sub("", text.casefold())
+
+
+def _region_text(pdfium_doc, page_no: int, bbox: tuple[float, float, float, float]) -> str:
+    """The text the PDF draws inside a top-left-origin bbox, or "" if it cannot be read."""
+    try:
+        page = pdfium_doc[page_no]
+        height = page.get_size()[1]
+        # pdfium measures y upward from the page bottom; the bbox measures it downward from the top.
+        return page.get_textpage().get_text_bounded(
+            left=bbox[0], bottom=height - bbox[3], right=bbox[2], top=height - bbox[1]
+        )
+    except Exception:  # noqa: BLE001 - unreadable text layer simply offers no verdict
+        return ""
+
+
+def _is_caption_only(spec: AssetCropSpec, bbox, pdfium_doc, page_no: int) -> bool:
+    """Whether this crop would store a picture of the float's caption and nothing else.
+
+    Only asked of the specs that can be one: a bbox taken from a ``<graphic>``/``<table>`` is the
+    content by construction, a recovered bbox has been moved onto a graphic, and a formula's
+    coordinates are the formula. Everything else is the float's own coords, which GROBID fills with
+    the caption's text lines whether or not it located anything else.
+    """
+    if spec.content_coords or spec.type is AssetType.FORMULA or bbox != spec.bbox:
+        return False
+    caption = _text_key(spec.caption)
+    if not caption:
+        return False  # nothing to compare the region against
+    region = len(_text_key(_region_text(pdfium_doc, page_no, bbox)))
+    return (
+        len(caption) * _CAPTION_ONLY_MIN_RATIO
+        <= region
+        <= len(caption) * _CAPTION_ONLY_MAX_RATIO
+    )
+
+
 def crop_bbox_for(
     spec: AssetCropSpec, graphics: Sequence[tuple[float, float, float, float]]
 ) -> tuple[float, float, float, float]:
     """The region to render for ``spec``, widened when a figure's graphic went unreported.
 
-    Figures only. A table's coordinates are its body and a formula's are the formula, so neither
-    has anything to recover and widening either would pull in surrounding page content.
+    Figures only, and only those whose bbox is NOT already the float's content: a spec built from
+    a ``<graphic>`` is the picture itself, a table's is its body and a formula's is the formula, so
+    none of them has anything to recover and widening any would pull in surrounding page content.
     """
-    if spec.type is not AssetType.FIGURE:
+    if spec.type is not AssetType.FIGURE or spec.content_coords:
         return spec.bbox
     return _recover_figure_bbox(graphics, spec.bbox) or spec.bbox
 
@@ -979,7 +1041,7 @@ def _recover_figure_bbox(
     graphics: Sequence[tuple[float, float, float, float]],
     bbox: tuple[float, float, float, float],
 ) -> tuple[float, float, float, float] | None:
-    """Widen a caption-only figure bbox to include the graphic sitting above it, or None.
+    """Move a caption-only figure bbox onto the graphic sitting above it, or None.
 
     GROBID emits a ``<graphic>`` for raster figures only, so a vector figure's coordinates cover
     just the caption's text lines and the crop shows a sentence where the figure should be. The
@@ -1015,7 +1077,11 @@ def _recover_figure_bbox(
     # Nearest one only. Unioning every candidate would merge stacked subfigures into one crop that
     # also swept up whatever text sat between them.
     nearest = max(above, key=lambda g: g[3])
-    return (min(x0, nearest[0]), min(y0, nearest[1]), max(x1, nearest[2]), max(y1, nearest[3]))
+    # Only x is unioned. The caption is not part of the picture — the viewer renders it as a
+    # <figcaption> beside the image — so y stays the graphic's own band, while x keeps the caption's
+    # span because that is the column the float occupies and a single graphic object need not fill
+    # it. Unioning y as well was how the recovered crops still carried their caption sentence.
+    return (min(x0, nearest[0]), nearest[1], max(x1, nearest[2]), nearest[3])
 
 
 def _render_bbox_to_png(
@@ -1088,7 +1154,7 @@ def crop_assets_from_specs(
             if page_idx < 0 or page_idx >= page_count:
                 continue
             bbox = crop_bbox_for(spec, graphics.boxes(doc, page_idx))
-            if not crop_is_renderable(bbox):
+            if not crop_is_renderable(bbox) or _is_caption_only(spec, bbox, doc, page_idx):
                 continue
             raw = _render_bbox_to_png(doc, page_idx, bbox, bitmap_cache=bitmaps)
             image = normalizer.normalize(raw) if raw else None

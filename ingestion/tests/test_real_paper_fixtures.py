@@ -363,9 +363,10 @@ def test_real_pdf_crops_render_for_every_tei_spec() -> None:
     specs = tei_crop_specs(_load_tei(), paper_id=TRIPLE, version=1)
     assets = crop_assets_from_specs(_load_pdf(), specs, paper_id=TRIPLE, version=1)
 
-    assert len(assets) == len(specs), (
-        f"{len(specs) - len(assets)} of {len(specs)} crops failed to render"
-    )
+    refused = set(_ids_by_caption(_CAPTION_ONLY_FLOATS).values())
+    assert len(refused) == len(_CAPTION_ONLY_FLOATS), "fixture drifted: caption-only set unresolved"
+    missing = {s.asset_id for s in specs} - {a.meta.asset_id for a in assets}
+    assert missing == refused, f"unexpected crops missing: {sorted(missing - refused)}"
     for asset in assets:
         assert asset.image, f"{asset.meta.asset_id}: rendered to empty bytes"
         # WebP is the delivered format (FR-17); the magic bytes are RIFF....WEBP.
@@ -406,12 +407,22 @@ _VECTOR_FIGURES = {
     "Figure 3: Value of information": 68.5,  # p16 — value-of-information plot
 }
 
+# The other half of the same defect: floats GROBID gave no content element AND whose page carries
+# no graphic object to recover. Their crop is a photograph of the caption the viewer already
+# renders beneath it, so no asset is stored and the viewer holds the slot with its placeholder.
+# The first here is a boxed "Challenge" callout whose figDesc captured the ENTIRE box text — the
+# image would repeat, glyph for glyph, what the caption already says.
+_CAPTION_ONLY_FLOATS = (
+    "Developing powerful ML pipelines",
+    "Major challenges facing clinical",
+)
 
-def _figure_ids_by_caption(paper_id: str = TRIPLE) -> dict[str, str]:
-    """Asset ids of a paper's figure crops, keyed by the caption prefixes named above."""
+
+def _ids_by_caption(prefixes, paper_id: str = TRIPLE) -> dict[str, str]:
+    """Asset ids of a paper's float crops, keyed by the caption prefixes given."""
     ids = {}
     for spec in tei_crop_specs(_load_tei(paper_id), paper_id=paper_id, version=1):
-        for prefix in _VECTOR_FIGURES:
+        for prefix in prefixes:
             if (spec.caption or "").startswith(prefix):
                 ids[prefix] = spec.asset_id
     return ids
@@ -426,26 +437,36 @@ def _rendered_bboxes() -> dict[str, tuple]:
 
 
 def test_vector_figures_recover_the_graphic_grobid_did_not_locate() -> None:
-    """A caption-only crop must be widened to the figure the PDF really carries.
+    """A caption-only crop must move onto the figure the PDF really carries — and off the caption.
 
-    Asserting on the *height* rather than on rendering success is the point: the caption-only
-    crops rendered perfectly well and were valid WebP, which is exactly why the existing
-    assertions above could not see the defect.
+    Asserting on the *region* rather than on rendering success is the point: the caption-only crops
+    rendered perfectly well and were valid WebP, which is exactly why the assertions above could
+    not see the defect.
     """
     pytest.importorskip("pypdfium2")
     pytest.importorskip("PIL")
     boxes = _rendered_bboxes()
+    specs = {s.asset_id: s.bbox for s in tei_crop_specs(_load_tei(), paper_id=TRIPLE, version=1)}
 
-    ids = _figure_ids_by_caption()
+    ids = _ids_by_caption(_VECTOR_FIGURES)
     assert set(ids) == set(_VECTOR_FIGURES), f"fixture drifted: resolved {sorted(ids)}"
     for prefix, caption_height in _VECTOR_FIGURES.items():
         aid = ids[prefix]
         assert aid in boxes, f"{prefix} produced no asset at all"
         x0, y0, x1, y1 = boxes[aid]
         height = y1 - y0
-        assert height > caption_height * 2.5, (
+        assert height > caption_height, (
             f"{prefix}: crop is {height:.1f}pt tall against a {caption_height}pt caption strip — "
             "the graphic above the caption was not recovered"
+        )
+        # The caption strip itself is left behind: the recovered region ends where GROBID's
+        # caption-only box began, give or take the point or two a graphic's box routinely tucks
+        # over its caption's first line (2.3pt on Figure2 here). A crop that still carried the
+        # caption would run to that box's BOTTOM edge, tens of points lower.
+        caption_top, caption_bottom = specs[aid][1], specs[aid][3]
+        assert y1 - caption_top < 5.0, (
+            f"{prefix}: {y1 - caption_top:.1f}pt of the {caption_bottom - caption_top:.1f}pt "
+            "caption strip is still inside the crop"
         )
         assert 0 <= x0 < x1 and 0 <= y0 < y1, f"{prefix}: degenerate bbox after recovery"
 
@@ -453,18 +474,19 @@ def test_vector_figures_recover_the_graphic_grobid_did_not_locate() -> None:
 def test_figures_grobid_located_and_all_tables_keep_their_coordinates() -> None:
     """The recovery must be inert wherever GROBID's coordinates were already right.
 
-    Figures 4/5 carry a <graphic>; figure 0 is a text block GROBID mislabelled a figure and has no
-    graphic object to find; tables get their body coordinates. None may move — a recovery that
-    widened these would be swallowing neighbouring page content.
+    Figures 4/5 carry a <graphic> and tables get their body coordinates, so their specs are the
+    content already. None may move — a recovery that widened these would be swallowing
+    neighbouring page content.
     """
     pytest.importorskip("pypdfium2")
     pytest.importorskip("PIL")
     specs = {s.asset_id: s.bbox for s in tei_crop_specs(_load_tei(), paper_id=TRIPLE, version=1)}
     boxes = _rendered_bboxes()
 
-    recovered = set(_figure_ids_by_caption().values())
-    untouched = [aid for aid in specs if aid not in recovered]
-    assert len(untouched) == 9, f"fixture drifted: expected 9 untouched specs, got {untouched}"
+    moved = set(_ids_by_caption(_VECTOR_FIGURES).values())
+    refused = set(_ids_by_caption(_CAPTION_ONLY_FLOATS).values())
+    untouched = [aid for aid in specs if aid not in moved and aid not in refused]
+    assert len(untouched) == 7, f"fixture drifted: expected 7 untouched specs, got {untouched}"
     for aid in untouched:
         assert boxes[aid] == specs[aid], f"{aid}: bbox changed but GROBID's coordinates were sound"
 
@@ -637,9 +659,17 @@ def test_tei_formula_crops_actually_render_from_the_real_pdf() -> None:
     assets = crop_assets_from_specs(
         _load_pdf(FORMULA_PAPER), specs, paper_id=FORMULA_PAPER, version=1
     )
-    # One spec is deliberately refused: GROBID made a formula element out of a stray ")" and its
-    # 4.4x9.6pt region cannot hold an equation. Everything else must render.
-    refused = {f"{FORMULA_PAPER}:v1:formula:22"}
+    # Four specs are deliberately refused. GROBID made a formula element out of a stray ")" whose
+    # 4.4x9.6pt region cannot hold an equation, and three floats have neither a content element nor
+    # a graphic object on the page, so their crop would picture only the caption. Everything else
+    # must render.
+    refused = {f"{FORMULA_PAPER}:v1:formula:22"} | set(
+        _ids_by_caption(
+            ("Figure3: Time spent", "Equation (2) requires", "14 with the NumPy"),
+            FORMULA_PAPER,
+        ).values()
+    )
+    assert len(refused) == 4, "fixture drifted: caption-only floats unresolved"
     rendered = {a.meta.asset_id for a in assets}
     assert {s.asset_id for s in specs} - rendered == refused, (
         f"unexpected crops missing: {sorted({s.asset_id for s in specs} - rendered - refused)}"

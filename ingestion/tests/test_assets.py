@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+from dataclasses import replace
 
 import pytest
 from hypothesis import given
@@ -25,9 +26,10 @@ def test_crop_assets_from_specs_empty_is_noop_without_pdfium() -> None:
 # ------------------------------------------------------- crop_bbox_for (graphic recovery)
 #
 # GROBID reports a <graphic> for raster figures only, so a vector figure arrives with coordinates
-# covering nothing but its caption's text lines. These pin when the caption-only bbox may be
-# widened to the graphic above it — every "unchanged" case is a guard against a crop that reaches
-# up the page and swallows content that is not part of the figure.
+# covering nothing but its caption's text lines. These pin when the caption-only bbox may be moved
+# onto the graphic above it — every "unchanged" case is a guard against a crop that reaches up the
+# page and swallows content that is not part of the figure. The caption itself does not come along:
+# the viewer renders it as a <figcaption> beside the image, so only the x span is unioned.
 
 _CAPTION = (100.0, 300.0, 400.0, 320.0)  # a two-line caption strip, top-left origin
 _PLOT_ABOVE = (110.0, 150.0, 390.0, 295.0)  # the graphic it belongs to, 5pt higher up
@@ -39,8 +41,17 @@ def _spec(bbox, asset_type=AssetType.FIGURE) -> AssetCropSpec:
     )
 
 
-def test_caption_only_figure_grows_to_include_the_graphic_above_it() -> None:
-    assert crop_bbox_for(_spec(_CAPTION), [_PLOT_ABOVE]) == (100.0, 150.0, 400.0, 320.0)
+def test_caption_only_figure_moves_onto_the_graphic_above_it() -> None:
+    # y becomes the plot's own band (150-295); x keeps the caption's wider span, which is the
+    # column the float occupies and may be wider than one graphic object.
+    assert crop_bbox_for(_spec(_CAPTION), [_PLOT_ABOVE]) == (100.0, 150.0, 400.0, 295.0)
+
+
+def test_a_figure_cropped_from_its_own_graphic_coords_is_never_re_derived() -> None:
+    """``content_coords`` says the bbox already IS the picture — re-deriving can only make it
+    worse."""
+    spec = replace(_spec(_CAPTION), content_coords=True)
+    assert crop_bbox_for(spec, [_PLOT_ABOVE]) == _CAPTION
 
 
 def test_a_table_is_never_widened_even_with_a_graphic_directly_above_it() -> None:
@@ -87,7 +98,7 @@ def test_only_the_nearest_graphic_is_merged() -> None:
     """
     lower = (110.0, 275.0, 390.0, 295.0)  # 5pt above the caption
     upper = (110.0, 150.0, 390.0, 270.0)  # 30pt above the caption — also within the bound
-    assert crop_bbox_for(_spec(_CAPTION), [upper, lower]) == (100.0, 275.0, 400.0, 320.0)
+    assert crop_bbox_for(_spec(_CAPTION), [upper, lower]) == (100.0, 275.0, 400.0, 295.0)
 
 
 def test_a_page_with_no_graphics_leaves_the_caption_crop_untouched() -> None:
