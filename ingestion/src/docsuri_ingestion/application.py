@@ -157,7 +157,15 @@ class IngestionPipelineService:
         # rung fails the result STAYS source_unavailable (viewer links out) instead of excluding
         # the paper — this lazy job serves already-indexed papers, so exclusion is the reingest
         # batch's call, not this handler's.
-        result, status, cached, _ = self._walk_ladder(metadata)
+        result, status, cached, asset_extra = self._walk_ladder(metadata)
+        if isinstance(asset_extra, _TeiAssetContext) and asset_extra.crops:
+            # A FRESH GROBID build on the lazy path must store its crops too. Discarding them
+            # left a cached doc-model whose figure blocks reference assets that were never
+            # rendered — and every later eager pass hits the cache, sees no crops to derive, and
+            # stores nothing, so the gap became permanent.
+            self._render_and_store_crops(
+                metadata.paper_id, metadata.version, asset_extra.pdf, list(asset_extra.crops)
+            )
         self._observability.emit_metric(
             "ingestion.docmodel.build",
             1.0,
@@ -545,7 +553,9 @@ class IngestionPipelineService:
             # TEI coordinates were computed on, not the e-print figure extractor. An empty ctx
             # (doc-model cache hit) selects this branch deliberately and does nothing — the crops
             # were stored by the build that populated the cache.
-            self._render_and_store_crops(paper, asset_extra.pdf, list(asset_extra.crops))
+            self._render_and_store_crops(
+                paper.paper_id, paper.version, asset_extra.pdf, list(asset_extra.crops)
+            )
         elif asset_metadata is not None:
             self._store_assets_best_effort(paper, asset_metadata, asset_extra or ())
         elif record_asset_ctx is not None:
@@ -789,10 +799,14 @@ class IngestionPipelineService:
         except Exception as exc:  # noqa: BLE001 - best-effort: never block indexing (BR-27)
             self._report_asset_failure(paper.paper_id, reason, exc)
 
-    def _render_and_store_crops(self, paper, pdf: bytes, specs: list[AssetCropSpec]) -> None:
+    def _render_and_store_crops(
+        self, paper_id: str, version: int, pdf: bytes, specs: list[AssetCropSpec]
+    ) -> None:
         """Render TEI page-crop specs to WebP and persist them (FR-17). The one place that owns
-        the crop→store sequence, so both TEI paths (arXiv GROBID rung and non-arXiv source record)
-        share a single failure classification and a single ``assets.stored`` contract.
+        the crop→store sequence, so every TEI path (arXiv GROBID rung — eager AND lazy — and the
+        non-arXiv source record) shares a single failure classification and a single
+        ``assets.stored`` contract. Takes bare ids because the lazy BUILD_DOC_MODEL job has no
+        ParsedPaper — only metadata.
 
         Best-effort and never raises (BR-27): assets are a display-only side path, so a failure is
         observed rather than propagated. Classified by WHERE it fails (§7.3): rendering →
@@ -801,17 +815,15 @@ class IngestionPipelineService:
             return
         reason = FailureReason.ASSET_EXTRACT_FAILURE
         try:
-            extracted = crop_assets_from_specs(
-                pdf, specs, paper_id=paper.paper_id, version=paper.version
-            )
+            extracted = crop_assets_from_specs(pdf, specs, paper_id=paper_id, version=version)
             reason = FailureReason.ASSET_STORE_FAILURE
             if extracted:
-                self._asset_store.store_assets(paper.paper_id, paper.version, extracted)
+                self._asset_store.store_assets(paper_id, version, extracted)
             self._observability.emit_metric(
-                "ingestion.assets.stored", float(len(extracted)), {"paperId": paper.paper_id}
+                "ingestion.assets.stored", float(len(extracted)), {"paperId": paper_id}
             )
         except Exception as exc:  # noqa: BLE001 - best-effort: never block indexing (BR-27)
-            self._report_asset_failure(paper.paper_id, reason, exc)
+            self._report_asset_failure(paper_id, reason, exc)
 
     def _store_record_assets_best_effort(
         self,
@@ -849,7 +861,7 @@ class IngestionPipelineService:
         except Exception as exc:  # noqa: BLE001 - resolving the inputs is still the EXTRACT phase
             self._report_asset_failure(paper.paper_id, FailureReason.ASSET_EXTRACT_FAILURE, exc)
             return
-        self._render_and_store_crops(paper, pdf, specs)
+        self._render_and_store_crops(paper.paper_id, paper.version, pdf, specs)
 
     def _report_asset_failure(
         self, paper_id: str, reason: FailureReason, exc: Exception
@@ -939,16 +951,27 @@ class IngestionPipelineService:
         )
         if isinstance(result, SourceUnavailableDTO):
             return None
-        # A cache hit parsed no TEI, so `crops` is empty — hand back an EMPTY context rather than
-        # None. None would fall through to the `asset_metadata` branch in _index_paper, whose
-        # e-print figure extractor re-downloads the tarball AND the PDF to produce assets this
-        # rung does not use. The crops were already stored by the build that filled the cache.
         # Skip the context entirely when no asset store is wired: carrying multi-MB PDF bytes
         # across chunking, embedding and the index upsert only to drop them is pure waste.
         if self._asset_store is None:
             return result, None
-        ctx = _TeiAssetContext(crops=() if result.cached else tuple(crops), pdf=pdf)
-        return result, ctx
+        if result.cached:
+            # A cache hit parsed no TEI, so there are no crops to render — and none needed, the
+            # build that filled the cache stored them. Hand back an EMPTY context rather than
+            # None: None falls through to the `asset_metadata` branch in _index_paper, whose
+            # e-print figure extractor re-downloads the tarball AND the PDF for assets this rung
+            # does not use. (pdf=b"" so the bytes are not kept alive through embedding.)
+            return result, _TeiAssetContext(crops=(), pdf=b"")
+        if not crops:
+            # FRESH build whose TEI carried no coordinates (a GROBID deployment can drop
+            # teiCoordinates): the crop branch would silently no-op while the doc-model's figure
+            # blocks still reference assetIds. Fall back to the e-print extractor branch (None →
+            # `asset_metadata` in _index_paper) — the same asset_id scheme, and the path this
+            # population used before the GROBID rung existed. Metric'd: dangling figure refs are
+            # otherwise invisible in observability.
+            self._observability.emit_metric("ingestion.docmodel.grobid_rung_no_coords", 1.0, {})
+            return result, None
+        return result, _TeiAssetContext(crops=tuple(crops), pdf=pdf)
 
     def _walk_ladder(
         self, metadata: MetadataRecord, figure_specs: list[FigureSpec] | None = None

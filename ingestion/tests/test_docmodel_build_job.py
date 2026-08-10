@@ -220,41 +220,113 @@ def test_build_doc_model_stays_unavailable_when_grobid_rejects_the_pdf() -> None
     )
 
 
-def test_grobid_rung_reports_an_empty_context_on_a_cache_hit() -> None:
-    # A cache hit parses no TEI, so the rung has no crop specs to hand over. Reporting that as
-    # "no asset context" (None) made _index_paper select the arXiv e-print branch instead, whose
-    # extractor re-downloads the tarball AND the PDF to build assets this rung never uses. An
-    # EMPTY context keeps the crop branch selected, and that branch correctly does nothing —
-    # the crops were already stored by the build that filled the cache.
+def test_grobid_rung_asset_context_tristate() -> None:
+    # The rung's asset context distinguishes three situations _index_paper must not confuse:
+    #   fresh build WITH coords  → context carrying the crops (crop branch renders them);
+    #   fresh build, NO coords   → None: fall back to the e-print extractor branch (the path this
+    #                              population used before the rung existed) + a metric — a silent
+    #                              no-op left the doc-model's figure assetIds dangling invisibly;
+    #   cache hit                → EMPTY context: stay on the crop branch and do nothing, the
+    #                              build that filled the cache already stored the crops (None here
+    #                              would re-download the tarball AND PDF via the e-print branch).
     class _AssetStore:
         def store_assets(self, *a):  # pragma: no cover - must not be reached
-            raise AssertionError("a cache hit has nothing to store")
+            raise AssertionError("this test never renders/stores")
 
         def remove_assets(self, paper_id):  # pragma: no cover - not exercised
             pass
 
+    coords_tei = (
+        '<TEI xmlns="http://www.tei-c.org/ns/1.0"><text><body><div><head>M</head>'
+        "<p>Prose body.</p>"
+        '<figure coords="1,5,6,30,12"><head>Figure 1</head><figDesc>d</figDesc></figure>'
+        "</div></body></text></TEI>"
+    )
     metadata = sample_metadata()
+
+    # Fresh build with coordinates: crops travel in the context.
     store = _FakeStore()
     pipeline, _, _, _, _ = build_test_pipeline(
         arxiv=FakeArxivSource([metadata], pdf=b"%PDF-fake"),
         doc_model_builder=_builder(_FakeSource(None), store),
-        grobid=_FakeGrobid(_ARXIV_GROBID_TEI),
+        grobid=_FakeGrobid(coords_tei),
         asset_store=_AssetStore(),
     )
-
     fresh = pipeline._grobid_doc_model(metadata)
     assert fresh is not None
     fresh_result, fresh_ctx = fresh
     assert fresh_result.cached is False
-    assert fresh_ctx is not None and fresh_ctx.crops == ()  # this TEI carries no crop coords
+    assert fresh_ctx is not None and len(fresh_ctx.crops) == 1
 
-    store._cached = store.put_calls[0]  # the next build hits the cache
+    # Cache hit: EMPTY context, not None.
+    store._cached = store.put_calls[0]
     cached = pipeline._grobid_doc_model(metadata)
     assert cached is not None
     cached_result, cached_ctx = cached
     assert cached_result.cached is True
-    # NOT None — None would hand the paper to the e-print figure extractor.
     assert cached_ctx is not None and cached_ctx.crops == ()
+
+    # Fresh build with NO coordinates: None (e-print fallback) + the visibility metric.
+    store2 = _FakeStore()
+    pipeline2, _, _, _, observability2 = build_test_pipeline(
+        arxiv=FakeArxivSource([metadata], pdf=b"%PDF-fake"),
+        doc_model_builder=_builder(_FakeSource(None), store2),
+        grobid=_FakeGrobid(_ARXIV_GROBID_TEI),  # no coords anywhere
+        asset_store=_AssetStore(),
+    )
+    no_coords = pipeline2._grobid_doc_model(metadata)
+    assert no_coords is not None
+    _result, no_coords_ctx = no_coords
+    assert no_coords_ctx is None
+    assert any(
+        m[0] == "ingestion.docmodel.grobid_rung_no_coords" for m in observability2.metrics
+    )
+
+
+def test_lazy_build_doc_model_stores_the_grobid_crops(monkeypatch) -> None:
+    # The lazy BUILD_DOC_MODEL path caches the doc-model it builds — so a fresh GROBID build here
+    # must ALSO store its crops. Discarding them left a cached doc-model whose figure blocks
+    # reference assets never rendered, and every later eager pass hit the cache and stored
+    # nothing: the gap was permanent.
+    def fake_crops(pdf, specs, *, paper_id, version):
+        return [
+            SimpleNamespace(meta=SimpleNamespace(asset_id=spec.asset_id), image=b"img")
+            for spec in specs
+        ]
+
+    monkeypatch.setattr(application_module, "crop_assets_from_specs", fake_crops)
+
+    class _RecordingAssetStore:
+        def __init__(self) -> None:
+            self.stored: list[tuple[str, int, int]] = []
+
+        def store_assets(self, paper_id, version, assets):
+            self.stored.append((paper_id, version, len(assets)))
+
+        def remove_assets(self, paper_id):  # pragma: no cover - not exercised
+            pass
+
+    coords_tei = (
+        '<TEI xmlns="http://www.tei-c.org/ns/1.0"><text><body><div><head>M</head>'
+        "<p>Prose body.</p>"
+        '<figure coords="1,5,6,30,12"><head>Figure 1</head><figDesc>d</figDesc></figure>'
+        "</div></body></text></TEI>"
+    )
+    metadata = sample_metadata()
+    asset_store = _RecordingAssetStore()
+    pipeline, _, _, _, _ = build_test_pipeline(
+        arxiv=FakeArxivSource([metadata], pdf=b"%PDF-fake"),
+        doc_model_builder=_builder(_FakeSource(None), _FakeStore()),
+        grobid=_FakeGrobid(coords_tei),
+        asset_store=asset_store,
+    )
+
+    result = pipeline.build_doc_model(
+        IngestionJob(job_id="b-lc", kind=JobKind.BUILD_DOC_MODEL, arxiv_ref=metadata.arxiv_ref)
+    )
+
+    assert result.status == "ok"
+    assert asset_store.stored == [(metadata.paper_id, metadata.version, 1)]
 
 
 def test_build_doc_model_stays_unavailable_when_tei_has_no_body() -> None:
