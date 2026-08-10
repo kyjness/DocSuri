@@ -570,3 +570,57 @@ def test_a_grid_whose_cells_are_all_blank_is_re_read_too() -> None:
     filled = dict(_MERGED)
     filled["rows"] = [{"cells": [{"text": "Method"}, {"text": "0.696"}]}]
     assert tables_needing_repair(_doc(filled), [_SPEC]) == []
+
+
+# --- 실논문 실패 원인에서 나온 회귀 (2026-08-10) ------------------------------
+#
+# 50편 표본에서 표 212개 중 61개가 셀이 붙은 채 남았다. 미수리를 분류했더니 검증 게이트에서
+# 거부된 것이 44%였고, 그중 다수의 원인이 아래 둘이다 — 재구성이 틀린 게 아니라 페이지 쪽을
+# 잘못 읽고 있었다.
+
+
+def test_a_minus_printed_as_a_unicode_sign_still_matches_the_cell() -> None:
+    """Papers set a minus as U+2212; an extractor's cell uses ASCII "-". Read literally the two
+    sides disagree about the same value, and one verified rebuild was refused over "-5 -4 -3 -2"."""
+    doc = _doc(
+        {
+            "id": "s1.tbl1",
+            "type": "table",
+            "assetRef": {"assetId": _ASSET, "type": "table", "ordinal": 0},
+            "rows": [{"cells": [{"text": "lr"}, {"text": "-5 -4 -3"}]}],
+        }
+    )
+    rebuilt = ExtractedTable(page=3, bbox=_REBUILT.bbox, rows=(("lr", "-5", "-4", "-3"),))
+
+    # The page prints them with the typographic minus, and with the ASCII one they already matched.
+    assert apply_repairs(doc, [_SPEC], [rebuilt], _printed("lr −5 −4 −3")) == 1
+
+
+def test_a_rotated_row_label_is_read_from_either_end() -> None:
+    """pdfplumber orders a rotated run geometrically, so a top-to-bottom label comes back
+    backwards ("elbmesnE" for "Ensemble"). The extractor reads it the right way round, and the
+    mismatch refused a correctly rebuilt table over a handful of tokens."""
+    from docsuri_ingestion.docmodel.table_repair import _word_readings
+
+    assert _word_readings({"text": "elbmesnE", "upright": False}) == "elbmesnE Ensemble"
+    # Horizontal text is compared exactly as before.
+    assert _word_readings({"text": "Ensemble", "upright": True}) == "Ensemble"
+    # Anything holding a digit is left alone: reversing "12.5" would mint "5.21", a value the page
+    # never prints — the one thing verification exists to refuse.
+    assert _word_readings({"text": "12.5", "upright": False}) == "12.5"
+
+
+def test_a_rebuild_matching_only_a_rotated_label_verifies() -> None:
+    doc = _doc(
+        {
+            "id": "s1.tbl1",
+            "type": "table",
+            "assetRef": {"assetId": _ASSET, "type": "table", "ordinal": 0},
+            "rows": [{"cells": [{"text": "Ensemble"}, {"text": "0.90 0.80 0.70"}]}],
+        }
+    )
+    rebuilt = ExtractedTable(
+        page=3, bbox=_REBUILT.bbox, rows=(("Ensemble", "0.90", "0.80", "0.70"),)
+    )
+    # As the reader hands it back for a rotated label: both readings, digits untouched.
+    assert apply_repairs(doc, [_SPEC], [rebuilt], _printed("elbmesnE Ensemble 0.90 0.80 0.70")) == 1

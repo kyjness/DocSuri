@@ -295,7 +295,7 @@ def _table_extractor(settings: IngestionSettings) -> TableExtractorPort | None:
     def build() -> TableExtractorPort:
         from .adapters.docling_tables import DoclingTableExtractor
 
-        return DoclingTableExtractor()
+        return DoclingTableExtractor(max_pages=settings.docling_max_pages)
 
     return cast(
         "TableExtractorPort | None", _optional_reader(settings.table_extractor, "docling", build)

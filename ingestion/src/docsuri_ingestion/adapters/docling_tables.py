@@ -35,7 +35,18 @@ class DoclingTableExtractor:
         except ImportError as exc:  # pragma: no cover - optional extra
             raise RuntimeError(_DOCLING_MISSING) from exc
 
-        wanted = sorted({int(p) for p in pages if p and p > 0})[: self._max_pages]
+        suspect = sorted({int(p) for p in pages if p and p > 0})
+        wanted = suspect[: self._max_pages]
+        if len(suspect) > len(wanted):
+            # The cap is a budget device, but it used to be INVISIBLE: a candidate on a dropped
+            # page is never re-read, and downstream that is indistinguishable from "the extractor
+            # found nothing there". Measured over 50 papers, one paper spread its candidates over
+            # 14 pages and lost 5 of them (4% of all candidates) this way, counted as match
+            # failures. Say what was dropped so the batch can price raising the cap.
+            log.warning(
+                "docling page cap: re-reading %d of %d suspect pages, skipping %s",
+                len(wanted), len(suspect), suspect[self._max_pages :],
+            )
         if not wanted:
             return ()
         # Built once and reused for the life of this extractor. Constructing it loads the

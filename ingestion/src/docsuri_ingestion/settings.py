@@ -110,6 +110,10 @@ class IngestionSettings(BaseModel):
     # the optional extra is installed; "off" disables it; "docling" demands it. Only the PDF path
     # runs it, and a rebuilt table is kept only when every number verifies against the page.
     table_extractor: str = Field(default="auto", alias="DOCSURI_TABLE_EXTRACTOR")
+    # Suspect pages one paper may spend on the Docling re-read. A page costs seconds, so a
+    # pathological paper must not stall the pipeline behind a best-effort repair — but the cap
+    # also silently drops candidates, so the batch has to be able to price raising it.
+    docling_max_pages: int = Field(default=12, alias="DOCSURI_DOCLING_MAX_PAGES")
     # OCR of the formula crops the PDF path produces — same auto/off/"pix2tex" contract. Recovered
     # LaTeX is indexed, never rendered; see docmodel/formula_ocr.py.
     formula_reader: str = Field(default="auto", alias="DOCSURI_FORMULA_READER")

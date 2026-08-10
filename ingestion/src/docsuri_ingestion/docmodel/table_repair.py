@@ -37,6 +37,12 @@ _NUMBER_RE = re.compile(r"(?<![A-Za-z\d.])-?\d+(?:\.\d+)?(?![A-Za-z\d])")
 # would fuse the neighbouring values of "0.771 0.775". This is never applied to the printed pool:
 # there the spacing is the page's own, and rewriting it invents values the page does not print.
 _INNER_SPACE_RE = re.compile(r"(?<=\.)\s+(?=\d)|(?<=\d)\s+(?=\.)")
+# Papers set a minus as U+2212 (or a dash from the same family), while a table extractor's cell
+# uses ASCII "-". Read literally, the two sides disagree about the SAME value: a cell's "-5" was
+# looked for among page numbers that only ever held "5", and one verified rebuild was refused over
+# exactly that ("-5 -4 -3 -2" on arXiv:2409.08036). Normalised identically on both sides, because a
+# one-sided rewrite would replace this asymmetry with another.
+_MINUS_SIGNS = str.maketrans({"−": "-", "–": "-", "‐": "-", "‑": "-"})
 # Word-gap tolerance as a fraction of font size, for reading the printed pool. pdfplumber's own
 # default is an absolute 3pt, which is wider than the space of a 9-10pt paper and glued whole
 # regions into one token; a space is proportional to the font, so the threshold should be too.
@@ -211,7 +217,7 @@ def _normalise(text: object) -> str:
 
 def _cell_numbers(text: str) -> list[str]:
     """Numbers in a cell, healing a decimal an extractor split across a space ("4. 69%")."""
-    return _NUMBER_RE.findall(_INNER_SPACE_RE.sub("", text))
+    return _NUMBER_RE.findall(_INNER_SPACE_RE.sub("", text.translate(_MINUS_SIGNS)))
 
 
 def _page_numbers(text: str) -> list[str]:
@@ -221,8 +227,11 @@ def _page_numbers(text: str) -> list[str]:
     already delimited, so rejoining "4. 69" there recovers what it meant; the region is running
     text where "avg. 0.85" and "4. 69 patients" are ordinary, and healing them either destroys a
     printed value or manufactures one that was never on the page.
+
+    The MINUS normalisation is not that kind of rewrite and is applied to BOTH sides: it changes
+    which character counts as a sign, not where a value begins or ends.
     """
-    return _NUMBER_RE.findall(text)
+    return _NUMBER_RE.findall(text.translate(_MINUS_SIGNS))
 
 
 def _words(text: str) -> list[str]:
@@ -298,6 +307,27 @@ def _proven(
     return all(token in available for token in new)
 
 
+def _word_readings(word: dict) -> str:
+    """A word as the reader returned it, plus the other reading when the page draws it ROTATED.
+
+    pdfplumber orders a run geometrically, and for a top-to-bottom label that comes out backwards:
+    page 31 of arXiv:2409.08036 sets its row-group labels rotated and the reader returns
+    ``elbmesnE``, ``DSN``, ``EN``, ``TN`` for "Ensemble", "NSD", "NE", "NT". The table extractor
+    reads them the right way round, so verification then refused a correctly rebuilt 50-row table
+    over four tokens out of 891.
+
+    Which end a rotated run starts from is genuinely ambiguous to a geometric reader, so both
+    readings are offered — and ONLY for the words the page itself marks rotated (7 of 410 on that
+    page), so ordinary horizontal text is compared exactly as before. Anything holding a digit is
+    excluded: reversing "12.5" would mint "5.21", a value the page never prints, which is the one
+    thing verification exists to refuse (C-2). Pure.
+    """
+    text = str(word.get("text") or "")
+    if word.get("upright", True) or not text or any(ch.isdigit() for ch in text):
+        return text
+    return f"{text} {text[::-1]}"
+
+
 def printed_text(pdf: bytes) -> PrintedText:
     """A reader of the text actually printed in a region of the PDF.
 
@@ -351,7 +381,7 @@ def printed_text(pdf: bytes) -> PrintedText:
                     min(float(page.height), bbox[3]),
                 )
                 words = page.crop(region).extract_words(x_tolerance_ratio=_GAP_RATIO) or ()
-                text = " ".join(str(w.get("text") or "") for w in words)
+                text = " ".join(_word_readings(w) for w in words)
         except TypeError:
             # Not an unreadable page — the extractor did not accept the call. ``x_tolerance_ratio``
             # arrived in pdfplumber 0.11.1, so an environment resolving lower raises here on EVERY
