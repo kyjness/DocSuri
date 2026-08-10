@@ -733,3 +733,30 @@ def test_a_caption_too_short_to_name_a_table_matches_nothing() -> None:
     tables = [_far("Table 2: Complexity analysis.")]
 
     assert apply_repairs(_doc(_EMPTY), [spec], tables, _printed("A 1 B 2")) == 0
+
+
+def test_a_label_the_strip_regex_does_not_know_cannot_hide_the_caption() -> None:
+    """The spec caption is label-free by construction (the TEI walk files the label into <head>),
+    but the re-read caption is the caption as PRINTED — and the label strip only knows arabic and
+    roman numerals. An appendix label ("Table A1:") or a leading "(a)" used to score a strict
+    prefix comparison 0 against a caption it quotes verbatim, and the repair was silently lost."""
+    spec = _spec_with(_TRUE)
+    for label in ("Table A1: ", "TABLE S2. ", "(a) Table 1: ", "Table 5 (continued): "):
+        tables = [_far(label + _TRUE)]
+        doc = _doc(_EMPTY)
+
+        assert apply_repairs(doc, [spec], tables, _printed("A 1 B 2")) == 1, label
+        assert _rows(doc) == [["A", "1"], ["B", "2"]]
+
+
+def test_captions_that_share_an_opening_but_both_diverge_are_refused() -> None:
+    """The agreed stretch must reach an end — the whole of the spec's caption, or the end of the
+    re-read's. Two captions that merely share an opening and then both go their own way agree
+    nowhere that both speak: with the winner's own region as the verification yardstick, a sibling
+    matched on a shared opening would verify against ITSELF and the wrong rows would be written."""
+    shared = "Accuracy (%) under different conditions averaged over"  # >30 chars normalised
+    spec = _spec_with(f"{shared} backbones of the Domainbed benchmark suite.")
+    # Only the WRONG sibling was extracted; its caption diverges after the shared opening.
+    tables = [_far(f"Table 6: {shared} datasets of the Continual TTA benchmark suite.")]
+
+    assert apply_repairs(_doc(_EMPTY), [spec], tables, _printed("A 1 B 2")) == 0

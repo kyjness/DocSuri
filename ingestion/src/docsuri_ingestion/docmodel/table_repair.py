@@ -229,6 +229,9 @@ def _caption_match(spec: AssetCropSpec, tables: Sequence[ExtractedTable]) -> Ext
     ``_CAPTION_MIN_AGREEMENT_CHARS``. What is matched is never trusted on its own: ``_verified``
     judges the rebuilt grid against the page either way.
 
+    The agreement is measured by ``_agreement_len``, which tolerates leading text on the re-read
+    side and demands the agreed stretch reach an end — see there for why either alone fails.
+
     The caption comes off the crop spec rather than the block: they are the same string, written
     from the same variable in the same walk (``tei._table_block`` hands it to ``_record_crop``),
     and taking it here keeps both matchers to one ``(spec, tables)`` shape.
@@ -237,7 +240,7 @@ def _caption_match(spec: AssetCropSpec, tables: Sequence[ExtractedTable]) -> Ext
     if len(caption) < _CAPTION_MIN_CHARS:
         return None
     scored = [
-        (_common_prefix_len(caption, _normalise(table.caption)), table)
+        (_agreement_len(caption, _normalise(table.caption)), table)
         for table in tables
         if table.page == spec.page
     ]
@@ -248,14 +251,33 @@ def _caption_match(spec: AssetCropSpec, tables: Sequence[ExtractedTable]) -> Ext
     return winners[0] if len(winners) == 1 else None
 
 
-def _common_prefix_len(left: str, right: str) -> int:
-    """How many leading characters two normalised captions agree on. Pure."""
-    length = 0
-    for a, b in zip(left, right, strict=False):
-        if a != b:
-            break
-        length += 1
-    return length
+def _agreement_len(spec_caption: str, read_caption: str) -> int:
+    """How much of the block's caption the re-read caption quotes, or 0 when they disagree.
+
+    Two rules, each carrying a measured failure:
+
+    * The opening of ``spec_caption`` may sit at ANY offset in ``read_caption``, not only at the
+      start. GROBID's caption is label-free by construction (the TEI walk files the label into
+      ``<head>``) while the re-read caption is the caption as PRINTED — and ``_CAPTION_LABEL_RE``
+      only knows arabic and roman numerals, so an appendix label ("Table A1:", "TABLE S2.") or a
+      leading "(a)" survived normalisation and scored a strict prefix comparison 0 against a
+      caption it quotes verbatim. Searching for the opening instead makes every leading spelling
+      irrelevant without enumerating label grammars.
+    * The agreed stretch must REACH AN END — the whole of the spec's caption, or the end of the
+      re-read's. Truncation and a contaminated tail both pass (the intact side is consumed whole),
+      but two captions that merely share an opening and then both go their own way agree nowhere
+      that both speak: with the winner's own region as the verification yardstick, a sibling
+      matched on a shared 30-character opening would verify against ITSELF, and the wrong table's
+      rows would be written under this block's caption.
+
+    Pure."""
+    if spec_caption and spec_caption in read_caption:
+        return len(spec_caption)  # the whole caption is quoted, wherever it sits
+    ceiling = min(len(spec_caption), len(read_caption))
+    for length in range(ceiling, _CAPTION_MIN_AGREEMENT_CHARS - 1, -1):
+        if read_caption.endswith(spec_caption[:length]):
+            return length  # the re-read caption ends inside the spec's — truncation, not sibling
+    return 0
 
 
 def _normalise(text: object) -> str:
