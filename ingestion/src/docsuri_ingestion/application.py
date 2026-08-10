@@ -900,9 +900,19 @@ class IngestionPipelineService:
             # `only` cache mode with a miss — no bytes, no rung. Not an error.
             self._observability.emit_metric("ingestion.docmodel.grobid_rung_no_pdf", 1.0, {})
             return None
-        tei = self._resilience.dependency_call(
-            "grobid", "extract_tei", lambda: grobid.extract_tei(pdf)
-        )
+        try:
+            tei = self._resilience.dependency_call(
+                "grobid", "extract_tei", lambda: grobid.extract_tei(pdf)
+            )
+        except PermanentIngestionError:
+            # GROBID REJECTED this PDF outright (400/415/422 — malformed/oversized/unsupported).
+            # That is "the rung cannot produce a doc-model for this paper", not a fault to bubble:
+            # the lazy BUILD_DOC_MODEL contract keeps the result source_unavailable (viewer links
+            # out), and letting this escape turned every such already-indexed paper into an
+            # endless DLQ + failure-signal loop while the viewer polled a build that can never
+            # land. Transient GROBID faults (5xx/timeouts) still propagate and retry.
+            self._observability.emit_metric("ingestion.docmodel.grobid_rung_rejected", 1.0, {})
+            return None
         crops: list[AssetCropSpec] = []
         result = builder.build_from_tei(
             metadata.paper_id,

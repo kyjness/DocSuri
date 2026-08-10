@@ -14,7 +14,7 @@ from docsuri_shared.dtos import DocModel, SourceTier
 import docsuri_ingestion.application as application_module
 from docsuri_ingestion.adapters.local import FakeArxivSource, sample_metadata
 from docsuri_ingestion.docmodel.builder import DocModelBuilder
-from docsuri_ingestion.domain.enums import DedupDecision, JobKind
+from docsuri_ingestion.domain.enums import DedupDecision, FailureReason, JobKind
 from docsuri_ingestion.domain.errors import PermanentIngestionError
 from docsuri_ingestion.domain.models import IngestionJob
 from docsuri_ingestion.full_text_extraction import FullTextExtractionError
@@ -187,6 +187,36 @@ def test_build_doc_model_recovers_via_grobid_rung() -> None:
         # Same rung name the eager path reports — one ladder, one vocabulary.
         metric[0] == "ingestion.docmodel.build" and metric[2]["status"] == "grobid"
         for metric in observability.metrics
+    )
+
+
+def test_build_doc_model_stays_unavailable_when_grobid_rejects_the_pdf() -> None:
+    # GROBID 4xx-rejects the PDF (malformed/unsupported): a PERMANENT verdict about this paper,
+    # not a worker fault. The lazy job's contract says the result STAYS source_unavailable
+    # (viewer links out); letting the error escape turned every such already-indexed paper into
+    # an endless DLQ + failure-signal loop while the viewer polled forever.
+    class _RejectingGrobid:
+        def extract_tei(self, pdf: bytes) -> str:
+            raise PermanentIngestionError(
+                "GROBID rejected PDF", reason=FailureReason.PARSE_FAILURE, stage="grobid"
+            )
+
+    metadata = sample_metadata()
+    store = _FakeStore()
+    pipeline, _, _, _, observability = build_test_pipeline(
+        arxiv=FakeArxivSource([metadata], pdf=b"%PDF-fake"),
+        doc_model_builder=_builder(_FakeSource(None), store),
+        grobid=_RejectingGrobid(),
+    )
+
+    result = pipeline.build_doc_model(
+        IngestionJob(job_id="b-rej", kind=JobKind.BUILD_DOC_MODEL, arxiv_ref=metadata.arxiv_ref)
+    )
+
+    assert result.status == "source_unavailable"  # NOT an exception
+    assert store.put_calls == []
+    assert any(
+        m[0] == "ingestion.docmodel.grobid_rung_rejected" for m in observability.metrics
     )
 
 
