@@ -24,6 +24,7 @@ import hashlib
 import json
 import os
 from datetime import UTC, datetime
+from functools import cache
 from pathlib import Path
 
 import pytest
@@ -54,12 +55,14 @@ def _load(paper_id: str) -> str:
         return handle.read()
 
 
+@cache
 def _load_tei(paper_id: str = TRIPLE) -> str:
     path = FIXTURE_ROOT / "grobid" / f"{paper_id}.tei.xml.gz"
     with gzip.open(path, "rt", encoding="utf-8") as handle:
         return handle.read()
 
 
+@cache
 def _load_pdf(paper_id: str = TRIPLE) -> bytes:
     return (FIXTURE_ROOT / "pdf" / f"{paper_id}.pdf").read_bytes()
 
@@ -428,7 +431,13 @@ def _ids_by_caption(prefixes, paper_id: str = TRIPLE) -> dict[str, str]:
     return ids
 
 
+@cache
 def _rendered_bboxes() -> dict[str, tuple]:
+    """Where every crop of the TRIPLE paper actually landed, keyed by asset id.
+
+    Cached because this renders the whole PDF at 2x, WebP-encodes every crop and now also runs
+    pdfplumber over the table pages — four tests want the same answer, and re-deriving it per test
+    is by far the most expensive thing in this file. The result is read-only to its callers."""
     from docsuri_ingestion.asset_extraction import crop_assets_from_specs
 
     specs = tei_crop_specs(_load_tei(), paper_id=TRIPLE, version=1)
