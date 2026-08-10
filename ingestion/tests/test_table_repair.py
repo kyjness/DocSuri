@@ -624,3 +624,82 @@ def test_a_rebuild_matching_only_a_rotated_label_verifies() -> None:
     )
     # As the reader hands it back for a rotated label: both readings, digits untouched.
     assert apply_repairs(doc, [_SPEC], [rebuilt], _printed("elbmesnE Ensemble 0.90 0.80 0.70")) == 1
+
+
+# --- 캡션 폴백: 고정 프로브가 두 방향으로 실패하던 것 (2026-08-10) --------------
+#
+# GROBID가 빈 표에는 좌표를 안 줘서 기하 매칭이 구조적으로 불가능하고, 그때 캡션이 유일한
+# 식별 수단이 된다. 50편 census에서 남은 빈 표 7건 중 5건이 이 지점에서 막혀 있었다.
+
+_EMPTY = {
+    "id": "s1.tbl1",
+    "type": "table",
+    "assetRef": {"assetId": _ASSET, "type": "table", "ordinal": 0},
+    "rows": [],
+}
+
+
+def _far(caption: str, rows=(("A", "1"), ("B", "2"))) -> ExtractedTable:
+    """A rebuild whose region does NOT overlap the spec — the caption is the only route to it."""
+    return ExtractedTable(page=3, bbox=(10.0, 600.0, 300.0, 700.0), rows=rows, caption=caption)
+
+
+def _spec_with(caption: str) -> AssetCropSpec:
+    return replace(_SPEC, caption=caption)
+
+
+_TRUE = "Four-dimensional case. Performances on P 4 of the GINN-based detector."
+
+
+def test_a_caption_grobid_ran_into_the_next_float_still_matches() -> None:
+    """GROBID appends what follows the caption — here the next table's "Algorithm 2" arrives as
+    "rithm 2". A fixed 60-char probe reached into that tail and matched nothing, though the real
+    caption (56 chars normalised) is quoted exactly."""
+    spec = _spec_with(_TRUE + " rithm 2 (Λ min = 2/2 (hmax) = 2 -4 ) on a piece-wise")
+    tables = [
+        _far("Table 3: Results of Algorithm 2 with respect to the Shepp-Logan phantom."),
+        _far("Table 4: " + _TRUE),
+        _far("Table 5: Results of Algorithm 2 with respect to test function."),
+    ]
+    doc = _doc(_EMPTY)
+
+    assert apply_repairs(doc, [spec], tables, _printed("A 1 B 2")) == 1
+    assert _rows(doc) == [["A", "1"], ["B", "2"]]
+
+
+def test_sibling_captions_are_separated_by_where_they_diverge() -> None:
+    """Two tables opening identically used to read as an ambiguous page and be refused. They part
+    at one word, and the longest agreement finds it."""
+    shared = (
+        "Accuracy (%) under different experimental conditions. "
+        "The values are averaged for each"
+    )
+    spec = _spec_with(f"{shared} backbone and TTA loss of the Domainbed benchmark.")
+    tables = [
+        _far(f"Table 5: {shared} backbone and TTA loss of the Domainbed benchmark."),
+        _far(
+            f"Table 6: {shared} dataset and TTA loss of the Continual TTA benchmark.",
+            (("C", "3"),),
+        ),
+    ]
+    doc = _doc(_EMPTY)
+
+    assert apply_repairs(doc, [spec], tables, _printed("A 1 B 2")) == 1
+    assert _rows(doc) == [["A", "1"], ["B", "2"]]
+
+
+def test_captions_that_agree_equally_far_are_still_refused() -> None:
+    """A tie means the captions do not identify a table, and filing one table's numbers under
+    another's caption is the misattribution this fallback exists to avoid."""
+    spec = _spec_with(_TRUE)
+    tables = [_far("Table 4: " + _TRUE), _far("Table 7: " + _TRUE, (("C", "3"),))]
+
+    assert apply_repairs(_doc(_EMPTY), [spec], tables, _printed("A 1 B 2")) == 0
+
+
+def test_a_caption_too_short_to_name_a_table_matches_nothing() -> None:
+    spec = _spec_with("Complexity analysis.")
+
+    tables = [_far("Table 2: Complexity analysis.")]
+
+    assert apply_repairs(_doc(_EMPTY), [spec], tables, _printed("A 1 B 2")) == 0

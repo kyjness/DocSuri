@@ -59,10 +59,10 @@ _CAPTION_LABEL_RE = re.compile(r"^\s*(?:table|tab\.?)\s*[IVXLC\d]+\s*[:.]?\s*", 
 _NON_ALNUM_RE = re.compile(r"[^0-9a-z]+", re.IGNORECASE)
 # Under this a caption is too generic to identify a table on its own ("Results", "Ablation").
 _CAPTION_MIN_CHARS = 30
-# Compare an OPENING stretch, not the whole caption: the two readers agree on where a caption
-# starts but not where it ends — one truncates a long one, the other runs it into the following
-# paragraph — so demanding the whole of it made a matching caption look like a mismatch.
-_CAPTION_PROBE_CHARS = 60
+# The two readers agree on where a caption STARTS but not where it ends — one truncates a long
+# one, the other runs it into the following paragraph — so the match is made on the opening
+# stretch. How long that stretch may be is not fixed: see ``_caption_match``, where a fixed length
+# was both too long (a contaminated tail) and too short (sibling captions) on the same sample.
 
 
 def tables_needing_repair(doc: dict, crops: Sequence[AssetCropSpec]) -> list[AssetCropSpec]:
@@ -184,23 +184,51 @@ def _caption_match(spec: AssetCropSpec, tables: Sequence[ExtractedTable]) -> Ext
     check downstream would not catch the misattribution. The caption does choose: it matched
     "Table 2 ..." exactly and separated it from the "Table 3 ..." grid 12pt away.
 
-    Demanded strictly, because this runs precisely where geometry has already failed: the block's
-    whole caption must appear in the candidate's, and exactly one candidate on the page may match.
-    An ambiguous page is left unrepaired.
+    The table is the one whose caption AGREES WITH THIS BLOCK'S FOR LONGEST, and it has to win
+    alone. A fixed-length probe cannot do this job, because the two readers disagree about where a
+    caption ends in both directions at once:
+
+    * GROBID runs a caption into what follows it, so the block's version carries a tail the page
+      never gave this table — "…of the GINN-based detector. rithm 2 (Λ min …", where "rithm 2" is
+      the NEXT table's "Algorithm 2". A 60-character probe reaches into that tail and matches
+      nothing, although the real caption (56 characters normalised) is quoted exactly.
+    * Sibling tables share an opening — "Accuracy (%) under different experimental conditions. The
+      values are averaged for each …" is the start of BOTH Table 5 and Table 6, which parted only
+      at "backbone" against "dataset". A short probe matches both and the page reads as ambiguous.
+
+    Longest agreement settles both: the contaminated tail simply ends the agreement, and the
+    siblings are separated by the character where they diverge. Ambiguity is still refused — a tie
+    for longest means the captions do not identify a table — and a winner still has to clear
+    ``_CAPTION_MIN_CHARS``, below which a caption is too generic to name anything. What is matched
+    is never trusted on its own: ``_verified`` judges the rebuilt grid against the page either way.
 
     The caption comes off the crop spec rather than the block: they are the same string, written
     from the same variable in the same walk (``tei._table_block`` hands it to ``_record_crop``),
     and taking it here keeps both matchers to one ``(spec, tables)`` shape.
     """
-    caption = _normalise(spec.caption)[:_CAPTION_PROBE_CHARS]
+    caption = _normalise(spec.caption)
     if len(caption) < _CAPTION_MIN_CHARS:
         return None
-    hits = [
-        table
+    scored = [
+        (_common_prefix_len(caption, _normalise(table.caption)), table)
         for table in tables
-        if table.page == spec.page and caption in _normalise(table.caption)
+        if table.page == spec.page
     ]
-    return hits[0] if len(hits) == 1 else None
+    best = max((length for length, _ in scored), default=0)
+    if best < _CAPTION_MIN_CHARS:
+        return None
+    winners = [table for length, table in scored if length == best]
+    return winners[0] if len(winners) == 1 else None
+
+
+def _common_prefix_len(left: str, right: str) -> int:
+    """How many leading characters two normalised captions agree on. Pure."""
+    length = 0
+    for a, b in zip(left, right, strict=False):
+        if a != b:
+            break
+        length += 1
+    return length
 
 
 def _normalise(text: object) -> str:
