@@ -9,7 +9,11 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from docsuri_ingestion.docmodel.table_repair import apply_repairs, tables_needing_repair
+from docsuri_ingestion.docmodel.table_repair import (
+    PrintedRegion,
+    apply_repairs,
+    tables_needing_repair,
+)
 from docsuri_ingestion.domain.assets import AssetCropSpec, ExtractedTable
 from docsuri_ingestion.domain.enums import AssetType
 
@@ -42,9 +46,12 @@ def _doc(table: dict | None = None) -> dict:
     return {"sections": [{"id": "s1", "blocks": [dict(table or _MERGED)]}]}
 
 
-def _printed(text: str):
-    """The region's printed text, as the pdfplumber reader hands it back."""
-    return lambda page, bbox: text
+def _printed(text: str, rotated: tuple[str, ...] = ()):
+    """The region's printed text, as the pdfplumber reader hands it back.
+
+    ``rotated`` names the words the page draws turned on their side, which the reader reports
+    separately from the text so that only the verifier decides what that ambiguity earns."""
+    return lambda page, bbox: PrintedRegion(text, rotated)
 
 
 def _rows(doc: dict) -> list[list[str]]:
@@ -101,9 +108,9 @@ def test_verification_reads_the_extractors_own_region() -> None:
     doc = _doc()
     seen: list[tuple[float, float, float, float]] = []
 
-    def printed(page: int, bbox: tuple[float, float, float, float]) -> str:
+    def printed(page: int, bbox: tuple[float, float, float, float]) -> PrintedRegion:
         seen.append(bbox)
-        return _REGION
+        return PrintedRegion(_REGION)
 
     assert apply_repairs(doc, [_SPEC], [_REBUILT], printed) == 1
     assert seen == [_REBUILT.bbox]  # not a union with _SPEC.bbox
@@ -122,7 +129,7 @@ def test_an_unreadable_page_refuses_the_rebuild() -> None:
     """With no yardstick there is no verification, and an unverified rebuild is not applied."""
     doc = _doc()
 
-    assert apply_repairs(doc, [_SPEC], [_REBUILT], lambda page, bbox: "") == 0
+    assert apply_repairs(doc, [_SPEC], [_REBUILT], _printed("")) == 0
 
 
 def test_a_grid_from_another_region_is_not_used() -> None:
@@ -596,18 +603,20 @@ def test_a_minus_printed_as_a_unicode_sign_still_matches_the_cell() -> None:
     assert apply_repairs(doc, [_SPEC], [rebuilt], _printed("lr −5 −4 −3")) == 1
 
 
-def test_a_rotated_row_label_is_read_from_either_end() -> None:
+def test_the_reader_names_the_rotated_words_instead_of_folding_them_into_the_text() -> None:
     """pdfplumber orders a rotated run geometrically, so a top-to-bottom label comes back
-    backwards ("elbmesnE" for "Ensemble"). The extractor reads it the right way round, and the
-    mismatch refused a correctly rebuilt table over a handful of tokens."""
-    from docsuri_ingestion.docmodel.table_repair import _word_readings
+    backwards ("elbmesnE" for "Ensemble"). The reader reports that ambiguity SEPARATELY rather
+    than adding a second reading to the region's text — the text is the yardstick a rebuild is
+    measured against, and one that quietly contains more than the page does is not one."""
+    from docsuri_ingestion.docmodel.table_repair import _rotated_words
 
-    assert _word_readings({"text": "elbmesnE", "upright": False}) == "elbmesnE Ensemble"
-    # Horizontal text is compared exactly as before.
-    assert _word_readings({"text": "Ensemble", "upright": True}) == "Ensemble"
-    # Anything holding a digit is left alone: reversing "12.5" would mint "5.21", a value the page
-    # never prints — the one thing verification exists to refuse.
-    assert _word_readings({"text": "12.5", "upright": False}) == "12.5"
+    rotated = {"text": "elbmesnE", "upright": False}
+    upright = {"text": "Ensemble", "upright": True}
+    # Anything holding a digit is left out here, so no check downstream can ever reverse it:
+    # reversing "12.5" would mint "5.21", a value the page never prints.
+    numeric = {"text": "12.5", "upright": False}
+
+    assert _rotated_words([rotated, upright, numeric]) == ("elbmesnE",)
 
 
 def test_a_rebuild_matching_only_a_rotated_label_verifies() -> None:
@@ -622,8 +631,29 @@ def test_a_rebuild_matching_only_a_rotated_label_verifies() -> None:
     rebuilt = ExtractedTable(
         page=3, bbox=_REBUILT.bbox, rows=(("Ensemble", "0.90", "0.80", "0.70"),)
     )
-    # As the reader hands it back for a rotated label: both readings, digits untouched.
-    assert apply_repairs(doc, [_SPEC], [rebuilt], _printed("elbmesnE Ensemble 0.90 0.80 0.70")) == 1
+    # The page prints the label backwards and nothing else vouches for "Ensemble".
+    printed = _printed("elbmesnE 0.90 0.80 0.70", ("elbmesnE",))
+
+    assert apply_repairs(doc, [_SPEC], [rebuilt], printed) == 1
+
+
+def test_a_word_the_page_does_not_print_is_not_excused_by_an_unrelated_rotated_label() -> None:
+    """The allowance is a second reading of a rotated word, not a licence for any word. A token
+    that matches neither the page's text nor a reversed rotated label stays refused (C-2)."""
+    doc = _doc(
+        {
+            "id": "s1.tbl1",
+            "type": "table",
+            "assetRef": {"assetId": _ASSET, "type": "table", "ordinal": 0},
+            "rows": [{"cells": [{"text": "Ensemble"}, {"text": "0.90 0.80 0.70"}]}],
+        }
+    )
+    invented = ExtractedTable(
+        page=3, bbox=_REBUILT.bbox, rows=(("Ensemble", "Baseline", "0.90", "0.80", "0.70"),)
+    )
+    printed = _printed("elbmesnE 0.90 0.80 0.70", ("elbmesnE",))
+
+    assert apply_repairs(doc, [_SPEC], [invented], printed) == 0
 
 
 # --- 캡션 폴백: 고정 프로브가 두 방향으로 실패하던 것 (2026-08-10) --------------

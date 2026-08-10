@@ -22,12 +22,32 @@ import logging
 import re
 from collections import Counter
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from docsuri_ingestion.docmodel.parser import iter_blocks
 from docsuri_ingestion.domain.assets import AssetCropSpec, ExtractedTable
+from docsuri_ingestion.text_keys import alnum_key
 
 log = logging.getLogger("docsuri.ingestion.tables")
+
+
+@dataclass(frozen=True, slots=True)
+class PrintedRegion:
+    """What the page draws inside one region: its text, and which of those words are ROTATED.
+
+    The two are kept apart on purpose. ``text`` is the yardstick a rebuild is measured against, so
+    it has to stay literally what the reader reported — nothing may be added to it to make a match
+    easier. ``rotated`` records the words whose reading DIRECTION a geometric reader cannot settle,
+    and it is the verifier's business alone what allowance, if any, that earns (see ``_proven``).
+    """
+
+    text: str
+    rotated: tuple[str, ...] = ()
+
+
+# Reads what a page region prints: (page, bbox) -> PrintedRegion.
+PrintedText = Callable[[int, tuple[float, float, float, float]], PrintedRegion]
 
 # A number as a table reports one — never the digit inside an identifier like "HbA1c", which
 # would otherwise have to be found on the page for the rebuild to verify.
@@ -47,8 +67,6 @@ _MINUS_SIGNS = str.maketrans({"−": "-", "–": "-", "‐": "-", "‑": "-"})
 # default is an absolute 3pt, which is wider than the space of a 9-10pt paper and glued whole
 # regions into one token; a space is proportional to the font, so the threshold should be too.
 _GAP_RATIO = 0.15
-# Reads the text printed in one page region: (page, bbox) -> text.
-PrintedText = Callable[[int, tuple[float, float, float, float]], str]
 # Tokens a word-level check compares. One-character cells ("N", "-") carry no evidence either way.
 _WORD_RE = re.compile(r"[0-9a-z]{2,}", re.IGNORECASE)
 # A cell holding several numbers is the tell-tale of a merged row ("0.696 ± 0.015 0.011 ± 0.000").
@@ -56,13 +74,16 @@ _MERGED_CELL_NUMBERS = 3
 # The label each reader renders its own way ("Table 2 :" against "Table 2:"), dropped before the
 # two captions are compared — what identifies the table is the sentence after it.
 _CAPTION_LABEL_RE = re.compile(r"^\s*(?:table|tab\.?)\s*[IVXLC\d]+\s*[:.]?\s*", re.IGNORECASE)
-_NON_ALNUM_RE = re.compile(r"[^0-9a-z]+", re.IGNORECASE)
-# Under this a caption is too generic to identify a table on its own ("Results", "Ablation").
+# Under this a caption is too generic to identify a table on its own ("Results", "Ablation",
+# "Ablation study on the two components" is 33 and does identify one).
 _CAPTION_MIN_CHARS = 30
-# The two readers agree on where a caption STARTS but not where it ends — one truncates a long
-# one, the other runs it into the following paragraph — so the match is made on the opening
-# stretch. How long that stretch may be is not fixed: see ``_caption_match``, where a fixed length
-# was both too long (a contaminated tail) and too short (sibling captions) on the same sample.
+# How much of two captions must AGREE before the match is accepted. A separate number from the one
+# above even where they coincide today, because they answer different questions and move for
+# different reasons: raising the generic-caption floor to keep "Results" out would, if this were
+# the same constant, silently drop real repairs whose readers part company early. Measured on the
+# sweep's own case, the shortest caption that identified its table alone normalises to 56
+# characters, and the sibling pair that had to be told apart diverged at 71.
+_CAPTION_MIN_AGREEMENT_CHARS = 30
 
 
 def tables_needing_repair(doc: dict, crops: Sequence[AssetCropSpec]) -> list[AssetCropSpec]:
@@ -162,7 +183,13 @@ def _best_match(spec: AssetCropSpec, tables: Sequence[ExtractedTable]) -> Extrac
     sliver — which is why the fallback is reachable and in fact decides the majority (50 of 89).
     Only 3 candidates had geometry and caption disagree, all at cover 0.63-0.79 where geometry is
     the better witness. A minimum-cover threshold would therefore change 0 of 89 decisions at any
-    value the data supports, while costing recall if set higher. Left as it is, on evidence."""
+    value the data supports, while costing recall if set higher. Left as it is, on evidence.
+
+    Those figures describe ``spec.bbox`` as it was BEFORE the crop-framing change: the box is now
+    the ``<table>`` content region and its page comes from that element too, so the cover
+    distribution above has not been re-measured against today's input. Re-run the repair census
+    before quoting them again. Note also that the box this overlaps is GROBID's, not the regrown
+    one the renderer draws — regrowth is applied at render time and this matcher does not see it."""
     best, best_area = None, 0.0
     for table in tables:
         if table.page != spec.page:
@@ -198,9 +225,9 @@ def _caption_match(spec: AssetCropSpec, tables: Sequence[ExtractedTable]) -> Ext
 
     Longest agreement settles both: the contaminated tail simply ends the agreement, and the
     siblings are separated by the character where they diverge. Ambiguity is still refused — a tie
-    for longest means the captions do not identify a table — and a winner still has to clear
-    ``_CAPTION_MIN_CHARS``, below which a caption is too generic to name anything. What is matched
-    is never trusted on its own: ``_verified`` judges the rebuilt grid against the page either way.
+    for longest means the captions do not identify a table — and a winner still has to agree over
+    ``_CAPTION_MIN_AGREEMENT_CHARS``. What is matched is never trusted on its own: ``_verified``
+    judges the rebuilt grid against the page either way.
 
     The caption comes off the crop spec rather than the block: they are the same string, written
     from the same variable in the same walk (``tei._table_block`` hands it to ``_record_crop``),
@@ -215,7 +242,7 @@ def _caption_match(spec: AssetCropSpec, tables: Sequence[ExtractedTable]) -> Ext
         if table.page == spec.page
     ]
     best = max((length for length, _ in scored), default=0)
-    if best < _CAPTION_MIN_CHARS:
+    if best < _CAPTION_MIN_AGREEMENT_CHARS:
         return None
     winners = [table for length, table in scored if length == best]
     return winners[0] if len(winners) == 1 else None
@@ -239,8 +266,7 @@ def _normalise(text: object) -> str:
     r ∼ p (` — so quotes, spacing and brackets have to go before the comparison, not just case and
     the label each spells its own way ("Table 2 :" against "Table 2:").
     """
-    stripped = _CAPTION_LABEL_RE.sub("", str(text or ""), count=1)
-    return _NON_ALNUM_RE.sub("", stripped).lower()
+    return alnum_key(_CAPTION_LABEL_RE.sub("", str(text or ""), count=1))
 
 
 def _cell_numbers(text: str) -> list[str]:
@@ -273,7 +299,9 @@ def _overlap(a: tuple[float, ...], b: tuple[float, ...]) -> float:
     return width * height if width > 0 and height > 0 else 0.0
 
 
-def _verified(rows: Sequence[Any], rebuilt: Sequence[Sequence[str]], printed: str) -> bool:
+def _verified(
+    rows: Sequence[Any], rebuilt: Sequence[Sequence[str]], printed: PrintedRegion
+) -> bool:
     """Whether a rebuilt grid may replace the TEI cells.
 
     Two conditions, and they are the whole safety argument. Everything the rebuild places in a cell
@@ -295,18 +323,23 @@ def _verified(rows: Sequence[Any], rebuilt: Sequence[Sequence[str]], printed: st
     was worse than the seam: splitting "ResNet50" to heal a glued unit also minted a standalone
     "50" that the page never prints as a value, which is exactly the fabrication C-2 forbids.
     """
-    if not printed.strip():
+    if not printed.text.strip():
         return False
     # Each kind of token a rebuilt cell may claim, paired with how the same kind is read off the
-    # page. Words are read identically on both sides; numbers are not, because a cell and a page
-    # line disagree about what a numeral is glued to.
+    # page, and with the leniency that kind allows. Words are read identically on both sides;
+    # numbers are not, because a cell and a page line disagree about what a numeral is glued to.
+    reversible = frozenset(t for word in printed.rotated for t in _words(word))
     checks = [
-        (in_cell, set(on_page(printed)))
-        for in_cell, on_page in ((_cell_numbers, _page_numbers), (_words, _words))
+        (in_cell, set(on_page(printed.text)), lenient)
+        for in_cell, on_page, lenient in (
+            (_cell_numbers, _page_numbers, frozenset()),
+            (_words, _words, reversible),
+        )
         if any(in_cell(cell) for row in rebuilt for cell in row)
     ]
     return bool(checks) and all(
-        _proven(rows, rebuilt, in_cell, available) for in_cell, available in checks
+        _proven(rows, rebuilt, in_cell, available, lenient)
+        for in_cell, available, lenient in checks
     )
 
 
@@ -315,11 +348,23 @@ def _proven(
     rebuilt: Sequence[Sequence[str]],
     tokens: Callable[[str], list[str]],
     available: set[str],
+    reversible: frozenset[str] = frozenset(),
 ) -> bool:
     """The two conditions of ``_verified``, over whichever tokens that path compares.
 
     A rebuild with nothing to compare is refused rather than waved through — verifying against an
     empty set would let any grid pass, which is the one outcome this check exists to prevent.
+
+    ``reversible`` is the only leniency, and it is decided HERE rather than by widening the page's
+    text, so what the page prints stays literally what the reader reported. pdfplumber orders a run
+    geometrically and a top-to-bottom label therefore comes out backwards: page 31 of
+    arXiv:2409.08036 sets its row-group labels rotated and the reader returns ``elbmesnE``, ``DSN``,
+    ``EN``, ``TN`` for "Ensemble", "NSD", "NE", "NT", which refused a correctly rebuilt 50-row table
+    over four tokens out of 891. Which end such a run starts from is genuinely ambiguous, so a token
+    that failed the exact test is given a second look against the reversed rotated words — and only
+    those, so a page's ordinary horizontal text is compared exactly as before. Never offered for
+    NUMBERS (the caller passes an empty set there): reversing "12.5" would mint "5.21", a value the
+    page does not print, which is the one thing verification exists to refuse (C-2).
     """
     new = Counter(t for row in rebuilt for cell in row for t in tokens(cell))
     if not new:
@@ -332,28 +377,23 @@ def _proven(
     # copies refused real tables wholesale. Fabrication is still impossible — a value the region
     # never prints stays refused — and replication of a printed value is colspan flattening, not
     # invented content.
-    return all(token in available for token in new)
+    return all(token in available or token[::-1] in reversible for token in new)
 
 
-def _word_readings(word: dict) -> str:
-    """A word as the reader returned it, plus the other reading when the page draws it ROTATED.
+def _rotated_words(words: Sequence[Any]) -> tuple[str, ...]:
+    """The words the page itself marks as drawn ROTATED, as the reader returned them.
 
-    pdfplumber orders a run geometrically, and for a top-to-bottom label that comes out backwards:
-    page 31 of arXiv:2409.08036 sets its row-group labels rotated and the reader returns
-    ``elbmesnE``, ``DSN``, ``EN``, ``TN`` for "Ensemble", "NSD", "NE", "NT". The table extractor
-    reads them the right way round, so verification then refused a correctly rebuilt 50-row table
-    over four tokens out of 891.
-
-    Which end a rotated run starts from is genuinely ambiguous to a geometric reader, so both
-    readings are offered — and ONLY for the words the page itself marks rotated (7 of 410 on that
-    page), so ordinary horizontal text is compared exactly as before. Anything holding a digit is
-    excluded: reversing "12.5" would mint "5.21", a value the page never prints, which is the one
-    thing verification exists to refuse (C-2). Pure.
+    Carried beside the region's text rather than mixed into it, so a verifier can tell a word the
+    page prints from one whose reading direction is merely ambiguous. Anything holding a digit is
+    left out here rather than downstream: it can then never reach a reversal, whichever check asks.
+    Measured on the page above, 7 of 410 words qualify. Pure.
     """
-    text = str(word.get("text") or "")
-    if word.get("upright", True) or not text or any(ch.isdigit() for ch in text):
-        return text
-    return f"{text} {text[::-1]}"
+    out = []
+    for word in words:
+        text = str(word.get("text") or "")
+        if text and not word.get("upright", True) and not any(ch.isdigit() for ch in text):
+            out.append(text)
+    return tuple(out)
 
 
 def printed_text(pdf: bytes) -> PrintedText:
@@ -364,7 +404,9 @@ def printed_text(pdf: bytes) -> PrintedText:
     verification treats as "cannot be checked" and therefore refuses to repair.
 
     The region's whole text is returned rather than just its numbers: the numbers were always
-    derived from it, and a table that holds none still has to be checkable against something.
+    derived from it, and a table that holds none still has to be checkable against something. It is
+    returned EXACTLY as read, with the rotated words named separately (``PrintedRegion``) rather
+    than folded in — a yardstick that quietly contains more than the page does is not one.
 
     Built from word boxes read at a FONT-RELATIVE gap tolerance, joined by single spaces. Both
     parts matter, and the second is the one that was wrong before.
@@ -389,12 +431,12 @@ def printed_text(pdf: bytes) -> PrintedText:
     # table of a page at once, and the caption fallback is a second route to a table the region
     # match may also find — so the same (page, box) is cropped and extracted twice. The reading is
     # a pure function of those two, and this memo dies with the closure exactly as ``pages`` does.
-    seen: dict[tuple[int, tuple[float, float, float, float]], str] = {}
+    seen: dict[tuple[int, tuple[float, float, float, float]], PrintedRegion] = {}
 
-    def read(page_no: int, bbox: tuple[float, float, float, float]) -> str:
+    def read(page_no: int, bbox: tuple[float, float, float, float]) -> PrintedRegion:
         if (page_no, bbox) in seen:
             return seen[(page_no, bbox)]
-        text = ""
+        region_text = PrintedRegion("")
         try:
             if not pages:
                 import pdfplumber
@@ -409,7 +451,9 @@ def printed_text(pdf: bytes) -> PrintedText:
                     min(float(page.height), bbox[3]),
                 )
                 words = page.crop(region).extract_words(x_tolerance_ratio=_GAP_RATIO) or ()
-                text = " ".join(_word_readings(w) for w in words)
+                region_text = PrintedRegion(
+                    " ".join(str(w.get("text") or "") for w in words), _rotated_words(words)
+                )
         except TypeError:
             # Not an unreadable page — the extractor did not accept the call. ``x_tolerance_ratio``
             # arrived in pdfplumber 0.11.1, so an environment resolving lower raises here on EVERY
@@ -420,10 +464,10 @@ def printed_text(pdf: bytes) -> PrintedText:
             # not a property of this paper. The dependency floor is pinned to match.
             log.error("pdfplumber rejected the word-extraction call — table repair is inert",
                       exc_info=True)
-            text = ""
+            region_text = PrintedRegion("")
         except Exception:  # noqa: BLE001 - unreadable page -> no yardstick -> no repair
-            text = ""
-        seen[(page_no, bbox)] = text
-        return text
+            region_text = PrintedRegion("")
+        seen[(page_no, bbox)] = region_text
+        return region_text
 
     return read
