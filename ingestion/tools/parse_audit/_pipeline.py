@@ -56,7 +56,7 @@ def build_doc(
     ``crops`` is the parser's out-param; both recovery stages page-crop through it, so passing a
     list is what makes them run at all.
     """
-    from docsuri_shared.dtos import SourceTier
+    from docsuri_shared.dtos import SourceTier, SourceUnavailableDTO
 
     from docsuri_ingestion.docmodel.tei import parse_tei_to_docmodel
 
@@ -68,10 +68,15 @@ def build_doc(
             source_tier=SourceTier.pdf, parser_version="audit", schema_version="audit",
             generated_at=TS, crops=crops,
         )
-    return builder.build_from_tei(
-        paper_id, version, "", "", tei, "",
+    result = builder.build_from_tei(
+        paper_id, version, "", "", tei,
         source_tier=SourceTier.pdf, crops=crops, pdf=pdf,
-    ).docModel
+    )
+    if isinstance(result, SourceUnavailableDTO):
+        # BR-30 2026-08-10: a TEI that parses to no structure yields NO doc-model (real ingestion
+        # excludes the paper). The audits count that as "nothing to measure", not a crash.
+        return None
+    return result.docModel
 
 
 def pipeline_builder() -> Any:

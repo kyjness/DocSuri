@@ -63,6 +63,36 @@ def test_dedup_ladder_matches_the_in_memory_store_on_real_sql(store) -> None:
     assert decide(0, _FINGERPRINT) == {DedupDecision.STALE}
 
 
+def test_mark_excluded_flips_only_the_half_open_claim(store) -> None:
+    # BR-30 2026-08-10 exclusion ledger. Three properties, checked on BOTH stores so the real
+    # SQL and the in-memory double cannot disagree:
+    #   1. a claim whose build was excluded reads EXCLUDED, not INDEXED;
+    #   2. a redelivery of that version still classifies CHANGED (fingerprint stayed NULL);
+    #   3. a COMPLETED ingest is never flipped.
+    from docsuri_ingestion.domain.enums import DedupStateKind
+
+    memory = InMemoryControlPlaneStore()
+    stores = (store, memory)
+
+    for s in stores:
+        assert s.try_claim_upsert(_PAPER, 1, _FINGERPRINT)
+        s.mark_excluded(_PAPER, 1)
+        assert s.evaluate_dedup(_PAPER, 1, _FINGERPRINT).decision is DedupDecision.CHANGED
+
+    with store._connect() as conn:  # noqa: SLF001 - asserting the persisted row
+        row = conn.execute(
+            "SELECT state, fingerprint FROM dedup_state WHERE paper_id = %s", (_PAPER,)
+        ).fetchone()
+    assert row == (DedupStateKind.EXCLUDED.value, None)
+    assert memory._dedup[_PAPER].state is DedupStateKind.EXCLUDED
+
+    for s in stores:
+        assert s.try_claim_upsert(_PAPER, 2, _FINGERPRINT)
+        s.mark_ingested(_PAPER, 2, _FINGERPRINT)
+        s.mark_excluded(_PAPER, 2)  # completed ingest — must be a no-op
+        assert s.evaluate_dedup(_PAPER, 2, _FINGERPRINT).decision is DedupDecision.DUPLICATE
+
+
 def test_canonical_state_round_trips_through_real_sql(store) -> None:
     state = CanonicalDedupState(
         canonical_key=f"arxiv:{_PAPER}",

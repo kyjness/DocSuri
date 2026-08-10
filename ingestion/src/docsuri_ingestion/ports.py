@@ -48,6 +48,16 @@ class ArxivSourcePort(Protocol):
 
     def fetch_full_text(self, metadata: MetadataRecord) -> RawDocument: ...
 
+    def fetch_pdf(self, metadata: MetadataRecord) -> bytes | None:
+        """The paper's PDF bytes, or ``None`` when the cache mode forbids a fetch.
+
+        On the port because the doc-model's PDF→GROBID rung (BR-30 2026-08-10) needs the same
+        bytes the plain-text rung already fetches. Reaching for the FR-17 asset source instead
+        would put a parsing rung behind a display-only feature flag, outside the arXiv rate
+        limiter, and outside the failure taxonomy — a permanently missing PDF must raise, not
+        arrive as ``None``."""
+        ...
+
 
 @runtime_checkable
 class FullTextStorePort(Protocol):
@@ -101,6 +111,16 @@ class ControlPlaneStorePort(Protocol):
     def try_claim_upsert(self, paper_id: str, version: int, fingerprint: str) -> bool: ...
 
     def mark_ingested(self, paper_id: str, version: int, fingerprint: str) -> None: ...
+
+    def mark_excluded(self, paper_id: str, version: int) -> None:
+        """Flip a half-open ``try_claim_upsert`` claim to EXCLUDED (BR-30 2026-08-10).
+
+        Called when the doc-model build failed every rung AFTER the claim committed its version
+        bump — otherwise the ledger permanently reports INDEXED for a version that has no chunks,
+        no doc-model, and no full text, and audits/tier counts silently overcount. Must only
+        touch the half-open claim (fingerprint still NULL at this exact version), never a
+        completed ingest or a newer concurrent claim."""
+        ...
 
     def try_claim_tombstone(self, paper_id: str, version: int) -> bool: ...
 

@@ -67,10 +67,6 @@ class _CountingBuilder:
         self.build_calls += 1
         return self._inner.build(metadata, figure_specs=figure_specs)
 
-    def build_from_text(self, *args, **kwargs):
-        self.build_calls += 1
-        return self._inner.build_from_text(*args, **kwargs)
-
     def build_from_tei(self, *args, **kwargs):
         self.build_calls += 1
         return self._inner.build_from_tei(*args, **kwargs)
@@ -991,7 +987,7 @@ def test_arxiv_replaces_lower_priority_canonical_winner() -> None:
     old_paper_id = "src-old-openalex"
     arxiv_key = "arxiv:2401.00001"
     store = _DocModelStore()
-    builder = DocModelBuilder(source=_NoHtmlDocModelSource(), store=store)
+    builder = DocModelBuilder(source=FakeArxivSource([]), store=store)
     asset_store = _AssetStore()
     pipeline, control, index, _, _ = build_test_pipeline(
         doc_model_builder=builder,
@@ -1241,7 +1237,7 @@ def test_duplicate_redelivery_skips_doc_model_build() -> None:
     # BR-4/BR-22 + BLM §0.2–0.3: a DUPLICATE redelivery short-circuits before the doc-model
     # build, so an at-least-once event replay pays no build cost (not even a cache round-trip).
     builder = _CountingBuilder(
-        DocModelBuilder(source=_NoHtmlDocModelSource(), store=_DocModelStore())
+        DocModelBuilder(source=FakeArxivSource([]), store=_DocModelStore())
     )
     pipeline, _, _, _, _ = build_test_pipeline(doc_model_builder=builder)
     job = IngestionJob(job_id="job-1", kind=JobKind.EVENT, arxiv_ref="2401.00001v1")

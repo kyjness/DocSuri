@@ -53,7 +53,9 @@ def reparse(settings: IngestionSettings | None = None) -> int:
         updated_before=window_end,
     )
 
-    count = errors = 0
+    from .domain.errors import PermanentIngestionError
+
+    count = excluded = errors = 0
     for metadata in arxiv.harvest_seed(filter_):
         try:
             runtime.pipeline.ingest_metadata(
@@ -66,8 +68,30 @@ def reparse(settings: IngestionSettings | None = None) -> int:
             )
             count += 1
             log.info("[%d] reparsed %s", count, metadata.arxiv_ref)
+        except PermanentIngestionError as exc:
+            # BR-30 2026-08-10 corpus exclusion (or any other permanent verdict) — counted apart
+            # from faults: an exclusion RATE is the signal a mis-tuned gate or an unwired/broken
+            # GROBID would show, and it must fail the run, not scroll past as warnings.
+            excluded += 1
+            log.warning("EXCLUDED %s: %s", metadata.arxiv_ref, exc)
         except Exception as exc:  # noqa: BLE001 — one bad paper must not abort the reparse
             errors += 1
             log.warning("FAILED %s: %s", metadata.arxiv_ref, exc)
-    log.info("reparse complete: %d indexed, %d failures", count, errors)
+    total = count + excluded + errors
+    bad_ratio = (excluded + errors) / total if total else 1.0
+    log.info(
+        "reparse complete: %d indexed, %d excluded, %d failures (bad ratio %.3f, budget %.3f)",
+        count, excluded, errors, bad_ratio, settings.reparse_max_failure_ratio,
+    )
+    if bad_ratio > settings.reparse_max_failure_ratio:
+        # The run itself must refuse to look successful: reembed_finalize's document floor
+        # defaults to 1 and reembed_cutover swaps the alias unconditionally, so a silent shrink
+        # here would go live. A nonzero exit blocks the finalize→cutover chain and puts the
+        # decision (retune the gate / fix GROBID / raise the budget) in the operator's hands.
+        log.error(
+            "reparse FAILED its loss budget: %.1f%% of %d papers excluded/errored (budget %.1f%%)"
+            " — finalize/cutover must not proceed on this run",
+            bad_ratio * 100, total, settings.reparse_max_failure_ratio * 100,
+        )
+        return 1
     return 0

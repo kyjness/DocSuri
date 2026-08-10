@@ -84,18 +84,22 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
     # B3 raw-content cache wiring: only when explicitly enabled AND a bucket exists. Otherwise the
     # source keeps its default off mode → the live fetch path is byte-identical (raw_store=None).
     raw_cache_on = settings.raw_cache_mode != "off" and bool(settings.s3_bucket)
+    # ONE store instance shared by every adapter that reads the cache: each S3RawContentStore
+    # builds its own boto3 client (session/loader/endpoint resolution + a connection pool), so a
+    # second instance is duplicated startup work against the same bucket.
+    raw_store = (
+        S3RawContentStore(
+            bucket=settings.s3_bucket or "",
+            prefix=settings.raw_cache_prefix,
+            kms_key_id=settings.asset_kms_key_id,
+        )
+        if raw_cache_on
+        else None
+    )
     arxiv = ArxivHttpSource(
         timeout_seconds=settings.request_timeout_seconds,
         rate_limiter=TokenBucket(rate_per_second=settings.arxiv_rate_per_second),
-        raw_store=(
-            S3RawContentStore(
-                bucket=settings.s3_bucket or "",
-                prefix=settings.raw_cache_prefix,
-                kms_key_id=settings.asset_kms_key_id,
-            )
-            if raw_cache_on
-            else None
-        ),
+        raw_store=raw_store,
         raw_cache_mode=settings.raw_cache_mode if raw_cache_on else "off",
     )
     grobid = None
@@ -151,13 +155,22 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
         timeout_seconds=settings.dependency_timeout_seconds,
     )
     failure_handler = IngestFailureHandler(queue, observability)
-    # FR-17 multimodal assets (display-only). Wired only when the flag is on — the three
-    # adapters are injected together (the pipeline gates extraction on all three being
-    # present), so the base worker is unaffected when off. Best-effort: never blocks indexing.
+    # FR-17 multimodal assets (display-only), wired only when the flag is on — the pipeline gates
+    # extraction on all three adapters being present, so the base worker is unaffected when off.
+    # The arXiv PDF→GROBID rung (BR-30 2026-08-10) deliberately does NOT go through this source:
+    # it reads the PDF from `arxiv` above, so a parsing rung never hangs on a display-only flag.
     asset_extractor = asset_store = asset_source = None
     if settings.multimodal_assets_enabled:
         from .adapters.assets import ArxivAssetSource, S3RdsAssetStore
         from .asset_extraction import AssetExtractor, ImageNormalizer
+
+        asset_source = ArxivAssetSource(
+            timeout_seconds=settings.asset_fetch_timeout_seconds,
+            # Share the raw cache with the full-text source so an assets-enabled paper does not
+            # download its PDF once for text and again for crops.
+            raw_store=raw_store,
+            raw_cache_mode=settings.raw_cache_mode if raw_cache_on else "off",
+        )
 
         asset_extractor = AssetExtractor(
             normalizer=ImageNormalizer(
@@ -165,21 +178,6 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
                 max_pixels=settings.asset_max_pixels,
                 webp_quality=settings.asset_webp_quality,
             )
-        )
-        asset_source = ArxivAssetSource(
-            timeout_seconds=settings.asset_fetch_timeout_seconds,
-            # Share the raw cache with the full-text source so an assets-enabled paper does not
-            # download its PDF once for text and again for crops.
-            raw_store=(
-                S3RawContentStore(
-                    bucket=settings.s3_bucket or "",
-                    prefix=settings.raw_cache_prefix,
-                    kms_key_id=settings.asset_kms_key_id,
-                )
-                if raw_cache_on
-                else None
-            ),
-            raw_cache_mode=settings.raw_cache_mode if raw_cache_on else "off",
         )
         asset_store = S3RdsAssetStore(
             bucket=settings.s3_bucket or "",

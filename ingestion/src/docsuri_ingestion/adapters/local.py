@@ -6,7 +6,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
-from docsuri_shared.dtos import DocModel
+from docsuri_shared.dtos import DocModel, SourceTier
 from docsuri_shared.events import NewArxivEvent
 from docsuri_shared.vector_spec import DIMENSIONS, IndexRecord
 
@@ -32,10 +32,17 @@ from docsuri_ingestion.domain.models import (
 
 class FakeArxivSource:
     def __init__(
-        self, metadata: list[MetadataRecord], full_text: dict[str, str] | None = None
+        self,
+        metadata: list[MetadataRecord],
+        full_text: dict[str, str] | None = None,
+        pdf: bytes | None = None,
     ) -> None:
         self._metadata = {record.arxiv_ref: record for record in metadata}
         self._full_text = full_text or {}
+        self._pdf = pdf
+        # Every fetch_pdf call, so a test can assert the PDF is downloaded ONCE per paper even
+        # when both the plain-text rung and the doc-model's GROBID rung ask for it.
+        self.pdf_calls: list[str] = []
 
     def harvest_seed(self, category_filter: CategoryFilter):
         for record in self._metadata.values():
@@ -58,9 +65,24 @@ class FakeArxivSource:
             )
         return RawDocument(metadata=metadata, text=text, source_url=f"local://{metadata.arxiv_ref}")
 
+    def fetch_pdf(self, metadata: MetadataRecord) -> bytes | None:
+        """PDF bytes for the doc-model's GROBID rung. ``None`` (the default) means this paper has
+        no PDF, which is what the local runtime wants — it drives the HTML rung end-to-end."""
+        self.pdf_calls.append(metadata.identifier.arxiv_id)
+        return self._pdf
+
     def fetch_html_source(self, arxiv_id: str):
+        # A deterministic COMPLETE ar5iv-style page: the local runtime drives the real HTML rung
+        # end-to-end. (Returning None here would demand a wired GROBID rung for every local
+        # ingest since the flat-text doc-model fallback was removed — BR-30 2026-08-10.)
         del arxiv_id
-        return None
+        body = "Deterministic local body prose for the completeness floor. " * 12
+        html = (
+            '<article class="ltx_document"><section class="ltx_section" id="S1">'
+            '<h2 class="ltx_title ltx_title_section">Introduction</h2>'
+            f'<div class="ltx_para"><p class="ltx_p">{body}</p></div></section></article>'
+        )
+        return html, SourceTier.ar5iv
 
 
 def _winner_supersedes(new: CanonicalDedupState, old: CanonicalDedupState) -> bool:
@@ -126,6 +148,24 @@ class InMemoryControlPlaneStore:
                 state=DedupStateKind.INDEXED,
             )
             return True
+
+    def mark_excluded(self, paper_id: str, version: int) -> None:
+        with self._lock:
+            current = self._dedup.get(paper_id)
+            # Only the half-open claim (fingerprint None, INDEXED, same version) — see the port.
+            if (
+                current is None
+                or current.current_version != version
+                or current.fingerprint is not None
+                or current.state is not DedupStateKind.INDEXED
+            ):
+                return
+            self._dedup[paper_id] = DedupState(
+                paper_id=paper_id,
+                current_version=version,
+                fingerprint=None,
+                state=DedupStateKind.EXCLUDED,
+            )
 
     def mark_ingested(self, paper_id: str, version: int, fingerprint: str) -> None:
         with self._lock:

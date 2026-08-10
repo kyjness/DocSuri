@@ -126,34 +126,38 @@ _EMPTY_BODY_TEI = '<TEI xmlns="http://www.tei-c.org/ns/1.0"><text><body /></text
 def test_build_from_tei_produces_structured_sections() -> None:
     store = _FakeStore()
     builder = _builder(_FakeSource(None), store)
-    result = builder.build_from_tei("src-1", 1, "Title", "Abs", _TEI, "fallback text")
+    result = builder.build_from_tei("src-1", 1, "Title", "Abs", _TEI)
     assert result.cached is False
     titles = [s.title for s in result.docModel.sections]
     assert "Method" in titles
     assert store.put_calls  # cached for reuse
 
 
-def test_build_from_tei_falls_back_to_flat_text_on_bad_tei() -> None:
+def test_build_from_tei_reports_unavailable_on_bad_tei() -> None:
+    # Malformed TEI yields NO doc-model, unconditionally (BR-30 2026-08-10). Leniency is not an
+    # argument here — the one caller allowed to be lenient (user uploads) recovers on this result
+    # at its own call site, so a corpus caller cannot re-admit flat text by forgetting a keyword.
     store = _FakeStore()
     builder = _builder(_FakeSource(None), store)
-    result = builder.build_from_tei("src-2", 1, "Title", "Abs", "<TEI", "flat fallback body")
-    # malformed TEI -> flat-text doc-model carrying the fallback text as a single paragraph
-    assert "flat fallback body" in result.docModel.fullText
+    result = builder.build_from_tei("src-2", 1, "Title", "Abs", "<TEI")
+    assert isinstance(result, SourceUnavailableDTO)
+    assert store.put_calls == []  # nothing cached
 
 
-def test_build_from_tei_falls_back_to_flat_text_on_empty_body_tei() -> None:
+def test_build_from_tei_reports_unavailable_on_empty_body_tei() -> None:
     store = _FakeStore()
     builder = _builder(_FakeSource(None), store)
-    result = builder.build_from_tei(
-        "src-3", 1, "Title", "Abs", _EMPTY_BODY_TEI, "flat fallback body"
-    )
-
-    assert "flat fallback body" in result.docModel.fullText
-    assert store.put_calls[-1].fullText == result.docModel.fullText
+    result = builder.build_from_tei("src-3", 1, "Title", "Abs", _EMPTY_BODY_TEI)
+    assert isinstance(result, SourceUnavailableDTO)
+    assert store.put_calls == []
 
 
+# Prose alongside the formula: a formula block carries no body text of its own, and a TEI with
+# nothing else is (correctly) not a structured doc-model at all — see
+# test_build_from_tei_reports_unavailable_on_empty_body_tei.
 _TEI_FORMULA = (
     '<TEI xmlns="http://www.tei-c.org/ns/1.0"><text><body><div><head>M</head>'
+    "<p>Prose body.</p>"
     '<formula coords="1,5,6,30,12"><label>(2)</label>x=y</formula>'
     "</div></body></text></TEI>"
 )
@@ -165,7 +169,7 @@ def test_build_from_tei_collects_crop_specs_in_one_parse() -> None:
     store = _FakeStore()
     builder = _builder(_FakeSource(None), store)
     crops: list = []
-    result = builder.build_from_tei("src-9", 1, "T", "A", _TEI_FORMULA, "fb", crops=crops)
+    result = builder.build_from_tei("src-9", 1, "T", "A", _TEI_FORMULA, crops=crops)
     assert result.cached is False
     assert [c.asset_id for c in crops] == ["src-9:v1:formula:0"]
 
@@ -176,7 +180,7 @@ def test_build_from_tei_skips_crop_collection_on_cache_hit() -> None:
     store = _FakeStore(cached=_doc())
     builder = _builder(_FakeSource(None), store)
     crops: list = []
-    result = builder.build_from_tei("src-1", 1, "T", "A", _TEI_FORMULA, "fb", crops=crops)
+    result = builder.build_from_tei("src-1", 1, "T", "A", _TEI_FORMULA, crops=crops)
     assert result.cached is True
     assert crops == []
 
@@ -212,7 +216,7 @@ def test_a_table_repair_reprojects_full_text(monkeypatch) -> None:
     builder = _builder(_FakeSource(None), _FakeStore(), table_extractor=_FakeTableExtractor())
 
     result = builder.build_from_tei(
-        "src-r", 1, "T", "A", _MERGED_TABLE_TEI, "fb", crops=[], pdf=b"%PDF-fake"
+        "src-r", 1, "T", "A", _MERGED_TABLE_TEI, crops=[], pdf=b"%PDF-fake"
     )
 
     assert "ADA | 0.696 ± 0.015 | 0.011 ± 0.000" in result.docModel.fullText
@@ -241,14 +245,14 @@ def test_a_formula_ocr_read_reprojects_full_text(monkeypatch) -> None:
         "</div></body></text></TEI>"
     )
 
-    result = builder.build_from_tei("src-o", 1, "T", "A", tei, "fb", crops=[], pdf=b"%PDF-fake")
+    result = builder.build_from_tei("src-o", 1, "T", "A", tei, crops=[], pdf=b"%PDF-fake")
 
     assert r"E = mc^{2}" in result.docModel.fullText
 
 
 def test_cache_hit_returns_cached_without_fetching() -> None:
     store = _FakeStore(cached=_doc())
-    source = _FakeSource((_HTML, SourceTier.native_html))
+    source = _FakeSource((_HTML, SourceTier.ar5iv))
     result = _builder(source, store).build(sample_metadata("2401.00001v1"))
     assert isinstance(result, DocModelResultDTO)
     assert result.cached is True
@@ -270,7 +274,7 @@ def test_cache_miss_builds_caches_and_returns_fresh() -> None:
 
 def test_stale_parser_cache_hit_rebuilds_and_overwrites() -> None:
     store = _FakeStore(cached=_doc(parser_version="docmodel-parser@0"))
-    source = _FakeSource((_HTML, SourceTier.native_html))
+    source = _FakeSource((_HTML, SourceTier.ar5iv))
     result = _builder(source, store).build(sample_metadata("2401.00001v1"))
     assert isinstance(result, DocModelResultDTO)
     assert result.cached is False
@@ -299,10 +303,12 @@ def test_get_cached_rejects_native_html_even_at_current_version() -> None:
     assert _builder(_FakeSource(None), store).get_cached("2401.00001", 1) is None
 
 
-def test_stale_schema_cache_hit_rebuilds_text_doc_model() -> None:
+def test_stale_schema_cache_hit_rebuilds_flat_doc_model() -> None:
+    # build_from_paper is the surviving flat-text entry (user uploads via build_from_tei's
+    # degrade); build_from_text was removed with the corpus flat-text fallback (BR-30 2026-08-10).
     store = _FakeStore(cached=_doc(schema_version="0.9.0"))
-    result = _builder(_FakeSource(None), store).build_from_text(
-        sample_metadata("2401.00001v1"), "PDF fallback text."
+    result = _builder(_FakeSource(None), store).build_from_paper(
+        "2401.00001", 1, "T", "A", "PDF fallback text."
     )
     assert result.cached is False
     assert len(store.put_calls) == 1
@@ -346,6 +352,102 @@ def test_build_degrades_to_source_unavailable_when_conversion_is_truncated() -> 
     result = _builder(source, store).build(sample_metadata("2401.00001v1"))
     assert isinstance(result, SourceUnavailableDTO)
     assert store.put_calls == []  # nothing cached
+
+
+# A LaTeXML build that died PART-WAY: 2,000+ chars of body survive (clearing the absolute floor),
+# but the bulk of the page's readable text never became blocks — it sits in prose the parser
+# cannot reach. Modeled on the measured break (2502.10208: 8,905 chars of body, ~0.08 coverage).
+_DEAD_CONVERSION_HTML = (
+    '<article class="ltx_document"><section class="ltx_section" id="S1">'
+    '<h2 class="ltx_title ltx_title_section">Intro</h2>'
+    + "".join(
+        f'<div class="ltx_para"><p class="ltx_p">Surviving prose number {i}. {"x" * 200}</p></div>'
+        for i in range(5)
+    )
+    + "</section>"
+    # Unreachable remainder: readable text on the page that produced no block at all.
+    + "".join(f"<span>Stranded body text {i}. {'z' * 400}</span>" for i in range(40))
+    + "</article>"
+)
+
+
+def test_build_degrades_when_the_conversion_died_partway() -> None:
+    # Enough chars survive to clear the absolute floor, so only the RELATIVE coverage check can
+    # catch it: the parser recovered a small fraction of the text the page actually carries.
+    obs = _CapturingMetrics()
+    store = _FakeStore(cached=None)
+    builder = DocModelBuilder(
+        source=_FakeSource((_DEAD_CONVERSION_HTML, SourceTier.ar5iv)),
+        store=store,
+        observability=obs,
+        clock=_FixedClock(),
+    )
+    result = builder.build(sample_metadata("2401.00001v1"))
+    assert isinstance(result, SourceUnavailableDTO)
+    assert store.put_calls == []  # nothing cached
+    # Counted apart from truncations so the two failure modes stay distinguishable in metrics.
+    assert ("ingestion.docmodel.broken_conversion", 1.0) in obs.metrics
+
+
+def test_build_tolerates_a_reference_heavy_math_paper() -> None:
+    # The coverage denominator must NOT count text the block tree is designed to omit: the
+    # bibliography (never projected into blocks) and MathML <annotation> TeX sources (the
+    # doc-model stores one form of each formula, the raw page renders both). Here that structural
+    # residue outweighs the body several times over — with a raw denominator the ratio would sit
+    # far under any sane floor and EXCLUDE a perfectly healthy paper. Guards review #5 (2026-08-10).
+    body = "".join(
+        f'<div class="ltx_para"><p class="ltx_p">Body prose {i}. {"y" * 200}</p></div>'
+        for i in range(4)
+    )
+    bibliography = (
+        '<section class="ltx_bibliography" id="bib"><h2 class="ltx_title">References</h2>'
+        + "".join(
+            f'<li class="ltx_bibitem">[{i}] Author {i}. A cited paper title. {"r" * 120}</li>'
+            for i in range(40)
+        )
+        + "</section>"
+    )
+    tex_source = "\\alpha" * 300
+    annotations = (
+        "<math><semantics><mrow><mi>x</mi></mrow>"
+        f'<annotation encoding="application/x-tex">{tex_source}</annotation>'
+        "</semantics></math>"
+    )
+    html = (
+        '<article class="ltx_document"><section class="ltx_section" id="S1">'
+        '<h2 class="ltx_title ltx_title_section">Intro</h2>'
+        + body + annotations + "</section>" + bibliography + "</article>"
+    )
+    store = _FakeStore(cached=None)
+    result = _builder(_FakeSource((html, SourceTier.ar5iv)), store).build(
+        sample_metadata("2401.00001v1")
+    )
+    assert isinstance(result, DocModelResultDTO)  # NOT excluded
+    assert len(store.put_calls) == 1
+
+
+def test_build_tolerates_a_macro_the_converter_could_not_resolve() -> None:
+    # An unresolved macro emits one ltx_ERROR per USE, so a paper that names its own tool 74 times
+    # carries 74 error nodes while staying entirely readable (measured: 2310.04047 — 36,770 chars,
+    # 18 sections, 7 tables, zero TeX leak). Counting error nodes rejected papers like this one;
+    # coverage must not. Guards the 2026-08-10 false-rejection finding.
+    html = (
+        '<article class="ltx_document"><section class="ltx_section" id="S1">'
+        '<h2 class="ltx_title ltx_title_section">Intro</h2>'
+        + "".join(
+            '<div class="ltx_para"><p class="ltx_p">Body prose about '
+            '<span class="ltx_ERROR undefined">\\ourtool</span> and its results. '
+            f'{"y" * 200}</p></div>'
+            for _ in range(8)
+        )
+        + "</section></article>"
+    )
+    store = _FakeStore(cached=None)
+    result = _builder(_FakeSource((html, SourceTier.ar5iv)), store).build(
+        sample_metadata("2401.00001v1")
+    )
+    assert isinstance(result, DocModelResultDTO)  # NOT degraded
+    assert len(store.put_calls) == 1
 
 
 def test_build_counts_body_in_nested_subsections() -> None:
@@ -436,7 +538,7 @@ def _eprint_tar(tex: str) -> bytes:
 
 def test_build_attaches_eprint_macros_to_meta() -> None:
     store = _FakeStore(cached=None)
-    source = _FakeSource((_HTML, SourceTier.native_html))
+    source = _FakeSource((_HTML, SourceTier.ar5iv))
     eprint = _FakeEprintSource(_eprint_tar(r"\newcommand{\R}{\mathbb{R}}"))
     builder = DocModelBuilder(
         source=source, store=store, eprint_source=eprint, clock=_FixedClock()
@@ -449,7 +551,7 @@ def test_build_attaches_eprint_macros_to_meta() -> None:
 
 def test_build_without_eprint_source_omits_macros() -> None:
     store = _FakeStore(cached=None)
-    source = _FakeSource((_HTML, SourceTier.native_html))
+    source = _FakeSource((_HTML, SourceTier.ar5iv))
     result = _builder(source, store).build(sample_metadata("2401.00001v1"))
     assert isinstance(result, DocModelResultDTO)
     assert result.docModel.meta.macros is None  # optional field omitted
@@ -457,7 +559,7 @@ def test_build_without_eprint_source_omits_macros() -> None:
 
 def test_build_survives_eprint_fetch_failure() -> None:
     store = _FakeStore(cached=None)
-    source = _FakeSource((_HTML, SourceTier.native_html))
+    source = _FakeSource((_HTML, SourceTier.ar5iv))
     eprint = _FakeEprintSource(None, raises=True)
     builder = DocModelBuilder(
         source=source, store=store, eprint_source=eprint, clock=_FixedClock()
@@ -479,7 +581,7 @@ def test_build_emits_macro_count_metric() -> None:
     obs = _CapturingMetrics()
     eprint = _FakeEprintSource(_eprint_tar(r"\newcommand{\R}{\mathbb{R}}"))
     builder = DocModelBuilder(
-        source=_FakeSource((_HTML, SourceTier.native_html)),
+        source=_FakeSource((_HTML, SourceTier.ar5iv)),
         store=_FakeStore(cached=None),
         eprint_source=eprint,
         observability=obs,
@@ -511,7 +613,7 @@ def test_build_from_tei_counts_floats_that_read_inline() -> None:
     builder = DocModelBuilder(
         source=_FakeSource(None), store=_FakeStore(), observability=obs, clock=_FixedClock()
     )
-    builder.build_from_tei("src-p", 1, "T", "A", _TEI_WITH_COORDS, "flat")
+    builder.build_from_tei("src-p", 1, "T", "A", _TEI_WITH_COORDS)
     assert ("ingestion.docmodel.floats_placed", 1.0) in obs.metrics
     assert ("ingestion.docmodel.floats_trailing", 0.0) in obs.metrics
 
@@ -524,7 +626,7 @@ def test_build_from_tei_counts_floats_stranded_in_the_trailing_dump() -> None:
     builder = DocModelBuilder(
         source=_FakeSource(None), store=_FakeStore(), observability=obs, clock=_FixedClock()
     )
-    builder.build_from_tei("src-q", 1, "T", "A", _TEI_WITHOUT_COORDS, "flat")
+    builder.build_from_tei("src-q", 1, "T", "A", _TEI_WITHOUT_COORDS)
     assert ("ingestion.docmodel.floats_trailing", 1.0) in obs.metrics
     assert ("ingestion.docmodel.floats_placed", 0.0) in obs.metrics
 
@@ -532,7 +634,7 @@ def test_build_from_tei_counts_floats_stranded_in_the_trailing_dump() -> None:
 def test_build_emits_failure_metric_on_eprint_error() -> None:
     obs = _CapturingMetrics()
     builder = DocModelBuilder(
-        source=_FakeSource((_HTML, SourceTier.native_html)),
+        source=_FakeSource((_HTML, SourceTier.ar5iv)),
         store=_FakeStore(cached=None),
         eprint_source=_FakeEprintSource(None, raises=True),
         observability=obs,

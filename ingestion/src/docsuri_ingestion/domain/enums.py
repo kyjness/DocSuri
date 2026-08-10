@@ -50,6 +50,12 @@ class FailureReason(StrEnum):
 class DedupStateKind(StrEnum):
     INDEXED = "INDEXED"
     TOMBSTONED = "TOMBSTONED"
+    # A begin_upsert claim whose build was then EXCLUDED from the corpus (BR-30 2026-08-10):
+    # the version bump is committed before the doc-model build, so without this the ledger would
+    # keep claiming INDEXED for a version that has no chunks, no doc-model, and no full text.
+    # `decide_dedup` needs no special case — the fingerprint is still NULL, so a redelivery of
+    # the same version classifies CHANGED and retries.
+    EXCLUDED = "EXCLUDED"
 
 
 class AssetType(StrEnum):

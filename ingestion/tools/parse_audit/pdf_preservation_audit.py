@@ -187,6 +187,10 @@ def _audit_one(
     paper_id: str, version: int, tei: str, pdf: bytes, builder: object | None = None
 ) -> dict:
     model = build_doc(paper_id, version, tei, pdf, builder)
+    if model is None:
+        # BR-30 2026-08-10: real ingestion EXCLUDES this paper (TEI parsed to no structure), so
+        # there is nothing to measure preservation against — the loss is the source's.
+        return {"excluded": True, "violations": []}
     doc = model.model_dump(mode="json")
     source = pdf_to_text(pdf)
     src = {kind: _contiguous(nums) for kind, nums in _floats_in(source).items()}

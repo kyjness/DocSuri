@@ -89,10 +89,9 @@ class RawDocument:
     text: str  # normalized plain text (BR-29: from HTML-preferred source, PDF fallback)
     source_url: str
     content_type: str = "text/plain"
-    # Which rung actually produced ``text`` (ar5iv / native_html / pdf). Consumers that store the
-    # text as a doc-model use this to keep native arXiv HTML text out of a servable doc-model (its
-    # raw TeX/pgf leaks past the parser sanitizer): the doc-model text-fallback refuses native_html.
-    # ``None`` when the producer does not tag it (treated as non-native by consumers).
+    # Which rung actually produced ``text`` (ar5iv / pdf), for the stored canonical tier label.
+    # ``native_html`` has no producer since 2026-08-10 (BR-29) — the enum value survives only for
+    # artifacts written before then. ``None`` when the producer does not tag it.
     source_tier: SourceTier | None = None
 
 

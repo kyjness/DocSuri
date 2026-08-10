@@ -14,18 +14,19 @@ from docsuri_shared.dtos import DocModel, SourceTier
 import docsuri_ingestion.application as application_module
 from docsuri_ingestion.adapters.local import FakeArxivSource, sample_metadata
 from docsuri_ingestion.docmodel.builder import DocModelBuilder
-from docsuri_ingestion.domain.enums import DedupDecision, JobKind
+from docsuri_ingestion.domain.enums import DedupDecision, FailureReason, JobKind
 from docsuri_ingestion.domain.errors import PermanentIngestionError
-from docsuri_ingestion.domain.models import IngestionJob, RawDocument
+from docsuri_ingestion.domain.models import IngestionJob
 from docsuri_ingestion.full_text_extraction import FullTextExtractionError
 from docsuri_ingestion.worker import job_from_payload, process_message
 
 from .conftest import build_test_pipeline
 
+_BODY = "A full paragraph of body prose for the completeness floor. " * 12  # ~700 chars
 _HTML = (
     '<article class="ltx_document"><section class="ltx_section" id="S1">'
     '<h2 class="ltx_title ltx_title_section">Intro</h2>'
-    '<div class="ltx_para"><p class="ltx_p">Body.</p></div></section></article>'
+    f'<div class="ltx_para"><p class="ltx_p">{_BODY}</p></div></section></article>'
 )
 _USERDOC_TEI = (
     '<TEI xmlns="http://www.tei-c.org/ns/1.0"><text><body>'
@@ -41,6 +42,27 @@ _USERDOC_JOB_UUID = "3e9d6b7d-24d9-4a21-8049-6ac132f5499f"
 _USERDOC_JOB_ID = f"userdoc-{_USERDOC_JOB_UUID}"
 _OTHER_USERDOC_JOB_ID = "userdoc-1f977735-652f-49b3-a281-c93f2bc17430"
 _USERDOC_RECORD_REF = f"upload:acct-1:{_USERDOC_JOB_ID}:attachment-1"
+
+
+class _FakeGrobid:
+    """GROBID sidecar double for the arXiv PDF→GROBID rung."""
+
+    def __init__(self, tei: str) -> None:
+        self._tei = tei
+        self.seen_pdf: bytes | None = None
+        self.calls = 0
+
+    def extract_tei(self, pdf: bytes) -> str:
+        self.seen_pdf = pdf
+        self.calls += 1
+        return self._tei
+
+
+_ARXIV_GROBID_TEI = (
+    '<TEI xmlns="http://www.tei-c.org/ns/1.0"><text><body>'
+    "<div><head>Method</head><p>Structured body recovered from the PDF via GROBID.</p></div>"
+    "</body></text></TEI>"
+)
 
 
 class _FakeSource:
@@ -111,7 +133,7 @@ def _assert_index_refs_doc_model(index, doc: DocModel) -> None:
 
 
 def test_build_doc_model_builds_and_caches_on_miss() -> None:
-    source = _FakeSource((_HTML, SourceTier.native_html))
+    source = _FakeSource((_HTML, SourceTier.ar5iv))
     store = _FakeStore(cached=None)
     pipeline, _, _, _, _ = build_test_pipeline(doc_model_builder=_builder(source, store))
 
@@ -125,7 +147,9 @@ def test_build_doc_model_builds_and_caches_on_miss() -> None:
     assert source.calls  # builder fetched the HTML source
 
 
-def test_build_doc_model_falls_back_to_text_when_html_unavailable() -> None:
+def test_build_doc_model_stays_unavailable_without_grobid() -> None:
+    # BR-30 2026-08-10: below ar5iv the ladder is PDF→GROBID — never a flat-text doc-model.
+    # With the rung unwired the lazy job keeps source_unavailable (viewer links out).
     store = _FakeStore()
     pipeline, _, _, _, observability = build_test_pipeline(
         doc_model_builder=_builder(_FakeSource(None), store)
@@ -133,86 +157,200 @@ def test_build_doc_model_falls_back_to_text_when_html_unavailable() -> None:
     result = pipeline.build_doc_model(
         IngestionJob(job_id="b-2", kind=JobKind.BUILD_DOC_MODEL, arxiv_ref="2401.00001v1")
     )
-    assert result.status == "ok"
-    assert result.docModel.meta.provenance.sourceTier is SourceTier.pdf
-    assert result.docModel.fullText
-    assert len(store.put_calls) == 1
+    assert result.status == "source_unavailable"
+    assert store.put_calls == []  # no flat-text doc-model was cached
     assert any(
-        metric[0] == "ingestion.docmodel.build" and metric[2]["status"] == "pdf_fallback"
-        for metric in observability.metrics
+        m[0] == "ingestion.docmodel.grobid_rung_unwired" for m in observability.metrics
     )
 
 
-def test_build_doc_model_refuses_native_html_text_fallback() -> None:
-    # ar5iv missing (builder source returns None) → SourceUnavailable → text fallback. When the
-    # only full text is native arXiv HTML (its raw TeX/pgf leaks past the parser sanitizer), it must
-    # NOT be stored as a servable doc-model labeled pdf — that would slip past the U7 reader's
-    # native_html guard. The build stays source_unavailable (viewer links out to arXiv) instead.
+def test_build_doc_model_recovers_via_grobid_rung() -> None:
+    # ar5iv missing → arXiv PDF → GROBID → structured doc-model (BR-30 2026-08-10). The rung
+    # needs the grobid sidecar AND a PDF source wired; both are faked here.
     metadata = sample_metadata()
-
-    class _NativeHtmlArxiv(FakeArxivSource):
-        def fetch_full_text(self, meta):
-            return RawDocument(
-                metadata=meta,
-                text="Native HTML full text with \\pgfsys@color and \\ref leakage.",
-                source_url="https://arxiv.org/html/2401.00001v1",
-                source_tier=SourceTier.native_html,
-            )
-
     store = _FakeStore()
     pipeline, _, _, _, observability = build_test_pipeline(
-        arxiv=_NativeHtmlArxiv([metadata]),
+        arxiv=FakeArxivSource([metadata], pdf=b"%PDF-fake"),
         doc_model_builder=_builder(_FakeSource(None), store),  # ar5iv miss → SourceUnavailable
+        grobid=_FakeGrobid(_ARXIV_GROBID_TEI),
     )
 
     result = pipeline.build_doc_model(
-        IngestionJob(job_id="b-nh", kind=JobKind.BUILD_DOC_MODEL, arxiv_ref=metadata.arxiv_ref)
-    )
-
-    assert result.status == "source_unavailable"  # native HTML text was refused, not stored
-    assert store.put_calls == []  # nothing cached as a servable doc-model
-    assert any(
-        metric[0] == "ingestion.docmodel.build" and metric[2]["status"] == "native_html_refused"
-        for metric in observability.metrics
-    )
-
-
-def test_build_doc_model_still_uses_pdf_text_fallback() -> None:
-    # Counterpart to the native_html refusal: a PDF-tagged (or untagged) text fallback still builds
-    # a servable doc-model, so the refusal is scoped to native HTML only.
-    metadata = sample_metadata()
-
-    class _PdfArxiv(FakeArxivSource):
-        def fetch_full_text(self, meta):
-            return RawDocument(
-                metadata=meta,
-                text="INTRODUCTION\nBody from the PDF text extractor.\nMETHOD\nDetails.",
-                source_url="https://arxiv.org/pdf/2401.00001v1",
-                source_tier=SourceTier.pdf,
-            )
-
-    store = _FakeStore()
-    pipeline, _, _, _, observability = build_test_pipeline(
-        arxiv=_PdfArxiv([metadata]),
-        doc_model_builder=_builder(_FakeSource(None), store),
-    )
-
-    result = pipeline.build_doc_model(
-        IngestionJob(job_id="b-pdf", kind=JobKind.BUILD_DOC_MODEL, arxiv_ref=metadata.arxiv_ref)
+        IngestionJob(job_id="b-gr", kind=JobKind.BUILD_DOC_MODEL, arxiv_ref=metadata.arxiv_ref)
     )
 
     assert result.status == "ok"
     assert result.docModel.meta.provenance.sourceTier is SourceTier.pdf
+    assert [s.title for s in result.docModel.sections if s.title] != []  # structured, not flat
     assert len(store.put_calls) == 1
     assert any(
-        metric[0] == "ingestion.docmodel.build" and metric[2]["status"] == "pdf_fallback"
+        # Same rung name the eager path reports — one ladder, one vocabulary.
+        metric[0] == "ingestion.docmodel.build" and metric[2]["status"] == "grobid"
         for metric in observability.metrics
     )
+
+
+def test_build_doc_model_stays_unavailable_when_grobid_rejects_the_pdf() -> None:
+    # GROBID 4xx-rejects the PDF (malformed/unsupported): a PERMANENT verdict about this paper,
+    # not a worker fault. The lazy job's contract says the result STAYS source_unavailable
+    # (viewer links out); letting the error escape turned every such already-indexed paper into
+    # an endless DLQ + failure-signal loop while the viewer polled forever.
+    class _RejectingGrobid:
+        def extract_tei(self, pdf: bytes) -> str:
+            raise PermanentIngestionError(
+                "GROBID rejected PDF", reason=FailureReason.PARSE_FAILURE, stage="grobid"
+            )
+
+    metadata = sample_metadata()
+    store = _FakeStore()
+    pipeline, _, _, _, observability = build_test_pipeline(
+        arxiv=FakeArxivSource([metadata], pdf=b"%PDF-fake"),
+        doc_model_builder=_builder(_FakeSource(None), store),
+        grobid=_RejectingGrobid(),
+    )
+
+    result = pipeline.build_doc_model(
+        IngestionJob(job_id="b-rej", kind=JobKind.BUILD_DOC_MODEL, arxiv_ref=metadata.arxiv_ref)
+    )
+
+    assert result.status == "source_unavailable"  # NOT an exception
+    assert store.put_calls == []
+    assert any(
+        m[0] == "ingestion.docmodel.grobid_rung_rejected" for m in observability.metrics
+    )
+
+
+def test_grobid_rung_asset_context_tristate() -> None:
+    # The rung's asset context distinguishes three situations _index_paper must not confuse:
+    #   fresh build WITH coords  → context carrying the crops (crop branch renders them);
+    #   fresh build, NO coords   → None: fall back to the e-print extractor branch (the path this
+    #                              population used before the rung existed) + a metric — a silent
+    #                              no-op left the doc-model's figure assetIds dangling invisibly;
+    #   cache hit                → EMPTY context: stay on the crop branch and do nothing, the
+    #                              build that filled the cache already stored the crops (None here
+    #                              would re-download the tarball AND PDF via the e-print branch).
+    class _AssetStore:
+        def store_assets(self, *a):  # pragma: no cover - must not be reached
+            raise AssertionError("this test never renders/stores")
+
+        def remove_assets(self, paper_id):  # pragma: no cover - not exercised
+            pass
+
+    coords_tei = (
+        '<TEI xmlns="http://www.tei-c.org/ns/1.0"><text><body><div><head>M</head>'
+        "<p>Prose body.</p>"
+        '<figure coords="1,5,6,30,12"><head>Figure 1</head><figDesc>d</figDesc></figure>'
+        "</div></body></text></TEI>"
+    )
+    metadata = sample_metadata()
+
+    # Fresh build with coordinates: crops travel in the context.
+    store = _FakeStore()
+    pipeline, _, _, _, _ = build_test_pipeline(
+        arxiv=FakeArxivSource([metadata], pdf=b"%PDF-fake"),
+        doc_model_builder=_builder(_FakeSource(None), store),
+        grobid=_FakeGrobid(coords_tei),
+        asset_store=_AssetStore(),
+    )
+    fresh = pipeline._grobid_doc_model(metadata)
+    assert fresh is not None
+    fresh_result, fresh_ctx = fresh
+    assert fresh_result.cached is False
+    assert fresh_ctx is not None and len(fresh_ctx.crops) == 1
+
+    # Cache hit: EMPTY context, not None.
+    store._cached = store.put_calls[0]
+    cached = pipeline._grobid_doc_model(metadata)
+    assert cached is not None
+    cached_result, cached_ctx = cached
+    assert cached_result.cached is True
+    assert cached_ctx is not None and cached_ctx.crops == ()
+
+    # Fresh build with NO coordinates: None (e-print fallback) + the visibility metric.
+    store2 = _FakeStore()
+    pipeline2, _, _, _, observability2 = build_test_pipeline(
+        arxiv=FakeArxivSource([metadata], pdf=b"%PDF-fake"),
+        doc_model_builder=_builder(_FakeSource(None), store2),
+        grobid=_FakeGrobid(_ARXIV_GROBID_TEI),  # no coords anywhere
+        asset_store=_AssetStore(),
+    )
+    no_coords = pipeline2._grobid_doc_model(metadata)
+    assert no_coords is not None
+    _result, no_coords_ctx = no_coords
+    assert no_coords_ctx is None
+    assert any(
+        m[0] == "ingestion.docmodel.grobid_rung_no_coords" for m in observability2.metrics
+    )
+
+
+def test_lazy_build_doc_model_stores_the_grobid_crops(monkeypatch) -> None:
+    # The lazy BUILD_DOC_MODEL path caches the doc-model it builds — so a fresh GROBID build here
+    # must ALSO store its crops. Discarding them left a cached doc-model whose figure blocks
+    # reference assets never rendered, and every later eager pass hit the cache and stored
+    # nothing: the gap was permanent.
+    def fake_crops(pdf, specs, *, paper_id, version):
+        return [
+            SimpleNamespace(meta=SimpleNamespace(asset_id=spec.asset_id), image=b"img")
+            for spec in specs
+        ]
+
+    monkeypatch.setattr(application_module, "crop_assets_from_specs", fake_crops)
+
+    class _RecordingAssetStore:
+        def __init__(self) -> None:
+            self.stored: list[tuple[str, int, int]] = []
+
+        def store_assets(self, paper_id, version, assets):
+            self.stored.append((paper_id, version, len(assets)))
+
+        def remove_assets(self, paper_id):  # pragma: no cover - not exercised
+            pass
+
+    coords_tei = (
+        '<TEI xmlns="http://www.tei-c.org/ns/1.0"><text><body><div><head>M</head>'
+        "<p>Prose body.</p>"
+        '<figure coords="1,5,6,30,12"><head>Figure 1</head><figDesc>d</figDesc></figure>'
+        "</div></body></text></TEI>"
+    )
+    metadata = sample_metadata()
+    asset_store = _RecordingAssetStore()
+    pipeline, _, _, _, _ = build_test_pipeline(
+        arxiv=FakeArxivSource([metadata], pdf=b"%PDF-fake"),
+        doc_model_builder=_builder(_FakeSource(None), _FakeStore()),
+        grobid=_FakeGrobid(coords_tei),
+        asset_store=asset_store,
+    )
+
+    result = pipeline.build_doc_model(
+        IngestionJob(job_id="b-lc", kind=JobKind.BUILD_DOC_MODEL, arxiv_ref=metadata.arxiv_ref)
+    )
+
+    assert result.status == "ok"
+    assert asset_store.stored == [(metadata.paper_id, metadata.version, 1)]
+
+
+def test_build_doc_model_stays_unavailable_when_tei_has_no_body() -> None:
+    # GROBID answered but the TEI parses to nothing — a flat-text doc-model is exactly what the
+    # 2026-08-10 revision removed, so the result stays source_unavailable.
+    metadata = sample_metadata()
+    store = _FakeStore()
+    pipeline, _, _, _, _ = build_test_pipeline(
+        arxiv=FakeArxivSource([metadata], pdf=b"%PDF-fake"),
+        doc_model_builder=_builder(_FakeSource(None), store),
+        grobid=_FakeGrobid(_USERDOC_EMPTY_BODY_TEI),
+    )
+
+    result = pipeline.build_doc_model(
+        IngestionJob(job_id="b-nb", kind=JobKind.BUILD_DOC_MODEL, arxiv_ref=metadata.arxiv_ref)
+    )
+
+    assert result.status == "source_unavailable"
+    assert store.put_calls == []
 
 
 def test_build_doc_model_requires_arxiv_ref() -> None:
     pipeline, _, _, _, _ = build_test_pipeline(
-        doc_model_builder=_builder(_FakeSource((_HTML, SourceTier.native_html)), _FakeStore())
+        doc_model_builder=_builder(_FakeSource((_HTML, SourceTier.ar5iv)), _FakeStore())
     )
     with pytest.raises(PermanentIngestionError):
         pipeline.build_doc_model(
@@ -283,7 +421,7 @@ def test_user_docmodel_payload_rejects_contract_drift(override: dict) -> None:
 
 
 def test_worker_dispatches_build_job_and_acks() -> None:
-    source = _FakeSource((_HTML, SourceTier.native_html))
+    source = _FakeSource((_HTML, SourceTier.ar5iv))
     store = _FakeStore(cached=None)
     pipeline, _, _, queue, observability = build_test_pipeline(
         doc_model_builder=_builder(source, store)
@@ -387,15 +525,7 @@ def test_build_user_doc_model_uses_grobid_when_configured(monkeypatch) -> None:
     monkeypatch.setattr(application_module, "pdf_to_text", lambda pdf: "INTRODUCTION\nBody text.")
     store = _FakeStore(cached=None)
 
-    class _FakeGrobid:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def extract_tei(self, pdf: bytes) -> str:
-            self.calls += 1
-            return _USERDOC_TEI
-
-    grobid = _FakeGrobid()
+    grobid = _FakeGrobid(_USERDOC_TEI)
     pipeline, _, _, _, _ = build_test_pipeline(
         doc_model_builder=_builder(_FakeSource(None), store),
         user_document_source=_FakeUserDocumentSource(),
@@ -437,14 +567,10 @@ def test_build_user_doc_model_passes_the_crop_channel(monkeypatch) -> None:
         def __getattr__(self, name):
             return getattr(inner, name)
 
-    class _FakeGrobid:
-        def extract_tei(self, pdf: bytes) -> str:
-            return _USERDOC_TEI
-
     pipeline, _, _, _, _ = build_test_pipeline(
         doc_model_builder=_RecordingBuilder(),
         user_document_source=_FakeUserDocumentSource(),
-        grobid=_FakeGrobid(),
+        grobid=_FakeGrobid(_USERDOC_TEI),
     )
     job = IngestionJob(
         job_id=_USERDOC_JOB_ID,
@@ -473,7 +599,7 @@ def test_build_user_doc_model_degrades_when_grobid_returns_empty_body(
         def extract_tei(self, pdf: bytes) -> str:
             return _USERDOC_EMPTY_BODY_TEI
 
-    pipeline, _, _, _, _ = build_test_pipeline(
+    pipeline, _, _, _, observability = build_test_pipeline(
         doc_model_builder=_builder(_FakeSource(None), store),
         user_document_source=_FakeUserDocumentSource(),
         grobid=_EmptyBodyGrobid(),
@@ -493,6 +619,12 @@ def test_build_user_doc_model_degrades_when_grobid_returns_empty_body(
 
     assert "Body text" in result.docModel.fullText
     assert "Structured body from GROBID" not in result.docModel.fullText
+    # The metric reports what the user RECEIVED: flat pdfplumber text, even though GROBID
+    # answered — labeling this "grobid" hid a systematic empty-TEI regression at 100% grobid.
+    assert any(
+        m[0] == "ingestion.docmodel.user_build" and m[2]["status"] == "pdf_fallback"
+        for m in observability.metrics
+    )
 
 
 def test_build_user_doc_model_degrades_when_grobid_faults(monkeypatch) -> None:
@@ -530,7 +662,7 @@ def test_build_user_doc_model_degrades_when_grobid_faults(monkeypatch) -> None:
 
 
 def test_ingest_one_eagerly_builds_doc_model_before_index() -> None:
-    source = _FakeSource((_HTML, SourceTier.native_html))
+    source = _FakeSource((_HTML, SourceTier.ar5iv))
     store = _FakeStore(cached=None)
     pipeline, _, index, _, observability = build_test_pipeline(
         doc_model_builder=_builder(source, store)
@@ -557,7 +689,7 @@ def test_ingest_one_eager_doc_model_new_and_changed_smoke() -> None:
             "2401.00001v2": "INTRODUCTION\nbody v2",
         },
     )
-    source = _FakeSource((_HTML, SourceTier.native_html))
+    source = _FakeSource((_HTML, SourceTier.ar5iv))
     store = _FakeStore(cached=None)
     pipeline, _, index, _, _ = build_test_pipeline(
         arxiv=arxiv, doc_model_builder=_builder(source, store)
@@ -582,21 +714,113 @@ def test_ingest_one_eager_doc_model_new_and_changed_smoke() -> None:
     assert index.index_stats().total_documents == len(index.records)
 
 
-def test_ingest_one_falls_back_to_text_doc_model_when_html_unavailable() -> None:
+def test_ingest_one_excludes_the_paper_when_every_rung_fails() -> None:
+    # BR-30 2026-08-10: no rung produced a structured doc-model → the paper does NOT enter the
+    # corpus. Nothing is indexed, and no full text is written — the build runs BEFORE the store,
+    # so the exclusion path costs zero S3 round trips instead of a write followed by a delete.
     store = _FakeStore()
     pipeline, _, index, _, observability = build_test_pipeline(
         doc_model_builder=_builder(_FakeSource(None), store)
     )
 
+    with pytest.raises(PermanentIngestionError):
+        pipeline.ingest_one(
+            IngestionJob(job_id="i-2", kind=JobKind.INCREMENTAL, arxiv_ref="2401.00001v1")
+        )
+
+    assert index.bulk_calls == 0  # nothing reached the index
+    assert pipeline._full_text_store.objects == {}  # never written, not written-then-deleted
+    assert any(m[0] == "ingestion.paper.excluded" for m in observability.metrics)
+    assert any(
+        metric[0] == "ingestion.docmodel.eager_build" and metric[2]["status"] == "excluded"
+        for metric in observability.metrics
+    )
+    # The begin_upsert claim committed its version bump before the build — the ledger must not
+    # keep claiming INDEXED for a version that has no chunks, no doc-model, and no full text.
+    from docsuri_ingestion.domain.enums import DedupStateKind
+
+    ledger = pipeline._control_plane._dedup["2401.00001"]
+    assert ledger.state is DedupStateKind.EXCLUDED
+    assert ledger.fingerprint is None  # still the half-open claim, retriable as CHANGED
+
+
+def test_ingest_one_recovers_via_grobid_rung_and_indexes() -> None:
+    # ar5iv missing but GROBID wired: the paper lands with a STRUCTURED doc-model and its index
+    # records reference that doc-model's blocks.
+    store = _FakeStore()
+    arxiv = FakeArxivSource([sample_metadata()], pdf=b"%PDF-fake")
+    pipeline, _, index, _, observability = build_test_pipeline(
+        arxiv=arxiv,
+        doc_model_builder=_builder(_FakeSource(None), store),
+        grobid=_FakeGrobid(_ARXIV_GROBID_TEI),
+    )
+
     result = pipeline.ingest_one(
-        IngestionJob(job_id="i-2", kind=JobKind.INCREMENTAL, arxiv_ref="2401.00001v1")
+        IngestionJob(job_id="i-gr", kind=JobKind.INCREMENTAL, arxiv_ref="2401.00001v1")
     )
 
     assert result is DedupDecision.NEW
     assert index.bulk_calls == 1
     _assert_index_refs_doc_model(index, store.put_calls[0])
     assert any(
-        metric[0] == "ingestion.docmodel.eager_build"
-        and metric[2]["status"] == "pdf_fallback"
+        metric[0] == "ingestion.docmodel.eager_build" and metric[2]["status"] == "grobid"
         for metric in observability.metrics
     )
+    # The plain-text rung and the GROBID rung want the SAME bytes. Routing both through the arXiv
+    # source (memoized) makes that one download; reaching for the FR-17 asset source instead
+    # fetched the PDF a second time on exactly the papers this rung exists for.
+    assert len(arxiv.pdf_calls) == 1, arxiv.pdf_calls
+
+
+def test_ingest_one_swaps_discredited_ar5iv_text_for_pdf_text(monkeypatch) -> None:
+    # The doc-model gate rejects the ar5iv page, GROBID recovers the structure — but the FULL
+    # TEXT was extracted from that same rejected page and clears its own length-only floor. It
+    # must NOT become the stored .txt (U7 summaries read it with no quality signal): the pipeline
+    # re-derives the text from the PDF rung, and the canonical winner is labeled ARXIV_PDF.
+    from docsuri_ingestion.domain.canonical import ARXIV_PDF_TIER
+    from docsuri_ingestion.domain.models import RawDocument
+
+    metadata = sample_metadata()
+
+    class _Ar5ivTextSource(FakeArxivSource):
+        """Full text extracted from the (broken) ar5iv page — over the 3,000-char floor."""
+
+        def fetch_full_text(self, md):
+            return RawDocument(
+                metadata=md,
+                text="Leaked TeX prose includegraphics thefigure. " * 100,
+                source_url="html://x",
+                source_tier=SourceTier.ar5iv,
+            )
+
+    # The page the gate rejects: clears the 500-char absolute floor, fails relative coverage.
+    dead_html = (
+        '<article class="ltx_document"><section class="ltx_section" id="S1">'
+        '<h2 class="ltx_title ltx_title_section">Intro</h2>'
+        + "".join(
+            f'<div class="ltx_para"><p class="ltx_p">Surviving prose {i}. {"x" * 200}</p></div>'
+            for i in range(5)
+        )
+        + "</section>"
+        + "".join(f"<span>Stranded text {i}. {'z' * 400}</span>" for i in range(40))
+        + "</article>"
+    )
+    monkeypatch.setattr(application_module, "pdf_to_text", lambda pdf: "Clean PDF body. " * 60)
+    arxiv = _Ar5ivTextSource([metadata], pdf=b"%PDF-fake")
+    store = _FakeStore()
+    pipeline, control, index, _, _ = build_test_pipeline(
+        arxiv=arxiv,
+        doc_model_builder=_builder(_FakeSource((dead_html, SourceTier.ar5iv)), store),
+        grobid=_FakeGrobid(_ARXIV_GROBID_TEI),
+    )
+
+    result = pipeline.ingest_one(
+        IngestionJob(job_id="i-sw", kind=JobKind.INCREMENTAL, arxiv_ref=metadata.arxiv_ref)
+    )
+
+    assert result is DedupDecision.NEW
+    [stored_text] = pipeline._full_text_store.objects.values()
+    assert "Clean PDF body." in stored_text  # the PDF rung's text, not the rejected page's
+    assert "includegraphics" not in stored_text
+    winners = list(control._canonical.values())
+    assert winners and all(w.winning_source_tier == ARXIV_PDF_TIER for w in winners)

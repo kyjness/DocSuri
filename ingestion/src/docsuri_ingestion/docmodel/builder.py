@@ -14,6 +14,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from typing import Any, Protocol, runtime_checkable
 
+from bs4 import BeautifulSoup
 from docsuri_shared.docmodel_contract import DOCMODEL_PARSER_VERSION, DOCMODEL_SCHEMA_VERSION
 from docsuri_shared.dtos import DocModel, DocModelResultDTO, SourceTier, SourceUnavailableDTO
 from docsuri_shared.observability import emit_metric
@@ -34,6 +35,7 @@ from docsuri_ingestion.docmodel.table_repair import (
 from docsuri_ingestion.docmodel.tei import TRAILING_FLOAT_SECTION_TITLE, parse_tei_to_docmodel
 from docsuri_ingestion.domain.assets import AssetCropSpec, FigureSpec
 from docsuri_ingestion.domain.models import MetadataRecord
+from docsuri_ingestion.full_text_extraction import html_to_text
 from docsuri_ingestion.ports import (
     ClockPort,
     DocModelSourcePort,
@@ -67,9 +69,59 @@ _REBUILD_SOURCE_TIERS = frozenset({SourceTier.native_html})
 # stored as a "complete" doc-model. Gate on the non-abstract body length: a real paper has
 # thousands of characters of body prose, so a floor this low never trips a genuinely complete paper
 # but reliably catches the abstract-only truncations. A tripped gate degrades to source_unavailable
-# (arXiv link-out) — honest — rather than shipping a fragment as the full text. (A PDF→GROBID
-# fallback that actually recovers the body is a separate follow-up.)
+# so the next ladder rung (PDF→GROBID) can recover the body, rather than shipping a fragment as
+# the full text.
 _MIN_BODY_TEXT_CHARS = 500
+
+# The absolute floor above catches an abstract-only truncation, but not a conversion that dies
+# PART-WAY: 2502.10208 was measured carrying 8,905 chars of body with most of the paper gone —
+# comfortably over any absolute floor worth setting. So judge RELATIVELY as well: of the readable
+# text the fetched page carries, how much did the parser actually recover?
+#
+# The denominator is NOT the raw page text. Two structural biases are removed first (see
+# _comparable_source_len): the bibliography (`ltx_bibliography` — never projected into blocks by
+# design, and its share of a page is unbounded: a survey can be 20%+ references) and MathML
+# `<annotation>` elements (every formula's TeX source duplicated next to its rendered glyphs —
+# math-heavy fixtures measured up to 22% of raw text). Without the trim, a reference-heavy
+# math paper's ratio drifts toward the floor for reasons that have nothing to do with conversion
+# health — and the penalty here is corpus EXCLUSION, so drift is not tolerable.
+#
+# Measured on 61 corpus papers (2026-08-10), scored against LaTeXML's OWN truncation notice
+# ("This document may be truncated or damaged") as ground truth. With the trimmed denominator the
+# only substantial damaged page (2506.01145) reconstructs to 0.27, while the healthy pass-set
+# starts at 0.81 and clusters 0.88-1.0. 0.50 sits in the empty band between them (1.85x above the
+# damaged page, 1.6x below the weakest healthy one) — false rejections: 0/61. The 2502.10208
+# break reconstructed to ~0.08 on the raw denominator, far under it. Tiny damaged shells
+# (2308.02452: 343 chars, trimmed ratio 0.70) are the ABSOLUTE floor's catch, not this gate's —
+# a ratio is meaningless at that size, which is why both gates exist.
+#
+# Do NOT gate on the truncation notice itself: 2502.15015 carries it yet recovered 0.81 of its
+# trimmed text, so the notice over-rejects where coverage does not.
+#
+# REJECTED — counting `ltx_ERROR` nodes per paragraph (shipped earlier the same day, reverted
+# here): it does not separate the two. One unresolved macro used N times emits N error nodes while
+# the paragraph count stays fixed, so 2310.04047 (36,770 chars, 18 sections, 7 tables, zero TeX
+# leak; the author's own `\ourtool` macro used 74 times) measured 1.7 and 2501.08626 (23,705
+# chars; a proceedings style's `\Name`/`\Email`) measured 2.35 — both healthy, both above any
+# threshold that still catches a real break. 3.3% of the sample were false rejections, and every
+# genuine break it did flag was already caught by the absolute floor above.
+_MIN_SOURCE_COVERAGE = 0.50
+
+
+def _comparable_source_len(html: str) -> int:
+    """Length of the source page's readable text that the block tree is EXPECTED to carry.
+
+    Strips, before ``html_to_text``: bibliography subtrees (``ltx_bibliography`` is not in the
+    parser's section classes, so its text can never appear in fullText) and MathML
+    ``<annotation>``/``<annotation-xml>`` (the TeX source of every formula, duplicated beside its
+    rendered glyphs — the doc-model stores one form, the raw page renders both). Gate-denominator
+    only; the stored full text is a different product with its own rules."""
+    soup = BeautifulSoup(html or "", "lxml")
+    for node in soup.find_all(class_="ltx_bibliography"):
+        node.decompose()
+    for node in soup.find_all(["annotation", "annotation-xml"]):
+        node.decompose()
+    return len(html_to_text(str(soup)))
 
 
 def _block_text_len(block: dict) -> int:
@@ -172,7 +224,6 @@ class DocModelBuilder:
                 status="source_unavailable", reason=_SOURCE_UNAVAILABLE_REASON
             )
         html, source_tier = fetched
-
         doc = parse_html_to_docmodel(
             html,
             paper_id=paper_id,
@@ -194,6 +245,17 @@ class DocModelBuilder:
             return SourceUnavailableDTO(
                 status="source_unavailable", reason=_SOURCE_UNAVAILABLE_REASON
             )
+        source_chars = _comparable_source_len(html)
+        if source_chars and len(doc.fullText or "") < _MIN_SOURCE_COVERAGE * source_chars:
+            # The conversion died PART-WAY (see _MIN_SOURCE_COVERAGE): long enough to clear the
+            # absolute floor, but most of the page never became blocks. Degrade so the next rung
+            # (PDF→GROBID) takes over, and count it apart from abstract-only truncations so the
+            # two failure modes stay distinguishable — and so the reingest batch can watch this
+            # rate and retune the floor on corpus-wide evidence rather than a 61-paper sample.
+            emit_metric(self._observability, "ingestion.docmodel.broken_conversion", 1.0)
+            return SourceUnavailableDTO(
+                status="source_unavailable", reason=_SOURCE_UNAVAILABLE_REASON
+            )
         self._store.put(doc)
         return DocModelResultDTO(status="ok", cached=False, docModel=doc)
 
@@ -212,23 +274,6 @@ class DocModelBuilder:
         except Exception:  # noqa: BLE001 - macros are a display refinement, never blocking
             emit_metric(self._observability, "ingestion.docmodel.macros_failed", 1.0)
             return {}
-
-    def build_from_text(
-        self,
-        metadata: MetadataRecord,
-        text: str,
-        *,
-        source_tier: SourceTier = SourceTier.pdf,
-    ) -> DocModelResultDTO:
-        """Return/cache a minimal doc-model from already-fetched PDF/GROBID text."""
-        return self.build_from_paper(
-            metadata.paper_id,
-            metadata.version,
-            metadata.title,
-            metadata.abstract or "",
-            text,
-            source_tier=source_tier,
-        )
 
     def build_from_paper(
         self,
@@ -265,17 +310,22 @@ class DocModelBuilder:
         title: str,
         abstract: str,
         tei: str,
-        fallback_text: str,
         *,
         source_tier: SourceTier = SourceTier.pdf,
         crops: list[AssetCropSpec] | None = None,
         pdf: bytes | None = None,
-    ) -> DocModelResultDTO:
-        """Structured doc-model from GROBID TEI for non-arXiv sources (sections/tables/figures).
+    ) -> DocModelResultDTO | SourceUnavailableDTO:
+        """Structured doc-model from GROBID TEI (sections/tables/figures).
 
-        Falls back to the flat-text doc-model when TEI is missing or unparseable, so a GROBID
-        quirk never blocks ingestion (best-effort, BR-27-style). The fallback emits a metric so
-        a systematic TEI regression is visible rather than silently degrading every paper.
+        TEI missing or unparseable returns ``SourceUnavailableDTO`` — unconditionally. A
+        structureless text blob must not become a doc-model (BR-30 2026-08-10), and expressing
+        that as an opt-out flag would mean every future corpus caller has to remember the keyword
+        to avoid silently re-admitting flat text. The one caller that IS allowed to be lenient
+        (user uploads, where failing on a GROBID hiccup would take away the only view the user
+        has) does its own ``build_from_paper`` on this result, visibly, at its own call site.
+
+        The degradation emits a metric either way, so a systematic TEI regression is visible
+        rather than silently downgrading every paper.
 
         When ``crops`` is supplied, the figure/formula page-crop specs are collected during this
         single TEI parse (the parser's out-param) so the asset step need not re-parse the TEI.
@@ -307,8 +357,8 @@ class DocModelBuilder:
                 emit_metric(self._observability, "ingestion.docmodel.tei_fallback", 1.0)
                 doc = None
         if doc is None:
-            return self.build_from_paper(
-                paper_id, version, title, abstract, fallback_text, source_tier=source_tier
+            return SourceUnavailableDTO(
+                status="source_unavailable", reason=_SOURCE_UNAVAILABLE_REASON
             )
         self._emit_float_placement(doc)
         doc = self._repair_tables(doc, pdf, crops)

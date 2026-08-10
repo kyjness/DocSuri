@@ -8,6 +8,8 @@ page carrying several figures used to be rendered once per crop.
 
 from __future__ import annotations
 
+import pytest
+
 from docsuri_ingestion.adapters.arxiv import ArxivHttpSource
 from docsuri_ingestion.adapters.local import sample_metadata
 
@@ -42,6 +44,84 @@ def test_full_text_and_doc_model_share_one_html_fetch(monkeypatch) -> None:
     assert tier.value == "ar5iv"
 
     assert len(calls) == after_full_text, f"doc-model rung re-fetched HTML: {calls}"
+
+
+def test_full_text_and_grobid_rung_share_one_pdf_fetch(monkeypatch) -> None:
+    # A paper with NO ar5iv build asks for its PDF twice in one ingest: fetch_full_text falls
+    # through to the PDF text rung, then the doc-model ladder's PDF→GROBID rung wants the same
+    # bytes. That is exactly the population the GROBID rung exists for, so a second multi-MB
+    # download here is paid on every such paper of a re-parse batch.
+    from docsuri_ingestion.adapters import arxiv as arxiv_mod
+
+    source = ArxivHttpSource()
+    downloads: list[str] = []
+
+    def _count_bytes(url: str, *, params, stage) -> bytes:
+        downloads.append(url)
+        return b"%PDF-fake"
+
+    monkeypatch.setattr(source, "_fetch_html_at", lambda base, arxiv_id: None)  # no ar5iv build
+    monkeypatch.setattr(source, "_get_bytes", _count_bytes)
+    monkeypatch.setattr(arxiv_mod, "pdf_to_text", lambda pdf: "Recovered PDF body. " * 200)
+    metadata = sample_metadata()
+
+    raw = source.fetch_full_text(metadata)
+    assert "Recovered PDF body." in raw.text
+    assert len(downloads) == 1
+
+    assert source.fetch_pdf(metadata) == b"%PDF-fake"  # the GROBID rung's read
+    assert len(downloads) == 1, f"GROBID rung re-downloaded the PDF: {downloads}"
+
+
+def test_only_mode_ar5iv_miss_never_reaches_the_network(monkeypatch) -> None:
+    # raw_cache_mode="only" is the offline reparse contract: NEVER hit the network. The full-text
+    # path honored it, but a cache MISS left the HTML memo unprimed — and the doc-model rung's
+    # fetch_html_source reads through the memo straight to a live GET, stalling the offline batch
+    # ~3s per such paper on the politeness bucket and adding an un-asked-for network dependency.
+    class _EmptyRawStore:
+        def get_raw(self, paper_id, version, kind):
+            return None
+
+        def put_raw(self, *a, **k):  # pragma: no cover - only-mode never writes
+            raise AssertionError("only-mode must never write")
+
+    source = ArxivHttpSource(raw_store=_EmptyRawStore(), raw_cache_mode="only")
+
+    def _no_network(base, arxiv_id):
+        raise AssertionError("only-mode must never fetch HTML from the network")
+
+    monkeypatch.setattr(source, "_fetch_html_at", _no_network)
+    metadata = sample_metadata()
+
+    html, _url = source._acquire_html(metadata)  # full-text path: miss, no network
+    assert html is None
+    assert source.fetch_html_source(metadata.identifier.arxiv_id) is None  # doc-model path too
+
+
+def test_a_permanently_missing_pdf_is_requested_once(monkeypatch) -> None:
+    # A 404'd PDF stays 404 within one job: fetch_full_text's attempt is swallowed by its ladder,
+    # then the GROBID rung asked again — re-taking a ~3s rate-limiter slot for a doomed request,
+    # concentrated on exactly the most expensive population of a reparse batch.
+    from docsuri_ingestion.domain.enums import FailureReason
+    from docsuri_ingestion.domain.errors import PermanentIngestionError
+
+    source = ArxivHttpSource()
+    attempts: list[str] = []
+
+    def _always_404(url, *, params, stage):
+        attempts.append(url)
+        raise PermanentIngestionError(
+            "404", reason=FailureReason.FETCH_FAILURE, stage=stage
+        )
+
+    monkeypatch.setattr(source, "_get_bytes", _always_404)
+    metadata = sample_metadata()
+
+    with pytest.raises(PermanentIngestionError):
+        source.fetch_pdf(metadata)
+    with pytest.raises(PermanentIngestionError):  # second rung: memoized re-raise, no request
+        source.fetch_pdf(metadata)
+    assert len(attempts) == 1, attempts
 
 
 def test_a_missing_ar5iv_build_is_not_requested_again(monkeypatch) -> None:
