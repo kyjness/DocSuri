@@ -78,11 +78,20 @@ def main() -> None:
                 tei = tei_for(key, args.cache, client)
                 crops: list = []
                 pdf_path = args.cache / "pdf" / f"{key}.pdf"
-                doc = build_doc(
+                doc_model = build_doc(
                     paper_id, version, tei,
                     pdf_path.read_bytes() if builder else b"",
                     builder, crops,
-                ).model_dump(mode="json")
+                )
+                if doc_model is None:
+                    # BR-30 2026-08-10: real ingestion EXCLUDES this paper (TEI parsed to no
+                    # structure). Marked distinctly — it is the source's failure, not the parser's.
+                    row["excluded"] = True
+                    fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+                    fh.flush()
+                    print(f"[{i}/{len(targets)}] {key} excluded (TEI has no structure)", flush=True)
+                    continue
+                doc = doc_model.model_dump(mode="json")
                 row["pdf"] = counts(doc)
                 row["crops"] = len(crops)
                 html_path = args.cache / "html" / f"{key}.html"
