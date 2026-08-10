@@ -27,6 +27,18 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 # ponytail: single global ceiling; split per-content-type only if a legitimate fetch is rejected.
 MAX_RESPONSE_BYTES = 64 * 1024 * 1024
 
+# How we identify ourselves to third-party publishers. Sending nothing means httpx's default
+# ("python-httpx/x.y"), which several open-access hosts treat as a bot: measured on the OpenAlex
+# harvest, Springer and Nature answered an unidentified request with HTTP 200 and a 3 KB HTML
+# landing page instead of the PDF, and Cureus answered 403. With this header the same URLs return
+# the real 1.4-1.9 MB PDFs. Publishers ask for a contact, so callers append one when configured.
+USER_AGENT = "DocSuri/1.0 (+https://docsuri.org)"
+
+
+def user_agent(contact: str | None = None) -> str:
+    """The outbound ``User-Agent``, carrying a contact address when one is configured."""
+    return f"{USER_AGENT[:-1]}; mailto:{contact})" if contact else USER_AGENT
+
 
 class ResponseTooLargeError(Exception):
     """Raised when a response body exceeds the byte cap mid-stream."""

@@ -120,6 +120,12 @@ class IngestionSettings(BaseModel):
     # in the throttled common pool and 429 (observed on the very first /works page). Email kept
     # out of source; supplied via env.
     openalex_mailto: str | None = Field(default=None, alias="DOCSURI_OPENALEX_MAILTO")
+    # Contact carried in the outbound User-Agent for third-party publisher fetches. Separate from
+    # ``openalex_mailto``, which is one API's polite-pool query parameter: a deployment that sets
+    # only that one must not silently go anonymous everywhere else. Falls back to it when unset,
+    # because an anonymous request is what several publishers answer with a landing page or a 403.
+    contact_email: str | None = Field(default=None, alias="DOCSURI_CONTACT_EMAIL")
+
     request_timeout_seconds: float = Field(default=30.0, alias="DOCSURI_REQUEST_TIMEOUT_SECONDS")
     # Wall-clock cap for one resilience dependency_call. Must exceed the worst LEGITIMATE
     # multi-request chain (politeness-paced html→ar5iv→pdf + pdfplumber on a big PDF ≈ 2-3 min);
@@ -190,6 +196,11 @@ class IngestionSettings(BaseModel):
             _parse_window_bound(self.backfill_start, default_start),
             _parse_window_bound(self.backfill_end, default_end),
         )
+
+    @property
+    def outbound_contact(self) -> str | None:
+        """The address to identify ourselves with, however the deployment configured one."""
+        return self.contact_email or self.openalex_mailto
 
     @property
     def parsed_corpus_sources(self) -> tuple[str, ...]:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import logging
 import socket
 import time
 from collections.abc import Iterator, Sequence
@@ -13,14 +14,22 @@ from docsuri_ingestion.corpus_sources import SourcePaperRecord
 from docsuri_ingestion.domain.enums import FailureReason, SourceName
 from docsuri_ingestion.domain.errors import PermanentIngestionError, RetriableIngestionError
 
+log = logging.getLogger("docsuri.ingestion.corpus")
+
 # Hops to follow for an attacker-influenced PDF URL, validating each target host (SSRF guard).
 _MAX_PDF_REDIRECTS = 5
+# How many copies of one paper we are willing to try. Open-access records list several deposits and
+# most are fine on the first; a paper whose first three are all refused is not worth knocking on
+# ten doors for, and the cap keeps one bad record from pacing the whole harvest.
+_MAX_PDF_CANDIDATES = 3
 
 
 class SsrfBlockedError(Exception):
     """Raised when a fetch target resolves to a non-public address (BR-18 / SEC-15)."""
 
 _FIELDS_OF_STUDY = "Computer Science"
+# OpenAlex's own id for the Computer Science field — the counterpart of ``_FIELDS_OF_STUDY``.
+_OPENALEX_CS_FIELD = "fields/17"
 _QUERY_TERMS = {
     "cs.AI": "artificial intelligence",
     "cs.CL": "natural language processing",
@@ -40,6 +49,21 @@ _RETRY_BACKOFF_SECONDS = 2.0
 # pages just under it. The bulk endpoint is the only SS API call in the harvest (PDF fetch hits the
 # publisher host, not the API), so a per-page sleep is enough to stay compliant single-threaded.
 _SS_REQUEST_INTERVAL_SECONDS = 1.1
+
+
+def _headers(contact: str | None, extra: dict[str, str] | None = None) -> dict[str, str]:
+    """Outbound headers for a third-party request: who we are, plus whatever the caller adds.
+
+    Sending nothing left httpx's default ``python-httpx/x.y``, and several open-access publishers
+    answer that with a 403 or with their landing page instead of the PDF (measured on Springer,
+    Nature, Cureus). Identifying ourselves is the fix and is also what publishers ask for.
+    """
+    from docsuri_ingestion.http_limits import user_agent
+
+    headers = {"User-Agent": user_agent(contact), "Accept": "application/pdf,application/json,*/*"}
+    if extra:
+        headers.update(extra)
+    return headers
 
 
 def _get_json_retrying(
@@ -80,21 +104,53 @@ def _fetch_record_pdf(
     stage: str,
     timeout_seconds: float,
     transport: object | None,
+    contact: str | None = None,
 ) -> bytes:
-    """Open-access PDF bytes for a corpus record. A record with no PDF URL is a permanent
-    fetch failure — the record should never have passed the source adapter's OA filter."""
-    if not record.pdf_url:
+    """Open-access PDF bytes for a corpus record, trying its other copies when one is unusable.
+
+    A record with no PDF URL is a permanent fetch failure — it should never have passed the source
+    adapter's OA filter. Beyond that, two things go wrong with publisher PDFs and both are
+    permanent for THAT copy while another copy may be fine:
+
+    * the host refuses us outright (MDPI, Wiley and ACM answer 403 even to an identified client);
+    * the host answers 200 with its landing page instead of the file, which used to be handed
+      straight to GROBID — a 3 KB HTML document produced a GROBID 500, and a 500 is RETRIABLE, so
+      the job went round the retry loop and into the DLQ instead of being rejected once.
+
+    Retriable outcomes (429/5xx, timeouts) are NOT walked past: those mean "ask again later", and
+    moving to another copy would turn a transient blip into a permanent choice of a worse source.
+    """
+    candidates = [url for url in (record.pdf_url, *record.alternate_pdf_urls) if url]
+    if not candidates:
         raise PermanentIngestionError(
             f"{source_label} record has no PDF URL",
             reason=FailureReason.FETCH_FAILURE,
             stage="source",
         )
-    return _get_bytes(
-        record.pdf_url,
-        timeout_seconds=timeout_seconds,
-        transport=transport,
-        stage=stage,
-    )
+    last: PermanentIngestionError | None = None
+    for url in candidates[:_MAX_PDF_CANDIDATES]:
+        try:
+            body = _get_bytes(
+                url,
+                timeout_seconds=timeout_seconds,
+                transport=transport,
+                stage=stage,
+                contact=contact,
+            )
+        except PermanentIngestionError as exc:
+            log.warning("%s: %s unusable (%s)", source_label, url, exc)
+            last = exc
+            continue
+        if body.lstrip()[:5] != b"%PDF-":
+            log.warning("%s: %s answered %d bytes that are not a PDF", source_label, url, len(body))
+            last = PermanentIngestionError(
+                f"{source_label} PDF URL served a non-PDF body",
+                reason=FailureReason.FETCH_FAILURE,
+                stage=stage,
+            )
+            continue
+        return body
+    raise last  # the loop cannot exit without setting it: candidates is non-empty
 
 
 class SemanticScholarCorpusSource:
@@ -105,11 +161,13 @@ class SemanticScholarCorpusSource:
         base_url: str = "https://api.semanticscholar.org/graph/v1",
         timeout_seconds: float = 30.0,
         transport: object | None = None,
+        contact: str | None = None,
     ) -> None:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._timeout_seconds = timeout_seconds
         self._transport = transport
+        self._contact = contact
 
     def fetch_incremental(
         self,
@@ -131,7 +189,7 @@ class SemanticScholarCorpusSource:
         year_filter = f"{since.year}-{until.year}" if until else f"{since.year}-"
         while True:
             params = {
-                "query": _query(categories),
+                "query": _query(categories, joiner="|"),
                 "fields": ",".join(
                     (
                         "paperId",
@@ -156,7 +214,9 @@ class SemanticScholarCorpusSource:
             payload = _get_json_retrying(
                 f"{self._base_url}/paper/search/bulk",
                 params=params,
-                headers={"x-api-key": self._api_key} if self._api_key else None,
+                headers=_headers(
+                    self._contact, {"x-api-key": self._api_key} if self._api_key else None
+                ),
                 timeout_seconds=self._timeout_seconds,
                 transport=self._transport,
                 stage="semantic_scholar",
@@ -180,6 +240,7 @@ class SemanticScholarCorpusSource:
             stage="semantic_scholar_pdf",
             timeout_seconds=self._timeout_seconds,
             transport=self._transport,
+            contact=self._contact,
         )
 
 
@@ -191,11 +252,14 @@ class OpenAlexCorpusSource:
         timeout_seconds: float = 30.0,
         transport: object | None = None,
         mailto: str | None = None,
+        contact: str | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout_seconds = timeout_seconds
         self._transport = transport
         self._mailto = mailto
+        # The polite-pool mailto doubles as the contact when no separate one is configured.
+        self._contact = contact or mailto
 
     def fetch_incremental(
         self,
@@ -214,12 +278,18 @@ class OpenAlexCorpusSource:
                 f"from_publication_date:{since.date().isoformat()}",
                 "open_access.is_oa:true",
                 "type:article",
+                # Restrict to the same discipline Semantic Scholar is asked for with
+                # `fieldsOfStudy=Computer Science`. Without it the harvest was a free-text search
+                # only, and the top of a real week came back as intensive-care medicine,
+                # Alzheimer's diagnosis and surface-water management — papers that say "machine
+                # learning" but are not the corpus this app is about.
+                f"primary_topic.field.id:{_OPENALEX_CS_FIELD}",
             ]
             if until is not None:
                 filters.append(f"to_publication_date:{until.date().isoformat()}")
             params = {
                 "filter": ",".join(filters),
-                "search": _query(categories),
+                "search": _query(categories, joiner="OR"),
                 "per-page": "100",
                 "cursor": cursor,
                 "select": ",".join(
@@ -243,7 +313,7 @@ class OpenAlexCorpusSource:
             payload = _get_json_retrying(
                 f"{self._base_url}/works",
                 params=params,
-                headers=None,
+                headers=_headers(self._contact),
                 timeout_seconds=self._timeout_seconds,
                 transport=self._transport,
                 stage="openalex",
@@ -261,6 +331,7 @@ class OpenAlexCorpusSource:
             stage="openalex_pdf",
             timeout_seconds=self._timeout_seconds,
             transport=self._transport,
+            contact=self._contact,
         )
 
 
@@ -293,10 +364,10 @@ def _semantic_record(item: dict[str, Any]) -> SourcePaperRecord | None:
 
 def _openalex_record(item: dict[str, Any]) -> SourcePaperRecord | None:
     location = item.get("primary_location") or {}
-    pdf_url = _https_url(location.get("pdf_url")) or _first_pdf_url(item.get("locations") or [])
-    license_url = _license_url(location.get("license"))
-    if not pdf_url or not license_url:
+    copies = _licensed_pdf_copies(location, item.get("locations") or [])
+    if not copies:
         return None
+    (pdf_url, license_url), alternates = copies[0], tuple(url for url, _ in copies[1:])
     ids = item.get("ids") or {}
     return SourcePaperRecord(
         source_name=SourceName.OPENALEX,
@@ -316,7 +387,30 @@ def _openalex_record(item: dict[str, Any]) -> SourcePaperRecord | None:
         license_url=license_url,
         doi=item.get("doi") or ids.get("doi"),
         arxiv_id=_arxiv_id(ids.get("arxiv")),
+        alternate_pdf_urls=alternates,
     )
+
+
+def _licensed_pdf_copies(
+    primary: dict[str, Any], locations: list[dict[str, Any]]
+) -> list[tuple[str, str]]:
+    """(pdf_url, license_url) for every copy of the work we may legally read, primary first.
+
+    Each OpenAlex location carries its OWN licence, and a repository deposit does not inherit the
+    publisher's terms — pairing one location's URL with another's licence would record a paper as
+    CC-BY on the strength of a copy we never fetched. So the licence is read per location and a
+    location that fails the gate is not a candidate at all.
+    """
+    copies: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for location in (primary, *locations):
+        pdf_url = _https_url(location.get("pdf_url"))
+        license_url = _license_url(location.get("license"))
+        if not pdf_url or not license_url or pdf_url in seen:
+            continue
+        seen.add(pdf_url)
+        copies.append((pdf_url, license_url))
+    return copies
 
 
 def _openalex_authors(item: dict[str, Any]) -> list[str]:
@@ -352,7 +446,12 @@ def _get_json(
 
 
 def _get_bytes(
-    url: str, *, timeout_seconds: float, transport: object | None, stage: str
+    url: str,
+    *,
+    timeout_seconds: float,
+    transport: object | None,
+    stage: str,
+    contact: str | None = None,
 ) -> bytes:
     """Fetch a PDF from an attacker-influenced URL with an SSRF host guard + size cap.
 
@@ -389,9 +488,12 @@ def _get_bytes(
                 if transport is None:
                     host, ip = _assert_public_host(current)
                     target = _pin_url(current, ip)
-                    send = {"headers": {"Host": host}, "extensions": {"sni_hostname": host}}
+                    send = {
+                        "headers": {"Host": host, **_headers(contact)},
+                        "extensions": {"sni_hostname": host},
+                    }
                 else:
-                    target, send = current, {}
+                    target, send = current, {"headers": _headers(contact)}
                 with client.stream("GET", target, **send) as response:
                     location = response.headers.get("location")
                     if response.is_redirect and location:
@@ -502,9 +604,23 @@ def _response_json(raw: bytes, stage: str) -> dict[str, Any]:
     return payload
 
 
-def _query(categories: Sequence[str]) -> str:
-    terms = sorted({_QUERY_TERMS.get(category, category) for category in categories})
-    return " ".join(terms) or "machine learning"
+def _query_terms(categories: Sequence[str]) -> list[str]:
+    """The corpus slice's category names as search phrases, deduplicated and ordered. Pure."""
+    return sorted({_QUERY_TERMS.get(category, category) for category in categories}) or [
+        "machine learning"
+    ]
+
+
+def _query(categories: Sequence[str], *, joiner: str) -> str:
+    """The slice's phrases joined as a DISJUNCTION, in the joining source's own syntax.
+
+    Space-joining them, as this used to, is read by both APIs as "must contain all of these", so a
+    paper had to be about artificial intelligence AND computer vision AND machine learning AND
+    natural language processing at once. Measured against the live endpoints, that cost Semantic
+    Scholar 306 results where the disjunction returns 22,039 (2025), and OpenAlex 539 where a
+    single term returns 9,305 (one week). The categories are alternatives, not a conjunction.
+    """
+    return f" {joiner} ".join(_query_terms(categories))
 
 
 def _in_window(
@@ -514,14 +630,6 @@ def _in_window(
 ) -> bool:
     timestamp = record.updated_at or record.published_at or since
     return timestamp > since and (until is None or timestamp <= until)
-
-
-def _first_pdf_url(locations: list[dict[str, Any]]) -> str | None:
-    for location in locations:
-        pdf_url = _https_url(location.get("pdf_url"))
-        if pdf_url:
-            return pdf_url
-    return None
 
 
 def _https_url(value: object) -> str | None:

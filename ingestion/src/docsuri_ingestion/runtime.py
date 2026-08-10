@@ -119,11 +119,13 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
             semantic_scholar = SemanticScholarCorpusSource(
                 api_key=settings.semantic_scholar_api_key,
                 timeout_seconds=settings.request_timeout_seconds,
+                contact=settings.outbound_contact,
             )
         if SourceName.OPENALEX in enabled_sources:
             openalex = OpenAlexCorpusSource(
                 timeout_seconds=settings.request_timeout_seconds,
                 mailto=settings.openalex_mailto,
+                contact=settings.outbound_contact,
             )
     corpus_sources = CorpusSourceAdapterSet(
         arxiv=arxiv,
