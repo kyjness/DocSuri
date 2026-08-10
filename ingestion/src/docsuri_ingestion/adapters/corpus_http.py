@@ -117,6 +117,8 @@ def _fetch_record_pdf(
     Retriable outcomes (429/5xx, timeouts) are NOT walked past: those mean "ask again later", and
     moving to another copy would turn a transient blip into a permanent choice of a worse source.
     """
+    from docsuri_ingestion.http_limits import is_pdf_payload
+
     candidates = [url for url in (record.pdf_url, *record.alternate_pdf_urls) if url]
     if not candidates:
         raise PermanentIngestionError(
@@ -138,7 +140,7 @@ def _fetch_record_pdf(
             log.warning("%s: %s unusable (%s)", source_label, url, exc)
             last = exc
             continue
-        if body.lstrip()[:5] != b"%PDF-":
+        if not is_pdf_payload(body):
             log.warning("%s: %s answered %d bytes that are not a PDF", source_label, url, len(body))
             last = PermanentIngestionError(
                 f"{source_label} PDF URL served a non-PDF body",
@@ -331,6 +333,10 @@ class OpenAlexCorpusSource:
 
 
 def _semantic_record(item: dict[str, Any]) -> SourcePaperRecord | None:
+    # No ``alternate_pdf_urls`` here, deliberately: the S2 API reports exactly one
+    # ``openAccessPdf`` — there is no second copy to carry. A record with an arXiv id would not
+    # benefit from a synthesised arxiv.org URL either, since dedup (arXiv > S2) hands that paper
+    # to the arXiv source before this record's PDF is ever fetched.
     pdf = item.get("openAccessPdf") or {}
     license_url = _license_url(pdf.get("license"))
     pdf_url = _https_url(pdf.get("url"))
@@ -362,10 +368,20 @@ def _openalex_record(item: dict[str, Any]) -> SourcePaperRecord | None:
     copies = _licensed_pdf_copies(location, item.get("locations") or [])
     if not copies:
         return None
-    # Only as many alternates as the fetch will ever walk. Everything past that would be
-    # serialised into the queue message, delivered and parsed for a candidate nobody tries.
     (pdf_url, license_url) = copies[0]
-    alternates = tuple(url for url, _ in copies[1:_MAX_PDF_CANDIDATES])
+    # Alternates are restricted to copies under the SAME licence as the primary, because the
+    # record keeps exactly one ``license_url`` and the downstream OA gate and the stored paper
+    # both read that one — a copy under a different licence would be fetched as bytes but
+    # recorded under terms it was never offered on, which is the mispairing
+    # ``_licensed_pdf_copies`` exists to prevent. (``_license_url`` alone does not protect here:
+    # it is a host/path shape check that passes any creativecommons.org licence, NC-ND included;
+    # the allowlist gate runs later and only ever sees the primary's licence.) Measured cost:
+    # 2 of 50 harvested records carry any alternate at all, and mirrored deposits typically
+    # repeat the publisher's licence. Capped at what the fetch will ever walk — everything past
+    # that would be serialised into the queue message for a candidate nobody tries.
+    alternates = tuple(
+        url for url, lic in copies[1:] if lic == license_url
+    )[: _MAX_PDF_CANDIDATES - 1]
     ids = item.get("ids") or {}
     return SourcePaperRecord(
         source_name=SourceName.OPENALEX,
@@ -603,16 +619,21 @@ def _response_json(raw: bytes, stage: str) -> dict[str, Any]:
 
 
 def _query(categories: Sequence[str], *, joiner: str) -> str:
-    """The slice's category names as search phrases, joined as a DISJUNCTION in the API's syntax.
+    """The slice's category names as QUOTED search phrases, joined as a disjunction.
 
-    Space-joining them, as this used to, is read by both APIs as "must contain all of these", so a
-    paper had to be about artificial intelligence AND computer vision AND machine learning AND
-    natural language processing at once. Measured against the live endpoints, that cost Semantic
-    Scholar 306 results where the disjunction returns 22,039 (2025), and OpenAlex 539 where a
-    single term returns 9,305 (one week). The categories are alternatives, not a conjunction.
+    Both halves matter and each was wrong once. Space-joining the phrases is read by both APIs as
+    "must contain all of these", so a paper had to be about artificial intelligence AND computer
+    vision AND machine learning AND natural language processing at once — measured against the
+    live endpoints, that cost Semantic Scholar 306 results where a disjunction returns tens of
+    thousands, and OpenAlex 539 where a single term returns 9,305 (one week). And joining with the
+    operator but WITHOUT quotes does not say what it reads as either: S2's bulk-search grammar
+    binds ``|`` to the adjacent words (its own documentation parenthesises multi-word operands —
+    ``((cloud computing) | virtualization) +security``), and OpenAlex loses phrase adjacency, so
+    "computer vision" matched the two words anywhere in the record. Quoting each phrase makes the
+    query mean the intended union of topics in both syntaxes.
     """
     terms = sorted({_QUERY_TERMS.get(category, category) for category in categories})
-    return f" {joiner} ".join(terms or ["machine learning"])
+    return f" {joiner} ".join(f'"{term}"' for term in (terms or ["machine learning"]))
 
 
 def _in_window(

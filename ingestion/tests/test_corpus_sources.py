@@ -463,9 +463,11 @@ def test_a_transient_failure_is_not_walked_past() -> None:
     assert tried == ["https://example.test/publisher.pdf"]
 
 
-def test_only_copies_that_pass_the_licence_gate_become_candidates() -> None:
-    """Each OpenAlex location carries its own licence. Pairing one location's URL with another's
-    licence would record a paper as CC-BY on the strength of a copy we never fetched."""
+def test_only_same_licence_copies_become_candidates() -> None:
+    """The record keeps exactly ONE license_url and the downstream OA gate only ever reads that
+    one — so a copy under any OTHER licence must not be a fallback candidate, or its bytes would
+    be stored under terms they were never offered on. The shape check (_license_url) cannot catch
+    this: it passes any creativecommons.org licence, NC included."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -477,7 +479,8 @@ def test_only_copies_that_pass_the_licence_gate_become_candidates() -> None:
                             {"pdf_url": "https://example.test/a.pdf", "license": "cc-by"},
                             {"pdf_url": "https://example.test/nc.pdf", "license": "cc-by-nc"},
                             {"pdf_url": "https://example.test/none.pdf", "license": None},
-                            {"pdf_url": "https://example.test/b.pdf", "license": "cc-by-sa"},
+                            {"pdf_url": "https://example.test/sa.pdf", "license": "cc-by-sa"},
+                            {"pdf_url": "https://example.test/mirror.pdf", "license": "cc-by"},
                         ]
                     )
                 ],
@@ -487,7 +490,8 @@ def test_only_copies_that_pass_the_licence_gate_become_candidates() -> None:
 
     record = _harvest(_openalex_source(handler))[0]
     assert record.pdf_url == "https://example.test/a.pdf"
-    assert record.alternate_pdf_urls == ("https://example.test/b.pdf",)
+    # The cc-by mirror survives; cc-by-sa is allowlisted but DIFFERENT, so it is dropped too.
+    assert record.alternate_pdf_urls == ("https://example.test/mirror.pdf",)
 
 
 def test_the_candidate_walk_is_bounded() -> None:
@@ -514,13 +518,15 @@ def test_alternate_copies_survive_the_queue_round_trip() -> None:
     assert SourcePaperRecord.from_payload(record.to_payload()) == record
 
 
-def test_the_harvest_asks_for_alternatives_not_a_conjunction() -> None:
-    """Space-joining the slice's phrases is read by both APIs as "must contain all of these" —
-    measured, that cost Semantic Scholar 306 results where the disjunction returns 22,039."""
+def test_the_harvest_asks_for_alternatives_as_quoted_phrases() -> None:
+    """Two failure modes in one query. Space-joining is read as "must contain all of these"
+    (measured: 306 results where the disjunction returns 22,039), and an unquoted disjunction
+    binds the operator to adjacent WORDS, not phrases — S2's own grammar parenthesises multi-word
+    operands, and OpenAlex loses phrase adjacency. Each phrase must be quoted."""
     from docsuri_ingestion.adapters.corpus_http import _query
 
-    assert _query(("cs.LG", "cs.CV"), joiner="|") == "computer vision | machine learning"
-    assert _query(("cs.LG", "cs.CV"), joiner="OR") == "computer vision OR machine learning"
+    assert _query(("cs.LG", "cs.CV"), joiner="|") == '"computer vision" | "machine learning"'
+    assert _query(("cs.LG", "cs.CV"), joiner="OR") == '"computer vision" OR "machine learning"'
 
 
 def test_openalex_harvests_computer_science_not_everything_that_says_machine_learning() -> None:
