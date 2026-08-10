@@ -42,6 +42,19 @@ def user_agent(contact: str | None = None) -> str:
     return f"{_PRODUCT} ({detail})"
 
 
+def is_pdf_payload(body: bytes) -> bool:
+    """Whether a fetched body is a PDF, by its magic bytes (BR-23b).
+
+    A 200 is not proof we were handed the file: several hosts answer with a landing or error
+    page instead, and that HTML reaching GROBID produces a retriable 500 — so the job circles
+    the retry loop into the DLQ instead of being rejected once. One shared check, because the
+    first false rejection (a BOM, CDN-prepended junk) must be fixed for every fetcher at once
+    rather than in whichever adapter happened to report it. Applied to cache reads as well as
+    fetches — a body that failed this check must never be served from the raw cache either.
+    """
+    return body.lstrip()[:5] == b"%PDF-"
+
+
 class ResponseTooLargeError(Exception):
     """Raised when a response body exceeds the byte cap mid-stream."""
 

@@ -284,16 +284,24 @@ class ArxivHttpSource:
                 # before a second call could happen, and must stay retriable on redelivery.
                 raise memo[1]
             return memo[1]
+        from docsuri_ingestion.http_limits import is_pdf_payload
+
         mode, store = self._raw_cache_mode, self._raw_store
         pid, ver = metadata.paper_id, metadata.version
         if mode in ("prefer", "only") and store is not None:
             cached = store.get_raw(pid, ver, "pdf")
-            if cached:
+            # A cache hit passes the SAME magic-byte check as a fetch: entries written before the
+            # check existed can hold a landing page filed as a PDF, and serving those would keep
+            # the exact GROBID-500 retry loop the check breaks — on every reparse, forever. A
+            # poisoned entry is treated as a miss; a successful refetch then overwrites it below,
+            # so the cache heals itself one paper at a time.
+            if cached and is_pdf_payload(cached):
                 self._pdf_memo = (arxiv_id, cached)
                 return cached
             if mode == "only":
-                # A miss is NOT memoized here: "only" means the caller asked for cache-or-nothing,
-                # and remembering the miss would mask a later cache write within the same paper.
+                # Cache-or-nothing: a miss AND a poisoned entry both answer None — "only" must
+                # never reach the network. The miss is NOT memoized, because remembering it would
+                # mask a later cache write within the same paper.
                 return None
         try:
             pdf = self._get_bytes(
@@ -301,12 +309,11 @@ class ArxivHttpSource:
                 params=None,
                 stage="fetch_full_text",
             )
-            # A 200 is not proof we were handed the file. A host that answers with its landing or
-            # error page instead sends HTML that reaches GROBID, which returns 500 — and a 500 is
-            # RETRIABLE, so the job circles the retry loop and lands in the DLQ rather than being
-            # rejected once. Worse here than on the other sources: without this the bytes would
-            # also be written to the raw cache AS a PDF and served to every later reparse.
-            if pdf.lstrip()[:5] != b"%PDF-":
+            # A 200 is not proof we were handed the file (BR-23b). A landing or error page
+            # reaching GROBID produces a retriable 500 and the job circles into the DLQ instead
+            # of being rejected once — and without this the bytes would also be written to the
+            # raw cache AS a PDF and served to every later reparse.
+            if not is_pdf_payload(pdf):
                 raise PermanentIngestionError(
                     "arXiv PDF URL served a non-PDF body",
                     reason=FailureReason.FETCH_FAILURE,

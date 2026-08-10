@@ -150,6 +150,53 @@ def test_a_landing_page_answered_as_a_pdf_is_never_written_to_the_raw_cache(monk
     assert len(calls) == 1  # the second ask was answered from the memo, not the network
 
 
+def test_a_poisoned_cache_entry_is_refetched_and_healed(monkeypatch) -> None:
+    """A cache hit passes the same magic-byte check as a fetch (BR-23b).
+
+    Entries written before the check existed can hold a landing page filed as a PDF. Served
+    unchecked, that HTML reaches GROBID on EVERY reparse and the retry-to-DLQ loop the check was
+    written to break survives for the existing corpus. A poisoned entry is a miss: the refetch
+    then overwrites it, healing the cache one paper at a time.
+    """
+    from docsuri_ingestion.adapters.arxiv import ArxivHttpSource
+
+    class _PoisonedStore:
+        def __init__(self) -> None:
+            self.written: list[bytes] = []
+
+        def get_raw(self, paper_id: str, version: int, kind: str) -> bytes | None:
+            return b"<!doctype html><title>Please wait</title>"
+
+        def put_raw(self, paper_id, version, kind, body, *, content_type) -> None:
+            self.written.append(body)
+
+    store = _PoisonedStore()
+    src = ArxivHttpSource(raw_store=store, raw_cache_mode="prefer")
+    monkeypatch.setattr(src, "_get_bytes", lambda url, *, params, stage: b"%PDF-1.7 real")
+
+    assert src.fetch_pdf(sample_metadata()) == b"%PDF-1.7 real"
+    assert store.written == [b"%PDF-1.7 real"]  # the good bytes replaced the poisoned entry
+
+
+def test_only_mode_answers_none_for_a_poisoned_entry_without_touching_the_network() -> None:
+    """Cache-or-nothing means exactly that: a poisoned entry is a miss, not a licence to fetch."""
+    from docsuri_ingestion.adapters.arxiv import ArxivHttpSource
+
+    class _PoisonedStore:
+        def get_raw(self, paper_id: str, version: int, kind: str) -> bytes | None:
+            return b"<html>not a pdf</html>"
+
+        def put_raw(self, *a, **k) -> None:  # pragma: no cover - only-mode never writes
+            raise AssertionError("only-mode must never write")
+
+    src = ArxivHttpSource(raw_store=_PoisonedStore(), raw_cache_mode="only")
+    src._get_bytes = lambda *a, **k: (_ for _ in ()).throw(  # type: ignore[method-assign]
+        AssertionError("only-mode must never reach the network")
+    )
+
+    assert src.fetch_pdf(sample_metadata()) is None
+
+
 def test_fetch_full_text_prefers_pdf_when_html_conversion_is_truncated(monkeypatch) -> None:
     # A truncated ar5iv conversion returns HTTP 200 but only a sentence of body — worse than the
     # PDF text, so fetch_full_text must fall through to the PDF rather than storing the fragment.
