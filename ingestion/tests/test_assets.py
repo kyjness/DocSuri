@@ -90,8 +90,8 @@ def test_a_graphic_in_the_other_column_is_not_pulled_in() -> None:
     assert crop_bbox_for(_spec(_CAPTION), [other_column]) == _CAPTION
 
 
-def test_only_the_nearest_graphic_is_merged() -> None:
-    """Unioning every candidate would merge stacked figures and the text between them.
+def test_without_a_page_reader_only_the_nearest_graphic_is_merged() -> None:
+    """No reader, no way to tell a panel from a separate figure — so the recovery stays put.
 
     Both graphics here are close enough to qualify, so the choice between them is what is being
     pinned: the crop must stop at the lower one rather than stretching over both.
@@ -99,6 +99,40 @@ def test_only_the_nearest_graphic_is_merged() -> None:
     lower = (110.0, 275.0, 390.0, 295.0)  # 5pt above the caption
     upper = (110.0, 150.0, 390.0, 270.0)  # 30pt above the caption — also within the bound
     assert crop_bbox_for(_spec(_CAPTION), [upper, lower]) == (100.0, 275.0, 400.0, 295.0)
+
+
+def test_panels_stacked_with_blank_space_between_them_are_one_figure() -> None:
+    """Taking the nearest graphic alone pictured a multi-panel figure as its bottom strip —
+    measured on arXiv:2608.07458 Figure 1, six panels over 158pt of which the crop showed the
+    last 31pt. Nothing is printed between panels of one figure, so the walk climbs through."""
+    lower = (110.0, 275.0, 390.0, 295.0)
+    upper = (110.0, 150.0, 390.0, 270.0)  # 5pt of white space above `lower`
+
+    got = crop_bbox_for(_spec(_CAPTION), [upper, lower], lambda box: "   \n  ")
+
+    assert got == (100.0, 150.0, 400.0, 295.0)
+
+
+def test_a_caption_printed_between_two_graphics_stops_the_walk() -> None:
+    """The band between them holds another float's caption, so they are two figures — climbing
+    would sweep that caption into this figure's image. A gap threshold cannot make this call: the
+    16.9pt panel spacing measured on the fixture above and a two-line caption are the same size."""
+    lower = (110.0, 275.0, 390.0, 295.0)
+    upper = (110.0, 150.0, 390.0, 270.0)
+
+    got = crop_bbox_for(_spec(_CAPTION), [upper, lower], lambda box: "Figure 2: The other one.")
+
+    assert got == (100.0, 275.0, 400.0, 295.0)
+
+
+def test_panels_beside_each_other_widen_the_same_band() -> None:
+    """A figure laid out as a row of panels reports one graphic each; the crop is their union."""
+    left = (110.0, 275.0, 240.0, 295.0)
+    right = (260.0, 275.0, 390.0, 295.0)
+
+    got = crop_bbox_for(_spec(_CAPTION), [left, right], lambda box: "")
+
+    assert got == (100.0, 275.0, 400.0, 295.0)
 
 
 def test_a_page_with_no_graphics_leaves_the_caption_crop_untouched() -> None:

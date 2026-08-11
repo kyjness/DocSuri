@@ -13,9 +13,10 @@ from __future__ import annotations
 import io
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
+from functools import partial
 from typing import Any
 
 from .domain.assets import (
@@ -1085,7 +1086,9 @@ def _is_caption_only(
 
 
 def crop_bbox_for(
-    spec: AssetCropSpec, graphics: Sequence[tuple[float, float, float, float]]
+    spec: AssetCropSpec,
+    graphics: Sequence[tuple[float, float, float, float]],
+    printed: Callable[[tuple[float, float, float, float]], str] | None = None,
 ) -> tuple[float, float, float, float]:
     """The region to render for ``spec``, widened when a figure's graphic went unreported.
 
@@ -1095,18 +1098,23 @@ def crop_bbox_for(
     """
     if spec.type is not AssetType.FIGURE or spec.content_coords:
         return spec.bbox
-    return _recover_figure_bbox(graphics, spec.bbox) or spec.bbox
+    return _recover_figure_bbox(graphics, spec.bbox, printed) or spec.bbox
 
 
 def _recover_figure_bbox(
     graphics: Sequence[tuple[float, float, float, float]],
     bbox: tuple[float, float, float, float],
+    printed: Callable[[tuple[float, float, float, float]], str] | None = None,
 ) -> tuple[float, float, float, float] | None:
-    """Move a caption-only figure bbox onto the graphic sitting above it, or None.
+    """Move a caption-only figure bbox onto the graphics sitting above it, or None.
 
     GROBID emits a ``<graphic>`` for raster figures only, so a vector figure's coordinates cover
     just the caption's text lines and the crop shows a sentence where the figure should be. The
     picture is still in the PDF as a page object; this finds it.
+
+    ``printed`` reads the text drawn in a region of the same page. It is what lets the walk below
+    tell a panel of THIS figure from a different figure stacked above; without it the recovery
+    takes the nearest graphic only, which is the conservative answer.
 
     Returns None whenever the answer is not clear-cut, which keeps the existing crop:
     a bbox already overlapping a graphic is GROBID's own (correct) figure region, and a page with
@@ -1125,24 +1133,48 @@ def _recover_figure_bbox(
         area = (g[2] - g[0]) * (g[3] - g[1])
         if area > 0 and overlap / area >= 0.5:
             return None  # GROBID's own figure region — nothing was missed
-    above = [
-        g
-        for g in graphics
-        # Horizontally overlapping, bottom above the caption's bottom, and close enough that the
-        # caption plausibly belongs to it. The gap may be slightly negative (a caption whose first
-        # line tucks under the graphic's box), which the upper bound alone still admits.
-        if g[0] < x1 and g[2] > x0 and g[3] < y1 and (y0 - g[3]) <= _CAPTION_GRAPHIC_GAP_PT
-    ]
-    if not above:
+    # Horizontally overlapping and ending above the caption. Everything the figure could be made
+    # of; which of them the caption actually claims is decided next.
+    above = [g for g in graphics if g[0] < x1 and g[2] > x0 and g[3] < y1]
+    # The ANCHOR must sit close enough that the caption plausibly belongs to it. The gap may be
+    # slightly negative (a caption whose first line tucks under the graphic's box), which the
+    # upper bound alone still admits. This bound picks the anchor ONLY — the climb below is not
+    # bounded by it, because a stacked figure's top panel is far from the caption by construction
+    # (the four upper panels of arXiv:2608.07458 Figure 1 sit 85 and 142pt away).
+    anchors = [g for g in above if (y0 - g[3]) <= _CAPTION_GRAPHIC_GAP_PT]
+    if not anchors:
         return None
-    # Nearest one only. Unioning every candidate would merge stacked subfigures into one crop that
-    # also swept up whatever text sat between them.
-    nearest = max(above, key=lambda g: g[3])
-    # Only x is unioned. The caption is not part of the picture — the viewer renders it as a
-    # <figcaption> beside the image — so y stays the graphic's own band, while x keeps the caption's
-    # span because that is the column the float occupies and a single graphic object need not fill
-    # it. Unioning y as well was how the recovered crops still carried their caption sentence.
-    return (min(x0, nearest[0]), nearest[1], max(x1, nearest[2]), nearest[3])
+    nearest = max(anchors, key=lambda g: g[3])
+    # Then UP through the panels stacked on it. Taking the nearest object alone pictured a
+    # multi-panel figure as its bottom strip — measured on arXiv:2608.07458 Figure 1, six panels
+    # spanning 158pt of which the crop showed the last 31pt (20%). Unioning every candidate is not
+    # the answer either: two separate figures in one column would merge, sweeping the first one's
+    # caption into the second one's image.
+    #
+    # What separates the two cases is what sits in the GAP, and specifically whether it is another
+    # float's CAPTION. "Any text at all" is the wrong test: the same fixture prints per-panel
+    # sub-captions between its rows ("(c) TurboRAG(d) KVLink"), which belong to this figure and
+    # must not stop the walk. A gap threshold is wrong too — that 16.9pt panel spacing and a
+    # two-line caption are the same size. So the walk climbs until the band it would cross opens
+    # with "Figure N"/"Table N", the one thing that can only be a different float.
+    top, left, right = nearest[1], nearest[0], nearest[2]
+    if printed is not None:  # without a reader there is no way to tell the cases apart: stay put
+        remaining = sorted((g for g in above if g is not nearest), key=lambda g: g[3], reverse=True)
+        for g in remaining:
+            if g[3] > top + _ROW_TOLERANCE_PT:
+                continue  # overlaps the band already taken (side-by-side panel) — absorbed below
+            band = printed((min(left, g[0]), g[3], max(right, g[2]), top))
+            if any(_CAPTION_RE.match(line) for line in band.splitlines() if line.strip()):
+                break  # another float's caption sits between them
+            top, left, right = min(top, g[1]), min(left, g[0]), max(right, g[2])
+    for g in above:  # side-by-side panels of the band we ended up with
+        if g[1] < nearest[3] and g[3] > top:
+            left, right = min(left, g[0]), max(right, g[2])
+    # Only x is unioned with the caption's. The caption is not part of the picture — the viewer
+    # renders it as a <figcaption> beside the image — so y stays the graphics' own band, while x
+    # keeps the caption's span because that is the column the float occupies and the graphics need
+    # not fill it. Unioning y as well was how recovered crops still carried their caption sentence.
+    return (min(x0, left), top, max(x1, right), nearest[3])
 
 
 def _page_words(plumber_doc, page_no: int) -> tuple[dict, ...]:
@@ -1335,7 +1367,11 @@ def crop_assets_from_specs(
             # the table regrowth ignores its words unless there is a float box to bound them.
             bbox, recovered = spec.bbox, False
             if spec.type is AssetType.FIGURE and not spec.content_coords:
-                bbox = crop_bbox_for(spec, graphics.of(doc, page_idx))
+                bbox = crop_bbox_for(
+                    spec,
+                    graphics.of(doc, page_idx),
+                    partial(page_text.text_in, doc, page_idx),
+                )
                 recovered = bbox != spec.bbox
             elif (
                 spec.type is AssetType.TABLE
