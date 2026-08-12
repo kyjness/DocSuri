@@ -13,6 +13,13 @@ on:
     branches: [develop, main]
   pull_request:
     branches: [develop, main]
+  # Weekly, because the SCA step's inventory goes stale without a commit: a CVE published against
+  # a dependency we already ship is news, and on push/PR triggers alone nobody hears it until the
+  # next push. Runs the whole workflow rather than the security job alone — it also catches the
+  # environment rot (a yanked wheel, a broken transitive pin) that only shows on a cold install.
+  # `dependency-review` self-skips here, having no PR to diff.
+  schedule:
+    - cron: "41 4 * * 1" # Mondays 04:41 UTC, off-peak and off the top of the hour
 
 permissions:
   contents: read
@@ -323,24 +330,43 @@ jobs:
     name: Security Scan (SCA + Secrets)
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Two scans with DELIBERATELY different verdicts, which is why they are steps and not a
+    # job-level continue-on-error:
+    #
+    #   pip-audit (SCA)  — INFORMATIONAL. It audits the WHOLE tree and has no severity filter, so
+    #                      a CVE published today against a transitive dep blocks a PR that touched
+    #                      nothing related. What actually needs blocking is a NEWLY introduced
+    #                      vulnerable dependency, and the `dependency-review` job above already
+    #                      does exactly that (PR diff, fail-on-severity high). Leaving both
+    #                      blocking buys no extra protection and hands us a queue of
+    #                      `--ignore-vuln` exceptions to maintain instead. Read this as inventory:
+    #                      the run is annotated, not failed.
+    #   gitleaks         — BLOCKING. A committed secret is this PR's own doing and is not
+    #                      something to merge and fix later.
+    #
+    # If the SCA verdict should start blocking, the fix is a severity filter here — not removing
+    # this comment.
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
           enable-cache: true
-      - name: Run pip-audit on Backend
+      - name: Run pip-audit on Backend (informational)
+        continue-on-error: true
         run: |
           uv pip compile backend/pyproject.toml -o backend/requirements.txt
           # drop first-party editable path deps (not on PyPI; their third-party deps are already flattened in)
           grep -v '^-e ' backend/requirements.txt > backend/requirements.audit.txt
           uvx pip-audit -r backend/requirements.audit.txt
-      - name: Run pip-audit on Ingestion
+      - name: Run pip-audit on Ingestion (informational)
+        continue-on-error: true
         run: |
           uv pip compile ingestion/pyproject.toml -o ingestion/requirements.txt
           # drop first-party editable path deps (not on PyPI; their third-party deps are already flattened in)
           grep -v '^-e ' ingestion/requirements.txt > ingestion/requirements.audit.txt
           uvx pip-audit -r ingestion/requirements.audit.txt
-      - name: Run pip-audit on Ops
+      - name: Run pip-audit on Ops (informational)
+        continue-on-error: true
         run: |
           uv pip compile ops/pyproject.toml -o ops/requirements.txt
           # drop first-party editable path deps (not on PyPI; their third-party deps are already flattened in)
