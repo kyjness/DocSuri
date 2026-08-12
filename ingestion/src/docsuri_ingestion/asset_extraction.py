@@ -1319,6 +1319,7 @@ def crop_assets_from_specs(
     paper_id: str,
     version: int,
     normalizer: ImageNormalizer | None = None,
+    refusals: list[tuple[str, str]] | None = None,
 ) -> tuple[ExtractedAsset, ...]:
     """Render TEI-coordinate page-crops into stored assets (PDF/GROBID path, FR-17).
 
@@ -1326,6 +1327,16 @@ def crop_assets_from_specs(
     WebP, keyed by the spec's ``asset_id`` — the SAME id the doc-model block references, so the
     image lands on the right FormulaBlock/FigureBlock (ordinal alignment guaranteed upstream).
     Best-effort: any failure yields an empty tuple (assets never block indexing, BR-27).
+
+    ``refusals`` is an optional out-param collecting ``(asset_id, reason)`` for every spec that
+    produced no image. Without it a caller can only see that fewer assets came back than specs
+    went in, and CANNOT tell the two apart: ``caption_only`` is a DESIGNED outcome (BR-23a — the
+    region holds nothing but the caption the viewer already renders, so storing it would put a
+    sentence where the figure should be), while the others are losses. That distinction is
+    invisible in the count alone, and a reparse batch that cannot make it never learns which of
+    its placeholder figures were deliberate. An out-param rather than a second return value: the
+    idiom this package already uses for exactly this (``crops``, ``figure_specs``), and it leaves
+    every existing call site untouched.
     """
     if not specs:
         return ()
@@ -1358,9 +1369,14 @@ def crop_assets_from_specs(
         # specs arrive in document order, so a paper whose floats interleave pages re-read one to
         # three pages from scratch per cache. The output is keyed by ``asset_id`` at both callers,
         # so only the work moves; a stable sort keeps document order inside a page.
+        def refused(spec: AssetCropSpec, reason: str) -> None:
+            if refusals is not None:
+                refusals.append((spec.asset_id, reason))
+
         for spec in sorted(specs, key=lambda s: s.page):
             page_idx = spec.page - 1  # GROBID coords are 1-based
             if page_idx < 0 or page_idx >= page_count:
+                refused(spec, "page_missing")
                 continue
             # Each branch pays for its own page scan, and only where the answer can be used: the
             # figure recovery ignores its graphics unless the bbox is the float's own coords, and
@@ -1380,13 +1396,16 @@ def crop_assets_from_specs(
             ):
                 bbox = table_body_bbox(spec, page_words.of(plumber_doc, page_idx))
             if not crop_is_renderable(bbox):
+                refused(spec, "not_renderable")
                 continue
             # Asked only of a bbox nothing moved — a recovered one is the graphic, by construction.
             if not recovered and _is_caption_only(spec, bbox, page_text, doc, page_idx):
+                refused(spec, "caption_only")  # DESIGNED, not a loss — see the docstring
                 continue
             raw = _render_bbox_to_png(doc, page_idx, bbox, bitmap_cache=bitmaps)
             image = normalizer.normalize(raw) if raw else None
             if image is None:
+                refused(spec, "render_failed")
                 continue
             meta = FigureTableAsset(
                 asset_id=spec.asset_id,

@@ -819,16 +819,37 @@ class IngestionPipelineService:
         if self._asset_store is None or not specs:
             return
         reason = FailureReason.ASSET_EXTRACT_FAILURE
+        refusals: list[tuple[str, str]] = []
         try:
-            extracted = crop_assets_from_specs(pdf, specs, paper_id=paper_id, version=version)
+            extracted = crop_assets_from_specs(
+                pdf, specs, paper_id=paper_id, version=version, refusals=refusals
+            )
             reason = FailureReason.ASSET_STORE_FAILURE
             if extracted:
                 self._asset_store.store_assets(paper_id, version, extracted)
             self._observability.emit_metric(
                 "ingestion.assets.stored", float(len(extracted)), {"paperId": paper_id}
             )
+            self._emit_asset_refusals(paper_id, refusals)
         except Exception as exc:  # noqa: BLE001 - best-effort: never block indexing (BR-27)
             self._report_asset_failure(paper_id, reason, exc)
+
+    def _emit_asset_refusals(self, paper_id: str, refusals: list[tuple[str, str]]) -> None:
+        """One counter per reason a spec produced no image (BR-23a).
+
+        ``assets.stored`` alone cannot answer the question a reparse batch has to answer: a figure
+        with no image shows the viewer's placeholder either way, but ``caption_only`` is the
+        DESIGNED outcome (the region held nothing but the caption) while the rest are losses.
+        Counted apart so the batch reports its own placeholder rate broken down by cause instead
+        of leaving one number that means both.
+        """
+        by_reason: dict[str, int] = {}
+        for _asset_id, why in refusals:
+            by_reason[why] = by_reason.get(why, 0) + 1
+        for why, count in sorted(by_reason.items()):
+            self._observability.emit_metric(
+                "ingestion.assets.refused", float(count), {"paperId": paper_id, "reason": why}
+            )
 
     def _store_record_assets_best_effort(
         self,

@@ -204,3 +204,37 @@ def test_record_assets_refetch_when_candidate_has_no_pdf() -> None:
     pipeline = _record_asset_pipeline(RecordingAssetStore(), spy)
     pipeline._store_record_assets_best_effort(_PAPER, _RECORD, _candidate(pdf=None), _CROPS)
     assert spy.fetch_calls == 1  # fell back to re-fetch when bytes are unavailable
+
+
+def test_refused_crops_are_counted_by_reason() -> None:
+    """A figure with no image looks the same on the page whatever the cause, so the batch needs
+    the cause counted apart: ``caption_only`` is the designed outcome (BR-23a), the rest are
+    losses. One number covering both is the thing a reparse cannot act on."""
+    pipeline = _record_asset_pipeline(RecordingAssetStore(), _SpyCorpusSources())
+    hub = pipeline._observability
+
+    pipeline._emit_asset_refusals(
+        "p",
+        [
+            ("p:v1:figure:0", "caption_only"),
+            ("p:v1:figure:1", "caption_only"),
+            ("p:v1:table:0", "not_renderable"),
+        ],
+    )
+
+    refused = {
+        tags["reason"]: value
+        for name, value, tags in hub.metrics
+        if name == "ingestion.assets.refused"
+    }
+    assert refused == {"caption_only": 2.0, "not_renderable": 1.0}
+
+
+def test_no_refusals_emits_no_counter() -> None:
+    """Nothing refused must not publish a zero — a metric that fires on every paper drowns the
+    signal it exists to carry."""
+    pipeline = _record_asset_pipeline(RecordingAssetStore(), _SpyCorpusSources())
+
+    pipeline._emit_asset_refusals("p", [])
+
+    assert not [m for m in pipeline._observability.metrics if m[0] == "ingestion.assets.refused"]
