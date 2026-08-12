@@ -865,7 +865,7 @@ def _table_block(figure_el: ET.Element, sec_ctx: _SectionCtx, doc_ctx: _DocCtx) 
     # so a later vision reader can re-read numbers GROBID's cell reconstruction may have garbled —
     # without that image ever displacing the structured data. No coordinates -> data only.
     aid = asset_id(doc_ctx.paper_id, doc_ctx.version, AssetType.TABLE, ordinal)
-    if _record_crop(doc_ctx, figure_el, aid, AssetType.TABLE, ordinal, caption):
+    if _record_crop(doc_ctx, figure_el, aid, AssetType.TABLE, ordinal, caption, label):
         asset_ref: dict = {
             "assetId": aid,
             "type": "table",
@@ -896,7 +896,7 @@ def _figure_block(figure_el: ET.Element, sec_ctx: _SectionCtx, doc_ctx: _DocCtx)
         block["caption"] = caption
     if label:
         block["anchorLabel"] = label
-    _record_crop(doc_ctx, figure_el, aid, AssetType.FIGURE, ordinal, caption)
+    _record_crop(doc_ctx, figure_el, aid, AssetType.FIGURE, ordinal, caption, label)
     return block
 
 
@@ -929,6 +929,7 @@ def _record_crop(
     asset_type: AssetType,
     ordinal: int,
     caption: str,
+    label: str = "",
 ) -> bool:
     """Report whether ``el`` can be page-cropped, appending its spec when a collector is active.
 
@@ -951,6 +952,7 @@ def _record_crop(
                 caption=caption,
                 content_coords=parsed.from_content,
                 float_bbox=parsed.float_bbox,
+                label=label,
             )
         )
     return True

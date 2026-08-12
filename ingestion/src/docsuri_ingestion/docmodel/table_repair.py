@@ -316,6 +316,9 @@ def _words(text: str) -> list[str]:
 
 
 def _overlap(a: tuple[float, ...], b: tuple[float, ...]) -> float:
+    # Same arithmetic as the audit's ``_assets._overlap_area`` — kept separate on purpose, since
+    # this one pairs specs with Docling tables and that one measures delivered crops; neither
+    # should move when the other's pairing rule is retuned.
     width = min(a[2], b[2]) - max(a[0], b[0])
     height = min(a[3], b[3]) - max(a[1], b[1])
     return width * height if width > 0 and height > 0 else 0.0

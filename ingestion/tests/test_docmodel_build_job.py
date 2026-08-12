@@ -288,7 +288,11 @@ def test_lazy_build_doc_model_stores_the_grobid_crops(monkeypatch) -> None:
     # must ALSO store its crops. Discarding them left a cached doc-model whose figure blocks
     # reference assets never rendered, and every later eager pass hit the cache and stored
     # nothing: the gap was permanent.
-    def fake_crops(pdf, specs, *, paper_id, version):
+    def fake_crops(pdf, specs, *, paper_id, version, refusals=None):
+        # ``refusals`` accepted and ignored: this double renders everything, so there is nothing to
+        # refuse. It must still take the argument — the caller passes it, and the asset path
+        # swallows every exception by design (BR-27), so a stale double reads as "no assets"
+        # rather than as the TypeError it is.
         return [
             SimpleNamespace(meta=SimpleNamespace(asset_id=spec.asset_id), image=b"img")
             for spec in specs

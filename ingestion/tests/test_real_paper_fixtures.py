@@ -364,12 +364,18 @@ def test_real_pdf_crops_render_for_every_tei_spec() -> None:
     from docsuri_ingestion.asset_extraction import crop_assets_from_specs
 
     specs = tei_crop_specs(_load_tei(), paper_id=TRIPLE, version=1)
-    assets = crop_assets_from_specs(_load_pdf(), specs, paper_id=TRIPLE, version=1)
+    refusals: list[tuple[str, str]] = []
+    assets = crop_assets_from_specs(
+        _load_pdf(), specs, paper_id=TRIPLE, version=1, refusals=refusals
+    )
 
     refused = set(_ids_by_caption(_CAPTION_ONLY_FLOATS).values())
     assert len(refused) == len(_CAPTION_ONLY_FLOATS), "fixture drifted: caption-only set unresolved"
     missing = {s.asset_id for s in specs} - {a.meta.asset_id for a in assets}
     assert missing == refused, f"unexpected crops missing: {sorted(missing - refused)}"
+    # And each is reported as the DESIGNED refusal, not as a loss — the distinction a reparse
+    # batch reads to tell a deliberate placeholder from a figure it dropped.
+    assert {aid: why for aid, why in refusals} == dict.fromkeys(refused, "caption_only")
     for asset in assets:
         assert asset.image, f"{asset.meta.asset_id}: rendered to empty bytes"
         # WebP is the delivered format (FR-17); the magic bytes are RIFF....WEBP.

@@ -420,3 +420,232 @@ def test_a_crop_too_small_to_hold_anything_is_not_rendered() -> None:
     assert not crop_is_renderable((10.0, 10.0, 14.1, 18.6))
     assert crop_is_renderable((110.8, 304.1, 499.4, 324.8))  # a caption strip is still renderable
     assert crop_is_renderable((100.0, 100.0, 130.0, 120.0))  # 600pt², the small end of real crops
+
+
+# ------------------------------------------------------- refusals the counters have to tell apart
+
+
+def _fig_spec(bbox, *, caption="", content=False, label=""):
+    return AssetCropSpec(
+        asset_id=f"p:v1:figure:{int(bbox[1])}", type=AssetType.FIGURE, ordinal=0, page=1,
+        bbox=bbox, caption=caption, content_coords=content, label=label,
+    )
+
+
+def test_a_float_nothing_vouches_for_is_not_stored() -> None:
+    """No content element, no float name, and no graphic under it — three independent things could
+    say this is a picture and none does. Measured on 30 papers it is a lone word or a section
+    heading GROBID mislabelled, and storing it hands the reader a thumbnail of text."""
+    from docsuri_ingestion.asset_extraction import _has_no_figure_evidence
+
+    strip = (100.0, 700.0, 130.0, 707.0)
+    no_graphics = tuple
+
+    assert _has_no_figure_evidence(_fig_spec(strip), recovered=False, graphics=no_graphics)
+    # Any one of the three vouching for it is enough to keep it.
+    assert not _has_no_figure_evidence(_fig_spec(strip), recovered=True, graphics=no_graphics)
+    assert not _has_no_figure_evidence(
+        _fig_spec(strip, caption="Figure 1: x"), recovered=False, graphics=no_graphics
+    )
+    assert not _has_no_figure_evidence(
+        _fig_spec(strip, content=True), recovered=False, graphics=no_graphics
+    )
+
+
+def test_a_head_filed_float_name_counts_as_evidence() -> None:
+    """GROBID splits a float's heading between ``<head>`` and ``<figDesc>`` inconsistently: a
+    caption-less spec whose LABEL reads "Figure 3" is a named float, not junk. The junk this
+    guard was measured on carries a head too ("7.4 Figures" is a section heading) — the test is
+    "names a float", not "has a label"."""
+    from docsuri_ingestion.asset_extraction import _has_no_figure_evidence
+
+    strip = (100.0, 700.0, 130.0, 707.0)
+
+    assert not _has_no_figure_evidence(
+        _fig_spec(strip, label="Figure 3"), recovered=False, graphics=tuple
+    )
+    assert _has_no_figure_evidence(
+        _fig_spec(strip, label="7.4 Figures"), recovered=False, graphics=tuple
+    )
+    assert _has_no_figure_evidence(
+        _fig_spec(strip, label="GraftLLM"), recovered=False, graphics=tuple
+    )
+
+
+def test_a_graphic_already_under_the_bbox_counts_as_evidence() -> None:
+    """Recovery stays put BOTH when there is no graphic and when the bbox already sits on one —
+    and only the first is evidence of junk. Reading ``recovered=False`` as "no graphic" refused
+    exactly the caption-less figures GROBID had located correctly."""
+    from docsuri_ingestion.asset_extraction import _has_no_figure_evidence
+
+    figure_box = (100.0, 100.0, 400.0, 300.0)
+    covered = [(110.0, 110.0, 390.0, 290.0)]  # a real graphic under the float's own coords
+
+    assert not _has_no_figure_evidence(
+        _fig_spec(figure_box), recovered=False, graphics=lambda: covered
+    )
+    hairline = [(110.0, 110.0, 390.0, 110.4)]  # decorative rule: not a picture, vouches for nothing
+    assert _has_no_figure_evidence(
+        _fig_spec(figure_box), recovered=False, graphics=lambda: hairline
+    )
+
+
+class _Meta:
+    def __init__(self, asset_id, bbox, caption, page=1, type=AssetType.FIGURE):
+        self.asset_id, self.bbox, self.caption, self.page_ref = asset_id, bbox, caption, page
+        self.type = type
+
+
+class _Asset:
+    def __init__(self, meta):
+        self.meta = meta
+
+
+def _dedup(pairs, labels=None):
+    from docsuri_ingestion.asset_extraction import _without_duplicate_regions
+
+    dropped: list[tuple[str, str]] = []
+    kept = _without_duplicate_regions(
+        [_Asset(_Meta(aid, box, cap)) for aid, box, cap in pairs],
+        lambda aid, why: dropped.append((aid, why)),
+        labels or {},
+    )
+    return [a.meta.asset_id for a in kept], dropped
+
+
+def test_a_sentence_about_a_figure_does_not_get_the_figures_image() -> None:
+    """GROBID mints a float out of the sentence that MENTIONS one and gives it the real float's
+    coordinates, so the same image is stored twice. The captions separate them: one quotes a
+    caption, the other is prose about it."""
+    box = (72.0, 100.0, 500.0, 300.0)
+    kept, dropped = _dedup([
+        ("prose", box, "Figure3defines a function generating the parse tree."),
+        ("real", box, "Figure 3: Code using ITERGEN for the same task."),
+    ])
+
+    assert kept == ["real"]
+    assert dropped == [("prose", "duplicate_region")]
+
+
+def test_two_real_captions_on_one_box_are_both_kept() -> None:
+    """A different defect: 2501.17431 gave "Figure 10: …" and "Figure 12: …" the same box. Either
+    could be the real one, so dropping either loses a figure — the audit reports the pair instead.
+    """
+    box = (72.0, 100.0, 500.0, 300.0)
+    kept, dropped = _dedup([
+        ("ten", box, "Figure 10: Approximated Pareto fronts."),
+        ("twelve", box, "Figure 12: Comparing hypervolume."),
+    ])
+
+    assert sorted(kept) == ["ten", "twelve"]
+    assert dropped == []
+
+
+def test_crops_that_merely_overlap_are_both_kept() -> None:
+    """A parent figure and the sub-panel inside it overlap by construction — only a box that is
+    effectively the SAME box is a duplicate."""
+    kept, dropped = _dedup([
+        ("parent", (72.0, 100.0, 500.0, 300.0), "some prose"),
+        ("panel", (80.0, 110.0, 240.0, 290.0), "Figure 4: A panel."),
+    ])
+
+    assert sorted(kept) == ["panel", "parent"]
+    assert dropped == []
+
+
+def test_a_float_named_only_in_its_head_is_never_the_dropped_side() -> None:
+    """GROBID can file the "Figure N:" prefix into ``<head>``, leaving a caption that never
+    mentions a float. Judged on captions alone that REAL float loses to caption-shaped prose —
+    the inversion of the defect the pass exists to fix — so a float-silent caption with a
+    float-naming label is protected. The junk sides of the measured pairs cannot shelter here:
+    their captions are ABOUT the figure and always name it (see the next test)."""
+    box = (72.0, 100.0, 500.0, 300.0)
+    kept, dropped = _dedup(
+        [
+            ("real", box, "Overview of our approach."),  # prefix split into <head>
+            ("junk", box, "Figure 7. The comparison shows the gap."),  # caption-shaped prose
+        ],
+        labels={"real": "Figure 7"},
+    )
+
+    assert sorted(kept) == ["junk", "real"]  # kept-both is the safe failure; the audit reports it
+    assert dropped == []
+
+
+def test_a_junk_head_does_not_shelter_a_prose_caption() -> None:
+    """GROBID mints a head for the junk float out of the same sentence — both sides of every
+    measured pair carry 'Figure N'. A label test alone called them ties and stored the junk
+    again; the mention test is what keeps the measured drops dropping."""
+    box = (72.0, 100.0, 500.0, 300.0)
+    kept, dropped = _dedup(
+        [
+            ("junk", box, "Figure 7 illustrates the evolution of the rank."),
+            ("real", box, "Figure 7: GIN model training runs."),
+        ],
+        labels={"junk": "Figure 7", "real": "Figure 7 :"},  # as measured on 2509.00928
+    )
+
+    assert kept == ["real"]
+    assert dropped == [("junk", "duplicate_region")]
+
+
+def test_a_formula_sharing_a_figures_box_is_not_its_duplicate() -> None:
+    """A displayed equation GROBID also floated: the formula's empty caption would lose the
+    contest every time, dangling the FormulaBlock's assetRef on an image that rendered fine.
+    Different types are different assets, whatever their boxes say."""
+    box = (72.0, 100.0, 500.0, 300.0)
+    formula = _Meta("formula", box, "", type=AssetType.FORMULA)
+    figure = _Meta("figure", box, "Figure 3: The pipeline.")
+    dropped: list[tuple[str, str]] = []
+
+    from docsuri_ingestion.asset_extraction import _without_duplicate_regions
+
+    kept = _without_duplicate_regions(
+        [_Asset(formula), _Asset(figure)], lambda aid, why: dropped.append((aid, why)), {}
+    )
+
+    assert sorted(a.meta.asset_id for a in kept) == ["figure", "formula"]
+    assert dropped == []
+
+
+def test_a_mid_run_failure_rolls_the_refusals_back(monkeypatch) -> None:
+    """The best-effort bail returns () — and the refusals out-param must roll back with it, or
+    both consumers read "a truncated run that lost every image" as "a few designed refusals from
+    a complete one". Entries that predate the call are the caller's and stay."""
+    pypdfium2 = pytest.importorskip("pypdfium2")
+    from docsuri_ingestion import asset_extraction
+
+    class _Doc:
+        def __len__(self):
+            return 1
+
+    monkeypatch.setattr(pypdfium2, "PdfDocument", lambda pdf: _Doc())
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("mid-run failure")
+
+    monkeypatch.setattr(asset_extraction, "_without_duplicate_regions", _boom)
+    refusals: list[tuple[str, str]] = [("prior", "caption_only")]
+
+    out = crop_assets_from_specs(
+        b"%PDF-",
+        [_fig_spec((0.0, 0.0, 100.0, 100.0)), _fig_spec((0.0, 200.0, 100.0, 300.0))],
+        paper_id="p",
+        version=1,
+        refusals=refusals,
+    )
+
+    assert out == ()
+    assert refusals == [("prior", "caption_only")]
+
+
+def test_designed_refusals_names_only_the_designed_outcomes() -> None:
+    """The audit counts every reason OUTSIDE this set as a loss (fail-closed), so the set must
+    hold exactly the guards-working-as-intended and never the losses."""
+    from docsuri_ingestion.asset_extraction import DESIGNED_REFUSALS
+
+    assert {
+        "caption_only", "not_renderable", "no_figure_evidence", "duplicate_region"
+    } == DESIGNED_REFUSALS
+    assert "page_missing" not in DESIGNED_REFUSALS
+    assert "render_failed" not in DESIGNED_REFUSALS
