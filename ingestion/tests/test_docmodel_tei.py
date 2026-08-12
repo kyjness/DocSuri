@@ -202,6 +202,149 @@ def test_crop_specs_empty_on_malformed_tei() -> None:
     assert tei_crop_specs("<TEI", paper_id="p", version=1) == []
 
 
+# --- crop framing: the rendered region is the CONTENT, not the float's caption lines ---
+#
+# A float's coords is the list of its caption's text LINES plus its content region. Unioning all of
+# it put the caption inside the image the reader sees, beside the <figcaption> already rendering
+# the same words. These fix which region is actually cropped.
+
+
+def _figure_crop(tei: str):
+    return next(s for s in tei_crop_specs(tei, paper_id="p", version=1) if s.type.value == "figure")
+
+
+def test_caption_lines_below_a_graphic_are_trimmed_off_the_crop() -> None:
+    # Two caption lines under a plot: the crop must be the plot.
+    tei = (
+        f"<TEI {_NS}><text><body><div><head>S</head></div>"
+        '<figure coords="4,50,100,200,120;4,50,230,200,8;4,50,240,140,8">'
+        "<head>Figure 1</head><figDesc>A plot.</figDesc>"
+        '<graphic coords="4,50,100,200,120" type="bitmap" />'
+        "</figure></body></text></TEI>"
+    )
+    spec = _figure_crop(tei)
+    assert spec.bbox == (50.0, 100.0, 250.0, 220.0)
+    assert spec.content_coords is True
+
+
+def test_caption_lines_above_a_graphic_keep_the_floats_own_width() -> None:
+    # The caption spans the whole column; the <graphic> covers only ONE of two subfigures. Cropping
+    # to the graphic alone would cut the other, so x stays the float's span and only y is trimmed.
+    tei = (
+        f"<TEI {_NS}><text><body><div><head>S</head></div>"
+        '<figure coords="4,72,330,467,8;4,72,340,467,8;4,334,377,164,157">'
+        "<head>Figure 1</head><figDesc>Two panels.</figDesc>"
+        '<graphic coords="4,334,377,164,157" type="bitmap" />'
+        "</figure></body></text></TEI>"
+    )
+    spec = _figure_crop(tei)
+    assert spec.bbox == (72.0, 377.0, 539.0, 534.0)
+
+
+def test_a_tables_own_coords_decide_the_page_its_crop_comes_from() -> None:
+    # GROBID files the caption strip on the page the caption sits on, which is not always the page
+    # the table is on. Cropping the float's first region then pictures the wrong page entirely.
+    tei = (
+        f"<TEI {_NS}><text><body><div><head>S</head></div>"
+        '<figure type="table" coords="11,311,247,228,117">'
+        "<head>Table 1</head><figDesc>Timings.</figDesc>"
+        '<table coords="12,88,135,205,240">'
+        "<row><cell>a</cell><cell>b</cell></row></table>"
+        "</figure></body></text></TEI>"
+    )
+    spec = next(s for s in tei_crop_specs(tei, paper_id="p", version=1) if s.type.value == "table")
+    assert spec.page == 12
+    assert spec.bbox == (88.0, 135.0, 293.0, 375.0)
+
+
+def test_a_single_region_float_is_cropped_to_its_content_box() -> None:
+    # One region covering caption AND body: no line is identifiable as caption, so GROBID's own
+    # content box is the only signal left and it is taken as-is.
+    tei = (
+        f"<TEI {_NS}><text><body><div><head>S</head></div>"
+        '<figure type="table" coords="17,111,132,388,208">'
+        "<head>Table 5</head><figDesc>Scores.</figDesc>"
+        '<table coords="17,126,160,354,65">'
+        "<row><cell>a</cell></row></table>"
+        "</figure></body></text></TEI>"
+    )
+    spec = next(s for s in tei_crop_specs(tei, paper_id="p", version=1) if s.type.value == "table")
+    assert spec.bbox == (126.0, 160.0, 480.0, 225.0)
+
+
+# --- crop framing: an algorithm split across <formula> elements is cropped whole ---
+
+
+def _algorithm_tei(continuation_coords: str) -> str:
+    return (
+        f"<TEI {_NS}><text><body><div><head>Method</head>"
+        '<formula coords="2,50,100,200,40">Algorithm 1 Sort 1: for each x 2: swap</formula>'
+        f'<formula coords="{continuation_coords}">3: end for 4: return 5: Require: x</formula>'
+        "</div></body></text></TEI>"
+    )
+
+
+def _one_code_block(tei: str):
+    doc = _parse(tei)
+    blocks = [b.root for s in doc.sections for b in s.blocks if b.root.type == "code"]
+    assert len(blocks) == 1, f"expected one listing, got {len(blocks)}"
+    return blocks[0]
+
+
+def test_a_listing_continued_in_a_second_formula_is_cropped_whole() -> None:
+    # The continuation's text was already being rejoined; without its coordinates the crop pictured
+    # only the opening fragment.
+    tei = _algorithm_tei("2,50,150,200,60")
+    assert "end for" in _one_code_block(tei).text
+    spec = next(s for s in tei_crop_specs(tei, paper_id="p", version=1))
+    assert spec.bbox == (50.0, 100.0, 250.0, 210.0)
+
+
+def test_a_continuation_on_another_page_leaves_the_crop_where_it_was() -> None:
+    # A listing running overleaf has no single rectangle; cropping between the two pages would
+    # picture neither.
+    tei = _algorithm_tei("3,50,150,200,60")
+    assert "end for" in _one_code_block(tei).text
+    spec = next(s for s in tei_crop_specs(tei, paper_id="p", version=1))
+    assert spec.page == 2
+    assert spec.bbox == (50.0, 100.0, 250.0, 140.0)
+
+
+def test_a_continuation_in_the_other_column_leaves_the_crop_where_it_was() -> None:
+    # Unioning across the gutter would drag the whole neighbouring column into the image.
+    tei = _algorithm_tei("2,320,150,200,60")
+    assert "end for" in _one_code_block(tei).text
+    spec = next(s for s in tei_crop_specs(tei, paper_id="p", version=1))
+    assert spec.bbox == (50.0, 100.0, 250.0, 140.0)
+
+
+def test_a_listing_joined_from_far_down_the_column_leaves_the_crop_where_it_was() -> None:
+    # _last_listing reaches back across intervening blocks (deliberately — GROBID interleaves a
+    # listing's fragments with paragraphs), so a SECOND standalone listing lower in the column can
+    # be textually joined to an earlier one. The text join is at worst a concatenation; unioning
+    # the box would picture every line of prose in the gap. Measured continuation gaps run to
+    # 46.3pt (2607.16138); this fragment sits 160pt below and must not join the image.
+    tei = _algorithm_tei("2,50,300,200,60")
+    assert "end for" in _one_code_block(tei).text
+    spec = next(s for s in tei_crop_specs(tei, paper_id="p", version=1))
+    assert spec.bbox == (50.0, 100.0, 250.0, 140.0)
+
+
+def test_a_float_with_no_content_element_keeps_its_own_coords() -> None:
+    # Nothing to trim to. The bbox is unchanged from before this rule existed, and the spec says so
+    # — a strip of caption text and a text float both land here, and only the PDF can tell them
+    # apart.
+    tei = (
+        f"<TEI {_NS}><text><body><div><head>S</head></div>"
+        '<figure coords="8,111,408,388,11;8,111,420,388,11">'
+        "<head>Figure 1</head><figDesc>Overview.</figDesc>"
+        "</figure></body></text></TEI>"
+    )
+    spec = _figure_crop(tei)
+    assert spec.bbox == (111.0, 408.0, 499.0, 431.0)
+    assert spec.content_coords is False
+
+
 def test_a_table_grobid_could_not_reconstruct_keeps_its_caption() -> None:
     """GROBID emits an empty <table/> when its cell reconstruction fails on a real table.
 

@@ -9,7 +9,11 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from docsuri_ingestion.docmodel.table_repair import apply_repairs, tables_needing_repair
+from docsuri_ingestion.docmodel.table_repair import (
+    PrintedRegion,
+    apply_repairs,
+    tables_needing_repair,
+)
 from docsuri_ingestion.domain.assets import AssetCropSpec, ExtractedTable
 from docsuri_ingestion.domain.enums import AssetType
 
@@ -42,9 +46,12 @@ def _doc(table: dict | None = None) -> dict:
     return {"sections": [{"id": "s1", "blocks": [dict(table or _MERGED)]}]}
 
 
-def _printed(text: str):
-    """The region's printed text, as the pdfplumber reader hands it back."""
-    return lambda page, bbox: text
+def _printed(text: str, rotated: tuple[str, ...] = ()):
+    """The region's printed text, as the pdfplumber reader hands it back.
+
+    ``rotated`` names the words the page draws turned on their side, which the reader reports
+    separately from the text so that only the verifier decides what that ambiguity earns."""
+    return lambda page, bbox: PrintedRegion(text, rotated)
 
 
 def _rows(doc: dict) -> list[list[str]]:
@@ -101,9 +108,9 @@ def test_verification_reads_the_extractors_own_region() -> None:
     doc = _doc()
     seen: list[tuple[float, float, float, float]] = []
 
-    def printed(page: int, bbox: tuple[float, float, float, float]) -> str:
+    def printed(page: int, bbox: tuple[float, float, float, float]) -> PrintedRegion:
         seen.append(bbox)
-        return _REGION
+        return PrintedRegion(_REGION)
 
     assert apply_repairs(doc, [_SPEC], [_REBUILT], printed) == 1
     assert seen == [_REBUILT.bbox]  # not a union with _SPEC.bbox
@@ -122,7 +129,7 @@ def test_an_unreadable_page_refuses_the_rebuild() -> None:
     """With no yardstick there is no verification, and an unverified rebuild is not applied."""
     doc = _doc()
 
-    assert apply_repairs(doc, [_SPEC], [_REBUILT], lambda page, bbox: "") == 0
+    assert apply_repairs(doc, [_SPEC], [_REBUILT], _printed("")) == 0
 
 
 def test_a_grid_from_another_region_is_not_used() -> None:
@@ -570,3 +577,186 @@ def test_a_grid_whose_cells_are_all_blank_is_re_read_too() -> None:
     filled = dict(_MERGED)
     filled["rows"] = [{"cells": [{"text": "Method"}, {"text": "0.696"}]}]
     assert tables_needing_repair(_doc(filled), [_SPEC]) == []
+
+
+# --- 실논문 실패 원인에서 나온 회귀 (2026-08-10) ------------------------------
+#
+# 50편 표본에서 표 212개 중 61개가 셀이 붙은 채 남았다. 미수리를 분류했더니 검증 게이트에서
+# 거부된 것이 44%였고, 그중 다수의 원인이 아래 둘이다 — 재구성이 틀린 게 아니라 페이지 쪽을
+# 잘못 읽고 있었다.
+
+
+def test_a_minus_printed_as_a_unicode_sign_still_matches_the_cell() -> None:
+    """Papers set a minus as U+2212; an extractor's cell uses ASCII "-". Read literally the two
+    sides disagree about the same value, and one verified rebuild was refused over "-5 -4 -3 -2"."""
+    doc = _doc(
+        {
+            "id": "s1.tbl1",
+            "type": "table",
+            "assetRef": {"assetId": _ASSET, "type": "table", "ordinal": 0},
+            "rows": [{"cells": [{"text": "lr"}, {"text": "-5 -4 -3"}]}],
+        }
+    )
+    rebuilt = ExtractedTable(page=3, bbox=_REBUILT.bbox, rows=(("lr", "-5", "-4", "-3"),))
+
+    # The page prints them with the typographic minus, and with the ASCII one they already matched.
+    assert apply_repairs(doc, [_SPEC], [rebuilt], _printed("lr −5 −4 −3")) == 1
+
+
+def test_the_reader_names_the_rotated_words_instead_of_folding_them_into_the_text() -> None:
+    """pdfplumber orders a rotated run geometrically, so a top-to-bottom label comes back
+    backwards ("elbmesnE" for "Ensemble"). The reader reports that ambiguity SEPARATELY rather
+    than adding a second reading to the region's text — the text is the yardstick a rebuild is
+    measured against, and one that quietly contains more than the page does is not one."""
+    from docsuri_ingestion.docmodel.table_repair import _rotated_words
+
+    rotated = {"text": "elbmesnE", "upright": False}
+    upright = {"text": "Ensemble", "upright": True}
+    # Anything holding a digit is left out here, so no check downstream can ever reverse it:
+    # reversing "12.5" would mint "5.21", a value the page never prints.
+    numeric = {"text": "12.5", "upright": False}
+
+    assert _rotated_words([rotated, upright, numeric]) == ("elbmesnE",)
+
+
+def test_a_rebuild_matching_only_a_rotated_label_verifies() -> None:
+    doc = _doc(
+        {
+            "id": "s1.tbl1",
+            "type": "table",
+            "assetRef": {"assetId": _ASSET, "type": "table", "ordinal": 0},
+            "rows": [{"cells": [{"text": "Ensemble"}, {"text": "0.90 0.80 0.70"}]}],
+        }
+    )
+    rebuilt = ExtractedTable(
+        page=3, bbox=_REBUILT.bbox, rows=(("Ensemble", "0.90", "0.80", "0.70"),)
+    )
+    # The page prints the label backwards and nothing else vouches for "Ensemble".
+    printed = _printed("elbmesnE 0.90 0.80 0.70", ("elbmesnE",))
+
+    assert apply_repairs(doc, [_SPEC], [rebuilt], printed) == 1
+
+
+def test_a_word_the_page_does_not_print_is_not_excused_by_an_unrelated_rotated_label() -> None:
+    """The allowance is a second reading of a rotated word, not a licence for any word. A token
+    that matches neither the page's text nor a reversed rotated label stays refused (C-2)."""
+    doc = _doc(
+        {
+            "id": "s1.tbl1",
+            "type": "table",
+            "assetRef": {"assetId": _ASSET, "type": "table", "ordinal": 0},
+            "rows": [{"cells": [{"text": "Ensemble"}, {"text": "0.90 0.80 0.70"}]}],
+        }
+    )
+    invented = ExtractedTable(
+        page=3, bbox=_REBUILT.bbox, rows=(("Ensemble", "Baseline", "0.90", "0.80", "0.70"),)
+    )
+    printed = _printed("elbmesnE 0.90 0.80 0.70", ("elbmesnE",))
+
+    assert apply_repairs(doc, [_SPEC], [invented], printed) == 0
+
+
+# --- 캡션 폴백: 고정 프로브가 두 방향으로 실패하던 것 (2026-08-10) --------------
+#
+# GROBID가 빈 표에는 좌표를 안 줘서 기하 매칭이 구조적으로 불가능하고, 그때 캡션이 유일한
+# 식별 수단이 된다. 50편 census에서 남은 빈 표 7건 중 5건이 이 지점에서 막혀 있었다.
+
+_EMPTY = {
+    "id": "s1.tbl1",
+    "type": "table",
+    "assetRef": {"assetId": _ASSET, "type": "table", "ordinal": 0},
+    "rows": [],
+}
+
+
+def _far(caption: str, rows=(("A", "1"), ("B", "2"))) -> ExtractedTable:
+    """A rebuild whose region does NOT overlap the spec — the caption is the only route to it."""
+    return ExtractedTable(page=3, bbox=(10.0, 600.0, 300.0, 700.0), rows=rows, caption=caption)
+
+
+def _spec_with(caption: str) -> AssetCropSpec:
+    return replace(_SPEC, caption=caption)
+
+
+_TRUE = "Four-dimensional case. Performances on P 4 of the GINN-based detector."
+
+
+def test_a_caption_grobid_ran_into_the_next_float_still_matches() -> None:
+    """GROBID appends what follows the caption — here the next table's "Algorithm 2" arrives as
+    "rithm 2". A fixed 60-char probe reached into that tail and matched nothing, though the real
+    caption (56 chars normalised) is quoted exactly."""
+    spec = _spec_with(_TRUE + " rithm 2 (Λ min = 2/2 (hmax) = 2 -4 ) on a piece-wise")
+    tables = [
+        _far("Table 3: Results of Algorithm 2 with respect to the Shepp-Logan phantom."),
+        _far("Table 4: " + _TRUE),
+        _far("Table 5: Results of Algorithm 2 with respect to test function."),
+    ]
+    doc = _doc(_EMPTY)
+
+    assert apply_repairs(doc, [spec], tables, _printed("A 1 B 2")) == 1
+    assert _rows(doc) == [["A", "1"], ["B", "2"]]
+
+
+def test_sibling_captions_are_separated_by_where_they_diverge() -> None:
+    """Two tables opening identically used to read as an ambiguous page and be refused. They part
+    at one word, and the longest agreement finds it."""
+    shared = (
+        "Accuracy (%) under different experimental conditions. "
+        "The values are averaged for each"
+    )
+    spec = _spec_with(f"{shared} backbone and TTA loss of the Domainbed benchmark.")
+    tables = [
+        _far(f"Table 5: {shared} backbone and TTA loss of the Domainbed benchmark."),
+        _far(
+            f"Table 6: {shared} dataset and TTA loss of the Continual TTA benchmark.",
+            (("C", "3"),),
+        ),
+    ]
+    doc = _doc(_EMPTY)
+
+    assert apply_repairs(doc, [spec], tables, _printed("A 1 B 2")) == 1
+    assert _rows(doc) == [["A", "1"], ["B", "2"]]
+
+
+def test_captions_that_agree_equally_far_are_still_refused() -> None:
+    """A tie means the captions do not identify a table, and filing one table's numbers under
+    another's caption is the misattribution this fallback exists to avoid."""
+    spec = _spec_with(_TRUE)
+    tables = [_far("Table 4: " + _TRUE), _far("Table 7: " + _TRUE, (("C", "3"),))]
+
+    assert apply_repairs(_doc(_EMPTY), [spec], tables, _printed("A 1 B 2")) == 0
+
+
+def test_a_caption_too_short_to_name_a_table_matches_nothing() -> None:
+    spec = _spec_with("Complexity analysis.")
+
+    tables = [_far("Table 2: Complexity analysis.")]
+
+    assert apply_repairs(_doc(_EMPTY), [spec], tables, _printed("A 1 B 2")) == 0
+
+
+def test_a_label_the_strip_regex_does_not_know_cannot_hide_the_caption() -> None:
+    """The spec caption is label-free by construction (the TEI walk files the label into <head>),
+    but the re-read caption is the caption as PRINTED — and the label strip only knows arabic and
+    roman numerals. An appendix label ("Table A1:") or a leading "(a)" used to score a strict
+    prefix comparison 0 against a caption it quotes verbatim, and the repair was silently lost."""
+    spec = _spec_with(_TRUE)
+    for label in ("Table A1: ", "TABLE S2. ", "(a) Table 1: ", "Table 5 (continued): "):
+        tables = [_far(label + _TRUE)]
+        doc = _doc(_EMPTY)
+
+        assert apply_repairs(doc, [spec], tables, _printed("A 1 B 2")) == 1, label
+        assert _rows(doc) == [["A", "1"], ["B", "2"]]
+
+
+def test_captions_that_share_an_opening_but_both_diverge_are_refused() -> None:
+    """The agreed stretch must reach an end — the whole of the spec's caption, or the end of the
+    re-read's. Two captions that merely share an opening and then both go their own way agree
+    nowhere that both speak: with the winner's own region as the verification yardstick, a sibling
+    matched on a shared opening would verify against ITSELF and the wrong rows would be written."""
+    shared = "Accuracy (%) under different conditions averaged over"  # >30 chars normalised
+    spec = _spec_with(f"{shared} backbones of the Domainbed benchmark suite.")
+    # Only the WRONG sibling was extracted; its caption diverges after the shared opening.
+    tables = [_far(f"Table 6: {shared} datasets of the Continual TTA benchmark suite.")]
+
+    assert apply_repairs(_doc(_EMPTY), [spec], tables, _printed("A 1 B 2")) == 0

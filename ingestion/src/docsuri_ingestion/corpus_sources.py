@@ -30,6 +30,13 @@ class SourcePaperRecord:
     doi: str | None = None
     arxiv_id: str | None = None
     version: int = 1
+    # Further copies of the SAME paper, in preference order after ``pdf_url``. An open-access
+    # article is often deposited in a repository as well as on the publisher's site, and the
+    # publisher's copy is the one behind bot protection: measured over an OpenAlex week, 8 of 15
+    # primary PDFs answered 403 (MDPI, Wiley, ACM) while repository copies served fine. Every
+    # entry has already passed the licence gate on ITS OWN location — a repository copy does not
+    # inherit the primary's terms.
+    alternate_pdf_urls: tuple[str, ...] = ()
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -48,6 +55,7 @@ class SourcePaperRecord:
             "doi": self.doi,
             "arxivId": self.arxiv_id,
             "version": self.version,
+            "alternatePdfUrls": list(self.alternate_pdf_urls),
         }
 
     @classmethod
@@ -78,6 +86,7 @@ class SourcePaperRecord:
             doi=payload.get("doi"),
             arxiv_id=payload.get("arxivId"),
             version=int(payload.get("version") or 1),
+            alternate_pdf_urls=tuple(str(v) for v in payload.get("alternatePdfUrls") or ()),
         )
 
 

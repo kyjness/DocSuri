@@ -35,9 +35,14 @@ class ArxivAssetSource:
         timeout_seconds: float = 20.0,
         raw_store: RawContentStorePort | None = None,
         raw_cache_mode: str = "off",
+        contact: str | None = None,
     ) -> None:
         self._base = base_url.rstrip("/")
         self._timeout = timeout_seconds
+        # Same identity every other fetcher sends (BR-23b) — this was the one adapter still going
+        # out anonymously, and a host that throttles unidentified clients would surface here as a
+        # silent zero-asset paper (the _get below swallows all failures by design).
+        self._contact = contact
         # B3 raw-content cache, same store the full-text source primes. Assets and full text are
         # fetched by two different adapters, so an assets-enabled paper that fell back to PDF text
         # downloaded the same multi-MB PDF twice. Reading the cache here makes the second download
@@ -60,22 +65,33 @@ class ArxivAssetSource:
         return data
 
     def fetch_pdf(self, metadata: MetadataRecord) -> bytes | None:
+        from docsuri_ingestion.http_limits import is_pdf_payload
+
         if self._raw_cache_mode in ("prefer", "only") and self._raw_store is not None:
             cached = self._raw_store.get_raw(metadata.paper_id, metadata.version, "pdf")
-            if cached:
+            # Same magic-byte check as every other reader of this cache key (BR-23b): an entry
+            # written before the check can hold a landing page filed as a PDF, and cropping that
+            # yields garbage assets. Poisoned entry -> treated as a miss.
+            if cached and is_pdf_payload(cached):
                 return cached
             if self._raw_cache_mode == "only":
-                return None
-        return self._get(f"{self._base}/pdf/{metadata.identifier.arxiv_id}")
+                return None  # cache-or-nothing: a miss and a poisoned entry both answer None
+        body = self._get(f"{self._base}/pdf/{metadata.identifier.arxiv_id}")
+        # Best-effort path: a non-PDF body simply means no assets for this paper, never an error.
+        return body if body is not None and is_pdf_payload(body) else None
 
     def _get(self, url: str) -> bytes | None:
         import httpx
 
-        from docsuri_ingestion.http_limits import read_capped
+        from docsuri_ingestion.http_limits import read_capped, user_agent
 
         try:
             with (
-                httpx.Client(timeout=self._timeout, follow_redirects=True) as client,
+                httpx.Client(
+                    timeout=self._timeout,
+                    follow_redirects=True,
+                    headers={"User-Agent": user_agent(self._contact)},
+                ) as client,
                 client.stream("GET", url) as response,
             ):
                 response.raise_for_status()

@@ -66,6 +66,7 @@ class ArxivHttpSource:
         oai_retry_policy: RetryPolicy | None = None,
         raw_store: RawContentStorePort | None = None,
         raw_cache_mode: str = "off",
+        contact: str | None = None,
     ) -> None:
         self._atom_base_url = atom_base_url
         self._oai_base_url = oai_base_url
@@ -74,6 +75,9 @@ class ArxivHttpSource:
         # has no producer since 2026-08-10.
         self._html_base_url = html_base_url.rstrip("/")
         self._timeout_seconds = timeout_seconds
+        # Who we say we are on the way out. arXiv and ar5iv ask harvesters to identify themselves,
+        # and it is the same identity the non-arXiv sources send — one app, one User-Agent.
+        self._contact = contact
         self._rate_limiter = rate_limiter or TokenBucket(rate_per_second=0.33)
         # Harvest pagination is long-running (hours); tolerate transient arXiv blips with
         # generous backoff before giving up. ~2,4,8,16,32s ≈ 62s total across 6 attempts.
@@ -280,16 +284,24 @@ class ArxivHttpSource:
                 # before a second call could happen, and must stay retriable on redelivery.
                 raise memo[1]
             return memo[1]
+        from docsuri_ingestion.http_limits import is_pdf_payload
+
         mode, store = self._raw_cache_mode, self._raw_store
         pid, ver = metadata.paper_id, metadata.version
         if mode in ("prefer", "only") and store is not None:
             cached = store.get_raw(pid, ver, "pdf")
-            if cached:
+            # A cache hit passes the SAME magic-byte check as a fetch: entries written before the
+            # check existed can hold a landing page filed as a PDF, and serving those would keep
+            # the exact GROBID-500 retry loop the check breaks — on every reparse, forever. A
+            # poisoned entry is treated as a miss; a successful refetch then overwrites it below,
+            # so the cache heals itself one paper at a time.
+            if cached and is_pdf_payload(cached):
                 self._pdf_memo = (arxiv_id, cached)
                 return cached
             if mode == "only":
-                # A miss is NOT memoized here: "only" means the caller asked for cache-or-nothing,
-                # and remembering the miss would mask a later cache write within the same paper.
+                # Cache-or-nothing: a miss AND a poisoned entry both answer None — "only" must
+                # never reach the network. The miss is NOT memoized, because remembering it would
+                # mask a later cache write within the same paper.
                 return None
         try:
             pdf = self._get_bytes(
@@ -297,6 +309,16 @@ class ArxivHttpSource:
                 params=None,
                 stage="fetch_full_text",
             )
+            # A 200 is not proof we were handed the file (BR-23b). A landing or error page
+            # reaching GROBID produces a retriable 500 and the job circles into the DLQ instead
+            # of being rejected once — and without this the bytes would also be written to the
+            # raw cache AS a PDF and served to every later reparse.
+            if not is_pdf_payload(pdf):
+                raise PermanentIngestionError(
+                    "arXiv PDF URL served a non-PDF body",
+                    reason=FailureReason.FETCH_FAILURE,
+                    stage="fetch_full_text",
+                )
         except PermanentIngestionError as exc:
             self._pdf_memo = (arxiv_id, exc)
             raise
@@ -344,12 +366,16 @@ class ArxivHttpSource:
         import httpx
 
         url = f"{base}/{arxiv_id}"
-        from docsuri_ingestion.http_limits import ResponseTooLargeError, read_capped
+        from docsuri_ingestion.http_limits import ResponseTooLargeError, read_capped, user_agent
 
         self._rate_limiter.acquire()
         try:
             with (
-                httpx.Client(timeout=self._timeout_seconds, follow_redirects=True) as client,
+                httpx.Client(
+                    timeout=self._timeout_seconds,
+                    follow_redirects=True,
+                    headers={"User-Agent": user_agent(self._contact)},
+                ) as client,
                 client.stream("GET", url) as response,
             ):
                 content_type = response.headers.get("content-type", "").lower()
@@ -410,6 +436,7 @@ class ArxivHttpSource:
             http_failures_as_ingestion_errors,
             raise_for_fetch_status,
             read_capped,
+            user_agent,
         )
 
         self._rate_limiter.acquire()
@@ -420,7 +447,11 @@ class ArxivHttpSource:
             rejected_message="arXiv response exceeded size cap",
         ):
             with (
-                httpx.Client(timeout=self._timeout_seconds, follow_redirects=True) as client,
+                httpx.Client(
+                    timeout=self._timeout_seconds,
+                    follow_redirects=True,
+                    headers={"User-Agent": user_agent(self._contact)},
+                ) as client,
                 client.stream("GET", url, params=params) as response,
             ):
                 raise_for_fetch_status(response.status_code, stage=stage, source_label="arXiv")

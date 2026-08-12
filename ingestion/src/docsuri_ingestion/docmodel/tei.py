@@ -45,6 +45,7 @@ import re
 import xml.etree.ElementTree as ET
 from collections import defaultdict
 from collections.abc import MutableSequence, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import NamedTuple
 
@@ -621,6 +622,9 @@ def _formula_or_algorithm_blocks(
             host = _last_listing(section_blocks)
             if host is not None:
                 _append_to_listing(host, text)
+                # The WHOLE element goes into this listing, so its region belongs to that crop too.
+                # This is the only call site that may say so — see ``_widen_crop``.
+                _widen_crop(doc_ctx, (host.get("assetRef") or {}).get("assetId"), formula)
                 return []
             return [_algorithm_block(formula, text, sec_ctx, doc_ctx)]
         # No "Algorithm N" heading followed by numbered steps — an equation that merely cites one
@@ -657,6 +661,67 @@ def _formula_or_algorithm_blocks(
 def _append_to_listing(host: dict, text: str) -> None:
     """Append a split-off fragment to the listing it belongs to, single-spaced."""
     host["text"] = f"{host['text']} {text}".strip()
+
+
+# How far below (or above) a listing's crop a rejoined fragment's box may sit and still join the
+# image. Measured on the fixtures that motivated the widening: real continuation fragments sit at
+# gaps of 0.5, 0.6 and 46.3pt (2607.16138), while a distinct listing joined across intervening
+# paragraphs would sit at least two paragraph heights (~100pt+) away — an inch splits the two
+# populations with headroom on both sides.
+_WIDEN_MAX_GAP_PT = 72.0
+
+
+def _widen_crop(doc_ctx: _DocCtx, aid: str | None, el: ET.Element) -> None:
+    """Grow the recorded crop spec ``aid`` to also cover ``el``, when they share page and column.
+
+    GROBID files one algorithm float as several ``<formula>`` elements, and keeping only the first
+    one's box pictured a multi-line listing as its opening line — measured on 2607.16138, a
+    297-character listing whose crop was 223x21pt. The text was already being rejoined by
+    ``_append_to_listing``; the region follows it here.
+
+    Only a caller putting the WHOLE element into one listing may say so. An element whose text is
+    split across several blocks has no region attributable to one of them, and unioning all of it
+    made the first listing's crop swallow the next listing entirely (the same fixture: 84pt ->
+    339pt, overlapping the block below it). Those fragments keep their text merged and their
+    coordinates behind, which is what they already did.
+
+    Regions on another page are ignored, the rule ``_union_regions`` already follows: a listing
+    continuing overleaf has no single rectangle and inventing one would crop the pages between.
+    Regions that do not overlap the spec HORIZONTALLY are ignored for the same reason one column
+    down — in a two-column paper the continuation sits beside the host, and unioning across the
+    gutter would drag the whole other column into the image. And a region VERTICALLY further than
+    ``_WIDEN_MAX_GAP_PT`` is ignored too: ``_last_listing`` reaches back across intervening blocks
+    (deliberately — GROBID interleaves a listing's fragments with paragraphs), so a SECOND
+    standalone listing lower in the same column can be textually joined to an earlier one, and
+    unioning its box would drag every line of prose between them into the image. The text join is
+    at worst a concatenation; the crop must not picture the gap.
+    """
+    if not aid or doc_ctx.crops is None:
+        return
+    for index in range(len(doc_ctx.crops) - 1, -1, -1):
+        spec = doc_ctx.crops[index]
+        if spec.asset_id != aid:
+            continue
+        x0, y0, x1, y1 = spec.bbox
+        regions = [
+            r
+            for r in _coord_regions(el)
+            if r.page == spec.page
+            and r.x1 > x0
+            and r.x0 < x1
+            and max(r.y0 - y1, y0 - r.y1) <= _WIDEN_MAX_GAP_PT
+        ]
+        if regions:
+            doc_ctx.crops[index] = replace(
+                spec,
+                bbox=(
+                    min([x0, *(r.x0 for r in regions)]),
+                    min([y0, *(r.y0 for r in regions)]),
+                    max([x1, *(r.x1 for r in regions)]),
+                    max([y1, *(r.y1 for r in regions)]),
+                ),
+            )
+        return
 
 
 def _last_listing(blocks: Sequence[dict]) -> dict | None:
@@ -872,52 +937,150 @@ def _record_crop(
     collector is currently running — the doc-model build runs with no collector yet still needs
     the coords-present answer. The spec itself is appended only when ``doc_ctx.crops`` is active
     (the asset-pipeline walk in ``tei_crop_specs``)."""
-    parsed = _parse_coords(el)
+    parsed = _crop_region(el, asset_type)
     if parsed is None:
         return False  # no coordinates -> no crop possible (the block still renders its caption)
     if doc_ctx.crops is not None:
-        page, bbox = parsed
         doc_ctx.crops.append(
             AssetCropSpec(
                 asset_id=aid,
                 type=asset_type,
                 ordinal=ordinal,
-                page=page,
-                bbox=bbox,
+                page=parsed.page,
+                bbox=parsed.bbox,
                 caption=caption,
+                content_coords=parsed.from_content,
+                float_bbox=parsed.float_bbox,
             )
         )
     return True
 
 
-def _parse_coords(el: ET.Element) -> tuple[int, tuple[float, float, float, float]] | None:
-    """GROBID ``coords`` ("page,x,y,w,h;..." possibly multi-region) -> (page, bbox) bounding box.
+class _Region(NamedTuple):
+    """One rectangle of a GROBID ``coords`` attribute: 1-based page, top-left-origin PDF points."""
 
-    Multiple regions (a figure spanning columns) are unioned into one bbox on the first page."""
-    coords = el.get("coords")
-    if not coords:
-        return None
-    page: int | None = None
-    x0 = y0 = float("inf")
-    x1 = y1 = float("-inf")
-    for region in coords.split(";"):
+    page: int
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+
+
+def _coord_regions(el: ET.Element) -> list[_Region]:
+    """Every rectangle in ``coords`` ("page,x,y,w,h;..."), malformed entries skipped. Pure."""
+    out: list[_Region] = []
+    for region in (el.get("coords") or "").split(";"):
         parts = region.split(",")
         if len(parts) < 5:
             continue
         try:
-            pg = int(float(parts[0]))
+            page = int(float(parts[0]))
             x, y, w, h = (float(parts[1]), float(parts[2]), float(parts[3]), float(parts[4]))
         except ValueError:
             continue
-        if page is None:
-            page = pg
-        elif pg != page:
-            continue  # keep the bbox on the first region's page (deterministic)
-        x0, y0 = min(x0, x), min(y0, y)
-        x1, y1 = max(x1, x + w), max(y1, y + h)
-    if page is None or x1 <= x0 or y1 <= y0:
+        out.append(_Region(page, x, y, x + w, y + h))
+    return out
+
+
+def _union_regions(
+    regions: Sequence[_Region],
+) -> tuple[int, tuple[float, float, float, float]] | None:
+    """Bounding box of the regions lying on the FIRST one's page, or None if there is no area.
+
+    Regions on later pages are dropped rather than merged: a float that spans a page break has no
+    single rectangle, and picking the first page keeps the answer deterministic."""
+    if not regions:
         return None
-    return page, (x0, y0, x1, y1)
+    page = regions[0].page
+    same = [r for r in regions if r.page == page]
+    bbox = (
+        min(r.x0 for r in same),
+        min(r.y0 for r in same),
+        max(r.x1 for r in same),
+        max(r.y1 for r in same),
+    )
+    if bbox[2] <= bbox[0] or bbox[3] <= bbox[1]:
+        return None
+    return page, bbox
+
+
+def _parse_coords(el: ET.Element) -> tuple[int, tuple[float, float, float, float]] | None:
+    """GROBID ``coords`` -> (page, bbox) bounding box over everything the element covers."""
+    return _union_regions(_coord_regions(el))
+
+
+# Where a float's CONTENT is reported, per float kind. GROBID emits these as children of the
+# ``<figure>`` and they carry their own coordinates; nothing else in the float does.
+_CONTENT_TAG = {AssetType.FIGURE: "graphic", AssetType.TABLE: "table"}
+
+
+class _CropRegion(NamedTuple):
+    """Where a float's page-crop is, and what is known about how that was decided."""
+
+    page: int
+    bbox: tuple[float, float, float, float]
+    from_content: bool
+    float_bbox: tuple[float, float, float, float] | None
+
+
+def _crop_region(el: ET.Element, asset_type: AssetType) -> _CropRegion | None:
+    """(page, bbox, from_content) for a float's page-crop: its content, caption lines trimmed off.
+
+    A float's ``coords`` is the list of its caption's TEXT LINES plus its content region, and
+    unioning all of it put the caption inside every crop — 10-69% of the rendered image on the TEI
+    fixtures, duplicating text the viewer already renders as a ``<figcaption>`` beside it. The
+    content region is exactly what ``<graphic>``/``<table>`` reports, so when one is present:
+
+    * ``y`` spans only the regions that overlap the content — the caption lines above and/or below
+      it are dropped;
+    * ``x`` stays the float's own span, because a subfigure's ``<graphic>`` can be narrower than
+      the column the float occupies and cropping to it alone cuts the neighbouring subfigure;
+    * a float whose regions ALL overlap the content has no line identifiable as caption (GROBID
+      gave it one region covering caption and body together), so the content box is taken as-is.
+
+    The content element also decides the PAGE, which is how a table whose caption strip GROBID
+    filed on the previous page stops being cropped from the wrong page entirely.
+
+    ``from_content`` is False when GROBID reported no content region: the bbox is then the float's
+    own coords, which may be a picture's surroundings or nothing but the caption — a difference
+    only the PDF itself can settle, so the asset pipeline makes that call. ``float_bbox`` carries
+    the float's own box along for the same reason: GROBID's ``<table>`` box sometimes collapses
+    onto a fragment of one row, and the renderer needs the float's extent to grow it back inside.
+    """
+    tag = _CONTENT_TAG.get(asset_type)
+    content = (
+        _union_regions(
+            [
+                region
+                for child in el.iter()
+                if _local(child.tag) == tag
+                for region in _coord_regions(child)
+            ]
+        )
+        if tag is not None
+        else None
+    )
+    if content is None:
+        parsed = _parse_coords(el)
+        return None if parsed is None else _CropRegion(parsed[0], parsed[1], False, None)
+    page, (cx0, cy0, cx1, cy1) = content
+    regions = [r for r in _coord_regions(el) if r.page == page]
+    float_box = _union_regions(regions)
+    outer = float_box[1] if float_box is not None else None
+    body = [r for r in regions if r.y1 > cy0 and r.y0 < cy1]
+    if len(body) == len(regions):
+        return _CropRegion(page, (cx0, cy0, cx1, cy1), True, outer)
+    return _CropRegion(
+        page,
+        (
+            min([r.x0 for r in regions] + [cx0]),
+            min([r.y0 for r in body] + [cy0]),
+            max([r.x1 for r in regions] + [cx1]),
+            max([r.y1 for r in body] + [cy1]),
+        ),
+        True,
+        outer,
+    )
 
 
 def tei_crop_specs(tei: str, *, paper_id: str, version: int) -> list[AssetCropSpec]:
@@ -988,15 +1151,16 @@ def _page_layout(root: ET.Element, divs: list[ET.Element]) -> _PageLayout:
 
 
 def _coord_parts(el: ET.Element) -> tuple[float, float, float, float] | None:
-    """``(page, x, y, width)`` from GROBID's ``coords`` ("page,x,y,w,h;..."), or None."""
-    coords = el.get("coords")
-    if not coords:
+    """``(page, x, y, width)`` of the FIRST region GROBID's ``coords`` names, or None.
+
+    Ordering needs one anchor point, not the element's extent, which is why this reads the first
+    region rather than the union ``_parse_coords`` builds. Both read the attribute through
+    ``_coord_regions`` so the parse rules stay in one place."""
+    regions = _coord_regions(el)
+    if not regions:
         return None
-    first = coords.split(";", 1)[0].split(",")
-    try:
-        return (float(first[0]), float(first[1]), float(first[2]), float(first[3]))
-    except (ValueError, IndexError):
-        return None
+    first = regions[0]
+    return (float(first.page), first.x0, first.y0, first.x1 - first.x0)
 
 
 def _coord_sort_key(

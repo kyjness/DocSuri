@@ -230,3 +230,31 @@ def test_assets_still_fetch_when_the_cache_is_off() -> None:
 
     assert source.fetch_pdf(sample_metadata()) == b"%PDF-network"
     assert len(downloads) == 1
+
+
+def test_assets_treat_a_poisoned_cache_entry_as_a_miss() -> None:
+    # Same magic-byte rule as every other reader of this cache key (BR-23b): an entry holding a
+    # landing page filed as a PDF must not be cropped into garbage assets — refetch instead.
+    from docsuri_ingestion.adapters.assets import ArxivAssetSource
+
+    class _PoisonedStore:
+        def get_raw(self, paper_id, version, tier):
+            return b"<html>not a pdf</html>"
+
+        def put_raw(self, *a, **k):  # pragma: no cover - the asset source never writes
+            raise AssertionError("asset source must not write the raw cache")
+
+    source = ArxivAssetSource(raw_store=_PoisonedStore(), raw_cache_mode="prefer")
+    source._get = lambda url: b"%PDF-network"  # noqa: SLF001
+
+    assert source.fetch_pdf(sample_metadata()) == b"%PDF-network"
+
+
+def test_assets_give_up_quietly_when_the_network_answers_html() -> None:
+    # Best-effort path: a landing page instead of the PDF means no assets, never an error.
+    from docsuri_ingestion.adapters.assets import ArxivAssetSource
+
+    source = ArxivAssetSource()
+    source._get = lambda url: b"<!doctype html>"  # noqa: SLF001
+
+    assert source.fetch_pdf(sample_metadata()) is None

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+from dataclasses import replace
 
 import pytest
 from hypothesis import given
@@ -25,9 +26,10 @@ def test_crop_assets_from_specs_empty_is_noop_without_pdfium() -> None:
 # ------------------------------------------------------- crop_bbox_for (graphic recovery)
 #
 # GROBID reports a <graphic> for raster figures only, so a vector figure arrives with coordinates
-# covering nothing but its caption's text lines. These pin when the caption-only bbox may be
-# widened to the graphic above it — every "unchanged" case is a guard against a crop that reaches
-# up the page and swallows content that is not part of the figure.
+# covering nothing but its caption's text lines. These pin when the caption-only bbox may be moved
+# onto the graphic above it — every "unchanged" case is a guard against a crop that reaches up the
+# page and swallows content that is not part of the figure. The caption itself does not come along:
+# the viewer renders it as a <figcaption> beside the image, so only the x span is unioned.
 
 _CAPTION = (100.0, 300.0, 400.0, 320.0)  # a two-line caption strip, top-left origin
 _PLOT_ABOVE = (110.0, 150.0, 390.0, 295.0)  # the graphic it belongs to, 5pt higher up
@@ -39,8 +41,17 @@ def _spec(bbox, asset_type=AssetType.FIGURE) -> AssetCropSpec:
     )
 
 
-def test_caption_only_figure_grows_to_include_the_graphic_above_it() -> None:
-    assert crop_bbox_for(_spec(_CAPTION), [_PLOT_ABOVE]) == (100.0, 150.0, 400.0, 320.0)
+def test_caption_only_figure_moves_onto_the_graphic_above_it() -> None:
+    # y becomes the plot's own band (150-295); x keeps the caption's wider span, which is the
+    # column the float occupies and may be wider than one graphic object.
+    assert crop_bbox_for(_spec(_CAPTION), [_PLOT_ABOVE]) == (100.0, 150.0, 400.0, 295.0)
+
+
+def test_a_figure_cropped_from_its_own_graphic_coords_is_never_re_derived() -> None:
+    """``content_coords`` says the bbox already IS the picture — re-deriving can only make it
+    worse."""
+    spec = replace(_spec(_CAPTION), content_coords=True)
+    assert crop_bbox_for(spec, [_PLOT_ABOVE]) == _CAPTION
 
 
 def test_a_table_is_never_widened_even_with_a_graphic_directly_above_it() -> None:
@@ -79,20 +90,126 @@ def test_a_graphic_in_the_other_column_is_not_pulled_in() -> None:
     assert crop_bbox_for(_spec(_CAPTION), [other_column]) == _CAPTION
 
 
-def test_only_the_nearest_graphic_is_merged() -> None:
-    """Unioning every candidate would merge stacked figures and the text between them.
+def test_without_a_page_reader_only_the_nearest_graphic_is_merged() -> None:
+    """No reader, no way to tell a panel from a separate figure — so the recovery stays put.
 
     Both graphics here are close enough to qualify, so the choice between them is what is being
     pinned: the crop must stop at the lower one rather than stretching over both.
     """
     lower = (110.0, 275.0, 390.0, 295.0)  # 5pt above the caption
     upper = (110.0, 150.0, 390.0, 270.0)  # 30pt above the caption — also within the bound
-    assert crop_bbox_for(_spec(_CAPTION), [upper, lower]) == (100.0, 275.0, 400.0, 320.0)
+    assert crop_bbox_for(_spec(_CAPTION), [upper, lower]) == (100.0, 275.0, 400.0, 295.0)
+
+
+def test_panels_stacked_with_blank_space_between_them_are_one_figure() -> None:
+    """Taking the nearest graphic alone pictured a multi-panel figure as its bottom strip —
+    measured on arXiv:2608.07458 Figure 1, six panels over 158pt of which the crop showed the
+    last 31pt. Nothing is printed between panels of one figure, so the walk climbs through."""
+    lower = (110.0, 275.0, 390.0, 295.0)
+    upper = (110.0, 150.0, 390.0, 270.0)  # 5pt of white space above `lower`
+
+    got = crop_bbox_for(_spec(_CAPTION), [upper, lower], lambda box: "   \n  ")
+
+    assert got == (100.0, 150.0, 400.0, 295.0)
+
+
+def test_a_caption_printed_between_two_graphics_stops_the_walk() -> None:
+    """The band between them holds another float's caption, so they are two figures — climbing
+    would sweep that caption into this figure's image. A gap threshold cannot make this call: the
+    16.9pt panel spacing measured on the fixture above and a two-line caption are the same size."""
+    lower = (110.0, 275.0, 390.0, 295.0)
+    upper = (110.0, 150.0, 390.0, 270.0)
+
+    got = crop_bbox_for(_spec(_CAPTION), [upper, lower], lambda box: "Figure 2: The other one.")
+
+    assert got == (100.0, 275.0, 400.0, 295.0)
+
+
+def test_panels_beside_each_other_widen_the_same_band() -> None:
+    """A figure laid out as a row of panels reports one graphic each; the crop is their union."""
+    left = (110.0, 275.0, 240.0, 295.0)
+    right = (260.0, 275.0, 390.0, 295.0)
+
+    got = crop_bbox_for(_spec(_CAPTION), [left, right], lambda box: "")
+
+    assert got == (100.0, 275.0, 400.0, 295.0)
 
 
 def test_a_page_with_no_graphics_leaves_the_caption_crop_untouched() -> None:
     """A text block GROBID mislabelled as a figure lands here: nothing to find, nothing lost."""
     assert crop_bbox_for(_spec(_CAPTION), []) == _CAPTION
+
+
+# ------------------------------------------------------- table_body_bbox (row regrowth)
+#
+# GROBID's <table> box collapses onto the ruled band, and where a journal rules only part of the
+# header it becomes a fragment of one row. These pin the regrowth: it runs along the row the box
+# sits on, stops at a page-column gutter, then follows the columnar rows below — all inside the
+# float that holds the table.
+
+
+def _word(text: str, x0: float, x1: float, top: float, bottom: float) -> dict:
+    return {"text": text, "x0": x0, "x1": x1, "top": top, "bottom": bottom}
+
+
+def _table_words() -> list[dict]:
+    """A four-column table, header at y 100 and three body rows 20pt apart."""
+    columns = [(60.0, 110.0), (150.0, 190.0), (230.0, 270.0), (310.0, 350.0)]
+    words = []
+    for row, top in enumerate((100.0, 120.0, 140.0, 160.0)):
+        for col, (x0, x1) in enumerate(columns):
+            words.append(_word(f"r{row}c{col}", x0, x1, top, top + 10.0))
+    return words
+
+
+def _table_spec(bbox, float_bbox) -> AssetCropSpec:
+    return AssetCropSpec(
+        asset_id="p:v1:table:0",
+        type=AssetType.TABLE,
+        ordinal=0,
+        page=1,
+        bbox=bbox,
+        caption="c",
+        content_coords=True,
+        float_bbox=float_bbox,
+    )
+
+
+def test_a_collapsed_table_box_regrows_over_the_rows_below_it() -> None:
+    from docsuri_ingestion.asset_extraction import table_body_bbox
+
+    # GROBID ruled only the last two header cells: a 40pt-wide, 10pt-tall sliver.
+    spec = _table_spec((230.0, 100.0, 350.0, 110.0), (50.0, 90.0, 400.0, 200.0))
+    x0, y0, x1, y1 = table_body_bbox(spec, _table_words())
+    assert x0 < 65.0 and x1 > 345.0, "the header row's full width was not recovered"
+    assert y0 <= 100.0 and y1 >= 170.0, "the body rows below the header were not recovered"
+
+
+def test_regrowth_stops_at_the_page_column_gutter() -> None:
+    """A two-column float box must not let a table's crop reach into the column beside it."""
+    from docsuri_ingestion.asset_extraction import table_body_bbox
+
+    words = _table_words() + [_word("prose", 600.0, 700.0, 100.0, 110.0)]  # 250pt away
+    spec = _table_spec((230.0, 100.0, 350.0, 110.0), (50.0, 90.0, 750.0, 200.0))
+    assert table_body_bbox(spec, words)[2] < 500.0
+
+
+def test_regrowth_never_leaves_the_float_that_holds_the_table() -> None:
+    from docsuri_ingestion.asset_extraction import table_body_bbox
+
+    # The float ends at y=130, cutting the last two rows off: whatever is below belongs to
+    # something else on the page.
+    spec = _table_spec((230.0, 100.0, 350.0, 110.0), (50.0, 90.0, 400.0, 130.0))
+    assert table_body_bbox(spec, _table_words())[3] <= 130.0
+
+
+def test_a_table_with_no_float_box_keeps_grobids_own() -> None:
+    """No outer bound, no regrowth — the caption sat on another page and there is nothing to grow
+    inside."""
+    from docsuri_ingestion.asset_extraction import table_body_bbox
+
+    spec = _table_spec((230.0, 100.0, 350.0, 110.0), None)
+    assert table_body_bbox(spec, _table_words()) == spec.bbox
 
 # ---------------------------------------------------------------- caption_kind
 

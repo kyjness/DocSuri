@@ -101,6 +101,7 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
         rate_limiter=TokenBucket(rate_per_second=settings.arxiv_rate_per_second),
         raw_store=raw_store,
         raw_cache_mode=settings.raw_cache_mode if raw_cache_on else "off",
+        contact=settings.outbound_contact,
     )
     grobid = None
     if settings.grobid_url:
@@ -119,11 +120,13 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
             semantic_scholar = SemanticScholarCorpusSource(
                 api_key=settings.semantic_scholar_api_key,
                 timeout_seconds=settings.request_timeout_seconds,
+                contact=settings.outbound_contact,
             )
         if SourceName.OPENALEX in enabled_sources:
             openalex = OpenAlexCorpusSource(
                 timeout_seconds=settings.request_timeout_seconds,
                 mailto=settings.openalex_mailto,
+                contact=settings.outbound_contact,
             )
     corpus_sources = CorpusSourceAdapterSet(
         arxiv=arxiv,
@@ -170,6 +173,7 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
             # download its PDF once for text and again for crops.
             raw_store=raw_store,
             raw_cache_mode=settings.raw_cache_mode if raw_cache_on else "off",
+            contact=settings.outbound_contact,
         )
 
         asset_extractor = AssetExtractor(
@@ -293,7 +297,7 @@ def _table_extractor(settings: IngestionSettings) -> TableExtractorPort | None:
     def build() -> TableExtractorPort:
         from .adapters.docling_tables import DoclingTableExtractor
 
-        return DoclingTableExtractor()
+        return DoclingTableExtractor(max_pages=settings.docling_max_pages)
 
     return cast(
         "TableExtractorPort | None", _optional_reader(settings.table_extractor, "docling", build)

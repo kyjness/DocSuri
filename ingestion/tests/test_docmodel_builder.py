@@ -209,9 +209,11 @@ class _FakeTableExtractor:
 def test_a_table_repair_reprojects_full_text(monkeypatch) -> None:
     """Repaired cells must reach every representation: the blocks AND the root fullText, which
     was projected before the repair ran and would otherwise keep the merged numbers."""
+    from docsuri_ingestion.docmodel.table_repair import PrintedRegion
+
     monkeypatch.setattr(
         "docsuri_ingestion.docmodel.builder.printed_text",
-        lambda pdf: lambda page, bbox: "ADA 0.696 ± 0.015 0.011 ± 0.000",
+        lambda pdf: lambda page, bbox: PrintedRegion("ADA 0.696 ± 0.015 0.011 ± 0.000"),
     )
     builder = _builder(_FakeSource(None), _FakeStore(), table_extractor=_FakeTableExtractor())
 

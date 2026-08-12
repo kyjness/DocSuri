@@ -9,7 +9,10 @@ from docsuri_ingestion.adapters.corpus_http import OpenAlexCorpusSource, Semanti
 from docsuri_ingestion.adapters.local import FakeArxivSource, sample_metadata
 from docsuri_ingestion.corpus_sources import CorpusSourceAdapterSet, SourcePaperRecord
 from docsuri_ingestion.domain.enums import SourceName
-from docsuri_ingestion.domain.errors import PermanentIngestionError
+from docsuri_ingestion.domain.errors import (
+    PermanentIngestionError,
+    RetriableIngestionError,
+)
 
 
 class _Grobid:
@@ -38,7 +41,7 @@ class _ExternalSource:
 
     def fetch_pdf(self, record: SourcePaperRecord) -> bytes:
         self.fetched_record = record
-        return b"%PDF"
+        return b"%PDF-1.7 body"
 
 
 def test_arxiv_source_reuses_existing_html_first_adapter() -> None:
@@ -63,16 +66,16 @@ def test_external_pdf_source_retains_pdf_bytes_for_crop_reuse() -> None:
         pdf_url="https://example.test/paper.pdf",
     )
 
-    candidate = adapters.extract_pdf_text(record, b"%PDF")
+    candidate = adapters.extract_pdf_text(record, b"%PDF-1.7 body")
 
-    assert grobid.seen_pdf == b"%PDF"
+    assert grobid.seen_pdf == b"%PDF-1.7 body"
     assert candidate.source_tier == "SEMANTIC_SCHOLAR_GROBID"
     assert candidate.payload_kind == "PDF"
     assert candidate.text == "structured full text"
     # The PDF bytes are kept on the candidate (in-memory only) so the figure/formula crop step
     # reuses them instead of re-fetching — and crops against the same bytes the TEI coords came
     # from. The candidate is never serialized (the queue job carries the SourcePaperRecord).
-    assert candidate.pdf == b"%PDF"
+    assert candidate.pdf == b"%PDF-1.7 body"
 
 
 def test_external_pdf_source_requires_grobid() -> None:
@@ -85,7 +88,7 @@ def test_external_pdf_source_requires_grobid() -> None:
     )
 
     with pytest.raises(PermanentIngestionError):
-        adapters.extract_pdf_text(record, b"%PDF")
+        adapters.extract_pdf_text(record, b"%PDF-1.7 body")
 
 
 def test_external_source_incremental_delegates_by_source_name() -> None:
@@ -154,14 +157,14 @@ def test_external_record_text_fetches_pdf_then_grobid() -> None:
     candidate = adapters.extract_record_text(record)
 
     assert provider.fetched_record == record
-    assert grobid.seen_pdf == b"%PDF"
+    assert grobid.seen_pdf == b"%PDF-1.7 body"
     assert candidate.source_tier == "OPENALEX_GROBID"
 
 
 def test_semantic_scholar_provider_fetches_oa_pdf_records() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if str(request.url).endswith("paper.pdf"):
-            return httpx.Response(200, content=b"%PDF")
+            return httpx.Response(200, content=b"%PDF-1.7 body")
         return httpx.Response(
             200,
             json={
@@ -195,7 +198,7 @@ def test_semantic_scholar_provider_fetches_oa_pdf_records() -> None:
     assert records[0].source_name is SourceName.SEMANTIC_SCHOLAR
     assert records[0].pdf_url == "https://example.test/paper.pdf"
     assert records[0].license_url == "https://creativecommons.org/licenses/by/4.0/"
-    assert source.fetch_pdf(records[0]) == b"%PDF"
+    assert source.fetch_pdf(records[0]) == b"%PDF-1.7 body"
 
 
 def test_semantic_scholar_rejects_spoofed_license_host() -> None:
@@ -301,40 +304,64 @@ def test_paged_harvest_retries_transient_429_then_succeeds(monkeypatch) -> None:
     assert records[0].source_id == "s2-1"
 
 
+def _openalex_work(locations: list[dict], primary: dict | None = None, **extra) -> dict:
+    """One ``results`` entry as OpenAlex sends it — the shape written once for this whole file."""
+    return {
+        "id": "https://openalex.org/W1",
+        "ids": {},
+        "display_name": "Paper",
+        "abstract_inverted_index": {"hello": [0]},
+        "authorships": [],
+        "publication_year": 2025,
+        "publication_date": "2025-01-01",
+        "primary_location": primary if primary is not None else locations[0],
+        "locations": locations,
+        **extra,
+    }
+
+
+def _openalex_source(handler) -> OpenAlexCorpusSource:
+    return OpenAlexCorpusSource(
+        base_url="https://example.test", transport=httpx.MockTransport(handler)
+    )
+
+
+def _harvest(source) -> list[SourcePaperRecord]:
+    return list(source.fetch_incremental(datetime(2024, 12, 31, tzinfo=UTC), ("cs.LG", "cs.CV")))
+
+
+def _oa_record(*pdf_urls: str) -> SourcePaperRecord:
+    """A harvested OpenAlex record carrying the given copies, primary first."""
+    return SourcePaperRecord(
+        source_name=SourceName.OPENALEX,
+        source_id="W1",
+        title="Paper",
+        pdf_url=pdf_urls[0],
+        alternate_pdf_urls=pdf_urls[1:],
+    )
+
+
 def test_openalex_provider_reconstructs_abstract_and_pdf_record() -> None:
+    work = _openalex_work(
+        [],
+        primary={
+            "pdf_url": "https://example.test/paper.pdf",
+            "landing_page_url": "https://example.test/paper",
+            "license": "cc-by",
+        },
+        ids={"arxiv": "https://arxiv.org/abs/2401.00001"},
+        doi="https://doi.org/10.1000/x",
+        abstract_inverted_index={"hello": [0], "world": [1]},
+        authorships=[{"author": {"display_name": "Ada"}}],
+        updated_date="2026-01-02T00:00:00Z",
+    )
+
     def handler(request: httpx.Request) -> httpx.Response:
         if str(request.url).endswith("paper.pdf"):
-            return httpx.Response(200, content=b"%PDF")
-        return httpx.Response(
-            200,
-            json={
-                "meta": {"next_cursor": None},
-                "results": [
-                    {
-                        "id": "https://openalex.org/W1",
-                        "ids": {"arxiv": "https://arxiv.org/abs/2401.00001"},
-                        "doi": "https://doi.org/10.1000/x",
-                        "display_name": "Paper",
-                        "abstract_inverted_index": {"hello": [0], "world": [1]},
-                        "authorships": [{"author": {"display_name": "Ada"}}],
-                        "publication_year": 2025,
-                        "publication_date": "2025-01-01",
-                        "updated_date": "2026-01-02T00:00:00Z",
-                        "primary_location": {
-                            "pdf_url": "https://example.test/paper.pdf",
-                            "landing_page_url": "https://example.test/paper",
-                            "license": "cc-by",
-                        },
-                        "locations": [],
-                    }
-                ],
-            },
-        )
+            return httpx.Response(200, content=b"%PDF-1.7 body")
+        return httpx.Response(200, json={"meta": {"next_cursor": None}, "results": [work]})
 
-    source = OpenAlexCorpusSource(
-        base_url="https://example.test",
-        transport=httpx.MockTransport(handler),
-    )
+    source = _openalex_source(handler)
     # Windowed by publication_date (2025-01-01) now, not updated_date — since must precede it.
     records = list(source.fetch_incremental(datetime(2024, 12, 31, tzinfo=UTC), ("cs.LG",)))
 
@@ -343,4 +370,173 @@ def test_openalex_provider_reconstructs_abstract_and_pdf_record() -> None:
     assert records[0].updated_at is None  # windows by published_at, uniform with SS
     assert records[0].abstract == "hello world"
     assert records[0].arxiv_id == "2401.00001"
-    assert source.fetch_pdf(records[0]) == b"%PDF"
+    assert source.fetch_pdf(records[0]) == b"%PDF-1.7 body"
+
+
+# --- 기동 검증에서 드러난 결함들 (2026-08-10) ---------------------------------
+#
+# The S2/OpenAlex path had never been run. Doing so end-to-end put 0 of 6 papers into a doc-model:
+# every failure was in how we talk to publishers, not in the parser. These pin the fixes.
+
+
+def test_outbound_requests_say_who_we_are() -> None:
+    """Unidentified requests are answered with a landing page or a 403 by real publishers.
+
+    Springer and Nature returned HTTP 200 with 3 KB of HTML — not an error, just not the paper —
+    and Cureus returned 403, all of which stopped when the client identified itself.
+    """
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("user-agent", ""))
+        if str(request.url).endswith("paper.pdf"):
+            return httpx.Response(200, content=b"%PDF-1.7 body")
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    _openalex_work(
+                        [
+                            {
+                                "pdf_url": "https://example.test/paper.pdf",
+                                "license": "cc-by",
+                                "landing_page_url": "https://example.test/paper",
+                            }
+                        ]
+                    )
+                ],
+                "meta": {"next_cursor": None},
+            },
+        )
+
+    source = OpenAlexCorpusSource(
+        base_url="https://example.test",
+        transport=httpx.MockTransport(handler),
+        contact="ops@example.test",
+    )
+    records = _harvest(source)
+    source.fetch_pdf(records[0])
+
+    assert seen, "no request was made"
+    assert all(agent.startswith("DocSuri/") for agent in seen), seen
+    assert all("ops@example.test" in agent for agent in seen), seen
+
+
+def test_a_landing_page_served_as_a_pdf_is_a_permanent_failure() -> None:
+    """A 200 carrying HTML used to be handed to GROBID, whose 500 is RETRIABLE — so the job went
+    round the retry loop into the DLQ instead of being rejected once."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"<!DOCTYPE html><html>not a paper</html>")
+
+    source = _openalex_source(handler)
+    with pytest.raises(PermanentIngestionError):
+        source.fetch_pdf(_oa_record("https://example.test/paper.pdf"))
+
+
+def test_a_refused_copy_falls_through_to_the_next_one() -> None:
+    tried: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        tried.append(str(request.url))
+        if "repo" in str(request.url):
+            return httpx.Response(200, content=b"%PDF-1.7 body")
+        return httpx.Response(403)
+
+    record = _oa_record("https://example.test/publisher.pdf", "https://example.test/repo.pdf")
+    assert _openalex_source(handler).fetch_pdf(record) == b"%PDF-1.7 body"
+    assert len(tried) == 2
+
+
+def test_a_transient_failure_is_not_walked_past() -> None:
+    """429/5xx mean "ask again later". Moving to another copy would turn a blip into a permanent
+    choice of a worse source, so the retriable error propagates and the fallback stays unused."""
+    tried: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        tried.append(str(request.url))
+        return httpx.Response(503)
+
+    record = _oa_record("https://example.test/publisher.pdf", "https://example.test/repo.pdf")
+    with pytest.raises(RetriableIngestionError):
+        _openalex_source(handler).fetch_pdf(record)
+    assert tried == ["https://example.test/publisher.pdf"]
+
+
+def test_only_same_licence_copies_become_candidates() -> None:
+    """The record keeps exactly ONE license_url and the downstream OA gate only ever reads that
+    one — so a copy under any OTHER licence must not be a fallback candidate, or its bytes would
+    be stored under terms they were never offered on. The shape check (_license_url) cannot catch
+    this: it passes any creativecommons.org licence, NC included."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    _openalex_work(
+                        [
+                            {"pdf_url": "https://example.test/a.pdf", "license": "cc-by"},
+                            {"pdf_url": "https://example.test/nc.pdf", "license": "cc-by-nc"},
+                            {"pdf_url": "https://example.test/none.pdf", "license": None},
+                            {"pdf_url": "https://example.test/sa.pdf", "license": "cc-by-sa"},
+                            {"pdf_url": "https://example.test/mirror.pdf", "license": "cc-by"},
+                        ]
+                    )
+                ],
+                "meta": {"next_cursor": None},
+            },
+        )
+
+    record = _harvest(_openalex_source(handler))[0]
+    assert record.pdf_url == "https://example.test/a.pdf"
+    # The cc-by mirror survives; cc-by-sa is allowlisted but DIFFERENT, so it is dropped too.
+    assert record.alternate_pdf_urls == ("https://example.test/mirror.pdf",)
+
+
+def test_the_candidate_walk_is_bounded() -> None:
+    tried: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        tried.append(str(request.url))
+        return httpx.Response(403)
+
+    record = _oa_record(*(f"https://example.test/{i}.pdf" for i in range(9)))
+    with pytest.raises(PermanentIngestionError):
+        _openalex_source(handler).fetch_pdf(record)
+    assert len(tried) == 3
+
+
+def test_alternate_copies_survive_the_queue_round_trip() -> None:
+    record = SourcePaperRecord(
+        source_name=SourceName.OPENALEX,
+        source_id="W1",
+        title="Paper",
+        pdf_url="https://example.test/a.pdf",
+        alternate_pdf_urls=("https://example.test/b.pdf",),
+    )
+    assert SourcePaperRecord.from_payload(record.to_payload()) == record
+
+
+def test_the_harvest_asks_for_alternatives_as_quoted_phrases() -> None:
+    """Two failure modes in one query. Space-joining is read as "must contain all of these"
+    (measured: 306 results where the disjunction returns 22,039), and an unquoted disjunction
+    binds the operator to adjacent WORDS, not phrases — S2's own grammar parenthesises multi-word
+    operands, and OpenAlex loses phrase adjacency. Each phrase must be quoted."""
+    from docsuri_ingestion.adapters.corpus_http import _query
+
+    assert _query(("cs.LG", "cs.CV"), joiner="|") == '"computer vision" | "machine learning"'
+    assert _query(("cs.LG", "cs.CV"), joiner="OR") == '"computer vision" OR "machine learning"'
+
+
+def test_openalex_harvests_computer_science_not_everything_that_says_machine_learning() -> None:
+    """Semantic Scholar is asked for `fieldsOfStudy=Computer Science`; OpenAlex had no field
+    filter at all, so a real week came back as intensive-care medicine and water management."""
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.params.get("filter", ""))
+        return httpx.Response(200, json={"results": [], "meta": {"next_cursor": None}})
+
+    _harvest(_openalex_source(handler))
+    assert seen and "primary_topic.field.id:fields/17" in seen[0]

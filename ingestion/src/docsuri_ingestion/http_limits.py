@@ -27,6 +27,33 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 # ponytail: single global ceiling; split per-content-type only if a legitimate fetch is rejected.
 MAX_RESPONSE_BYTES = 64 * 1024 * 1024
 
+# How we identify ourselves to third-party hosts. Sending nothing means httpx's default
+# ("python-httpx/x.y"), which several open-access hosts treat as a bot: measured on the OpenAlex
+# harvest, Springer and Nature answered an unidentified request with HTTP 200 and a 3 KB HTML
+# landing page instead of the PDF, and Cureus answered 403. With this header the same URLs return
+# the real 1.4-1.9 MB PDFs. Publishers ask for a contact, so callers append one when configured.
+_PRODUCT = "DocSuri/1.0"
+_HOMEPAGE = "+https://docsuri.org"
+
+
+def user_agent(contact: str | None = None) -> str:
+    """The outbound ``User-Agent``, carrying a contact address when one is configured."""
+    detail = f"{_HOMEPAGE}; mailto:{contact}" if contact else _HOMEPAGE
+    return f"{_PRODUCT} ({detail})"
+
+
+def is_pdf_payload(body: bytes) -> bool:
+    """Whether a fetched body is a PDF, by its magic bytes (BR-23b).
+
+    A 200 is not proof we were handed the file: several hosts answer with a landing or error
+    page instead, and that HTML reaching GROBID produces a retriable 500 — so the job circles
+    the retry loop into the DLQ instead of being rejected once. One shared check, because the
+    first false rejection (a BOM, CDN-prepended junk) must be fixed for every fetcher at once
+    rather than in whichever adapter happened to report it. Applied to cache reads as well as
+    fetches — a body that failed this check must never be served from the raw cache either.
+    """
+    return body.lstrip()[:5] == b"%PDF-"
+
 
 class ResponseTooLargeError(Exception):
     """Raised when a response body exceeds the byte cap mid-stream."""
