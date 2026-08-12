@@ -217,10 +217,16 @@ def _violations(sig: dict) -> list[str]:
         v.append("coverage_low")
     # Asset-stage types — present only on a --pipeline run, since only that renders the crops.
     # The same contract decides which of them count: a LOSS of content is a violation, a designed
-    # outcome is not. ``caption_only`` refusals are therefore absent from this list by intent (the
-    # region held nothing but the caption the viewer already renders beside it, BR-23a) while every
-    # other refusal reason is a figure the reader was meant to see and did not get.
-    if sum(n for why, n in (sig.get("crops_refused") or {}).items() if why != "caption_only"):
+    # outcome is not. Only two refusal reasons are losses. The rest are guards firing as intended
+    # and were measured to be so over 30 papers: ``caption_only`` (the region held nothing but the
+    # caption the viewer already renders beside it, BR-23a); ``not_renderable``, which by
+    # DEFINITION means under ``_MIN_CROP_AREA_PT2`` — all 57 of them measured 46pt² median, 185pt²
+    # at the largest, and 50 were the caption-less formula fragments GROBID mints from a stray
+    # delimiter; ``no_figure_evidence``, a float with no content element, no caption and no
+    # graphic under it (measured: 2 in 1,112 crops, a lone word and a section heading).
+    # Counting those as losses put this type at 60% of papers when the real figure is 0%.
+    _LOSSES = ("page_missing", "render_failed")
+    if sum(n for why, n in (sig.get("crops_refused") or {}).items() if why in _LOSSES):
         v.append("crop_missing")
     # ``figure_crops_partial`` is deliberately NOT here. It catches the regression it was built
     # for (0.197 on the broken crop, 0 once fixed), but on 30 corpus papers it fires 7 times and

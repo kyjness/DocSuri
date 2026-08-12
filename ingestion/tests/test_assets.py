@@ -420,3 +420,89 @@ def test_a_crop_too_small_to_hold_anything_is_not_rendered() -> None:
     assert not crop_is_renderable((10.0, 10.0, 14.1, 18.6))
     assert crop_is_renderable((110.8, 304.1, 499.4, 324.8))  # a caption strip is still renderable
     assert crop_is_renderable((100.0, 100.0, 130.0, 120.0))  # 600pt², the small end of real crops
+
+
+# ------------------------------------------------------- refusals the counters have to tell apart
+
+
+def _fig_spec(bbox, *, caption="", content=False):
+    return AssetCropSpec(
+        asset_id=f"p:v1:figure:{int(bbox[1])}", type=AssetType.FIGURE, ordinal=0, page=1,
+        bbox=bbox, caption=caption, content_coords=content,
+    )
+
+
+def test_a_float_nothing_vouches_for_is_not_stored() -> None:
+    """No content element, no caption, and no graphic recovered — three independent things could
+    say this is a picture and none does. Measured on 30 papers it is a lone word or a section
+    heading GROBID mislabelled, and storing it hands the reader a thumbnail of text."""
+    from docsuri_ingestion.asset_extraction import _has_no_figure_evidence
+
+    strip = (100.0, 700.0, 130.0, 707.0)
+
+    assert _has_no_figure_evidence(_fig_spec(strip), recovered=False)
+    # Any one of the three vouching for it is enough to keep it.
+    assert not _has_no_figure_evidence(_fig_spec(strip), recovered=True)
+    assert not _has_no_figure_evidence(_fig_spec(strip, caption="Figure 1: x"), recovered=False)
+    assert not _has_no_figure_evidence(_fig_spec(strip, content=True), recovered=False)
+
+
+class _Meta:
+    def __init__(self, asset_id, bbox, caption, page=1):
+        self.asset_id, self.bbox, self.caption, self.page_ref = asset_id, bbox, caption, page
+
+
+class _Asset:
+    def __init__(self, meta):
+        self.meta = meta
+
+
+def _dedup(pairs):
+    from docsuri_ingestion.asset_extraction import _without_duplicate_regions
+
+    dropped: list[tuple[str, str]] = []
+    kept = _without_duplicate_regions(
+        [_Asset(_Meta(aid, box, cap)) for aid, box, cap in pairs],
+        lambda aid, why: dropped.append((aid, why)),
+    )
+    return [a.meta.asset_id for a in kept], dropped
+
+
+def test_a_sentence_about_a_figure_does_not_get_the_figures_image() -> None:
+    """GROBID mints a float out of the sentence that MENTIONS one and gives it the real float's
+    coordinates, so the same image is stored twice. The captions separate them: one quotes a
+    caption, the other is prose about it."""
+    box = (72.0, 100.0, 500.0, 300.0)
+    kept, dropped = _dedup([
+        ("prose", box, "Figure3defines a function generating the parse tree."),
+        ("real", box, "Figure 3: Code using ITERGEN for the same task."),
+    ])
+
+    assert kept == ["real"]
+    assert dropped == [("prose", "duplicate_region")]
+
+
+def test_two_real_captions_on_one_box_are_both_kept() -> None:
+    """A different defect: 2501.17431 gave "Figure 10: …" and "Figure 12: …" the same box. Either
+    could be the real one, so dropping either loses a figure — the audit reports the pair instead.
+    """
+    box = (72.0, 100.0, 500.0, 300.0)
+    kept, dropped = _dedup([
+        ("ten", box, "Figure 10: Approximated Pareto fronts."),
+        ("twelve", box, "Figure 12: Comparing hypervolume."),
+    ])
+
+    assert sorted(kept) == ["ten", "twelve"]
+    assert dropped == []
+
+
+def test_crops_that_merely_overlap_are_both_kept() -> None:
+    """A parent figure and the sub-panel inside it overlap by construction — only a box that is
+    effectively the SAME box is a duplicate."""
+    kept, dropped = _dedup([
+        ("parent", (72.0, 100.0, 500.0, 300.0), "some prose"),
+        ("panel", (80.0, 110.0, 240.0, 290.0), "Figure 4: A panel."),
+    ])
+
+    assert sorted(kept) == ["panel", "parent"]
+    assert dropped == []
