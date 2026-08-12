@@ -19,9 +19,10 @@ from typing import Any
 # Deliberately generous: the point is to bound a run of stacked panels from below, and a figure's
 # own panels sit far closer (16.9pt measured on arXiv:2608.07458). See ``_graphic_cluster``.
 _CLUSTER_GAP_PT = 40.0
-# Under this share of its graphic cluster, a rendered figure crop is showing part of the figure.
-# Measured over 25 recovery-eligible figures in 4 real papers, the ratio is bimodal with nothing
-# in between: the one defective crop scored 0.20 and every sound one scored 1.00.
+# Under this share of its graphic cluster, a rendered figure crop MAY be showing part of the
+# figure. A signal, never a violation — measured on 30 papers it is right about a regression and
+# wrong about the corpus. See ``_graphic_cluster`` for why, and read it as a number to COMPARE
+# between runs (baseline: 7 crops over 30 papers) rather than as a defect count.
 _PARTIAL_MAX_COVER = 0.75
 # Two crops overlapping by more than this share of the smaller one are worth a look. NOT a defect
 # on its own: measured on the fixtures, this fires on legitimate nesting too — a parent figure and
@@ -42,7 +43,9 @@ def _overlap_area(a: tuple[float, ...], b: tuple[float, ...]) -> float:
 
 
 def _graphic_cluster(
-    graphics: list[tuple[float, float, float, float]], bbox: tuple[float, float, float, float]
+    graphics: list[tuple[float, float, float, float]],
+    bbox: tuple[float, float, float, float],
+    page_height: float,
 ) -> float:
     """Height of the run of graphic objects the crop sits in, by GAPS alone.
 
@@ -54,8 +57,29 @@ def _graphic_cluster(
 
     Returns the crop's own height when nothing adjoins it, so the ratio is 1.0 by default and
     only a crop that genuinely left picture behind scores low.
+
+    Boxes are clamped to the PAGE first. pdfium reports an object's own extent, which routinely
+    runs off the sheet — arXiv:2506.14753 p23 has one starting at y=-2154 on a 792pt page — and a
+    cluster measured from that reads 2828pt tall and calls a perfectly whole crop 18% of itself.
+    Nothing can be rendered outside the page anyway, so the visible part is the only honest
+    denominator.
+
+    KNOWN FALSE POSITIVES, measured on 30 papers, which is why the caller reports this as a signal
+    and not a defect. Gaps alone cannot tell one figure from the next, so the run happily spans
+    TWO floats stacked in a column — on arXiv:2502.19790 p11 it merged Figure 5, its caption and
+    Figure 6 into one 188pt cluster and called Figure 6's complete 90pt crop 48% of itself. It
+    also over-counts whenever a graphic object's box is padded well beyond its visible ink
+    (arXiv:2504.00366: a complete two-panel crop scored 0.62 against a box with 40pt of white
+    above it). Post-fix on that sample it fires 7 times and every one examined was sound; on the
+    same sample with the caption-aware climb removed it fires on the genuinely broken crop at
+    0.197. Comparative use only.
     """
     top, bottom = bbox[1], bbox[3]
+    graphics = [
+        (g[0], max(0.0, g[1]), g[2], min(page_height, g[3]))
+        for g in graphics
+        if g[3] > 0 and g[1] < page_height
+    ]
     members = [g for g in graphics if g[2] > bbox[0] and g[0] < bbox[2] and g[1] < bottom + 1]
     changed = True
     while changed:
@@ -104,6 +128,7 @@ def asset_signals(paper_id: str, version: int, pdf: bytes, crops: list) -> dict[
             if page_idx < 0 or page_idx >= len(doc):
                 continue
             graphics = list(_graphic_boxes(doc, page_idx))
+            page_height = float(doc[page_idx].get_size()[1])
             for asset in page_assets:
                 spec = spec_by_id.get(asset.meta.asset_id)
                 # Only the recovered figures can be partial: everywhere else the box came from
@@ -111,7 +136,7 @@ def asset_signals(paper_id: str, version: int, pdf: bytes, crops: list) -> dict[
                 if spec is None or spec.type is not AssetType.FIGURE or spec.content_coords:
                     continue
                 bbox = tuple(asset.meta.bbox)
-                cluster = _graphic_cluster(graphics, bbox)
+                cluster = _graphic_cluster(graphics, bbox, page_height)
                 cover = (bbox[3] - bbox[1]) / cluster if cluster > 0 else 1.0
                 if cover < _PARTIAL_MAX_COVER:
                     partial.append({"asset_id": asset.meta.asset_id, "cover": round(cover, 3)})

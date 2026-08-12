@@ -222,8 +222,11 @@ def _violations(sig: dict) -> list[str]:
     # other refusal reason is a figure the reader was meant to see and did not get.
     if sum(n for why, n in (sig.get("crops_refused") or {}).items() if why != "caption_only"):
         v.append("crop_missing")
-    if sig.get("figure_crops_partial"):
-        v.append("figure_crop_partial")
+    # ``figure_crops_partial`` is deliberately NOT here. It catches the regression it was built
+    # for (0.197 on the broken crop, 0 once fixed), but on 30 corpus papers it fires 7 times and
+    # every one examined was a sound crop — its cluster rule cannot tell two stacked floats apart.
+    # A violation type that is wrong at baseline teaches everyone to ignore the histogram, so it
+    # stays a signal to compare between runs. See ``_assets._graphic_cluster``.
     if sig.get("crop_duplicates"):
         v.append("crop_duplicate")
     if sig.get("table_cells_merged"):
