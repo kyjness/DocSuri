@@ -20,6 +20,14 @@ The verdicts follow the ar5iv audit's contract — content reaching ``fullText``
 A listing the parser keeps as a paragraph still delivers its words, so it is reported as a structure
 signal for drill-down, never as a violation.
 
+``--pipeline`` also renders the page crops and judges THOSE (see ``_assets.py``). Everything above
+reads the doc-model, and a doc-model is not what the reader looks at: a figure block can carry a
+caption, an ``assetRef`` and healthy coverage while its stored image is a fifth of the figure — the
+defect that prompted these signals went unseen by every check here until someone opened the page.
+The same contract still decides what counts: a crop refused because the region held only the caption
+is a DESIGNED outcome (BR-23a) and stays a signal, while a crop the reader was meant to get and did
+not is a violation.
+
 Reads the PDF and TEI caches written by ``corpus_sample.py --pdf`` and ``pdf_grobid_audit.py``. No
 embedding, no cloud. With the caches populated it needs no network at all; ``--grobid-url`` only
 fills TEI the cache is missing, and ``--pipeline`` runs the local recovery stages.
@@ -36,6 +44,7 @@ import argparse
 import re
 from pathlib import Path
 
+from _assets import asset_signals, merged_cell_tables
 from _common import caption_probe, counts, figures_without_assetref, strip_ws, walk_sections
 from _pipeline import build_doc, pipeline_builder, tei_for
 from _sweep import run_sweep
@@ -134,6 +143,32 @@ def _doc_floats(doc: dict) -> dict[str, set[int]]:
     return out
 
 
+def _unreadable_labels(doc: dict) -> int:
+    """Figure/table blocks whose label and caption together name no float number.
+
+    The masking term in the loss arithmetic. ``lost_figures`` is a COUNT subtraction, so a block
+    GROBID minted out of a body paragraph raises the doc-model's tally and cancels a float that
+    genuinely went missing — three named and three held reads as clean even when one of the three
+    held is junk. Observed directly: blocks labelled ``'-P peaks at d = 2'``, ``'K'`` and ``'?'``.
+
+    Counted rather than turned into a stricter loss test on purpose. Matching float numbers as a
+    SET instead of a count is the obvious alternative and it was measured to be worse — GROBID
+    files a float's name into labels it never finished splitting, and set-matching reported six
+    missing tables for a paper that had three of them sitting right there (see ``_violations``).
+    This names the population that causes the cancellation without re-opening that over-report.
+    """
+    unreadable = 0
+    for section in walk_sections(doc):
+        for block in section.get("blocks") or []:
+            kind = block.get("type")
+            if kind not in ("figure", "table"):
+                continue
+            named = _floats_in(f"{block.get('anchorLabel') or ''} {block.get('caption') or ''}")
+            if not any(named.values()):
+                unreadable += 1
+    return unreadable
+
+
 def _caption_text_dropped(doc: dict, full_text: str) -> int:
     """Captions the doc-model holds that never reached ``fullText`` — a projection loss.
 
@@ -180,13 +215,29 @@ def _violations(sig: dict) -> list[str]:
         v.append("figure_missing_assetref")
     if sig["coverage"] is not None and sig["coverage"] < _COVERAGE_MIN:
         v.append("coverage_low")
+    # Asset-stage types — present only on a --pipeline run, since only that renders the crops.
+    # The same contract decides which of them count: a LOSS of content is a violation, a designed
+    # outcome is not. ``caption_only`` refusals are therefore absent from this list by intent (the
+    # region held nothing but the caption the viewer already renders beside it, BR-23a) while every
+    # other refusal reason is a figure the reader was meant to see and did not get.
+    if sum(n for why, n in (sig.get("crops_refused") or {}).items() if why != "caption_only"):
+        v.append("crop_missing")
+    if sig.get("figure_crops_partial"):
+        v.append("figure_crop_partial")
+    if sig.get("crop_duplicates"):
+        v.append("crop_duplicate")
+    if sig.get("table_cells_merged"):
+        v.append("table_cells_merged")
+    if sig.get("float_label_unreadable"):
+        v.append("float_label_unreadable")
     return v
 
 
 def _audit_one(
     paper_id: str, version: int, tei: str, pdf: bytes, builder: object | None = None
 ) -> dict:
-    model = build_doc(paper_id, version, tei, pdf, builder)
+    crops: list = []
+    model = build_doc(paper_id, version, tei, pdf, builder, crops)
     if model is None:
         # BR-30 2026-08-10: real ingestion EXCLUDES this paper (TEI parsed to no structure), so
         # there is nothing to measure preservation against — the loss is the source's.
@@ -219,6 +270,12 @@ def _audit_one(
     sig["coverage"] = (
         round(sig["body_chars"] / sig["source_chars"], 4) if sig["source_chars"] else None
     )
+    sig["float_label_unreadable"] = _unreadable_labels(doc)
+    if builder is not None:
+        # Asset signals only on the pipeline run: they render the crops, which is the artifact a
+        # reader receives, and there is no point measuring it against a parser-only doc-model.
+        sig.update(asset_signals(paper_id, version, pdf, crops))
+        sig["table_cells_merged"] = merged_cell_tables(doc, crops)
     return {
         "paper_id": paper_id,
         "version": version,
@@ -241,8 +298,9 @@ def main() -> None:
     parser.add_argument(
         "--pipeline",
         action="store_true",
-        help="judge the WHOLE builder (table re-read + formula OCR), not the parser alone — "
-             "slower by minutes per paper, but this is what a reader actually receives",
+        help="judge the WHOLE builder (table re-read + formula OCR) AND render the page crops, "
+             "not the parser alone — slower by minutes per paper, but this is what a reader "
+             "actually receives, images included",
     )
     args = parser.parse_args()
 
