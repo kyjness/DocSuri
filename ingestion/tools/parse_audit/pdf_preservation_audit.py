@@ -50,6 +50,7 @@ from _pipeline import build_doc, pipeline_builder, tei_for
 from _sweep import run_sweep
 
 from docsuri_ingestion.adapters.grobid import GrobidHttpClient
+from docsuri_ingestion.asset_extraction import DESIGNED_REFUSALS
 from docsuri_ingestion.full_text_extraction import pdf_to_text
 
 # Body text this far short of the PDF's own text layer is gross loss. Set well below 1.0 on
@@ -69,6 +70,15 @@ _FLOAT_RE = re.compile(
 _KIND_OF = {"fig": "figure", "figure": "figure", "table": "table",
             "algorithm": "algorithm", "listing": "algorithm"}
 _ROMAN = {"i": 1, "v": 5, "x": 10, "l": 50}
+# Letter-prefixed float numbering — "Figure A1", "Table S2", "Fig. B.3" — the standard style for
+# appendix and supplementary floats. ``_FLOAT_RE`` cannot read these, and it must stay that way
+# on the SOURCE side: the letter is invisible to ``_contiguous`` (A1 is not "the float after 12"),
+# so admitting it there would re-open the column-seam artefacts that function exists to cut.
+# ``_unreadable_labels`` alone reads this pattern — its question is "did GROBID mint this block
+# out of junk", and a block named "Figure A1" plainly was not.
+_LETTERED_FLOAT_RE = re.compile(
+    r"\b(?:fig(?:ure)?|table)\s*\.?\s*(?-i:[A-Z])\.?\s*\d{1,2}\b", re.IGNORECASE
+)
 # The glyphs an itemize renders into the text layer.
 _BULLET_RE = re.compile(r"[•▪‣◦]")
 # Past this a float number is too commonly a year/section reference to trust ("Table 2020").
@@ -156,6 +166,11 @@ def _unreadable_labels(doc: dict) -> int:
     files a float's name into labels it never finished splitting, and set-matching reported six
     missing tables for a paper that had three of them sitting right there (see ``_violations``).
     This names the population that causes the cancellation without re-opening that over-report.
+
+    A letter-prefixed name ("Figure A1") counts as readable even though ``_FLOAT_RE`` cannot
+    parse it: appendix numbering is a paper's standard style, not GROBID junk, and a violation
+    that fires on every paper with an appendix is wrong at baseline — the failure mode this
+    directory keeps ``figure_crops_partial`` out of the violations for.
     """
     unreadable = 0
     for section in walk_sections(doc):
@@ -163,8 +178,9 @@ def _unreadable_labels(doc: dict) -> int:
             kind = block.get("type")
             if kind not in ("figure", "table"):
                 continue
-            named = _floats_in(f"{block.get('anchorLabel') or ''} {block.get('caption') or ''}")
-            if not any(named.values()):
+            name = f"{block.get('anchorLabel') or ''} {block.get('caption') or ''}"
+            named = _floats_in(name)
+            if not any(named.values()) and not _LETTERED_FLOAT_RE.search(name):
                 unreadable += 1
     return unreadable
 
@@ -217,17 +233,28 @@ def _violations(sig: dict) -> list[str]:
         v.append("coverage_low")
     # Asset-stage types — present only on a --pipeline run, since only that renders the crops.
     # The same contract decides which of them count: a LOSS of content is a violation, a designed
-    # outcome is not. Only two refusal reasons are losses. The rest are guards firing as intended
-    # and were measured to be so over 30 papers: ``caption_only`` (the region held nothing but the
-    # caption the viewer already renders beside it, BR-23a); ``not_renderable``, which by
-    # DEFINITION means under ``_MIN_CROP_AREA_PT2`` — all 57 of them measured 46pt² median, 185pt²
-    # at the largest, and 50 were the caption-less formula fragments GROBID mints from a stray
-    # delimiter; ``no_figure_evidence``, a float with no content element, no caption and no
-    # graphic under it (measured: 2 in 1,112 crops, a lone word and a section heading).
-    # Counting those as losses put this type at 60% of papers when the real figure is 0%.
-    _LOSSES = ("page_missing", "render_failed")
-    if sum(n for why, n in (sig.get("crops_refused") or {}).items() if why in _LOSSES):
+    # outcome is not. Which reasons are designed is the CROP STAGE's fact, decided where each
+    # reason is minted — ``DESIGNED_REFUSALS`` lives beside that code, and everything outside the
+    # set counts as a loss here, so a reason added there without a classification fails loud
+    # instead of reading as designed. (A local list did the opposite, and also mis-drew the line
+    # once already: counting ``not_renderable`` — by DEFINITION under ``_MIN_CROP_AREA_PT2``,
+    # measured 46pt² median over all 57, 50 of them caption-less formula fragments — put this
+    # type at 60% of papers when the real figure is 0%.)
+    if sum(
+        n for why, n in (sig.get("crops_refused") or {}).items() if why not in DESIGNED_REFUSALS
+    ):
         v.append("crop_missing")
+    # Conservation: every spec must be stored or refused. A mid-loop failure in the crop stage
+    # returns nothing for specs it never reached — no image, no refusal — and without this check
+    # a paper that lost EVERY image reads as "a few designed placeholders".
+    if "crop_specs" in sig and sig["crop_specs"] != sig.get("crops_stored", 0) + sum(
+        (sig.get("crops_refused") or {}).values()
+    ):
+        v.append("crop_unaccounted")
+    # A dead measurement must not read as a clean one: the geometry keys exist (as zeros) even
+    # when the pass died, and this is what says they were never measured.
+    if sig.get("crop_geometry_error"):
+        v.append("crop_geometry_error")
     # ``figure_crops_partial`` is deliberately NOT here. It catches the regression it was built
     # for (0.197 on the broken crop, 0 once fixed), but on 30 corpus papers it fires 7 times and
     # every one examined was a sound crop — its cluster rule cannot tell two stacked floats apart.

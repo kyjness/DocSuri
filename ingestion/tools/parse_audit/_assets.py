@@ -30,10 +30,13 @@ _PARTIAL_MAX_COVER = 0.75
 # another by construction. Reported for drill-down, the way this directory already treats a listing
 # that landed as a paragraph.
 _OVERLAP_MAX_SHARE = 0.5
-# Near-identical boxes are a different matter and unambiguous: two assets picturing the SAME region
-# means one image is stored twice and at most one of the two captions belongs to it. Observed on
-# 2607.16138, where "Figure 1: Heatmap …" and "Figure 2: Heatmap …" both rendered (72,377,539,535).
-_DUPLICATE_MIN_IOU = 0.9
+# Near-identical boxes are unambiguous: two assets picturing the SAME region means one image is
+# stored twice and at most one of the two captions belongs to it. Observed on 2607.16138, where
+# "Figure 1: Heatmap …" and "Figure 2: Heatmap …" both rendered (72,377,539,535). The threshold is
+# the crop stage's own (imported, not copied): this counter reports the duplicates that SURVIVE
+# ``_without_duplicate_regions``, and that correspondence only holds while both sides call the
+# same boxes duplicates — a retuned copy here would count pairs the pipeline never sees, or miss
+# the ones it drops.
 
 
 def _overlap_area(a: tuple[float, ...], b: tuple[float, ...]) -> float:
@@ -97,12 +100,35 @@ def asset_signals(paper_id: str, version: int, pdf: bytes, crops: list) -> dict[
 
     Runs the real ``crop_assets_from_specs`` — the point is to measure the delivered artifact, so
     a reimplementation here would measure the wrong thing.
+
+    ONE result shape on every path. When the geometry pass dies its signal keys must still exist
+    — absent keys read as 0 to a sweep, which turns "measurement broke on half the corpus" into
+    an apparent improvement. The zeros stay zeros, and ``crop_geometry_error`` is what says they
+    were never measured; ``_violations`` raises it so a dead measurement is loud, not clean.
     """
-    from docsuri_ingestion.asset_extraction import _graphic_boxes, crop_assets_from_specs
+    from docsuri_ingestion.asset_extraction import (
+        _DUPLICATE_MIN_IOU,
+        _graphic_boxes,
+        crop_assets_from_specs,
+    )
     from docsuri_ingestion.domain.enums import AssetType
 
+    partial: list[dict[str, Any]] = []
+    overlapping: list[str] = []
+    duplicated: list[str] = []
+    result: dict[str, Any] = {
+        "crop_specs": len(crops),
+        "crops_stored": 0,
+        "crops_refused": {},
+        "figure_crops_partial": 0,
+        "partial_detail": partial,
+        "crop_duplicates": 0,
+        "duplicate_detail": duplicated,
+        "crop_overlaps": 0,
+        "overlap_detail": overlapping,
+    }
     if not crops:
-        return {"crop_specs": 0, "crops_stored": 0, "crops_refused": {}}
+        return result
     refusals: list[tuple[str, str]] = []
     assets = crop_assets_from_specs(
         pdf, crops, paper_id=paper_id, version=version, refusals=refusals
@@ -110,10 +136,9 @@ def asset_signals(paper_id: str, version: int, pdf: bytes, crops: list) -> dict[
     by_reason: dict[str, int] = {}
     for _aid, why in refusals:
         by_reason[why] = by_reason.get(why, 0) + 1
+    result["crops_stored"] = len(assets)
+    result["crops_refused"] = by_reason
 
-    partial: list[dict[str, Any]] = []
-    overlapping: list[str] = []
-    duplicated: list[str] = []
     doc = None
     try:
         import pypdfium2 as pdfium
@@ -154,12 +179,8 @@ def asset_signals(paper_id: str, version: int, pdf: bytes, crops: list) -> dict[
                     elif min(areas) > 0 and area / min(areas) > _OVERLAP_MAX_SHARE:
                         overlapping.append(pair)
     except Exception as exc:  # noqa: BLE001 - a geometry read that fails costs the signal, not the row
-        return {
-            "crop_specs": len(crops),
-            "crops_stored": len(assets),
-            "crops_refused": by_reason,
-            "crop_geometry_error": f"{type(exc).__name__}: {exc}",
-        }
+        result["crop_geometry_error"] = f"{type(exc).__name__}: {exc}"
+        return result
     finally:
         # A sweep opens one of these per paper; pypdfium2 closes nothing on its own, so leaving
         # them to the interpreter is how a 150-paper run ends in a wall of teardown warnings.
@@ -167,17 +188,17 @@ def asset_signals(paper_id: str, version: int, pdf: bytes, crops: list) -> dict[
             with suppress(Exception):
                 doc.close()
 
-    return {
-        "crop_specs": len(crops),
-        "crops_stored": len(assets),
-        "crops_refused": by_reason,
-        "figure_crops_partial": len(partial),
-        "partial_detail": partial[:8],
-        "crop_duplicates": len(duplicated),
-        "duplicate_detail": duplicated[:8],
-        "crop_overlaps": len(overlapping),
-        "overlap_detail": overlapping[:8],
-    }
+    result.update(
+        {
+            "figure_crops_partial": len(partial),
+            "partial_detail": partial[:8],
+            "crop_duplicates": len(duplicated),
+            "duplicate_detail": duplicated[:8],
+            "crop_overlaps": len(overlapping),
+            "overlap_detail": overlapping[:8],
+        }
+    )
+    return result
 
 
 def merged_cell_tables(doc: dict, crops: list) -> int:
