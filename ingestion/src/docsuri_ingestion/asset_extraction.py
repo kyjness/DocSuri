@@ -63,6 +63,11 @@ _CAPTION_BODY = (
 )
 _CAPTION_RE = re.compile(r"^\s*" + _CAPTION_BODY, re.IGNORECASE)
 _CAPTION_ANYWHERE_RE = re.compile(_CAPTION_BODY, re.IGNORECASE)
+# Any float MENTION at all, follower-blind — "Figure3defines", "Figure 7 illustrates". Looser than
+# ``_CAPTION_BODY`` on purpose: that grammar exists to tell a caption from a cross-reference, this
+# one only asks whether the text talks about a float in any register. Used by the duplicate pass
+# to spot the caption that is ABOUT a figure rather than OF one.
+_FLOAT_MENTION_RE = re.compile(r"\b(?:figure|fig\.?|table)\s*(?:\d|(?-i:[IVXLCDM]))", re.IGNORECASE)
 _LABEL_NUM_RE = re.compile(r"(\d+)")
 # Roman fallback for anchor labels ("TABLE III") — keyword-prefixed so a roman-lettered word in a
 # label can never be misread as a number.
@@ -1100,15 +1105,31 @@ _DUPLICATE_MIN_IOU = 0.9
 
 
 def _without_duplicate_regions(
-    assets: list[ExtractedAsset], refused
+    assets: list[ExtractedAsset], refused, labels: dict[str, str]
 ) -> list[ExtractedAsset]:
     """Drop a crop that repeats another on its page and is the WORSE of the two.
 
-    Which copy to drop is the whole question, and the captions answer it: of the 4 measured pairs
-    3 had one side quoting a real caption ("Figure 3: Code using ITERGEN …") and the other a
-    sentence about it ("Figure3defines a function …"). ``_CAPTION_RE`` already separates those —
+    Which copy to drop is the whole question, and the CAPTION SHAPE answers it: of the 4 measured
+    pairs 3 had one side quoting a real caption ("Figure 3: Code using ITERGEN …") and the other
+    a sentence about it ("Figure3defines a function …"). ``_CAPTION_RE`` already separates those —
     it demands a delimiter or a capitalised word after the number — so the float-shaped caption
     wins and the prose is dropped.
+
+    The LABEL (``<head>``) cannot arbitrate, and this was measured: GROBID mints a head for the
+    junk float out of the same sentence, so BOTH sides of all 3 prose pairs carry a float-naming
+    label ('Figure 3' against 'Figure 3 :'). A rule that read "label names a float" as caption
+    shape called every measured pair a tie and stored the 3 junk duplicates again. The label's
+    one honest use is as PROTECTION, for the float GROBID split the other way — "Figure N:" filed
+    into ``<head>``, leaving a caption that never mentions a float at all ("Overview of our
+    approach."). Judged on captions alone that real float would lose to caption-shaped prose and
+    the image would be stored under the junk block's id — so a side whose caption is float-silent
+    while its label names one is never dropped. The junk sides cannot shelter here: their
+    captions are ABOUT the figure and always name it ("Figure 7 illustrates …").
+
+    Same type only. A formula and a figure can land on the same region (a displayed equation
+    GROBID also floated), and the formula's empty caption would lose that contest every time —
+    dangling the FormulaBlock's ``assetRef`` on an image that rendered fine. The measured pairs
+    were all figure-against-figure, so the restriction changes none of them.
 
     When BOTH look like captions the pair is a different defect: 2501.17431 gave "Figure 10: …"
     and "Figure 12: …" the same box, so one real figure would be lost by dropping either. Both are
@@ -1119,6 +1140,12 @@ def _without_duplicate_regions(
     The wasted render is real but rare (4 crops in 1,112 measured), and a pre-pass would have to
     predict recovery to see the collision at all.
     """
+
+    def protected(meta) -> bool:
+        return _FLOAT_MENTION_RE.search(meta.caption or "") is None and (
+            _CAPTION_RE.match(labels.get(meta.asset_id, "")) is not None
+        )
+
     drop: set[int] = set()
     by_page: dict[int, list[int]] = {}
     for i, asset in enumerate(assets):
@@ -1129,6 +1156,8 @@ def _without_duplicate_regions(
                 if i == j or i in drop:
                     continue
                 a, b = assets[i].meta, assets[j].meta
+                if a.type is not b.type:
+                    continue
                 inter = max(0.0, min(a.bbox[2], b.bbox[2]) - max(a.bbox[0], b.bbox[0])) * max(
                     0.0, min(a.bbox[3], b.bbox[3]) - max(a.bbox[1], b.bbox[1])
                 )
@@ -1138,23 +1167,67 @@ def _without_duplicate_regions(
                 union = areas[0] + areas[1] - inter
                 if union <= 0 or inter / union < _DUPLICATE_MIN_IOU:
                     continue
-                if _CAPTION_RE.match(a.caption or "") is None and (
-                    _CAPTION_RE.match(b.caption or "") is not None
+                if (
+                    _CAPTION_RE.match(a.caption or "") is None
+                    and _CAPTION_RE.match(b.caption or "") is not None
+                    and not protected(a)
                 ):
                     drop.add(i)
                     refused(a.asset_id, "duplicate_region")
     return [a for i, a in enumerate(assets) if i not in drop]
 
 
-def _has_no_figure_evidence(spec: AssetCropSpec, recovered: bool) -> bool:
+def _covers_graphic(
+    graphics: Sequence[tuple[float, float, float, float]],
+    bbox: tuple[float, float, float, float],
+) -> bool:
+    """Whether ``bbox`` already covers most of a graphic object on its page.
+
+    "Covers" has to mean most of one (>=50% of the graphic), not a hairline touch: a caption's
+    first line routinely tucks a point or two under the plot above it, and treating that as
+    coverage would leave exactly the figures recovery exists to correct uncorrected. Decorative
+    objects below ``_MIN_GRAPHIC_AREA_PT2`` are ignored — a rule or table border under a text
+    strip is not a picture and must not vouch for one.
+
+    One definition for the two readers of the fact: ``_recover_figure_bbox`` (covered -> its own
+    region is right, nothing to recover) and ``_has_no_figure_evidence`` (covered -> there IS a
+    picture here, whatever the caption says). When they were separate, the second read
+    "recovery did not move the bbox" as "no graphic underneath", which are opposites in exactly
+    this case.
+    """
+    x0, y0, x1, y1 = bbox
+    for g in graphics:
+        area = (g[2] - g[0]) * (g[3] - g[1])
+        if area < _MIN_GRAPHIC_AREA_PT2:
+            continue
+        overlap = max(0.0, min(x1, g[2]) - max(x0, g[0])) * max(0.0, min(y1, g[3]) - max(y0, g[1]))
+        if overlap / area >= 0.5:
+            return True
+    return False
+
+
+def _has_no_figure_evidence(
+    spec: AssetCropSpec,
+    recovered: bool,
+    graphics: Callable[[], Sequence[tuple[float, float, float, float]]],
+) -> bool:
     """Whether nothing at all says this figure float is a picture.
 
     Three independent things could vouch for it and none does: GROBID reported no content element
-    (``content_coords``), it wrote no caption, and pdfium found no graphic under it for the
-    recovery to move onto. What is left is the float's own coords over a strip of body text that
-    GROBID mislabelled — measured on 30 papers, exactly 2 of 1,112 stored crops, and both were
-    plainly that: a lone word ("GraftLLM", 30x7pt) and a section heading ("7.4 Figures", 54x9pt).
-    Stored, they hand the reader a thumbnail of a word where a figure should be.
+    (``content_coords``), it named no float (no caption, and no label reading "Figure N" — GROBID
+    splits the two inconsistently, so a float whose whole heading landed in ``<head>`` has an
+    empty ``figDesc`` and only the label left to speak for it), and pdfium found no graphic under
+    it. What is left is the float's own coords over a strip of body text that GROBID mislabelled —
+    measured on 30 papers, exactly 2 of 1,112 stored crops, and both were plainly that: a lone
+    word ("GraftLLM", 30x7pt) and a section heading ("7.4 Figures", 54x9pt). Stored, they hand
+    the reader a thumbnail of a word where a figure should be.
+
+    The label test is ``_CAPTION_RE`` (keyword + number), not "label is non-empty" — the junk
+    this guard exists for can carry a head ("7.4 Figures" IS a heading) without ever naming a
+    float. The graphic test is ``_covers_graphic``, NOT ``recovered``: recovery also stays put
+    when the bbox already sits on its graphic, and reading that as "no graphic" would refuse the
+    caption-less figures GROBID located correctly. ``graphics`` is a thunk because it is the one
+    test with a cost (a page-object scan) and the short-circuit above it answers most specs.
 
     The empty caption is what ``_is_caption_only`` cannot judge — with nothing to compare the
     region against it has to abstain — so the two conditions are separate guards with separate
@@ -1167,6 +1240,8 @@ def _has_no_figure_evidence(spec: AssetCropSpec, recovered: bool) -> bool:
         and not spec.content_coords
         and not recovered
         and not (spec.caption or "").strip()
+        and _CAPTION_RE.match(spec.label or "") is None
+        and not _covers_graphic(graphics(), spec.bbox)
     )
 
 
@@ -1207,17 +1282,11 @@ def _recover_figure_bbox(
     figure lands here and is left exactly as it was.
     """
     x0, y0, x1, y1 = bbox
+    if _covers_graphic(graphics, bbox):
+        return None  # GROBID's own figure region — nothing was missed
     # Decorative vector objects are not pictures — see _MIN_GRAPHIC_AREA_PT2. Filtering here rather
     # than in _graphic_boxes keeps that helper an honest report of what is on the page.
     graphics = [g for g in graphics if (g[2] - g[0]) * (g[3] - g[1]) >= _MIN_GRAPHIC_AREA_PT2]
-    # "Already covers a graphic" has to mean most of one, not a hairline touch: a caption's first
-    # line routinely tucks a point or two under the plot above it, and treating that as coverage
-    # would leave exactly the figures this exists to recover uncorrected.
-    for g in graphics:
-        overlap = max(0.0, min(x1, g[2]) - max(x0, g[0])) * max(0.0, min(y1, g[3]) - max(y0, g[1]))
-        area = (g[2] - g[0]) * (g[3] - g[1])
-        if area > 0 and overlap / area >= 0.5:
-            return None  # GROBID's own figure region — nothing was missed
     # Horizontally overlapping and ending above the caption. Everything the figure could be made
     # of; which of them the caption actually claims is decided next.
     above = [g for g in graphics if g[0] < x1 and g[2] > x0 and g[3] < y1]
@@ -1397,6 +1466,21 @@ def _render_bbox_to_png(
         return None
 
 
+# The refusal reasons that are DESIGNED outcomes rather than losses. Defined here, beside the
+# code that mints every reason, because the designed-vs-loss classification is decided at mint
+# time and a copy kept elsewhere fails open: a new reason added to the loop below would read as
+# "designed" to any consumer whose list did not grow with it. Consumers (the parse audit) treat
+# every reason NOT in this set as a loss, so a new one fails loud instead of invisible.
+#   caption_only        BR-23a — the region holds only the caption the viewer already renders
+#   not_renderable      by definition under _MIN_CROP_AREA_PT2 (measured: median 46pt², and 50 of
+#                       57 were the caption-less formula fragments GROBID mints from a delimiter)
+#   no_figure_evidence  nothing says the float is a picture — see _has_no_figure_evidence
+#   duplicate_region    the same picture is stored under the other spec's id
+DESIGNED_REFUSALS = frozenset(
+    {"caption_only", "not_renderable", "no_figure_evidence", "duplicate_region"}
+)
+
+
 def crop_assets_from_specs(
     pdf: bytes,
     specs: Sequence[AssetCropSpec],
@@ -1444,6 +1528,13 @@ def crop_assets_from_specs(
 
     out: list[ExtractedAsset] = []
     page_text = _PageTextCache()
+    # Everything appended past this point belongs to THIS call: the best-effort bail below rolls
+    # the list back to it, so "``refusals`` accounts for the returned tuple" stays true even when
+    # the loop died halfway. Without the rollback a mid-loop failure returned () alongside the
+    # refusals collected before it — and both consumers read that as a complete, mostly-designed
+    # run instead of a paper that lost every image.
+    refusals_base = len(refusals) if refusals is not None else 0
+    doc = None
     try:
         doc = pdfium.PdfDocument(pdf)
         page_count = len(doc)
@@ -1483,7 +1574,7 @@ def crop_assets_from_specs(
             if not crop_is_renderable(bbox):
                 refused(spec.asset_id, "not_renderable")
                 continue
-            if _has_no_figure_evidence(spec, recovered):
+            if _has_no_figure_evidence(spec, recovered, partial(graphics.of, doc, page_idx)):
                 refused(spec.asset_id, "no_figure_evidence")
                 continue
             # Asked only of a bbox nothing moved — a recovered one is the graphic, by construction.
@@ -1507,13 +1598,23 @@ def crop_assets_from_specs(
                 bbox=bbox,  # the rendered region, which recovery may have widened
             )
             out.append(ExtractedAsset(meta=meta, image=image))
-        out = _without_duplicate_regions(out, refused)
+        out = _without_duplicate_regions(
+            out, refused, {s.asset_id: s.label or "" for s in specs}
+        )
     except Exception:  # noqa: BLE001 - best-effort; skip assets for this paper
+        if refusals is not None:
+            del refusals[refusals_base:]
         return ()
     finally:
         page_text.close()
         if plumber_doc is not None:
             plumber_doc.close()
+        # pypdfium2 closes nothing on its own; leaving the document to GC-time finalizers is how
+        # a long sweep ends in a wall of teardown warnings (the same rationale the audit's
+        # _assets.py already applies to its own document).
+        if doc is not None:
+            with suppress(Exception):
+                doc.close()
     return tuple(out)
 
 

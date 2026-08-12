@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import NoReturn
@@ -830,12 +831,18 @@ class IngestionPipelineService:
             self._observability.emit_metric(
                 "ingestion.assets.stored", float(len(extracted)), {"paperId": paper_id}
             )
-            self._emit_asset_refusals(paper_id, refusals)
         except Exception as exc:  # noqa: BLE001 - best-effort: never block indexing (BR-27)
             self._report_asset_failure(paper_id, reason, exc)
+        finally:
+            # In ``finally``, decoupled from the store on both sides: the refusals were collected
+            # by the crop stage and are true whatever happens to storage, and a store failure is
+            # exactly when the batch most needs this paper's breakdown. Inside the ``try`` it
+            # would also misattribute — an emission error there records ASSET_STORE_FAILURE for
+            # assets that stored fine.
+            self._emit_asset_refusals(paper_id, refusals)
 
     def _emit_asset_refusals(self, paper_id: str, refusals: list[tuple[str, str]]) -> None:
-        """One counter per reason a spec produced no image (BR-23a).
+        """One counter per reason a spec produced no image (BR-23a). Never raises.
 
         ``assets.stored`` alone cannot answer the question a reparse batch has to answer: a figure
         with no image shows the viewer's placeholder either way, but ``caption_only`` is the
@@ -846,10 +853,16 @@ class IngestionPipelineService:
         by_reason: dict[str, int] = {}
         for _asset_id, why in refusals:
             by_reason[why] = by_reason.get(why, 0) + 1
-        for why, count in sorted(by_reason.items()):
-            self._observability.emit_metric(
-                "ingestion.assets.refused", float(count), {"paperId": paper_id, "reason": why}
-            )
+        try:
+            for why, count in sorted(by_reason.items()):
+                self._observability.emit_metric(
+                    "ingestion.assets.refused", float(count), {"paperId": paper_id, "reason": why}
+                )
+        except Exception as exc:  # noqa: BLE001 - a broken metrics sink must not cost the asset path
+            with suppress(Exception):  # the log rides the same sink that just failed
+                self._observability.emit_log(
+                    {"type": "asset_refusal_emit_failure", "paperId": paper_id, "error": str(exc)}
+                )
 
     def _store_record_assets_best_effort(
         self,

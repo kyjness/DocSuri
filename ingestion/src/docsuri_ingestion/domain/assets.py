@@ -73,6 +73,12 @@ class AssetCropSpec:
     bound for anything the renderer recovers: GROBID's ``<table>`` box sometimes collapses onto a
     fragment of the header row, and growing that back over the rows below it must not run past
     where the float itself ended.
+
+    ``label`` is the float's name as GROBID filed it (``<head>``/``<label>``: "Figure 3",
+    "TABLE II"). Carried separately from ``caption`` because GROBID splits the two inconsistently
+    — a float whose whole heading landed in ``<head>`` has an empty ``figDesc``, and a renderer
+    that reads only ``caption`` would judge it caption-less. The renderer's evidence and
+    duplicate-arbitration rules read both.
     """
 
     asset_id: str
@@ -83,6 +89,7 @@ class AssetCropSpec:
     caption: str = ""
     content_coords: bool = False
     float_bbox: tuple[float, float, float, float] | None = None
+    label: str = ""
 
 
 @dataclass(frozen=True, slots=True)
