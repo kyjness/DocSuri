@@ -919,6 +919,51 @@ control plane은 별도 DB(`docsuri_verify`), 색인은 뷰어가 직행 URL을 
 
 1~3은 감사가 크롭 스펙과 저장 결과를 대조하면 한 자리에서 다 나온다.
 
+**완료 (2026-08-12).** 두 부분으로 붙였다. 프로덕션은 `crop_assets_from_specs`가 거부 사유를
+모으고(`page_missing`/`not_renderable`/`caption_only`/`render_failed`) `ingestion.assets.refused
+{reason}`로 방출한다 — 배치가 자기 placeholder 비율을 원인별로 보고한다. 감사는 `_assets.py`가
+크롭을 실제로 렌더해 판정하고, 위반 유형 4종(`crop_missing`·`crop_duplicate`·
+`table_cells_merged`·`float_label_unreadable`)이 추가됐다.
+
+**⑧-2 출발 기준선** (신규 표본 30편, seed 20260812, `~/data/docsuri-verify/baseline`):
+
+| | 값 |
+|---|---|
+| 크롭 스펙 / 저장 | 1,261 / 1,112 |
+| 거부 | `caption_only` 92 (의도됨) · `not_renderable` 57 |
+| 라벨 못 읽는 float 블록 | 113 |
+| 셀이 붙은 채 남은 표 | 42 |
+
+| 위반 유형 | 영향받은 논문 |
+|---|---|
+| `float_label_unreadable` | 26 (87%) |
+| `crop_missing` | 18 (60%) |
+| `table_cells_merged` | 18 (60%) |
+| `figure_lost` | 10 (33%) |
+| `table_lost` | 7 (23%) |
+| `empty_table` | 4 (13%) |
+| `crop_duplicate` | 4 (13%) |
+
+`float_label_unreadable` 87%가 가장 큰 수치다 — 3번 사각지대(가짜 float가 잃은 float를 가림)의
+모집단이 이만큼 크다는 뜻이고, `figure_lost` 33%·`table_lost` 23%가 **과소보고**일 수 있음을
+같이 읽어야 한다.
+
+**만들면서 알게 된 것 둘 (⑧-2에서 판단할 것).**
+
+1. **캡션 없는 가짜 float가 이미지로 저장된다.** 2505.18502에서 `GraffLM`이라는 30x7pt 텍스트
+   조각이 그림 자산이 됐다. `_is_caption_only`는 캡션이 비면 비교할 대상이 없어 일찍 빠지고,
+   `_MIN_CROP_AREA_PT2`(200pt²)는 208pt²인 이것을 통과시킨다.
+2. **그 상수의 보정 근거가 넓은 표본에서 성립하지 않는다.** 주석은 "진짜 크롭 중 최소가
+   600pt² 초과"라고 적었는데(픽스처 3편 기준), 30편에서는 600pt² 미만이 16개고 대부분 정당한
+   짧은 수식(26x9pt 등)이다. **면적으로는 깨끗한 경계가 없으므로 문턱을 올리는 것은 답이
+   아니다** — 1번은 "캡션도 없고 회수된 그래픽도 없는 그림 float"라는 조건으로 풀어야 한다.
+
+**부분 크롭 신호는 위반이 아니라 신호다.** 만든 탐지기가 회귀는 잡지만(캡션 인식 등반을 뺀
+판본에서 0.197) 30편 기준선에서 7건 뜨고 뜯어본 것마다 멀쩡했다 — 간격만으로는 세로로 쌓인
+두 그림을 못 가르고(2502.19790: Figure 5+캡션+Figure 6을 한 덩어리로), 그래픽 상자가 잉크보다
+넓게 패딩된 경우도 걸린다(2504.00366: 완전한 크롭이 0.62). 기준선에서 틀리는 위반 유형은
+히스토그램 전체를 무시하게 만들므로 런 간 비교용 신호로 남겼다.
+
 - **arXiv 경로 사다리는 ⑧-1.5에서 재확정** — `ar5iv HTML(품질검사) → arXiv PDF → GROBID`.
   native HTML 단은 제거됐다. 재파싱 시간 산정에는 품질검사 탈락·ar5iv 부재분이 GROBID로
   내려가는 비중(최신 논문일수록 큼)을 반영해야 한다.
