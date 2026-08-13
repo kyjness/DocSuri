@@ -26,7 +26,12 @@ _WRITER_PORT_BY_PROVIDER = {
 @pytest.mark.parametrize("provider", sorted(_WRITER_PORT_BY_PROVIDER))
 def test_writer_follows_the_embedding_provider_setting(provider: str) -> None:
     settings = IngestionSettings(
-        DOCSURI_EMBEDDING_PROVIDER=provider, DOCSURI_BEDROCK_MODEL_ID="cohere.embed-v4:0"
+        DOCSURI_EMBEDDING_PROVIDER=provider,
+        DOCSURI_BEDROCK_MODEL_ID="cohere.embed-v4:0",
+        # The Bedrock port builds its boto3 client in __init__, which needs a region. Supplied
+        # here so the test asserts the SELECTION rather than the ambient AWS configuration — CI
+        # has no region and would otherwise fail on NoRegionError while the logic is correct.
+        DOCSURI_EMBED_REGION="us-east-1",
     )
     port = _embedding_port(settings)
     assert type(port).__name__ == _WRITER_PORT_BY_PROVIDER[provider]
