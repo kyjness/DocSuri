@@ -45,7 +45,6 @@ from .domain.enums import JobKind
 from .domain.errors import PermanentIngestionError, RetriableIngestionError
 from .domain.models import IngestionJob
 from .observability import configure_logging
-from .resilience import RetryPolicy, retry_with_policy
 from .runtime import build_production_runtime
 from .settings import IngestionSettings
 
@@ -53,11 +52,6 @@ _log = logging.getLogger("docsuri.ingestion.foundational")
 
 DEFAULT_LIST = "reports/foundational-papers.tsv"
 DEFAULT_LEDGER = ".cache/foundational-ingest.jsonl"
-
-# A retriable error means the dependency asked us to come back, so one more try is worth it;
-# beyond that the paper is recorded and the run moves on rather than stalling the other 1,499.
-# ``retry_with_policy``'s default predicate already means "RetriableIngestionError only".
-_RETRY = RetryPolicy(max_attempts=3, base_delay_seconds=10.0, factor=2.0, jitter_ratio=0.1)
 
 MAX_FAILURE_RATIO = 0.10
 
@@ -168,17 +162,22 @@ def ingest_foundational(
 
 
 def _ingest_one_paper(runtime, arxiv_id: str) -> str:
-    """One paper's outcome as a ledger string. Never raises — one bad paper must not end the run."""
+    """One paper's outcome as a ledger string. Never raises — one bad paper must not end the run.
 
-    def once() -> str:
+    NO retry here, deliberately. ``ingest_one`` already owns retry: every dependency call inside
+    it goes through ``IngestionResilienceService.dependency_call`` — up to 5 attempts with
+    backoff, behind a circuit breaker. An outer retry layer multiplied that (3 x 5 = 15 attempts
+    against a dead dependency) and, worse, re-ran the WHOLE pipeline from the metadata fetch,
+    hammering a breaker that had just opened. A RetriableIngestionError surfacing here means the
+    inner retries are already exhausted; the ledger records it and ``--retry-failed`` on a later
+    run is the second chance.
+    """
+    try:
         return runtime.pipeline.ingest_one(
             IngestionJob(
                 job_id=new_job_id("foundational"), kind=JobKind.EVENT, arxiv_ref=arxiv_id
             )
         ).value
-
-    try:
-        return retry_with_policy(_RETRY, once)
     except RetriableIngestionError as exc:
         return f"failed:retriable:{exc.reason.value}"
     except PermanentIngestionError as exc:

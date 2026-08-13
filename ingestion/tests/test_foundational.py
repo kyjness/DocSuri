@@ -22,7 +22,6 @@ from docsuri_ingestion.foundational import (
     pending,
     read_list,
 )
-from docsuri_ingestion.resilience import RetryPolicy
 
 _HEADER = "arxiv_id\tbucket\tyear\tcitations\tsurveys\tbuckets\tscore\ttitle\n"
 
@@ -136,13 +135,12 @@ def test_one_failing_paper_does_not_end_the_run(tmp_path, wired) -> None:
     assert recorded["b"] == "failed:permanent:FETCH_FAILURE"
 
 
-def test_retriable_failure_is_retried_then_recorded(tmp_path, wired, monkeypatch) -> None:
-    # Swap the whole policy: the real one sleeps 10s then 20s, which is right for arXiv and
-    # wrong for a unit test.
-    monkeypatch.setattr(
-        "docsuri_ingestion.foundational._RETRY",
-        RetryPolicy(max_attempts=3, base_delay_seconds=0.0, factor=1.0, jitter_ratio=0.0),
-    )
+def test_retriable_failure_is_classified_without_a_second_retry_layer(tmp_path, wired) -> None:
+    """A RetriableIngestionError surfacing from ingest_one means the pipeline's OWN retries
+    (dependency_call: up to 5 attempts behind a circuit breaker) are already exhausted. An outer
+    retry here multiplied that to 15 attempts per dead dependency and re-ran the whole pipeline
+    against a breaker that had just opened — so the driver classifies and moves on, and
+    ``--retry-failed`` on a later run is the second chance."""
     pipeline = wired(
         _Pipeline(
             {
@@ -152,10 +150,13 @@ def test_retriable_failure_is_retried_then_recorded(tmp_path, wired, monkeypatch
             }
         )
     )
-    path = _write_list(tmp_path, [("a", "canon")])
-    ingest_foundational(list_path=str(path), ledger_path=str(tmp_path / "l.jsonl"))
-    # Retried, not abandoned on the first 429 — and the id appears once per attempt.
-    assert pipeline.seen.count("a") > 1
+    path = _write_list(tmp_path, [("a", "canon"), ("b", "canon")] + [
+        (f"p{i}", "canon") for i in range(18)
+    ])
+    ledger = tmp_path / "l.jsonl"
+    assert ingest_foundational(list_path=str(path), ledger_path=str(ledger)) == 0
+    assert pipeline.seen.count("a") == 1
+    assert load_ledger(ledger)["a"] == "failed:retriable:RATE_LIMITED"
 
 
 def test_loss_over_the_gate_exits_nonzero(tmp_path, wired) -> None:
