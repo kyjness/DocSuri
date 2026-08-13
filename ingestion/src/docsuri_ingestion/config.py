@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 # Deployment corpus slice (2026-08-13). Narrowed from the five-category phase-1 slice
 # ("cs.LG", "cs.AI", "cs.CL", "cs.CV", "stat.ML") to NLP/AI only, and the window moved from
@@ -19,12 +19,36 @@ from datetime import UTC, datetime
 # Decision record: inception/requirements/
 #   requirement-verification-questions-corpus-and-deployment.md
 CORPUS_SLICE_CATEGORIES: tuple[str, ...] = ("cs.CL", "cs.AI")
-# ~4.4 months back from the batch date, which is what ~3,000 papers costs at the measured
-# ~680/month for these two categories. VERIFY THE ACTUAL HARVEST COUNT AGAINST THE ~3,000
-# CEILING BEFORE PARSING: the rate was estimated from a 2025 sample and 2026 volume is higher,
-# and overshooting the ceiling does not fail loudly — it silently exceeds the box's k-NN budget.
-CORPUS_START = datetime(2026, 4, 1, tzinfo=UTC)
-CORPUS_END = datetime(2026, 8, 14, tzinfo=UTC)
+# The window is a LENGTH ending at the batch date, not two pinned dates.
+#
+# 135 days is what ~3,000 papers costs at the measured ~680/month for these two categories, and
+# 3,000 is what the box leaves once the ~1,500 named foundational papers are in (4 GB Lightsail
+# → ~1.8 GB k-NN → ~4,500 total). Expressing it as a duration says the actual decision — "the
+# most recent ~4.4 months" — instead of encoding it in two magic dates that rot the moment the
+# batch slips a week.
+#
+# It also removes a whole failure mode: a pinned end date one day past today made arXiv OAI
+# answer `badArgument: until date too late` with HTTP 200 and no records, which the harvest read
+# as an empty window and reported as success. Deriving the end from the clock cannot be too late.
+#
+# VERIFY THE ACTUAL HARVEST COUNT AGAINST THE ~3,000 CEILING BEFORE PARSING: the rate was
+# estimated from a 2025 sample and 2026 volume is higher, and overshooting does not fail loudly —
+# it silently exceeds the box's k-NN budget and only surfaces as a dead search after deploy.
+# Pin both bounds explicitly with DOCSURI_BACKFILL_START / _END to reproduce a past run.
+CORPUS_WINDOW_DAYS = 135
+
+
+def _corpus_window() -> tuple[datetime, datetime]:
+    """(start, end) for the deployment slice, ending at today 00:00 UTC.
+
+    Read once at import, which is what a snapshot-freeze corpus wants (Q7=B): the batch resolves
+    the window when it starts and every stage of that run shares it.
+    """
+    end = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    return end - timedelta(days=CORPUS_WINDOW_DAYS), end
+
+
+CORPUS_START, CORPUS_END = _corpus_window()
 
 OPEN_ACCESS_LICENSE_ALLOWLIST: tuple[str, ...] = (
     "creativecommons.org/licenses/by/",

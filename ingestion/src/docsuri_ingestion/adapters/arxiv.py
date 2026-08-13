@@ -403,6 +403,7 @@ class ArxivHttpSource:
             root = _parse_xml(
                 self._fetch_oai_page(params), stage="parse_oai_records", label="OAI records"
             )
+            _raise_on_oai_error(root, stage="parse_oai_records")
             yield from _oai_records_from(root)
             token = _oai_token_from(root)
             if not token:
@@ -542,6 +543,36 @@ def _build_oai_record(metadata: ET.Element) -> MetadataRecord:
 
 def parse_oai_records(body: str) -> list[MetadataRecord]:
     return _oai_records_from(_parse_xml(body, stage="parse_oai_records", label="OAI records"))
+
+
+# noRecordsMatch is the one OAI error that legitimately means "nothing here" — an empty window is
+# not a fault. Every other code is a malformed request, and OAI reports all of them with HTTP 200
+# and a body carrying no records and no resumption token, which is byte-for-byte what a genuinely
+# empty harvest looks like.
+_OAI_EMPTY_ERROR_CODES = frozenset({"noRecordsMatch"})
+
+
+def _raise_on_oai_error(root: ET.Element, *, stage: str) -> None:
+    """Turn an OAI-PMH ``<error>`` body into a raised failure instead of a silent zero.
+
+    Measured the hard way: a one-day-too-far ``until`` bound answered ``badArgument: until date
+    too late`` with HTTP 200, the harvest generator yielded nothing, and the run reported success —
+    a corpus build that quietly harvested 0 papers. The same shape hides ``Set does not exist``
+    (see ``_oai_set``), so a typo'd category is equally invisible. A batch whose whole premise is
+    "how many papers did we get" cannot afford this failure to be indistinguishable from an empty
+    window.
+    """
+    error = root.find("oai:error", OAI_NS)
+    if error is None:
+        return
+    code = (error.get("code") or "unknown").strip()
+    if code in _OAI_EMPTY_ERROR_CODES:
+        return
+    raise PermanentIngestionError(
+        f"arXiv OAI rejected the request ({code}): {(error.text or '').strip()}",
+        reason=FailureReason.VALIDATION_VIOLATION,
+        stage=stage,
+    )
 
 
 def _oai_records_from(root: ET.Element) -> list[MetadataRecord]:
