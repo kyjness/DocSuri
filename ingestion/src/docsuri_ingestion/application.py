@@ -14,6 +14,7 @@ from docsuri_shared.dtos import DocModel, DocModelResultDTO, SourceTier, SourceU
 from .asset_extraction import AssetExtractor, crop_assets_from_specs
 from .config import CORPUS_SLICE_CATEGORIES
 from .corpus_sources import (
+    POLICY_REJECTIONS,
     CorpusSourceAdapterSet,
     CorpusTextCandidate,
     SourcePaperRecord,
@@ -396,12 +397,13 @@ class IngestionPipelineService:
         record = SourcePaperRecord.from_payload(job.source_record or {})
         self._parser.validate_open_access(record.license_url)
         # Re-asserted at consumption for the same reason the licence check above is, even though
-        # the enqueue path already applied it: a job can predate the current rule. A queued
-        # backlog and a DLQ redrive both carry records admitted under whatever the gate said when
-        # they were enqueued, so tightening it — populating BLOCKED_VENUE_MARKERS from the ⑧-2
-        # harvest, say — would otherwise let the very records it was tightened against through.
+        # the enqueue path already applied it: a job can predate the current rule, and tightening
+        # the policy — populating BLOCKED_VENUE_MARKERS from the ⑧-2 harvest, say — would
+        # otherwise let the very records it was tightened against through. POLICY reasons only:
+        # judging old payloads on data-absence reasons would dead-letter every pre-gate job as
+        # `field_unknown` merely for lacking keys that did not exist when it was queued.
         rejection = admission_rejection(record)
-        if rejection is not None:
+        if rejection in POLICY_REJECTIONS:
             raise PermanentIngestionError(
                 f"source record refused at admission: {rejection}",
                 reason=FailureReason.VALIDATION_VIOLATION,
@@ -1374,6 +1376,22 @@ class RefreshOrchestrationService:
                     "ingestion.source.rejected",
                     float(count),
                     {"source": source_name.value, "reason": reason},
+                )
+            if rejected and queued == 0:
+                # Total collapse is upstream schema drift until proven otherwise (rename of
+                # s2FieldsOfStudy / primary_topic), and without this it reads exactly like "the
+                # source had nothing new" — return 0, exit 0, nobody looks. The exact zero/some
+                # condition needs no invented threshold.
+                self._observability.emit_metric(
+                    "ingestion.source.rejected_all", 1.0, {"source": source_name.value}
+                )
+                self._observability.emit_log(
+                    {
+                        "type": "ingestion_source_rejected_all",
+                        "source": source_name.value,
+                        "rejected": sum(rejected.values()),
+                        "hint": "every harvested record was refused — check upstream field names",
+                    }
                 )
         return queued
 

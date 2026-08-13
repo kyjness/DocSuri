@@ -290,6 +290,89 @@ def test_both_sources_carry_the_admission_signals_the_gate_reads() -> None:
     assert admission_rejection(oa_record) is None
 
 
+def test_s2_falls_back_to_the_legacy_venue_string() -> None:
+    """publicationVenue is null for many workshop/conference papers that are not entity-linked;
+    the legacy `venue` string is then the only venue S2 has. The graph API returns only REQUESTED
+    fields, so the fallback existing in code while "venue" was missing from the fields list was a
+    dead branch — real published papers dropped out as venue_unknown."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "venue" in str(request.url)  # the fallback only works if it is requested
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {
+                        "paperId": "s2-2",
+                        "title": "Workshop Paper",
+                        "year": 2025,
+                        "publicationDate": "2025-01-01",
+                        "isOpenAccess": True,
+                        "externalIds": {},
+                        "openAccessPdf": {
+                            "url": "https://example.test/w.pdf",
+                            "license": "CC-BY",
+                        },
+                        "s2FieldsOfStudy": [{"category": "Computer Science"}],
+                        "publicationVenue": None,
+                        "venue": "Workshop on Tests @ ACL",
+                    }
+                ]
+            },
+        )
+
+    source = SemanticScholarCorpusSource(
+        base_url="https://example.test", transport=httpx.MockTransport(handler)
+    )
+    (record,) = list(source.fetch_incremental(datetime(2024, 1, 1, tzinfo=UTC), ("cs.CL",)))
+    assert record.venue == "Workshop on Tests @ ACL"
+    assert admission_rejection(record) is None
+
+
+def test_openalex_venue_comes_from_the_location_that_supplied_the_pdf() -> None:
+    """The PDF can be chosen from ANY locations[] entry, so the venue must come from the same
+    location — reading it from the primary alone rejected works as venue_unknown whenever the
+    primary was a bare landing page while the repository copy that supplied the bytes names its
+    venue."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {
+                        "id": "https://openalex.org/W2",
+                        "display_name": "Repository Copy Paper",
+                        "publication_year": 2025,
+                        "publication_date": "2025-01-01",
+                        # Primary is a landing page: no pdf, no source entity.
+                        "primary_location": {"landing_page_url": "https://pub.test/x"},
+                        "locations": [
+                            {
+                                "pdf_url": "https://repo.test/x.pdf",
+                                "license": "cc-by",
+                                "source": {"display_name": "Journal of Repositories"},
+                            }
+                        ],
+                        "primary_topic": {
+                            "field": {"display_name": "Computer Science"},
+                            "subfield": {"display_name": "Artificial Intelligence"},
+                        },
+                    }
+                ],
+                "meta": {"next_cursor": None},
+            },
+        )
+
+    source = OpenAlexCorpusSource(
+        base_url="https://example.test", transport=httpx.MockTransport(handler)
+    )
+    (record,) = list(source.fetch_incremental(datetime(2024, 1, 1, tzinfo=UTC), ("cs.CL",)))
+    assert record.pdf_url == "https://repo.test/x.pdf"
+    assert record.venue == "Journal of Repositories"
+    assert admission_rejection(record) is None
+
+
 def test_semantic_scholar_rejects_spoofed_license_host() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(

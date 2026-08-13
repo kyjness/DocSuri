@@ -131,6 +131,15 @@ ADMITTED_FIELDS_OF_STUDY = frozenset({"Computer Science"})
 # sample, where the real venue distribution is visible.
 BLOCKED_VENUE_MARKERS: frozenset[str] = frozenset()
 
+# The rejection reasons that assert a POLICY violation, as opposed to data absence. The split
+# exists for the consumption-time re-check: a payload queued before this gate shipped carries
+# neither field labels nor a venue, so judging it on the data-absence reasons would dead-letter
+# the entire pre-gate backlog as `field_unknown` — indistinguishable from genuinely off-field
+# papers. Fresh records were already refused fail-closed at enqueue; what consumption re-asserts
+# is only the part that can legitimately change between enqueue and consumption (a tightened
+# policy), never the shape of an old payload.
+POLICY_REJECTIONS = frozenset({"off_field", "venue_blocked"})
+
 
 def admission_rejection(record: SourcePaperRecord) -> str | None:
     """Why this record must not enter the corpus, or None to admit it.

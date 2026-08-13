@@ -52,6 +52,7 @@ import math
 import pathlib
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -167,6 +168,12 @@ def _http_retriable(exc: Exception) -> bool:
     return isinstance(exc, urllib.error.URLError | TimeoutError)
 
 
+# Inter-request pacing for the unauthenticated S2 pool (~100 requests / 5 min, shared). Set
+# from --pause in main(); slept only after a REAL request, so cache hits stay free and a re-run
+# still costs nothing. Losing this sleep un-paced ~180 requests straight into 429 backoff.
+_PAUSE = 3.5
+
+
 def _fetch(url: str, *, timeout: int = 90) -> bytes:
     """One GET with the package's outbound identity, retried on the shared policy."""
 
@@ -181,7 +188,9 @@ def _fetch(url: str, *, timeout: int = 90) -> bytes:
         code = getattr(exc, "code", None) or type(exc).__name__
         print(f"    [{code}] 재시도 {attempt}", file=sys.stderr)
 
-    return retry_with_policy(_HTTP_RETRY, once, retriable=_http_retriable, on_retry=note)
+    body = retry_with_policy(_HTTP_RETRY, once, retriable=_http_retriable, on_retry=note)
+    time.sleep(_PAUSE)
+    return body
 
 
 def _cached_by_id(
@@ -341,6 +350,8 @@ def main() -> int:
     ap.add_argument("--pause", type=float, default=3.5, help="요청 간격(초) — 미인증 풀 기준")
     args = ap.parse_args()
 
+    global _PAUSE
+    _PAUSE = args.pause
     cache = pathlib.Path(args.cache)
     cache.mkdir(parents=True, exist_ok=True)
 
@@ -485,17 +496,20 @@ def s2_metadata(ids: list[str], cache: pathlib.Path) -> dict[str, dict]:
 
     def fetch(batch: list[str]) -> dict[str, dict]:
         body = json.dumps({"ids": [f"ARXIV:{a}" for a in batch]}).encode()
-        req = urllib.request.Request(
-            f"{S2}/paper/batch?fields=paperId,title,year,citationCount,externalIds",
-            data=body,
-            headers={"Content-Type": "application/json", "User-Agent": user_agent()},
-        )
 
         def once() -> list[dict]:
+            # Rebuilt per attempt — the same rule _fetch documents: urllib records redirect
+            # state on the Request object and trips its loop guard on a reused one.
+            req = urllib.request.Request(
+                f"{S2}/paper/batch?fields=paperId,title,year,citationCount,externalIds",
+                data=body,
+                headers={"Content-Type": "application/json", "User-Agent": user_agent()},
+            )
             with urllib.request.urlopen(req, timeout=120) as resp:  # noqa: S310
                 return [p for p in json.loads(resp.read()) if p]
 
         rows = retry_with_policy(_HTTP_RETRY, once, retriable=_http_retriable)
+        time.sleep(_PAUSE)
         return {aid: p for p in rows if (aid := _arxiv_id(p))}
 
     return _cached_by_id(cache / "s2-metadata.json", ids, fetch, chunk=400)

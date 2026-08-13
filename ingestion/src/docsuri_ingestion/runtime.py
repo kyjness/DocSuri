@@ -25,6 +25,7 @@ from .adapters.local import (
 )
 from .adapters.postgres import PostgresControlPlaneStore
 from .application import IngestionPipelineService, RefreshOrchestrationService
+from .config import CORPUS_SLICE_CATEGORIES
 from .corpus_sources import CorpusSourceAdapterSet
 from .domain.enums import SourceName
 from .observability import LoggingObservabilityHub
@@ -46,7 +47,13 @@ class RuntimeServices:
 
 
 def build_local_runtime() -> RuntimeServices:
-    metadata = [sample_metadata()]
+    # Seeded INSIDE the configured slice, or the offline smoke path goes dark: harvest_seed
+    # intersects the sample's categories with CORPUS_SLICE_CATEGORIES, and when the slice
+    # narrowed to cs.CL/cs.AI a default (cs.LG) sample made `--local trigger-full-rebuild`
+    # queue 0 and exit 0 — a smoke test that silently tests nothing. Unlike the assertion-side
+    # fixtures (which pin literals so the filter cannot be self-fulfilling), the runtime seed
+    # SHOULD follow the config: its job is to exercise the pipeline as currently configured.
+    metadata = [sample_metadata(category=CORPUS_SLICE_CATEGORIES[0])]
     arxiv = FakeArxivSource(metadata)
     control = InMemoryControlPlaneStore()
     queue = InMemoryQueue()

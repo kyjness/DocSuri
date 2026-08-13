@@ -789,13 +789,79 @@ def test_backfill_refuses_off_field_and_unlabelled_records_and_says_why(override
     assert rejected[0][2]["source"] == SourceName.OPENALEX.value
 
 
-def test_queued_source_record_is_refused_again_at_consumption() -> None:
-    """A job can predate the current rule, so the gate is re-asserted where the record is used.
+def test_total_rejection_collapse_is_signalled() -> None:
+    """A harvest whose every record is refused must not read as "the source had nothing new".
 
-    Same reason ``validate_open_access`` is re-checked here although the adapters already gate
-    licences: a queued backlog and a DLQ redrive carry records admitted under whatever the rule
-    said when they were enqueued. Tightening it — populating BLOCKED_VENUE_MARKERS from the ⑧-2
-    harvest — would otherwise let through exactly the records it was tightened against.
+    That is exactly what upstream schema drift looks like (s2FieldsOfStudy renamed, topics
+    dropped): fields_of_study resolves empty, the fail-closed gate refuses everything, and the
+    run returns 0 and exits 0. The zero-queued/some-rejected condition is exact, so no invented
+    threshold is needed."""
+    control = InMemoryControlPlaneStore()
+    queue = InMemoryQueue()
+    observability = type(
+        "Obs",
+        (),
+        {
+            "metrics": [],
+            "logs": [],
+            "emit_metric": lambda self, name, value, tags=None: self.metrics.append(
+                (name, value, tags or {})
+            ),
+            "emit_log": lambda self, entry: self.logs.append(entry),
+            "emit_failure_signal": lambda self, job_id, stage, error: None,
+        },
+    )()
+    provider = _ExternalSource(replace(_external_record(), fields_of_study=()))
+    service = RefreshOrchestrationService(
+        arxiv=FakeArxivSource([sample_metadata()]),
+        control_plane=control,
+        queue=queue,
+        observability=observability,
+        corpus_sources=CorpusSourceAdapterSet(
+            arxiv=FakeArxivSource([sample_metadata()]),
+            openalex=provider,
+            grobid=_Grobid(),
+        ),
+        enabled_sources=(SourceName.ARXIV, SourceName.OPENALEX),
+    )
+
+    assert service.backfill_external_sources(CORPUS_START, CORPUS_END) == 0
+    assert any(m[0] == "ingestion.source.rejected_all" for m in observability.metrics)
+    assert any(e.get("type") == "ingestion_source_rejected_all" for e in observability.logs)
+
+
+def test_pre_gate_payload_without_admission_keys_passes_consumption() -> None:
+    """A payload queued before the gate shipped carries neither field labels nor a venue, and
+    the consumption-time re-check must not dead-letter it for that: key ABSENCE is the shape of
+    an old payload, not evidence the paper is off-field. Only POLICY reasons are re-asserted."""
+    pipeline, _, index, _, _ = build_test_pipeline(
+        corpus_sources=CorpusSourceAdapterSet(
+            arxiv=FakeArxivSource([sample_metadata()]),
+            openalex=_ExternalSource(_external_record()),
+            grobid=_Grobid(),
+        )
+    )
+    legacy = _external_record().to_payload()
+    del legacy["fieldsOfStudy"]
+    del legacy["venue"]
+
+    decision = pipeline.ingest_one(
+        IngestionJob(
+            job_id="job-legacy",
+            kind=JobKind.SEED_REBUILD,
+            source_name=SourceName.OPENALEX,
+            source_record=legacy,
+        )
+    )
+    assert decision is DedupDecision.NEW
+    assert index.records
+
+
+def test_queued_source_record_is_refused_again_at_consumption() -> None:
+    """A job can predate the current rule, so POLICY rejections are re-asserted where the record
+    is used — same reason ``validate_open_access`` is re-checked although the adapters already
+    gate licences. Tightening the policy (populating BLOCKED_VENUE_MARKERS from the ⑧-2 harvest)
+    must catch already-queued and DLQ-redriven records it was tightened against.
     """
     pipeline, _, _, _, _ = build_test_pipeline(
         corpus_sources=CorpusSourceAdapterSet(
