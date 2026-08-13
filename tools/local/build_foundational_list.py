@@ -66,21 +66,59 @@ S2 = "https://api.semanticscholar.org/graph/v1"
 # cs.CL is weighted ABOVE its 7% share on purpose: its foundational papers are cited from
 # outside it. Transformer is a cs.CL primary and most cs.LG papers cite it, so a share
 # proportional to cs.CL's own volume would under-supply the whole corpus.
+# SEVERAL PHRASES PER BUCKET, because the S2 query is a literal phrase match and a field's
+# name is not in every important paper's text. Measured: "natural language processing" sorted
+# by citations does not contain LLaMA-2, ReAct or Self-Consistency anywhere in its first 1,000
+# rows, while "large language model" has them at ranks 2, 5 and 11. One phrase per bucket
+# silently excluded the current generation of the very subfield the corpus is being built for.
 BUCKETS = (
-    # (name, target, query, note)
-    ("canon", 300, None, "cross-field canon — filled from the global top by merged score"),
-    ("cs.LG", 700, "machine learning", "optimisation · theory · architectures · RL · graphs"),
-    ("cs.CL", 180, "natural language processing", "NLP/LLM — over-weighted, cited field-wide"),
-    ("cs.CV", 180, "computer vision", "vision"),
-    ("other", 140, "artificial intelligence", "cs.AI · cs.RO · cs.IR · stat.ML"),
+    # (name, target, queries, note)
+    ("canon", 300, (), "cross-field canon — filled from the global top by merged score"),
+    (
+        "cs.CL",
+        550,
+        (
+            "large language model",
+            "natural language processing",
+            "language model pretraining",
+            "instruction tuning",
+            "retrieval augmented generation",
+        ),
+        "NLP/LLM — the recent slice's main axis",
+    ),
+    (
+        "cs.AI",
+        350,
+        ("artificial intelligence", "llm agent", "chain of thought reasoning", "tool use"),
+        "agents · reasoning · planning",
+    ),
+    (
+        "cs.LG",
+        200,
+        ("machine learning", "deep learning", "representation learning"),
+        "ML foundations that NLP/AI work keeps citing",
+    ),
+    ("cs.CV", 100, ("computer vision", "vision language model"), "multimodal cross-over only"),
 )
+# Surveys cost one request each and their reference sets overlap heavily between sibling
+# phrases, so only the first few phrases of a bucket are mined for them.
+SURVEY_PHRASES_PER_BUCKET = 2
 
 # Surveys older than this rarely reflect what a subfield currently treats as its foundation;
 # newer than ~1 year they have not accumulated enough references to be worth a request.
 SURVEY_YEARS = "2019-2025"
 # Foundational work predates the recent slice by construction. The upper bound keeps the list
 # from filling with 2025 papers that are merely popular, which the recent slice already covers.
-CANDIDATE_YEARS = "2012-2024"
+#
+# TWO AGE BANDS, because absolute citation count is not comparable across them. Ranking one
+# pooled list by citations lets 2015-2018 win every slot — a 2023 paper cannot accumulate
+# 20,000 citations no matter how load-bearing it is. Measured: a single-band run produced a
+# list with Transformer/BERT/GPT-3 but WITHOUT LLaMA-2, Self-Consistency, ReAct or RoPE, which
+# is exactly the prior art an agent/reasoning novelty question needs. Giving the recent band
+# its own quota per bucket is what puts them back.
+CANDIDATE_YEARS = "2012-2021"
+RECENT_BAND_YEARS = "2022-2024"
+RECENT_BAND_SHARE = 0.35
 SURVEYS_PER_BUCKET = 12
 # S2 caps /references paging; one page is plenty — a survey's first 1000 references cover it.
 REFERENCE_LIMIT = 1000
@@ -91,28 +129,56 @@ _SURVEY_RE = re.compile(r"\b(survey|review|overview|systematic)\b", re.IGNORECAS
 # ceiling the tier came out 46.7% cs.CV (see the canon block in main()); vision's 2014-2017
 # papers dominate any citation-ordered list and would crowd out the fields the recent slice is
 # actually made of. Held-back papers are not dropped — they fall through to their own bucket.
-CANON_CATEGORY_CAP = 0.30
-ARXIV_API = "http://export.arxiv.org/api/query"
+#
+# 0.15, not the earlier 0.30: the recent slice was narrowed to cs.CL + cs.AI, so vision is now
+# peripheral. The vision papers NLP work actually cites (ViT, CLIP) are multimodal and reach the
+# tier on their own merits; YOLO and FPN should not.
+CANON_CATEGORY_CAP = 0.15
+ARXIV_API = "https://export.arxiv.org/api/query"
 _ARXIV_NS = {"a": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
 
 
 def arxiv_primary_categories(ids: list[str], cache: pathlib.Path) -> dict[str, str]:
-    """arXiv id -> primary category, in batches of 100. arXiv asks for ~3s between requests."""
+    """arXiv id -> primary category, cached PER PAPER in one accumulating file.
+
+    Per paper, not per batch: the batch composition changes whenever the bucket targets change,
+    so a batch-keyed cache is invalidated wholesale by an edit that leaves 99% of the answers
+    still valid — and arXiv throttles (503, then read timeouts) long before a re-fetch finishes.
+    """
     import xml.etree.ElementTree as ET
 
-    out: dict[str, str] = {}
-    for i in range(0, len(ids), 100):
-        batch = ids[i : i + 100]
-        key = hashlib.sha256(",".join(batch).encode()).hexdigest()[:24]
-        hit = cache / f"arxivcat-{key}.json"
-        if hit.exists():
-            out.update(json.loads(hit.read_text(encoding="utf-8")))
-            continue
+    store = cache / "arxiv-categories.json"
+    known: dict[str, str] = json.loads(store.read_text(encoding="utf-8")) if store.exists() else {}
+    todo = [i for i in ids if i not in known]
+    if todo:
+        print(f"  캐시 {len(ids) - len(todo)}편 재사용, 신규 조회 {len(todo)}편")
+    for i in range(0, len(todo), 100):
+        batch = todo[i : i + 100]
         url = f"{ARXIV_API}?id_list={','.join(batch)}&max_results=100"
-        req = urllib.request.Request(url, headers={"User-Agent": "docsuri-corpus/1.0"})
-        with urllib.request.urlopen(req, timeout=90) as resp:
-            root = ET.fromstring(resp.read())
-        got: dict[str, str] = {}
+        # arXiv answers 503 (then plain read timeouts) when it wants the caller to back off, so
+        # this needs the same retry the S2 path has. The Request is rebuilt per attempt on
+        # purpose: urllib records redirect state on the object, so reusing one across retries
+        # trips its "infinite loop" guard on the second try.
+        root = None
+        for attempt in range(6):
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "docsuri-corpus/1.0"})
+                with urllib.request.urlopen(req, timeout=90) as resp:
+                    root = ET.fromstring(resp.read())
+                break
+            except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
+                code = getattr(exc, "code", None)
+                if code is not None and code not in (429, 500, 502, 503, 504):
+                    raise
+                wait = 10.0 * (attempt + 1)
+                print(f"    [arXiv {code or 'timeout'}] 대기 {wait:.0f}s", file=sys.stderr)
+                time.sleep(wait)
+        if root is None:
+            # Partial knowledge is fine — the caller only uses this for the canon ceiling, and
+            # an unknown category simply does not count against any cap. Failing the whole run
+            # over a throttle would throw away the S2 work already done.
+            print("    arXiv 조회 포기 — 남은 편은 카테고리 미상으로 진행", file=sys.stderr)
+            break
         for entry in root.findall("a:entry", _ARXIV_NS):
             pid = entry.find("a:id", _ARXIV_NS)
             pc = entry.find("arxiv:primary_category", _ARXIV_NS)
@@ -120,11 +186,10 @@ def arxiv_primary_categories(ids: list[str], cache: pathlib.Path) -> dict[str, s
                 continue
             m = re.search(r"abs/(.+?)(?:v\d+)?$", pid.text or "")
             if m:
-                got[m.group(1)] = pc.get("term") or "?"
-        hit.write_text(json.dumps(got), encoding="utf-8")
-        out.update(got)
+                known[m.group(1)] = pc.get("term") or "?"
+        store.write_text(json.dumps(known), encoding="utf-8")
         time.sleep(3.0)
-    return out
+    return {i: known[i] for i in ids if i in known}
 
 
 def canon_target_lookup(buckets: tuple) -> int:
@@ -166,8 +231,10 @@ def _arxiv_id(paper: dict) -> str | None:
     return ((paper or {}).get("externalIds") or {}).get("ArXiv")
 
 
-def collect_by_citation(query: str, cache: pathlib.Path, pause: float, want: int) -> list[dict]:
-    """Signal A — the citation-count top of one query, arXiv rows only."""
+def collect_by_citation(
+    query: str, cache: pathlib.Path, pause: float, want: int, years: str = CANDIDATE_YEARS
+) -> list[dict]:
+    """Signal A — the citation-count top of one query within one age band, arXiv rows only."""
     out: list[dict] = []
     dropped = 0
     token = None
@@ -177,7 +244,7 @@ def collect_by_citation(query: str, cache: pathlib.Path, pause: float, want: int
             "fieldsOfStudy": "Computer Science",
             "fields": "paperId,title,year,citationCount,externalIds",
             "sort": "citationCount:desc",
-            "year": CANDIDATE_YEARS,
+            "year": years,
         }
         if token:
             params["token"] = token
@@ -243,25 +310,27 @@ def main() -> int:
     pool: dict[str, dict] = {}
     survey_votes: collections.Counter = collections.Counter()
 
-    for name, target, query, _note in BUCKETS:
-        if query is None:
-            continue
-        print(f"[{name}] '{query}'")
-        # Over-collect: the bucket fill drops anything the canon tier already took.
-        for p in collect_by_citation(query, cache, args.pause, want=target * 3):
-            aid = _arxiv_id(p)
-            rec = pool.setdefault(
-                aid,
-                {
-                    "arxiv_id": aid,
-                    "title": (p.get("title") or "").replace("\t", " ").strip(),
-                    "year": p.get("year") or 0,
-                    "citations": p.get("citationCount") or 0,
-                    "buckets": set(),
-                },
-            )
-            rec["buckets"].add(name)
-        survey_votes.update(collect_survey_refs(query, cache, args.pause))
+    for name, target, queries, _note in BUCKETS:
+        for qi, query in enumerate(queries):
+            print(f"[{name}] '{query}'")
+            # Over-collect: the bucket fill drops anything the canon tier already took.
+            for band in (CANDIDATE_YEARS, RECENT_BAND_YEARS):
+                rows = collect_by_citation(query, cache, args.pause, want=target * 2, years=band)
+                for p in rows:
+                    aid = _arxiv_id(p)
+                    rec = pool.setdefault(
+                        aid,
+                        {
+                            "arxiv_id": aid,
+                            "title": (p.get("title") or "").replace("\t", " ").strip(),
+                            "year": p.get("year") or 0,
+                            "citations": p.get("citationCount") or 0,
+                            "buckets": set(),
+                        },
+                    )
+                    rec["buckets"].add(name)
+            if qi < SURVEY_PHRASES_PER_BUCKET:
+                survey_votes.update(collect_survey_refs(query, cache, args.pause))
 
     # Survey-only papers are worth keeping: being cited by several surveys is the stronger
     # signal of the two, and such a paper can sit below the citation cut of every query.
@@ -336,16 +405,27 @@ def main() -> int:
                 break
             chosen[rec["arxiv_id"]] = "canon"
     print("[canon] 분야 구성: " + " · ".join(f"{k} {v}" for k, v in per_cat.most_common(6)))
+    recent_from = int(RECENT_BAND_YEARS.split("-")[0])
     for name, target, query, _note in BUCKETS[1:]:
-        n = 0
-        for rec in ranked:
-            if n >= target:
-                break
-            if rec["arxiv_id"] in chosen or name not in rec["buckets"]:
-                continue
-            chosen[rec["arxiv_id"]] = name
-            n += 1
-        print(f"[{name}] 배정 {n}/{target}")
+        quota = int(target * RECENT_BAND_SHARE)
+        # Recent band first, up to its quota — otherwise the older band, which always wins on
+        # absolute citations, would consume the whole bucket before a 2023 paper is reached.
+        n = recent = 0
+        for want_recent in (True, False):
+            for rec in ranked:
+                if n >= target:
+                    break
+                is_recent = rec["year"] >= recent_from
+                if is_recent is not want_recent:
+                    continue
+                if want_recent and recent >= quota:
+                    break
+                if rec["arxiv_id"] in chosen or name not in rec["buckets"]:
+                    continue
+                chosen[rec["arxiv_id"]] = name
+                n += 1
+                recent += is_recent
+        print(f"[{name}] 배정 {n}/{target} (2022~ {recent}편, 할당 {quota})")
 
     out = pathlib.Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)

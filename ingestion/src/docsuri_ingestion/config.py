@@ -19,11 +19,12 @@ from datetime import UTC, datetime
 # Decision record: inception/requirements/
 #   requirement-verification-questions-corpus-and-deployment.md
 CORPUS_SLICE_CATEGORIES: tuple[str, ...] = ("cs.CL", "cs.AI")
-# Set at batch time. ~4.4 months at the measured rate; verify the actual harvest count against
-# the ~3,000 ceiling BEFORE parsing, since 2026 volume is higher than the 2025 sample it was
-# estimated from and overshooting the ceiling silently breaks the memory budget.
+# ~4.4 months back from the batch date, which is what ~3,000 papers costs at the measured
+# ~680/month for these two categories. VERIFY THE ACTUAL HARVEST COUNT AGAINST THE ~3,000
+# CEILING BEFORE PARSING: the rate was estimated from a 2025 sample and 2026 volume is higher,
+# and overshooting the ceiling does not fail loudly — it silently exceeds the box's k-NN budget.
 CORPUS_START = datetime(2026, 4, 1, tzinfo=UTC)
-CORPUS_END = datetime(2026, 9, 1, tzinfo=UTC)
+CORPUS_END = datetime(2026, 8, 14, tzinfo=UTC)
 
 OPEN_ACCESS_LICENSE_ALLOWLIST: tuple[str, ...] = (
     "creativecommons.org/licenses/by/",
