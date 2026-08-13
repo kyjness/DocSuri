@@ -269,14 +269,12 @@ def test_both_sources_carry_the_admission_signals_the_gate_reads() -> None:
                             "source": {"display_name": "Journal of Tests"},
                         },
                         # field is the rung the gate reads; subfield rides along for later rules.
-                        "topics": [
-                            {
-                                "display_name": "Retrieval-Augmented Generation",
-                                "subfield": {"display_name": "Artificial Intelligence"},
-                                "field": {"display_name": "Computer Science"},
-                                "domain": {"display_name": "Physical Sciences"},
-                            }
-                        ],
+                        "primary_topic": {
+                            "display_name": "Retrieval-Augmented Generation",
+                            "subfield": {"display_name": "Artificial Intelligence"},
+                            "field": {"display_name": "Computer Science"},
+                            "domain": {"display_name": "Physical Sciences"},
+                        },
                     }
                 ],
                 "meta": {"next_cursor": None},

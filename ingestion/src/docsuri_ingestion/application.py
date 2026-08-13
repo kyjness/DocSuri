@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections import Counter
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, replace
@@ -1315,42 +1316,53 @@ class RefreshOrchestrationService:
             )
             return 0
         queued = 0
-        for record in self._corpus_sources.fetch_incremental(
-            source_name, since, CORPUS_SLICE_CATEGORIES, until
-        ):
-            updated = record.updated_at or record.published_at or self._clock.now()
-            if updated <= since or (until is not None and updated > until):
-                continue
-            rejection = admission_rejection(record)
-            if rejection is not None:
-                # Counted, not silently dropped. ⑧-1.12's lesson: a stage that both refuses by
-                # design and loses by accident must be able to tell the two apart afterwards,
-                # or a filter bug reads as "the sources had nothing".
+        rejected: Counter[str] = Counter()
+        try:
+            yield_from_source = self._corpus_sources.fetch_incremental(
+                source_name, since, CORPUS_SLICE_CATEGORIES, until
+            )
+            for record in yield_from_source:
+                updated = record.updated_at or record.published_at or self._clock.now()
+                if updated <= since or (until is not None and updated > until):
+                    continue
+                rejection = admission_rejection(record)
+                if rejection is not None:
+                    # Counted here, emitted once per reason in the finally. Emitting per record
+                    # would flood exactly when it hurts — the gate is fail-closed, so a field
+                    # going missing upstream refuses EVERY record, and a widened S2 query has
+                    # been measured at 22,039 of them. A count is also the more useful datapoint.
+                    rejected[rejection] += 1
+                    continue
+                year = record.year or updated.year
+                prefix = "seed" if kind is JobKind.SEED_REBUILD else "incremental"
+                self._queue.send_job(
+                    IngestionJob(
+                        job_id=new_job_id(prefix),
+                        kind=kind,
+                        source_name=source_name,
+                        source_record=record.to_payload(),
+                        canonical_key=canonical_key(
+                            title=record.title,
+                            year=year,
+                            doi=record.doi,
+                            arxiv_id=record.arxiv_id,
+                            first_author=record.authors[0] if record.authors else None,
+                        ),
+                    )
+                )
+                queued += 1
+                if tally is not None:
+                    tally[0] = queued
+        finally:
+            # In a finally for the same reason ``tally`` exists: the source generator can raise
+            # part-way through a multi-page harvest, and a refusal count that only survives a
+            # clean run is missing exactly when something went wrong.
+            for reason, count in rejected.items():
                 self._observability.emit_metric(
                     "ingestion.source.rejected",
-                    1.0,
-                    {"source": source_name.value, "reason": rejection},
+                    float(count),
+                    {"source": source_name.value, "reason": reason},
                 )
-                continue
-            year = record.year or updated.year
-            self._queue.send_job(
-                IngestionJob(
-                    job_id=new_job_id("seed" if kind is JobKind.SEED_REBUILD else "incremental"),
-                    kind=kind,
-                    source_name=source_name,
-                    source_record=record.to_payload(),
-                    canonical_key=canonical_key(
-                        title=record.title,
-                        year=year,
-                        doi=record.doi,
-                        arxiv_id=record.arxiv_id,
-                        first_author=record.authors[0] if record.authors else None,
-                    ),
-                )
-            )
-            queued += 1
-            if tally is not None:
-                tally[0] = queued
         return queued
 
     def on_new_arxiv_event(self, event) -> bool:

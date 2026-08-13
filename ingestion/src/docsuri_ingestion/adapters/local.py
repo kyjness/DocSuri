@@ -10,7 +10,6 @@ from docsuri_shared.dtos import DocModel, SourceTier
 from docsuri_shared.events import NewArxivEvent
 from docsuri_shared.vector_spec import DIMENSIONS, IndexRecord
 
-from docsuri_ingestion.config import CORPUS_SLICE_CATEGORIES
 from docsuri_ingestion.domain.canonical import source_priority_from_tier
 from docsuri_ingestion.domain.dedup import decide_dedup
 from docsuri_ingestion.domain.enums import DedupStateKind, FailureReason
@@ -412,20 +411,20 @@ def deterministic_vector(text: str) -> list[float]:
     return values
 
 
-def sample_metadata(arxiv_ref: str = "2401.00001v1") -> MetadataRecord:
+def sample_metadata(arxiv_ref: str = "2401.00001v1", category: str = "cs.LG") -> MetadataRecord:
     now = datetime(2024, 1, 1, tzinfo=UTC)
     return MetadataRecord(
         arxiv_ref=arxiv_ref,
         title="A Local Test Paper",
         authors=("Ada Lovelace", "Grace Hopper"),
         abstract="This paper studies deterministic ingestion for retrieval systems.",
-        # Derived from the configured slice rather than a literal category: seed harvesting
-        # filters on the intersection with CORPUS_SLICE_CATEGORIES, so a hard-coded value makes
-        # this sample invisible to the rebuild path the moment the slice changes (it did — the
-        # slice narrowed to cs.CL + cs.AI and a "cs.LG" sample yielded zero seed jobs).
-        categories=(CORPUS_SLICE_CATEGORIES[0],),
+        # A LITERAL, deliberately. Deriving this from CORPUS_SLICE_CATEGORIES makes both sides of
+        # the seed-harvest intersection move together, so the filter could break and every test
+        # would still pass — the sample would follow the slice wherever it went. A test that
+        # needs a sample inside the current slice passes the category it wants explicitly.
+        categories=(category,),
         updated_at=now,
         published_at=now,
         license_url="https://creativecommons.org/licenses/by/4.0/",
-        primary_category=CORPUS_SLICE_CATEGORIES[0],
+        primary_category=category,
     )

@@ -666,13 +666,16 @@ def test_full_rebuild_wires_configured_external_sources_as_seed_jobs() -> None:
     )()
     record = _external_record()
     provider = _ExternalSource(record)
+    # The seed harvest admits a paper only if its categories intersect the configured slice, so
+    # this test states the category it needs instead of letting the sample follow the slice.
+    in_slice = sample_metadata(category=CORPUS_SLICE_CATEGORIES[0])
     corpus_sources = CorpusSourceAdapterSet(
-        arxiv=FakeArxivSource([sample_metadata()]),
+        arxiv=FakeArxivSource([in_slice]),
         openalex=provider,
         grobid=_Grobid(),
     )
     service = RefreshOrchestrationService(
-        arxiv=FakeArxivSource([sample_metadata()]),
+        arxiv=FakeArxivSource([in_slice]),
         control_plane=control,
         queue=queue,
         observability=observability,
@@ -781,8 +784,67 @@ def test_backfill_refuses_off_field_and_unlabelled_records_and_says_why(override
     assert queue.jobs == []
     rejected = [m for m in observability.metrics if m[0] == "ingestion.source.rejected"]
     assert len(rejected) == 1
+    assert rejected[0][1] == 1.0
     assert rejected[0][2]["reason"] == reason
     assert rejected[0][2]["source"] == SourceName.OPENALEX.value
+
+
+def test_backfill_reports_refusals_as_one_counted_metric_per_reason() -> None:
+    """The refusal metric is a COUNT, not one datapoint per record.
+
+    The gate is fail-closed, so an upstream field going missing refuses every record at once —
+    a widened S2 query has been measured at 22,039. Emitting per record would flood the log
+    exactly when the source is broken, which is when the log has to stay readable.
+    """
+    control = InMemoryControlPlaneStore()
+    queue = InMemoryQueue()
+    observability = type(
+        "Obs",
+        (),
+        {
+            "metrics": [],
+            "emit_metric": lambda self, name, value, tags=None: self.metrics.append(
+                (name, value, tags or {})
+            ),
+            "emit_log": lambda self, entry: None,
+            "emit_failure_signal": lambda self, job_id, stage, error: None,
+        },
+    )()
+    base = _external_record()
+    records = (
+        replace(base, source_id="a", fields_of_study=()),
+        replace(base, source_id="b", fields_of_study=()),
+        replace(base, source_id="c", fields_of_study=("Medicine",)),
+    )
+
+    class _Multi:
+        def fetch_incremental(self, since, categories, until=None):
+            return records
+
+        def fetch_pdf(self, record):
+            return b"%PDF"
+
+    service = RefreshOrchestrationService(
+        arxiv=FakeArxivSource([sample_metadata()]),
+        control_plane=control,
+        queue=queue,
+        observability=observability,
+        corpus_sources=CorpusSourceAdapterSet(
+            arxiv=FakeArxivSource([sample_metadata()]),
+            openalex=_Multi(),
+            grobid=_Grobid(),
+        ),
+        enabled_sources=(SourceName.ARXIV, SourceName.OPENALEX),
+    )
+
+    assert service.backfill_external_sources(CORPUS_START, CORPUS_END) == 0
+    rejected = {
+        m[2]["reason"]: m[1]
+        for m in observability.metrics
+        if m[0] == "ingestion.source.rejected"
+    }
+    # Three refused records collapse to two datapoints — one per reason, carrying the count.
+    assert rejected == {"field_unknown": 2.0, "off_field": 1.0}
 
 
 def test_backfill_external_sources_enqueues_only_external_seed_jobs_in_window() -> None:
