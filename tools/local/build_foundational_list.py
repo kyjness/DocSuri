@@ -48,13 +48,20 @@ import argparse
 import collections
 import hashlib
 import json
+import math
 import pathlib
 import re
 import sys
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from typing import Any
+
+from docsuri_ingestion.adapters.arxiv import ATOM_NS
+from docsuri_ingestion.domain.ids import normalize_arxiv_ref
+from docsuri_ingestion.http_limits import user_agent
+from docsuri_ingestion.resilience import RetryPolicy, retry_with_policy
+from docsuri_ingestion.xmlsafe import safe_fromstring
 
 S2 = "https://api.semanticscholar.org/graph/v1"
 
@@ -135,61 +142,94 @@ _SURVEY_RE = re.compile(r"\b(survey|review|overview|systematic)\b", re.IGNORECAS
 # tier on their own merits; YOLO and FPN should not.
 CANON_CATEGORY_CAP = 0.15
 ARXIV_API = "https://export.arxiv.org/api/query"
-_ARXIV_NS = {"a": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
+
+# Both APIs answer 429/5xx when they want the caller to slow down; everything else is a real
+# error and must propagate. One policy, one predicate — three hand-rolled loops disagreed about
+# the backoff and about whether exhaustion raises.
+_HTTP_RETRY = RetryPolicy(max_attempts=6, base_delay_seconds=8.0, factor=1.6, jitter_ratio=0.1)
+_RETRIABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+
+# Pages per (query, band). Measured on a full cold run: 28 of 71 search requests returned nothing
+# that reached the final list, and the query "tool use" alone burned 24 of them paging into rows
+# no bucket ever wanted. No chain needed a row past rank ~1,700, and 24 of the 28 needed nothing
+# past rank 700 — so three pages is generous, not tight.
+MAX_PAGES_PER_QUERY = 3
+
+# A paper reaching the list on survey votes alone needs more than a coincidence. Measured: of the
+# 162 survey-only papers admitted at >=2, only 2 had exactly 2 votes — so the looser threshold
+# bought 2 papers in 1,500 while inflating the metadata lookup from ~1,400 ids to ~5,700.
+MIN_SURVEY_VOTES = 3
 
 
-def arxiv_primary_categories(ids: list[str], cache: pathlib.Path) -> dict[str, str]:
-    """arXiv id -> primary category, cached PER PAPER in one accumulating file.
+def _http_retriable(exc: Exception) -> bool:
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code in _RETRIABLE_STATUS
+    return isinstance(exc, urllib.error.URLError | TimeoutError)
 
-    Per paper, not per batch: the batch composition changes whenever the bucket targets change,
-    so a batch-keyed cache is invalidated wholesale by an edit that leaves 99% of the answers
-    still valid — and arXiv throttles (503, then read timeouts) long before a re-fetch finishes.
+
+def _fetch(url: str, *, timeout: int = 90) -> bytes:
+    """One GET with the package's outbound identity, retried on the shared policy."""
+
+    def once() -> bytes:
+        # Rebuilt per attempt: urllib records redirect state on the Request object, so reusing
+        # one across retries trips its "infinite loop" guard on the second try.
+        req = urllib.request.Request(url, headers={"User-Agent": user_agent()})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+            return resp.read()
+
+    def note(attempt: int, exc: Exception) -> None:
+        code = getattr(exc, "code", None) or type(exc).__name__
+        print(f"    [{code}] 재시도 {attempt}", file=sys.stderr)
+
+    return retry_with_policy(_HTTP_RETRY, once, retriable=_http_retriable, on_retry=note)
+
+
+def _cached_by_id(
+    store: pathlib.Path, ids: list[str], fetch: "callable", chunk: int
+) -> dict[str, Any]:
+    """Resolve ids through one accumulating PER-ID store, fetching only what is missing.
+
+    Per id, not per batch. A batch-keyed cache is invalidated wholesale by an edit that leaves
+    99% of the answers still valid — change a bucket target and every chunk reshuffles, so all
+    of them miss although every record is already on disk. Written after each chunk so an
+    interrupted run keeps what it fetched.
     """
-    import xml.etree.ElementTree as ET
-
-    store = cache / "arxiv-categories.json"
-    known: dict[str, str] = json.loads(store.read_text(encoding="utf-8")) if store.exists() else {}
+    known: dict[str, Any] = json.loads(store.read_text(encoding="utf-8")) if store.exists() else {}
     todo = [i for i in ids if i not in known]
     if todo:
         print(f"  캐시 {len(ids) - len(todo)}편 재사용, 신규 조회 {len(todo)}편")
-    for i in range(0, len(todo), 100):
-        batch = todo[i : i + 100]
-        url = f"{ARXIV_API}?id_list={','.join(batch)}&max_results=100"
-        # arXiv answers 503 (then plain read timeouts) when it wants the caller to back off, so
-        # this needs the same retry the S2 path has. The Request is rebuilt per attempt on
-        # purpose: urllib records redirect state on the object, so reusing one across retries
-        # trips its "infinite loop" guard on the second try.
-        root = None
-        for attempt in range(6):
-            try:
-                req = urllib.request.Request(url, headers={"User-Agent": "docsuri-corpus/1.0"})
-                with urllib.request.urlopen(req, timeout=90) as resp:
-                    root = ET.fromstring(resp.read())
-                break
-            except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
-                code = getattr(exc, "code", None)
-                if code is not None and code not in (429, 500, 502, 503, 504):
-                    raise
-                wait = 10.0 * (attempt + 1)
-                print(f"    [arXiv {code or 'timeout'}] 대기 {wait:.0f}s", file=sys.stderr)
-                time.sleep(wait)
-        if root is None:
-            # Partial knowledge is fine — the caller only uses this for the canon ceiling, and
-            # an unknown category simply does not count against any cap. Failing the whole run
-            # over a throttle would throw away the S2 work already done.
-            print("    arXiv 조회 포기 — 남은 편은 카테고리 미상으로 진행", file=sys.stderr)
+    for i in range(0, len(todo), chunk):
+        batch = todo[i : i + chunk]
+        try:
+            known.update(fetch(batch))
+        except Exception as exc:  # noqa: BLE001 — partial knowledge beats losing the whole run
+            print(f"    조회 포기({type(exc).__name__}) — 남은 편은 미상으로 진행", file=sys.stderr)
             break
-        for entry in root.findall("a:entry", _ARXIV_NS):
-            pid = entry.find("a:id", _ARXIV_NS)
-            pc = entry.find("arxiv:primary_category", _ARXIV_NS)
-            if pid is None or pc is None:
-                continue
-            m = re.search(r"abs/(.+?)(?:v\d+)?$", pid.text or "")
-            if m:
-                known[m.group(1)] = pc.get("term") or "?"
         store.write_text(json.dumps(known), encoding="utf-8")
-        time.sleep(3.0)
     return {i: known[i] for i in ids if i in known}
+
+
+def arxiv_primary_categories(ids: list[str], cache: pathlib.Path) -> dict[str, str]:
+    """arXiv id -> primary category. Only the canon ceiling reads this."""
+
+    def fetch(batch: list[str]) -> dict[str, str]:
+        url = f"{ARXIV_API}?id_list={','.join(batch)}&max_results={len(batch)}"
+        root = safe_fromstring(_fetch(url))
+        out: dict[str, str] = {}
+        for entry in root.findall("atom:entry", ATOM_NS):
+            raw = (entry.findtext("atom:id", "", ATOM_NS) or "").rsplit("/", 1)[-1]
+            pc = entry.find("arxiv:primary_category", ATOM_NS)
+            if not raw or pc is None:
+                continue
+            try:
+                paper_id = normalize_arxiv_ref(raw).paper_id
+            except ValueError:
+                continue
+            out[paper_id] = pc.get("term") or "?"
+        return out
+
+    # Flat id -> category, which is also the shape the existing cache file already holds.
+    return _cached_by_id(cache / "arxiv-categories.json", ids, fetch, chunk=100)
 
 
 def canon_target_lookup(buckets: tuple) -> int:
@@ -198,47 +238,37 @@ def canon_target_lookup(buckets: tuple) -> int:
     return buckets[0][1] * 4
 
 
-def _get(url: str, params: dict, cache: pathlib.Path, pause: float) -> dict:
-    """One cached GET. Retries 429/5xx with linear backoff; raises on anything else."""
-    qs = urllib.parse.urlencode(params)
-    key = hashlib.sha256(f"{url}?{qs}".encode()).hexdigest()[:24]
+def _get(url: str, params: dict, cache: pathlib.Path, page: int = 0) -> dict:
+    """One cached GET.
+
+    The cache key deliberately EXCLUDES the pagination token and uses the page ordinal instead.
+    S2's token is opaque 128-char scroll state; if it is not byte-identical between runs the
+    token-keyed cache misses every page past the first, which is 43 of the 71 search requests a
+    cold run makes. The (url, params-without-token, page) triple is deterministic.
+    """
+    stable = {k: v for k, v in params.items() if k != "token"}
+    qs = urllib.parse.urlencode(sorted(stable.items()))
+    key = hashlib.sha256(f"{url}?{qs}#p{page}".encode()).hexdigest()[:24]
     hit = cache / f"{key}.json"
     if hit.exists():
         return json.loads(hit.read_text(encoding="utf-8"))
-
-    last: Exception | None = None
-    for attempt in range(6):
-        try:
-            req = urllib.request.Request(f"{url}?{qs}", headers={"User-Agent": "docsuri-corpus/1.0"})
-            with urllib.request.urlopen(req, timeout=90) as resp:
-                payload = json.loads(resp.read())
-            hit.write_text(json.dumps(payload), encoding="utf-8")
-            time.sleep(pause)
-            return payload
-        except urllib.error.HTTPError as exc:  # noqa: PERF203
-            last = exc
-            if exc.code not in (429, 500, 502, 503, 504):
-                raise
-            wait = pause * (attempt + 1) * 4
-            print(f"    [{exc.code}] 대기 {wait:.0f}s", file=sys.stderr)
-            time.sleep(wait)
-        except (urllib.error.URLError, TimeoutError) as exc:
-            last, _ = exc, time.sleep(pause * (attempt + 1) * 2)
-    raise RuntimeError(f"S2 요청 실패: {url}?{qs}") from last
+    payload = json.loads(_fetch(f"{url}?{urllib.parse.urlencode(params)}"))
+    hit.write_text(json.dumps(payload), encoding="utf-8")
+    return payload
 
 
 def _arxiv_id(paper: dict) -> str | None:
     return ((paper or {}).get("externalIds") or {}).get("ArXiv")
 
 
-def collect_by_citation(
-    query: str, cache: pathlib.Path, pause: float, want: int, years: str = CANDIDATE_YEARS
-) -> list[dict]:
+def collect_by_citation(query: str, cache: pathlib.Path, want: int, years: str) -> list[dict]:
     """Signal A — the citation-count top of one query within one age band, arXiv rows only."""
     out: list[dict] = []
     dropped = 0
     token = None
-    while len(out) < want:
+    for page in range(MAX_PAGES_PER_QUERY):
+        if len(out) >= want:
+            break
         params = {
             "query": f'"{query}"',
             "fieldsOfStudy": "Computer Science",
@@ -248,8 +278,8 @@ def collect_by_citation(
         }
         if token:
             params["token"] = token
-        page = _get(f"{S2}/paper/search/bulk", params, cache, pause)
-        rows = page.get("data") or []
+        body = _get(f"{S2}/paper/search/bulk", params, cache, page)
+        rows = body.get("data") or []
         if not rows:
             break
         for p in rows:
@@ -257,15 +287,23 @@ def collect_by_citation(
                 out.append(p)
             else:
                 dropped += 1
-        token = page.get("token")
+        token = body.get("token")
         if not token:
             break
     print(f"    인용수 상위 {len(out)}편 수집 (arXiv 없어 제외 {dropped}편)")
     return out[:want]
 
 
-def collect_survey_refs(query: str, cache: pathlib.Path, pause: float) -> collections.Counter:
-    """Signal B — how many independent recent surveys of this topic cite each paper."""
+def collect_survey_refs(
+    query: str, cache: pathlib.Path, mined: set[str]
+) -> collections.Counter:
+    """Signal B — how many INDEPENDENT recent surveys cite each paper.
+
+    ``mined`` carries the survey ids already counted in this run. Sibling phrases of a bucket
+    return heavily overlapping survey sets — measured, 62 distinct surveys filled 96 phrase
+    slots — so without it a third of the votes are the same survey counted twice and the signal
+    stops meaning "independent surveys".
+    """
     params = {
         "query": f'"{query}" survey',
         "fieldsOfStudy": "Computer Science",
@@ -273,17 +311,17 @@ def collect_survey_refs(query: str, cache: pathlib.Path, pause: float) -> collec
         "sort": "citationCount:desc",
         "year": SURVEY_YEARS,
     }
-    page = _get(f"{S2}/paper/search/bulk", params, cache, pause)
-    surveys = [p for p in (page.get("data") or []) if _SURVEY_RE.search(p.get("title") or "")]
-    surveys = surveys[:SURVEYS_PER_BUCKET]
+    body = _get(f"{S2}/paper/search/bulk", params, cache)
+    surveys = [p for p in (body.get("data") or []) if _SURVEY_RE.search(p.get("title") or "")]
+    surveys = [p for p in surveys if p.get("paperId") not in mined][:SURVEYS_PER_BUCKET]
 
     freq: collections.Counter = collections.Counter()
-    for s in surveys:
+    for survey in surveys:
+        mined.add(survey["paperId"])
         refs = _get(
-            f"{S2}/paper/{s['paperId']}/references",
+            f"{S2}/paper/{survey['paperId']}/references",
             {"fields": "title,year,citationCount,externalIds", "limit": REFERENCE_LIMIT},
             cache,
-            pause,
         )
         seen: set[str] = set()
         for item in refs.get("data") or []:
@@ -310,12 +348,19 @@ def main() -> int:
     pool: dict[str, dict] = {}
     survey_votes: collections.Counter = collections.Counter()
 
+    canon_target = BUCKETS[0][1]
+    mined_surveys: set[str] = set()
     for name, target, queries, _note in BUCKETS:
         for qi, query in enumerate(queries):
             print(f"[{name}] '{query}'")
-            # Over-collect: the bucket fill drops anything the canon tier already took.
+            # Sized to what the fill can actually consume: the bucket's own slots plus whatever
+            # the canon tier may take off the top. `target * 2` per query AND per band asked for
+            # 11,000 candidates for a 550-slot bucket, which is what drove the wasted paging.
             for band in (CANDIDATE_YEARS, RECENT_BAND_YEARS):
-                rows = collect_by_citation(query, cache, args.pause, want=target * 2, years=band)
+                want = canon_target + (
+                    int(target * RECENT_BAND_SHARE) if band == RECENT_BAND_YEARS else target
+                )
+                rows = collect_by_citation(query, cache, want=want, years=band)
                 for p in rows:
                     aid = _arxiv_id(p)
                     rec = pool.setdefault(
@@ -330,41 +375,37 @@ def main() -> int:
                     )
                     rec["buckets"].add(name)
             if qi < SURVEY_PHRASES_PER_BUCKET:
-                survey_votes.update(collect_survey_refs(query, cache, args.pause))
+                survey_votes.update(collect_survey_refs(query, cache, mined_surveys))
 
     # Survey-only papers are worth keeping: being cited by several surveys is the stronger
     # signal of the two, and such a paper can sit below the citation cut of every query.
-    missing = [a for a, v in survey_votes.items() if a not in pool and v >= 2]
+    missing = [
+        a for a, v in survey_votes.items() if a not in pool and v >= MIN_SURVEY_VOTES
+    ]
     print(f"\n서베이에서만 나온 논문 {len(missing)}편 — 메타데이터 보강")
-    for i in range(0, len(missing), 400):
-        chunk = missing[i : i + 400]
-        got = _post_batch(chunk, cache, args.pause)
-        for p in got:
-            aid = _arxiv_id(p)
-            if not aid:
-                continue
-            pool[aid] = {
-                "arxiv_id": aid,
-                "title": (p.get("title") or "").replace("\t", " ").strip(),
-                "year": p.get("year") or 0,
-                "citations": p.get("citationCount") or 0,
-                "buckets": set(),
-            }
+    for aid, p in s2_metadata(missing, cache).items():
+        pool[aid] = {
+            "arxiv_id": aid,
+            "title": (p.get("title") or "").replace("\t", " ").strip(),
+            "year": p.get("year") or 0,
+            "citations": p.get("citationCount") or 0,
+            "buckets": set(),
+        }
 
     for aid, rec in pool.items():
         rec["surveys"] = survey_votes.get(aid, 0)
         # Citations span five orders of magnitude, so rank on their log; survey votes are a
         # small integer and are weighted to matter — three surveys should outrank a 10x
         # citation gap, because tooling papers win on citations and lose on surveys.
-        import math
-
         rec["score"] = math.log10(rec["citations"] + 10) + 1.5 * rec["surveys"]
 
     ranked = sorted(pool.values(), key=lambda r: (-r["score"], -r["citations"]))
 
     # Primary categories are needed only for the canon ceiling, so look them up for the head of
     # the ranking rather than all ~6,000 candidates.
-    head = [r["arxiv_id"] for r in ranked[: canon_target_lookup(BUCKETS)]]
+    # The ceiling can push the tier well past its own size before it fills, so resolve a
+    # generous multiple of it — a smaller head leaves those entries category-unknown.
+    head = [r["arxiv_id"] for r in ranked[: canon_target * 4]]
     print(f"\narXiv 1차 카테고리 조회 {len(head)}편 (canon 상한 판정용)")
     categories = arxiv_primary_categories(head, cache)
 
@@ -384,7 +425,6 @@ def main() -> int:
     #
     # The ceiling attacks the skew directly and leaves the ordering that was already right.
     chosen: dict[str, str] = {}
-    canon_target = BUCKETS[0][1]
     cap = int(canon_target * CANON_CATEGORY_CAP)
     per_cat: collections.Counter = collections.Counter()
     deferred: list[dict] = []
@@ -397,46 +437,41 @@ def main() -> int:
             continue
         chosen[rec["arxiv_id"]] = "canon"
         per_cat[cat] += 1
-    # Papers held back by the ceiling are still foundational — they fall through to their own
-    # subject bucket below rather than being dropped.
-    if len(chosen) < canon_target:
-        for rec in deferred:
-            if len(chosen) >= canon_target:
-                break
-            chosen[rec["arxiv_id"]] = "canon"
+    # Papers held back by the ceiling are still foundational. Any that the tier still has room
+    # for come back here (and are counted, so the line below describes the tier as it ended up
+    # rather than only its first pass); the rest fall through to their own subject bucket.
+    for rec in deferred:
+        if len(chosen) >= canon_target:
+            break
+        chosen[rec["arxiv_id"]] = "canon"
+        per_cat[categories.get(rec["arxiv_id"], "?")] += 1
     print("[canon] 분야 구성: " + " · ".join(f"{k} {v}" for k, v in per_cat.most_common(6)))
     recent_from = int(RECENT_BAND_YEARS.split("-")[0])
-    for name, target, query, _note in BUCKETS[1:]:
+    for name, target, _queries, _note in BUCKETS[1:]:
         quota = int(target * RECENT_BAND_SHARE)
-        # Recent band first, up to its quota — otherwise the older band, which always wins on
-        # absolute citations, would consume the whole bucket before a 2023 paper is reached.
-        n = recent = 0
-        for want_recent in (True, False):
-            for rec in ranked:
-                if n >= target:
-                    break
-                is_recent = rec["year"] >= recent_from
-                if is_recent is not want_recent:
-                    continue
-                if want_recent and recent >= quota:
-                    break
-                if rec["arxiv_id"] in chosen or name not in rec["buckets"]:
-                    continue
-                chosen[rec["arxiv_id"]] = name
-                n += 1
-                recent += is_recent
-        print(f"[{name}] 배정 {n}/{target} (2022~ {recent}편, 할당 {quota})")
+        eligible = [
+            r for r in ranked if name in r["buckets"] and r["arxiv_id"] not in chosen
+        ]
+        # `ranked` is already in score order, so slicing keeps that order inside each band. The
+        # recent band goes first up to its quota — the older band always wins on absolute
+        # citations and would otherwise consume the bucket before a 2023 paper is reached.
+        recent = [r for r in eligible if r["year"] >= recent_from][:quota]
+        picked = (recent + [r for r in eligible if r["year"] < recent_from])[:target]
+        for rec in picked:
+            chosen[rec["arxiv_id"]] = name
+        n_recent = sum(1 for r in picked if r["year"] >= recent_from)
+        print(f"[{name}] 배정 {len(picked)}/{target} (2022~ {n_recent}편, 할당 {quota})")
 
     out = pathlib.Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("w", encoding="utf-8") as fh:
-        fh.write("arxiv_id\tbucket\tyear\tcitations\tsurveys\ttopics\tscore\ttitle\n")
+        fh.write("arxiv_id\tbucket\tyear\tcitations\tsurveys\tbuckets\tscore\ttitle\n")
         for rec in ranked:
             b = chosen.get(rec["arxiv_id"])
             if not b:
                 continue
-            # ``topics`` = how many of the topic queries surfaced this paper. It is the canon
-            # gate, so keep it in the output: a reviewer can re-derive the tier from the file.
+            # ``buckets`` = how many subject buckets surfaced this paper. Diagnostic only — the
+            # canon tier is decided by score + CANON_CATEGORY_CAP, not by this count.
             fh.write(
                 f"{rec['arxiv_id']}\t{b}\t{rec['year']}\t{rec['citations']}\t"
                 f"{rec['surveys']}\t{len(rec['buckets'])}\t{rec['score']:.3f}\t{rec['title']}\n"
@@ -445,30 +480,25 @@ def main() -> int:
     return 0
 
 
-def _post_batch(ids: list[str], cache: pathlib.Path, pause: float) -> list[dict]:
-    """S2 batch lookup by ArXiv id. POST, so it is cached by request-body hash."""
-    body = json.dumps({"ids": [f"ARXIV:{a}" for a in ids]}).encode()
-    key = hashlib.sha256(body).hexdigest()[:24]
-    hit = cache / f"batch-{key}.json"
-    if hit.exists():
-        return json.loads(hit.read_text(encoding="utf-8"))
-    req = urllib.request.Request(
-        f"{S2}/paper/batch?fields=paperId,title,year,citationCount,externalIds",
-        data=body,
-        headers={"Content-Type": "application/json", "User-Agent": "docsuri-corpus/1.0"},
-    )
-    for attempt in range(6):
-        try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                payload = [p for p in json.loads(resp.read()) if p]
-            hit.write_text(json.dumps(payload), encoding="utf-8")
-            time.sleep(pause)
-            return payload
-        except urllib.error.HTTPError as exc:
-            if exc.code not in (429, 500, 502, 503, 504):
-                raise
-            time.sleep(pause * (attempt + 1) * 4)
-    return []
+def s2_metadata(ids: list[str], cache: pathlib.Path) -> dict[str, dict]:
+    """S2 metadata for arXiv ids, through the same per-id store as the arXiv lookup."""
+
+    def fetch(batch: list[str]) -> dict[str, dict]:
+        body = json.dumps({"ids": [f"ARXIV:{a}" for a in batch]}).encode()
+        req = urllib.request.Request(
+            f"{S2}/paper/batch?fields=paperId,title,year,citationCount,externalIds",
+            data=body,
+            headers={"Content-Type": "application/json", "User-Agent": user_agent()},
+        )
+
+        def once() -> list[dict]:
+            with urllib.request.urlopen(req, timeout=120) as resp:  # noqa: S310
+                return [p for p in json.loads(resp.read()) if p]
+
+        rows = retry_with_policy(_HTTP_RETRY, once, retriable=_http_retriable)
+        return {aid: p for p in rows if (aid := _arxiv_id(p))}
+
+    return _cached_by_id(cache / "s2-metadata.json", ids, fetch, chunk=400)
 
 
 if __name__ == "__main__":
