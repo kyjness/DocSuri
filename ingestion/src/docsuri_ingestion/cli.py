@@ -44,13 +44,25 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     settings = IngestionSettings.from_env()
-    if args.command == "trigger-full-rebuild" and not args.local:
-        validate_corpus_build_settings(settings)
-    runtime = build_local_runtime() if args.local else build_production_runtime(settings)
 
+    # Dispatched BEFORE the shared runtime construction below. Building the runtime first
+    # discarded --local (a local runtime was built and thrown away while foundational.py went on
+    # to construct a production one and ingest 1,500 papers into the real corpus), violated
+    # --dry-run's documented no-runtime guarantee, and made normal runs build two runtimes.
     if args.command == "ingest-foundational":
+        if not args.local and not args.dry_run:
+            # Writes a third of the corpus, so it needs the same preconditions the full rebuild
+            # checks (multimodal assets on, no v2 model shadow, GROBID reachable, rollout
+            # confirmed) — skipping them here would be discovered after the ~1.5-hour run.
+            validate_corpus_build_settings(settings)
+        foundational_runtime = None
+        if not args.dry_run:
+            foundational_runtime = (
+                build_local_runtime() if args.local else build_production_runtime(settings)
+            )
         return ingest_foundational(
             settings,
+            runtime=foundational_runtime,
             list_path=args.list_path,
             ledger_path=args.ledger_path,
             bucket=args.bucket,
@@ -58,6 +70,10 @@ def main(argv: list[str] | None = None) -> int:
             retry_failed=args.retry_failed,
             dry_run=args.dry_run,
         )
+
+    if args.command == "trigger-full-rebuild" and not args.local:
+        validate_corpus_build_settings(settings)
+    runtime = build_local_runtime() if args.local else build_production_runtime(settings)
 
     if args.command == "ingest-one":
         decision = runtime.pipeline.ingest_one(

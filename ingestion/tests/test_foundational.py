@@ -73,7 +73,36 @@ def test_read_list_selects_by_column_name_and_filters_by_bucket(tmp_path) -> Non
     path = _write_list(tmp_path, [("1706.03762", "canon"), ("2106.09685", "cs.CL")])
     assert read_list(path) == [("1706.03762", "canon"), ("2106.09685", "cs.CL")]
     assert read_list(path, bucket="cs.CL") == [("2106.09685", "cs.CL")]
-    assert read_list(path, limit=1) == [("1706.03762", "canon")]
+
+
+def test_limit_applies_after_the_ledger_so_chunked_runs_advance(tmp_path, wired) -> None:
+    """--limit N caps THIS run's work, not the window of reachable rows.
+
+    Sliced before the ledger filter, run 2 of `--limit 2` re-read the same first two rows,
+    found them ledgered, and reported success having done nothing — rows 3+ were unreachable
+    without deleting the ledger."""
+    pipeline = wired(_Pipeline())
+    rows = [(f"p{i}", "canon") for i in range(5)]
+    path = _write_list(tmp_path, rows)
+    ledger = tmp_path / "l.jsonl"
+
+    assert ingest_foundational(list_path=str(path), ledger_path=str(ledger), limit=2) == 0
+    assert pipeline.seen == ["p0", "p1"]
+    assert ingest_foundational(list_path=str(path), ledger_path=str(ledger), limit=2) == 0
+    assert pipeline.seen == ["p0", "p1", "p2", "p3"]
+
+
+def test_limit_zero_means_do_nothing(tmp_path, monkeypatch) -> None:
+    # `if limit` read 0 as "no limit" and launched the full run.
+    def explode(settings):  # pragma: no cover
+        raise AssertionError("limit 0 must not build a runtime")
+
+    monkeypatch.setattr("docsuri_ingestion.foundational.build_production_runtime", explode)
+    path = _write_list(tmp_path, [("a", "canon")])
+    result = ingest_foundational(
+        list_path=str(path), ledger_path=str(tmp_path / "l.jsonl"), limit=0
+    )
+    assert result == 0
 
 
 def test_resume_skips_done_and_retries_failures_only_on_request() -> None:
@@ -85,12 +114,16 @@ def test_resume_skips_done_and_retries_failures_only_on_request() -> None:
     assert pending(rows, done, retry_failed=True) == [("b", "canon"), ("c", "canon")]
 
 
-def test_ledger_survives_a_corrupt_line(tmp_path) -> None:
+def test_ledger_survives_corrupt_and_wrong_shaped_lines(tmp_path) -> None:
     # The ledger is append-only and flushed per paper, so a kill mid-write can leave a partial
-    # last line. That must cost one paper, not the whole resume record.
+    # last line — and a hand-edited line can be valid JSON of the wrong shape. Either must cost
+    # that line, not the whole resume record (a KeyError here re-ingests 1,500 papers).
     path = tmp_path / "ledger.jsonl"
     path.write_text(
-        json.dumps({"arxiv_id": "a", "outcome": "NEW"}) + "\n" + '{"arxiv_id": "b", "outc',
+        json.dumps({"arxiv_id": "a", "outcome": "NEW"}) + "\n"
+        + '{"arxiv_id": "b", "outc' + "\n"
+        + json.dumps({"paper": "c"}) + "\n"
+        + json.dumps(["not", "a", "dict"]),
         encoding="utf-8",
     )
     assert load_ledger(path) == {"a": "NEW"}
@@ -182,3 +215,75 @@ def test_loss_at_or_below_the_gate_exits_zero(tmp_path, wired) -> None:
     path = _write_list(tmp_path, rows)
 
     assert ingest_foundational(list_path=str(path), ledger_path=str(tmp_path / "l.jsonl")) == 0
+
+
+def test_cli_dry_run_builds_no_runtime_and_local_uses_the_local_one(tmp_path, monkeypatch) -> None:
+    """The CLI dispatch order is the contract under test.
+
+    Building the shared runtime before dispatching this subcommand silently discarded --local
+    (a local runtime was constructed and thrown away while the module went on to ingest 1,500
+    papers into the REAL corpus) and violated --dry-run's documented no-runtime guarantee by
+    constructing production adapters it never used.
+    """
+    from docsuri_ingestion import cli
+
+    path = _write_list(tmp_path, [("a", "canon")])
+
+    def explode(*args, **kwargs):  # pragma: no cover
+        raise AssertionError("this runtime must not be built on this path")
+
+    # --dry-run: neither runtime may be constructed.
+    monkeypatch.setattr(cli, "build_production_runtime", explode)
+    monkeypatch.setattr(cli, "build_local_runtime", explode)
+    assert (
+        cli.main(
+            [
+                "ingest-foundational",
+                "--dry-run",
+                "--list", str(path),
+                "--ledger", str(tmp_path / "l1.jsonl"),
+            ]
+        )
+        == 0
+    )
+
+    # --local: the LOCAL runtime is the one the ingest actually uses.
+    local = _Runtime(_Pipeline())
+    monkeypatch.setattr(cli, "build_local_runtime", lambda: local)
+    assert (
+        cli.main(
+            [
+                "--local",
+                "ingest-foundational",
+                "--list", str(path),
+                "--ledger", str(tmp_path / "l2.jsonl"),
+            ]
+        )
+        == 0
+    )
+    assert local.pipeline.seen == ["a"]
+
+
+def test_cli_production_path_checks_corpus_build_preconditions(tmp_path, monkeypatch) -> None:
+    """ingest-foundational writes a third of the corpus, so it must refuse under the same
+    preconditions trigger-full-rebuild refuses under — discovering a wrong embedding model
+    after the 1.5-hour run costs the whole ledger."""
+    from docsuri_ingestion import cli
+
+    called = []
+    monkeypatch.setattr(
+        cli, "validate_corpus_build_settings", lambda settings: called.append(True)
+    )
+    monkeypatch.setattr(cli, "build_production_runtime", lambda settings: _Runtime(_Pipeline()))
+    path = _write_list(tmp_path, [("a", "canon")])
+    assert (
+        cli.main(
+            [
+                "ingest-foundational",
+                "--list", str(path),
+                "--ledger", str(tmp_path / "l.jsonl"),
+            ]
+        )
+        == 0
+    )
+    assert called == [True]

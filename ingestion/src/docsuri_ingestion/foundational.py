@@ -50,16 +50,25 @@ from .settings import IngestionSettings
 
 _log = logging.getLogger("docsuri.ingestion.foundational")
 
-DEFAULT_LIST = "reports/foundational-papers.tsv"
-DEFAULT_LEDGER = ".cache/foundational-ingest.jsonl"
+# Anchored to the repo root, NOT the CWD. CWD-relative defaults made "run it from anywhere
+# else" fail in the worst way available: the list read errors loudly, but the ledger path is
+# CREATED wherever you happen to stand — an empty ledger, which silently discards all resume
+# state and re-ingests 1,500 papers. (An installed wheel has no repo root; pass explicit paths
+# there.)
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
+DEFAULT_LIST = str(_REPO_ROOT / "reports" / "foundational-papers.tsv")
+DEFAULT_LEDGER = str(_REPO_ROOT / ".cache" / "foundational-ingest.jsonl")
 
 MAX_FAILURE_RATIO = 0.10
 
 
-def read_list(
-    path: pathlib.Path, bucket: str | None = None, limit: int | None = None
-) -> list[tuple[str, str]]:
-    """(arxiv_id, bucket) rows, read by column NAME so the TSV can gain columns."""
+def read_list(path: pathlib.Path, bucket: str | None = None) -> list[tuple[str, str]]:
+    """(arxiv_id, bucket) rows, read by column NAME so the TSV can gain columns.
+
+    No ``limit`` here on purpose: a limit applied before the ledger filter pins every run to the
+    same first N rows, so a chunked ingest can never advance past them. The caller slices the
+    PENDING list instead.
+    """
     rows: list[tuple[str, str]] = []
     with path.open(encoding="utf-8") as fh:
         header = fh.readline().rstrip("\n").split("\t")
@@ -71,7 +80,7 @@ def read_list(
             if bucket and parts[i_bucket] != bucket:
                 continue
             rows.append((parts[i_id], parts[i_bucket]))
-    return rows[:limit] if limit else rows
+    return rows
 
 
 def load_ledger(path: pathlib.Path) -> dict[str, str]:
@@ -86,7 +95,10 @@ def load_ledger(path: pathlib.Path) -> dict[str, str]:
             record = json.loads(line)
         except ValueError:
             continue
-        done[record["arxiv_id"]] = record["outcome"]
+        # Valid JSON of the wrong shape (a hand-edited line, a partial write that still parses)
+        # must cost that line, not the whole resume record.
+        if isinstance(record, dict) and record.get("arxiv_id") and record.get("outcome"):
+            done[str(record["arxiv_id"])] = str(record["outcome"])
     return done
 
 
@@ -105,6 +117,7 @@ def pending(
 def ingest_foundational(
     settings: IngestionSettings | None = None,
     *,
+    runtime=None,
     list_path: str = DEFAULT_LIST,
     ledger_path: str = DEFAULT_LEDGER,
     bucket: str | None = None,
@@ -112,10 +125,15 @@ def ingest_foundational(
     retry_failed: bool = False,
     dry_run: bool = False,
 ) -> int:
-    rows = read_list(pathlib.Path(list_path), bucket, limit)
+    rows = read_list(pathlib.Path(list_path), bucket)
     ledger_file = pathlib.Path(ledger_path)
     ledger_file.parent.mkdir(parents=True, exist_ok=True)
     todo = pending(rows, load_ledger(ledger_file), retry_failed=retry_failed)
+    # Sliced AFTER the ledger filter, so successive --limit N runs advance through the list
+    # instead of re-reading the same first N rows forever. `is not None`, not truthiness:
+    # --limit 0 means "do nothing", not "do everything".
+    if limit is not None:
+        todo = todo[:limit]
     _log.info("목록 %d편 · 완료 %d편 · 이번 실행 %d편", len(rows), len(rows) - len(todo), len(todo))
     if not todo:
         return 0
@@ -128,7 +146,9 @@ def ingest_foundational(
         _log.info("예상 소요: 편당 약 3초 → 약 %d분", len(todo) * 3 // 60)
         return 0
 
-    runtime = build_production_runtime(settings or IngestionSettings.from_env())
+    if runtime is None:
+        # The `python -m` path builds its own; the CLI passes one in so --local is honoured.
+        runtime = build_production_runtime(settings or IngestionSettings.from_env())
     counts: Counter[str] = Counter()
     started = time.monotonic()
     with ledger_file.open("a", encoding="utf-8") as ledger:
