@@ -19,7 +19,7 @@ from docsuri_ingestion.adapters.local import (
     sample_metadata,
 )
 from docsuri_ingestion.application import RefreshOrchestrationService
-from docsuri_ingestion.config import CORPUS_END, CORPUS_START
+from docsuri_ingestion.config import CORPUS_END, CORPUS_SLICE_CATEGORIES, CORPUS_START
 from docsuri_ingestion.corpus_sources import CorpusSourceAdapterSet, SourcePaperRecord
 from docsuri_ingestion.docmodel.builder import DocModelBuilder
 from docsuri_ingestion.domain.canonical import canonical_key
@@ -115,9 +115,14 @@ def _external_record() -> SourcePaperRecord:
         title="External PDF Paper",
         abstract="External abstract",
         authors=("Ada Lovelace",),
-        categories=("cs.LG",),
-        updated_at=datetime(2025, 6, 2, tzinfo=UTC),
-        published_at=datetime(2025, 6, 1, tzinfo=UTC),
+        # Both the category and the timestamps are derived from the configured slice rather than
+        # literals: the rebuild path filters records on the category intersection with
+        # CORPUS_SLICE_CATEGORIES and on the CORPUS_START/CORPUS_END window, so hard-coded values
+        # silently drop this record the day the deployment slice moves (it did — the slice went
+        # to cs.CL + cs.AI over 2026-04..09 and this test began asserting 0 jobs instead of 2).
+        categories=(CORPUS_SLICE_CATEGORIES[0],),
+        updated_at=CORPUS_START + timedelta(days=2),
+        published_at=CORPUS_START + timedelta(days=1),
         pdf_url="https://example.test/paper.pdf",
         license_url="https://creativecommons.org/licenses/by/4.0/",
         doi="10.1000/external",
@@ -754,8 +759,8 @@ def test_backfill_external_sources_enqueues_only_external_seed_jobs_in_window() 
         enabled_sources=(SourceName.ARXIV, SourceName.OPENALEX),
     )
 
-    since = datetime(2025, 1, 1, tzinfo=UTC)
-    until = datetime(2025, 12, 31, tzinfo=UTC)
+    # Config-derived, matching _external_record's timestamps — see the comment there.
+    since, until = CORPUS_START, CORPUS_END
     assert service.backfill_external_sources(since, until) == 1
 
     # arXiv is NOT re-harvested — only the external source is enqueued, and as a SEED job.
@@ -811,7 +816,7 @@ def test_backfill_external_sources_isolates_a_failing_source() -> None:
     )
 
     queued = service.backfill_external_sources(
-        datetime(2025, 1, 1, tzinfo=UTC), datetime(2025, 12, 31, tzinfo=UTC)
+        CORPUS_START, CORPUS_END
     )  # must not raise despite SS failing
 
     assert queued == 1  # OpenAlex still enqueued
@@ -1322,7 +1327,7 @@ def test_backfill_external_sources_counts_jobs_queued_before_a_mid_harvest_failu
     )
 
     queued = service.backfill_external_sources(
-        datetime(2025, 1, 1, tzinfo=UTC), datetime(2025, 12, 31, tzinfo=UTC)
+        CORPUS_START, CORPUS_END
     )
 
     assert len(queue.jobs) == 2, "the two pre-failure records really were enqueued"
