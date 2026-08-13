@@ -52,7 +52,7 @@ services:
   # and U2 reader share ONE index (docsuri-corpus-v1, vector-spec §4).
   opensearch:
     container_name: docsuri-opensearch
-    image: opensearchproject/opensearch:2.13.0
+    image: opensearchproject/opensearch:2.19.0
     environment:
       discovery.type: single-node
       DISABLE_SECURITY_PLUGIN: "true"
