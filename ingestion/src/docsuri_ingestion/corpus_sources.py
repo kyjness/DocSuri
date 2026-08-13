@@ -37,6 +37,20 @@ class SourcePaperRecord:
     # entry has already passed the licence gate on ITS OWN location — a repository copy does not
     # inherit the primary's terms.
     alternate_pdf_urls: tuple[str, ...] = ()
+    # Admission signals for the non-arXiv sources (U1-F1 / U1-F2). Both are empty for arXiv,
+    # whose category filter is applied server-side by the OAI set and needs no second gate.
+    #
+    # ``fields_of_study`` is the source's OWN subject labelling (S2 ``s2FieldsOfStudy``,
+    # OpenAlex ``topics``). It is needed because ``categories`` above is never populated for
+    # these two sources and their query-level "Computer Science" filter is loose — ⑧-1.7
+    # measured a week's OpenAlex harvest topped by critical-care medicine, Alzheimer's diagnosis
+    # and water-resource management.
+    # ``venue`` is the journal/conference name, needed because widening the S2 query from AND to
+    # OR raised the yield from 306 to 22,039 and filled it with small and predatory journals.
+    #
+    # Neither can be enforced at query time, so admission is decided at enqueue.
+    fields_of_study: tuple[str, ...] = ()
+    venue: str = ""
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -56,6 +70,8 @@ class SourcePaperRecord:
             "arxivId": self.arxiv_id,
             "version": self.version,
             "alternatePdfUrls": list(self.alternate_pdf_urls),
+            "fieldsOfStudy": list(self.fields_of_study),
+            "venue": self.venue,
         }
 
     @classmethod
@@ -87,7 +103,63 @@ class SourcePaperRecord:
             arxiv_id=payload.get("arxivId"),
             version=int(payload.get("version") or 1),
             alternate_pdf_urls=tuple(str(v) for v in payload.get("alternatePdfUrls") or ()),
+            fields_of_study=tuple(str(v) for v in payload.get("fieldsOfStudy") or ()),
+            venue=str(payload.get("venue") or ""),
         )
+
+
+# --- Admission rules for the non-arXiv sources (U1-F1 field · U1-F2 venue) -------------------
+#
+# WHY AT ENQUEUE AND NOT AT QUERY TIME. ⑧-1.7 ran both sources live and found their query-level
+# subject filters do not hold: OpenAlex has no usable field filter (a week's harvest was topped
+# by critical-care medicine, Alzheimer's diagnosis and water-resource management), and widening
+# the S2 query from AND to OR took the yield from 306 to 22,039 by admitting small and predatory
+# journals. Neither can be fixed by asking the API differently, so admission is decided here on
+# the per-record labelling.
+#
+# WHY IT MATTERS MORE THAN IT LOOKS. An off-field or low-quality paper that gets in does not
+# announce itself — it becomes evidence U11 cites and prior art U12 reasons about, and neither
+# output shows where the claim came from. Breadth we fail to collect is visible to the user as an
+# empty result; contamination is not.
+
+# The field rung that must be present. Deliberately coarse: this gate separates "Computer
+# Science" from "Medicine", and the narrowing to specific CS subfields is the corpus slice's job
+# (CORPUS_SLICE_CATEGORIES), not this one's.
+ADMITTED_FIELDS_OF_STUDY = frozenset({"Computer Science"})
+
+# Substring markers (lowercased) for venues to refuse outright. Empty on purpose — the shape is
+# here so the rule has one place to live, but filling it with guesses would encode prejudice
+# rather than measurement. Populate from the ⑧-2 harvest sample, where the actual venue
+# distribution is visible.
+BLOCKED_VENUE_MARKERS: frozenset[str] = frozenset()
+
+
+def admission_rejection(record: SourcePaperRecord) -> str | None:
+    """Why this record must not enter the corpus, or None to admit it.
+
+    FAIL-CLOSED. A record whose field or venue is unknown is refused, not waved through, and
+    each refusal carries its own reason. That matters most when the plumbing breaks: if the API
+    stops returning ``s2FieldsOfStudy``, every record refuses as ``field_unknown`` and the
+    harvest count collapses visibly — whereas admitting on missing data would quietly fill the
+    corpus with whatever arrived.
+    """
+    if record.source_name is SourceName.ARXIV:
+        # arXiv is filtered server-side by the OAI set, so there is nothing left to decide and
+        # its records carry neither field labels nor a venue.
+        return None
+    if not record.fields_of_study:
+        return "field_unknown"
+    if not ADMITTED_FIELDS_OF_STUDY.intersection(record.fields_of_study):
+        return "off_field"
+    if not record.venue:
+        # These two sources earn their place by reaching papers arXiv does not have, and a
+        # published paper has a venue. A record without one is typically a preprint the arXiv
+        # path already covers.
+        return "venue_unknown"
+    lowered = record.venue.lower()
+    if any(marker in lowered for marker in BLOCKED_VENUE_MARKERS):
+        return "venue_blocked"
+    return None
 
 
 @dataclass(frozen=True, slots=True)

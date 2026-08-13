@@ -12,7 +12,12 @@ from docsuri_shared.dtos import DocModel, DocModelResultDTO, SourceTier, SourceU
 
 from .asset_extraction import AssetExtractor, crop_assets_from_specs
 from .config import CORPUS_SLICE_CATEGORIES
-from .corpus_sources import CorpusSourceAdapterSet, CorpusTextCandidate, SourcePaperRecord
+from .corpus_sources import (
+    CorpusSourceAdapterSet,
+    CorpusTextCandidate,
+    SourcePaperRecord,
+    admission_rejection,
+)
 from .docmodel import DocModelBuilder
 from .docmodel.tei import tei_crop_specs
 from .domain.assets import AssetCropSpec, FigureSpec
@@ -1315,6 +1320,17 @@ class RefreshOrchestrationService:
         ):
             updated = record.updated_at or record.published_at or self._clock.now()
             if updated <= since or (until is not None and updated > until):
+                continue
+            rejection = admission_rejection(record)
+            if rejection is not None:
+                # Counted, not silently dropped. ⑧-1.12's lesson: a stage that both refuses by
+                # design and loses by accident must be able to tell the two apart afterwards,
+                # or a filter bug reads as "the sources had nothing".
+                self._observability.emit_metric(
+                    "ingestion.source.rejected",
+                    1.0,
+                    {"source": source_name.value, "reason": rejection},
+                )
                 continue
             year = record.year or updated.year
             self._queue.send_job(

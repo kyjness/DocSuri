@@ -7,7 +7,11 @@ import pytest
 
 from docsuri_ingestion.adapters.corpus_http import OpenAlexCorpusSource, SemanticScholarCorpusSource
 from docsuri_ingestion.adapters.local import FakeArxivSource, sample_metadata
-from docsuri_ingestion.corpus_sources import CorpusSourceAdapterSet, SourcePaperRecord
+from docsuri_ingestion.corpus_sources import (
+    CorpusSourceAdapterSet,
+    SourcePaperRecord,
+    admission_rejection,
+)
 from docsuri_ingestion.domain.enums import SourceName
 from docsuri_ingestion.domain.errors import (
     PermanentIngestionError,
@@ -199,6 +203,93 @@ def test_semantic_scholar_provider_fetches_oa_pdf_records() -> None:
     assert records[0].pdf_url == "https://example.test/paper.pdf"
     assert records[0].license_url == "https://creativecommons.org/licenses/by/4.0/"
     assert source.fetch_pdf(records[0]) == b"%PDF-1.7 body"
+
+
+def test_both_sources_carry_the_admission_signals_the_gate_reads() -> None:
+    """U1-F1/F2 plumbing: field labels and venue survive the adapters and the queue round-trip.
+
+    The gate (``admission_rejection``) is fail-closed, so a parsing regression here does not
+    show up as slightly worse quality — every record refuses as ``field_unknown`` and the harvest
+    collapses. The round-trip assert matters for the same reason: the worker receives the record
+    through the queue, so a field that serialises away is a field the gate cannot see.
+    """
+
+    def s2_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {
+                        "paperId": "s2-1",
+                        "title": "Paper",
+                        "year": 2025,
+                        "publicationDate": "2025-01-01",
+                        "isOpenAccess": True,
+                        "externalIds": {},
+                        "openAccessPdf": {
+                            "url": "https://example.test/paper.pdf",
+                            "license": "CC-BY",
+                        },
+                        # Duplicated category across sources — the parser must de-duplicate.
+                        "s2FieldsOfStudy": [
+                            {"category": "Computer Science", "source": "external"},
+                            {"category": "Computer Science", "source": "s2-fos-model"},
+                            {"category": "Mathematics", "source": "s2-fos-model"},
+                        ],
+                        "publicationVenue": {"name": "ACL", "type": "conference"},
+                    }
+                ]
+            },
+        )
+
+    s2 = SemanticScholarCorpusSource(
+        base_url="https://example.test", transport=httpx.MockTransport(s2_handler)
+    )
+    (record,) = list(s2.fetch_incremental(datetime(2024, 1, 1, tzinfo=UTC), ("cs.CL",)))
+    assert record.fields_of_study == ("Computer Science", "Mathematics")
+    assert record.venue == "ACL"
+    assert admission_rejection(record) is None
+    round_tripped = SourcePaperRecord.from_payload(record.to_payload())
+    assert round_tripped.fields_of_study == record.fields_of_study
+    assert round_tripped.venue == record.venue
+
+    def oa_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {
+                        "id": "https://openalex.org/W1",
+                        "display_name": "OA Paper",
+                        "publication_year": 2025,
+                        "publication_date": "2025-01-01",
+                        "primary_location": {
+                            "pdf_url": "https://example.test/oa.pdf",
+                            "license": "cc-by",
+                            "source": {"display_name": "Journal of Tests"},
+                        },
+                        # field is the rung the gate reads; subfield rides along for later rules.
+                        "topics": [
+                            {
+                                "display_name": "Retrieval-Augmented Generation",
+                                "subfield": {"display_name": "Artificial Intelligence"},
+                                "field": {"display_name": "Computer Science"},
+                                "domain": {"display_name": "Physical Sciences"},
+                            }
+                        ],
+                    }
+                ],
+                "meta": {"next_cursor": None},
+            },
+        )
+
+    oa = OpenAlexCorpusSource(
+        base_url="https://example.test", transport=httpx.MockTransport(oa_handler)
+    )
+    (oa_record,) = list(oa.fetch_incremental(datetime(2024, 1, 1, tzinfo=UTC), ("cs.CL",)))
+    assert oa_record.fields_of_study == ("Computer Science", "Artificial Intelligence")
+    assert oa_record.venue == "Journal of Tests"
+    assert admission_rejection(oa_record) is None
 
 
 def test_semantic_scholar_rejects_spoofed_license_host() -> None:

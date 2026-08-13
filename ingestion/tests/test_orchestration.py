@@ -126,6 +126,11 @@ def _external_record() -> SourcePaperRecord:
         pdf_url="https://example.test/paper.pdf",
         license_url="https://creativecommons.org/licenses/by/4.0/",
         doi="10.1000/external",
+        # Admission signals (U1-F1 / U1-F2). Without them the record is refused as
+        # `field_unknown` — the gate is fail-closed on purpose — so a record meant to reach the
+        # queue has to carry them.
+        fields_of_study=("Computer Science",),
+        venue="ACM Conference on Test Systems",
     )
 
 
@@ -726,6 +731,58 @@ def test_full_rebuild_skips_external_records_outside_corpus_window() -> None:
 
     assert service.trigger_full_rebuild(owner="test") == 0
     assert queue.jobs == []
+
+
+@pytest.mark.parametrize(
+    ("overrides", "reason"),
+    [
+        ({"fields_of_study": ()}, "field_unknown"),
+        ({"fields_of_study": ("Medicine",)}, "off_field"),
+        ({"venue": ""}, "venue_unknown"),
+    ],
+)
+def test_backfill_refuses_off_field_and_unlabelled_records_and_says_why(overrides, reason) -> None:
+    """U1-F1/F2: the admission gate keeps contamination out AND leaves a counted trace.
+
+    Both halves matter. ⑧-1.7 measured that neither source's query-level subject filter holds —
+    an OpenAlex week came back topped by critical-care medicine — and a paper that slips through
+    becomes evidence U11 cites, which no output reveals. The metric is the other half: a filter
+    that silently drops everything looks exactly like sources that returned nothing.
+    """
+    control = InMemoryControlPlaneStore()
+    queue = InMemoryQueue()
+    observability = type(
+        "Obs",
+        (),
+        {
+            "metrics": [],
+            "emit_metric": lambda self, name, value, tags=None: self.metrics.append(
+                (name, value, tags or {})
+            ),
+            "emit_log": lambda self, entry: None,
+            "emit_failure_signal": lambda self, job_id, stage, error: None,
+        },
+    )()
+    provider = _ExternalSource(replace(_external_record(), **overrides))
+    service = RefreshOrchestrationService(
+        arxiv=FakeArxivSource([sample_metadata()]),
+        control_plane=control,
+        queue=queue,
+        observability=observability,
+        corpus_sources=CorpusSourceAdapterSet(
+            arxiv=FakeArxivSource([sample_metadata()]),
+            openalex=provider,
+            grobid=_Grobid(),
+        ),
+        enabled_sources=(SourceName.ARXIV, SourceName.OPENALEX),
+    )
+
+    assert service.backfill_external_sources(CORPUS_START, CORPUS_END) == 0
+    assert queue.jobs == []
+    rejected = [m for m in observability.metrics if m[0] == "ingestion.source.rejected"]
+    assert len(rejected) == 1
+    assert rejected[0][2]["reason"] == reason
+    assert rejected[0][2]["source"] == SourceName.OPENALEX.value
 
 
 def test_backfill_external_sources_enqueues_only_external_seed_jobs_in_window() -> None:

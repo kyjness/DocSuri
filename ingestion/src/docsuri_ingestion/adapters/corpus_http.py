@@ -200,6 +200,12 @@ class SemanticScholarCorpusSource:
                         "externalIds",
                         "openAccessPdf",
                         "isOpenAccess",
+                        # Admission signals — the query-level `fieldsOfStudy` filter is loose
+                        # enough that off-field papers arrive labelled Computer Science, so the
+                        # per-record labelling and the venue are needed to decide at enqueue
+                        # (U1-F1 / U1-F2).
+                        "s2FieldsOfStudy",
+                        "publicationVenue",
                     )
                 ),
                 "fieldsOfStudy": _FIELDS_OF_STUDY,
@@ -302,6 +308,11 @@ class OpenAlexCorpusSource:
                         "updated_date",
                         "primary_location",
                         "locations",
+                        # Admission signals (U1-F1 / U1-F2). OpenAlex has no usable field filter
+                        # at query time — a week's harvest came back topped by critical-care
+                        # medicine — so the per-work topics decide at enqueue. The venue name
+                        # comes from primary_location.source, already selected above.
+                        "topics",
                     )
                 ),
             }
@@ -360,7 +371,28 @@ def _semantic_record(item: dict[str, Any]) -> SourcePaperRecord | None:
         license_url=license_url,
         doi=external_ids.get("DOI"),
         arxiv_id=external_ids.get("ArXiv"),
+        fields_of_study=_s2_fields_of_study(item),
+        venue=str((item.get("publicationVenue") or {}).get("name") or item.get("venue") or ""),
     )
+
+
+def _s2_fields_of_study(item: dict[str, Any]) -> tuple[str, ...]:
+    """S2 subject labels, de-duplicated and order-preserving.
+
+    ``s2FieldsOfStudy`` entries look like ``{"category": "Computer Science", "source": ...}`` and
+    a paper routinely carries the same category from more than one source. Falls back to the
+    plain ``fieldsOfStudy`` list, which is a bare array of strings and is sometimes the only one
+    populated.
+    """
+    seen: dict[str, None] = {}
+    for entry in item.get("s2FieldsOfStudy") or ():
+        category = (entry or {}).get("category") if isinstance(entry, dict) else None
+        if category:
+            seen.setdefault(str(category), None)
+    for category in item.get("fieldsOfStudy") or ():
+        if category:
+            seen.setdefault(str(category), None)
+    return tuple(seen)
 
 
 def _openalex_record(item: dict[str, Any]) -> SourcePaperRecord | None:
@@ -402,7 +434,30 @@ def _openalex_record(item: dict[str, Any]) -> SourcePaperRecord | None:
         doi=item.get("doi") or ids.get("doi"),
         arxiv_id=_arxiv_id(ids.get("arxiv")),
         alternate_pdf_urls=alternates,
+        fields_of_study=_openalex_fields_of_study(item),
+        venue=str((location.get("source") or {}).get("display_name") or ""),
     )
+
+
+def _openalex_fields_of_study(item: dict[str, Any]) -> tuple[str, ...]:
+    """OpenAlex subject labels, taken at the FIELD level of its topic hierarchy.
+
+    A topic is ``{"display_name": ..., "subfield": {...}, "field": {...}, "domain": {...}}``.
+    The leaf ``display_name`` is far too specific to admit on ("Retrieval-Augmented Generation"),
+    and ``domain`` is far too broad ("Physical Sciences" covers all of CS). ``field`` is the rung
+    that says "Computer Science" vs "Medicine", which is the distinction ⑧-1.7 needed and the
+    query filter failed to make. Subfields are kept alongside so a later rule can tighten without
+    another harvest.
+    """
+    seen: dict[str, None] = {}
+    for topic in item.get("topics") or ():
+        if not isinstance(topic, dict):
+            continue
+        for rung in ("field", "subfield"):
+            name = (topic.get(rung) or {}).get("display_name")
+            if name:
+                seen.setdefault(str(name), None)
+    return tuple(seen)
 
 
 def _licensed_pdf_copies(
