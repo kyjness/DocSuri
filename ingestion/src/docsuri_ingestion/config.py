@@ -2,19 +2,21 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-# Deployment corpus slice (2026-08-13). Narrowed from the five-category phase-1 slice
-# ("cs.LG", "cs.AI", "cs.CL", "cs.CV", "stat.ML") to NLP/AI only, and the window moved from
-# calendar 2025 to the months preceding the batch.
+# Deployment corpus slice. Narrowed twice from the five-category phase-1 slice
+# ("cs.LG", "cs.AI", "cs.CL", "cs.CV", "stat.ML"): first to cs.CL + cs.AI, then to cs.CL alone.
 #
-# WHY NARROWER. The box sets a hard ceiling of ~4,500 papers (Lightsail 4 GB → ~1.8 GB k-NN),
-# of which ~1,500 are the named foundational list, leaving ~3,000 for the date window. Spread
-# over five categories that is ~7 weeks — measured, the five together produce ~1,700 papers a
-# month and cs.LG alone is 52% of them. Seven weeks is too thin for U12: a novelty check that
-# cannot find prior art reports "novel", and it cannot tell that apart from "not indexed".
-# Restricting to cs.CL + cs.AI (40% of the volume including cross-lists, ~680/month, measured
-# on a 200-paper sample) buys ~4.4 months instead, so a subfield is covered deeply rather than
-# every subfield thinly. Breadth lost this way is visible to the user and is disclosed by
-# FR-48; density lost is not.
+# WHY SO NARROW — and why the first estimate was wrong by 13x. The box sets a hard ceiling
+# (Lightsail 8 GB → ~4.5 GB k-NN → ~11,000 papers), of which ~1,500 are the named foundational
+# list. The first narrowing was sized from the LOCAL development corpus's composition, which
+# turned out not to be a complete harvest of its own window: it implied ~680 papers/month for
+# cs.CL + cs.AI, and a live OAI harvest measured ~9,000 — 36 days returned 13,602 unique papers.
+# At that rate the entire recent-paper budget is EIGHT DAYS, which is worthless to U12: inside
+# eight days a novelty check finds neither prior art nor the citation chain leading to it, and
+# it cannot tell "not found" from "not indexed".
+#
+# So the trade is breadth for depth, deliberately: one subfield covered deeply beats every
+# subfield covered for a week. Breadth lost this way is visible to the user as an empty result
+# and is disclosed by FR-48; density lost is not visible at all.
 #
 # Decision record: inception/requirements/
 #   requirement-verification-questions-corpus-and-deployment.md

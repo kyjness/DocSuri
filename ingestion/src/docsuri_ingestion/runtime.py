@@ -85,6 +85,27 @@ def build_local_runtime() -> RuntimeServices:
     )
 
 
+def _embedding_port(settings: IngestionSettings):
+    """The writer's embedding model, chosen by the SAME setting the U2 reader reads.
+
+    Reader and writer must resolve to one model: the vectors they produce only compare inside a
+    single embedding space, and both sides are 1024-dimensional, so a mismatch passes every
+    dimension check and shows up as semantically wrong neighbours. This used to be hardcoded to
+    Bedrock here while the reader followed ``DOCSURI_EMBEDDING_PROVIDER``, which meant a single
+    env value could split them with nothing failing until the index manifest was compared —
+    after a full corpus build.
+    """
+    if settings.embedding_provider == "openai":
+        from .adapters.openai_embedding import OpenAIEmbeddingPort
+
+        return OpenAIEmbeddingPort(model=settings.openai_embedding_model)
+    return BedrockCohereEmbeddingPort(
+        model_id=settings.bedrock_model_id or "",
+        # embed region decoupled from aws_region (OpenSearch SigV4): Cohere is not in apne2.
+        region_name=settings.embed_region or settings.aws_region,
+    )
+
+
 def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
     settings.require_production()
     observability = LoggingObservabilityHub()
@@ -218,11 +239,7 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
     pipeline = IngestionPipelineService(
         arxiv=arxiv,
         full_text_store=S3FullTextStore(bucket=settings.s3_bucket or ""),
-        embedding=BedrockCohereEmbeddingPort(
-            model_id=settings.bedrock_model_id or "",
-            # embed region decoupled from aws_region (OpenSearch SigV4): Cohere v3 isn't in apne2.
-            region_name=settings.embed_region or settings.aws_region,
-        ),
+        embedding=_embedding_port(settings),
         vector_index=OpenSearchVectorIndex(
             endpoint=settings.opensearch_endpoint or "",
             index_name=settings.opensearch_index,

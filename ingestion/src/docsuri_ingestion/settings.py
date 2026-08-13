@@ -81,6 +81,19 @@ class IngestionSettings(BaseModel):
     # Cohere Embed Multilingual v3 is NOT in ap-northeast-2, so the worker must embed new papers
     # cross-region once on v3. None → embed in DOCSURI_AWS_REGION (unchanged single-region path).
     embed_region: str | None = Field(default=None, alias="DOCSURI_EMBED_REGION")
+    # Which embedding model the WRITER uses. Reads the same env name the U2 reader reads
+    # (`discovery/adapters/settings.py`), because the two must resolve to the SAME model or the
+    # vectors land in different spaces and k-NN returns semantic noise — and at 1024 dimensions
+    # on both sides, no dimension check can catch it. Until this field existed the writer
+    # hardcoded Bedrock while the reader followed the env, so setting the env to "openai"
+    # silently split them; only the index's embedding manifest would have caught it, after a
+    # full corpus build. Default matches the reader's default.
+    embedding_provider: Literal["bedrock", "openai"] = Field(
+        default="bedrock", alias="DOCSURI_EMBEDDING_PROVIDER"
+    )
+    openai_embedding_model: str = Field(
+        default="text-embedding-3-small", alias="DOCSURI_OPENAI_EMBEDDING_MODEL"
+    )
     # B3 fast full-re-parse (raw cache + bulk PDF prime + offline re-parse; see reparse.py /
     # raw_backfill.py / runbook). Default OFF → the live fetch path stays byte-identical.
     raw_cache_mode: Literal["off", "prefer", "only"] = Field(
