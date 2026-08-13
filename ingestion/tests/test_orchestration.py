@@ -789,6 +789,35 @@ def test_backfill_refuses_off_field_and_unlabelled_records_and_says_why(override
     assert rejected[0][2]["source"] == SourceName.OPENALEX.value
 
 
+def test_queued_source_record_is_refused_again_at_consumption() -> None:
+    """A job can predate the current rule, so the gate is re-asserted where the record is used.
+
+    Same reason ``validate_open_access`` is re-checked here although the adapters already gate
+    licences: a queued backlog and a DLQ redrive carry records admitted under whatever the rule
+    said when they were enqueued. Tightening it — populating BLOCKED_VENUE_MARKERS from the ⑧-2
+    harvest — would otherwise let through exactly the records it was tightened against.
+    """
+    pipeline, _, _, _, _ = build_test_pipeline(
+        corpus_sources=CorpusSourceAdapterSet(
+            arxiv=FakeArxivSource([sample_metadata()]),
+            openalex=_ExternalSource(_external_record()),
+            grobid=_Grobid(),
+        )
+    )
+    stale = replace(_external_record(), fields_of_study=("Medicine",))
+
+    with pytest.raises(PermanentIngestionError) as caught:
+        pipeline.ingest_one(
+            IngestionJob(
+                job_id="job-stale",
+                kind=JobKind.SEED_REBUILD,
+                source_name=SourceName.OPENALEX,
+                source_record=stale.to_payload(),
+            )
+        )
+    assert "off_field" in str(caught.value)
+
+
 def test_backfill_reports_refusals_as_one_counted_metric_per_reason() -> None:
     """The refusal metric is a COUNT, not one datapoint per record.
 

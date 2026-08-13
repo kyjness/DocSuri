@@ -395,6 +395,18 @@ class IngestionPipelineService:
             )
         record = SourcePaperRecord.from_payload(job.source_record or {})
         self._parser.validate_open_access(record.license_url)
+        # Re-asserted at consumption for the same reason the licence check above is, even though
+        # the enqueue path already applied it: a job can predate the current rule. A queued
+        # backlog and a DLQ redrive both carry records admitted under whatever the gate said when
+        # they were enqueued, so tightening it — populating BLOCKED_VENUE_MARKERS from the ⑧-2
+        # harvest, say — would otherwise let the very records it was tightened against through.
+        rejection = admission_rejection(record)
+        if rejection is not None:
+            raise PermanentIngestionError(
+                f"source record refused at admission: {rejection}",
+                reason=FailureReason.VALIDATION_VIOLATION,
+                stage="source",
+            )
         updated = record.updated_at or record.published_at or self._clock.now()
         record_keys = self._canonical_keys_for_record(record, record.year or updated.year)
         key = job.canonical_key or record_keys[0]
