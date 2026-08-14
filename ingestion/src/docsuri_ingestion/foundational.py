@@ -61,6 +61,10 @@ DEFAULT_LEDGER = str(_REPO_ROOT / ".cache" / "foundational-ingest.jsonl")
 
 MAX_FAILURE_RATIO = 0.10
 
+# Papers per bulk metadata request. Matches the arXiv adapter's own ``id_list`` batch size, so a
+# chunk here is exactly one request there.
+METADATA_CHUNK = 100
+
 
 def read_list(path: pathlib.Path, bucket: str | None = None) -> list[tuple[str, str]]:
     """(arxiv_id, bucket) rows, read by column NAME so the TSV can gain columns.
@@ -156,22 +160,39 @@ def ingest_foundational(
     if runtime is None:
         # The `python -m` path builds its own; the CLI passes one in so --local is honoured.
         runtime = build_production_runtime(settings or IngestionSettings.from_env())
+
     counts: Counter[str] = Counter()
     started = time.monotonic()
+    n = 0
     with ledger_file.open("a", encoding="utf-8") as ledger:
-        for n, (arxiv_id, row_bucket) in enumerate(todo, 1):
-            outcome = _ingest_one_paper(runtime, arxiv_id)
-            counts[outcome] += 1
-            ledger.write(
-                json.dumps({"arxiv_id": arxiv_id, "bucket": row_bucket, "outcome": outcome}) + "\n"
-            )
-            ledger.flush()
-            if n % 25 == 0 or n == len(todo):
-                rate = (time.monotonic() - started) / n
-                _log.info(
-                    "  %d/%d  편당 %.1fs  남은 시간 약 %d분",
-                    n, len(todo), rate, int((len(todo) - n) * rate // 60),
+        # Chunked, not prefetched-all-at-once. The metadata itself is one request per chunk, but
+        # the licence enrichment behind it is still one request per paper, so prefetching all
+        # 1,500 would spend over an hour before the first paper was written — and lose the lot on
+        # a crash, because the ledger only advances as papers finish. A chunk at a time keeps the
+        # resume ledger moving while still collapsing 1,500 metadata requests into ~15.
+        for offset in range(0, len(todo), METADATA_CHUNK):
+            chunk = todo[offset : offset + METADATA_CHUNK]
+            metadata_by_id = _batch_metadata(runtime, [aid for aid, _ in chunk])
+            for arxiv_id, row_bucket in chunk:
+                n += 1
+                # .get, not [] — a paper absent from the batch (withdrawn, mistyped, a failed
+                # chunk) falls back to ingest_one's own fetch rather than being skipped.
+                outcome = _ingest_one_paper(runtime, arxiv_id, metadata_by_id.get(arxiv_id))
+                counts[outcome] += 1
+                ledger.write(
+                    json.dumps({"arxiv_id": arxiv_id, "bucket": row_bucket, "outcome": outcome})
+                    + "\n"
                 )
+                ledger.flush()
+                if n % 25 == 0 or n == len(todo):
+                    rate = (time.monotonic() - started) / n
+                    _log.info(
+                        "  %d/%d  편당 %.1fs  남은 시간 약 %d분",
+                        n,
+                        len(todo),
+                        rate,
+                        int((len(todo) - n) * rate // 60),
+                    )
 
     for outcome, count in counts.most_common():
         _log.info("  %5d  %s", count, outcome)
@@ -188,7 +209,20 @@ def ingest_foundational(
     return 0
 
 
-def _ingest_one_paper(runtime, arxiv_id: str) -> str:
+def _batch_metadata(runtime, arxiv_ids: list[str]) -> dict[str, object]:
+    """Bulk metadata for one chunk, keyed by bare paper id. Never raises: this is a prefetch, and
+    an empty result just means every paper in the chunk fetches its own the way it used to."""
+    arxiv = getattr(runtime, "arxiv", None)
+    if arxiv is None or not hasattr(arxiv, "fetch_metadata_batch"):
+        return {}
+    try:
+        return arxiv.fetch_metadata_batch(arxiv_ids)
+    except Exception as exc:  # noqa: BLE001 — fall back to per-paper fetch
+        _log.warning("메타데이터 일괄 조회 실패(%s) — 논문별 조회로 진행", type(exc).__name__)
+        return {}
+
+
+def _ingest_one_paper(runtime, arxiv_id: str, metadata=None) -> str:
     """One paper's outcome as a ledger string. Never raises — one bad paper must not end the run.
 
     NO retry here, deliberately. ``ingest_one`` already owns retry: every dependency call inside
@@ -202,7 +236,12 @@ def _ingest_one_paper(runtime, arxiv_id: str) -> str:
     try:
         return runtime.pipeline.ingest_one(
             IngestionJob(
-                job_id=new_job_id("foundational"), kind=JobKind.EVENT, arxiv_ref=arxiv_id
+                job_id=new_job_id("foundational"),
+                kind=JobKind.EVENT,
+                arxiv_ref=arxiv_id,
+                # Pre-fetched in bulk. ``ingest_one`` skips its own per-paper metadata request
+                # when this is present — the path the harvest already uses.
+                arxiv_metadata=metadata.to_payload() if metadata is not None else None,
             )
         ).value
     except RetriableIngestionError as exc:

@@ -42,6 +42,10 @@ class RuntimeServices:
     queue: object
     observability: object
     corpus_sources: object | None = None
+    # The arXiv source itself, for drivers that need bulk metadata before feeding the pipeline
+    # one job at a time (``foundational``). The pipeline holds the same instance; exposing it
+    # here beats reaching through the pipeline's private attribute.
+    arxiv: object | None = None
     # Optional priority doc-model build queue (BR-30/D6). None → worker polls only `queue`.
     docmodel_queue: object | None = None
 
@@ -81,7 +85,11 @@ def build_local_runtime() -> RuntimeServices:
         observability=observability,
     )
     return RuntimeServices(
-        pipeline=pipeline, refresh=refresh, queue=queue, observability=observability
+        pipeline=pipeline,
+        refresh=refresh,
+        queue=queue,
+        observability=observability,
+        arxiv=arxiv,
     )
 
 
@@ -280,6 +288,7 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
         queue=queue,
         observability=observability,
         corpus_sources=corpus_sources,
+        arxiv=arxiv,
         docmodel_queue=docmodel_queue,
     )
 

@@ -10,13 +10,16 @@ from __future__ import annotations
 
 import json
 import pathlib
+from datetime import UTC, datetime
 
 import pytest
 
 from docsuri_ingestion.domain.enums import DedupDecision, FailureReason
 from docsuri_ingestion.domain.errors import PermanentIngestionError, RetriableIngestionError
+from docsuri_ingestion.domain.models import MetadataRecord
 from docsuri_ingestion.foundational import (
     MAX_FAILURE_RATIO,
+    METADATA_CHUNK,
     ingest_foundational,
     load_ledger,
     pending,
@@ -38,29 +41,59 @@ class _Pipeline:
 
     def __init__(self, outcomes: dict[str, object] | None = None) -> None:
         self.seen: list[str] = []
+        self.metadata_seen: list[dict | None] = []
         self._outcomes = outcomes or {}
 
     def ingest_one(self, job):
         self.seen.append(job.arxiv_ref)
+        self.metadata_seen.append(job.arxiv_metadata)
         outcome = self._outcomes.get(job.arxiv_ref, DedupDecision.NEW)
         if isinstance(outcome, Exception):
             raise outcome
         return outcome
 
 
+class _Arxiv:
+    """Bulk-metadata double. Records the id lists it was asked for, one entry per chunk."""
+
+    def __init__(self, *, known: set[str] | None = None, raises: Exception | None = None) -> None:
+        self.calls: list[list[str]] = []
+        self._known = known
+        self._raises = raises
+
+    def fetch_metadata_batch(self, refs):
+        self.calls.append(list(refs))
+        if self._raises is not None:
+            raise self._raises
+        return {aid: _metadata(aid) for aid in refs if self._known is None or aid in self._known}
+
+
+def _metadata(arxiv_id: str) -> MetadataRecord:
+    return MetadataRecord(
+        arxiv_ref=arxiv_id,
+        title=f"Title {arxiv_id}",
+        authors=("A",),
+        abstract="abstract",
+        categories=("cs.CL",),
+        updated_at=datetime(2024, 1, 1, tzinfo=UTC),
+        license_url="http://creativecommons.org/licenses/by/4.0/",
+    )
+
+
 class _Runtime:
-    def __init__(self, pipeline: _Pipeline) -> None:
+    def __init__(self, pipeline: _Pipeline, arxiv: _Arxiv | None = None) -> None:
         self.pipeline = pipeline
+        self.arxiv = arxiv
 
 
 @pytest.fixture
 def wired(monkeypatch):
     """Patch the runtime builder so no real adapters (or corpus) are touched."""
 
-    def build(pipeline: _Pipeline) -> _Pipeline:
+    def build(pipeline: _Pipeline, arxiv: _Arxiv | None = None) -> _Pipeline:
         monkeypatch.setattr(
             "docsuri_ingestion.foundational.build_production_runtime",
-            lambda settings: _Runtime(pipeline),
+            lambda settings: _Runtime(pipeline, arxiv),
         )
         return pipeline
 
@@ -120,9 +153,12 @@ def test_ledger_survives_corrupt_and_wrong_shaped_lines(tmp_path) -> None:
     # that line, not the whole resume record (a KeyError here re-ingests 1,500 papers).
     path = tmp_path / "ledger.jsonl"
     path.write_text(
-        json.dumps({"arxiv_id": "a", "outcome": "NEW"}) + "\n"
-        + '{"arxiv_id": "b", "outc' + "\n"
-        + json.dumps({"paper": "c"}) + "\n"
+        json.dumps({"arxiv_id": "a", "outcome": "NEW"})
+        + "\n"
+        + '{"arxiv_id": "b", "outc'
+        + "\n"
+        + json.dumps({"paper": "c"})
+        + "\n"
         + json.dumps(["not", "a", "dict"]),
         encoding="utf-8",
     )
@@ -183,9 +219,9 @@ def test_retriable_failure_is_classified_without_a_second_retry_layer(tmp_path, 
             }
         )
     )
-    path = _write_list(tmp_path, [("a", "canon"), ("b", "canon")] + [
-        (f"p{i}", "canon") for i in range(18)
-    ])
+    path = _write_list(
+        tmp_path, [("a", "canon"), ("b", "canon")] + [(f"p{i}", "canon") for i in range(18)]
+    )
     ledger = tmp_path / "l.jsonl"
     assert ingest_foundational(list_path=str(path), ledger_path=str(ledger)) == 0
     assert pipeline.seen.count("a") == 1
@@ -240,8 +276,10 @@ def test_cli_dry_run_builds_no_runtime_and_local_uses_the_local_one(tmp_path, mo
             [
                 "ingest-foundational",
                 "--dry-run",
-                "--list", str(path),
-                "--ledger", str(tmp_path / "l1.jsonl"),
+                "--list",
+                str(path),
+                "--ledger",
+                str(tmp_path / "l1.jsonl"),
             ]
         )
         == 0
@@ -255,8 +293,10 @@ def test_cli_dry_run_builds_no_runtime_and_local_uses_the_local_one(tmp_path, mo
             [
                 "--local",
                 "ingest-foundational",
-                "--list", str(path),
-                "--ledger", str(tmp_path / "l2.jsonl"),
+                "--list",
+                str(path),
+                "--ledger",
+                str(tmp_path / "l2.jsonl"),
             ]
         )
         == 0
@@ -271,19 +311,85 @@ def test_cli_production_path_checks_corpus_build_preconditions(tmp_path, monkeyp
     from docsuri_ingestion import cli
 
     called = []
-    monkeypatch.setattr(
-        cli, "validate_corpus_build_settings", lambda settings: called.append(True)
-    )
+    monkeypatch.setattr(cli, "validate_corpus_build_settings", lambda settings: called.append(True))
     monkeypatch.setattr(cli, "build_production_runtime", lambda settings: _Runtime(_Pipeline()))
     path = _write_list(tmp_path, [("a", "canon")])
     assert (
         cli.main(
             [
                 "ingest-foundational",
-                "--list", str(path),
-                "--ledger", str(tmp_path / "l.jsonl"),
+                "--list",
+                str(path),
+                "--ledger",
+                str(tmp_path / "l.jsonl"),
             ]
         )
         == 0
     )
     assert called == [True]
+
+
+def test_metadata_is_fetched_in_bulk_and_handed_to_the_pipeline(tmp_path, wired):
+    """The whole point: one metadata request per chunk, not one per paper.
+
+    arXiv rate-limits by IP, and the per-paper burst is what trips it — a 20-paper trial walked
+    one at a time put ~100 requests through and left the source refusing us for hours. If this
+    regresses to per-paper fetching nothing fails; the run just gets throttled off the source
+    partway through, which is why it is pinned here.
+    """
+    rows = [(f"24{i:02d}.0000{i % 10}", "canon") for i in range(5)]
+    arxiv = _Arxiv()
+    pipeline = wired(_Pipeline(), arxiv)
+    rc = ingest_foundational(
+        list_path=str(_write_list(tmp_path, rows)),
+        ledger_path=str(tmp_path / "ledger.jsonl"),
+    )
+    assert rc == 0
+    assert arxiv.calls == [[aid for aid, _ in rows]]
+    # Every job carries its metadata, so ingest_one takes the "already fetched" branch.
+    assert all(payload is not None for payload in pipeline.metadata_seen)
+    assert [p["arxivRef"] for p in pipeline.metadata_seen] == [aid for aid, _ in rows]
+
+
+def test_bulk_fetch_is_chunked_so_the_ledger_advances_during_a_long_run(tmp_path, wired):
+    """Chunked rather than prefetched whole. Licence enrichment behind the batch is still one
+    request per paper, so a single up-front fetch would spend over an hour before writing the
+    first ledger line — and lose all of it on a crash."""
+    rows = [(f"2400.{i:05d}", "canon") for i in range(METADATA_CHUNK + 3)]
+    arxiv = _Arxiv()
+    wired(_Pipeline(), arxiv)
+    ingest_foundational(
+        list_path=str(_write_list(tmp_path, rows)),
+        ledger_path=str(tmp_path / "ledger.jsonl"),
+    )
+    assert [len(call) for call in arxiv.calls] == [METADATA_CHUNK, 3]
+
+
+def test_a_failed_bulk_fetch_falls_back_to_per_paper_instead_of_ending_the_run(tmp_path, wired):
+    """The batch is an optimisation, not a dependency — losing it must cost speed, not papers."""
+    rows = [("2401.00001", "canon"), ("2401.00002", "canon")]
+    arxiv = _Arxiv(raises=RuntimeError("arXiv down"))
+    pipeline = wired(_Pipeline(), arxiv)
+    rc = ingest_foundational(
+        list_path=str(_write_list(tmp_path, rows)),
+        ledger_path=str(tmp_path / "ledger.jsonl"),
+    )
+    assert rc == 0
+    assert pipeline.seen == [aid for aid, _ in rows]
+    # No metadata on the job → ingest_one fetches it itself, the pre-batch behaviour.
+    assert pipeline.metadata_seen == [None, None]
+
+
+def test_a_paper_missing_from_the_batch_still_gets_ingested(tmp_path, wired):
+    """A withdrawn or mistyped id simply has no Atom entry. It must fall through to its own
+    fetch — where the real error surfaces — rather than be silently dropped from the run."""
+    rows = [("2401.00001", "canon"), ("2401.99999", "canon")]
+    arxiv = _Arxiv(known={"2401.00001"})
+    pipeline = wired(_Pipeline(), arxiv)
+    ingest_foundational(
+        list_path=str(_write_list(tmp_path, rows)),
+        ledger_path=str(tmp_path / "ledger.jsonl"),
+    )
+    assert pipeline.seen == [aid for aid, _ in rows]
+    assert pipeline.metadata_seen[0] is not None
+    assert pipeline.metadata_seen[1] is None
