@@ -215,15 +215,11 @@ def main() -> int:
     files = _enumerate_papers(docmodel_dir, args.limit)
     print(f"[plan] {len(files)} papers (mirror: {mirror})")
 
-    plain_http = args.endpoint.startswith("http://")
-    client = build_opensearch_client(
-        endpoint=args.endpoint, use_ssl=not plain_http, verify_certs=not plain_http
-    )
+    # TLS follows the endpoint scheme inside the client factory now — this tool used to be the
+    # only caller that got it right, and it got it right by doing exactly that here.
+    client = build_opensearch_client(endpoint=args.endpoint)
     _ensure_index(client, args.index, args.alias, embedding_model=args.model)
-    writer = OpenSearchVectorIndex(
-        endpoint=args.endpoint, index_name=args.index,
-        use_ssl=not plain_http, verify_certs=not plain_http,
-    )
+    writer = OpenSearchVectorIndex(endpoint=args.endpoint, index_name=args.index)
     embedder = OpenAIEmbeddingPort(model=args.model)
     chunker = Chunker()
     assembler = IndexRecordAssembler()

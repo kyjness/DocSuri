@@ -18,7 +18,9 @@ resume ledger, so an interrupted run costs only the papers it had not reached.
 
 RATE LIMITING IS NOT DONE HERE. The arXiv adapter holds a ``TokenBucket(0.33/s)`` — arXiv's
 stated politeness budget — and a second sleep on top would only make the run slower without
-making it politer. Expect roughly 3s per paper, so ~1.5 hours for 1,500.
+making it politer. MEASURED 14.0s per paper on the 20-paper trial (2026-08-14), so ~5.8 hours for
+1,500 — the earlier "3s per paper" was the rate limiter's floor, not the pipeline's cost: parse,
+asset rendering, embedding and indexing all sit on top of the fetch.
 
 FAILURES DO NOT STOP THE RUN. A paper that 404s or fails to parse is recorded and skipped; the
 summary groups them by reason so a systematic failure (a whole bucket, a whole source) is
@@ -154,7 +156,7 @@ def ingest_foundational(
         # ledger and the resume path without writing anything to whichever corpus is wired.
         for name, count in Counter(b for _, b in todo).most_common():
             _log.info("  %5d  %s", count, name)
-        _log.info("예상 소요: 편당 약 3초 → 약 %d분", len(todo) * 3 // 60)
+        _log.info("예상 소요: 편당 약 14초(실측) → 약 %d분", len(todo) * 14 // 60)
         return 0
 
     if runtime is None:
@@ -211,15 +213,25 @@ def ingest_foundational(
 
 def _batch_metadata(runtime, arxiv_ids: list[str]) -> dict[str, object]:
     """Bulk metadata for one chunk, keyed by bare paper id. Never raises: this is a prefetch, and
-    an empty result just means every paper in the chunk fetches its own the way it used to."""
+    an empty result just means every paper in the chunk fetches its own the way it used to.
+
+    The COVERAGE is logged, not just the failures. Falling back is invisible from the outside —
+    the run still succeeds, it just spends 15x the arXiv requests and eventually gets throttled
+    off the source — so an unattended 1,500-paper run must say how many papers the batch actually
+    covered rather than only speaking up when it raised.
+    """
     arxiv = getattr(runtime, "arxiv", None)
     if arxiv is None or not hasattr(arxiv, "fetch_metadata_batch"):
         return {}
     try:
-        return arxiv.fetch_metadata_batch(arxiv_ids)
+        found = arxiv.fetch_metadata_batch(arxiv_ids)
     except Exception as exc:  # noqa: BLE001 — fall back to per-paper fetch
-        _log.warning("메타데이터 일괄 조회 실패(%s) — 논문별 조회로 진행", type(exc).__name__)
+        _log.warning(
+            "메타데이터 일괄 조회 실패(%s) — %d편 논문별 조회", type(exc).__name__, len(arxiv_ids)
+        )
         return {}
+    _log.info("메타데이터 일괄 조회 %d/%d편", len(found), len(arxiv_ids))
+    return found
 
 
 def _ingest_one_paper(runtime, arxiv_id: str, metadata=None) -> str:

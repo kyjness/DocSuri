@@ -356,11 +356,10 @@ def admin_client_from_settings(settings: IngestionSettings):
     if not settings.opensearch_endpoint:
         raise SystemExit("DOCSURI_OPENSEARCH_ENDPOINT is required")
     local = settings.env == "local"
+    # TLS is NOT decided here — ``build_opensearch_client`` reads it off the endpoint scheme.
     return build_opensearch_client(
         endpoint=settings.opensearch_endpoint,
         region_name=None if local else settings.aws_region,
-        use_ssl=not local,
-        verify_certs=not local,
     )
 
 
@@ -370,14 +369,25 @@ def build_opensearch_client(
     region_name: str | None = None,
     username: str | None = None,
     password: str | None = None,
-    use_ssl: bool = True,
-    verify_certs: bool = True,
+    use_ssl: bool | None = None,
+    verify_certs: bool | None = None,
 ):
     """Build an opensearch-py client. Auth order: basic-auth if both creds are given
     (local/override), else SigV4 (``Urllib3AWSV4SignerAuth``, service ``es``) when a region
     is set — the managed VPC domain authorizes the ECS task role by resource policy, so signed
-    requests are required — else unsigned (local clusters with an open policy)."""
+    requests are required — else unsigned (local clusters with an open policy).
+
+    TLS is READ OFF THE ENDPOINT unless the caller overrides it. Three call sites each decided
+    this separately and one of them did not decide at all: the pipeline writer took the
+    ``use_ssl=True`` default and spoke TLS to an ``http://`` cluster, so every ``_bulk`` died with
+    ``WRONG_VERSION_NUMBER`` — on the batch path, where it is a whole run's worth of papers
+    parsed and then dropped at the last step. The endpoint string already says which it is, so it
+    is the one thing asked."""
     from opensearchpy import OpenSearch
+
+    plain_http = endpoint.startswith("http://")
+    use_ssl = (not plain_http) if use_ssl is None else use_ssl
+    verify_certs = (not plain_http) if verify_certs is None else verify_certs
 
     if username and password:
         http_auth = (username, password)
@@ -405,11 +415,11 @@ class OpenSearchVectorIndex:
         username: str | None = None,
         password: str | None = None,
         stats_ttl_seconds: float = 60.0,
-        use_ssl: bool = True,
-        verify_certs: bool = True,
+        use_ssl: bool | None = None,
+        verify_certs: bool | None = None,
     ) -> None:
-        # use_ssl/verify_certs forwarded for plain-HTTP local clusters (docker single node)
-        # — the U2 reader factory already supports this; the writer previously pinned TLS on.
+        # None → read off the endpoint scheme, so a plain-HTTP local cluster needs no extra
+        # argument at the call site (which is exactly where it was forgotten).
         self._client = build_opensearch_client(
             endpoint=endpoint,
             region_name=region_name,
