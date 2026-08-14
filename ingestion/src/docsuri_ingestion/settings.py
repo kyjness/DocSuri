@@ -100,6 +100,17 @@ class IngestionSettings(BaseModel):
         default="off", alias="DOCSURI_RAW_CACHE_MODE"
     )
     raw_cache_prefix: str = Field(default="raw", alias="DOCSURI_RAW_CACHE_PREFIX")
+    # TEI cache for the PDF/GROBID rung, on the SAME raw store under tier "tei". Exists to keep
+    # GROBID and Docling out of memory at the same time: measured on a 7.5GB box, GROBID holds
+    # 2.9GB while working (its image bakes in -Xmx4g and its `header`/`reference-segmenter` models
+    # run TensorFlow off-heap, so -Xmx alone does not bound it) and Docling peaks at 1.6GB — the
+    # kernel OOM-kills GROBID on the first paper that needs both. So the rung is run in two passes:
+    #   prefer  — GROBID up, Docling absent: extract TEI and cache it
+    #   only    — GROBID down, Docling on: build from cached TEI, never call GROBID
+    # `off` is the single-pass behaviour and stays the default (a box with room needs no split).
+    grobid_cache_mode: Literal["off", "prefer", "only"] = Field(
+        default="off", alias="DOCSURI_GROBID_CACHE_MODE"
+    )
     # arXiv requester-pays bulk PDF bucket + optional YYMM month shards (csv, e.g. "2501,2502").
     arxiv_bulk_bucket: str = Field(default="arxiv", alias="DOCSURI_ARXIV_BULK_BUCKET")
     # Run-scoped harvest window override (ISO dates). Lets a one-off backfill narrow the slice

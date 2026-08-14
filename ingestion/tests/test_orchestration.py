@@ -103,7 +103,7 @@ class _Grobid:
         self.text = text
         self.seen_pdf: bytes | None = None
 
-    def extract_tei(self, pdf: bytes) -> str:
+    def extract_tei(self, pdf: bytes, **_key: object) -> str:
         self.seen_pdf = pdf
         return f"<TEI><text><body><div><p>{self.text}</p></div></body></text></TEI>"
 

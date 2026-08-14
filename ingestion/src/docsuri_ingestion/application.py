@@ -251,7 +251,9 @@ class IngestionPipelineService:
                 tei = self._resilience.dependency_call(
                     "grobid",
                     "extract_tei",
-                    lambda: grobid.extract_tei(pdf),
+                    lambda: grobid.extract_tei(
+                        pdf, paper_id=job.paper_id, version=job.version
+                    ),
                 )
             except Exception:  # noqa: BLE001 - GROBID is best-effort; degrade to pdfplumber.
                 self._observability.emit_metric(
@@ -986,7 +988,13 @@ class IngestionPipelineService:
             return None
         try:
             tei = self._resilience.dependency_call(
-                "grobid", "extract_tei", lambda: grobid.extract_tei(pdf)
+                "grobid",
+                "extract_tei",
+                # Keyed so the two-pass TEI cache can serve this rung; without the key the cache
+                # is skipped and this is the plain call it has always been.
+                lambda: grobid.extract_tei(
+                    pdf, paper_id=metadata.paper_id, version=metadata.version
+                ),
             )
         except PermanentIngestionError:
             # GROBID REJECTED this PDF outright (400/415/422 — malformed/oversized/unsupported).

@@ -277,7 +277,13 @@ class CorpusSourceAdapterSet:
             )
         # One GROBID call yields the structured TEI; the flat text projection is derived from it
         # (the doc-model parser consumes the TEI, withdrawal/scan paths consume the text).
-        tei = self._grobid.extract_tei(pdf)
+        # Keyed for the two-pass TEI cache. A non-arXiv record has no arXiv paper_id yet — the
+        # canonical id is assigned downstream — so the source's own identity is the key. It is
+        # stable and unique per source document, which is all the cache needs, and namespacing it
+        # keeps these entries from colliding with an arXiv paper of the same numeric id.
+        tei = self._grobid.extract_tei(
+            pdf, paper_id=f"{record.source_name.value.lower()}:{record.source_id}", version=1
+        )
         text = tei_to_text(tei).strip()
         if not text:
             raise PermanentIngestionError(

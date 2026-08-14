@@ -119,7 +119,16 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
     observability = LoggingObservabilityHub()
     # B3 raw-content cache wiring: only when explicitly enabled AND a bucket exists. Otherwise the
     # source keeps its default off mode → the live fetch path is byte-identical (raw_store=None).
-    raw_cache_on = settings.raw_cache_mode != "off" and bool(settings.s3_bucket)
+    # The TEI cache lives on the SAME store, so either mode being on is enough to build it —
+    # keyed off raw_cache_mode alone, `DOCSURI_GROBID_CACHE_MODE=prefer` on its own would leave
+    # the store None and the cache would do nothing at all while looking configured.
+    cache_wanted = settings.raw_cache_mode != "off" or settings.grobid_cache_mode != "off"
+    if cache_wanted and not settings.s3_bucket:
+        raise RuntimeError(
+            "DOCSURI_RAW_CACHE_MODE/DOCSURI_GROBID_CACHE_MODE need DOCSURI_S3_BUCKET — "
+            "without a bucket the cache silently does nothing"
+        )
+    raw_cache_on = cache_wanted
     # ONE store instance shared by every adapter that reads the cache: each S3RawContentStore
     # builds its own boto3 client (session/loader/endpoint resolution + a connection pool), so a
     # second instance is duplicated startup work against the same bucket.
@@ -146,6 +155,10 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
         grobid = GrobidHttpClient(
             base_url=settings.grobid_url,
             timeout_seconds=settings.request_timeout_seconds,
+            # Same store the raw source-byte cache uses, under tier "tei" — the two-pass split
+            # that keeps GROBID and Docling out of memory together.
+            raw_store=raw_store,
+            cache_mode=settings.grobid_cache_mode if raw_store is not None else "off",
         )
     enabled_sources = _enabled_sources(settings.parsed_corpus_sources)
     semantic_scholar = openalex = None

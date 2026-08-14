@@ -123,6 +123,14 @@ services:
     profiles: ["ingest"]
     ports:
       - "8070:8070"
+    environment:
+      # The image bakes in `-Xmx4g`. On a 7.5GB box that is not a ceiling the JVM respects
+      # reluctantly — it is a licence to grow, and the heap does grow across requests and is never
+      # returned. Measured: 1.96GB idle, 3.4GB after 60 papers. Capping the CONTAINER instead
+      # (`docker update --memory`) does not help and actively hurts: the JVM still believes it has
+      # 4GB of heap, so the cgroup kills it (exit 137) before it ever feels pressure to collect.
+      # The number to lower is this one.
+      JAVA_OPTS: "-Xmx2g"
     # Model load takes a while; a port-open check is a fine readiness proxy (the image ships no curl).
     # `/dev/tcp` is a bash feature, so invoke bash explicitly — CMD-SHELL runs /bin/sh (dash on this
     # Debian-based image), which has no /dev/tcp and would report the container perpetually unhealthy.
@@ -130,6 +138,35 @@ services:
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8070"]
       interval: 10s
       timeout: 5s
+      retries: 20
+
+  # SQS stand-in for the ingestion job queue, the same way s3proxy stands in for S3. Without it
+  # the harvest path cannot run locally AT ALL: `trigger_full_rebuild` enqueues every harvested
+  # paper and a worker drains it, so with no queue there is nothing to drain and the recent-slice
+  # half of ⑧-2 has no way to execute. The queue was pointed at a placeholder URL
+  # (`unused.local/queue-not-wired-locally`), which is why the local corpus was built by one-off
+  # scripts instead — a path production never takes.
+  #
+  # No code change is needed to use it: botocore reads `AWS_ENDPOINT_URL_SQS`, exactly as the S3
+  # adapters read `AWS_ENDPOINT_URL_S3`. Deploying to real SQS is then a matter of dropping that
+  # variable.
+  #
+  # Queues are declared in elasticmq.conf (main + DLQ) so they exist on boot rather than being
+  # created by whichever process happens to run first.
+  elasticmq:
+    container_name: docsuri-elasticmq
+    image: softwaremill/elasticmq-native:1.6.11
+    profiles: ["ingest"]
+    ports:
+      - "9324:9324"
+    volumes:
+      - ./elasticmq.conf:/opt/elasticmq.conf:ro
+    healthcheck:
+      # netstat, not the /dev/tcp trick the other services use: this image is busybox with no
+      # bash, so /dev/tcp does not exist and the check reported a working queue as unhealthy.
+      test: ["CMD-SHELL", "netstat -ltn | grep -q ':9324 '"]
+      interval: 5s
+      timeout: 3s
       retries: 20
 
 volumes:

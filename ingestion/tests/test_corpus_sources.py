@@ -23,9 +23,11 @@ class _Grobid:
     def __init__(self, text: str = "structured full text") -> None:
         self.text = text
         self.seen_pdf: bytes | None = None
+        self.seen_key: dict[str, object] = {}
 
-    def extract_tei(self, pdf: bytes) -> str:
+    def extract_tei(self, pdf: bytes, **key: object) -> str:
         self.seen_pdf = pdf
+        self.seen_key = key
         return f"<TEI><text><body><div><p>{self.text}</p></div></body></text></TEI>"
 
 
@@ -163,6 +165,10 @@ def test_external_record_text_fetches_pdf_then_grobid() -> None:
     assert provider.fetched_record == record
     assert grobid.seen_pdf == b"%PDF-1.7 body"
     assert candidate.source_tier == "OPENALEX_GROBID"
+    # The TEI cache key has to reach the client, or the two-pass split (GROBID and Docling never
+    # resident together) silently degrades to single-pass and the box OOMs on this very rung.
+    # A non-arXiv record has no arXiv id yet, so its own source identity is the key.
+    assert grobid.seen_key == {"paper_id": "openalex:oa-1", "version": 1}
 
 
 def test_semantic_scholar_provider_fetches_oa_pdf_records() -> None:
