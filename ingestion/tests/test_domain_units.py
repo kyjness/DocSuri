@@ -483,3 +483,42 @@ def test_reembed_abstract_reconstruction_is_exact_at_the_default_chunk_size() ->
     assert len(split_abstract_chunks) > 1
     recovered = _embed_text_for_source({"section": "abstract", "abstract": paper.abstract})
     assert all(recovered != chunk.text for chunk in split_abstract_chunks)
+
+
+def test_chunk_cap_does_not_truncate_a_survey_sized_paper() -> None:
+    """The cap counts BLOCKS, not 2,400-char windows — a survey with hundreds of paragraphs must
+    still be indexed whole.
+
+    At 128 this silently cut the body of 217 of the 827 papers in the ⑧-2 deploy corpus (26%):
+    a median 9.7% of their text and up to 64.6%. Nothing failed and nothing was logged; the
+    paper simply stopped partway and the rest was unsearchable. The papers it cut were the
+    surveys and reviews — the ones with the most paragraphs, and the ones the foundational list
+    was assembled to include.
+    """
+    from docsuri_ingestion.processors import Chunker
+
+    blocks = [
+        {"id": f"s1.p{i}", "type": "paragraph", "text": f"Paragraph {i} of a long survey."}
+        for i in range(300)
+    ]
+    doc = DocModel.model_validate(
+        {
+            "meta": {
+                "paperId": "2401.00002",
+                "version": 1,
+                "title": "A Survey",
+                "provenance": {
+                    "sourceTier": "pdf",
+                    "parserVersion": "test",
+                    "schemaVersion": "1",
+                    "generatedAt": "1970-01-01T00:00:00Z",
+                },
+            },
+            "fullText": "body",
+            "sections": [{"id": "s1", "title": "Body", "blocks": blocks}],
+        }
+    )
+
+    chunks = Chunker().chunk_doc_model(doc).chunks
+
+    assert len(chunks) == 300, "the survey lost paragraphs to the per-paper cap"

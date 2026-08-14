@@ -171,7 +171,13 @@ class IngestionSettings(BaseModel):
     worker_queue_mode: Literal["all", "bulk", "docmodel"] = Field(
         default="all", alias="DOCSURI_WORKER_QUEUE_MODE"
     )
-    max_chunks_per_paper: int = Field(default=128, alias="DOCSURI_MAX_CHUNKS_PER_PAPER")
+    # Raised 128 -> 512 (2026-08-15). Chunking is per BLOCK, so this counts paragraphs, not
+    # 2,400-char windows: at 128 it cut the body of 217 of the 827 papers indexed so far (26%),
+    # dropping a median 9.7% and up to 64.6% of their text (2 of every 3 paragraphs in
+    # `1706.07269`). The papers it cut were surveys and reviews — the ones with the most
+    # paragraphs, and exactly what the foundational list was assembled to include. Measured cost
+    # of 512: +10.1% chunks, and nothing truncated (sample max was 487 blocks).
+    max_chunks_per_paper: int = Field(default=512, alias="DOCSURI_MAX_CHUNKS_PER_PAPER")
     max_chunk_chars: int = Field(default=2400, alias="DOCSURI_MAX_CHUNK_CHARS")
     chunk_overlap_chars: int = Field(default=240, alias="DOCSURI_CHUNK_OVERLAP_CHARS")
     # FR-17 multimodal assets (display-only). Safe default OFF — base worker unaffected.

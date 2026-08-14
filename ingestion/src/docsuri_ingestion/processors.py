@@ -96,7 +96,10 @@ class Chunker:
 
     max_chunk_chars: int = 2400
     overlap_chars: int = 240
-    max_chunks_per_paper: int = 128
+    # Kept in step with IngestionSettings.max_chunks_per_paper — see the rationale there. Both
+    # matter: the worker passes the setting in, but tools and tests that build a Chunker directly
+    # take this default, so a single-sided change silently keeps the old cap for them.
+    max_chunks_per_paper: int = 512
 
     def _fill(
         self,

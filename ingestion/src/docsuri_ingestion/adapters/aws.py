@@ -253,9 +253,10 @@ class BedrockCohereEmbeddingPort:
         del correlation_id
         if EMBEDDING_SPEC.input_type_writer != "search_document":
             raise RuntimeError("Bedrock writer must use search_document input type")
-        # Cohere Embed on Bedrock caps a single request at 96 texts; a long paper can chunk
-        # past that (max_chunks_per_paper=128). Sub-batch and concatenate IN ORDER — the
-        # assembler zips chunk_ids↔vectors with strict=True, so order must be preserved.
+        # Cohere Embed on Bedrock caps a single request at 96 texts; a long paper chunks well past
+        # that (block-level chunking, ~91 chunks median and up to max_chunks_per_paper=512).
+        # Sub-batch and concatenate IN ORDER — the assembler zips chunk_ids↔vectors with
+        # strict=True, so order must be preserved.
         vectors: list[list[float]] = []
         for start in range(0, len(texts), BEDROCK_EMBED_BATCH_LIMIT):
             vectors.extend(self._embed_batch(texts[start : start + BEDROCK_EMBED_BATCH_LIMIT]))
