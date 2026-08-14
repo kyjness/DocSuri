@@ -16,7 +16,7 @@ from .foundational import (
     ingest_foundational,
 )
 from .observability import configure_logging
-from .runtime import build_local_runtime, build_production_runtime
+from .runtime import build_local_runtime, build_production_runtime, preflight_dependencies
 from .settings import IngestionSettings, validate_corpus_build_settings
 
 
@@ -60,6 +60,18 @@ def main(argv: list[str] | None = None) -> int:
             foundational_runtime = (
                 build_local_runtime() if args.local else build_production_runtime(settings)
             )
+            if not args.local:
+                # Settings being right is not the same as the things they name being up. Both
+                # failures this catches were correctly configured and simply not answering, and
+                # neither is visible in the output — see preflight_dependencies.
+                #
+                # Reported as a message, not a traceback: this is an operator telling the batch
+                # to go fix something, and a stack trace buries the one line that says what.
+                try:
+                    preflight_dependencies(foundational_runtime, settings)
+                except RuntimeError as exc:
+                    print(exc, file=sys.stderr)
+                    return 1
         return ingest_foundational(
             settings,
             runtime=foundational_runtime,
@@ -74,6 +86,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "trigger-full-rebuild" and not args.local:
         validate_corpus_build_settings(settings)
     runtime = build_local_runtime() if args.local else build_production_runtime(settings)
+    if args.command == "trigger-full-rebuild" and not args.local:
+        try:
+            preflight_dependencies(runtime, settings)
+        except RuntimeError as exc:
+            print(exc, file=sys.stderr)
+            return 1
 
     if args.command == "ingest-one":
         decision = runtime.pipeline.ingest_one(

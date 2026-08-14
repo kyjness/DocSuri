@@ -4,6 +4,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import cast
 
+from docsuri_shared.vector_spec import DIMENSIONS
+
 from .adapters.arxiv import ArxivHttpSource
 from .adapters.aws import (
     BedrockCohereEmbeddingPort,
@@ -46,6 +48,9 @@ class RuntimeServices:
     # one job at a time (``foundational``). The pipeline holds the same instance; exposing it
     # here beats reaching through the pipeline's private attribute.
     arxiv: object | None = None
+    # The embedding port the pipeline will actually use, for the pre-flight probe below. Probing
+    # a freshly built port would test the configuration rather than the wiring.
+    embedding: object | None = None
     # Optional priority doc-model build queue (BR-30/D6). None → worker polls only `queue`.
     docmodel_queue: object | None = None
 
@@ -257,10 +262,11 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
         formula_reader=_formula_reader(settings),
         observability=observability,
     )
+    embedding = _embedding_port(settings)
     pipeline = IngestionPipelineService(
         arxiv=arxiv,
         full_text_store=S3FullTextStore(bucket=settings.s3_bucket or ""),
-        embedding=_embedding_port(settings),
+        embedding=embedding,
         vector_index=OpenSearchVectorIndex(
             endpoint=settings.opensearch_endpoint or "",
             index_name=settings.opensearch_index,
@@ -302,6 +308,7 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
         observability=observability,
         corpus_sources=corpus_sources,
         arxiv=arxiv,
+        embedding=embedding,
         docmodel_queue=docmodel_queue,
     )
 
@@ -361,3 +368,47 @@ def _formula_reader(settings: IngestionSettings) -> FormulaReaderPort | None:
     return cast(
         "FormulaReaderPort | None", _optional_reader(settings.formula_reader, "pix2tex", build)
     )
+
+
+def preflight_dependencies(runtime: RuntimeServices, settings: IngestionSettings) -> None:
+    """Probe the dependencies a corpus batch cannot run without, and refuse to start if one is
+    down. Raises ``RuntimeError`` listing every failure.
+
+    ``validate_corpus_build_settings`` already checks the SETTINGS; this checks that the things
+    they point at are alive. The distinction is the whole point — both failures this guards
+    against were correctly configured and simply not answering:
+
+    - GROBID was down for a whole 1,500-paper run (container exited 5s after start). ~42% of
+      arXiv papers fall to the PDF/GROBID rung, so that slice failed wholesale.
+    - Bedrock's daily token quota ran out mid-batch, and the run kept fetching, parsing and
+      rendering page crops for five and a half hours while nothing reached the index.
+
+    Neither shows up in the output — a paper that fails is simply absent — so they surface only as
+    a failure counter nobody is watching. Cheap to check up front, hours to discover otherwise.
+    """
+    errors: list[str] = []
+
+    if settings.grobid_url:
+        import httpx
+
+        try:
+            response = httpx.get(f"{settings.grobid_url.rstrip('/')}/api/isalive", timeout=10.0)
+            if response.status_code != 200:
+                errors.append(f"GROBID {settings.grobid_url} answered {response.status_code}")
+        except Exception as exc:  # noqa: BLE001 — any failure to reach it is the same verdict
+            errors.append(f"GROBID {settings.grobid_url} unreachable ({type(exc).__name__})")
+
+    embedding = getattr(runtime, "embedding", None)
+    if embedding is not None:
+        try:
+            vectors = embedding.embed_documents(["preflight"])
+            if not vectors or len(vectors[0]) != DIMENSIONS:
+                errors.append(
+                    f"embedding returned {len(vectors[0]) if vectors else 0} dims, "
+                    f"expected {DIMENSIONS}"
+                )
+        except Exception as exc:  # noqa: BLE001 — quota, credentials, region all land here
+            errors.append(f"embedding call failed ({type(exc).__name__}: {exc})")
+
+    if errors:
+        raise RuntimeError("배치 선행 점검 실패 — " + "; ".join(errors))
