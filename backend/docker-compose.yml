@@ -87,7 +87,10 @@ services:
     container_name: docsuri-s3proxy
     image: andrewgaul/s3proxy
     environment:
-      S3PROXY_AUTHORIZATION: aws-v2-or-v4
+      # 로컬 전용 대역이고, 인증을 켜두면 .env에 가짜 AWS 키를 둬야 하는데 그 값이
+      # boto3 환경변수 우선순위 때문에 Bedrock 호출까지 덮어쓴다. 인증을 끄면 진짜
+      # 자격증명이 프로필에서 잡히고 s3proxy는 서명을 무시한다.
+      S3PROXY_AUTHORIZATION: none
       S3PROXY_IDENTITY: docsuri
       S3PROXY_CREDENTIAL: docsuri-local
       # U1's S3 writers always request SSE (s3_put encrypts unconditionally by design); the

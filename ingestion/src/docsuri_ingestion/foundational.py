@@ -128,13 +128,20 @@ def ingest_foundational(
     rows = read_list(pathlib.Path(list_path), bucket)
     ledger_file = pathlib.Path(ledger_path)
     ledger_file.parent.mkdir(parents=True, exist_ok=True)
-    todo = pending(rows, load_ledger(ledger_file), retry_failed=retry_failed)
+    remaining = pending(rows, load_ledger(ledger_file), retry_failed=retry_failed)
     # Sliced AFTER the ledger filter, so successive --limit N runs advance through the list
     # instead of re-reading the same first N rows forever. `is not None`, not truthiness:
     # --limit 0 means "do nothing", not "do everything".
-    if limit is not None:
-        todo = todo[:limit]
-    _log.info("목록 %d편 · 완료 %d편 · 이번 실행 %d편", len(rows), len(rows) - len(todo), len(todo))
+    todo = remaining[:limit] if limit is not None else remaining
+    # Counted off `remaining`, not `todo`: subtracting the limited slice reported the papers this
+    # run merely deferred as "완료", which reads as resume progress that has not happened.
+    _log.info(
+        "목록 %d편 · 완료 %d편 · 남음 %d편 · 이번 실행 %d편",
+        len(rows),
+        len(rows) - len(remaining),
+        len(remaining),
+        len(todo),
+    )
     if not todo:
         return 0
 
