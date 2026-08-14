@@ -223,6 +223,13 @@ def _to_scored(hits: list[dict[str, Any]]) -> list[ScoredRecord]:
     return scored
 
 
+# How many chunks the ANN is asked for per paper slot. Chunking is block-level (~91 chunks per
+# paper), so the k nearest chunks cluster onto far fewer papers than k. Measured on the 827-paper
+# deploy index: k=150 -> 55 distinct, k=300 -> 84, k=600 -> 127, k=900 -> 165. Six is the smallest
+# factor that clears the retriever's 150-paper target with headroom.
+_KNN_COLLAPSE_OVERSAMPLE = 6
+
+
 class OpenSearchVectorStoreAdapter:
     """k-NN (ANN) reader over the shared OpenSearch index (cosine; FR-2).
 
@@ -239,13 +246,26 @@ class OpenSearchVectorStoreAdapter:
     def knn_search(
         self, vector: Sequence[float], top_k: int, abstract_only: bool = False
     ) -> list[ScoredRecord]:
-        knn: dict[str, Any] = {"vector": list(vector), "k": top_k}
+        # Ask the ANN for MORE than we want, then keep one chunk per paper. A paper is ~91 chunks
+        # (block-level chunking), so a topically close paper occupies many of the k slots: measured
+        # on the deploy index, a plain k=150 returned 150 chunks spanning only 55 distinct papers.
+        #
+        # Collapse alone does NOT fix that — the ANN picks its k neighbours FIRST and collapse then
+        # dedups them without refilling the freed slots (measured: 150 hits -> 55 hits). So the
+        # over-fetch is what buys the breadth and collapse only removes the duplicates.
+        # Measured on the deploy index: k=900 -> 165 distinct papers, 54ms (vs 63ms for the
+        # un-collapsed k=150, because collapse returns fewer rows to fetch).
+        fetch_k = top_k if abstract_only else top_k * _KNN_COLLAPSE_OVERSAMPLE
+        knn: dict[str, Any] = {"vector": list(vector), "k": fetch_k}
         if abstract_only:
             # Efficient k-NN filtering: restrict the ANN search to abstract chunks (lite scope).
+            # One abstract per paper, so breadth is guaranteed by construction and no over-fetch
+            # is needed — the collapse below is a no-op that costs nothing.
             knn["filter"] = {"term": {"section": "abstract"}}
         body = {
-            "size": top_k,
+            "size": fetch_k,
             "query": {"knn": {"vector": knn}},
+            "collapse": {"field": "paperId"},
         }
         hits = _search_hits(
             self._client,
@@ -254,7 +274,7 @@ class OpenSearchVectorStoreAdapter:
             message="OpenSearch k-NN query failed",
             breaker=self._breaker,
         )
-        return _to_scored(hits)
+        return _to_scored(hits)[:top_k]
 
 
 class OpenSearchPaperLookupAdapter:
@@ -334,6 +354,15 @@ class OpenSearchLexicalIndexAdapter:
                     "fields": list(fields),
                 }
             },
+            # One row per paper, its best-scoring chunk. Without this a single paper takes the
+            # whole slice: ``title``/``abstract`` are COPIED onto every chunk of a paper, so a
+            # lite-scope match scores all ~91 (up to the chunk cap) of them identically and they
+            # all land in the result. Measured on the deploy index before this line: 150 hits
+            # spanning **2** distinct papers; with it, 150 papers.
+            #
+            # Collapse happens during the query here (unlike the ANN path), so ``size`` counts
+            # groups and no over-fetch is needed to fill it.
+            "collapse": {"field": "paperId"},
         }
         hits = _search_hits(
             self._client,

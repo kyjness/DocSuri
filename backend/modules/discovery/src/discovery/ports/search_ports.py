@@ -76,8 +76,15 @@ class VectorStoreAdapter(Protocol):
     def knn_search(
         self, vector: Sequence[float], top_k: int, abstract_only: bool = False
     ) -> list[ScoredRecord]:
-        """Return up to ``top_k`` records in similarity order. ``abstract_only`` restricts the
-        search to abstract chunks (lite scope: 1 vector/paper). Raises ``IndexUnavailable``."""
+        """Return up to ``top_k`` DISTINCT PAPERS in similarity order — one record each, the
+        paper's best-scoring chunk. ``abstract_only`` restricts the search to abstract chunks
+        (lite scope: 1 vector/paper). Raises ``IndexUnavailable``.
+
+        ``top_k`` counts papers, not chunks. Chunking is block-level, so a paper spans ~91 chunks
+        and a chunk-counted slice collapses onto a fraction of that many papers — the retriever's
+        candidate breadth then silently shrinks with no visible symptom, since the cards it
+        finally shows look normal either way.
+        """
         ...
 
 
@@ -91,8 +98,14 @@ class LexicalIndexAdapter(Protocol):
         top_k: int,
         fields: Sequence[str] = ("title", "abstract", "lexicalTerms"),
     ) -> list[ScoredRecord]:
-        """Return up to ``top_k`` records in BM25 order over ``fields`` (lite vs full scope:
-        title+abstract vs +body). Raises ``IndexUnavailable``."""
+        """Return up to ``top_k`` DISTINCT PAPERS in BM25 order over ``fields`` — one record each,
+        the paper's best-scoring chunk. Lite vs full scope: title+abstract vs +body.
+        Raises ``IndexUnavailable``.
+
+        Papers, not chunks, for the same reason as ``knn_search`` — and more acutely here, since
+        ``title``/``abstract`` are copied onto every chunk, so a lite-scope match scores a paper's
+        whole chunk set identically.
+        """
         ...
 
 

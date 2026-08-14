@@ -6,6 +6,7 @@ import pytest
 from docsuri_shared.vector_spec import DIMENSIONS
 
 from discovery.adapters.opensearch_index import (
+    _KNN_COLLAPSE_OVERSAMPLE,
     OpenSearchLexicalIndexAdapter,
     OpenSearchPaperLookupAdapter,
     OpenSearchVectorStoreAdapter,
@@ -54,8 +55,11 @@ def test_knn_search_builds_query_and_deserializes_index_record() -> None:
     assert out[0][1] == pytest.approx(0.91)
     index, body = fake.last
     assert index == "docsuri-corpus-v1"
-    assert body["size"] == 20
-    assert body["query"]["knn"]["vector"]["k"] == 20
+    # ``top_k`` counts PAPERS, so the ANN is asked for a multiple of it and the result is
+    # collapsed back down — see test_search_candidate_diversity.py for why.
+    assert body["size"] == 20 * _KNN_COLLAPSE_OVERSAMPLE
+    assert body["query"]["knn"]["vector"]["k"] == 20 * _KNN_COLLAPSE_OVERSAMPLE
+    assert body["collapse"] == {"field": "paperId"}
 
 
 def test_bm25_search_builds_multi_match_query_over_split_lexical_fields() -> None:
