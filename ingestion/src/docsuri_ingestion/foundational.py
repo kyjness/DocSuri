@@ -22,11 +22,12 @@ making it politer. MEASURED 14.0s per paper on the 20-paper trial (2026-08-14), 
 1,500 — the earlier "3s per paper" was the rate limiter's floor, not the pipeline's cost: parse,
 asset rendering, embedding and indexing all sit on top of the fetch.
 
-FAILURES DO NOT STOP THE RUN. A paper that 404s or fails to parse is recorded and skipped; the
-summary groups them by reason so a systematic failure (a whole bucket, a whole source) is
-visible instead of being averaged into a success rate. Above ``MAX_FAILURE_RATIO`` the run
-exits non-zero: unlike a date window, every id here was chosen because U12 needs it, so losing
-many is a reason to stop rather than to proceed to the recent slice.
+ONE PAPER'S FAILURE DOES NOT STOP THE RUN; A COLLAPSE DOES. A paper that 404s or fails to parse
+is recorded and skipped, and the summary groups them by reason so a systematic failure (a whole
+bucket, a whole source) is visible instead of being averaged into a success rate. Two gates sit
+on top: ``MAX_FAILURE_RATIO`` judges the finished run, and ``RECENT_FAILURE_LIMIT`` aborts a run
+that is already collapsing. Both exit non-zero — unlike a date window, every id here was chosen
+because U12 needs it, so losing many is a reason to stop rather than proceed to the recent slice.
 
     python -m docsuri_ingestion.foundational --dry-run
     python -m docsuri_ingestion.foundational
@@ -40,7 +41,7 @@ import json
 import logging
 import pathlib
 import time
-from collections import Counter
+from collections import Counter, deque
 
 from .application import new_job_id
 from .domain.enums import JobKind
@@ -62,6 +63,20 @@ DEFAULT_LIST = str(_REPO_ROOT / "reports" / "foundational-papers.tsv")
 DEFAULT_LEDGER = str(_REPO_ROOT / ".cache" / "foundational-ingest.jsonl")
 
 MAX_FAILURE_RATIO = 0.10
+
+# In-flight abort. ``MAX_FAILURE_RATIO`` only judges at the END of a run, which is too late to be
+# useful: when Bedrock's daily token quota ran out mid-batch (2026-08-14) the reach rate fell from
+# 95% to 15% and the run kept going for five and a half hours, fetching from arXiv and rendering
+# page crops for 490 papers that then died at the embed step. Nothing was indexed and every one of
+# them was written to the ledger as `failed`, so recovering them costs the parse a second time.
+#
+# A ROLLING WINDOW, not a consecutive-failure counter: that throttle still let ~15% through, and a
+# consecutive counter resets on every one of those, so it would never have fired.
+#
+# Not split by failure reason on purpose — embed, GROBID or arXiv, "more than half of the last 50
+# papers are dying" is the same call either way.
+RECENT_WINDOW = 50
+RECENT_FAILURE_LIMIT = 0.6
 
 # Papers per bulk metadata request. Matches the arXiv adapter's own ``id_list`` batch size, so a
 # chunk here is exactly one request there.
@@ -166,6 +181,9 @@ def ingest_foundational(
     counts: Counter[str] = Counter()
     started = time.monotonic()
     n = 0
+    # Rolling outcome window feeding the in-flight abort below.
+    recent: deque[bool] = deque(maxlen=RECENT_WINDOW)
+    aborted = False
     with ledger_file.open("a", encoding="utf-8") as ledger:
         # Chunked, not prefetched-all-at-once. The metadata itself is one request per chunk, but
         # the licence enrichment behind it is still one request per paper, so prefetching all
@@ -186,6 +204,7 @@ def ingest_foundational(
                     + "\n"
                 )
                 ledger.flush()
+                recent.append(outcome.startswith("failed"))
                 if n % 25 == 0 or n == len(todo):
                     rate = (time.monotonic() - started) / n
                     _log.info(
@@ -195,6 +214,26 @@ def ingest_foundational(
                         rate,
                         int((len(todo) - n) * rate // 60),
                     )
+                if _recently_collapsed(recent):
+                    _log.error(
+                        "최근 %d편 중 %d편 실패 — 계속 돌아도 색인이 안 남는다. 중단한다.",
+                        len(recent),
+                        sum(recent),
+                    )
+                    aborted = True
+                    break
+            if aborted:
+                break
+
+    if aborted:
+        for outcome, count in counts.most_common(6):
+            _log.info("  %5d  %s", count, outcome)
+        _log.error(
+            "%d/%d편에서 중단됨. 원인을 고친 뒤 --retry-failed로 재개하면 이어서 간다.",
+            n,
+            len(todo),
+        )
+        return 1
 
     for outcome, count in counts.most_common():
         _log.info("  %5d  %s", count, outcome)
@@ -209,6 +248,15 @@ def ingest_foundational(
         )
         return 1
     return 0
+
+
+def _recently_collapsed(recent: deque[bool]) -> bool:
+    """Whether the run is failing fast enough that continuing only burns budget.
+
+    Waits for a full window first — the opening papers of a run are a poor sample, and an early
+    cluster of 404s would otherwise abort a healthy batch.
+    """
+    return len(recent) == recent.maxlen and sum(recent) / len(recent) > RECENT_FAILURE_LIMIT
 
 
 def _batch_metadata(runtime, arxiv_ids: list[str]) -> dict[str, object]:

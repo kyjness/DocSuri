@@ -20,6 +20,8 @@ from docsuri_ingestion.domain.models import MetadataRecord
 from docsuri_ingestion.foundational import (
     MAX_FAILURE_RATIO,
     METADATA_CHUNK,
+    RECENT_FAILURE_LIMIT,
+    RECENT_WINDOW,
     ingest_foundational,
     load_ledger,
     pending,
@@ -393,3 +395,68 @@ def test_a_paper_missing_from_the_batch_still_gets_ingested(tmp_path, wired):
     assert pipeline.seen == [aid for aid, _ in rows]
     assert pipeline.metadata_seen[0] is not None
     assert pipeline.metadata_seen[1] is None
+
+
+def test_a_collapsing_run_aborts_instead_of_burning_the_rest(tmp_path, wired) -> None:
+    """The gate that exists because a run kept going for five and a half hours after it stopped
+    producing anything.
+
+    When Bedrock's daily token quota ran out mid-batch (2026-08-14), papers still fetched from
+    arXiv and rendered their page crops, then died at the embed step: 490 papers' worth of work,
+    nothing indexed, and every one of them written to the ledger as `failed` so recovering them
+    costs the parse a second time. ``MAX_FAILURE_RATIO`` could not help — it only judges a run
+    that has finished.
+    """
+    boom = RetriableIngestionError(
+        "embed down", reason=FailureReason.DEPENDENCY_UNAVAILABLE, stage="embed"
+    )
+    rows = [(f"p{i}", "canon") for i in range(400)]
+    # Fails everything after a healthy opening stretch — the shape a quota exhaustion has.
+    failures = {f"p{i}": boom for i in range(20, 400)}
+    pipeline = wired(_Pipeline(failures))
+
+    rc = ingest_foundational(
+        list_path=str(_write_list(tmp_path, rows)), ledger_path=str(tmp_path / "l.jsonl")
+    )
+
+    assert rc == 1
+    # Aborted within roughly a window of the collapse rather than walking the remaining 380.
+    assert len(pipeline.seen) < 150, f"kept going for {len(pipeline.seen)} papers"
+
+
+def test_an_early_cluster_of_failures_does_not_abort_a_healthy_run(tmp_path, wired) -> None:
+    """A run can open badly — a few withdrawn papers in a row — without the batch being doomed.
+
+    The window has to be full before it judges, AND the rate inside it has to clear the limit, so
+    a cluster shorter than the window is diluted by the papers that follow rather than read as a
+    collapse.
+    """
+    boom = PermanentIngestionError("gone", reason=FailureReason.FETCH_FAILURE, stage="fetch")
+    rows = [(f"p{i}", "canon") for i in range(RECENT_WINDOW * 2)]
+    # A run of failures well inside one window: at its worst the window is 40% failed, under the
+    # 60% limit.
+    failures = {f"p{i}": boom for i in range(int(RECENT_WINDOW * 0.4))}
+    pipeline = wired(_Pipeline(failures))
+
+    ingest_foundational(
+        list_path=str(_write_list(tmp_path, rows)), ledger_path=str(tmp_path / "l.jsonl")
+    )
+
+    assert len(pipeline.seen) == len(rows), "an early cluster aborted an otherwise healthy run"
+
+
+def test_a_run_failing_below_the_limit_is_left_alone(tmp_path, wired) -> None:
+    """Scattered failures are normal — a withdrawn paper, a 404, a bad PDF. Only a collapse is a
+    reason to stop, so the limit is a majority rather than a whiff."""
+    boom = PermanentIngestionError("gone", reason=FailureReason.FETCH_FAILURE, stage="fetch")
+    rows = [(f"p{i}", "canon") for i in range(200)]
+    # Just under the limit, spread evenly so every window sees the same rate.
+    stride = int(1 / (RECENT_FAILURE_LIMIT - 0.1))
+    failures = {f"p{i}": boom for i in range(200) if i % stride}
+    pipeline = wired(_Pipeline(failures))
+
+    ingest_foundational(
+        list_path=str(_write_list(tmp_path, rows)), ledger_path=str(tmp_path / "l.jsonl")
+    )
+
+    assert len(pipeline.seen) == len(rows)
