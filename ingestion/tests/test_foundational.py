@@ -636,14 +636,117 @@ def test_a_run_with_nothing_to_do_pays_no_probe(tmp_path, monkeypatch) -> None:
     assert cli.main(["ingest-foundational", "--list", str(path), "--ledger", str(ledger)]) == 0
 
 
-def test_the_module_entry_point_delegates_to_the_cli(tmp_path, monkeypatch) -> None:
-    """``python -m docsuri_ingestion.foundational`` is in this module's own docstring, and it used
-    to call ``ingest_foundational`` directly — skipping the pre-flight checks and ``--local``, and
-    re-declaring every flag in a second place that had already drifted."""
+def test_the_module_entry_point_delegates_through_real_argparse(tmp_path) -> None:
+    """``python -m docsuri_ingestion.foundational`` delegates to the CLI — through the REAL
+    parser, because the first version of this test monkeypatched ``cli.main`` and so could not
+    see that the delegation put ``--local`` after the subcommand, where the top-level parser
+    (which declares it before ``add_subparsers``) never finds it: exit 2, and an operator who
+    then drops the flag runs live against the real corpus."""
+    from docsuri_ingestion import foundational
+
+    path = _write_list(tmp_path, [("a", "canon")])
+    rc = foundational.main(
+        ["--local", "--dry-run", "--list", str(path), "--ledger", str(tmp_path / "l.jsonl")]
+    )
+
+    assert rc == 0, "--local + --dry-run must parse and dry-run, not exit 2"
+
+
+def test_a_retry_run_dense_in_permanent_failures_is_not_read_as_a_dead_dependency(
+    tmp_path, wired
+) -> None:
+    """The livelock the class-blind gate produced: a --retry-failed set is dense in deterministic
+    permanent failures (404, NON_OA, no ar5iv build), those fail again in a row, the consecutive
+    gate calls it a dead dependency and aborts — and the abort message advises --retry-failed,
+    which replays the identical head of the list and aborts identically, never reaching paper 13.
+
+    A permanent failure is a property of the PAPER. Only retriable/unexpected failures are
+    dependency evidence.
+    """
+    boom = PermanentIngestionError("gone", reason=FailureReason.FETCH_FAILURE, stage="fetch")
+    rows = [(f"p{i}", "canon") for i in range(40)]
+    ledger = tmp_path / "l.jsonl"
+    ledger.write_text(
+        "".join(
+            json.dumps({"arxiv_id": f"p{i}", "outcome": "failed:permanent:FETCH_FAILURE:fetch"})
+            + "\n"
+            for i in range(40)
+        ),
+        encoding="utf-8",
+    )
+    pipeline = wired(_Pipeline(dict.fromkeys((f"p{i}" for i in range(40)), boom)))
+
+    ingest_foundational(
+        list_path=str(_write_list(tmp_path, rows)),
+        ledger_path=str(ledger),
+        retry_failed=True,
+    )
+
+    assert len(pipeline.seen) == 40, "aborted mid-retry on deterministic per-paper failures"
+
+
+def test_skip_stage_can_be_repeated_on_the_command_line(tmp_path, monkeypatch) -> None:
+    """`--skip-stage grobid --skip-stage embed` is the natural spelling for a singular flag name.
+    With a plain store action the second occurrence silently replaced the first — every grobid
+    failure retried against a deliberately-down GROBID anyway. Exercised through the REAL parser;
+    the other skip-stage tests call ingest_foundational directly and bypass argparse."""
     from docsuri_ingestion import cli, foundational
 
-    seen: list[list[str]] = []
-    monkeypatch.setattr(cli, "main", lambda argv: seen.append(argv) or 0)
+    captured: dict = {}
 
-    assert foundational.main(["--dry-run", "--limit", "3"]) == 0
-    assert seen == [["ingest-foundational", "--dry-run", "--limit", "3"]]
+    def fake_ingest(settings=None, **kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(cli, "ingest_foundational", fake_ingest)
+    monkeypatch.setattr(cli, "validate_corpus_build_settings", lambda settings: None)
+    monkeypatch.setattr(cli, "probe_grobid", lambda settings, *, required: None)
+    monkeypatch.setattr(cli, "build_production_runtime", lambda settings: _Runtime(_Pipeline()))
+    del foundational
+
+    path = _write_list(tmp_path, [("a", "canon")])
+    rc = cli.main(
+        [
+            "ingest-foundational",
+            "--list",
+            str(path),
+            "--ledger",
+            str(tmp_path / "l.jsonl"),
+            "--retry-failed",
+            "--skip-stage",
+            "grobid,extract_tei",
+            "--skip-stage",
+            "embed",
+        ]
+    )
+
+    assert rc == 0
+    assert sorted(captured["skip_stages"]) == ["embed", "extract_tei", "grobid"]
+
+
+def test_a_missing_redo_file_fails_before_the_runtime_is_built(tmp_path, monkeypatch) -> None:
+    """A typo'd --redo path used to surface as a FileNotFoundError traceback AFTER minutes of
+    Docling/torch loading. It must cost one line and no model load."""
+    from docsuri_ingestion import cli
+
+    def explode(settings):  # pragma: no cover - must not be called
+        raise AssertionError("a bad --redo path must fail before the runtime build")
+
+    monkeypatch.setattr(cli, "build_production_runtime", explode)
+    monkeypatch.setattr(cli, "validate_corpus_build_settings", lambda settings: None)
+    monkeypatch.setattr(cli, "probe_grobid", lambda settings, *, required: None)
+
+    path = _write_list(tmp_path, [("a", "canon")])
+    rc = cli.main(
+        [
+            "ingest-foundational",
+            "--list",
+            str(path),
+            "--ledger",
+            str(tmp_path / "l.jsonl"),
+            "--redo",
+            str(tmp_path / "no-such-file.txt"),
+        ]
+    )
+
+    assert rc == 1

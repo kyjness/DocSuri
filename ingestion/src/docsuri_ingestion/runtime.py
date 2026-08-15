@@ -33,7 +33,7 @@ from .observability import LoggingObservabilityHub
 from .ports import FormulaReaderPort, TableExtractorPort
 from .processors import Chunker
 from .resilience import IngestFailureHandler, IngestionResilienceService, TokenBucket
-from .settings import IngestionSettings
+from .settings import GROBID_ONLY_SOURCES, IngestionSettings
 
 _log = logging.getLogger("docsuri.ingestion.runtime")
 
@@ -371,10 +371,10 @@ def _formula_reader(settings: IngestionSettings) -> FormulaReaderPort | None:
     )
 
 
-# Sources whose ONLY structure parser is GROBID — the same set ``validate_corpus_build_settings``
-# tests, kept here so one rule answers "is GROBID required" for both the settings check and the
-# liveness probe.
-GROBID_ONLY_SOURCES = frozenset({"SEMANTIC_SCHOLAR", "OPENALEX"})
+class PreflightError(RuntimeError):
+    """A pre-start dependency probe failed. Its own type so the CLI can turn exactly this into a
+    one-line operator message without also swallowing unrelated RuntimeErrors from deep inside
+    the run it wraps."""
 
 
 def probe_grobid(settings: IngestionSettings, *, required: bool) -> str | None:
@@ -441,9 +441,14 @@ def preflight_dependencies(
     """
     errors: list[str] = []
 
-    problem = probe_grobid(settings, required=bool(GROBID_ONLY_SOURCES & set(sources)))
-    if problem:
-        errors.append(problem)
+    # Probed ONLY when this run's sources hard-require it. The warn-only case is the CALLER's
+    # early probe_grobid (before the runtime build, where a down GROBID costs no model loading) —
+    # probing again here produced a second 10s timeout and a duplicate warning that read as two
+    # incidents.
+    if GROBID_ONLY_SOURCES & set(sources):
+        problem = probe_grobid(settings, required=True)
+        if problem:
+            errors.append(problem)
 
     # Attribute access, not getattr: the field is declared on RuntimeServices, and a string lookup
     # would let a builder that forgets to set it turn the embed probe into a silent no-op — the
@@ -452,13 +457,17 @@ def preflight_dependencies(
         errors.append("runtime has no embedding port — the embed probe cannot run")
     else:
         try:
-            # The call IS the check. Both real ports already validate the returned width against
-            # their own configured dimension and raise, so re-checking here against the global
-            # constant would only disagree with them on the re-embed path, where the dimension is
-            # deliberately different.
-            runtime.embedding.embed_documents(["preflight"])
+            # The call is MOST of the check — both real ports validate the returned width against
+            # their own configured dimension, so re-checking width here would only disagree with
+            # them on the re-embed path. Emptiness is the one hole they leave: the Bedrock port
+            # reads ``payload.get("embeddings", [])``, so a 200 whose embeddings key is missing or
+            # reshaped yields [] and its per-vector width loop runs zero times. That would pass
+            # here and kill every paper later at the assembler's zip(..., strict=True).
+            vectors = runtime.embedding.embed_documents(["preflight"])
+            if not vectors or not vectors[0]:
+                errors.append("embedding returned an empty response for a non-empty input")
         except Exception as exc:  # noqa: BLE001 — quota, credentials, region all land here
             errors.append(f"embedding call failed ({type(exc).__name__}: {exc})")
 
     if errors:
-        raise RuntimeError("배치 선행 점검 실패 — " + "; ".join(errors))
+        raise PreflightError("배치 선행 점검 실패 — " + "; ".join(errors))

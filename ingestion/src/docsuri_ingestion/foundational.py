@@ -212,15 +212,29 @@ def ingest_foundational(
     if redo:
         _log.info("재수집 지정 %d편 (원장 결과와 무관하게 다시 돈다)", len(redo))
     skipped = frozenset(skip_stages)
+    done = load_ledger(ledger_file)
+    remaining = pending(rows, done, retry_failed=retry_failed, redo=redo, skip_stages=skipped)
     if skipped:
-        _log.info("재시도 제외 단계: %s", ", ".join(sorted(skipped)))
-    remaining = pending(
-        rows,
-        load_ledger(ledger_file),
-        retry_failed=retry_failed,
-        redo=redo,
-        skip_stages=skipped,
-    )
+        # Tally what each named stage actually held back. There is no stage vocabulary to
+        # validate against (stages are free-form strings across the pipeline), so a typo'd
+        # --skip-stage would otherwise be accepted, logged, and silently hold back nothing —
+        # sending the run straight back into the papers it was meant to avoid.
+        held = Counter(
+            failure_stage(done[aid])
+            for aid, _ in rows
+            if aid in done
+            and done[aid].startswith("failed")
+            and failure_stage(done[aid]) in skipped
+        )
+        for stage in sorted(skipped):
+            if held.get(stage):
+                _log.info("재시도 제외: %s 단계 %d편", stage, held[stage])
+            else:
+                _log.warning(
+                    "--skip-stage %s: 일치하는 실패가 0편 — 단계 이름 오타이거나 이미 처리됨", stage
+                )
+    if redo_path and not redo:
+        _log.warning("--redo %s: 지정된 id가 0개 — 전부 주석이거나 빈 파일", redo_path)
     # Sliced AFTER the ledger filter, so successive --limit N runs advance through the list
     # instead of re-reading the same first N rows forever. `is not None`, not truthiness:
     # --limit 0 means "do nothing", not "do everything".
@@ -282,7 +296,14 @@ def ingest_foundational(
                     + "\n"
                 )
                 ledger.flush()
-                recent.append(outcome.startswith("failed"))
+                # Only non-deterministic failures count toward the collapse gates. A permanent
+                # failure (404, NON_OA, no ar5iv build) is a property of the PAPER, not evidence
+                # about a dependency — and a --retry-failed set is dense in exactly those, so
+                # counting them aborted a retry run on its 12th paper and then advised the very
+                # command that reproduces the abort.
+                recent.append(
+                    outcome.startswith("failed") and not outcome.startswith("failed:permanent")
+                )
                 if n % 25 == 0 or n == len(todo):
                     rate = (time.monotonic() - started) / n
                     _log.info(
@@ -410,10 +431,17 @@ def main(argv: list[str] | None = None) -> int:
     It used to re-declare every flag and call ``ingest_foundational`` directly, which meant the
     documented ``python -m`` path silently skipped the pre-flight checks and ``--local`` — and the
     two copies of ``--redo``'s help text had already diverged.
+
+    ``--local`` is hoisted in front of the subcommand: the CLI declares it on the TOP-LEVEL parser
+    (before ``add_subparsers``), so left in place it would reach the subparser and exit 2 — and an
+    operator who then drops the flag gets a live run against the real corpus.
     """
     from .cli import main as cli_main
 
-    return cli_main(["ingest-foundational", *(argv if argv is not None else sys.argv[1:])])
+    raw = list(argv) if argv is not None else sys.argv[1:]
+    local = [flag for flag in raw if flag == "--local"]
+    rest = [flag for flag in raw if flag != "--local"]
+    return cli_main([*local[:1], "ingest-foundational", *rest])
 
 
 if __name__ == "__main__":

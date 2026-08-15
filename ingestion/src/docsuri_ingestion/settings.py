@@ -258,6 +258,14 @@ class IngestionSettings(BaseModel):
         return data
 
 
+# Sources whose ONLY structure parser is GROBID — no ar5iv rung exists for them. THE one rule
+# behind both "is DOCSURI_GROBID_URL required" (below) and "must the live GROBID answer before a
+# batch starts" (runtime.preflight_dependencies). It lives here, not in runtime.py, because the
+# import direction only works this way — and the first attempt at "one rule" left a second literal
+# in this file, which is exactly the drift a named constant exists to prevent.
+GROBID_ONLY_SOURCES = frozenset({"SEMANTIC_SCHOLAR", "OPENALEX"})
+
+
 def validate_corpus_build_settings(settings: IngestionSettings) -> None:
     if settings.env == "local":
         return
@@ -272,7 +280,7 @@ def validate_corpus_build_settings(settings: IngestionSettings) -> None:
             "DOCSURI_CORPUS_BUILD_ROLLOUT_CONFIRMED must be true after worker rollout "
             "completion and during a worker deployment freeze"
         )
-    if sources.intersection({"SEMANTIC_SCHOLAR", "OPENALEX"}) and not settings.grobid_url:
+    if sources & GROBID_ONLY_SOURCES and not settings.grobid_url:
         errors.append("DOCSURI_GROBID_URL is required for Semantic Scholar/OpenAlex corpus build")
     if errors:
         raise RuntimeError("; ".join(errors))

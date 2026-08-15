@@ -266,7 +266,9 @@ class OpenSearchVectorStoreAdapter:
     ) -> list[ScoredRecord]:
         # Collapse runs AFTER the ANN has chosen its k neighbours and does not refill the slots
         # it frees, so breadth has to be bought in ``k`` — see _KNN_COLLAPSE_OVERSAMPLE for the
-        # sizing. ``size`` needs no such adjustment: it counts collapsed groups.
+        # sizing. ``size`` needs no such adjustment: it counts collapsed groups. Known trade: a
+        # hit dropped by _to_scored's schema-drift tolerance now under-fills the page (the old
+        # 6x over-size absorbed those by accident); drift only exists mid-reindex and is logged.
         knn: dict[str, Any] = {
             "vector": list(vector),
             "k": top_k if abstract_only else top_k * _KNN_COLLAPSE_OVERSAMPLE,

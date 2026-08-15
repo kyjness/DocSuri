@@ -88,23 +88,23 @@ def test_a_dead_grobid_stops_a_run_that_parses_non_arxiv_sources(monkeypatch) ->
         )
 
 
-def test_a_dead_grobid_only_warns_an_arxiv_only_run(monkeypatch, caplog) -> None:
+def test_a_dead_grobid_only_warns_when_not_required(monkeypatch, caplog) -> None:
     """An arXiv-id list is served by the ar5iv rung for all but a small minority, and on a small
     box GROBID is better left DOWN: it holds 1.7GB resident while Docling needs 1.6GB to re-read a
     table, and the two together killed both the container and the worker mid-paper.
 
-    So the run proceeds — but it must SAY so. Losing that slice silently is the failure this whole
-    module exists to prevent, and the fix cannot reintroduce it in the name of convenience.
+    So the run proceeds — but it must SAY so. The warning lives in the CALLER's early
+    ``probe_grobid(required=False)`` (the in-run preflight no longer probes at all when GROBID is
+    not required — see the single-probe test below), so that is where the say-so is pinned.
     """
     _dead_grobid(monkeypatch)
 
     with caplog.at_level("WARNING"):
-        preflight_dependencies(
-            _runtime(_Embedding()),
-            _settings(DOCSURI_GROBID_URL="http://grobid:8070"),
-            sources=_ARXIV_ONLY,
+        outcome = probe_grobid(
+            _settings(DOCSURI_GROBID_URL="http://grobid:8070"), required=False
         )
 
+    assert outcome is None, "not-required means warn-and-proceed, not a problem report"
     assert any("GROBID" in record.getMessage() for record in caplog.records), (
         "a down GROBID passed without a word"
     )
@@ -174,3 +174,38 @@ def test_grobid_can_be_probed_before_the_runtime_exists(monkeypatch) -> None:
     problem = probe_grobid(_settings(DOCSURI_GROBID_URL="http://grobid:8070"), required=True)
 
     assert problem is not None and "GROBID" in problem
+
+
+def test_an_empty_embedding_response_is_a_failure_not_a_pass() -> None:
+    """The Bedrock port reads ``payload.get("embeddings", [])``: a 200 whose embeddings key is
+    missing or reshaped yields [] and its per-vector width loop runs zero times — no exception.
+    The call alone would pass pre-flight green, and the batch would then die paper by paper at the
+    assembler's ``zip(..., strict=True)``. Emptiness is the one hole the ports leave open."""
+
+    class _EmptyEmbedding:
+        def embed_documents(self, texts, *, correlation_id=None):  # noqa: ARG002
+            return []
+
+    with pytest.raises(RuntimeError, match="empty response"):
+        preflight_dependencies(_runtime(_EmptyEmbedding()), _settings(), sources=_ARXIV_ONLY)
+
+
+def test_preflight_probes_grobid_only_when_the_sources_require_it(monkeypatch) -> None:
+    """The warn-only probe belongs to the CALLER (before the runtime build, where it costs no
+    model loading). Probing again inside the preflight produced a second 10s timeout and a
+    duplicate warning that read as two incidents."""
+    calls: list[str] = []
+
+    def counting_get(url, timeout=None):  # noqa: ARG001
+        calls.append(url)
+        raise ConnectionError("down")
+
+    monkeypatch.setattr("httpx.get", counting_get)
+
+    preflight_dependencies(
+        _runtime(_Embedding()),
+        _settings(DOCSURI_GROBID_URL="http://grobid:8070"),
+        sources=_ARXIV_ONLY,
+    )
+
+    assert calls == [], "an arXiv-only run's preflight must not probe GROBID at all"
