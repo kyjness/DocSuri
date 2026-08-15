@@ -1,5 +1,5 @@
-"""배포 기준선(SQS·Bedrock) 계약 테스트 — AWS 회수 상태이므로 페이크 boto 클라이언트로
-포트 계약만 보존한다(nfr-design-patterns §7). local_wiring 프로바이더 스위치 포함."""
+"""배포 어댑터(SQS·Bedrock) 계약 테스트 — 페이크 boto 클라이언트로 포트 계약만 본다
+(nfr-design-patterns §7). local_wiring의 조립 결정도 함께 건다."""
 
 from __future__ import annotations
 
@@ -90,7 +90,7 @@ def test_sqs_corrupt_payload_discarded() -> None:
     assert client.deleted  # 독약 메시지는 제거
 
 
-# ── Bedrock LLM 계약 (OpenAI 어댑터와 동일 결정 계약) ──
+# ── Bedrock LLM 계약 ──
 
 
 class _FakeBedrockClient:
@@ -145,7 +145,7 @@ def test_bedrock_termination_and_text_fallback() -> None:
     assert proposal.note == "충분합니다"
 
 
-# ── local_wiring 프로바이더 스위치 ──
+# ── local_wiring 조립 ──
 
 
 def _settings(**overrides) -> NoveltySettings:
@@ -234,7 +234,7 @@ def test_asset_port_gates_on_the_toggle_and_postgres_only() -> None:
 
 
 def test_bedrock_outage_goes_through_breaker_to_llm_unavailable() -> None:
-    """OpenAI 어댑터와 대칭 — 재시도 1회 후 실패, 차단 개방 중 즉시 거부."""
+    """외부 연동 규칙(NFR-NV2-11) — 재시도 1회 후 실패, 차단 개방 중 즉시 거부."""
     from backend.modules.novelty.adapters.external.base import SourceBreaker
     from backend.modules.novelty.adapters.llm_prompt import LlmUnavailable
 

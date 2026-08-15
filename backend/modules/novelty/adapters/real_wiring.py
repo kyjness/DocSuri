@@ -7,8 +7,8 @@ local_wiring 대신 이 조립을 선택하면 된다 — 루프 코어·프롬�
 - RDS 저장: SqlNoveltyStore 재사용(동일 스키마 — migrations/004).
 - SQS 큐: visibility timeout이 리스 역할(수신 후 비가시 = 잠금, 갱신 =
   change_message_visibility). 프로세스 내 이중 실행은 in-flight 맵으로 방지.
-- Bedrock tool-calling: Anthropic messages + tool_choice any — OpenAI 어댑터와
-  동일한 결정 계약(합성 propose_termination 포함). 와이어 포맷은
+- Bedrock tool-calling: Anthropic messages + tool_choice any(합성 propose_termination
+  포함). 와이어 포맷은
   `docsuri_shared.bedrock`이 소유하고(U7·U11과 공유), 여기엔 정책만 남는다:
   브레이커·재시도 1회·`LlmUnavailable`·결정 매핑.
 """
@@ -174,7 +174,7 @@ class BedrockToolCallingLlm:
 
     def _invoke(self, body: dict[str, Any]) -> dict[str, Any]:
         try:
-            # 재시도 1회 + 서킷 브레이커(외부 연동 규칙) — OpenAI 어댑터와 동일 실패 계약.
+            # 재시도 1회 + 서킷 브레이커(외부 연동 규칙, NFR-NV2-11).
             return self._breaker.call(
                 lambda: invoke_model(self._client, self._model_id, body)
             )

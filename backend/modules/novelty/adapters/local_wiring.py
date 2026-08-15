@@ -1,4 +1,4 @@
-"""로컬 1차 조립(TD-NV2-1~3) — redis 큐·postgres 저장·OpenAI tool-calling.
+"""로컬 1차 조립(TD-NV2-1~3) — redis 큐·postgres 저장·Bedrock tool-calling.
 
 composition root: 프로바이더·백엔드 선택은 전부 여기서만 일어난다. 도메인·루프
 코어는 어떤 구현이 조립됐는지 모른다. 설정이 없는 구성 요소는 None을 반환하거나

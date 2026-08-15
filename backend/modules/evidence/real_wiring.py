@@ -10,8 +10,7 @@ Summarization(U7) 어댑터 재사용:
   S3DocModelReader → EvidenceDocModelTool
 
 신규:
-  EvidenceExtractor/Decider → 프로바이더 스위치(DOCSURI_EVIDENCE_LLM_PROVIDER):
-    bedrock=Anthropic Sonnet 4.6(기본) · openai=gpt-4o-mini
+  EvidenceExtractor/Decider → Bedrock Anthropic Sonnet 4.6.
 """
 
 from __future__ import annotations
@@ -87,9 +86,9 @@ def build_evidence_runner(
         verify_certs=d_settings.opensearch_verify_certs,
     )
 
-    # Query-embedding: provider switch (Bedrock/OpenAI) + same-space guard. The evidence agent is a
-    # SECOND reader over the SAME index, so it must resolve the provider and validate the embedding
-    # space exactly as discovery's read path does (see helper for the why).
+    # Query-embedding: same embedder as U2 + same-space guard. The evidence agent is a
+    # SECOND reader over the SAME index, so it must resolve the same model and validate the
+    # embedding space exactly as discovery's read path does (see helper for the why).
     embedding = _build_guarded_query_embedder(d_settings, os_client, settings.region_name)
     vector_store = OpenSearchVectorStoreAdapter(os_client, d_settings.opensearch_index)
     lexical_index = OpenSearchLexicalIndexAdapter(os_client, d_settings.opensearch_index)

@@ -98,7 +98,7 @@ class FigureAssetPort(Protocol):
         ...
 
 
-# LLM 프로바이더가 받는 이미지 포맷만 허용한다(OpenAI·Anthropic 공통 교집합).
+# LLM 프로바이더(Bedrock Anthropic)가 받는 이미지 포맷만 허용한다.
 # 다른 확장자가 오면 조회를 거부한다 — 프로바이더가 400을 돌려주면 루프는 원인을
 # 알 수 없는 LlmUnavailable로 수렴해 예산만 태운다.
 _MEDIA_TYPES = {

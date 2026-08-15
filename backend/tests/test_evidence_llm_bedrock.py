@@ -1,4 +1,4 @@
-"""Bedrock LLM 어댑터 — `test_evidence_llm`(OpenAI)과 **같은 계약**을 건다.
+"""Bedrock LLM 어댑터 계약 — 도구 호출·종료·실패 좁히기·이미지 순서.
 
 프로바이더가 둘이 되는 순간 위험한 것은 문법 차이가 아니라 계약이 갈리는 것이다.
 같은 관찰을 넣었을 때 같은 제안이 나오고, 같은 실패가 같은 예외로 좁혀지고,
@@ -130,7 +130,7 @@ def test_system_prompt_goes_to_the_system_field_not_messages():
 
 
 def test_tool_choice_forces_a_call():
-    """무-호출 턴을 막는다 — OpenAI 쪽 tool_choice='required'와 같은 의도."""
+    """무-호출 턴을 막는다 — 모델이 '아무 도구도 안 부른' 애매한 턴을 만들 수 없게 한다."""
     decider, client = _decider(_tool_response("finish", {}))
 
     decider.decide(observation(), (ToolSpec("corpus_search", "d", {}),))
@@ -189,7 +189,7 @@ def test_extraction_reads_every_text_block():
 
 
 def test_extraction_tolerates_a_code_fenced_object():
-    """Anthropic에는 OpenAI의 json_object 강제 모드가 없어 펜스가 섞일 수 있다."""
+    """JSON 강제 모드가 없어 모델이 코드펜스를 두를 수 있다."""
     fenced = '```json\n{"items": [{"statement": "s"}]}\n```'
     extractor = _extractor(_text_response(fenced))
 

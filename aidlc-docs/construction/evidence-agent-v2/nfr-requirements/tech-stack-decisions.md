@@ -1,12 +1,14 @@
 # Evidence Agent v2 (U11) — 기술 스택 결정 (Tech Stack Decisions)
 
 **단계**: CONSTRUCTION → NFR Requirements (재설계 라운드) · **유닛**: U11 · **일자**: 2026-07-28
-**전제**: AWS 배포는 은퇴했고 로컬 스택(postgres·redis·opensearch·s3proxy) + OpenAI 프로바이더가 현행이다(`operations/solo-local-migration.md`). 아래 결정은 그 위에서 내린 것이며, 배포 재개 시 어댑터 교체로 흡수한다.
+**전제(당시)**: AWS 배포는 은퇴했고 로컬 스택(postgres·redis·opensearch·s3proxy) + OpenAI 프로바이더가 현행이었다(`operations/solo-local-migration.md`). 아래 결정은 그 위에서 내렸고, 배포 재개 시 어댑터 교체로 흡수한다고 적었다.
+
+> **정정(2026-08-16)**: 배포가 재개되어 실제로 그 흡수가 일어났다. TD-EV2-2가 예고한 대로 **루프 코어·프롬프트는 무변경**이었고 어댑터만 교체됐다 — 결정 자체는 유효하며 구현만 Bedrock Anthropic Sonnet 4.6이다. OpenAI 어댑터와 프로바이더 스위치는 제거됐다(단일 어댑터).
 
 | ID | 결정 | 근거 |
 |---|---|---|
 | **TD-EV2-1** | 루프는 **프레임워크 없이 직접 구현** | 상속 arch Q5=A. LangGraph는 ⑦ supervisor에서 병렬·상태 전달이 실제로 필요해질 때 |
-| **TD-EV2-2** | LLM 호출은 **포트 뒤 어댑터** — 현행 구현은 OpenAI, 프로바이더 교체는 어댑터 추가 | 헥사고날 원칙. novelty가 같은 형태로 이미 돌고 있다 |
+| **TD-EV2-2** | LLM 호출은 **포트 뒤 어댑터** — 현행 구현은 Bedrock Anthropic(2026-08-16 정정; 당시 OpenAI), 프로바이더 교체는 어댑터 교체 | 헥사고날 원칙. novelty가 같은 형태로 이미 돌고 있다 |
 | **TD-EV2-3** | 도구 레지스트리는 **allowlist deny-by-default** | novelty `ports/tools.py` 선례 — 어휘 밖 도구가 구조적으로 등록 불가 |
 | **TD-EV2-4** | 검색은 **U2 discovery 재사용**(하이브리드 + phrase) | BR-EV-2. 전용 인덱스·랭킹 금지 |
 | **TD-EV2-5** | 온디맨드 승격은 **기존 `BUILD_DOC_MODEL` 큐 경로 재사용**(enqueue + bounded polling) | 요구사항 게이트 Q15 재결정(2026-07-28). 큐 계약·워커·reader-triggered 우선순위 큐가 이미 있고 u7이 쓰고 있다. backend 의존성 closure를 늘리지 않고, 파싱 CPU가 ingestion 워커에 이미 격리돼 있다. 코디네이터는 `backend/modules/user_docmodel.py`의 enqueue+poll 패턴을 따른다. **운영 전제**: ingestion 워커 미가동 시 폴링 시간 초과 → 초록 범위로 수렴 |

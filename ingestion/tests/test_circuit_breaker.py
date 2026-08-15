@@ -257,7 +257,7 @@ def test_bedrock_throttling_is_retriable() -> None:
     throttled embed reaches the resilience layer as a raw botocore error.
 
     Classification therefore happens here and nowhere else. Getting it wrong is not hypothetical:
-    the OpenAI embedding adapter had exactly this bug — its 429 classified as permanent, so a
+    an embedding adapter here had exactly this bug — its 429 classified as permanent, so a
     rate-limited re-index gave up instead of backing off.
     """
     for code in (

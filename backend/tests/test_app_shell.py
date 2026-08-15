@@ -134,10 +134,10 @@ def test_discovery_and_accounts_actually_mount(search_configured) -> None:
 def test_discovery_search_route_is_registered(search_configured) -> None:
     # The route must EXIST once discovery is configured — the app-shell contract is only
     # "configured ⇒ router mounted". Asserted on the route table, NOT by POSTing a query: a real
-    # request runs the expander, which embeds BEFORE retrieval, so the OpenAI embedder made a
-    # live HTTPS call (billed with a sourced .env; a 4s connect wait in egress-less CI) before
-    # the dead endpoint ever produced its 503. The outage→503 mapping has its own test below
-    # with the failure injected inside the orchestrator.
+    # request runs the expander, which embeds BEFORE retrieval, so the embedder made a live
+    # provider call (billed with a sourced .env; a connect wait in egress-less CI) before the
+    # dead endpoint ever produced its 503. The outage→503 mapping has its own test below with
+    # the failure injected inside the orchestrator.
     app = create_app(_TEST_SETTINGS)
     assert "discovery" in app.state.mount_result.mounted, app.state.mount_result.skipped
     # ``app.routes`` holds opaque _IncludedRouter nodes in this FastAPI version; the OpenAPI
@@ -200,11 +200,10 @@ def test_partial_search_config_does_not_pin_readyz_at_503(monkeypatch) -> None:
     """An endpoint with no embedder is *unconfigured*, not broken — readiness must say so.
 
     Regression guard for a gate the readiness check used to re-derive: it keyed on
-    DOCSURI_OPENSEARCH_ENDPOINT alone while the real gate is
-    ``endpoint AND (bedrock model id OR provider == "openai")``. Since the provider defaults
-    to bedrock, setting only the endpoint made discovery skip while readiness still demanded
-    it — a permanent 503 no amount of restarting would clear. The two conditions now come
-    from one place (the mount decision itself), so they cannot drift apart again.
+    DOCSURI_OPENSEARCH_ENDPOINT alone while the real gate also requires an embedding model.
+    Setting only the endpoint made discovery skip while readiness still demanded it — a
+    permanent 503 no amount of restarting would clear. The two conditions now come from one
+    place (the mount decision itself), so they cannot drift apart again.
     """
     monkeypatch.setenv("DOCSURI_OPENSEARCH_ENDPOINT", _DEAD_OPENSEARCH)
     monkeypatch.setenv("DOCSURI_EMBEDDING_PROVIDER", "bedrock")

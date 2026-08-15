@@ -7,7 +7,7 @@ DocModels were. This script rebuilds the search index from them:
                    → OpenSearchVectorIndex.bulk_upsert   (mapping: shared papers_index_body)
 
 THE EMBEDDING PORT COMES FROM THE ENVIRONMENT, exactly as the ingest pipeline picks it
-(``DOCSURI_EMBEDDING_PROVIDER``). It used to hardcode OpenAI, which was right for the corpus this
+(``DOCSURI_BEDROCK_MODEL_ID``). It used to hardcode the model, which was right for the corpus this
 tool was written for and silently wrong for any other: run against the Bedrock-embedded deployment
 index it would have written a few hundred papers into a DIFFERENT embedding space, and — worse —
 ``_ensure_index`` re-stamps the index manifest, so it would have overwritten the very manifest the

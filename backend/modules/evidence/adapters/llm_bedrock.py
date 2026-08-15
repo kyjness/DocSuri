@@ -119,7 +119,7 @@ def usage_cost(
 
 
 def parse_json_object(text: str) -> dict[str, Any]:
-    """본문에서 첫 JSON 객체를 잘라낸다. Bedrock에는 OpenAI의 json_object 강제 모드가 없어
+    """본문에서 첫 JSON 객체를 잘라낸다. JSON 강제 모드가 없어
     모델이 코드펜스를 두를 수 있으므로, 양쪽이 같은 파서를 써야 한쪽만 고쳐지지 않는다."""
     text = (text or "").strip()
     start, end = text.find("{"), text.rfind("}")
@@ -229,8 +229,8 @@ class BedrockExtractor(_BedrockBase):
         )
         response = self._invoke(self._body(system, messages))
         # Join every text block: a preface block before the JSON block would otherwise make the
-        # first block parse to [] with no error — the same prompt through OpenAI's json_object
-        # mode arrives as one string, and the two paths must not diverge on shape.
+        # first block parse to [] with no error, and an extraction turn that yields nothing is
+        # indistinguishable from papers that carried no evidence.
         return parse_json_items("\n".join(text_blocks(response)))
 
 

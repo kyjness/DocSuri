@@ -1,6 +1,22 @@
 # Solo/Local Migration — 팀 AWS 운영 종료 후 로컬 개발 환경 전환
 
-> **Status**: in progress (2026-07-14 시작)
+> **Status**: ⛔ **SUPERSEDED (2026-08-16)** — 이 문서의 절차를 그대로 따르지 말 것.
+> 아래 본문은 2026-07 "AWS 회수 → 로컬 + OpenAI" 전환의 **결정 기록**으로 보존한다.
+>
+> **무엇이 바뀌었나.** AWS가 복구되어 Bedrock이 다시 현행이고, 코퍼스는
+> `cohere.embed-v4:0`으로 재색인됐다. OpenAI 경로(임베딩 어댑터 2개 · LLM 어댑터 3개 ·
+> 프로바이더 스위치 5개)는 저장소에서 **제거**됐다. 따라서 §5의 `OPENAI_API_KEY` /
+> `DOCSURI_EMBEDDING_PROVIDER=openai` / `DOCSURI_LLM_PROVIDER=openai` 설정은 더 이상
+> 읽히지 않으며, 설정해도 무시된다.
+>
+> **왜 되돌렸나.** 이 문서 §2가 "차원 파라미터로 vector_spec 계약을 유지"한다고 적은 것이
+> 정확히 위험 지점이었다 — OpenAI 1024차원과 Cohere 1024차원은 **차원 검사에 안 걸리는
+> 다른 공간**이라, 색인과 리더가 갈리면 증상이 "검색 품질이 나쁘다"로만 나타난다.
+> 코퍼스가 Bedrock으로 재색인된 이후 OpenAI 리더는 대체 경로가 아니라 공간 불일치였다.
+>
+> 현행 설정은 `.env.example`, 배포 형상은 `ops/cdk/`를 보라.
+
+> **Status(당시)**: in progress (2026-07-14 시작)
 > **Owner**: kyjness (solo fork)
 > **위상**: 운영 문서. AI-DLC 동결 산출물이 아니며, 전환 작업의 결정 기록 + 실행 절차를 담는다.
 
