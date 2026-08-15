@@ -4,10 +4,19 @@ The shell must boot, serve health, generate OpenAPI, and never let one module si
 With the ``docsuri-discovery`` path source now declared (backend/pyproject.toml), accounts +
 discovery actually MOUNT here; the graceful-skip path is still exercised via an injected
 absent module (``test_absent_module_skips_gracefully``).
+
+discovery is real-first (no mock fallback), so it mounts only when the read path is configured.
+The ``_search_configured`` autouse fixture points it at an unreachable endpoint: wiring-time
+construction does not touch the network (``space_guard`` treats an unreadable mapping as
+"unverified" and proceeds), so the mount is exercised for real while every request fails closed.
+That is what keeps ``test_discovery_and_accounts_actually_mount`` — the guard against discovery
+silently skipping — meaningful without a live cluster. ``test_discovery_skips_when_unconfigured``
+covers the other side of the contract.
 """
 
 from __future__ import annotations
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -17,6 +26,17 @@ from backend.wiring import MountResult, mount_modules
 
 # In-memory SQLite so the accounts seam (if ever present) needs no DB file on disk.
 _TEST_SETTINGS = Settings(env="test", database_url="sqlite://")
+
+# Reserved-but-unroutable (RFC 5735 "this host"), port 1: connect fails immediately rather
+# than hanging on a timeout, keeping the suite fast.
+_DEAD_OPENSEARCH = "http://127.0.0.1:1"
+
+
+@pytest.fixture(autouse=True)
+def _search_configured(monkeypatch) -> None:
+    """Configure discovery's real read path so it mounts. Undone per-test by monkeypatch."""
+    monkeypatch.setenv("DOCSURI_OPENSEARCH_ENDPOINT", _DEAD_OPENSEARCH)
+    monkeypatch.setenv("DOCSURI_EMBEDDING_PROVIDER", "openai")
 
 
 def _client() -> TestClient:
@@ -97,14 +117,16 @@ def test_discovery_and_accounts_actually_mount() -> None:
     assert all(name == "summarization" for name, _ in result.skipped), result.skipped
 
 
-def test_discovery_search_endpoint_is_live() -> None:
-    # The mounted discovery router serves /api/search end-to-end through the mock pipeline,
-    # now gated by the REAL U6 GroundingEnforcementHook (INV-1). The mock derives retrieved
-    # records from the ranked candidates, so enforce() passes and cards are returned — this
-    # asserts the route is LIVE and grounding does not spuriously block the happy path.
-    resp = _client().post("/api/search", json={"query": "transformer attention"})
-    assert resp.status_code == 200
-    assert "cards" in resp.json()
+def test_discovery_search_route_is_registered() -> None:
+    # The route must EXIST once discovery is configured. With the store unreachable the request
+    # fails closed (503, INV-3) rather than fabricating results — the distinction that matters
+    # is 503-not-404: 404 would mean the router never mounted. End-to-end happy-path search is
+    # covered in discovery's own suite against build_mock_orchestrator; here the app-shell
+    # contract is only "configured ⇒ route present, and an outage is retryable, not missing".
+    resp = TestClient(create_app(_TEST_SETTINGS), raise_server_exceptions=False).post(
+        "/api/search", json={"query": "transformer attention"}
+    )
+    assert resp.status_code == 503, resp.text
 
 
 def test_search_store_outage_maps_to_fail_closed_503() -> None:
@@ -127,19 +149,37 @@ def test_search_store_outage_maps_to_fail_closed_503() -> None:
     assert resp.json()["requestId"]  # echoes a correlation id, like the 500 handler (errors.py)
 
 
-def test_paper_metadata_endpoint_is_live() -> None:
-    # The mounted discovery router serves GET /api/papers/{id} (paper-detail header metadata,
-    # U2-owned corpus data) end-to-end through the mock pipeline. A known fixture id returns the
-    # projected metadata (full abstract); an unknown id degrades to 404 (detail page falls back
-    # to the arXiv link-out). Distinct from /api/papers/{id}/full-text (summarization/U7).
-    client = _client()
-    ok = client.get("/api/papers/2401.00001")
-    assert ok.status_code == 200
-    body = ok.json()
-    assert body["title"] == "Diffusion Models for Protein Structure Prediction"
-    assert body["arxivId"] == "2401.00001v1"
-    assert body["abstract"]  # full abstract present
-    assert client.get("/api/papers/9999.99999").status_code == 404
+def test_paper_metadata_route_is_registered() -> None:
+    # GET /api/papers/{id} (paper-detail header metadata, U2-owned corpus data) rides the same
+    # discovery router. Same contract as search: present when configured, and a store outage is
+    # a fail-closed 503 — NOT the 404 the detail page uses to fall back to the arXiv link-out.
+    # Conflating the two would make an outage look like "this paper does not exist".
+    # Distinct from /api/papers/{id}/full-text (summarization/U7).
+    resp = TestClient(create_app(_TEST_SETTINGS), raise_server_exceptions=False).get(
+        "/api/papers/2401.00001"
+    )
+    assert resp.status_code == 503, resp.text
+
+
+def test_discovery_skips_when_unconfigured(monkeypatch) -> None:
+    # The other side of the real-first contract: no read path configured ⇒ discovery does not
+    # mount at all, and /api/search 404s instead of answering 200 with fabricated cards. The
+    # mock fallback this replaces was indistinguishable from a real answer at the HTTP layer.
+    monkeypatch.delenv("DOCSURI_OPENSEARCH_ENDPOINT", raising=False)
+    monkeypatch.delenv("DOCSURI_BEDROCK_MODEL_ID", raising=False)
+    monkeypatch.setenv("DOCSURI_EMBEDDING_PROVIDER", "bedrock")
+
+    app = create_app(_TEST_SETTINGS)
+    skipped = dict(app.state.mount_result.skipped)
+
+    assert "discovery" not in app.state.mount_result.mounted
+    assert "not configured" in skipped["discovery"]
+    assert TestClient(app).post("/api/search", json={"query": "x"}).status_code == 404
+    # ...and readiness stays green: an unconfigured module is legitimately absent, so /readyz
+    # must not pin the whole process at 503 (health._required_modules gates on the same env).
+    readyz = TestClient(app).get("/readyz")
+    assert readyz.status_code == 200
+    assert readyz.json()["blocking"] == []
 
 
 def test_absent_module_skips_gracefully_not_fatal() -> None:

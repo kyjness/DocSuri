@@ -9,9 +9,9 @@ already exist.
 Per-module integration idioms differ (see each ``_mount_*``):
   • accounts (U3) exposes a ready ``router`` + a ``get_db_session`` seam to override, and a
     Redis ``SessionRepository`` singleton to close on shutdown.
-  • discovery (U2) exposes *factories* (``build_mock_orchestrator`` + ``build_router``) that
-    need dependency injection — the mock orchestrator is wired with the REAL U6 grounding hook
-    (docsuri-ops); only the OpenSearch/Bedrock data adapters remain mock-first.
+  • discovery (U2) exposes *factories* (``build_real_orchestrator`` + ``build_router``) that
+    need dependency injection — the orchestrator is wired with the REAL U6 grounding hook
+    (docsuri-ops). Real-first like summarization: unconfigured → skipped, never a mock fallback.
 
 The shell owns this file (CODEOWNERS ``/backend/``); module owners change only their lane.
 """
@@ -157,10 +157,24 @@ def _mount_discovery(app: FastAPI, settings: Settings, result: MountResult) -> N
     from discovery.api.router import build_router, register_search_unavailable_handler
     from docsuri_ops.grounding import GroundingEnforcementHook
 
-    # Read path selection (U2 real adapters, critical path ⑥): when the shared OpenSearch
-    # cluster + Bedrock model are configured (DOCSURI_OPENSEARCH_ENDPOINT + _BEDROCK_MODEL_ID),
-    # wire the REAL OpenSearch/Bedrock read path; otherwise stay mock-first. The cluster itself
-    # is provisioned by the shared infra track (U1 infra + system event bus) — U2 only reads it.
+    # Read path gate (U2 real adapters, critical path ⑥): the real OpenSearch/Bedrock path is
+    # the ONLY path. Unconfigured → skip the mount entirely, exactly as summarization (U7) does
+    # — never a mock fallback. A mock read path answers /api/search with 200 and fabricated
+    # cards, and the only signal separating that from a real answer was one startup log line
+    # (read_path was recorded nowhere on app.state or MountResult). Against a live corpus that
+    # is indistinguishable from a search-quality bug, so a missing route is the honest outcome.
+    discovery_settings = DiscoverySettings.from_env()
+    if not discovery_settings.search_enabled:
+        result.skipped.append(
+            ("discovery", "real read path not configured (no OpenSearch endpoint / embedder)")
+        )
+        log.info("app-shell: discovery real read path not configured — skipping mount")
+        return
+
+    # Heavy wiring is imported only past the gate (the U7 idiom): an unconfigured process pays
+    # neither the opensearch-py/boto3 import nor a ModuleNotFoundError it cannot act on.
+    from discovery.real_wiring import build_real_orchestrator
+
     # The process-wide U6 hub the app-shell built (CloudWatch-backed when CLOUDWATCH_NAMESPACE
     # is set, else in-memory). Injecting it here is what routes U2's app metrics to CloudWatch
     # (US-R4): the factories default to NoopObservabilityHub, so without this discovery's
@@ -168,21 +182,11 @@ def _mount_discovery(app: FastAPI, settings: Settings, result: MountResult) -> N
     observability = getattr(app.state, "observability", None)
     cost_guard = getattr(app.state, "cost_guard", None)
 
-    discovery_settings = DiscoverySettings.from_env()
-    if discovery_settings.search_enabled:
-        from discovery.real_wiring import build_real_orchestrator
-
-        bundle = build_real_orchestrator(
-            discovery_settings,
-            observability=observability,
-            cost_guard=cost_guard,
-        )
-        read_path = f"real(opensearch+{discovery_settings.embedding_provider})"
-    else:
-        from discovery.testing.wiring import build_mock_orchestrator
-
-        bundle = build_mock_orchestrator(observability=observability, cost_guard=cost_guard)
-        read_path = "mock"
+    bundle = build_real_orchestrator(
+        discovery_settings,
+        observability=observability,
+        cost_guard=cost_guard,
+    )
 
     # Wire direct history recording when EventBridge is absent but library is mounted.
     # _DirectHistoryPublisher replaces the InMemoryEventPublisher inside the orchestrator so
@@ -205,11 +209,11 @@ def _mount_discovery(app: FastAPI, settings: Settings, result: MountResult) -> N
         result.cleanups.append(_close_direct_publisher)
         log.info("app-shell: discovery wired direct history publisher (no EventBridge)")
 
-    # The grounding gate is the REAL U6 single authority (INV-1) in BOTH modes — replacing the
-    # always-pass StubGroundingHook: enforce() blocks any exposed arXiv id/url absent from the
-    # retrieved records and abstains when there is nothing to ground against. With the real
-    # OpenSearch adapter the retrieved set is independent of the ranked candidates, so the hook
-    # is now load-bearing (not trivially passing as it did against the mock adapter).
+    # The grounding gate is the REAL U6 single authority (INV-1), never the always-pass
+    # StubGroundingHook: enforce() blocks any exposed arXiv id/url absent from the retrieved
+    # records and abstains when there is nothing to ground against. Against the real OpenSearch
+    # adapter the retrieved set is independent of the ranked candidates, so the hook is
+    # load-bearing rather than trivially passing.
     grounding_hook = GroundingEnforcementHook()
     app.state.discovery_bundle = bundle
     app.state.grounding_hook = grounding_hook
@@ -256,13 +260,16 @@ def _mount_discovery(app: FastAPI, settings: Settings, result: MountResult) -> N
     # stays single-sourced (no dev/app-shell drift).
     register_search_unavailable_handler(app)
 
-    # The paper-detail metadata endpoint (GET /api/papers/{id}) is U2-owned (corpus data); both
-    # bundles expose a paper_service. getattr keeps this resilient if a bundle predates it.
+    # The paper-detail metadata endpoint (GET /api/papers/{id}) is U2-owned (corpus data).
+    # getattr keeps this resilient if a bundle predates paper_service.
     app.include_router(
         build_router(bundle.orchestrator, grounding_hook, getattr(bundle, "paper_service", None))
     )
     result.mounted.append("discovery")
-    log.info("app-shell: discovery mounted (read path = %s)", read_path)
+    log.info(
+        "app-shell: discovery mounted (read path = real(opensearch+%s))",
+        discovery_settings.embedding_provider,
+    )
 
 
 def _is_postgres(database_url: str) -> bool:

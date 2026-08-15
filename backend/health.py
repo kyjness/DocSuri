@@ -43,9 +43,14 @@ def readyz(request: Request, response: Response) -> dict:
 
 
 def _required_modules() -> set[str]:
+    """Modules whose absence makes this process not ready.
+
+    The rule for the real-first modules is "configured ⇒ must mount": a module you pointed at
+    an endpoint is expected to serve, while one you never configured is legitimately absent.
+    Listing them unconditionally would pin every unconfigured process at a permanent 503.
+    """
     required = {
         "accounts",
-        "discovery",
         "library",
         "mypage",
         "ops",
@@ -57,4 +62,8 @@ def _required_modules() -> set[str]:
         required.add("research")
     if os.getenv("DOCSURI_SUMMARY_BUCKET"):
         required.add("summarization")
+    # discovery went real-first (no mock fallback), so it now skips when unconfigured exactly
+    # as summarization does — and gets the same conditional treatment.
+    if os.getenv("DOCSURI_OPENSEARCH_ENDPOINT"):
+        required.add("discovery")
     return required
