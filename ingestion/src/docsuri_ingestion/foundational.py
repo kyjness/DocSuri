@@ -138,14 +138,20 @@ def load_ledger(path: pathlib.Path) -> dict[str, str]:
 
 
 def read_redo(path: pathlib.Path) -> frozenset[str]:
-    """arXiv ids to re-ingest even though the ledger says they succeeded, one per line.
+    """arXiv ids to re-INGEST even though the ledger says they succeeded, one per line.
 
-    A paper that succeeded under an older parser or chunker is not "done" in any useful sense —
-    when the chunk cap went 128 -> 512, the 217 papers that had been truncated were all recorded
-    as NEW, so ``--retry-failed`` could not see them. The obvious workaround is to delete their
-    lines from the ledger, and that is exactly what this exists to avoid: the ledger is
-    append-only so a crash cannot corrupt it, and hand-editing it puts the whole resume record one
-    slip away from being lost.
+    FOR PARSER CHANGES ONLY — not for a chunker or embedding change. Measured (2026-08-15): the
+    217 papers truncated by the old chunk cap were fed back through here and every one returned
+    DUPLICATE. That is correct behaviour, not a bug: ``ingest_one``'s dedup compares the PAPER's
+    fingerprint, the paper did not change, and re-fetching and re-parsing it would produce the
+    identical doc-model. What changed was our chunker.
+
+    Re-chunking or re-embedding a stored doc-model is a REINDEX, and the tool for it is
+    ``tools/local/reindex_docmodels.py --ids <file>`` — no arXiv fetch, no GROBID, no Docling.
+    This flag is for the case where the doc-model itself is stale.
+
+    The ledger is append-only so a crash cannot corrupt it, which is why this exists at all:
+    hand-deleting rows to force a re-run puts the whole resume record one slip away from loss.
     """
     return frozenset(
         candidate

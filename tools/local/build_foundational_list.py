@@ -79,12 +79,20 @@ S2 = "https://api.semanticscholar.org/graph/v1"
 # by citations does not contain LLaMA-2, ReAct or Self-Consistency anywhere in its first 1,000
 # rows, while "large language model" has them at ranks 2, 5 and 11. One phrase per bucket
 # silently excluded the current generation of the very subfield the corpus is being built for.
+# Targets sum to the deployment corpus ceiling — 8 GB Lightsail / 1.73 MB per paper measured
+# (Q1). They grew from 1,500 when the date-window recent slice was dropped (2026-08-15): that
+# slice's ~2,000-paper budget now buys frontier papers HERE, selected by citation and survey
+# signal, instead of five days of everything.
+#
+# The split follows what U12 gets asked. cs.CL and cs.AI carry the weight because the questions
+# are about language models and about agents/reasoning; cs.LG is what both keep citing; cs.CV is
+# multimodal cross-over only.
 BUCKETS = (
     # (name, target, queries, note)
-    ("canon", 300, (), "cross-field canon — filled from the global top by merged score"),
+    ("canon", 600, (), "cross-field canon — filled from the global top by merged score"),
     (
         "cs.CL",
-        550,
+        1200,
         (
             "large language model",
             "natural language processing",
@@ -96,17 +104,17 @@ BUCKETS = (
     ),
     (
         "cs.AI",
-        350,
+        900,
         ("artificial intelligence", "llm agent", "chain of thought reasoning", "tool use"),
         "agents · reasoning · planning",
     ),
     (
         "cs.LG",
-        200,
+        500,
         ("machine learning", "deep learning", "representation learning"),
         "ML foundations that NLP/AI work keeps citing",
     ),
-    ("cs.CV", 100, ("computer vision", "vision language model"), "multimodal cross-over only"),
+    ("cs.CV", 300, ("computer vision", "vision language model"), "multimodal cross-over only"),
 )
 # Surveys cost one request each and their reference sets overlap heavily between sibling
 # phrases, so only the first few phrases of a bucket are mined for them.
@@ -114,19 +122,32 @@ SURVEY_PHRASES_PER_BUCKET = 2
 
 # Surveys older than this rarely reflect what a subfield currently treats as its foundation;
 # newer than ~1 year they have not accumulated enough references to be worth a request.
-SURVEY_YEARS = "2019-2025"
-# Foundational work predates the recent slice by construction. The upper bound keeps the list
-# from filling with 2025 papers that are merely popular, which the recent slice already covers.
-#
-# TWO AGE BANDS, because absolute citation count is not comparable across them. Ranking one
+SURVEY_YEARS = "2019-2026"
+# THREE AGE BANDS, because absolute citation count is not comparable across them. Ranking one
 # pooled list by citations lets 2015-2018 win every slot — a 2023 paper cannot accumulate
 # 20,000 citations no matter how load-bearing it is. Measured: a single-band run produced a
 # list with Transformer/BERT/GPT-3 but WITHOUT LLaMA-2, Self-Consistency, ReAct or RoPE, which
-# is exactly the prior art an agent/reasoning novelty question needs. Giving the recent band
-# its own quota per bucket is what puts them back.
+# is exactly the prior art an agent/reasoning novelty question needs. Giving each band its own
+# quota per bucket is what puts them back.
+#
+# THE FRONTIER BAND REPLACES THE DATE-WINDOW RECENT SLICE (2026-08-15). The original plan paired
+# this list with a date-window harvest of the most recent N days. Measured, that does not work at
+# this budget: cs.CL+cs.AI produce ~378 papers/day, so an 8 GB box's ~2,000-paper recent budget
+# buys **5 days** — and answering "did someone just do this" needs months. A date window buys
+# VOLUME (mostly papers nobody will ever cite); selecting by citation and survey signal buys
+# DENSITY, which is what U12 actually reasons over. 1,000 frontier papers chosen this way beat
+# 138,000 chosen by date.
+#
+# The trade is explicit: a paper published in the last month or two has no citations yet and this
+# signal cannot see it. That gap is FR-48's (판정 보류), not the corpus's — closing it by date
+# would cost 138,000 papers for one year of coverage.
 CANDIDATE_YEARS = "2012-2021"
 RECENT_BAND_YEARS = "2022-2024"
 RECENT_BAND_SHARE = 0.35
+# Citations accrue for a year or two, so a frontier paper's count is small in absolute terms and
+# only comparable within its own band — hence the separate quota rather than a widened window.
+FRONTIER_BAND_YEARS = "2025-2026"
+FRONTIER_BAND_SHARE = 0.35
 SURVEYS_PER_BUCKET = 12
 # S2 caps /references paging; one page is plenty — a survey's first 1000 references cover it.
 REFERENCE_LIMIT = 1000
@@ -367,10 +388,12 @@ def main() -> int:
             # Sized to what the fill can actually consume: the bucket's own slots plus whatever
             # the canon tier may take off the top. `target * 2` per query AND per band asked for
             # 11,000 candidates for a 550-slot bucket, which is what drove the wasted paging.
-            for band in (CANDIDATE_YEARS, RECENT_BAND_YEARS):
-                want = canon_target + (
-                    int(target * RECENT_BAND_SHARE) if band == RECENT_BAND_YEARS else target
-                )
+            for band, share in (
+                (CANDIDATE_YEARS, 1.0),
+                (RECENT_BAND_YEARS, RECENT_BAND_SHARE),
+                (FRONTIER_BAND_YEARS, FRONTIER_BAND_SHARE),
+            ):
+                want = canon_target + int(target * share)
                 rows = collect_by_citation(query, cache, want=want, years=band)
                 for p in rows:
                     aid = _arxiv_id(p)
@@ -458,20 +481,36 @@ def main() -> int:
         per_cat[categories.get(rec["arxiv_id"], "?")] += 1
     print("[canon] 분야 구성: " + " · ".join(f"{k} {v}" for k, v in per_cat.most_common(6)))
     recent_from = int(RECENT_BAND_YEARS.split("-")[0])
+    frontier_from = int(FRONTIER_BAND_YEARS.split("-")[0])
     for name, target, _queries, _note in BUCKETS[1:]:
-        quota = int(target * RECENT_BAND_SHARE)
-        eligible = [
-            r for r in ranked if name in r["buckets"] and r["arxiv_id"] not in chosen
-        ]
-        # `ranked` is already in score order, so slicing keeps that order inside each band. The
-        # recent band goes first up to its quota — the older band always wins on absolute
-        # citations and would otherwise consume the bucket before a 2023 paper is reached.
-        recent = [r for r in eligible if r["year"] >= recent_from][:quota]
-        picked = (recent + [r for r in eligible if r["year"] < recent_from])[:target]
+        eligible = [r for r in ranked if name in r["buckets"] and r["arxiv_id"] not in chosen]
+        # THE QUOTA HAS TO REACH THE FILL, not just the collection. Splitting the SEARCH into
+        # bands but then ranking one pooled list undoes the split: score is
+        # log10(citations) + 1.5*surveys, and a 2025 paper is behind on both — DeepSeek-R1 has
+        # 5,522 citations against InstructGPT's 23,352, and surveys have not covered it yet. A
+        # first attempt gave "2022 and newer" a single shared quota and the frontier still came
+        # out at 64 of 3,500 (2%), because 2022-2023 consumed that quota on absolute citations.
+        # So each band draws from its own pool, oldest last.
+        bands = (
+            ([r for r in eligible if r["year"] >= frontier_from], FRONTIER_BAND_SHARE),
+            (
+                [r for r in eligible if recent_from <= r["year"] < frontier_from],
+                RECENT_BAND_SHARE,
+            ),
+            ([r for r in eligible if r["year"] < recent_from], 1.0),
+        )
+        picked: list[dict] = []
+        for pool_rows, share in bands:
+            picked += pool_rows[: int(target * share)]
+        picked = picked[:target]
         for rec in picked:
             chosen[rec["arxiv_id"]] = name
-        n_recent = sum(1 for r in picked if r["year"] >= recent_from)
-        print(f"[{name}] 배정 {len(picked)}/{target} (2022~ {n_recent}편, 할당 {quota})")
+        n_front = sum(1 for r in picked if r["year"] >= frontier_from)
+        n_recent = sum(1 for r in picked if recent_from <= r["year"] < frontier_from)
+        print(
+            f"[{name}] 배정 {len(picked)}/{target} "
+            f"(최전선 {n_front} · 최근 {n_recent} · 정본 {len(picked) - n_front - n_recent})"
+        )
 
     out = pathlib.Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)

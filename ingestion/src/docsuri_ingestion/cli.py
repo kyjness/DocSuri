@@ -79,8 +79,9 @@ def main(argv: list[str] | None = None) -> int:
     foundational.add_argument(
         "--redo",
         dest="redo_path",
-        help="이 파일에 적힌 arXiv id는 원장이 성공으로 적어뒀어도 다시 돈다 "
-        "(파서·청커가 바뀌어 이전 산출물이 낡았을 때). 한 줄에 하나, # 뒤는 주석",
+        help="이 파일에 적힌 arXiv id를 원장 결과와 무관하게 다시 수집한다. "
+        "**파서가 바뀌었을 때만** 쓴다 — 청커·임베딩만 바뀐 경우 dedup이 DUPLICATE로 끊으므로 "
+        "tools/local/reindex_docmodels.py --ids 를 써야 한다. 한 줄에 하나, # 뒤는 주석",
     )
     foundational.add_argument("--dry-run", action="store_true")
 
