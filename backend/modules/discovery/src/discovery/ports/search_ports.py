@@ -108,6 +108,24 @@ class LexicalIndexAdapter(Protocol):
         """
         ...
 
+    def phrase_search(
+        self,
+        phrase: str,
+        top_k: int,
+        paper_ids: Sequence[str] | None = None,
+    ) -> list[ScoredRecord]:
+        """Exact-phrase matches over ``abstract`` and ``lexicalTerms``, ``top_k`` DISTINCT PAPERS.
+        ``paper_ids`` narrows to those papers (bare ids, no version suffix).
+        Raises ``IndexUnavailable``.
+
+        Declared here even though only U11's evidence path calls it: it was NOT in this protocol
+        when the paper-level contract was introduced, so updating the contract did not reach it and
+        it kept returning chunks — measured, 128 hits spanning a single paper, against a caller
+        asking for 20 distinct ones. A method the protocol does not name is a method the protocol
+        cannot keep honest.
+        """
+        ...
+
 
 @runtime_checkable
 class RerankAdapter(Protocol):

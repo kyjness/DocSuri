@@ -55,9 +55,10 @@ def test_knn_search_builds_query_and_deserializes_index_record() -> None:
     assert out[0][1] == pytest.approx(0.91)
     index, body = fake.last
     assert index == "docsuri-corpus-v1"
-    # ``top_k`` counts PAPERS, so the ANN is asked for a multiple of it and the result is
-    # collapsed back down — see test_search_candidate_diversity.py for why.
-    assert body["size"] == 20 * _KNN_COLLAPSE_OVERSAMPLE
+    # ``top_k`` counts PAPERS: the ANN is asked for a multiple of it (collapse cannot refill the
+    # slots it frees) while ``size`` — which counts collapsed groups — stays at top_k.
+    # See test_search_candidate_diversity.py for the measurements.
+    assert body["size"] == 20
     assert body["query"]["knn"]["vector"]["k"] == 20 * _KNN_COLLAPSE_OVERSAMPLE
     assert body["collapse"] == {"field": "paperId"}
 

@@ -118,7 +118,7 @@ class MockLexicalIndexAdapter:
             haystack = f"{record.abstract} {record.lexicalTerms}".lower()
             if needle in haystack:
                 scored.append((record, 1.0))
-        return scored[:top_k]
+        return _one_per_paper(scored, top_k)
 
 
 class MockRerankAdapter:

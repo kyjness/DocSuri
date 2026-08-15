@@ -225,9 +225,27 @@ def _to_scored(hits: list[dict[str, Any]]) -> list[ScoredRecord]:
 
 # How many chunks the ANN is asked for per paper slot. Chunking is block-level (~91 chunks per
 # paper), so the k nearest chunks cluster onto far fewer papers than k. Measured on the 827-paper
-# deploy index: k=150 -> 55 distinct, k=300 -> 84, k=600 -> 127, k=900 -> 165. Six is the smallest
-# factor that clears the retriever's 150-paper target with headroom.
+# deploy index: k=150 -> 55 distinct papers, k=300 -> 84, k=600 -> 127, k=900 -> 165. Six is the
+# smallest factor that clears the retriever's 150-paper target with headroom.
 _KNN_COLLAPSE_OVERSAMPLE = 6
+
+
+def _paper_level_body(query: dict, top_k: int) -> dict:
+    """A search body that returns ``top_k`` PAPERS — one row each, the paper's best-scoring chunk.
+
+    Every query this adapter issues wants papers, never chunks, and the reason is structural:
+    ``title`` and ``abstract`` are COPIED onto every chunk of a paper, so any match on them scores
+    that paper's whole chunk set identically and one paper fills the slice. Measured on the deploy
+    index, before this existed: a BM25 query returned 150 hits spanning **2** papers, and a phrase
+    query 128 hits spanning **1**.
+
+    So it lives here rather than being spelled out per method — it was spelled out per method
+    once, and the third method (``phrase_search``) was missed, which is exactly the shape of the
+    bug this prevents. ``size`` counts collapsed groups, so no over-fetch is needed to fill it.
+    (The ANN path is the exception and builds its own body: collapse there runs AFTER the k
+    neighbours are chosen and does not refill the freed slots.)
+    """
+    return {"size": top_k, "query": query, "collapse": {"field": "paperId"}}
 
 
 class OpenSearchVectorStoreAdapter:
@@ -246,35 +264,30 @@ class OpenSearchVectorStoreAdapter:
     def knn_search(
         self, vector: Sequence[float], top_k: int, abstract_only: bool = False
     ) -> list[ScoredRecord]:
-        # Ask the ANN for MORE than we want, then keep one chunk per paper. A paper is ~91 chunks
-        # (block-level chunking), so a topically close paper occupies many of the k slots: measured
-        # on the deploy index, a plain k=150 returned 150 chunks spanning only 55 distinct papers.
+        # The one query that cannot use ``_paper_level_body`` as-is: collapse runs AFTER the ANN
+        # has chosen its k neighbours and does not refill the slots it frees, so breadth has to be
+        # bought in ``k`` (measured: k=150 collapsed from 150 hits down to 55 papers).
         #
-        # Collapse alone does NOT fix that — the ANN picks its k neighbours FIRST and collapse then
-        # dedups them without refilling the freed slots (measured: 150 hits -> 55 hits). So the
-        # over-fetch is what buys the breadth and collapse only removes the duplicates.
-        # Measured on the deploy index: k=900 -> 165 distinct papers, 54ms (vs 63ms for the
-        # un-collapsed k=150, because collapse returns fewer rows to fetch).
-        fetch_k = top_k if abstract_only else top_k * _KNN_COLLAPSE_OVERSAMPLE
-        knn: dict[str, Any] = {"vector": list(vector), "k": fetch_k}
+        # ``size`` still counts collapsed GROUPS, so it stays at top_k — asking for ``fetch_k``
+        # rows would transfer six times the records the caller keeps, each carrying a 1024-float
+        # vector to validate and then discard.
+        knn: dict[str, Any] = {
+            "vector": list(vector),
+            "k": top_k if abstract_only else top_k * _KNN_COLLAPSE_OVERSAMPLE,
+        }
         if abstract_only:
             # Efficient k-NN filtering: restrict the ANN search to abstract chunks (lite scope).
             # One abstract per paper, so breadth is guaranteed by construction and no over-fetch
-            # is needed — the collapse below is a no-op that costs nothing.
+            # is needed — the collapse is then a no-op that costs nothing.
             knn["filter"] = {"term": {"section": "abstract"}}
-        body = {
-            "size": fetch_k,
-            "query": {"knn": {"vector": knn}},
-            "collapse": {"field": "paperId"},
-        }
         hits = _search_hits(
             self._client,
             self._index,
-            body,
+            _paper_level_body({"knn": {"vector": knn}}, top_k),
             message="OpenSearch k-NN query failed",
             breaker=self._breaker,
         )
-        return _to_scored(hits)[:top_k]
+        return _to_scored(hits)
 
 
 class OpenSearchPaperLookupAdapter:
@@ -346,24 +359,9 @@ class OpenSearchLexicalIndexAdapter:
         top_k: int,
         fields: Sequence[str] = ("title", "abstract", "lexicalTerms"),
     ) -> list[ScoredRecord]:
-        body = {
-            "size": top_k,
-            "query": {
-                "multi_match": {
-                    "query": " ".join(terms),
-                    "fields": list(fields),
-                }
-            },
-            # One row per paper, its best-scoring chunk. Without this a single paper takes the
-            # whole slice: ``title``/``abstract`` are COPIED onto every chunk of a paper, so a
-            # lite-scope match scores all ~91 (up to the chunk cap) of them identically and they
-            # all land in the result. Measured on the deploy index before this line: 150 hits
-            # spanning **2** distinct papers; with it, 150 papers.
-            #
-            # Collapse happens during the query here (unlike the ANN path), so ``size`` counts
-            # groups and no over-fetch is needed to fill it.
-            "collapse": {"field": "paperId"},
-        }
+        body = _paper_level_body(
+            {"multi_match": {"query": " ".join(terms), "fields": list(fields)}}, top_k
+        )
         hits = _search_hits(
             self._client,
             self._index,
@@ -398,7 +396,7 @@ class OpenSearchLexicalIndexAdapter:
         }
         if paper_ids:
             query["bool"]["filter"] = [{"terms": {"paperId": list(paper_ids)}}]
-        body = {"size": top_k, "query": query}
+        body = _paper_level_body(query, top_k)
         hits = _search_hits(
             self._client,
             self._index,
