@@ -264,13 +264,9 @@ class OpenSearchVectorStoreAdapter:
     def knn_search(
         self, vector: Sequence[float], top_k: int, abstract_only: bool = False
     ) -> list[ScoredRecord]:
-        # The one query that cannot use ``_paper_level_body`` as-is: collapse runs AFTER the ANN
-        # has chosen its k neighbours and does not refill the slots it frees, so breadth has to be
-        # bought in ``k`` (measured: k=150 collapsed from 150 hits down to 55 papers).
-        #
-        # ``size`` still counts collapsed GROUPS, so it stays at top_k — asking for ``fetch_k``
-        # rows would transfer six times the records the caller keeps, each carrying a 1024-float
-        # vector to validate and then discard.
+        # Collapse runs AFTER the ANN has chosen its k neighbours and does not refill the slots
+        # it frees, so breadth has to be bought in ``k`` — see _KNN_COLLAPSE_OVERSAMPLE for the
+        # sizing. ``size`` needs no such adjustment: it counts collapsed groups.
         knn: dict[str, Any] = {
             "vector": list(vector),
             "k": top_k if abstract_only else top_k * _KNN_COLLAPSE_OVERSAMPLE,

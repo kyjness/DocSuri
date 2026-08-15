@@ -262,7 +262,6 @@ def ingest_foundational(
     n = 0
     # Rolling outcome window feeding the in-flight abort below.
     recent: deque[bool] = deque(maxlen=RECENT_WINDOW)
-    aborted = False
     with ledger_file.open("a", encoding="utf-8") as ledger:
         # Chunked, not prefetched-all-at-once. The metadata itself is one request per chunk, but
         # the licence enrichment behind it is still one request per paper, so prefetching all
@@ -295,24 +294,19 @@ def ingest_foundational(
                     )
                 collapse = _recently_collapsed(recent)
                 if collapse:
+                    # Returning from inside the `with` closes the ledger exactly as falling out of
+                    # it would, and every row is flushed as it is written — so the abort needs no
+                    # flag threaded back through two loops.
                     _log.error("%s — 계속 돌아도 색인이 안 남는다. 중단한다.", collapse)
-                    aborted = True
-                    break
-            if aborted:
-                break
+                    _log_outcomes(counts)
+                    _log.error(
+                        "%d/%d편에서 중단됨. 원인을 고친 뒤 --retry-failed로 재개하면 이어서 간다.",
+                        n,
+                        len(todo),
+                    )
+                    return 1
 
-    if aborted:
-        for outcome, count in counts.most_common(6):
-            _log.info("  %5d  %s", count, outcome)
-        _log.error(
-            "%d/%d편에서 중단됨. 원인을 고친 뒤 --retry-failed로 재개하면 이어서 간다.",
-            n,
-            len(todo),
-        )
-        return 1
-
-    for outcome, count in counts.most_common():
-        _log.info("  %5d  %s", count, outcome)
+    _log_outcomes(counts)
     failed = sum(c for o, c in counts.items() if o.startswith("failed"))
     ratio = failed / len(todo)
     _log.info("성공 %d편 · 실패 %d편 (%.1f%%)", len(todo) - failed, failed, ratio * 100)
@@ -324,6 +318,13 @@ def ingest_foundational(
         )
         return 1
     return 0
+
+
+def _log_outcomes(counts: Counter[str]) -> None:
+    """Every outcome, never a truncated head. The aborted run is precisely the one whose reason
+    breakdown matters, and it used to print only the top six."""
+    for outcome, count in counts.most_common():
+        _log.info("  %5d  %s", count, outcome)
 
 
 def _recently_collapsed(recent: deque[bool]) -> str | None:
