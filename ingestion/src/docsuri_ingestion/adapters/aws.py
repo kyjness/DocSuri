@@ -28,13 +28,32 @@ _log = logging.getLogger(__name__)
 BEDROCK_EMBED_BATCH_LIMIT = 96
 
 
+def s3_client(client: Any = None) -> Any:
+    """A boto3 S3 client, reusing the caller's when it has one.
+
+    Every store below takes an optional client so a runtime that wires several of them against the
+    SAME bucket pays for one. Building a client is session + loader + endpoint resolution and its
+    own connection pool, and this module builds four of them under one worker — the cost the
+    runtime's raw-cache comment already names, applied to a single store and none of its siblings.
+    Omitting it keeps each store standalone, which is how the one-off tools construct them.
+    """
+    if client is not None:
+        return client
+    import boto3
+
+    return boto3.client("s3")
+
+
 class S3FullTextStore:
     def __init__(
-        self, *, bucket: str, prefix: str = "full-text", kms_key_id: str | None = None
+        self,
+        *,
+        bucket: str,
+        prefix: str = "full-text",
+        kms_key_id: str | None = None,
+        client: Any = None,
     ) -> None:
-        import boto3
-
-        self._client = boto3.client("s3")
+        self._client = s3_client(client)
         self._bucket = bucket
         self._prefix = prefix.strip("/")
         self._kms_key_id = kms_key_id
@@ -65,11 +84,14 @@ class S3DocModelStore:
     """
 
     def __init__(
-        self, *, bucket: str, prefix: str = "doc-model", kms_key_id: str | None = None
+        self,
+        *,
+        bucket: str,
+        prefix: str = "doc-model",
+        kms_key_id: str | None = None,
+        client: Any = None,
     ) -> None:
-        import boto3
-
-        self._client = boto3.client("s3")
+        self._client = s3_client(client)
         self._bucket = bucket
         self._prefix = prefix.strip("/")
         self._kms_key_id = kms_key_id
@@ -130,11 +152,14 @@ class S3RawContentStore:
     """
 
     def __init__(
-        self, *, bucket: str, prefix: str = "raw", kms_key_id: str | None = None
+        self,
+        *,
+        bucket: str,
+        prefix: str = "raw",
+        kms_key_id: str | None = None,
+        client: Any = None,
     ) -> None:
-        import boto3
-
-        self._client = boto3.client("s3")
+        self._client = s3_client(client)
         self._bucket = bucket
         self._prefix = prefix.strip("/")
         self._kms_key_id = kms_key_id
@@ -175,10 +200,10 @@ class S3UserDocumentSource:
     cap before handing data to pdfplumber.
     """
 
-    def __init__(self, *, bucket: str, max_bytes: int = 10 * 1024 * 1024) -> None:
-        import boto3
-
-        self._client = boto3.client("s3")
+    def __init__(
+        self, *, bucket: str, max_bytes: int = 10 * 1024 * 1024, client: Any = None
+    ) -> None:
+        self._client = s3_client(client)
         self._bucket = bucket
         self._max_bytes = max_bytes
 
@@ -564,10 +589,14 @@ class IndexStatsTtlCache:
         now = datetime.now(UTC)
         if self._value is not None and now < self._expires_at:
             return self._value
-        self._value = refresh()
-        self._expires_at = now + self._ttl
-        if self._value.index_name != index_name:
+        fresh = refresh()
+        # Checked BEFORE it is stored. Caching first and raising after meant the guard fired
+        # exactly once: every call inside the TTL then took the hit branch above and returned the
+        # mismatched stats silently, which is the opposite of what a guard is for.
+        if fresh.index_name != index_name:
             raise RuntimeError("index stats cache returned mismatched index")
+        self._value = fresh
+        self._expires_at = now + self._ttl
         return self._value
 
     def invalidate(self) -> None:

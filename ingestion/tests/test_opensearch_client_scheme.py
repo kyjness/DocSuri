@@ -59,3 +59,32 @@ def test_an_explicit_value_still_wins(monkeypatch) -> None:
     build_opensearch_client(endpoint="http://localhost:9200", use_ssl=True, verify_certs=False)
     assert seen["use_ssl"] is True
     assert seen["verify_certs"] is False
+
+
+def test_the_index_stats_cache_refuses_a_mismatched_index_every_time() -> None:
+    """The guard used to fire exactly once.
+
+    ``get_or_refresh`` stored the fresh value and only then compared its index name, so the first
+    call raised but left the mismatched stats CACHED — and every call inside the TTL took the hit
+    branch and returned them silently. A guard that answers correctly once and then hands back the
+    thing it rejected is worse than no guard, because the raise makes it look like it is working.
+    """
+    from datetime import UTC, datetime
+
+    from docsuri_ingestion.adapters.aws import IndexStatsTtlCache
+    from docsuri_ingestion.domain.models import IndexStats
+
+    wrong = IndexStats(
+        status="HEALTHY",
+        timestamp=datetime.now(UTC),
+        index_name="some-other-index",
+        total_documents=1,
+        vector_count=1,
+        last_write_timestamp=None,
+        dependencies={},
+    )
+    cache = IndexStatsTtlCache(ttl_seconds=3600.0)
+
+    for _ in range(3):
+        with pytest.raises(RuntimeError, match="mismatched index"):
+            cache.get_or_refresh("docsuri-corpus-v1", lambda: wrong)

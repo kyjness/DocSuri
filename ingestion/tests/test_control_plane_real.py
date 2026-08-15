@@ -93,6 +93,44 @@ def test_mark_excluded_flips_only_the_half_open_claim(store) -> None:
         assert s.evaluate_dedup(_PAPER, 2, _FINGERPRINT).decision is DedupDecision.DUPLICATE
 
 
+def test_a_re_ingest_claim_is_half_open_so_exclusion_still_records(store) -> None:
+    """The exclusion ledger on an ALREADY-INDEXED paper — where it used to silently do nothing.
+
+    ``mark_excluded`` only flips a claim whose fingerprint is still NULL (that is what makes it a
+    half-open claim rather than a completed ingest). The in-memory store always wrote NULL on a
+    claim; the Postgres ``ON CONFLICT`` branch did not, so a re-ingest kept the PREVIOUS version's
+    fingerprint and the exclusion was refused. The ledger then went on reporting INDEXED for a
+    version with no chunks, no doc-model and no full text — exactly the state BR-30 added this
+    method to prevent.
+
+    The existing exclusion test cannot see it: it claims from an empty row, which takes the INSERT
+    branch. Only a paper that was already there exercises the conflict branch.
+    """
+    from docsuri_ingestion.domain.enums import DedupStateKind
+
+    memory = InMemoryControlPlaneStore()
+    stores = (store, memory)
+
+    for s in stores:
+        # An ordinary already-indexed paper: v1 complete, fingerprint set.
+        assert s.try_claim_upsert(_PAPER, 1, _FINGERPRINT)
+        s.mark_ingested(_PAPER, 1, _FINGERPRINT)
+        # v2 arrives; the claim commits the version bump, then every doc-model rung fails.
+        assert s.try_claim_upsert(_PAPER, 2, "fp-v2")
+        s.mark_excluded(_PAPER, 2)
+
+    with store._connect() as conn:  # noqa: SLF001 - asserting the persisted row
+        row = conn.execute(
+            "SELECT state, fingerprint FROM dedup_state WHERE paper_id = %s", (_PAPER,)
+        ).fetchone()
+    assert row == (DedupStateKind.EXCLUDED.value, None)
+    assert memory._dedup[_PAPER].state is DedupStateKind.EXCLUDED
+
+    # And the redelivery still reprocesses rather than short-circuiting as a duplicate.
+    for s in stores:
+        assert s.evaluate_dedup(_PAPER, 2, "fp-v2").decision is DedupDecision.CHANGED
+
+
 def test_canonical_state_round_trips_through_real_sql(store) -> None:
     state = CanonicalDedupState(
         canonical_key=f"arxiv:{_PAPER}",

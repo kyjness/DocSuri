@@ -132,12 +132,19 @@ class Chunker:
     def chunk(self, paper: ParsedPaper) -> ChunkSet:
         sections = [("abstract", paper.abstract), *split_sections(paper.full_text)]
         chunks: list[Chunk] = []
+        truncated = False
         for section, section_text in sections:
             if self._fill(chunks, paper.paper_id, section, section_text):
+                truncated = True
                 break
         if not chunks:
             raise ValidationViolationError("paper produced no chunks", stage="chunk")
-        return ChunkSet(paper_id=paper.paper_id, version=paper.version, chunks=tuple(chunks))
+        return ChunkSet(
+            paper_id=paper.paper_id,
+            version=paper.version,
+            chunks=tuple(chunks),
+            truncated=truncated,
+        )
 
     def chunk_doc_model(self, doc: DocModel) -> ChunkSet:
         """Chunk structured doc-model blocks while preserving block id refs internally."""
@@ -186,12 +193,16 @@ class Chunker:
             walk(section)
 
         chunks: list[Chunk] = []
+        truncated = False
         for section, text, refs in entries:
             if self._fill(chunks, doc.meta.paperId, section or "body", text, refs):
+                truncated = True
                 break
 
         if not chunks and doc.fullText and fallback_refs:
-            self._fill(chunks, doc.meta.paperId, "body", doc.fullText, fallback_refs)
+            truncated = self._fill(
+                chunks, doc.meta.paperId, "body", doc.fullText, fallback_refs
+            )
 
         referenced = {
             (ref.section_id, ref.block_id, ref.block_type)
@@ -204,7 +215,12 @@ class Chunker:
             )
         if not chunks:
             raise ValidationViolationError("doc-model produced no chunks", stage="chunk")
-        return ChunkSet(paper_id=doc.meta.paperId, version=doc.meta.version, chunks=tuple(chunks))
+        return ChunkSet(
+            paper_id=doc.meta.paperId,
+            version=doc.meta.version,
+            chunks=tuple(chunks),
+            truncated=truncated,
+        )
 
 
 class DeduplicationGuard:

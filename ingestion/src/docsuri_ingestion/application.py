@@ -546,6 +546,22 @@ class IngestionPipelineService:
             if doc_model is not None
             else self._chunker.chunk(paper)
         )
+        if chunks.truncated:
+            # The per-paper chunk cap cut this body short. Counted, not just logged: a batch reads
+            # metrics, and the last time this went unreported it removed part of the body of 26%
+            # of the papers indexed so far without a single line saying so. The paper still
+            # indexes — what it loses is the tail of its text, so this is a signal, not a failure.
+            self._observability.emit_metric(
+                "ingestion.chunks.truncated", 1.0, {"paperId": paper.paper_id}
+            )
+            self._observability.emit_log(
+                {
+                    "type": "chunk_cap_reached",
+                    "paperId": paper.paper_id,
+                    "chunks": len(chunks.chunks),
+                    "hint": "raise DOCSURI_MAX_CHUNKS_PER_PAPER — this paper's body was cut",
+                }
+            )
         vectors = self._resilience.dependency_call(
             "bedrock",
             "embed",

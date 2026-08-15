@@ -17,22 +17,36 @@ import logging
 import os
 import tarfile
 import tempfile
+from collections import Counter
 
-from .domain.ids import normalize_arxiv_ref
+from .domain.ids import ArxivIdentifier, normalize_arxiv_ref
+from .http_limits import is_pdf_payload
 from .ports import RawContentStorePort
 from .settings import IngestionSettings
 
 log = logging.getLogger("docsuri.ingestion.raw_backfill")
 
 
-def _paper_id_from_member(name: str) -> str | None:
-    """Paper-id stem for an arXiv bulk-tar member: basename minus ``.pdf`` and any ``vN`` suffix
-    (``2501.12345v2.pdf`` → ``2501.12345``). ``None`` for a directory or non-PDF member."""
+def _identifier_from_member(name: str) -> ArxivIdentifier | None:
+    """Paper id AND VERSION for an arXiv bulk-tar member (``2501.12345v2.pdf`` → 2501.12345 v2).
+
+    The version is returned, not discarded, because the cache key carries one: this used to hand
+    back the bare paper id, and the caller then wrote whatever bytes the tar held under the
+    version the HARVEST wanted. A paper revised between arXiv's bulk snapshot and the harvest
+    therefore got its OLD version's PDF filed as the new one — and ``reparse`` reads that cache
+    exclusively (``raw_cache_mode=only``), so the wrong version's text and structure were indexed
+    with nothing anywhere saying so.
+
+    ``None`` for a directory, a non-PDF member, or a stem the id grammar does not accept. A member
+    with no ``vN`` suffix reads as v1 and will simply not match a target on a later version, which
+    is the fail-closed answer: arXiv's bulk tars name the version, so a bare stem is not something
+    to guess about.
+    """
     base = name.rsplit("/", 1)[-1]
     if not base.lower().endswith(".pdf"):
         return None
     try:
-        return normalize_arxiv_ref(base[:-4]).paper_id
+        return normalize_arxiv_ref(base[:-4])
     except ValueError:
         return None
 
@@ -65,9 +79,22 @@ def _prime_from_tar(
     targets: dict[str, int],
     raw_store: RawContentStorePort,
     tmp_dir: str,
+    skipped: Counter[str] | None = None,
 ) -> set[str]:
     """Download one bulk tar (requester-pays) and cache every member PDF whose id is a target.
-    Returns the set of paperIds cached from this tar; the temp tar is deleted on block exit."""
+
+    Two things are refused rather than written, and both are counted into ``skipped`` so the run
+    can say why a target went uncached instead of only that it did:
+
+    * a member whose VERSION is not the one the harvest wants — the cache key is per version, so
+      writing it would serve a different revision's bytes to every later cache-only reparse;
+    * a member that is not a PDF by its magic bytes. Every READER of this cache checks that (the
+      shared ``is_pdf_payload``, whose contract says "applied to cache reads as well as fetches"),
+      and the one tool that WRITES the cache did not — so a poisoned entry read as a miss and the
+      paper was excluded downstream with nothing pointing back to here.
+
+    Returns the set of paperIds cached; the temp tar is deleted on block exit.
+    """
     cached: set[str] = set()
     with tempfile.NamedTemporaryFile(dir=tmp_dir, suffix=".tar") as tf:
         client.download_fileobj(bucket, key, tf, ExtraArgs={"RequestPayer": "requester"})
@@ -77,17 +104,27 @@ def _prime_from_tar(
             for member in tar:
                 if not member.isfile():
                     continue
-                pid = _paper_id_from_member(member.name)
-                if pid is None or pid not in targets:
+                identifier = _identifier_from_member(member.name)
+                if identifier is None or identifier.paper_id not in targets:
+                    continue
+                wanted = targets[identifier.paper_id]
+                if identifier.version != wanted:
+                    if skipped is not None:
+                        skipped["version_mismatch"] += 1
                     continue
                 fobj = tar.extractfile(member)
                 if fobj is None:
                     continue
+                data = fobj.read()
+                if not is_pdf_payload(data):
+                    if skipped is not None:
+                        skipped["not_pdf"] += 1
+                    continue
                 raw_store.put_raw(
-                    pid, targets[pid], "pdf", fobj.read(),
+                    identifier.paper_id, wanted, "pdf", data,
                     content_type="application/pdf",
                 )
-                cached.add(pid)
+                cached.add(identifier.paper_id)
     return cached
 
 
@@ -136,6 +173,10 @@ def raw_backfill(settings: IngestionSettings | None = None) -> int:
 
     tars_processed = 0
     cached_ids: set[str] = set()
+    # Why each uncached target was refused. Without it ``pdfs_cached`` is the only number the run
+    # reports, and a systematic fault — a snapshot a revision behind the harvest, a tar of landing
+    # pages — is indistinguishable from "those papers were not in these months".
+    skipped: Counter[str] = Counter()
     paginator = client.get_paginator("list_objects_v2")
     for page in paginator.paginate(Bucket=bucket, Prefix="pdf/", RequestPayer="requester"):
         for obj in page.get("Contents", []):
@@ -146,7 +187,9 @@ def raw_backfill(settings: IngestionSettings | None = None) -> int:
             if months and not any(f"_{m}_" in key for m in months):
                 continue
             try:
-                cached_ids |= _prime_from_tar(client, bucket, key, targets, raw_store, tmp_dir)
+                cached_ids |= _prime_from_tar(
+                    client, bucket, key, targets, raw_store, tmp_dir, skipped
+                )
             except Exception as exc:  # noqa: BLE001 — one bad tar must not abort the prime
                 log.warning("FAILED tar %s: %s", key, exc)
             tars_processed += 1
@@ -157,9 +200,12 @@ def raw_backfill(settings: IngestionSettings | None = None) -> int:
                 len(targets) - len(cached_ids),
             )
     log.info(
-        "raw_backfill complete: %d tars, %d pdfs cached, %d targets missed",
+        "raw_backfill complete: %d tars, %d pdfs cached, %d targets missed"
+        " (version_mismatch=%d, not_pdf=%d)",
         tars_processed,
         len(cached_ids),
         len(targets) - len(cached_ids),
+        skipped["version_mismatch"],
+        skipped["not_pdf"],
     )
     return 0

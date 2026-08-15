@@ -161,6 +161,12 @@ class ChunkSet:
     paper_id: str
     version: int
     chunks: tuple[Chunk, ...]
+    # Whether the per-paper chunk cap cut this paper's body short. Carried on the set rather than
+    # logged inside the chunker because truncation is a CORPUS-level signal: at a cap of 128 it
+    # silently removed a median 9.7% (up to 64.6%) of the body from 217 of 827 papers, and nothing
+    # said so — the papers it hit were the surveys the foundational list exists to include. The
+    # cap is 512 now against a measured sample maximum of 487 blocks, which is not much room.
+    truncated: bool = False
 
     def __post_init__(self) -> None:
         if not self.chunks:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import signal
 import sys
 import threading
@@ -201,6 +202,7 @@ def job_from_payload(payload) -> IngestionJob:
         owner_id = _required_string(payload, "ownerId")
         record_ref = _required_string(payload, "recordRef")
         _validate_userdoc_record_ref(record_ref, owner_id=owner_id, job_id=job_id)
+        _validate_userdoc_object_key(object_key, owner_id=owner_id)
     return IngestionJob(
         job_id=job_id,
         kind=kind,
@@ -291,6 +293,38 @@ def _validate_userdoc_record_ref(record_ref: str, *, owner_id: str, job_id: str)
         or parts[2] != job_id
         or not parts[3].strip()
     ):
+        raise _invalid_payload()
+
+
+# Characters an S3 key path segment may carry, mirroring the producer's own key builder. Anything
+# else collapses to "-" there, so the owner's segment has to be derived the same way to be found.
+_UNSAFE_KEY_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _owner_handle(owner_id: str) -> str:
+    """The owner's key-path segment, derived the way the producer derives it."""
+    return (_UNSAFE_KEY_CHARS.sub("-", (owner_id or "").strip()).strip("-") or "x")[:128]
+
+
+def _validate_userdoc_object_key(object_key: str, *, owner_id: str) -> None:
+    """Refuse a user-document key that is not inside this owner's area.
+
+    ``objectKey`` is the field that actually READS BYTES, and it was the only one of the seven on
+    this job kind checked for nothing but "non-empty string" — while jobId, paperId, version,
+    module, ownerId and recordRef each had their shape pinned. A job naming any other key in the
+    bucket would have been fetched and handed back under this owner's paper id.
+
+    Only the owner SEGMENT is asserted, not the producer's full prefix tree. That tree is two
+    environment variables, a per-module branch and a repeated attachment segment; copying it here
+    would put a second, quietly-diverging definition of the layout in another module, and the
+    layout is not what protects anyone. Which owner's area the key sits in is.
+
+    Matched as a whole path SEGMENT, not a substring: the owner sits at a different depth per
+    module (``novelty/<owner>/…`` against ``uploads/<module>/<owner>/…``), so a depth-free segment
+    test covers both without either being spelled here, and it cannot be satisfied by an owner
+    handle that merely appears inside some longer name.
+    """
+    if _owner_handle(owner_id) not in object_key.split("/"):
         raise _invalid_payload()
 
 

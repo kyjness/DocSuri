@@ -5,7 +5,10 @@ license_url=None and broke strict-OA gating. fetch_metadata now falls back to an
 GetRecord to recover the license; if the Atom feed already carries one, no OAI call is made.
 """
 
+from dataclasses import replace
+
 from docsuri_ingestion.adapters.arxiv import ArxivHttpSource
+from docsuri_ingestion.adapters.local import sample_metadata
 
 _ATOM_NO_LICENSE = """<?xml version="1.0" encoding="UTF-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom">
@@ -128,3 +131,31 @@ def test_fetch_metadata_batch_keeps_the_chunks_that_worked():
 
     assert len(calls) == 3  # kept going past the failure
     assert len(records) == 150  # first and third chunks survived
+
+def test_license_lookup_derives_the_bare_id_with_the_id_parser():
+    """The OAI identifier is the versionless id from ``normalize_arxiv_ref``, not a hand split.
+
+    This used to strip the version with ``ref.rsplit("v", 1)[0]``, asserting in a comment that a
+    split on the last "v" was safe for legacy ids too. It is not: an old-style archive name can
+    contain a v, so ``solv-int/9801001`` reduced to ``sol`` and the GetRecord asked about a paper
+    that does not exist — the licence stayed None and the paper was then rejected as non-OA.
+
+    Exercised directly on the enrichment rather than through ``fetch_metadata``, because the Atom
+    feed's ``<id>`` is read with its own ``rsplit("/")`` that an old-style id does not survive
+    either. That is a separate matter and, in this corpus, an empty one: the 3,500-paper
+    foundational list holds no old-style id and the slice is recent-only.
+    """
+    src = ArxivHttpSource()
+    identifiers: list[str] = []
+
+    def fake_get_text(url, *, params, stage):
+        identifiers.append(params["identifier"])
+        return _OAI_WITH_LICENSE
+
+    src._get_text = fake_get_text  # type: ignore[method-assign]
+    record = replace(sample_metadata(arxiv_ref="solv-int/9801001v2"), license_url=None)
+
+    enriched = src._enrich_license_from_oai(record)
+
+    assert identifiers == ["oai:arXiv.org:solv-int/9801001"]
+    assert enriched.license_url == "http://creativecommons.org/licenses/by/4.0/"

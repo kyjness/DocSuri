@@ -4,7 +4,7 @@ import logging
 import xml.etree.ElementTree as ET
 from collections.abc import Iterable, Sequence
 from dataclasses import replace
-from datetime import datetime
+from datetime import UTC, datetime
 
 from docsuri_shared.dtos import SourceTier
 
@@ -27,6 +27,21 @@ ATOM_NS = {"atom": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/sch
 # Ids per Atom ``id_list`` request. arXiv accepts well over this, but a larger batch makes one
 # failure cost more papers and pushes the URL toward length limits.
 _METADATA_BATCH = 100
+
+# Records per Atom search page, and how many pages one incremental tick will walk. The slice
+# measures ~125 papers/day, so a single page cannot even hold a healthy day; the page cap bounds
+# a tick that resumes after a long outage rather than letting it run unbounded — the remainder
+# stays above the watermark and the next tick continues from there.
+_ATOM_PAGE_SIZE = 100
+_MAX_INCREMENTAL_PAGES = 20
+
+# The upper bound of an "everything since the watermark" date range. The range must be CLOSED:
+# arXiv answers ``lastUpdatedDate:[<stamp> TO *]`` with HTTP 500 and an Atom error feed (measured
+# — and the error feed carries ``totalResults`` like any other, so a reader that checks entries
+# instead of status reads it as a successful one-result window). A far-future sentinel is accepted
+# and keeps the query a pure function of the watermark: deriving the bound from the clock instead
+# would make the request unreproducible and the test non-deterministic for no gain.
+_ATOM_RANGE_END = "999912312359"
 OAI_NS = {
     "oai": "http://www.openarchives.org/OAI/2.0/",
     "arxiv": "http://arxiv.org/OAI/arXiv/",
@@ -47,6 +62,16 @@ def _oai_set(category: str) -> str:
     which silently harvested nothing."""
     archive, _, sub = category.partition(".")
     return f"{archive}:{archive}:{sub}" if sub else archive
+
+
+def _atom_stamp(moment: datetime) -> str:
+    """A datetime as the Atom search grammar's ``YYYYMMDDHHMM`` date-range bound (UTC).
+
+    Minute resolution is all the grammar carries, and it rounds DOWN — so the bound is inclusive
+    of the boundary minute and the caller keeps its own ``> since`` test to drop the re-served
+    records that produces.
+    """
+    return moment.astimezone(UTC).strftime("%Y%m%d%H%M")
 
 
 class ArxivHttpSource:
@@ -112,18 +137,55 @@ class ArxivHttpSource:
     def fetch_incremental(
         self, since: datetime, categories: Sequence[str]
     ) -> Iterable[MetadataRecord]:
-        query = "+OR+".join(f"cat:{category}" for category in categories)
-        params = {
-            "search_query": query,
-            "sortBy": "lastUpdatedDate",
-            "sortOrder": "ascending",
-            "start": "0",
-            "max_results": "100",
-        }
-        body = self._get_text(self._atom_base_url, params=params, stage="fetch_incremental")
-        for record in parse_atom_feed(body):
-            if record.updated_at > since:
-                yield record
+        """Papers in ``categories`` updated after ``since``, oldest first, across every page.
+
+        Three things here each cost the whole tick on their own, and all three were wrong — which
+        is how a daily harvest could queue nothing and report success for as long as it did.
+
+        * The disjunction joins with a SPACE, not a literal ``+``. arXiv's own docs write
+          ``cat:a+OR+cat:b`` because ``+`` is how a URL spells a space, but httpx already
+          percent-encodes the value — so a literal ``+`` went out as ``%2BOR%2B`` and arXiv
+          answered **HTTP 200 with totalResults=0**. That is byte-for-byte what a genuinely quiet
+          window looks like. It is the Atom twin of the OAI failure ``_raise_on_oai_error`` exists
+          for, and the sibling ``corpus_http._query`` already joins the right way.
+        * The window is a QUERY filter, not a post-filter. Sorting by ``lastUpdatedDate`` with no
+          date bound and reading the first page returned papers from 1993, every one of which the
+          ``> since`` test then discarded — zero records however the join was spelled. The
+          range has to be closed; see ``_ATOM_RANGE_END``.
+        * It PAGES. One page is 100 records against a slice measuring ~125/day, so a single page
+          dropped part of even a healthy tick and most of any backlog.
+
+        Ascending, deliberately: a run cut short by a transport failure then loses the NEWEST
+        records rather than the ones nearest the watermark. The next tick re-covers those, while a
+        gap just above the watermark would never be revisited.
+        """
+        query = (
+            "(" + " OR ".join(f"cat:{category}" for category in categories) + ")"
+            f" AND lastUpdatedDate:[{_atom_stamp(since)} TO {_ATOM_RANGE_END}]"
+        )
+        for page in range(_MAX_INCREMENTAL_PAGES):
+            params = {
+                "search_query": query,
+                "sortBy": "lastUpdatedDate",
+                "sortOrder": "ascending",
+                "start": str(page * _ATOM_PAGE_SIZE),
+                "max_results": str(_ATOM_PAGE_SIZE),
+            }
+            body = self._get_text(self._atom_base_url, params=params, stage="fetch_incremental")
+            records = parse_atom_feed(body)
+            for record in records:
+                # Kept even with the server-side bound: the stamp is minute-resolution and rounds
+                # down, so the boundary minute can return a record already ingested.
+                if record.updated_at > since:
+                    yield record
+            if len(records) < _ATOM_PAGE_SIZE:
+                return
+        _log.warning(
+            "증분 수집이 %d페이지(%d편) 상한에 걸렸다 — 나머지는 워터마크 위에 남아 "
+            "다음 틱이 가져간다",
+            _MAX_INCREMENTAL_PAGES,
+            _MAX_INCREMENTAL_PAGES * _ATOM_PAGE_SIZE,
+        )
 
     def fetch_metadata(self, arxiv_ref: str) -> MetadataRecord:
         params = {"id_list": arxiv_ref, "max_results": "1"}
@@ -185,11 +247,20 @@ class ArxivHttpSource:
         return out
 
     def _enrich_license_from_oai(self, record: MetadataRecord) -> MetadataRecord:
-        # ponytail: bare-id heuristic — strip the "vN" version suffix; arXiv versions are
-        # always a trailing "v<digits>", so split on the last "v" is safe for both new
-        # ("2401.12345v2") and legacy ("hep-ph/9901001") ids.
-        ref = record.arxiv_ref
-        bare_id = ref.rsplit("v", 1)[0] if "v" in ref else ref
+        # The versionless id, from the one parser that knows the id grammar. This used to strip
+        # the version by splitting on the last "v", asserting that was safe for legacy ids too —
+        # it is not: an old-style archive name can CONTAIN a v, so "solv-int/9801001" became
+        # "sol" and the GetRecord asked about a paper that does not exist (licence stays None ->
+        # the paper is then rejected as non-OA). ``normalize_arxiv_ref`` already answers this
+        # correctly and ``fetch_metadata_batch`` keys its result by the very same property.
+        try:
+            bare_id = record.identifier.paper_id
+        except ValueError:
+            # Same best-effort contract as the malformed-XML branch below: an unparseable ref
+            # must not escape the failure taxonomy from inside a licence backfill. The record's
+            # own consumers reject it a moment later with a typed error.
+            _log.warning("license enrichment skipped for unparseable ref %r", record.arxiv_ref)
+            return record
         params = {
             "verb": "GetRecord",
             "metadataPrefix": "arXiv",

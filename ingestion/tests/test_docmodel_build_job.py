@@ -362,13 +362,54 @@ def test_build_doc_model_requires_arxiv_ref() -> None:
         )
 
 
+def test_user_docmodel_payload_refuses_a_key_outside_the_owners_area() -> None:
+    """``objectKey`` is the field that actually reads bytes, and it was checked for nothing but
+    "non-empty string" while the six around it had their shape pinned. A job naming another
+    owner's upload — or any other object in the bucket — would have been fetched and returned
+    under this owner's paper id."""
+    payload = {
+        "jobId": _USERDOC_JOB_ID,
+        "kind": "BUILD_USER_DOC_MODEL",
+        "paperId": _USERDOC_PAPER_ID,
+        "version": 1,
+        "objectKey": "novelty/someone-else/attachment/attachment.pdf",
+        "module": "novelty",
+        "ownerId": "acct-1",
+        "recordRef": _USERDOC_RECORD_REF,
+    }
+
+    with pytest.raises(PermanentIngestionError):
+        job_from_payload(payload)
+
+
+def test_user_docmodel_payload_accepts_the_owner_at_either_depth() -> None:
+    """The owner sits at a different depth per module (``novelty/<owner>/…`` against
+    ``uploads/<module>/<owner>/…``), so the check is depth-free — neither layout is spelled in
+    the worker, and neither has to be."""
+    for object_key in (
+        "novelty/acct-1/attachment/attachment.pdf",
+        "uploads/evidence/acct-1/scope/attachment/paper.pdf",
+    ):
+        payload = {
+            "jobId": _USERDOC_JOB_ID,
+            "kind": "BUILD_USER_DOC_MODEL",
+            "paperId": _USERDOC_PAPER_ID,
+            "version": 1,
+            "objectKey": object_key,
+            "module": "evidence",
+            "ownerId": "acct-1",
+            "recordRef": _USERDOC_RECORD_REF,
+        }
+        assert job_from_payload(payload).object_key == object_key
+
+
 def test_user_docmodel_payload_accepts_s3_source_without_arxiv_ref() -> None:
     payload = {
         "jobId": _USERDOC_JOB_ID,
         "kind": "BUILD_USER_DOC_MODEL",
         "paperId": _USERDOC_PAPER_ID,
         "version": 1,
-        "objectKey": "uploads/owner/job/attachment.pdf",
+        "objectKey": "novelty/acct-1/attachment/attachment.pdf",
         "module": "novelty",
         "ownerId": "acct-1",
         "recordRef": _USERDOC_RECORD_REF,
@@ -381,7 +422,7 @@ def test_user_docmodel_payload_accepts_s3_source_without_arxiv_ref() -> None:
     assert job.job_id == _USERDOC_JOB_ID
     assert job.paper_id == _USERDOC_PAPER_ID
     assert job.version == 1
-    assert job.object_key == "uploads/owner/job/attachment.pdf"
+    assert job.object_key == "novelty/acct-1/attachment/attachment.pdf"
     assert job.module == "novelty"
     assert job.owner_id == "acct-1"
     assert job.record_ref == _USERDOC_RECORD_REF

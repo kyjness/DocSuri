@@ -141,6 +141,22 @@ class PostgresControlPlaneStore:
         return decide_dedup(self._get_dedup_state(paper_id), version, fingerprint)
 
     def try_claim_upsert(self, paper_id: str, version: int, fingerprint: str) -> bool:
+        """Claim this version, half-open: the row is bumped now, ``mark_ingested`` closes it.
+
+        ``fingerprint = NULL`` on the conflict branch too, which is what makes the claim actually
+        half-open on a RE-INGEST. Without it the row kept the PREVIOUS version's fingerprint, and
+        ``mark_excluded`` — whose whole job is to flip a claim whose build then failed every rung —
+        tests ``fingerprint IS NULL`` and so silently did nothing for any paper that was already
+        indexed. The ledger then went on reporting INDEXED for a version with no chunks, no
+        doc-model and no full text: exactly the state that method exists to prevent. The in-memory
+        store always wrote NULL here, so the two stores disagreed and only the real SQL was wrong.
+        ``try_claim_tombstone`` below has always nulled it; this is the same claim, same rule.
+
+        Safe because the DUPLICATE short-circuit runs BEFORE the claim (``_index_paper``), so a
+        redelivery of unchanged content never reaches here. A retriable failure after the claim
+        leaves the fingerprint NULL and the redelivery classifies CHANGED and reprocesses — which
+        is already what a first ingest does.
+        """
         del fingerprint
         with self._connect() as conn:
             row = conn.execute(
@@ -149,6 +165,7 @@ class PostgresControlPlaneStore:
                 VALUES (%s, %s, NULL, 'INDEXED')
                 ON CONFLICT (paper_id) DO UPDATE
                     SET current_version = EXCLUDED.current_version,
+                        fingerprint = NULL,
                         state = 'INDEXED',
                         updated_at = now()
                     WHERE dedup_state.current_version <= EXCLUDED.current_version

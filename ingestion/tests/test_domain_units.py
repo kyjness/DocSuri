@@ -134,6 +134,32 @@ def test_chunker_produces_abstract_plus_body_chunks() -> None:
     assert {c.section for c in first.chunks} > {"abstract"}
 
 
+def test_reaching_the_chunk_cap_is_reported_on_the_chunk_set() -> None:
+    """The cap cuts a paper's body short, and it used to do so in silence.
+
+    At 128 it removed a median 9.7% — up to 64.6% — of the body from 217 of 827 indexed papers
+    and nothing said so; the papers it hit were the surveys with the most paragraphs, which is
+    what the foundational list exists to include. The cap is 512 now against a measured sample
+    maximum of 487 blocks, so the next paper to cross it is not far off. ``truncated`` is what
+    lets the pipeline count it.
+    """
+    processor = FetchParseProcessor()
+    raw = RawDocument(
+        metadata=sample_metadata(),
+        text="INTRODUCTION\n" + "alpha " * 4000,
+        source_url="local://paper",
+    )
+    paper = processor.parse(raw)
+
+    cut = Chunker(max_chunk_chars=200, overlap_chars=0, max_chunks_per_paper=3).chunk(paper)
+    whole = Chunker(max_chunk_chars=200, overlap_chars=0).chunk(paper)
+
+    assert cut.truncated is True
+    assert len(cut.chunks) == 3
+    assert whole.truncated is False
+    assert len(whole.chunks) > 3
+
+
 def test_docmodel_chunker_uses_docmodel_blocks_only() -> None:
     doc = DocModel.model_validate(
         {

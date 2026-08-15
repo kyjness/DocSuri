@@ -431,6 +431,7 @@ class AssetExtractor:
             raise RuntimeError(_ASSETS_EXTRA_MISSING) from exc
 
         hits: list[_CropHit] = []
+        pdfium_doc = None
         try:
             pdfium_doc = pdfium.PdfDocument(pdf)
             bitmaps = _PageBitmapCache()
@@ -477,6 +478,14 @@ class AssetExtractor:
                         )
         except Exception:  # noqa: BLE001 - best-effort; skip assets for this paper
             return []
+        finally:
+            # pypdfium2 closes nothing on its own — the same rule ``crop_assets_from_specs``
+            # already applies to its own document. Left to GC-time finalizers this holds one
+            # parsed PDF per paper for an indeterminate while and ends a long sweep in a wall of
+            # teardown warnings, which on the caption path is EVERY assets-enabled arXiv paper.
+            if pdfium_doc is not None:
+                with suppress(Exception):
+                    pdfium_doc.close()
         return hits
 
     def _page_crop(self, pdf: bytes, *, want_figures: bool) -> list[RawAssetCandidate]:
