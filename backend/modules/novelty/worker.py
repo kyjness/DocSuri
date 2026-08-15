@@ -338,8 +338,9 @@ def build_worker_deps() -> WorkerDeps:
     settings = NoveltySettings.from_env()
     if not settings.queue_configured:
         raise SystemExit("novelty worker: job queue is not configured")
-    if not settings.llm_configured:
-        raise SystemExit("novelty worker: LLM provider is not configured")
+    # LLM 선행 점검은 없다: Bedrock 자격은 태스크 역할에서 오므로 기동 시점에 확인할
+    # 신호가 없다. 역할이 없으면 첫 호출이 LlmUnavailable로 떨어지고 루프가 그 계약을
+    # 이미 처리한다 — 항상 참인 점검을 두면 보호처럼 읽히지만 아무것도 막지 못한다.
     from backend.wiring import _is_postgres
 
     app_settings = Settings.from_env()

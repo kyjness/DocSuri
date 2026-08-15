@@ -28,13 +28,12 @@ from .settings import EvidenceSettings
 def _build_guarded_query_embedder(
     d_settings: Any, os_client: Any, fallback_region: str | None
 ) -> Any:
-    """Query-embedding provider switch + same-space guard, shared with discovery's read path.
+    """Query embedder + same-space guard, built the same way discovery's read path builds it.
 
-    Bedrock Cohere (team deploy) vs OpenAI (solo-local, DOCSURI_EMBEDDING_PROVIDER=openai). The
-    evidence agent is a SECOND reader over the SAME index, so it must resolve the provider the same
-    (else a solo-local OpenAI-indexed corpus gets Bedrock query vectors) AND validate the index's
-    embedding manifest against the reader identity — the dimension guard can't catch a
-    same-dim/different-model swap (OpenAI vs Cohere, both 1024-dim).
+    The evidence agent is a SECOND reader over the SAME index, so it must resolve the same model
+    AND validate the index's embedding manifest against the reader identity — the dimension guard
+    cannot catch a same-dimension/different-model swap, and Cohere Embed Multilingual v3 and
+    Embed v4 are both 1024-dimensional.
 
     Returns the real embedder when the space matches (or can't be verified — logged), else a
     MismatchedSpaceEmbedder that raises EmbeddingUnavailable per request; EvidencePaperSearchTool.
@@ -42,29 +41,20 @@ def _build_guarded_query_embedder(
     Extracted from build_evidence_runner so the guard wiring is unit-testable in isolation.
     """
     from discovery.adapters.bedrock_embedding import BedrockCohereQueryEmbedder
-    from discovery.adapters.openai_embedding import OpenAIQueryEmbedder
     from discovery.adapters.space_guard import guard_embedding_space
     from docsuri_shared.vector_spec import DIMENSIONS
 
-    if d_settings.embedding_provider == 'openai':
-        embedding: object = OpenAIQueryEmbedder(model=d_settings.openai_embedding_model)
-        reader_identity = {
-            'provider': 'openai',
-            'model': d_settings.openai_embedding_model,
-            'dimensions': DIMENSIONS,
-        }
-    else:
-        embedding = BedrockCohereQueryEmbedder(
-            model_id=d_settings.bedrock_model_id,
-            # Bedrock region decoupled from region_name (OpenSearch SigV4): Cohere v3 isn't in
-            # ap-northeast-2, so query embedding goes cross-region. Mirrors discovery real_wiring.
-            region_name=d_settings.bedrock_region or fallback_region,
-        )
-        reader_identity = {
-            'provider': 'bedrock',
-            'model': d_settings.bedrock_model_id,
-            'dimensions': DIMENSIONS,
-        }
+    embedding = BedrockCohereQueryEmbedder(
+        model_id=d_settings.bedrock_model_id,
+        # Bedrock region decoupled from region_name (OpenSearch SigV4): Cohere v3 isn't in
+        # ap-northeast-2, so query embedding goes cross-region. Mirrors discovery real_wiring.
+        region_name=d_settings.bedrock_region or fallback_region,
+    )
+    reader_identity = {
+        'provider': 'bedrock',
+        'model': d_settings.bedrock_model_id,
+        'dimensions': DIMENSIONS,
+    }
     return guard_embedding_space(os_client, d_settings.opensearch_index, reader_identity, embedding)
 
 
@@ -122,35 +112,29 @@ def build_evidence_runner(
     doc_models = DocModelReader(doc_model_reader)
 
     # --- LLM (결정 + 추출) ---
-    # 프로바이더 선택은 여기, composition root에서만 일어난다(TD-EV2-2). 루프 코어와
-    # 프롬프트는 어느 쪽이 조립됐는지 모른다 — 포트가 같기 때문이다.
+    # 어댑터 조립은 여기, composition root에서만 일어난다(TD-EV2-2). 루프 코어와 프롬프트는
+    # 무엇이 조립됐는지 모른다 — 포트가 같기 때문이다.
+    import boto3
+    from botocore.config import Config
+
+    from .adapters.llm_bedrock import BedrockDecider, BedrockExtractor
+
     rates = {
         "input_usd_per_mtok": settings.input_usd_per_mtok,
         "output_usd_per_mtok": settings.output_usd_per_mtok,
     }
-    if settings.llm_provider == 'bedrock':
-        import boto3
-        from botocore.config import Config
-
-        from .adapters.llm_bedrock import BedrockDecider, BedrockExtractor
-
-        # ONE client for both adapters, with botocore's own retries turned off. The failure
-        # contract belongs to SourceBreaker (retry once, then trip) — botocore's default legacy
-        # mode would retry ~5x underneath it, so a sustained outage cost ~10 wire attempts per
-        # turn and the breaker saw one failure per ten, never opening. Timeouts bound a hung
-        # turn; the loop budget, not the transport, decides how long a job may run.
-        client = boto3.client(
-            "bedrock-runtime",
-            region_name=settings.region_name,
-            config=Config(connect_timeout=5, read_timeout=90, retries={"max_attempts": 1}),
-        )
-        decider = BedrockDecider(model=settings.model_id, client=client, **rates)
-        extractor = BedrockExtractor(model=settings.model_id, client=client, **rates)
-    else:
-        from .adapters.llm_openai import OpenAiDecider, OpenAiExtractor
-
-        decider = OpenAiDecider(model=settings.model_id, **rates)
-        extractor = OpenAiExtractor(model=settings.model_id, **rates)
+    # ONE client for both adapters, with botocore's own retries turned off. The failure
+    # contract belongs to SourceBreaker (retry once, then trip) — botocore's default legacy
+    # mode would retry ~5x underneath it, so a sustained outage cost ~10 wire attempts per
+    # turn and the breaker saw one failure per ten, never opening. Timeouts bound a hung
+    # turn; the loop budget, not the transport, decides how long a job may run.
+    client = boto3.client(
+        "bedrock-runtime",
+        region_name=settings.region_name,
+        config=Config(connect_timeout=5, read_timeout=90, retries={"max_attempts": 1}),
+    )
+    decider = BedrockDecider(model=settings.model_id, client=client, **rates)
+    extractor = BedrockExtractor(model=settings.model_id, client=client, **rates)
 
     # --- 선택 도구: 없으면 등록되지 않고 도구 목록이 자연 축소된다 ---
     external_search = None

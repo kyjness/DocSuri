@@ -29,10 +29,12 @@ from typing import Any
 
 __all__ = [
     "ANTHROPIC_VERSION",
+    "dropped_call_note",
     "first_tool_call",
     "image_block",
     "invoke_model",
     "text_blocks",
+    "tool_calls",
     "tool_schema",
 ]
 
@@ -74,18 +76,38 @@ def image_block(media_type: str, data_b64: str) -> dict[str, Any]:
     }
 
 
-def first_tool_call(response: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
-    """First ``tool_use`` block as ``(name, arguments)``, or None if the model returned prose.
+def tool_calls(response: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    """EVERY ``tool_use`` block as ``(name, arguments)``, in order.
+
+    Anthropic may return several tool_use blocks in one turn — ``tool_choice`` forces at least
+    one, it does not cap them at one. A loop that executes a single call per turn must therefore
+    decide what happens to the rest, and "silently" is the wrong answer: the model asked for work
+    that never happened and nothing in the transcript says so. Callers take ``[0]`` and record
+    the dropped names.
 
     Arguments that are not an object become ``{}`` rather than propagating a non-dict: callers
     validate arguments against the tool's own schema, and handing them a string to unpack turns
     a bad model response into a TypeError far from here.
     """
+    out: list[tuple[str, dict[str, Any]]] = []
     for block in (response or {}).get("content") or []:
         if isinstance(block, dict) and block.get("type") == "tool_use":
             args = block.get("input")
-            return str(block.get("name") or ""), args if isinstance(args, dict) else {}
-    return None
+            out.append((str(block.get("name") or ""), args if isinstance(args, dict) else {}))
+    return out
+
+
+def first_tool_call(response: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
+    """First ``tool_use`` block, or None if the model returned prose. See :func:`tool_calls`
+    when the caller needs to account for extra calls rather than drop them."""
+    calls = tool_calls(response)
+    return calls[0] if calls else None
+
+
+def dropped_call_note(calls: list[tuple[str, dict[str, Any]]]) -> str | None:
+    """Names of the tool calls beyond the first, as a note — or None when there are none."""
+    extra = [name or "?" for name, _ in calls[1:]]
+    return f"dropped parallel calls: {', '.join(extra)}" if extra else None
 
 
 def text_blocks(response: dict[str, Any]) -> list[str]:

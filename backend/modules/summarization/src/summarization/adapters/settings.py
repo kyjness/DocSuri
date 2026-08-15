@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from docsuri_shared.env import env_choice, env_flag, env_int
+from docsuri_shared.env import env_flag, env_int
 
 # Concrete model bindings (TD-S3). modelVer is part of the immutable cache key.
 # Invoked via Bedrock inference profiles — the bare foundation-model ids (``anthropic.claude-*``)
@@ -19,15 +19,13 @@ from docsuri_shared.env import env_choice, env_flag, env_int
 # profiles; both overridable via DOCSURI_SUMMARY_MODEL_ID / DOCSURI_TRANSLATE_MODEL_ID.
 DEFAULT_SUMMARY_MODEL = "global.anthropic.claude-sonnet-4-6"
 DEFAULT_TRANSLATE_MODEL = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+# Cache-key dimension: cached summaries are keyed by it, so it must change whenever the output
+# distribution changes. KNOWN GAP: it is a hand-maintained constant, not derived from the model
+# ids above, so overriding DOCSURI_SUMMARY_MODEL_ID / DOCSURI_TRANSLATE_MODEL_ID does NOT rotate
+# the key and the cache keeps serving the previous model's output. Deriving it would be correct
+# but invalidates every cached summary at once, so it is a deliberate operational decision
+# rather than a code cleanup — bump this string by hand when the models change.
 MODEL_VER = "sonnet46-haiku45"
-# Solo-local provider (DOCSURI_LLM_PROVIDER=openai — AWS retired). model_ver MUST differ per
-# provider: it is a cache-key dimension, so OpenAI generations key separately from the mirrored
-# Bedrock-era summaries instead of silently mixing under one version.
-DEFAULT_OPENAI_SUMMARY_MODEL = "gpt-4o-mini"
-DEFAULT_OPENAI_TRANSLATE_MODEL = "gpt-4o-mini"
-# Closed vocabulary: an unknown value used to pick the Bedrock defaults, so a typo mixed a
-# provider switch with a model_ver that says the other provider — and model_ver is a cache key.
-LLM_PROVIDERS = ("bedrock", "openai")
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,8 +71,6 @@ class SummarizationSettings:
     # runs on a thread here instead of a separate worker. Without either, a long generation runs
     # inline and outlives the client's deadline. OFF by default; a real deploy uses the queue.
     local_summary_worker_enabled: bool = False
-    # LLM provider: "bedrock" (team AWS deploy) | "openai" (solo-local, personal key).
-    llm_provider: str = "bedrock"
 
     @property
     def summarization_enabled(self) -> bool:
@@ -83,34 +79,17 @@ class SummarizationSettings:
 
     @classmethod
     def from_env(cls) -> SummarizationSettings:
-        provider = env_choice("DOCSURI_LLM_PROVIDER", LLM_PROVIDERS, "bedrock")
-        default_summary = (
-            DEFAULT_OPENAI_SUMMARY_MODEL if provider == "openai" else DEFAULT_SUMMARY_MODEL
-        )
-        default_translate = (
-            DEFAULT_OPENAI_TRANSLATE_MODEL if provider == "openai" else DEFAULT_TRANSLATE_MODEL
-        )
         return cls(
-            llm_provider=provider,
-            summary_model_id=os.environ.get("DOCSURI_SUMMARY_MODEL_ID", default_summary),
+            summary_model_id=os.environ.get("DOCSURI_SUMMARY_MODEL_ID", DEFAULT_SUMMARY_MODEL),
             translate_model_id=os.environ.get(
-                "DOCSURI_TRANSLATE_MODEL_ID", default_translate
+                "DOCSURI_TRANSLATE_MODEL_ID", DEFAULT_TRANSLATE_MODEL
             ),
             s3_bucket=os.environ.get("DOCSURI_SUMMARY_BUCKET"),
             redis_url=os.environ.get("DOCSURI_REDIS_URL"),
             database_url=os.environ.get("DATABASE_URL"),
             region_name=os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION"),
             redis_ttl_seconds=env_int("DOCSURI_SUMMARY_TTL", 86400),  # 24h (§11)
-            # OpenAI model_ver derives from the ACTUAL model ids so swapping models rotates
-            # the cache key (a fixed provider tag would silently serve stale-model output).
-            model_ver=(
-                "openai:"
-                + os.environ.get("DOCSURI_SUMMARY_MODEL_ID", default_summary)
-                + ":"
-                + os.environ.get("DOCSURI_TRANSLATE_MODEL_ID", default_translate)
-                if provider == "openai"
-                else MODEL_VER
-            ),
+            model_ver=MODEL_VER,
             assets_enabled=env_flag("DOCSURI_MULTIMODAL_ASSETS_ENABLED"),
             asset_url_ttl_seconds=env_int("DOCSURI_ASSET_URL_TTL_SECONDS", 600),
             docmodel_viewer_enabled=env_flag("DOCSURI_DOCMODEL_VIEWER_ENABLED"),

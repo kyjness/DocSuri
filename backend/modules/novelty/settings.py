@@ -1,6 +1,6 @@
 """NoveltySettings — env 주도 설정(v2, tech-stack-decisions TD-NV2-1~8).
 
-로컬 1차: redis 큐 + postgres 저장 + OpenAI tool-calling. 배포 기준선(SQS·Bedrock)
+로컬 1차: redis 큐 + postgres 저장. 배포 기준선(SQS·RDS)
 env 이름은 v1을 보존한다. 예산 시작값은 nfr-requirements §3 — 완화(상향)는 U6
 예산 상태 확인 후에만(NFR-NV2-8).
 """
@@ -10,7 +10,6 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from docsuri_shared.env import env_choice as _env_choice
 from docsuri_shared.env import env_flag as _env_flag
 from docsuri_shared.env import env_float as _env_float
 from docsuri_shared.env import env_int as _env_int
@@ -25,39 +24,16 @@ from .ports.tools import (
     TOOL_VIEW_FIGURE,
 )
 
-DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
-# Closed vocabulary: ``llm_configured`` reads this as ``== "bedrock"``, so an unknown value used
-# to report "not configured" without ever naming the typo.
-LLM_PROVIDERS = ("openai", "bedrock")
-# 기본은 bedrock — evidence(U11)와 같은 근거다. OPENAI_API_KEY가 저장소에서 제거된 뒤
-# (2026-08-15) openai 기본값은 "설정된 적 없음"과 구별되지 않는다: `llm_configured`가
-# openai에서 키 유무를 보므로 False가 되고, 워커는 기동하자마자 SystemExit으로 죽는다.
-# 배포에서 정확히 그 상태였다 — CDK는 DOCSURI_NOVELTY_LLM_MODEL_ID(Sonnet)를 주면서
-# provider 스위치는 주지 않아, 모델 id는 Bedrock인데 provider는 openai였다. API는
-# novelty를 무조건 마운트하므로 잡은 접수되어 큐에 쌓이고 실행하는 프로세스만 없었다.
-# openai는 이제 opt-in이다(.env.example이 네 스위치를 모두 명시한다).
-DEFAULT_LLM_PROVIDER = "bedrock"
+# 비용 추정 단가(USD/1M tokens) — 기본값은 아래 Bedrock 모델 기준. 모델을 env로 바꾸면
+# 단가도 함께 바꾼다: 코드에 박으면 비싼 모델로 갈아탄 뒤 예산 대장이 조용히 과소계상된다.
+DEFAULT_INPUT_USD_PER_MTOK = 3.0
+DEFAULT_OUTPUT_USD_PER_MTOK = 15.0
 # v1 승계 — Bedrock inference profile(배포 기준선).
 DEFAULT_BEDROCK_MODEL = "global.anthropic.claude-sonnet-4-6"
 
 # 3.5MB — 프로바이더 이미지 한도(첫 프로바이더 5MB, 배포 기준선 Bedrock은 그보다
 # 낮다) 아래로 여유를 둔 값. 실측 코퍼스 최대 자산 1.5MB 미만이라 손실 없음.
 DEFAULT_FIGURE_MAX_IMAGE_BYTES = 3_500_000
-_IMAGE_DETAILS = frozenset({"low", "high", "auto"})
-
-
-def _image_detail_from_env() -> str | None:
-    """미지정이면 None(프로바이더 기본값). 오타는 조립 시점에 시끄럽게 실패한다 —
-    이미지가 실린 첫 턴에서 400으로 잡을 죽이는 것보다 낫다."""
-    raw = (os.environ.get("DOCSURI_NOVELTY_FIGURE_IMAGE_DETAIL") or "").strip().lower()
-    if not raw:
-        return None
-    if raw not in _IMAGE_DETAILS:
-        raise ValueError(
-            f"DOCSURI_NOVELTY_FIGURE_IMAGE_DETAIL must be one of "
-            f"{sorted(_IMAGE_DETAILS)}; got {raw!r}"
-        )
-    return raw
 
 # 캡 그룹(nfr-requirements §3) — 탐색류는 합산 캡.
 CAP_GROUP_SEARCH = "search"
@@ -77,13 +53,9 @@ TOOL_CAP_GROUPS: dict[str, str] = {
 
 @dataclass(frozen=True, slots=True)
 class NoveltySettings:
-    # LLM 프로바이더 스위치(TD-NV2-3) — 어댑터 선택은 composition root에서만.
-    llm_provider: str
-    openai_api_key: str | None
-    openai_model: str
     # 비용 추정 단가(USD/1M tokens) — 예산 집계 입력(FR-45). 모델 교체 시 env로 조정.
-    openai_input_usd_per_mtok: float
-    openai_output_usd_per_mtok: float
+    llm_input_usd_per_mtok: float
+    llm_output_usd_per_mtok: float
     bedrock_model_id: str
     region_name: str | None
     # 잡 큐(TD-NV2-1): redis URL(로컬 1차) / SQS URL(배포 기준선, v1 env 보존)
@@ -106,10 +78,6 @@ class NoveltySettings:
     # run_loop의 포괄 except가 fatal로 수렴). 실측 코퍼스 최대 자산이 1.5MB 미만이라
     # 낮게 잡아도 잃는 것이 없다.
     figure_max_image_bytes: int
-    # OpenAI image_url detail 힌트. 프로바이더가 받는 값만 허용한다 — 오타가 그대로
-    # 나가면 이미지가 실린 첫 턴에서 400 → 잡 FAILED로 번지고, 텍스트 턴은 멀쩡해서
-    # 프로바이더 불안정으로 오인하기 쉽다.
-    figure_image_detail: str | None
     # 워커 잠금·stale 감지(NFR-NV2-2·3)
     lock_ttl_seconds: float
     stale_after_seconds: float
@@ -135,12 +103,6 @@ class NoveltySettings:
     def queue_configured(self) -> bool:
         return bool(self.queue_url or self.sqs_queue_url)
 
-    @property
-    def llm_configured(self) -> bool:
-        if self.llm_provider == "openai":
-            return bool(self.openai_api_key)
-        return self.llm_provider == "bedrock"
-
     def build_loop_budget(self) -> LoopBudget:
         return LoopBudget(
             max_iterations=self.max_iterations,
@@ -158,16 +120,11 @@ class NoveltySettings:
     @classmethod
     def from_env(cls) -> NoveltySettings:
         return cls(
-            llm_provider=_env_choice(
-                "DOCSURI_NOVELTY_LLM_PROVIDER", LLM_PROVIDERS, DEFAULT_LLM_PROVIDER
+            llm_input_usd_per_mtok=_env_float(
+                "DOCSURI_NOVELTY_INPUT_USD_PER_MTOK", DEFAULT_INPUT_USD_PER_MTOK
             ),
-            openai_api_key=os.environ.get("OPENAI_API_KEY"),
-            openai_model=os.environ.get("DOCSURI_NOVELTY_OPENAI_MODEL", DEFAULT_OPENAI_MODEL),
-            openai_input_usd_per_mtok=_env_float(
-                "DOCSURI_NOVELTY_OPENAI_INPUT_USD_PER_MTOK", 0.15
-            ),
-            openai_output_usd_per_mtok=_env_float(
-                "DOCSURI_NOVELTY_OPENAI_OUTPUT_USD_PER_MTOK", 0.60
+            llm_output_usd_per_mtok=_env_float(
+                "DOCSURI_NOVELTY_OUTPUT_USD_PER_MTOK", DEFAULT_OUTPUT_USD_PER_MTOK
             ),
             bedrock_model_id=os.environ.get(
                 "DOCSURI_NOVELTY_LLM_MODEL_ID", DEFAULT_BEDROCK_MODEL
@@ -181,7 +138,6 @@ class NoveltySettings:
             figure_max_image_bytes=_env_int(
                 "DOCSURI_NOVELTY_FIGURE_MAX_BYTES", DEFAULT_FIGURE_MAX_IMAGE_BYTES
             ),
-            figure_image_detail=_image_detail_from_env(),
             lock_ttl_seconds=_env_float("DOCSURI_NOVELTY_LOCK_TTL_SECONDS", 120.0),
             stale_after_seconds=_env_float("DOCSURI_NOVELTY_STALE_AFTER_SECONDS", 900.0),
             max_iterations=_env_int("DOCSURI_NOVELTY_MAX_ITERATIONS", 24),

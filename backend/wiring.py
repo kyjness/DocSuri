@@ -284,8 +284,8 @@ def _mount_discovery(app: FastAPI, settings: Settings, result: MountResult) -> N
     app.include_router(build_router(bundle.orchestrator, grounding_hook, bundle.paper_service))
     result.mounted.append("discovery")
     log.info(
-        "app-shell: discovery mounted (read path = real(opensearch+%s))",
-        discovery_settings.embedding_provider,
+        "app-shell: discovery mounted (read path = real(opensearch + bedrock %s))",
+        discovery_settings.bedrock_model_id,
     )
 
 

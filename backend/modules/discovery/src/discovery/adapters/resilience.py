@@ -27,7 +27,7 @@ __all__ = ["CircuitBreaker", "CircuitGuardedEmbedder"]
 
 class CircuitGuardedEmbedder:
     """EmbeddingAdapter decorator: OPEN circuit → immediate ``EmbeddingUnavailable`` (the
-    orchestrator's tested lexical-only fallback) instead of a doomed ~7s Bedrock/OpenAI wait.
+    orchestrator's tested lexical-only fallback) instead of a doomed ~7s Bedrock wait.
 
     Sits UNDER the ``EmbeddingCache`` (cache → circuit → real adapter): cache hits neither
     consult nor count toward the circuit — only real dependency calls do."""

@@ -100,19 +100,15 @@ def build_local_runtime() -> RuntimeServices:
 
 
 def _embedding_port(settings: IngestionSettings):
-    """The writer's embedding model, chosen by the SAME setting the U2 reader reads.
+    """The writer's embedding model — Bedrock/Cohere, the same one the U2 reader builds.
 
     Reader and writer must resolve to one model: the vectors they produce only compare inside a
-    single embedding space, and both sides are 1024-dimensional, so a mismatch passes every
-    dimension check and shows up as semantically wrong neighbours. This used to be hardcoded to
-    Bedrock here while the reader followed ``DOCSURI_EMBEDDING_PROVIDER``, which meant a single
-    env value could split them with nothing failing until the index manifest was compared —
-    after a full corpus build.
+    single embedding space. There is deliberately no provider branch here — while one existed,
+    a single env value could split writer from reader, and because both providers were
+    1024-dimensional the split passed every dimension check and surfaced only as semantically
+    wrong neighbours, after a full corpus build. The remaining split risk is a MODEL change,
+    which the index embedding manifest catches.
     """
-    if settings.embedding_provider == "openai":
-        from .adapters.openai_embedding import OpenAIEmbeddingPort
-
-        return OpenAIEmbeddingPort(model=settings.openai_embedding_model)
     return BedrockCohereEmbeddingPort(
         model_id=settings.bedrock_model_id or "",
         # embed region decoupled from aws_region (OpenSearch SigV4): Cohere is not in apne2.

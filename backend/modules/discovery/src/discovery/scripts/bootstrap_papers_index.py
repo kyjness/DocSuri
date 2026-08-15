@@ -42,18 +42,11 @@ def bootstrap(settings: DiscoverySettings | None = None, *, recreate: bool = Fal
     # Stamp the embedding manifest with the configured provider identity: the harvest that
     # fills this index MUST use the same model, and the reader-side space guard verifies it
     # (u2 business-rules §6 / vector-spec §4).
-    if settings.embedding_provider == "openai":
-        embedding_meta = {
-            "provider": "openai",
-            "model": settings.openai_embedding_model,
-            "dimensions": DIMENSIONS,
-        }
-    else:
-        embedding_meta = {
-            "provider": "bedrock",
-            "model": settings.bedrock_model_id or "",
-            "dimensions": DIMENSIONS,
-        }
+    embedding_meta = {
+        "provider": "bedrock",
+        "model": settings.bedrock_model_id or "",
+        "dimensions": DIMENSIONS,
+    }
     create_index(
         client,
         index,

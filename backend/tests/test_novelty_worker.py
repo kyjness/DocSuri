@@ -47,11 +47,8 @@ def _settings(**overrides) -> NoveltySettings:
     from dataclasses import replace
 
     base = NoveltySettings(
-        llm_provider="openai",
-        openai_api_key="k",
-        openai_model="m",
-        openai_input_usd_per_mtok=0.15,
-        openai_output_usd_per_mtok=0.60,
+        llm_input_usd_per_mtok=3.0,
+        llm_output_usd_per_mtok=15.0,
         bedrock_model_id="b",
         region_name=None,
         queue_url="redis://test",
@@ -60,7 +57,6 @@ def _settings(**overrides) -> NoveltySettings:
         external_timeout_seconds=5.0,
         assets_enabled=False,
         figure_max_image_bytes=4 * 1024 * 1024,
-        figure_image_detail=None,
         lock_ttl_seconds=120.0,
         stale_after_seconds=900.0,
         max_iterations=24,

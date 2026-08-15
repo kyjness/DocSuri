@@ -41,9 +41,12 @@ def search_configured(monkeypatch) -> None:
     and only the discovery tests need it.
     """
     monkeypatch.setenv("DOCSURI_OPENSEARCH_ENDPOINT", _DEAD_OPENSEARCH)
-    monkeypatch.setenv("DOCSURI_EMBEDDING_PROVIDER", "openai")
-    # Hermetic regardless of a sourced .env: a region would make the OpenSearch factory resolve
-    # AWS credentials for SigV4, and a rerank ARN would build a live Bedrock client.
+    monkeypatch.setenv("DOCSURI_BEDROCK_MODEL_ID", "cohere.embed-v4:0")
+    # The embedder needs a region to build its boto3 client; give it one WITHOUT setting
+    # DOCSURI_AWS_REGION, which is what would push the OpenSearch factory onto SigV4 and make
+    # it resolve AWS credentials. Hermetic regardless of a sourced .env: no credentials are
+    # needed to construct a boto3 client, and a rerank ARN would build a live Bedrock client.
+    monkeypatch.setenv("DOCSURI_BEDROCK_REGION", "us-east-1")
     monkeypatch.delenv("DOCSURI_AWS_REGION", raising=False)
     monkeypatch.delenv("DOCSURI_RERANK_MODEL_ARN", raising=False)
 
@@ -218,16 +221,16 @@ def test_partial_search_config_does_not_pin_readyz_at_503(monkeypatch) -> None:
 @pytest.mark.parametrize(
     ("var", "value"),
     [
-        ("DOCSURI_LLM_PROVIDER", "bedrok"),      # summarization — provider typo
-        ("DOCSURI_EMBEDDING_PROVIDER", "bedrok"),  # discovery — provider typo
-        ("DOCSURI_SUMMARY_TTL", "one-day"),       # summarization — malformed int
+        ("DOCSURI_SUMMARY_TTL", "one-day"),                  # summarization — malformed int
+        ("DOCSURI_EVIDENCE_MAX_ITERATIONS", "many"),         # evidence — malformed int
+        ("DOCSURI_NOVELTY_INPUT_USD_PER_MTOK", "free"),      # novelty — malformed float
     ],
 )
 def test_invalid_configuration_refuses_to_boot(monkeypatch, var, value) -> None:
-    """A misspelled provider or a malformed limit is not a broken module — it is the operator's
-    config, and mount_modules must NOT contain it as a "mount error". Contained, it boots a
-    process that silently lacks the module (or, if the module is required, pins readyz at 503)
-    with the offending variable named nowhere. Failing the boot puts the variable in the trace.
+    """A malformed limit is not a broken module — it is the operator's config, and
+    mount_modules must NOT contain it as a "mount error". Contained, it boots a process that
+    silently lacks the module (or, if the module is required, pins readyz at 503) with the
+    offending variable named nowhere. Failing the boot puts the variable in the trace.
     """
     from docsuri_shared.env import EnvConfigError
 

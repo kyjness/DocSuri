@@ -181,9 +181,10 @@ def _enumerate_papers(
 
 
 def _ensure_index(client, index: str, alias: str, *, provider: str, embedding_model: str) -> None:
-    # Embedding manifest: stamped with the provider/model THIS run embeds with, so the discovery
+    # Embedding manifest: stamped with the model THIS run embeds with, so the discovery
     # reader's space guard can verify it at wiring time (vector-spec §4 same-space invariant).
-    # Hardcoding "openai" here defeated that guard on any index built with another provider.
+    # It must never be hardcoded — that defeats the guard on any index built with another model,
+    # and Cohere v3/v4 are both 1024-dimensional so nothing else would catch the swap.
     embedding_meta = {
         "provider": provider,
         "model": embedding_model,
@@ -275,17 +276,13 @@ def main() -> int:
     # The SAME selection the ingest pipeline makes, so a rebuild lands in the corpus's existing
     # embedding space instead of silently opening a second one.
     embedder = _embedding_port(settings)
-    model = (
-        settings.bedrock_model_id
-        if settings.embedding_provider == "bedrock"
-        else settings.openai_embedding_model
-    )
-    print(f"[embed] {settings.embedding_provider} · {model}")
+    model = settings.bedrock_model_id
+    print(f"[embed] bedrock · {model}")
     _ensure_index(
         client,
         args.index,
         args.alias,
-        provider=settings.embedding_provider,
+        provider="bedrock",
         embedding_model=model or "",
     )
     writer = OpenSearchVectorIndex(endpoint=args.endpoint, index_name=args.index)

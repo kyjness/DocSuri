@@ -21,10 +21,11 @@ from typing import Any
 
 from docsuri_shared.bedrock import (
     ANTHROPIC_VERSION,
-    first_tool_call,
+    dropped_call_note,
     image_block,
     invoke_model,
     text_blocks,
+    tool_calls,
     tool_schema,
 )
 
@@ -188,9 +189,12 @@ class BedrockToolCallingLlm:
             input_usd_per_mtok=self._input_rate,
             output_usd_per_mtok=self._output_rate,
         )
-        call = first_tool_call(response)
-        if call is None:
+        calls = tool_calls(response)
+        if not calls:
             # 도구 없이 산문만 온 턴 — 남은 텍스트 전부를 근거로 보수적 종료.
             return conservative_termination(" ".join(text_blocks(response)), cost)
-        name, args = call
-        return decision_from_tool_call(name, args, cost)
+        # 루프는 턴당 한 호출만 실행한다. tool_choice는 최소 1개를 강제할 뿐 1개로 제한하지
+        # 않으므로 나머지는 버려지는데, 조용히 버리면 모델이 요청한 작업이 사라진 사실이
+        # 어디에도 안 남는다 — 폐기 목록을 결정 노트에 기록한다.
+        name, args = calls[0]
+        return decision_from_tool_call(name, args, cost, decision_note=dropped_call_note(calls))

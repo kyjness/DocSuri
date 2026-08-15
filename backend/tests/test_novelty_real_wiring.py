@@ -150,11 +150,8 @@ def test_bedrock_termination_and_text_fallback() -> None:
 
 def _settings(**overrides) -> NoveltySettings:
     base = NoveltySettings(
-        llm_provider="openai",
-        openai_api_key="k",
-        openai_model="test-model",
-        openai_input_usd_per_mtok=0.15,
-        openai_output_usd_per_mtok=0.60,
+        llm_input_usd_per_mtok=3.0,
+        llm_output_usd_per_mtok=15.0,
         bedrock_model_id="anthropic.test",
         region_name=None,
         queue_url=None,
@@ -163,7 +160,6 @@ def _settings(**overrides) -> NoveltySettings:
         external_timeout_seconds=5.0,
         assets_enabled=False,
         figure_max_image_bytes=4 * 1024 * 1024,
-        figure_image_detail=None,
         lock_ttl_seconds=120.0,
         stale_after_seconds=900.0,
         max_iterations=24,
@@ -178,13 +174,17 @@ def _settings(**overrides) -> NoveltySettings:
     return replace(base, **overrides)
 
 
-def test_provider_switch_lives_in_composition_root() -> None:
-    from backend.modules.novelty.adapters.llm_openai import OpenAiToolCallingLlm
+def test_llm_assembly_lives_in_composition_root() -> None:
     from backend.modules.novelty.adapters.local_wiring import build_llm, build_store
     from backend.modules.novelty.adapters.memory import InMemoryNoveltyStore
+    from backend.modules.novelty.adapters.real_wiring import BedrockToolCallingLlm
 
-    assert isinstance(build_llm(_settings()), OpenAiToolCallingLlm)
-    assert build_llm(_settings(openai_api_key=None)) is None  # 키 없으면 미조립
+    llm = build_llm(_settings())
+    assert isinstance(llm, BedrockToolCallingLlm)
+    # 단가는 settings에서 온다 — 어댑터 기본값에 기대면 모델을 바꿨을 때 단가만 옛 모델에
+    # 남아 예산 대장이 조용히 어긋난다(FR-45 집계 입력).
+    assert llm._input_rate == 3.0
+    assert llm._output_rate == 15.0
     assert isinstance(build_store(None), InMemoryNoveltyStore)  # 폴백 — 항상 마운트 가능
 
 
@@ -256,26 +256,3 @@ def test_bedrock_outage_goes_through_breaker_to_llm_unavailable() -> None:
     assert calls["n"] == first_attempts
 
 
-def test_image_detail_typo_fails_at_composition_root_not_mid_investigation() -> None:
-    """오타가 그대로 프로바이더에 나가면 이미지가 실린 첫 턴에서 400 → 잡 FAILED다.
-    텍스트 턴은 멀쩡해서 프로바이더 불안정으로 오인하기 쉽다 — 조립 시점에 끊는다."""
-    import os
-
-    import pytest
-
-    from backend.modules.novelty.settings import NoveltySettings
-
-    key = "DOCSURI_NOVELTY_FIGURE_IMAGE_DETAIL"
-    previous = os.environ.get(key)
-    try:
-        os.environ[key] = "medium"  # OpenAI가 받지 않는 값
-        with pytest.raises(ValueError, match=key):
-            NoveltySettings.from_env()
-        os.environ[key] = "LOW"
-        assert NoveltySettings.from_env().figure_image_detail == "low"
-        del os.environ[key]
-        assert NoveltySettings.from_env().figure_image_detail is None
-    finally:
-        os.environ.pop(key, None)
-        if previous is not None:
-            os.environ[key] = previous

@@ -16,8 +16,11 @@ import json
 
 import pytest
 
-from backend.modules.evidence.adapters._llm_shared import IMAGE_BOUNDARY_BANNER
-from backend.modules.evidence.adapters.llm_bedrock import BedrockDecider, BedrockExtractor
+from backend.modules.evidence.adapters.llm_bedrock import (
+    IMAGE_BOUNDARY_BANNER,
+    BedrockDecider,
+    BedrockExtractor,
+)
 from backend.modules.evidence.ports.llm import (
     LlmUnavailable,
     TerminationProposal,

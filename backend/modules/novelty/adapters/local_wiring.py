@@ -83,28 +83,22 @@ def build_asset_port(
     return SqlS3FigureReader(session_factory, region_name=settings.region_name)
 
 
-def build_llm(settings: NoveltySettings) -> Any | None:
-    """프로바이더 스위치(TD-NV2-3) — openai(로컬 1차) | bedrock(배포 기준선)."""
-    if settings.llm_provider == "openai" and settings.openai_api_key:
-        from .llm_openai import OpenAiToolCallingLlm
+def build_llm(settings: NoveltySettings) -> Any:
+    """ToolCallingLlmPort 조립(TD-NV2-3) — Bedrock Anthropic.
 
-        return OpenAiToolCallingLlm(
-            model=settings.openai_model,
-            api_key=settings.openai_api_key,
-            input_usd_per_mtok=settings.openai_input_usd_per_mtok,
-            output_usd_per_mtok=settings.openai_output_usd_per_mtok,
-            image_detail=settings.figure_image_detail,
-        )
-    if settings.llm_provider == "bedrock":
-        import boto3
+    단가는 settings에서 받는다: 어댑터 기본값에 기대면 모델을 env로 바꿨을 때 단가만 옛
+    모델에 남아 예산 대장이 조용히 어긋난다(FR-45 집계 입력).
+    """
+    import boto3
 
-        from .real_wiring import BedrockToolCallingLlm
+    from .real_wiring import BedrockToolCallingLlm
 
-        return BedrockToolCallingLlm(
-            model_id=settings.bedrock_model_id,
-            client=boto3.client("bedrock-runtime", region_name=settings.region_name),
-        )
-    return None
+    return BedrockToolCallingLlm(
+        model_id=settings.bedrock_model_id,
+        client=boto3.client("bedrock-runtime", region_name=settings.region_name),
+        input_usd_per_mtok=settings.llm_input_usd_per_mtok,
+        output_usd_per_mtok=settings.llm_output_usd_per_mtok,
+    )
 
 
 def build_tool_registry(
