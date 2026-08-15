@@ -25,9 +25,10 @@ asset rendering, embedding and indexing all sit on top of the fetch.
 ONE PAPER'S FAILURE DOES NOT STOP THE RUN; A COLLAPSE DOES. A paper that 404s or fails to parse
 is recorded and skipped, and the summary groups them by reason so a systematic failure (a whole
 bucket, a whole source) is visible instead of being averaged into a success rate. Two gates sit
-on top: ``MAX_FAILURE_RATIO`` judges the finished run, and ``RECENT_FAILURE_LIMIT`` aborts a run
-that is already collapsing. Both exit non-zero — unlike a date window, every id here was chosen
-because U12 needs it, so losing many is a reason to stop rather than proceed to the recent slice.
+on top: ``MAX_FAILURE_RATIO`` judges the finished run, while ``CONSECUTIVE_FAILURE_LIMIT`` (a dead
+dependency) and ``RECENT_FAILURE_LIMIT`` (a throttle) abort one that is already collapsing. All
+exit non-zero — unlike a date window, every id here was chosen because U12 needs it, so losing
+many is a reason to stop rather than proceed to the recent slice.
 
     python -m docsuri_ingestion.foundational --dry-run
     python -m docsuri_ingestion.foundational
@@ -78,6 +79,17 @@ MAX_FAILURE_RATIO = 0.10
 RECENT_WINDOW = 50
 RECENT_FAILURE_LIMIT = 0.6
 
+# The window above is tuned for a PARTIAL collapse (a throttle letting some through) and is far too
+# slow for a TOTAL one. When the Postgres container died mid-run (2026-08-15, a Docker daemon
+# restart took all six containers down at once) every paper failed instantly, and the window would
+# have burned 50 of them before judging. A dead dependency needs no sample: nothing has succeeded
+# at all, so there is nothing to average.
+#
+# Deliberately larger than one metadata chunk's worth of transient noise but far below the window:
+# a genuine run has never produced this many consecutive failures, because the reasons that fail
+# a single paper (404, no ar5iv build, a blocked licence) are independent of each other.
+CONSECUTIVE_FAILURE_LIMIT = 12
+
 # Papers per bulk metadata request. Matches the arXiv adapter's own ``id_list`` batch size, so a
 # chunk here is exactly one request there.
 METADATA_CHUNK = 100
@@ -123,15 +135,39 @@ def load_ledger(path: pathlib.Path) -> dict[str, str]:
     return done
 
 
+def read_redo(path: pathlib.Path) -> set[str]:
+    """arXiv ids to re-ingest even though the ledger says they succeeded, one per line.
+
+    A paper that succeeded under an older parser or chunker is not "done" in any useful sense —
+    when the chunk cap went 128 -> 512, the 217 papers that had been truncated were all recorded
+    as NEW, so ``--retry-failed`` could not see them. The obvious workaround is to delete their
+    lines from the ledger, and that is exactly what this exists to avoid: the ledger is
+    append-only so a crash cannot corrupt it, and hand-editing it puts the whole resume record one
+    slip away from being lost.
+    """
+    ids: set[str] = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        candidate = line.split("#", 1)[0].strip()
+        if candidate:
+            ids.add(candidate)
+    return ids
+
+
 def pending(
-    rows: list[tuple[str, str]], done: dict[str, str], *, retry_failed: bool
+    rows: list[tuple[str, str]],
+    done: dict[str, str],
+    *,
+    retry_failed: bool,
+    redo: set[str] | None = None,
 ) -> list[tuple[str, str]]:
     """Rows still to do. A failed paper is retried only on request — re-running the list should
-    not spend an hour re-attempting the same 404s every time."""
+    not spend an hour re-attempting the same 404s every time. ``redo`` forces ids back in
+    regardless of their recorded outcome (see ``read_redo``)."""
+    forced = redo or set()
     return [
         (aid, bucket)
         for aid, bucket in rows
-        if aid not in done or (retry_failed and done[aid].startswith("failed"))
+        if aid in forced or aid not in done or (retry_failed and done[aid].startswith("failed"))
     ]
 
 
@@ -144,12 +180,16 @@ def ingest_foundational(
     bucket: str | None = None,
     limit: int | None = None,
     retry_failed: bool = False,
+    redo_path: str | None = None,
     dry_run: bool = False,
 ) -> int:
     rows = read_list(pathlib.Path(list_path), bucket)
     ledger_file = pathlib.Path(ledger_path)
     ledger_file.parent.mkdir(parents=True, exist_ok=True)
-    remaining = pending(rows, load_ledger(ledger_file), retry_failed=retry_failed)
+    redo = read_redo(pathlib.Path(redo_path)) if redo_path else set()
+    if redo:
+        _log.info("재수집 지정 %d편 (원장 결과와 무관하게 다시 돈다)", len(redo))
+    remaining = pending(rows, load_ledger(ledger_file), retry_failed=retry_failed, redo=redo)
     # Sliced AFTER the ledger filter, so successive --limit N runs advance through the list
     # instead of re-reading the same first N rows forever. `is not None`, not truthiness:
     # --limit 0 means "do nothing", not "do everything".
@@ -214,12 +254,9 @@ def ingest_foundational(
                         rate,
                         int((len(todo) - n) * rate // 60),
                     )
-                if _recently_collapsed(recent):
-                    _log.error(
-                        "최근 %d편 중 %d편 실패 — 계속 돌아도 색인이 안 남는다. 중단한다.",
-                        len(recent),
-                        sum(recent),
-                    )
+                collapse = _recently_collapsed(recent)
+                if collapse:
+                    _log.error("%s — 계속 돌아도 색인이 안 남는다. 중단한다.", collapse)
                     aborted = True
                     break
             if aborted:
@@ -250,13 +287,22 @@ def ingest_foundational(
     return 0
 
 
-def _recently_collapsed(recent: deque[bool]) -> bool:
-    """Whether the run is failing fast enough that continuing only burns budget.
+def _recently_collapsed(recent: deque[bool]) -> str | None:
+    """Why the run should stop now, or None to carry on. Two thresholds, two failure shapes.
 
-    Waits for a full window first — the opening papers of a run are a poor sample, and an early
-    cluster of 404s would otherwise abort a healthy batch.
+    TOTAL collapse — every recent paper failed. A dead dependency needs no sample: nothing has
+    succeeded, so there is nothing to average, and waiting for the window below would burn 50
+    papers to learn what 12 already said.
+
+    PARTIAL collapse — a majority failed but not all, which is what a throttle looks like. This
+    one DOES need the full window, because the opening papers of a run are a poor sample and an
+    early cluster of 404s must not abort a healthy batch.
     """
-    return len(recent) == recent.maxlen and sum(recent) / len(recent) > RECENT_FAILURE_LIMIT
+    if len(recent) >= CONSECUTIVE_FAILURE_LIMIT and all(list(recent)[-CONSECUTIVE_FAILURE_LIMIT:]):
+        return f"최근 {CONSECUTIVE_FAILURE_LIMIT}편 연속 실패 — 의존성이 죽은 것으로 본다"
+    if len(recent) == recent.maxlen and sum(recent) / len(recent) > RECENT_FAILURE_LIMIT:
+        return f"최근 {len(recent)}편 중 {sum(recent)}편 실패"
+    return None
 
 
 def _batch_metadata(runtime, arxiv_ids: list[str]) -> dict[str, object]:
@@ -320,6 +366,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--bucket", help="canon / cs.CL / cs.AI / cs.LG / cs.CV 중 하나만")
     ap.add_argument("--limit", type=int)
     ap.add_argument("--retry-failed", action="store_true", help="원장의 실패분을 다시 시도")
+    ap.add_argument("--redo", dest="redo_path", help="성공으로 적힌 id도 다시 도는 목록 파일")
     ap.add_argument("--dry-run", action="store_true", help="목록·원장·재개만 확인, 수집 없음")
     args = ap.parse_args(argv)
     return ingest_foundational(
@@ -328,6 +375,7 @@ def main(argv: list[str] | None = None) -> int:
         bucket=args.bucket,
         limit=args.limit,
         retry_failed=args.retry_failed,
+        redo_path=args.redo_path,
         dry_run=args.dry_run,
     )
 

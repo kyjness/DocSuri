@@ -40,6 +40,12 @@ def main(argv: list[str] | None = None) -> int:
     foundational.add_argument("--bucket")
     foundational.add_argument("--limit", type=int)
     foundational.add_argument("--retry-failed", action="store_true")
+    foundational.add_argument(
+        "--redo",
+        dest="redo_path",
+        help="이 파일에 적힌 arXiv id는 원장이 성공으로 적어뒀어도 다시 돈다 "
+        "(파서·청커가 바뀌어 이전 산출물이 낡았을 때). 한 줄에 하나, # 뒤는 주석",
+    )
     foundational.add_argument("--dry-run", action="store_true")
 
     args = parser.parse_args(argv)
@@ -67,8 +73,14 @@ def main(argv: list[str] | None = None) -> int:
                 #
                 # Reported as a message, not a traceback: this is an operator telling the batch
                 # to go fix something, and a stack trace buries the one line that says what.
+                #
+                # GROBID is NOT required here: this list is arXiv ids, which the ar5iv rung serves
+                # for all but a small minority, and on a small box GROBID is better left down —
+                # it and Docling together took out the worker mid-paper. The minority fails and a
+                # later pass recovers it; the check still warns so that is a choice, not a
+                # surprise.
                 try:
-                    preflight_dependencies(foundational_runtime, settings)
+                    preflight_dependencies(foundational_runtime, settings, require_grobid=False)
                 except RuntimeError as exc:
                     print(exc, file=sys.stderr)
                     return 1
@@ -80,6 +92,7 @@ def main(argv: list[str] | None = None) -> int:
             bucket=args.bucket,
             limit=args.limit,
             retry_failed=args.retry_failed,
+            redo_path=args.redo_path,
             dry_run=args.dry_run,
         )
 

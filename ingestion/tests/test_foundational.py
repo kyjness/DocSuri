@@ -18,6 +18,7 @@ from docsuri_ingestion.domain.enums import DedupDecision, FailureReason
 from docsuri_ingestion.domain.errors import PermanentIngestionError, RetriableIngestionError
 from docsuri_ingestion.domain.models import MetadataRecord
 from docsuri_ingestion.foundational import (
+    CONSECUTIVE_FAILURE_LIMIT,
     MAX_FAILURE_RATIO,
     METADATA_CHUNK,
     RECENT_FAILURE_LIMIT,
@@ -26,6 +27,7 @@ from docsuri_ingestion.foundational import (
     load_ledger,
     pending,
     read_list,
+    read_redo,
 )
 
 _HEADER = "arxiv_id\tbucket\tyear\tcitations\tsurveys\tbuckets\tscore\ttitle\n"
@@ -424,18 +426,17 @@ def test_a_collapsing_run_aborts_instead_of_burning_the_rest(tmp_path, wired) ->
     assert len(pipeline.seen) < 150, f"kept going for {len(pipeline.seen)} papers"
 
 
-def test_an_early_cluster_of_failures_does_not_abort_a_healthy_run(tmp_path, wired) -> None:
-    """A run can open badly — a few withdrawn papers in a row — without the batch being doomed.
+def test_a_bad_opening_stretch_does_not_abort_a_healthy_run(tmp_path, wired) -> None:
+    """A run can open badly — several dud papers early — without the batch being doomed.
 
-    The window has to be full before it judges, AND the rate inside it has to clear the limit, so
-    a cluster shorter than the window is diluted by the papers that follow rather than read as a
-    collapse.
+    The window gate waits for a full window before it judges, so an opening cluster is diluted by
+    the papers that follow rather than read as a collapse. (Failures are scattered, not
+    consecutive: an unbroken run of a dozen is a dead dependency, and the other gate catches it.)
     """
     boom = PermanentIngestionError("gone", reason=FailureReason.FETCH_FAILURE, stage="fetch")
     rows = [(f"p{i}", "canon") for i in range(RECENT_WINDOW * 2)]
-    # A run of failures well inside one window: at its worst the window is 40% failed, under the
-    # 60% limit.
-    failures = {f"p{i}": boom for i in range(int(RECENT_WINDOW * 0.4))}
+    # Half of the first twenty fail, alternating — a rough opening, never a dead dependency.
+    failures = {f"p{i}": boom for i in range(20) if i % 2 == 0}
     pipeline = wired(_Pipeline(failures))
 
     ingest_foundational(
@@ -454,6 +455,88 @@ def test_a_run_failing_below_the_limit_is_left_alone(tmp_path, wired) -> None:
     stride = int(1 / (RECENT_FAILURE_LIMIT - 0.1))
     failures = {f"p{i}": boom for i in range(200) if i % stride}
     pipeline = wired(_Pipeline(failures))
+
+    ingest_foundational(
+        list_path=str(_write_list(tmp_path, rows)), ledger_path=str(tmp_path / "l.jsonl")
+    )
+
+    assert len(pipeline.seen) == len(rows)
+
+
+def test_redo_reingests_papers_the_ledger_calls_done(tmp_path, wired) -> None:
+    """A paper that succeeded under an older parser or chunker is not "done" in any useful sense.
+
+    When the chunk cap went 128 -> 512, the 217 papers that had been truncated were all recorded
+    as NEW, so ``--retry-failed`` could not see them and they would have stayed half-indexed
+    forever. The obvious workaround — deleting their lines from the ledger — is what this exists
+    to avoid: the ledger is append-only so a crash cannot corrupt it, and hand-editing puts the
+    whole resume record one slip away from being lost.
+    """
+    rows = [("p1", "canon"), ("p2", "canon"), ("p3", "canon")]
+    ledger = tmp_path / "l.jsonl"
+    ledger.write_text(
+        "".join(
+            json.dumps({"arxiv_id": aid, "bucket": "canon", "outcome": "NEW"}) + "\n"
+            for aid, _ in rows
+        ),
+        encoding="utf-8",
+    )
+    redo = tmp_path / "redo.txt"
+    redo.write_text("p1\np3\n", encoding="utf-8")
+    pipeline = wired(_Pipeline())
+
+    ingest_foundational(
+        list_path=str(_write_list(tmp_path, rows)),
+        ledger_path=str(ledger),
+        redo_path=str(redo),
+    )
+
+    assert pipeline.seen == ["p1", "p3"], "redo did not override the ledger's NEW"
+    # The ledger is only appended to — the original NEW lines survive.
+    assert ledger.read_text(encoding="utf-8").count('"arxiv_id": "p1"') == 2
+
+
+def test_redo_list_ignores_comments_and_blank_lines(tmp_path) -> None:
+    """The list is produced by a query and then read by a human before it costs a batch run, so it
+    has to survive being annotated."""
+    path = tmp_path / "redo.txt"
+    path.write_text("# 상한 128에 걸린 논문\n1706.07269  # 블록 309개\n\n2103.00020\n", "utf-8")
+
+    assert read_redo(path) == {"1706.07269", "2103.00020"}
+
+
+def test_a_dead_dependency_stops_within_a_dozen_papers(tmp_path, wired) -> None:
+    """A total collapse needs no sample, and the rolling window is far too slow for one.
+
+    When the Postgres container died mid-run (2026-08-15 — a Docker daemon restart took all six
+    containers down at once) every paper failed instantly. The 50-paper window would have burned
+    50 of them to learn what the first dozen already said, and each one costs an arXiv fetch and a
+    parse before it dies.
+    """
+    boom = RetriableIngestionError(
+        "db gone", reason=FailureReason.DEPENDENCY_UNAVAILABLE, stage="control_plane"
+    )
+    rows = [(f"p{i}", "canon") for i in range(200)]
+    pipeline = wired(_Pipeline(dict.fromkeys((f"p{i}" for i in range(200)), boom)))
+
+    rc = ingest_foundational(
+        list_path=str(_write_list(tmp_path, rows)), ledger_path=str(tmp_path / "l.jsonl")
+    )
+
+    assert rc == 1
+    assert len(pipeline.seen) <= CONSECUTIVE_FAILURE_LIMIT + 2, (
+        f"burned {len(pipeline.seen)} papers on a dependency that was simply down"
+    )
+
+
+def test_scattered_failures_never_trip_the_consecutive_gate(tmp_path, wired) -> None:
+    """The reasons a single paper fails — a 404, no ar5iv build, a blocked licence — are
+    independent of one another, so they do not queue up. Only a shared cause does."""
+    boom = PermanentIngestionError("gone", reason=FailureReason.FETCH_FAILURE, stage="fetch")
+    rows = [(f"p{i}", "canon") for i in range(120)]
+    # Every third paper fails: long runs of failure are impossible, and the window rate (33%)
+    # stays under RECENT_FAILURE_LIMIT.
+    pipeline = wired(_Pipeline({f"p{i}": boom for i in range(120) if i % 3 == 0}))
 
     ingest_foundational(
         list_path=str(_write_list(tmp_path, rows)), ledger_path=str(tmp_path / "l.jsonl")

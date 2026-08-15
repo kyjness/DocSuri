@@ -117,3 +117,40 @@ def test_no_grobid_configured_is_not_a_failure(monkeypatch) -> None:
     monkeypatch.setattr("httpx.get", lambda url, timeout=None: pytest.fail("must not be called"))
 
     preflight_dependencies(_runtime(_Embedding()), _settings())
+
+
+def test_a_down_grobid_is_a_warning_when_the_run_can_proceed_without_it(
+    monkeypatch, caplog
+) -> None:
+    """An arXiv-id list is served by the ar5iv rung for all but a small minority, and on a small
+    box GROBID is better left DOWN: it holds 1.7GB resident while Docling needs 1.6GB to re-read a
+    table, and the two together killed both the container and the worker mid-paper.
+
+    So the run proceeds — but it must SAY so. Losing that slice silently is the failure this whole
+    module exists to prevent, and the fix cannot reintroduce it in the name of convenience.
+    """
+
+    def boom(url, timeout=None):  # noqa: ARG001
+        raise ConnectionError("connection refused")
+
+    monkeypatch.setattr("httpx.get", boom)
+
+    with caplog.at_level("WARNING"):
+        preflight_dependencies(
+            _runtime(_Embedding()),
+            _settings(DOCSURI_GROBID_URL="http://grobid:8070"),
+            require_grobid=False,
+        )
+
+    assert any("GROBID" in record.getMessage() for record in caplog.records), (
+        "a down GROBID passed without a word"
+    )
+
+
+def test_the_embedding_probe_is_never_optional() -> None:
+    """Unlike GROBID, there is no partial mode: with the embedder down nothing reaches the index
+    at all, so every paper the run touches is wasted work."""
+    embedding = _Embedding(error=RuntimeError("Too many tokens per day"))
+
+    with pytest.raises(RuntimeError, match="embedding"):
+        preflight_dependencies(_runtime(embedding), _settings(), require_grobid=False)

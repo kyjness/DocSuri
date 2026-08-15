@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import cast
@@ -35,6 +36,8 @@ from .ports import FormulaReaderPort, TableExtractorPort
 from .processors import Chunker
 from .resilience import IngestFailureHandler, IngestionResilienceService, TokenBucket
 from .settings import IngestionSettings
+
+_log = logging.getLogger("docsuri.ingestion.runtime")
 
 
 @dataclass(frozen=True, slots=True)
@@ -370,7 +373,9 @@ def _formula_reader(settings: IngestionSettings) -> FormulaReaderPort | None:
     )
 
 
-def preflight_dependencies(runtime: RuntimeServices, settings: IngestionSettings) -> None:
+def preflight_dependencies(
+    runtime: RuntimeServices, settings: IngestionSettings, *, require_grobid: bool = True
+) -> None:
     """Probe the dependencies a corpus batch cannot run without, and refuse to start if one is
     down. Raises ``RuntimeError`` listing every failure.
 
@@ -385,18 +390,29 @@ def preflight_dependencies(runtime: RuntimeServices, settings: IngestionSettings
 
     Neither shows up in the output — a paper that fails is simply absent — so they surface only as
     a failure counter nobody is watching. Cheap to check up front, hours to discover otherwise.
+
+    ``require_grobid=False`` for runs that can proceed without it — an arXiv-id list is mostly
+    served by the ar5iv rung, and on a small box GROBID is better left DOWN: it holds 1.7GB
+    resident while Docling needs 1.6GB to re-read a table, and the two together took out both the
+    container and the worker mid-paper on this 7.5GB machine. A down GROBID then costs the PDF-rung
+    minority, which a later pass recovers. It is still probed and still says so loudly — silently
+    losing that slice is how a whole run was lost once already.
     """
     errors: list[str] = []
+    warnings: list[str] = []
 
     if settings.grobid_url:
         import httpx
 
+        problem = None
         try:
             response = httpx.get(f"{settings.grobid_url.rstrip('/')}/api/isalive", timeout=10.0)
             if response.status_code != 200:
-                errors.append(f"GROBID {settings.grobid_url} answered {response.status_code}")
+                problem = f"GROBID {settings.grobid_url} answered {response.status_code}"
         except Exception as exc:  # noqa: BLE001 — any failure to reach it is the same verdict
-            errors.append(f"GROBID {settings.grobid_url} unreachable ({type(exc).__name__})")
+            problem = f"GROBID {settings.grobid_url} unreachable ({type(exc).__name__})"
+        if problem:
+            (errors if require_grobid else warnings).append(problem)
 
     embedding = getattr(runtime, "embedding", None)
     if embedding is not None:
@@ -410,5 +426,11 @@ def preflight_dependencies(runtime: RuntimeServices, settings: IngestionSettings
         except Exception as exc:  # noqa: BLE001 — quota, credentials, region all land here
             errors.append(f"embedding call failed ({type(exc).__name__}: {exc})")
 
+    for warning in warnings:
+        _log.warning(
+            "선행 점검 경고 — %s. PDF→GROBID 룽으로 내려가는 논문은 실패로 기록된다"
+            "(나중에 TEI 2패스로 회수).",
+            warning,
+        )
     if errors:
         raise RuntimeError("배치 선행 점검 실패 — " + "; ".join(errors))
