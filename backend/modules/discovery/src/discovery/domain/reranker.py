@@ -24,6 +24,10 @@ from .models import Candidate, SearchScope
 # They are a floor, not an optimum. The original "tune up once a quantitative signal exists"
 # gate still stands for finding the BEST M — the golden set is a 6-record synthetic corpus with
 # bag-of-keywords embeddings (see eval/golden_set.py), which cannot rank a 119k-paper index.
+# First real signal (2026-08-15, eval/live_cases.py over the 119k index, 13 uncontaminated
+# pairs): recall@10 is IDENTICAL with rerank on and off (0.923 both). Per query it wins more
+# than it loses — chain-of-thought 5→1, BERT 7→5, GPT-3 17→12, against ViT 4→5 and U-Net 2→4.
+# So M=100/150 is safe on quality; it is still not evidence that 100/150 beats some other M.
 # Measured 2026-08-15 against Bedrock Cohere Rerank v3.5 (Tokyo): latency is flat in M
 # (1.1-1.9s from 30 to 150 documents, 211KB payload), so the widening is essentially free on
 # the P50<3s LITE path. The binding constraint is the per-account request-rate quota, not M.

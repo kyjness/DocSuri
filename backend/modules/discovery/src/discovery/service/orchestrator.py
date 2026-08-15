@@ -169,12 +169,19 @@ class SearchOrchestrationService:
         t_stage = perf_counter()
         try:
             plan = self._expander.expand(normalized, degradation, scope)
-        except EmbeddingUnavailable:
+        except EmbeddingUnavailable as exc:
             # Dependency fail-fast (Q1/BR-16): embedding down → lexical-only degrade. Also flip
             # ``degradation`` itself (not just the expander's copy) so the downstream rerank is
             # skipped — rerank is the SAME Bedrock provider that just failed, so attempting it
             # would only stall on the rerank timeout before failing soft (extra latency on an
             # already-degraded request).
+            #
+            # Log it. The client sees a DegradedResultDTO banner, but nothing reached the log,
+            # so from the server side a throttled embedding was indistinguishable from a normal
+            # hybrid search returning different results. That silence corrupted a rerank
+            # A/B measurement before it was noticed (2026-08-15) — the vector leg was simply
+            # off for some queries and nothing said so.
+            _log.warning("discovery: embedding unavailable, degrading to lexical-only: %s", exc)
             degrade_mode = DegradeMode.LEXICAL_ONLY
             degradation = DegradationSignal(llm_enabled=False, rerank_enabled=False)
             plan = self._expander.expand(normalized, degradation, scope)
