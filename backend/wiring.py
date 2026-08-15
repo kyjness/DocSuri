@@ -179,7 +179,7 @@ def _mount_discovery(app: FastAPI, settings: Settings, result: MountResult) -> N
         )
         read_path = f"real(opensearch+{discovery_settings.embedding_provider})"
     else:
-        from discovery.mocks.wiring import build_mock_orchestrator
+        from discovery.testing.wiring import build_mock_orchestrator
 
         bundle = build_mock_orchestrator(observability=observability, cost_guard=cost_guard)
         read_path = "mock"
@@ -187,7 +187,7 @@ def _mount_discovery(app: FastAPI, settings: Settings, result: MountResult) -> N
     # Wire direct history recording when EventBridge is absent but library is mounted.
     # _DirectHistoryPublisher replaces the InMemoryEventPublisher inside the orchestrator so
     # SearchExecutedEvents reach the SQL DB without requiring a live event bus.
-    from discovery.mocks.port_stubs import InMemoryEventPublisher
+    from discovery.defaults.port_stubs import InMemoryEventPublisher
 
     if isinstance(getattr(bundle, "event_publisher", None), InMemoryEventPublisher) and hasattr(
         app.state, "library_session_factory"

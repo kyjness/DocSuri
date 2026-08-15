@@ -1,7 +1,7 @@
 """Seed a local OpenSearch with a deterministic mini-corpus for U2 read-path validation.
 
 Creates the shared index (``docsuri-corpus-v1``) with the k-NN + BM25 mapping the U1 writer
-uses, then bulk-indexes the deterministic fixtures (``mocks.fixtures.RECORDS``) exactly as
+uses, then bulk-indexes the deterministic fixtures (``testing.fixtures.RECORDS``) exactly as
 the writer would (``_id = chunkId``). This lets the real OpenSearch adapters be exercised
 end-to-end with NO cloud/Bedrock dependency — the fixtures carry precomputed vectors and the
 integration test embeds queries with the matching offline embedder.
@@ -25,7 +25,7 @@ from docsuri_shared.vector_spec import DIMENSIONS, IndexRecord
 
 from ..adapters.opensearch_index import OpenSearchClientFactory
 from ..adapters.settings import DiscoverySettings
-from ..mocks import fixtures
+from ..testing import fixtures
 
 # papers_index_body moved to docsuri_shared.index_spec (single source — the ingestion image
 # provisions from the same body). Re-exported here so existing callers keep importing it from

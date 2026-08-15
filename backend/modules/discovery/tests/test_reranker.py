@@ -18,7 +18,7 @@ from discovery.domain.reranker import (
     rerank_text,
     rerank_width,
 )
-from discovery.mocks.fixtures import RECORDS
+from discovery.testing.fixtures import RECORDS
 
 
 def _cand(i: int, score: float) -> Candidate:

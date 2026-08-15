@@ -22,7 +22,7 @@ from discovery.domain.ranker import (
     apply_boosts,
     shadow_rerank_diff,
 )
-from discovery.mocks.fixtures import RECORDS
+from discovery.testing.fixtures import RECORDS
 
 _ranker = RelevanceRanker()
 _plan = QueryPlan(lexical_terms=(), mode=RetrievalMode.HYBRID)

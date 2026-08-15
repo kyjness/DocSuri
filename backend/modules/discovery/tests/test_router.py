@@ -17,9 +17,9 @@ from discovery.api.router import (  # noqa: E402 — after importorskip
     _resolve_user_id,
     build_app,
 )
-from discovery.mocks import build_mock_orchestrator  # noqa: E402
 from discovery.ports.search_ports import IndexUnavailable  # noqa: E402
 from discovery.service.orchestrator import SearchUnavailable  # noqa: E402
+from discovery.testing import build_mock_orchestrator  # noqa: E402
 
 
 def _app():

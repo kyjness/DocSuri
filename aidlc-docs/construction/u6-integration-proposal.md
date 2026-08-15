@@ -65,7 +65,7 @@
 > `[tool.uv.workspace] members=["backend","backend/modules/discovery","ops","shared/python"]`).
 > "그냥 되겠지" 가정 금지 — 반드시 검증.
 
-### A2 · `discovery/mocks/wiring.py` — `grounding_hook` 주입 시임 추가 · _소유: discovery / Track 3 (@kyjness)_
+### A2 · `discovery/testing/wiring.py` — `grounding_hook` 주입 시임 추가 · _소유: discovery / Track 3 (@kyjness)_
 
 블로커 트랩: 현재 팩토리가 stub을 하드코딩하고 실 hook을 받을 인자가 없다.
 
@@ -104,7 +104,7 @@
 
 ```diff
      from discovery.api.router import build_router
-     from discovery.mocks.wiring import build_mock_orchestrator
+     from discovery.testing.wiring import build_mock_orchestrator
 +    from docsuri_ops.grounding import GroundingEnforcementHook as OpsGroundingHook
  
 -    # Mock-first (MR-1/4): real OpenSearch/Bedrock adapters and the U6 grounding hook swap in

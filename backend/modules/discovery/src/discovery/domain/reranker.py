@@ -1,6 +1,6 @@
 """Rerank application — the PURE half of cross-encoder reranking (FR-3 quality; BR-5).
 
-The I/O half (calling the model) is the ``RerankAdapter`` (adapters/mocks). This module holds
+The I/O half (calling the model) is the ``RerankAdapter`` (adapters/testing). This module holds
 only deterministic, no-I/O logic: how many candidates to rerank per scope (``rerank_width``),
 what text to score (``rerank_text``), and how to fold the returned scores back onto the candidate
 set (``apply_rerank``) so the ranker's single ``ranking_score`` sort key does the rest.

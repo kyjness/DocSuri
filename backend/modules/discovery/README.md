@@ -44,7 +44,7 @@ populates — the SAME index (`docsuri-corpus-v1`) and FROZEN embedding space (v
 | `EventBridgeEventPublisher` | `EventPublisher` | `SqsQueue` (non-blocking SearchExecuted → U4 history) |
 
 Swapping mock ↔ real is a **wiring** decision (`real_wiring.build_real_orchestrator` vs
-`mocks.wiring.build_mock_orchestrator`), not a contract change. The grounding gate stays U6's
+`testing.wiring.build_mock_orchestrator`), not a contract change. The grounding gate stays U6's
 single authority (INV-1) in both modes. Embedding is a separable dependency (Bedrock down →
 lexical-only degrade); the OpenSearch index has no fallback (down → fail-closed, INV-3).
 
@@ -84,8 +84,9 @@ src/discovery/
 │                   #   (plan_and_retrieve / finalize) so the domain never calls enforce
 ├── api/            # gateway_seam.run_search (the single enforce invocation, INV-1) +
 │                   #   router.py (thin FastAPI binding — `api` extra, app-shell-pending)
-├── mocks/          # deterministic fixtures (KO↔EN cross-lingual + QT-2), mock adapters,
-│                   #   U6 port stubs, build_mock_orchestrator()
+├── defaults/       # U6 port defaults taken when a hook is uninjected (PRODUCTION path)
+├── testing/        # deterministic fixtures (KO↔EN cross-lingual + QT-2), mock adapters,
+│                   #   build_mock_orchestrator()
 ├── real_wiring.py  # build_real_orchestrator() — same pipeline, real adapters injected (MR-4)
 └── scripts/        # seed_local_opensearch — create index mapping + seed mini-corpus (local)
 tests/              # PBT-02/03/07/09 + terminal states + degrade matrix + RES-12 fault

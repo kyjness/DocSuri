@@ -21,7 +21,7 @@ from discovery.domain.models import (
     SearchScope,
 )
 from discovery.domain.retriever import HybridRetriever
-from discovery.mocks import build_mock_orchestrator, fixtures
+from discovery.testing import build_mock_orchestrator, fixtures
 
 
 def _ctx() -> RequestContext:

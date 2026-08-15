@@ -1,4 +1,4 @@
-"""Real-adapter wiring — the production counterpart of ``mocks.wiring`` (MR-4).
+"""Real-adapter wiring — the production counterpart of ``testing.wiring`` (MR-4).
 
 ``build_real_orchestrator`` assembles the SAME U2 pipeline as ``build_mock_orchestrator``
 but injects the real OpenSearch/Bedrock adapters. Same constructor seam, same contract —
@@ -33,13 +33,13 @@ from .adapters.resilience import CircuitBreaker, CircuitGuardedEmbedder
 from .adapters.settings import DiscoverySettings
 from .adapters.space_guard import MismatchedSpaceEmbedder, guard_embedding_space
 from .cache.embedding_cache import EmbeddingCache
+from .defaults.port_stubs import InMemoryEventPublisher, NoopObservabilityHub, StubCostGuard
 from .domain.assembler import ResultAssembler
 from .domain.expander import QueryUnderstandingExpander
 from .domain.grounding_adapter import GroundingAdapter
 from .domain.ranker import RelevanceRanker
 from .domain.retriever import HybridRetriever
 from .domain.validator import QueryValidator
-from .mocks.port_stubs import InMemoryEventPublisher, NoopObservabilityHub, StubCostGuard
 from .ports.search_ports import EventPublisher
 from .service.orchestrator import SearchOrchestrationService
 from .service.paper_metadata import PaperMetadataService

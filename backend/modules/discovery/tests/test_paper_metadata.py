@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import pytest
 
-from discovery.mocks.adapters import MockPaperLookupAdapter
 from discovery.ports.search_ports import IndexUnavailable, SearchUnavailable
 from discovery.service.paper_metadata import PaperMetadataService, PaperMetaDTO
+from discovery.testing.adapters import MockPaperLookupAdapter
 
 
 def _service() -> PaperMetadataService:
@@ -56,7 +56,7 @@ def test_non_arxiv_paper_projects_source_neutral_link() -> None:
     # surfaces its source name and source link (not arXiv).
     from docsuri_shared.vector_spec import SourceProvenance
 
-    from discovery.mocks.fixtures import RECORDS
+    from discovery.testing.fixtures import RECORDS
 
     prov = SourceProvenance(
         sourceName="Semantic Scholar",

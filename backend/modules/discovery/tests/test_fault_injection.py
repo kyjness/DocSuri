@@ -7,13 +7,13 @@ from docsuri_shared.dtos import DegradedResultDTO, SearchRequest
 
 from discovery.api import run_search
 from discovery.domain.models import AuthSession, RequestContext
-from discovery.mocks import build_mock_orchestrator
-from discovery.mocks.adapters import (
+from discovery.service.orchestrator import SearchUnavailable
+from discovery.testing import build_mock_orchestrator
+from discovery.testing.adapters import (
     FailingEmbeddingAdapter,
     FailingLexicalIndexAdapter,
     FailingVectorStoreAdapter,
 )
-from discovery.service.orchestrator import SearchUnavailable
 
 
 def _ctx() -> RequestContext:

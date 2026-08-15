@@ -29,7 +29,7 @@ from discovery.eval import (
     recall_at_k,
     run_recall_eval,
 )
-from discovery.mocks import build_mock_orchestrator
+from discovery.testing import build_mock_orchestrator
 
 _ARXIV_VERSION = re.compile(r"v\d+$")
 

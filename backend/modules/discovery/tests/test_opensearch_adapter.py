@@ -11,8 +11,8 @@ from discovery.adapters.opensearch_index import (
     OpenSearchPaperLookupAdapter,
     OpenSearchVectorStoreAdapter,
 )
-from discovery.mocks import fixtures
 from discovery.ports.search_ports import IndexUnavailable
+from discovery.testing import fixtures
 
 
 def _hit(record, score: float) -> dict:

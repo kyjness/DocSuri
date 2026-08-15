@@ -29,7 +29,8 @@
 | 서비스 | `service/orchestrator.py` | 파이프라인(plan_and_retrieve/finalize)·degrade 매트릭스·비차단 발행 | 전 스토리·BR-11/13/14·INV-1/3 |
 | API | `api/gateway_seam.py` | **단일 enforce invocation**(게이트웨이 대역) | INV-1 |
 | API | `api/router.py` | thin FastAPI 라우터·fail-closed 핸들러 | SEC-15·⏳FastAPI |
-| mock | `mocks/{fixtures,adapters,port_stubs,wiring}.py` | KO↔EN cross-lingual+QT-2 픽스처·mock 어댑터·U6 스텁·빌더 | MR-1~4·TD-3 |
+| 기본값 | `defaults/port_stubs.py` | 훅 미주입 시의 U6 포트 기본 구현(**프로덕션 경로**) | MR-3 |
+| 테스트 더블 | `testing/{fixtures,adapters,wiring}.py` | KO↔EN cross-lingual+QT-2 픽스처·mock 어댑터·빌더 | MR-1~4·TD-3 |
 | 테스트 | `tests/test_*` | PBT-02/03/07/09·종단 상태·degrade·RES-12 폴트 인젝션 | QT-3/4 |
 | **real 어댑터** | `adapters/bedrock_embedding.py` | 질의 임베딩(reader=search_query·dim 검증·실패→EmbeddingUnavailable) | CG-2·MR-4·vector-spec §1 |
 | **real 어댑터** | `adapters/opensearch_index.py` | k-NN(cosine)+BM25 리더(IndexRecord 역직렬화·실패→IndexUnavailable fail-closed) | CG-2·MR-4·INV-3·FR-2 |
@@ -65,7 +66,7 @@ uv run --extra real pytest tests/test_opensearch_integration.py   # 3 passed (k-
 ```
 
 ## mock → real 전환 (✅ 완료, 2026-06-17)
-- `ports/search_ports.py` 인터페이스 뒤 mock을 real로 교체 완료: OpenSearch(opensearch-py k-NN/BM25)·Bedrock(boto3, Cohere v4 search_query)·EventBridge 발행. 계약(`SearchResponse`)·도메인 로직 불변(MR-4). 전환은 `real_wiring.build_real_orchestrator` ↔ `mocks.wiring.build_mock_orchestrator` 선택(어댑터만 교체).
+- `ports/search_ports.py` 인터페이스 뒤 mock을 real로 교체 완료: OpenSearch(opensearch-py k-NN/BM25)·Bedrock(boto3, Cohere v4 search_query)·EventBridge 발행. 계약(`SearchResponse`)·도메인 로직 불변(MR-4). 전환은 `real_wiring.build_real_orchestrator` ↔ `testing.wiring.build_mock_orchestrator` 선택(어댑터만 교체).
 - **app-shell 마운트 토글**: `backend/wiring.py::_mount_discovery`가 env(`DOCSURI_OPENSEARCH_ENDPOINT`+`DOCSURI_BEDROCK_MODEL_ID`)로 real/mock 선택. 실 근거화 hook은 양 모드 공통(INV-1). ⚠️ 조율존 변경 — app-shell 소유자 사인오프 필요.
-- U6 포트 스텁(`mocks/port_stubs.py`) 중 **근거화 hook은 실 U6로 교체됨**(PR #51). 비용·관측성은 잠정 스텁(U6 프로세스 싱글턴 노출 시 교체; U2는 advisory read-only).
+- U6 포트 기본값(`defaults/port_stubs.py`) 중 **근거화 hook은 실 U6로 교체됨**(PR #51). 비용·관측성은 잠정 스텁(U6 프로세스 싱글턴 노출 시 교체; U2는 advisory read-only).
 - **⏳ 잔여(후속/Infra)**: 실 OpenSearch 클러스터·Bedrock 접근·이벤트 버스 프로비저닝(공유 인프라 = U1 보류 인프라 + 시스템 횡단), 캐시 스토어(분산), 정량 수치. env로 분리되어 코드는 비차단.
