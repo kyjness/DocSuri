@@ -179,7 +179,10 @@ def test_llm_assembly_lives_in_composition_root() -> None:
     from backend.modules.novelty.adapters.memory import InMemoryNoveltyStore
     from backend.modules.novelty.adapters.real_wiring import BedrockToolCallingLlm
 
-    llm = build_llm(_settings())
+    # The adapter builds its boto3 client eagerly, which needs a region. Supplied here so the
+    # test asserts the ASSEMBLY rather than the ambient AWS configuration — CI has no region on
+    # this lane and would otherwise fail with NoRegionError while the wiring is correct.
+    llm = build_llm(_settings(region_name="us-east-1"))
     assert isinstance(llm, BedrockToolCallingLlm)
     # 단가는 settings에서 온다 — 어댑터 기본값에 기대면 모델을 바꿨을 때 단가만 옛 모델에
     # 남아 예산 대장이 조용히 어긋난다(FR-45 집계 입력).
