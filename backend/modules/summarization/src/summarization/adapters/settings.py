@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from docsuri_shared.env import env_flag, env_int
+from docsuri_shared.env import env_choice, env_flag, env_int
 
 # Concrete model bindings (TD-S3). modelVer is part of the immutable cache key.
 # Invoked via Bedrock inference profiles — the bare foundation-model ids (``anthropic.claude-*``)
@@ -25,6 +25,9 @@ MODEL_VER = "sonnet46-haiku45"
 # Bedrock-era summaries instead of silently mixing under one version.
 DEFAULT_OPENAI_SUMMARY_MODEL = "gpt-4o-mini"
 DEFAULT_OPENAI_TRANSLATE_MODEL = "gpt-4o-mini"
+# Closed vocabulary: an unknown value used to pick the Bedrock defaults, so a typo mixed a
+# provider switch with a model_ver that says the other provider — and model_ver is a cache key.
+LLM_PROVIDERS = ("bedrock", "openai")
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,7 +83,7 @@ class SummarizationSettings:
 
     @classmethod
     def from_env(cls) -> SummarizationSettings:
-        provider = (os.environ.get("DOCSURI_LLM_PROVIDER") or "bedrock").strip().lower()
+        provider = env_choice("DOCSURI_LLM_PROVIDER", LLM_PROVIDERS, "bedrock")
         default_summary = (
             DEFAULT_OPENAI_SUMMARY_MODEL if provider == "openai" else DEFAULT_SUMMARY_MODEL
         )

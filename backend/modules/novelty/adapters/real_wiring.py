@@ -8,7 +8,9 @@ local_wiring 대신 이 조립을 선택하면 된다 — 루프 코어·프롬�
 - SQS 큐: visibility timeout이 리스 역할(수신 후 비가시 = 잠금, 갱신 =
   change_message_visibility). 프로세스 내 이중 실행은 in-flight 맵으로 방지.
 - Bedrock tool-calling: Anthropic messages + tool_choice any — OpenAI 어댑터와
-  동일한 결정 계약(합성 propose_termination 포함).
+  동일한 결정 계약(합성 propose_termination 포함). 와이어 포맷은
+  `docsuri_shared.bedrock`이 소유하고(U7·U11과 공유), 여기엔 정책만 남는다:
+  브레이커·재시도 1회·`LlmUnavailable`·결정 매핑.
 """
 
 from __future__ import annotations
@@ -16,6 +18,15 @@ from __future__ import annotations
 import json
 import logging
 from typing import Any
+
+from docsuri_shared.bedrock import (
+    ANTHROPIC_VERSION,
+    first_tool_call,
+    image_block,
+    invoke_model,
+    text_blocks,
+    tool_schema,
+)
 
 from ..ports.llm import LlmDecision, LoopObservation
 from ..ports.queue import KIND_LOOP, QueuedJob
@@ -142,43 +153,30 @@ class BedrockToolCallingLlm:
         text, images = render_observation_parts(observation)
         # 텍스트(신뢰 경계 선언 포함)가 반드시 이미지보다 앞에 온다.
         content: list[dict[str, Any]] = [{"type": "text", "text": text}]
-        content.extend(
-            {
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": image.media_type,
-                    "data": image.data_b64,
-                },
-            }
-            for image in images
-        )
+        content.extend(image_block(image.media_type, image.data_b64) for image in images)
         body = {
-            "anthropic_version": "bedrock-2023-05-31",
+            "anthropic_version": ANTHROPIC_VERSION,
             "max_tokens": self._max_tokens,
             "system": system_prompt_for(observation),
             "messages": [{"role": "user", "content": content}],
-            "tools": [*(_to_tool(spec) for spec in tools), _termination_tool()],
+            "tools": [
+                *(tool_schema(s.name, s.description, s.parameters) for s in tools),
+                tool_schema(
+                    TERMINATION_TOOL,
+                    "필수 산출물이 모두 저장되어 조사를 끝내자고 제안한다.",
+                    termination_parameters(),
+                ),
+            ],
             "tool_choice": {"type": "any"},
         }
-        response = self._invoke(body)
-        return self._parse(response)
+        return self._parse(self._invoke(body))
 
     def _invoke(self, body: dict[str, Any]) -> dict[str, Any]:
-        def call() -> dict[str, Any]:
-            response = self._client.invoke_model(
-                modelId=self._model_id,
-                body=json.dumps(body).encode("utf-8"),
-                accept="application/json",
-                contentType="application/json",
-            )
-            raw = response["body"]
-            payload = raw.read() if hasattr(raw, "read") else raw
-            return json.loads(payload.decode("utf-8") if isinstance(payload, bytes) else payload)
-
         try:
             # 재시도 1회 + 서킷 브레이커(외부 연동 규칙) — OpenAI 어댑터와 동일 실패 계약.
-            return self._breaker.call(call)
+            return self._breaker.call(
+                lambda: invoke_model(self._client, self._model_id, body)
+            )
         except SourceUnavailable as exc:
             raise LlmUnavailable(str(exc)) from exc
 
@@ -190,36 +188,9 @@ class BedrockToolCallingLlm:
             input_usd_per_mtok=self._input_rate,
             output_usd_per_mtok=self._output_rate,
         )
-        tool_use = next(
-            (
-                block
-                for block in response.get("content") or []
-                if block.get("type") == "tool_use"
-            ),
-            None,
-        )
-        if tool_use is None:
-            text = " ".join(
-                str(block.get("text") or "")
-                for block in response.get("content") or []
-                if block.get("type") == "text"
-            )
-            return conservative_termination(text, cost)
-        args = tool_use.get("input") if isinstance(tool_use.get("input"), dict) else {}
-        return decision_from_tool_call(str(tool_use.get("name") or ""), args, cost)
-
-
-def _to_tool(spec: ToolSpec) -> dict[str, Any]:
-    return {
-        "name": spec.name,
-        "description": spec.description,
-        "input_schema": spec.parameters,
-    }
-
-
-def _termination_tool() -> dict[str, Any]:
-    return {
-        "name": TERMINATION_TOOL,
-        "description": "필수 산출물이 모두 저장되어 조사를 끝내자고 제안한다.",
-        "input_schema": termination_parameters(),
-    }
+        call = first_tool_call(response)
+        if call is None:
+            # 도구 없이 산문만 온 턴 — 남은 텍스트 전부를 근거로 보수적 종료.
+            return conservative_termination(" ".join(text_blocks(response)), cost)
+        name, args = call
+        return decision_from_tool_call(name, args, cost)

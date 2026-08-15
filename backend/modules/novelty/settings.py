@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from docsuri_shared.env import env_choice as _env_choice
 from docsuri_shared.env import env_flag as _env_flag
 from docsuri_shared.env import env_float as _env_float
 from docsuri_shared.env import env_int as _env_int
@@ -25,6 +26,9 @@ from .ports.tools import (
 )
 
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
+# Closed vocabulary: ``llm_configured`` reads this as ``== "bedrock"``, so an unknown value used
+# to report "not configured" without ever naming the typo.
+LLM_PROVIDERS = ("openai", "bedrock")
 # v1 승계 — Bedrock inference profile(배포 기준선).
 DEFAULT_BEDROCK_MODEL = "global.anthropic.claude-sonnet-4-6"
 
@@ -146,7 +150,7 @@ class NoveltySettings:
     @classmethod
     def from_env(cls) -> NoveltySettings:
         return cls(
-            llm_provider=os.environ.get("DOCSURI_NOVELTY_LLM_PROVIDER", "openai").lower(),
+            llm_provider=_env_choice("DOCSURI_NOVELTY_LLM_PROVIDER", LLM_PROVIDERS, "openai"),
             openai_api_key=os.environ.get("OPENAI_API_KEY"),
             openai_model=os.environ.get("DOCSURI_NOVELTY_OPENAI_MODEL", DEFAULT_OPENAI_MODEL),
             openai_input_usd_per_mtok=_env_float(

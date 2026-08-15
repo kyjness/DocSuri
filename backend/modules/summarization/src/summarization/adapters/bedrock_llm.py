@@ -18,6 +18,7 @@ import time
 from collections.abc import Sequence
 from typing import Any
 
+from docsuri_shared.bedrock import ANTHROPIC_VERSION
 from docsuri_shared.resilience import CircuitBreaker
 
 from ..domain.models import (
@@ -136,7 +137,7 @@ class BedrockLlmGateway:
             # than free-text JSON we have to slice out of prose and repair (unescaped quotes /
             # raw LaTeX backslashes).
             body = {
-                "anthropic_version": "bedrock-2023-05-31",
+                "anthropic_version": ANTHROPIC_VERSION,
                 "max_tokens": max_tokens,
                 "system": system,
                 "messages": [{"role": "user", "content": [{"type": "text", "text": user}]}],

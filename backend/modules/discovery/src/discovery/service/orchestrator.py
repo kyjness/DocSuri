@@ -255,7 +255,8 @@ class SearchOrchestrationService:
         budget disabled it (``rerank_enabled`` False → RERANK_OFF/LEXICAL_ONLY). Any adapter
         failure is swallowed and the baseline RRF order is kept — rerank is a ranking-QUALITY
         enhancement that MUST NEVER block or degrade the response (fail-soft, BR-5). It only
-        rewrites ``ranking_score`` on the head; the ranker re-sorts by that single key."""
+        rewrites ``ranking_score`` (scored head, then the tail demoted beneath it — the candidate
+        count is unchanged either way); the ranker re-sorts by that single key."""
         if self._reranker is None or not candidates.candidates:
             return candidates  # feature off, or nothing to rerank
         if not degradation.rerank_enabled:

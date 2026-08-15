@@ -5,6 +5,10 @@
 프롬프트(`prompts.build_*`)·비용 계상(`estimate_cost`)·실패 계약(재시도 1회 +
 `SourceBreaker` → `LlmUnavailable`)을 전부 공유한다. 다른 것은 요청 문법 하나뿐이다.
 
+Bedrock **와이어 포맷**(invoke_model 봉투·도구 스키마 모양·이미지 블록·응답 블록 읽기)은
+`docsuri_shared.bedrock`이 소유한다 — U7·U12도 같은 프로토콜을 말하므로 사본을 두면 프로토콜이
+움직일 때 한 곳만 고쳐진다. 여기 남는 것은 U11의 **정책**이다: 브레이커·재시도·`LlmUnavailable`.
+
 OpenAI와의 문법 차이는 셋이고, 전부 여기서 흡수한다:
 
 - **system이 필드다.** `build_decide_messages`는 `[{system}, {user}]`를 돌려주므로
@@ -24,9 +28,17 @@ boto3를 적재한다.
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
+
+from docsuri_shared.bedrock import (
+    ANTHROPIC_VERSION,
+    first_tool_call,
+    image_block,
+    invoke_model,
+    text_blocks,
+    tool_schema,
+)
 
 from backend.modules.novelty.adapters.external.base import SourceBreaker, SourceUnavailable
 
@@ -47,25 +59,7 @@ __all__ = ["BedrockDecider", "BedrockExtractor"]
 
 log = logging.getLogger("docsuri.evidence.llm")
 
-_ANTHROPIC_VERSION = "bedrock-2023-05-31"
 _MAX_TOKENS = 4096
-
-
-def _finish_spec() -> dict[str, Any]:
-    """Anthropic 문법으로 감싼 종료 도구(사양은 `_llm_shared`)."""
-    return {
-        "name": FINISH_TOOL,
-        "description": FINISH_DESCRIPTION,
-        "input_schema": FINISH_PARAMETERS,
-    }
-
-
-def _tool_schema(spec: ToolSpec) -> dict[str, Any]:
-    return {
-        "name": spec.name,
-        "description": spec.description,
-        "input_schema": spec.parameters,
-    }
 
 
 def _split_system(messages: list[dict[str, str]]) -> tuple[str, list[dict[str, Any]]]:
@@ -105,19 +99,9 @@ class _BedrockBase:
         return self._client
 
     def _invoke(self, body: dict[str, Any]) -> dict[str, Any]:
-        def call() -> dict[str, Any]:
-            response = self._runtime().invoke_model(
-                modelId=self._model,
-                body=json.dumps(body).encode("utf-8"),
-                accept="application/json",
-                contentType="application/json",
-            )
-            raw = response["body"]
-            payload = raw.read() if hasattr(raw, "read") else raw
-            return json.loads(payload.decode("utf-8") if isinstance(payload, bytes) else payload)
-
+        """전송은 공유 봉투가, 실패 계약(재시도 1회 + 브레이커 → `LlmUnavailable`)은 여기가."""
         try:
-            return self._breaker.call(call)
+            return self._breaker.call(lambda: invoke_model(self._runtime(), self._model, body))
         except SourceUnavailable as exc:
             raise LlmUnavailable(str(exc)[:300]) from exc
 
@@ -139,15 +123,18 @@ class BedrockDecider(_BedrockBase):
         messages = _attach_images(messages, observation)
         response = self._invoke(
             {
-                "anthropic_version": _ANTHROPIC_VERSION,
+                "anthropic_version": ANTHROPIC_VERSION,
                 "max_tokens": _MAX_TOKENS,
                 "system": system,
                 "messages": messages,
-                "tools": [_tool_schema(spec) for spec in tools] + [_finish_spec()],
+                "tools": [
+                    *(tool_schema(s.name, s.description, s.parameters) for s in tools),
+                    tool_schema(FINISH_TOOL, FINISH_DESCRIPTION, FINISH_PARAMETERS),
+                ],
                 "tool_choice": {"type": "any"},
             }
         )
-        return decision_from_tool_call(_first_tool_call(response), self._usage_cost(response))
+        return decision_from_tool_call(first_tool_call(response), self._usage_cost(response))
 
 
 class BedrockExtractor(_BedrockBase):
@@ -161,13 +148,14 @@ class BedrockExtractor(_BedrockBase):
         )
         response = self._invoke(
             {
-                "anthropic_version": _ANTHROPIC_VERSION,
+                "anthropic_version": ANTHROPIC_VERSION,
                 "max_tokens": _MAX_TOKENS,
                 "system": system,
                 "messages": messages,
             }
         )
-        return parse_json_items(_first_text(response))
+        texts = text_blocks(response)
+        return parse_json_items(texts[0] if texts else "")
 
 
 def _attach_images(
@@ -179,30 +167,5 @@ def _attach_images(
     if not images:
         return messages
     blocks: list[dict[str, Any]] = [{"type": "text", "text": IMAGE_BOUNDARY_BANNER}]
-    blocks.extend(
-        {
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": image.media_type,
-                "data": image.data_b64,
-            },
-        }
-        for image in images
-    )
+    blocks.extend(image_block(image.media_type, image.data_b64) for image in images)
     return [*messages, {"role": "user", "content": blocks}]
-
-
-def _first_tool_call(response: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
-    for block in (response or {}).get("content") or []:
-        if isinstance(block, dict) and block.get("type") == "tool_use":
-            args = block.get("input")
-            return str(block.get("name") or ""), args if isinstance(args, dict) else {}
-    return None
-
-
-def _first_text(response: dict[str, Any]) -> str:
-    for block in (response or {}).get("content") or []:
-        if isinstance(block, dict) and block.get("type") == "text":
-            return str(block.get("text") or "")
-    return ""

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from docsuri_shared.env import env_flag, env_float, env_int
+from docsuri_shared.env import env_choice, env_flag, env_float, env_int
 
 
 def test_env_flag_defaults_off_and_fails_closed(monkeypatch) -> None:
@@ -36,3 +36,20 @@ def test_malformed_numeric_value_raises_loudly(monkeypatch) -> None:
         env_int("X_NUM", 7)
     with pytest.raises(ValueError):
         env_float("X_NUM", 0.5)
+
+
+def test_env_choice_normalizes_and_defaults(monkeypatch) -> None:
+    monkeypatch.delenv("X_PROVIDER", raising=False)
+    assert env_choice("X_PROVIDER", ("bedrock", "openai"), "bedrock") == "bedrock"
+    monkeypatch.setenv("X_PROVIDER", "")
+    assert env_choice("X_PROVIDER", ("bedrock", "openai"), "bedrock") == "bedrock"
+    monkeypatch.setenv("X_PROVIDER", "  OpenAI ")  # 대소문자·공백은 흡수
+    assert env_choice("X_PROVIDER", ("bedrock", "openai"), "bedrock") == "openai"
+
+
+def test_env_choice_names_the_typo_instead_of_falling_through(monkeypatch) -> None:
+    # 이 헬퍼가 존재하는 이유: 전에는 오타가 비교문의 else 가지로 떨어져, 프로바이더를
+    # 잘못 고른 사실이 어디에도 안 남고 "미구성"으로만 보였다.
+    monkeypatch.setenv("X_PROVIDER", "bedrok")
+    with pytest.raises(ValueError, match="bedrok"):
+        env_choice("X_PROVIDER", ("bedrock", "openai"), "bedrock")

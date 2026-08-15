@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from docsuri_shared.env import env_choice as _env_choice
 from docsuri_shared.env import env_flag as _env_flag
 from docsuri_shared.env import env_float as _env_float
 from docsuri_shared.env import env_int as _env_int
@@ -60,11 +61,10 @@ class EvidenceSettings:
     @classmethod
     def from_env(cls) -> EvidenceSettings:
         # 기본은 bedrock. OPENAI_API_KEY가 저장소에서 제거된 뒤(2026-08-15) openai를
-        # 기본값으로 두면 실경로가 마운트되고도 매 호출이 401로 끝난다.
-        provider = (
-            os.environ.get('DOCSURI_EVIDENCE_LLM_PROVIDER', _DEFAULT_PROVIDER).strip().lower()
-        )
-        default_model, in_rate, out_rate = _PROVIDERS.get(provider, _PROVIDERS[_DEFAULT_PROVIDER])
+        # 기본값으로 두면 실경로가 마운트되고도 매 호출이 401로 끝난다. 테이블 자체가
+        # 허용 어휘라 오타는 여기서 이름이 불린 채 죽는다 — 조용한 기본값 폴백이 아니다.
+        provider = _env_choice('DOCSURI_EVIDENCE_LLM_PROVIDER', _PROVIDERS, _DEFAULT_PROVIDER)
+        default_model, in_rate, out_rate = _PROVIDERS[provider]
         return cls(
             llm_provider=provider,
             model_id=os.environ.get('DOCSURI_EVIDENCE_MODEL_ID', default_model),

@@ -26,6 +26,13 @@ first attempt (2026-08-15):
 
 Hence: pair the arms per query, treat ANY warning or degraded response as contamination, and
 aggregate only over clean pairs. Reporting a contaminated pair is worse than reporting nothing.
+
+Contaminated cases are RETRIED (``--retries``), not just excluded. Excluding was inherited from
+the serving path's ``max_attempts: 1`` — which exists because LITE has a P50<3s budget that a
+backoff would blow. This script has no such budget, so it paid the serving path's price for
+nothing and silently shrank its own sample. A retry converts contamination from "excluded" into
+"slower", and the retry re-runs BOTH arms: re-running only the failed arm would compare two arms
+measured under different throttle conditions, which is the same unfairness as trap 3.
 """
 
 from __future__ import annotations
@@ -95,6 +102,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--compare", action="store_true", help="paired rerank ON/OFF")
     ap.add_argument("--gap", type=float, default=5.0, help="seconds between calls (throttle)")
     ap.add_argument("-k", type=int, default=10, help="recall@k")
+    ap.add_argument(
+        "--retries", type=int, default=3, help="re-runs of a contaminated case (0 = exclude only)"
+    )
     args = ap.parse_args(argv)
 
     cap = _Contamination()
@@ -120,34 +130,58 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     clean: list[dict[str, float]] = []
-    first_call = True
+    stuck: list[tuple[str, str]] = []  # cases still contaminated after every retry
+    pending = [True]  # first call of the run has nothing to space against
+
+    def pace(extra: float) -> None:
+        if pending[0]:
+            pending[0] = False
+            return
+        time.sleep(args.gap + extra)
+
     for case in LIVE_CASES:
-        scores: dict[str, float] = {}
-        ranks: dict[str, int | None] = {}
-        warns: list[str] = []
-        for label in arms:
-            if not first_call:
-                time.sleep(args.gap)   # space calls; nothing to space before the first
-            first_call = False
-            bundle.orchestrator._reranker = reranker if label == "ON" else None
-            ids, w = _ask(bundle, hook, case.query, cap)
-            # recall@k over the whole relevant set — a case with several defensible answers
-            # (which live_cases invites) would be miscounted by a single-target hit test.
-            scores[label] = recall_at_k(ids, case.relevant, args.k)
-            ranks[label] = _rank(ids, case.relevant)
-            warns += w
-        bundle.orchestrator._reranker = reranker
-        if warns:
-            print(f"  오염  {case.query[:56]}\n        ↳ {warns[0][:88]}")
+        done: tuple[dict[str, float], dict[str, int | None]] | None = None
+        last_warn = ""
+        for attempt in range(args.retries + 1):
+            # A contaminated attempt means the quota is already empty and the steady-state gap is
+            # what emptied it — retrying at the same spacing just re-trips it. Back off further.
+            backoff = 0.0 if attempt == 0 else args.gap * 2**attempt
+            scores: dict[str, float] = {}
+            ranks: dict[str, int | None] = {}
+            warns: list[str] = []
+            for label in arms:
+                pace(backoff if label == arms[0] else 0.0)
+                bundle.orchestrator._reranker = reranker if label == "ON" else None
+                ids, w = _ask(bundle, hook, case.query, cap)
+                # recall@k over the whole relevant set — a case with several defensible answers
+                # (which live_cases invites) would be miscounted by a single-target hit test.
+                scores[label] = recall_at_k(ids, case.relevant, args.k)
+                ranks[label] = _rank(ids, case.relevant)
+                warns += w
+            bundle.orchestrator._reranker = reranker
+            if not warns:
+                done = (scores, ranks)
+                break
+            last_warn = warns[0]
+            if attempt < args.retries:
+                print(f"  재시도 {attempt + 1}/{args.retries}  {case.query[:48]}")
+        if done is None:
+            stuck.append((case.query, last_warn))
+            print(f"  오염  {case.query[:56]}\n        ↳ {last_warn[:88]}")
         else:
-            clean.append(scores)
-            cols = "  ".join(f"{lb} {str(ranks[lb] or '-'):>3}" for lb in arms)
+            clean.append(done[0])
+            cols = "  ".join(f"{lb} {str(done[1][lb] or '-'):>3}" for lb in arms)
             print(f"  {cols}   {case.query[:56]}")
 
-    dirty = len(LIVE_CASES) - len(clean)
-    print(f"\n정상 쌍 {len(clean)}건 / 오염 {dirty}건 (오염은 집계 제외)")
+    # Name what was dropped. A shrunken sample reported only as an average reads as "measured
+    # everything" — the number of cases the run could not measure changes how the average is read.
+    if stuck:
+        print(f"\n재시도 {args.retries}회로도 못 살린 케이스 {len(stuck)}건 — 집계에서 제외:")
+        for query, warn in stuck:
+            print(f"  - {query[:52]}  ↳ {warn[:64]}")
+    print(f"\n측정 {len(clean)}건 / 전체 {len(LIVE_CASES)}건")
     if not clean:
-        print("비교 가능한 쌍이 없다 — --gap 을 늘리거나 쿼터 상향이 필요하다")
+        print("비교 가능한 쌍이 없다 — --gap·--retries 를 늘리거나 쿼터 상향이 필요하다")
         return 1
     for label in arms:
         mean = sum(s[label] for s in clean) / len(clean)

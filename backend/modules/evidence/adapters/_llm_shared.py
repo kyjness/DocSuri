@@ -6,8 +6,9 @@ the port-contract mapping, the response parsing, and the prompt text the model a
 Each of these lived in both files at some point, which is exactly how a decision rule or a
 trust-boundary banner ends up fixed on one provider and not the other.
 
-Provider-specific pieces stay in their own adapter — `_first_tool_call` / `_first_text` read
-different response envelopes, and the transport layers share nothing.
+Provider-specific pieces stay in their own adapter, and the Bedrock wire format (envelope, tool
+schema, content blocks, response readers) belongs one level further out still — it is shared with
+U7 and U12 via `docsuri_shared.bedrock`, because a protocol is not U11's to own.
 """
 
 from __future__ import annotations
