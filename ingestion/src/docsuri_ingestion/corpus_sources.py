@@ -37,6 +37,10 @@ class SourcePaperRecord:
     # entry has already passed the licence gate on ITS OWN location — a repository copy does not
     # inherit the primary's terms.
     alternate_pdf_urls: tuple[str, ...] = ()
+    # Admission signals for the non-arXiv sources (U1-F1 / U1-F2) — see ``admission_rejection``
+    # below for what they are read for. Both are empty for arXiv, which is filtered by OAI set.
+    fields_of_study: tuple[str, ...] = ()
+    venue: str = ""
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -56,6 +60,8 @@ class SourcePaperRecord:
             "arxivId": self.arxiv_id,
             "version": self.version,
             "alternatePdfUrls": list(self.alternate_pdf_urls),
+            "fieldsOfStudy": list(self.fields_of_study),
+            "venue": self.venue,
         }
 
     @classmethod
@@ -87,7 +93,81 @@ class SourcePaperRecord:
             arxiv_id=payload.get("arxivId"),
             version=int(payload.get("version") or 1),
             alternate_pdf_urls=tuple(str(v) for v in payload.get("alternatePdfUrls") or ()),
+            fields_of_study=tuple(str(v) for v in payload.get("fieldsOfStudy") or ()),
+            venue=str(payload.get("venue") or ""),
         )
+
+
+# --- Admission rules for the non-arXiv sources (U1-F1 field · U1-F2 venue) -------------------
+#
+# WHAT ⑧-1.7 ACTUALLY LEFT OPEN. It ran both sources live and reported two limits. One of them
+# has since been closed at query time: OpenAlex now carries `primary_topic.field.id:fields/17`
+# (``adapters/corpus_http.py``), which is what stopped the week of critical-care medicine,
+# Alzheimer's diagnosis and water-resource management. Semantic Scholar has always sent
+# `fieldsOfStudy=Computer Science`. **The field is therefore already filtered server-side, and
+# this module does not re-filter it as a primary defence.**
+#
+# The limit still open is the other one: widening the S2 query from AND to OR took the yield
+# from 306 to 22,039 and filled it with small and predatory journals. No query parameter
+# expresses "a venue we would cite", so VENUE IS WHAT THIS GATE IS FOR.
+#
+# The field check stays as a cheap ASSERTION that the server-side filter is still doing its job.
+# It costs one set lookup per record and turns a silent upstream regression — a changed filter
+# name, a dropped parameter — into a visible wall of ``off_field`` instead of a corpus that
+# quietly fills with medicine.
+#
+# WHY THIS MATTERS MORE THAN IT LOOKS. A paper that gets in wrongly does not announce itself: it
+# becomes evidence U11 cites and prior art U12 reasons about, and neither output shows where the
+# claim came from. Breadth we fail to collect is visible to the user as an empty result;
+# contamination is not.
+
+# The field rung that must be present. Deliberately coarse — separating "Computer Science" from
+# "Medicine" is all this asserts; narrowing to CS subfields is the corpus slice's job
+# (``config.CORPUS_SLICE_CATEGORIES``).
+ADMITTED_FIELDS_OF_STUDY = frozenset({"Computer Science"})
+
+# Substring markers (lowercased) for venues to refuse outright. Empty on purpose: filling it
+# with guesses would encode prejudice rather than measurement. Populate from the ⑧-2 harvest
+# sample, where the real venue distribution is visible.
+BLOCKED_VENUE_MARKERS: frozenset[str] = frozenset()
+
+# The rejection reasons that assert a POLICY violation, as opposed to data absence. The split
+# exists for the consumption-time re-check: a payload queued before this gate shipped carries
+# neither field labels nor a venue, so judging it on the data-absence reasons would dead-letter
+# the entire pre-gate backlog as `field_unknown` — indistinguishable from genuinely off-field
+# papers. Fresh records were already refused fail-closed at enqueue; what consumption re-asserts
+# is only the part that can legitimately change between enqueue and consumption (a tightened
+# policy), never the shape of an old payload.
+POLICY_REJECTIONS = frozenset({"off_field", "venue_blocked"})
+
+
+def admission_rejection(record: SourcePaperRecord) -> str | None:
+    """Why this record must not enter the corpus, or None to admit it.
+
+    FAIL-CLOSED. A record whose field or venue is unknown is refused, not waved through, and
+    each refusal carries its own reason. That matters most when the plumbing breaks: if the API
+    stops returning ``s2FieldsOfStudy``, every record refuses as ``field_unknown`` and the
+    harvest count collapses visibly — whereas admitting on missing data would quietly fill the
+    corpus with whatever arrived.
+    """
+    if record.source_name is SourceName.ARXIV:
+        # arXiv is filtered server-side by the OAI set, so there is nothing left to decide and
+        # its records carry neither field labels nor a venue.
+        return None
+    if not record.fields_of_study:
+        return "field_unknown"
+    if ADMITTED_FIELDS_OF_STUDY.isdisjoint(record.fields_of_study):
+        return "off_field"
+    if not record.venue:
+        # These two sources earn their place by reaching papers arXiv does not have, and a
+        # published paper has a venue. A record without one is typically a preprint the arXiv
+        # path already covers.
+        return "venue_unknown"
+    if BLOCKED_VENUE_MARKERS:
+        lowered = record.venue.lower()
+        if any(marker in lowered for marker in BLOCKED_VENUE_MARKERS):
+            return "venue_blocked"
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,7 +277,13 @@ class CorpusSourceAdapterSet:
             )
         # One GROBID call yields the structured TEI; the flat text projection is derived from it
         # (the doc-model parser consumes the TEI, withdrawal/scan paths consume the text).
-        tei = self._grobid.extract_tei(pdf)
+        # Keyed for the two-pass TEI cache. A non-arXiv record has no arXiv paper_id yet — the
+        # canonical id is assigned downstream — so the source's own identity is the key. It is
+        # stable and unique per source document, which is all the cache needs, and namespacing it
+        # keeps these entries from colliding with an arXiv paper of the same numeric id.
+        tei = self._grobid.extract_tei(
+            pdf, paper_id=f"{record.source_name.value.lower()}:{record.source_id}", version=1
+        )
         text = tei_to_text(tei).strip()
         if not text:
             raise PermanentIngestionError(

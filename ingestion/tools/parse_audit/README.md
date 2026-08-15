@@ -86,6 +86,7 @@ uv run --all-extras python tools/parse_audit/pdf_preservation_audit.py \
 | `diff.py` | A/B diff of two metric dumps — reports losses (regressions) and gains |
 | `pdf_grobid_audit.py` | TEI → DocModel vs the same paper's ar5iv parse (needs GROBID) |
 | `table_repair_audit.py` | real Docling repair path — merged/empty tables before vs after (needs GROBID + `tables` extra) |
+| `docling_page_cap_sweep.py` | what the Docling page cap buys, per repair path — one re-read pass, every cap replayed offline (needs `tables` extra; GROBID must be DOWN) |
 | `_common.py` | shared metric helpers (kept self-contained so both checkouts measure identically) |
 | `_pipeline.py` | the TEI cache reader and the `--pipeline` builder, wired as ingestion wires it |
 

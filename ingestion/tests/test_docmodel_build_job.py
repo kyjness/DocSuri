@@ -52,7 +52,7 @@ class _FakeGrobid:
         self.seen_pdf: bytes | None = None
         self.calls = 0
 
-    def extract_tei(self, pdf: bytes) -> str:
+    def extract_tei(self, pdf: bytes, **_key: object) -> str:
         self.seen_pdf = pdf
         self.calls += 1
         return self._tei
@@ -196,7 +196,7 @@ def test_build_doc_model_stays_unavailable_when_grobid_rejects_the_pdf() -> None
     # (viewer links out); letting the error escape turned every such already-indexed paper into
     # an endless DLQ + failure-signal loop while the viewer polled forever.
     class _RejectingGrobid:
-        def extract_tei(self, pdf: bytes) -> str:
+        def extract_tei(self, pdf: bytes, **_key: object) -> str:
             raise PermanentIngestionError(
                 "GROBID rejected PDF", reason=FailureReason.PARSE_FAILURE, stage="grobid"
             )
@@ -600,7 +600,7 @@ def test_build_user_doc_model_degrades_when_grobid_returns_empty_body(
     store = _FakeStore(cached=None)
 
     class _EmptyBodyGrobid:
-        def extract_tei(self, pdf: bytes) -> str:
+        def extract_tei(self, pdf: bytes, **_key: object) -> str:
             return _USERDOC_EMPTY_BODY_TEI
 
     pipeline, _, _, _, observability = build_test_pipeline(
@@ -636,7 +636,7 @@ def test_build_user_doc_model_degrades_when_grobid_faults(monkeypatch) -> None:
     store = _FakeStore(cached=None)
 
     class _RaisingGrobid:
-        def extract_tei(self, pdf: bytes) -> str:
+        def extract_tei(self, pdf: bytes, **_key: object) -> str:
             raise RuntimeError("grobid unavailable")
 
     pipeline, _, _, _, observability = build_test_pipeline(

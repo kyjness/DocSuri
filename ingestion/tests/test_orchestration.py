@@ -19,7 +19,7 @@ from docsuri_ingestion.adapters.local import (
     sample_metadata,
 )
 from docsuri_ingestion.application import RefreshOrchestrationService
-from docsuri_ingestion.config import CORPUS_END, CORPUS_START
+from docsuri_ingestion.config import CORPUS_END, CORPUS_SLICE_CATEGORIES, CORPUS_START
 from docsuri_ingestion.corpus_sources import CorpusSourceAdapterSet, SourcePaperRecord
 from docsuri_ingestion.docmodel.builder import DocModelBuilder
 from docsuri_ingestion.domain.canonical import canonical_key
@@ -103,7 +103,7 @@ class _Grobid:
         self.text = text
         self.seen_pdf: bytes | None = None
 
-    def extract_tei(self, pdf: bytes) -> str:
+    def extract_tei(self, pdf: bytes, **_key: object) -> str:
         self.seen_pdf = pdf
         return f"<TEI><text><body><div><p>{self.text}</p></div></body></text></TEI>"
 
@@ -115,12 +115,22 @@ def _external_record() -> SourcePaperRecord:
         title="External PDF Paper",
         abstract="External abstract",
         authors=("Ada Lovelace",),
-        categories=("cs.LG",),
-        updated_at=datetime(2025, 6, 2, tzinfo=UTC),
-        published_at=datetime(2025, 6, 1, tzinfo=UTC),
+        # Both the category and the timestamps are derived from the configured slice rather than
+        # literals: the rebuild path filters records on the category intersection with
+        # CORPUS_SLICE_CATEGORIES and on the CORPUS_START/CORPUS_END window, so hard-coded values
+        # silently drop this record the day the deployment slice moves (it did — the slice went
+        # to cs.CL + cs.AI over 2026-04..09 and this test began asserting 0 jobs instead of 2).
+        categories=(CORPUS_SLICE_CATEGORIES[0],),
+        updated_at=CORPUS_START + timedelta(days=2),
+        published_at=CORPUS_START + timedelta(days=1),
         pdf_url="https://example.test/paper.pdf",
         license_url="https://creativecommons.org/licenses/by/4.0/",
         doi="10.1000/external",
+        # Admission signals (U1-F1 / U1-F2). Without them the record is refused as
+        # `field_unknown` — the gate is fail-closed on purpose — so a record meant to reach the
+        # queue has to carry them.
+        fields_of_study=("Computer Science",),
+        venue="ACM Conference on Test Systems",
     )
 
 
@@ -656,13 +666,16 @@ def test_full_rebuild_wires_configured_external_sources_as_seed_jobs() -> None:
     )()
     record = _external_record()
     provider = _ExternalSource(record)
+    # The seed harvest admits a paper only if its categories intersect the configured slice, so
+    # this test states the category it needs instead of letting the sample follow the slice.
+    in_slice = sample_metadata(category=CORPUS_SLICE_CATEGORIES[0])
     corpus_sources = CorpusSourceAdapterSet(
-        arxiv=FakeArxivSource([sample_metadata()]),
+        arxiv=FakeArxivSource([in_slice]),
         openalex=provider,
         grobid=_Grobid(),
     )
     service = RefreshOrchestrationService(
-        arxiv=FakeArxivSource([sample_metadata()]),
+        arxiv=FakeArxivSource([in_slice]),
         control_plane=control,
         queue=queue,
         observability=observability,
@@ -723,6 +736,212 @@ def test_full_rebuild_skips_external_records_outside_corpus_window() -> None:
     assert queue.jobs == []
 
 
+@pytest.mark.parametrize(
+    ("overrides", "reason"),
+    [
+        ({"fields_of_study": ()}, "field_unknown"),
+        ({"fields_of_study": ("Medicine",)}, "off_field"),
+        ({"venue": ""}, "venue_unknown"),
+    ],
+)
+def test_backfill_refuses_off_field_and_unlabelled_records_and_says_why(overrides, reason) -> None:
+    """U1-F1/F2: the admission gate keeps contamination out AND leaves a counted trace.
+
+    Both halves matter. ⑧-1.7 measured that neither source's query-level subject filter holds —
+    an OpenAlex week came back topped by critical-care medicine — and a paper that slips through
+    becomes evidence U11 cites, which no output reveals. The metric is the other half: a filter
+    that silently drops everything looks exactly like sources that returned nothing.
+    """
+    control = InMemoryControlPlaneStore()
+    queue = InMemoryQueue()
+    observability = type(
+        "Obs",
+        (),
+        {
+            "metrics": [],
+            "emit_metric": lambda self, name, value, tags=None: self.metrics.append(
+                (name, value, tags or {})
+            ),
+            "emit_log": lambda self, entry: None,
+            "emit_failure_signal": lambda self, job_id, stage, error: None,
+        },
+    )()
+    provider = _ExternalSource(replace(_external_record(), **overrides))
+    service = RefreshOrchestrationService(
+        arxiv=FakeArxivSource([sample_metadata()]),
+        control_plane=control,
+        queue=queue,
+        observability=observability,
+        corpus_sources=CorpusSourceAdapterSet(
+            arxiv=FakeArxivSource([sample_metadata()]),
+            openalex=provider,
+            grobid=_Grobid(),
+        ),
+        enabled_sources=(SourceName.ARXIV, SourceName.OPENALEX),
+    )
+
+    assert service.backfill_external_sources(CORPUS_START, CORPUS_END) == 0
+    assert queue.jobs == []
+    rejected = [m for m in observability.metrics if m[0] == "ingestion.source.rejected"]
+    assert len(rejected) == 1
+    assert rejected[0][1] == 1.0
+    assert rejected[0][2]["reason"] == reason
+    assert rejected[0][2]["source"] == SourceName.OPENALEX.value
+
+
+def test_total_rejection_collapse_is_signalled() -> None:
+    """A harvest whose every record is refused must not read as "the source had nothing new".
+
+    That is exactly what upstream schema drift looks like (s2FieldsOfStudy renamed, topics
+    dropped): fields_of_study resolves empty, the fail-closed gate refuses everything, and the
+    run returns 0 and exits 0. The zero-queued/some-rejected condition is exact, so no invented
+    threshold is needed."""
+    control = InMemoryControlPlaneStore()
+    queue = InMemoryQueue()
+    observability = type(
+        "Obs",
+        (),
+        {
+            "metrics": [],
+            "logs": [],
+            "emit_metric": lambda self, name, value, tags=None: self.metrics.append(
+                (name, value, tags or {})
+            ),
+            "emit_log": lambda self, entry: self.logs.append(entry),
+            "emit_failure_signal": lambda self, job_id, stage, error: None,
+        },
+    )()
+    provider = _ExternalSource(replace(_external_record(), fields_of_study=()))
+    service = RefreshOrchestrationService(
+        arxiv=FakeArxivSource([sample_metadata()]),
+        control_plane=control,
+        queue=queue,
+        observability=observability,
+        corpus_sources=CorpusSourceAdapterSet(
+            arxiv=FakeArxivSource([sample_metadata()]),
+            openalex=provider,
+            grobid=_Grobid(),
+        ),
+        enabled_sources=(SourceName.ARXIV, SourceName.OPENALEX),
+    )
+
+    assert service.backfill_external_sources(CORPUS_START, CORPUS_END) == 0
+    assert any(m[0] == "ingestion.source.rejected_all" for m in observability.metrics)
+    assert any(e.get("type") == "ingestion_source_rejected_all" for e in observability.logs)
+
+
+def test_pre_gate_payload_without_admission_keys_passes_consumption() -> None:
+    """A payload queued before the gate shipped carries neither field labels nor a venue, and
+    the consumption-time re-check must not dead-letter it for that: key ABSENCE is the shape of
+    an old payload, not evidence the paper is off-field. Only POLICY reasons are re-asserted."""
+    pipeline, _, index, _, _ = build_test_pipeline(
+        corpus_sources=CorpusSourceAdapterSet(
+            arxiv=FakeArxivSource([sample_metadata()]),
+            openalex=_ExternalSource(_external_record()),
+            grobid=_Grobid(),
+        )
+    )
+    legacy = _external_record().to_payload()
+    del legacy["fieldsOfStudy"]
+    del legacy["venue"]
+
+    decision = pipeline.ingest_one(
+        IngestionJob(
+            job_id="job-legacy",
+            kind=JobKind.SEED_REBUILD,
+            source_name=SourceName.OPENALEX,
+            source_record=legacy,
+        )
+    )
+    assert decision is DedupDecision.NEW
+    assert index.records
+
+
+def test_queued_source_record_is_refused_again_at_consumption() -> None:
+    """A job can predate the current rule, so POLICY rejections are re-asserted where the record
+    is used — same reason ``validate_open_access`` is re-checked although the adapters already
+    gate licences. Tightening the policy (populating BLOCKED_VENUE_MARKERS from the ⑧-2 harvest)
+    must catch already-queued and DLQ-redriven records it was tightened against.
+    """
+    pipeline, _, _, _, _ = build_test_pipeline(
+        corpus_sources=CorpusSourceAdapterSet(
+            arxiv=FakeArxivSource([sample_metadata()]),
+            openalex=_ExternalSource(_external_record()),
+            grobid=_Grobid(),
+        )
+    )
+    stale = replace(_external_record(), fields_of_study=("Medicine",))
+
+    with pytest.raises(PermanentIngestionError) as caught:
+        pipeline.ingest_one(
+            IngestionJob(
+                job_id="job-stale",
+                kind=JobKind.SEED_REBUILD,
+                source_name=SourceName.OPENALEX,
+                source_record=stale.to_payload(),
+            )
+        )
+    assert "off_field" in str(caught.value)
+
+
+def test_backfill_reports_refusals_as_one_counted_metric_per_reason() -> None:
+    """The refusal metric is a COUNT, not one datapoint per record.
+
+    The gate is fail-closed, so an upstream field going missing refuses every record at once —
+    a widened S2 query has been measured at 22,039. Emitting per record would flood the log
+    exactly when the source is broken, which is when the log has to stay readable.
+    """
+    control = InMemoryControlPlaneStore()
+    queue = InMemoryQueue()
+    observability = type(
+        "Obs",
+        (),
+        {
+            "metrics": [],
+            "emit_metric": lambda self, name, value, tags=None: self.metrics.append(
+                (name, value, tags or {})
+            ),
+            "emit_log": lambda self, entry: None,
+            "emit_failure_signal": lambda self, job_id, stage, error: None,
+        },
+    )()
+    base = _external_record()
+    records = (
+        replace(base, source_id="a", fields_of_study=()),
+        replace(base, source_id="b", fields_of_study=()),
+        replace(base, source_id="c", fields_of_study=("Medicine",)),
+    )
+
+    class _Multi:
+        def fetch_incremental(self, since, categories, until=None):
+            return records
+
+        def fetch_pdf(self, record):
+            return b"%PDF"
+
+    service = RefreshOrchestrationService(
+        arxiv=FakeArxivSource([sample_metadata()]),
+        control_plane=control,
+        queue=queue,
+        observability=observability,
+        corpus_sources=CorpusSourceAdapterSet(
+            arxiv=FakeArxivSource([sample_metadata()]),
+            openalex=_Multi(),
+            grobid=_Grobid(),
+        ),
+        enabled_sources=(SourceName.ARXIV, SourceName.OPENALEX),
+    )
+
+    assert service.backfill_external_sources(CORPUS_START, CORPUS_END) == 0
+    rejected = {
+        m[2]["reason"]: m[1]
+        for m in observability.metrics
+        if m[0] == "ingestion.source.rejected"
+    }
+    # Three refused records collapse to two datapoints — one per reason, carrying the count.
+    assert rejected == {"field_unknown": 2.0, "off_field": 1.0}
+
+
 def test_backfill_external_sources_enqueues_only_external_seed_jobs_in_window() -> None:
     control = InMemoryControlPlaneStore()
     queue = InMemoryQueue()
@@ -754,8 +973,8 @@ def test_backfill_external_sources_enqueues_only_external_seed_jobs_in_window() 
         enabled_sources=(SourceName.ARXIV, SourceName.OPENALEX),
     )
 
-    since = datetime(2025, 1, 1, tzinfo=UTC)
-    until = datetime(2025, 12, 31, tzinfo=UTC)
+    # Config-derived, matching _external_record's timestamps — see the comment there.
+    since, until = CORPUS_START, CORPUS_END
     assert service.backfill_external_sources(since, until) == 1
 
     # arXiv is NOT re-harvested — only the external source is enqueued, and as a SEED job.
@@ -811,7 +1030,7 @@ def test_backfill_external_sources_isolates_a_failing_source() -> None:
     )
 
     queued = service.backfill_external_sources(
-        datetime(2025, 1, 1, tzinfo=UTC), datetime(2025, 12, 31, tzinfo=UTC)
+        CORPUS_START, CORPUS_END
     )  # must not raise despite SS failing
 
     assert queued == 1  # OpenAlex still enqueued
@@ -1322,7 +1541,7 @@ def test_backfill_external_sources_counts_jobs_queued_before_a_mid_harvest_failu
     )
 
     queued = service.backfill_external_sources(
-        datetime(2025, 1, 1, tzinfo=UTC), datetime(2025, 12, 31, tzinfo=UTC)
+        CORPUS_START, CORPUS_END
     )
 
     assert len(queue.jobs) == 2, "the two pre-failure records really were enqueued"

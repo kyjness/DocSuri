@@ -7,9 +7,15 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-docker compose -f backend/docker-compose.yml up -d
-
+# .env BEFORE compose, not after. `docker-compose.yml` interpolates DOCSURI_S3_MIRROR to decide
+# which corpus s3proxy serves, so sourcing afterwards silently fell back to the default
+# (~/data/docsuri-data/s3) — search read the index the .env names while full text came from a
+# different corpus entirely. Cards appeared and every one of them said "원문을 볼 수 없습니다",
+# which reads as a missing index rather than a mount pointing somewhere else. Worse, an ingest
+# run against that stack writes its doc-models into whichever corpus is mounted.
 set -a; source .env; set +a
+
+docker compose -f backend/docker-compose.yml up -d
 
 # Kill the whole process group on exit so Ctrl+C stops both servers.
 trap 'kill 0' EXIT INT TERM

@@ -1,12 +1,21 @@
 """Reindex the downloaded doc-model mirror into a local OpenSearch (solo-local-migration §3).
 
 The AWS deployment is retired; the OpenSearch index was not backed up, but the parsed
-DocModels were (``~/data/docsuri-data/s3/doc-model/``). This script rebuilds the search
-index from them, swapping the embedding space to OpenAI (see the adapter docstrings for the
-same-space invariant with the discovery reader):
+DocModels were. This script rebuilds the search index from them:
 
-    doc-model JSON → Chunker.chunk_doc_model → OpenAIEmbeddingPort → IndexRecordAssembler
+    doc-model JSON → Chunker.chunk_doc_model → embedding port → IndexRecordAssembler
                    → OpenSearchVectorIndex.bulk_upsert   (mapping: shared papers_index_body)
+
+THE EMBEDDING PORT COMES FROM THE ENVIRONMENT, exactly as the ingest pipeline picks it
+(``DOCSURI_EMBEDDING_PROVIDER``). It used to hardcode OpenAI, which was right for the corpus this
+tool was written for and silently wrong for any other: run against the Bedrock-embedded deployment
+index it would have written a few hundred papers into a DIFFERENT embedding space, and — worse —
+``_ensure_index`` re-stamps the index manifest, so it would have overwritten the very manifest the
+reader's space guard uses to catch that. Both sides are 1024-dimensional, so nothing would raise;
+the only symptom is those papers quietly never matching a query.
+
+Targets are given, not defaulted. The mirror/index/alias defaults were the local development
+corpus, which is not where a deployment rebuild belongs.
 
 Authors/categories/year are not in the DocModel; they are batch-fetched from the arXiv
 export API (100 ids/request, 3s politeness delay) and cached to a JSON file so re-runs are
@@ -15,14 +24,16 @@ papers already present in the index are skipped.
 
 Run (repo root; local OpenSearch up via backend/docker-compose.yml):
 
-    export OPENAI_API_KEY=sk-...
-    uv run --project ingestion python tools/local/reindex_docmodels.py --limit 3000
+    set -a; . .env; set +a      # provider, region, credentials, index
+    uv run --project ingestion python tools/local/reindex_docmodels.py \\
+        --mirror "$DOCSURI_S3_MIRROR" --index "$DOCSURI_OPENSEARCH_INDEX" --ids ids.txt
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 import urllib.parse
@@ -31,13 +42,16 @@ import xml.etree.ElementTree as ET
 from datetime import UTC, datetime
 from pathlib import Path
 
-from docsuri_ingestion.adapters.aws import OpenSearchVectorIndex, build_opensearch_client
-from docsuri_ingestion.adapters.openai_embedding import OpenAIEmbeddingPort
-from docsuri_ingestion.domain.models import EmbeddingBatch, ParsedPaper
-from docsuri_ingestion.processors import Chunker, IndexRecordAssembler
 from docsuri_shared.dtos import DocModel
 from docsuri_shared.index_spec import papers_index_body
 from docsuri_shared.vector_spec import DIMENSIONS
+
+from docsuri_ingestion.adapters.aws import OpenSearchVectorIndex, build_opensearch_client
+from docsuri_ingestion.domain.models import EmbeddingBatch, ParsedPaper
+from docsuri_ingestion.ports import EmbeddingPort
+from docsuri_ingestion.processors import Chunker, IndexRecordAssembler
+from docsuri_ingestion.runtime import _embedding_port
+from docsuri_ingestion.settings import IngestionSettings
 
 _ARXIV_API = "http://export.arxiv.org/api/query"
 _ARXIV_BATCH = 100
@@ -140,11 +154,21 @@ def _paper_from_doc(doc: DocModel, meta: dict | None) -> ParsedPaper:
     )
 
 
-def _enumerate_papers(docmodel_dir: Path, limit: int | None) -> list[Path]:
-    """Latest-version doc-model JSON per paper, deterministic order."""
+def _enumerate_papers(
+    docmodel_dir: Path, limit: int | None, only: frozenset[str] = frozenset()
+) -> list[Path]:
+    """Latest-version doc-model JSON per paper, deterministic order.
+
+    ``only`` restricts to named paper ids — the shape a targeted rebuild needs. Re-chunking a
+    known subset (a chunker setting changed, so the stored doc-models are fine but the index rows
+    are stale) is not expressible as "the first N papers", and walking the whole corpus to fix
+    200 of them re-embeds everything.
+    """
     picked: list[Path] = []
     for paper_dir in sorted(docmodel_dir.iterdir()):
         if not paper_dir.is_dir():
+            continue
+        if only and paper_dir.name not in only:
             continue
         versions = sorted(
             paper_dir.glob("v*.json"), key=lambda p: int(p.stem[1:]) if p.stem[1:].isdigit() else 0
@@ -156,11 +180,12 @@ def _enumerate_papers(docmodel_dir: Path, limit: int | None) -> list[Path]:
     return picked
 
 
-def _ensure_index(client, index: str, alias: str, *, embedding_model: str) -> None:
-    # Embedding manifest: this rebuild embeds with OpenAI; the discovery reader's space guard
-    # verifies provider/model at wiring time (vector-spec §4 same-space invariant).
+def _ensure_index(client, index: str, alias: str, *, provider: str, embedding_model: str) -> None:
+    # Embedding manifest: stamped with the provider/model THIS run embeds with, so the discovery
+    # reader's space guard can verify it at wiring time (vector-spec §4 same-space invariant).
+    # Hardcoding "openai" here defeated that guard on any index built with another provider.
     embedding_meta = {
-        "provider": "openai",
+        "provider": provider,
         "model": embedding_model,
         "dimensions": DIMENSIONS,
     }
@@ -184,7 +209,7 @@ def _already_indexed(client, index: str, paper_id: str) -> bool:
     return int(result.get("count", 0)) > 0
 
 
-def _embed_with_retry(port: OpenAIEmbeddingPort, texts: list[str]) -> list[list[float]]:
+def _embed_with_retry(port: EmbeddingPort, texts: list[str]) -> list[list[float]]:
     for attempt in range(3):
         try:
             return port.embed_documents(texts)
@@ -197,14 +222,40 @@ def _embed_with_retry(port: OpenAIEmbeddingPort, texts: list[str]) -> list[list[
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--mirror", default=str(Path.home() / "data/docsuri-data/s3"))
-    parser.add_argument("--endpoint", default="http://localhost:9200")
-    parser.add_argument("--index", default="docsuri-corpus-v1")
-    parser.add_argument("--alias", default="docsuri-corpus")
+    # Defaults come from the environment, not from the development corpus. The old hardcoded
+    # mirror/index pair meant an operator who forgot a flag rebuilt the WRONG corpus.
+    settings = IngestionSettings.from_env()
+    parser.add_argument("--mirror", default=os.environ.get("DOCSURI_S3_MIRROR"))
+    parser.add_argument("--endpoint", default=settings.opensearch_endpoint or "http://localhost:9200")
+    parser.add_argument("--index", default=settings.opensearch_index)
+    parser.add_argument("--alias", default=settings.opensearch_alias)
     parser.add_argument("--limit", type=int, default=None, help="subset size (omit = full corpus)")
-    parser.add_argument("--model", default="text-embedding-3-small")
+    parser.add_argument(
+        "--ids",
+        help="이 파일에 적힌 paperId만 재색인한다 (한 줄에 하나, # 뒤는 주석). "
+        "청커 설정이 바뀌어 일부 논문만 낡았을 때 쓴다",
+    )
     parser.add_argument("--dry-run", action="store_true", help="chunk only; no embed/index")
     args = parser.parse_args()
+
+    if not args.mirror:
+        print("--mirror 또는 DOCSURI_S3_MIRROR가 필요하다", file=sys.stderr)
+        return 2
+    only: frozenset[str] = frozenset()
+    if args.ids:
+        path = Path(args.ids)
+        if not path.exists():
+            print(f"--ids 파일이 없다: {path}", file=sys.stderr)
+            return 2
+        only = frozenset(
+            candidate
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if (candidate := line.split("#", 1)[0].strip())
+        )
+        if not only:
+            print(f"--ids {path}: 지정된 id가 0개", file=sys.stderr)
+            return 2
+        print(f"[plan] --ids 지정 {len(only)}편만 재색인")
 
     mirror = Path(args.mirror)
     docmodel_dir = mirror / "doc-model"
@@ -212,19 +263,32 @@ def main() -> int:
         print(f"doc-model mirror not found: {docmodel_dir}", file=sys.stderr)
         return 2
 
-    files = _enumerate_papers(docmodel_dir, args.limit)
-    print(f"[plan] {len(files)} papers (mirror: {mirror})")
+    files = _enumerate_papers(docmodel_dir, args.limit, only)
+    print(f"[plan] {len(files)} papers (mirror: {mirror} · index: {args.index})")
+    if only and len(files) != len(only):
+        missing = sorted(only - {f.parent.name for f in files})
+        print(f"[plan] doc-model이 없는 id {len(missing)}편: {', '.join(missing[:5])}…")
 
-    plain_http = args.endpoint.startswith("http://")
-    client = build_opensearch_client(
-        endpoint=args.endpoint, use_ssl=not plain_http, verify_certs=not plain_http
+    # TLS follows the endpoint scheme inside the client factory now — this tool used to be the
+    # only caller that got it right, and it got it right by doing exactly that here.
+    client = build_opensearch_client(endpoint=args.endpoint)
+    # The SAME selection the ingest pipeline makes, so a rebuild lands in the corpus's existing
+    # embedding space instead of silently opening a second one.
+    embedder = _embedding_port(settings)
+    model = (
+        settings.bedrock_model_id
+        if settings.embedding_provider == "bedrock"
+        else settings.openai_embedding_model
     )
-    _ensure_index(client, args.index, args.alias, embedding_model=args.model)
-    writer = OpenSearchVectorIndex(
-        endpoint=args.endpoint, index_name=args.index,
-        use_ssl=not plain_http, verify_certs=not plain_http,
+    print(f"[embed] {settings.embedding_provider} · {model}")
+    _ensure_index(
+        client,
+        args.index,
+        args.alias,
+        provider=settings.embedding_provider,
+        embedding_model=model or "",
     )
-    embedder = OpenAIEmbeddingPort(model=args.model)
+    writer = OpenSearchVectorIndex(endpoint=args.endpoint, index_name=args.index)
     chunker = Chunker()
     assembler = IndexRecordAssembler()
 

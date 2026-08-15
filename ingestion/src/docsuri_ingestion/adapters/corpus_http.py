@@ -200,6 +200,15 @@ class SemanticScholarCorpusSource:
                         "externalIds",
                         "openAccessPdf",
                         "isOpenAccess",
+                        # Admission signals — see `admission_rejection` in corpus_sources.py.
+                        # Both venue fields: `publicationVenue` is the entity-linked record and
+                        # is null for many workshop/conference papers; the legacy `venue` string
+                        # is the fallback, and the graph API only returns REQUESTED fields — an
+                        # unrequested fallback is a dead branch that rejected real papers as
+                        # venue_unknown.
+                        "s2FieldsOfStudy",
+                        "publicationVenue",
+                        "venue",
                     )
                 ),
                 "fieldsOfStudy": _FIELDS_OF_STUDY,
@@ -302,6 +311,12 @@ class OpenAlexCorpusSource:
                         "updated_date",
                         "primary_location",
                         "locations",
+                        # Admission signals — see `admission_rejection` in corpus_sources.py.
+                        # `primary_topic`, not `topics`: the filter above already constrains
+                        # THIS object's field, so it is the one the assertion should read, and
+                        # it is a third of the bytes of the up-to-three-entry `topics` array.
+                        # The venue comes from primary_location.source, already selected above.
+                        "primary_topic",
                     )
                 ),
             }
@@ -360,7 +375,21 @@ def _semantic_record(item: dict[str, Any]) -> SourcePaperRecord | None:
         license_url=license_url,
         doi=external_ids.get("DOI"),
         arxiv_id=external_ids.get("ArXiv"),
+        fields_of_study=_s2_fields_of_study(item),
+        venue=str((item.get("publicationVenue") or {}).get("name") or item.get("venue") or ""),
     )
+
+
+def _s2_fields_of_study(item: dict[str, Any]) -> tuple[str, ...]:
+    """S2 subject labels, de-duplicated, order preserved.
+
+    ``s2FieldsOfStudy`` entries are ``{"category": ..., "source": ...}`` and a paper routinely
+    carries the same category from more than one source, hence the dedup. ``fieldsOfStudy`` is a
+    bare string array and is sometimes the only one populated, so it is appended as a fallback.
+    """
+    entries = [e for e in item.get("s2FieldsOfStudy") or () if isinstance(e, dict)]
+    names = [e.get("category") for e in entries] + list(item.get("fieldsOfStudy") or ())
+    return tuple(dict.fromkeys(str(n) for n in names if n))
 
 
 def _openalex_record(item: dict[str, Any]) -> SourcePaperRecord | None:
@@ -368,7 +397,7 @@ def _openalex_record(item: dict[str, Any]) -> SourcePaperRecord | None:
     copies = _licensed_pdf_copies(location, item.get("locations") or [])
     if not copies:
         return None
-    (pdf_url, license_url) = copies[0]
+    (pdf_url, license_url, chosen_venue) = copies[0]
     # Alternates are restricted to copies under the SAME licence as the primary, because the
     # record keeps exactly one ``license_url`` and the downstream OA gate and the stored paper
     # both read that one — a copy under a different licence would be fetched as bytes but
@@ -380,7 +409,7 @@ def _openalex_record(item: dict[str, Any]) -> SourcePaperRecord | None:
     # repeat the publisher's licence. Capped at what the fetch will ever walk — everything past
     # that would be serialised into the queue message for a candidate nobody tries.
     alternates = tuple(
-        url for url, lic in copies[1:] if lic == license_url
+        url for url, lic, _venue in copies[1:] if lic == license_url
     )[: _MAX_PDF_CANDIDATES - 1]
     ids = item.get("ids") or {}
     return SourcePaperRecord(
@@ -402,20 +431,46 @@ def _openalex_record(item: dict[str, Any]) -> SourcePaperRecord | None:
         doi=item.get("doi") or ids.get("doi"),
         arxiv_id=_arxiv_id(ids.get("arxiv")),
         alternate_pdf_urls=alternates,
+        fields_of_study=_openalex_fields_of_study(item),
+        # From the location the chosen PDF came from, falling back to the primary's source —
+        # a work whose primary is a bare landing page still names its venue on the repository
+        # copy that actually supplied the bytes.
+        venue=chosen_venue or str((location.get("source") or {}).get("display_name") or ""),
     )
+
+
+def _openalex_fields_of_study(item: dict[str, Any]) -> tuple[str, ...]:
+    """OpenAlex subject labels for the work's PRIMARY topic, field rung first.
+
+    A topic is ``{"display_name": ..., "subfield": {...}, "field": {...}, "domain": {...}}``. The
+    leaf ``display_name`` is too specific to admit on ("Retrieval-Augmented Generation") and
+    ``domain`` too broad ("Physical Sciences" covers all of CS); ``field`` is the rung that says
+    Computer Science vs Medicine, and it is exactly what the query filter constrains. Subfield
+    rides along so a later rule can tighten without another harvest.
+    """
+    topic = item.get("primary_topic")
+    if not isinstance(topic, dict):
+        return ()
+    names = [(topic.get(rung) or {}).get("display_name") for rung in ("field", "subfield")]
+    return tuple(dict.fromkeys(str(n) for n in names if n))
 
 
 def _licensed_pdf_copies(
     primary: dict[str, Any], locations: list[dict[str, Any]]
-) -> list[tuple[str, str]]:
-    """(pdf_url, license_url) for every copy of the work we may legally read, primary first.
+) -> list[tuple[str, str, str]]:
+    """(pdf_url, license_url, venue) for every copy we may legally read, primary first.
 
     Each OpenAlex location carries its OWN licence, and a repository deposit does not inherit the
     publisher's terms — pairing one location's URL with another's licence would record a paper as
     CC-BY on the strength of a copy we never fetched. So the licence is read per location and a
     location that fails the gate is not a candidate at all.
+
+    The venue rides along per copy for the same alignment reason: the PDF can be chosen from ANY
+    location, and reading the venue from the primary alone rejected works as ``venue_unknown``
+    whenever the primary was null or source-less even though the location that actually supplied
+    the PDF names its venue.
     """
-    copies: list[tuple[str, str]] = []
+    copies: list[tuple[str, str, str]] = []
     seen: set[str] = set()
     for location in (primary, *locations):
         pdf_url = _https_url(location.get("pdf_url"))
@@ -423,7 +478,8 @@ def _licensed_pdf_copies(
         if not pdf_url or not license_url or pdf_url in seen:
             continue
         seen.add(pdf_url)
-        copies.append((pdf_url, license_url))
+        venue = str(((location.get("source") or {}).get("display_name")) or "")
+        copies.append((pdf_url, license_url, venue))
     return copies
 
 

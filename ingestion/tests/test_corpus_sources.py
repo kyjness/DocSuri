@@ -7,7 +7,11 @@ import pytest
 
 from docsuri_ingestion.adapters.corpus_http import OpenAlexCorpusSource, SemanticScholarCorpusSource
 from docsuri_ingestion.adapters.local import FakeArxivSource, sample_metadata
-from docsuri_ingestion.corpus_sources import CorpusSourceAdapterSet, SourcePaperRecord
+from docsuri_ingestion.corpus_sources import (
+    CorpusSourceAdapterSet,
+    SourcePaperRecord,
+    admission_rejection,
+)
 from docsuri_ingestion.domain.enums import SourceName
 from docsuri_ingestion.domain.errors import (
     PermanentIngestionError,
@@ -19,9 +23,11 @@ class _Grobid:
     def __init__(self, text: str = "structured full text") -> None:
         self.text = text
         self.seen_pdf: bytes | None = None
+        self.seen_key: dict[str, object] = {}
 
-    def extract_tei(self, pdf: bytes) -> str:
+    def extract_tei(self, pdf: bytes, **key: object) -> str:
         self.seen_pdf = pdf
+        self.seen_key = key
         return f"<TEI><text><body><div><p>{self.text}</p></div></body></text></TEI>"
 
 
@@ -159,6 +165,10 @@ def test_external_record_text_fetches_pdf_then_grobid() -> None:
     assert provider.fetched_record == record
     assert grobid.seen_pdf == b"%PDF-1.7 body"
     assert candidate.source_tier == "OPENALEX_GROBID"
+    # The TEI cache key has to reach the client, or the two-pass split (GROBID and Docling never
+    # resident together) silently degrades to single-pass and the box OOMs on this very rung.
+    # A non-arXiv record has no arXiv id yet, so its own source identity is the key.
+    assert grobid.seen_key == {"paper_id": "openalex:oa-1", "version": 1}
 
 
 def test_semantic_scholar_provider_fetches_oa_pdf_records() -> None:
@@ -199,6 +209,174 @@ def test_semantic_scholar_provider_fetches_oa_pdf_records() -> None:
     assert records[0].pdf_url == "https://example.test/paper.pdf"
     assert records[0].license_url == "https://creativecommons.org/licenses/by/4.0/"
     assert source.fetch_pdf(records[0]) == b"%PDF-1.7 body"
+
+
+def test_both_sources_carry_the_admission_signals_the_gate_reads() -> None:
+    """U1-F1/F2 plumbing: field labels and venue survive the adapters and the queue round-trip.
+
+    The gate (``admission_rejection``) is fail-closed, so a parsing regression here does not
+    show up as slightly worse quality — every record refuses as ``field_unknown`` and the harvest
+    collapses. The round-trip assert matters for the same reason: the worker receives the record
+    through the queue, so a field that serialises away is a field the gate cannot see.
+    """
+
+    def s2_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {
+                        "paperId": "s2-1",
+                        "title": "Paper",
+                        "year": 2025,
+                        "publicationDate": "2025-01-01",
+                        "isOpenAccess": True,
+                        "externalIds": {},
+                        "openAccessPdf": {
+                            "url": "https://example.test/paper.pdf",
+                            "license": "CC-BY",
+                        },
+                        # Duplicated category across sources — the parser must de-duplicate.
+                        "s2FieldsOfStudy": [
+                            {"category": "Computer Science", "source": "external"},
+                            {"category": "Computer Science", "source": "s2-fos-model"},
+                            {"category": "Mathematics", "source": "s2-fos-model"},
+                        ],
+                        "publicationVenue": {"name": "ACL", "type": "conference"},
+                    }
+                ]
+            },
+        )
+
+    s2 = SemanticScholarCorpusSource(
+        base_url="https://example.test", transport=httpx.MockTransport(s2_handler)
+    )
+    (record,) = list(s2.fetch_incremental(datetime(2024, 1, 1, tzinfo=UTC), ("cs.CL",)))
+    assert record.fields_of_study == ("Computer Science", "Mathematics")
+    assert record.venue == "ACL"
+    assert admission_rejection(record) is None
+    round_tripped = SourcePaperRecord.from_payload(record.to_payload())
+    assert round_tripped.fields_of_study == record.fields_of_study
+    assert round_tripped.venue == record.venue
+
+    def oa_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {
+                        "id": "https://openalex.org/W1",
+                        "display_name": "OA Paper",
+                        "publication_year": 2025,
+                        "publication_date": "2025-01-01",
+                        "primary_location": {
+                            "pdf_url": "https://example.test/oa.pdf",
+                            "license": "cc-by",
+                            "source": {"display_name": "Journal of Tests"},
+                        },
+                        # field is the rung the gate reads; subfield rides along for later rules.
+                        "primary_topic": {
+                            "display_name": "Retrieval-Augmented Generation",
+                            "subfield": {"display_name": "Artificial Intelligence"},
+                            "field": {"display_name": "Computer Science"},
+                            "domain": {"display_name": "Physical Sciences"},
+                        },
+                    }
+                ],
+                "meta": {"next_cursor": None},
+            },
+        )
+
+    oa = OpenAlexCorpusSource(
+        base_url="https://example.test", transport=httpx.MockTransport(oa_handler)
+    )
+    (oa_record,) = list(oa.fetch_incremental(datetime(2024, 1, 1, tzinfo=UTC), ("cs.CL",)))
+    assert oa_record.fields_of_study == ("Computer Science", "Artificial Intelligence")
+    assert oa_record.venue == "Journal of Tests"
+    assert admission_rejection(oa_record) is None
+
+
+def test_s2_falls_back_to_the_legacy_venue_string() -> None:
+    """publicationVenue is null for many workshop/conference papers that are not entity-linked;
+    the legacy `venue` string is then the only venue S2 has. The graph API returns only REQUESTED
+    fields, so the fallback existing in code while "venue" was missing from the fields list was a
+    dead branch — real published papers dropped out as venue_unknown."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "venue" in str(request.url)  # the fallback only works if it is requested
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {
+                        "paperId": "s2-2",
+                        "title": "Workshop Paper",
+                        "year": 2025,
+                        "publicationDate": "2025-01-01",
+                        "isOpenAccess": True,
+                        "externalIds": {},
+                        "openAccessPdf": {
+                            "url": "https://example.test/w.pdf",
+                            "license": "CC-BY",
+                        },
+                        "s2FieldsOfStudy": [{"category": "Computer Science"}],
+                        "publicationVenue": None,
+                        "venue": "Workshop on Tests @ ACL",
+                    }
+                ]
+            },
+        )
+
+    source = SemanticScholarCorpusSource(
+        base_url="https://example.test", transport=httpx.MockTransport(handler)
+    )
+    (record,) = list(source.fetch_incremental(datetime(2024, 1, 1, tzinfo=UTC), ("cs.CL",)))
+    assert record.venue == "Workshop on Tests @ ACL"
+    assert admission_rejection(record) is None
+
+
+def test_openalex_venue_comes_from_the_location_that_supplied_the_pdf() -> None:
+    """The PDF can be chosen from ANY locations[] entry, so the venue must come from the same
+    location — reading it from the primary alone rejected works as venue_unknown whenever the
+    primary was a bare landing page while the repository copy that supplied the bytes names its
+    venue."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {
+                        "id": "https://openalex.org/W2",
+                        "display_name": "Repository Copy Paper",
+                        "publication_year": 2025,
+                        "publication_date": "2025-01-01",
+                        # Primary is a landing page: no pdf, no source entity.
+                        "primary_location": {"landing_page_url": "https://pub.test/x"},
+                        "locations": [
+                            {
+                                "pdf_url": "https://repo.test/x.pdf",
+                                "license": "cc-by",
+                                "source": {"display_name": "Journal of Repositories"},
+                            }
+                        ],
+                        "primary_topic": {
+                            "field": {"display_name": "Computer Science"},
+                            "subfield": {"display_name": "Artificial Intelligence"},
+                        },
+                    }
+                ],
+                "meta": {"next_cursor": None},
+            },
+        )
+
+    source = OpenAlexCorpusSource(
+        base_url="https://example.test", transport=httpx.MockTransport(handler)
+    )
+    (record,) = list(source.fetch_incremental(datetime(2024, 1, 1, tzinfo=UTC), ("cs.CL",)))
+    assert record.pdf_url == "https://repo.test/x.pdf"
+    assert record.venue == "Journal of Repositories"
+    assert admission_rejection(record) is None
 
 
 def test_semantic_scholar_rejects_spoofed_license_host() -> None:

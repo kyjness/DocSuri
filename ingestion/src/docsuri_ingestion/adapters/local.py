@@ -411,16 +411,20 @@ def deterministic_vector(text: str) -> list[float]:
     return values
 
 
-def sample_metadata(arxiv_ref: str = "2401.00001v1") -> MetadataRecord:
+def sample_metadata(arxiv_ref: str = "2401.00001v1", category: str = "cs.LG") -> MetadataRecord:
     now = datetime(2024, 1, 1, tzinfo=UTC)
     return MetadataRecord(
         arxiv_ref=arxiv_ref,
         title="A Local Test Paper",
         authors=("Ada Lovelace", "Grace Hopper"),
         abstract="This paper studies deterministic ingestion for retrieval systems.",
-        categories=("cs.LG",),
+        # A LITERAL, deliberately. Deriving this from CORPUS_SLICE_CATEGORIES makes both sides of
+        # the seed-harvest intersection move together, so the filter could break and every test
+        # would still pass — the sample would follow the slice wherever it went. A test that
+        # needs a sample inside the current slice passes the category it wants explicitly.
+        categories=(category,),
         updated_at=now,
         published_at=now,
         license_url="https://creativecommons.org/licenses/by/4.0/",
-        primary_category="cs.LG",
+        primary_category=category,
     )

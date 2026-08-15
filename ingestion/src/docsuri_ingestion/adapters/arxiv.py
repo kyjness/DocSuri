@@ -23,6 +23,10 @@ from docsuri_ingestion.xmlsafe import safe_fromstring
 _log = logging.getLogger("docsuri.ingestion.arxiv")
 
 ATOM_NS = {"atom": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
+
+# Ids per Atom ``id_list`` request. arXiv accepts well over this, but a larger batch makes one
+# failure cost more papers and pushes the URL toward length limits.
+_METADATA_BATCH = 100
 OAI_NS = {
     "oai": "http://www.openarchives.org/OAI/2.0/",
     "arxiv": "http://arxiv.org/OAI/arXiv/",
@@ -137,6 +141,48 @@ class ArxivHttpSource:
         if record.license_url is None:
             record = self._enrich_license_from_oai(record)
         return record
+
+    def fetch_metadata_batch(self, refs: Sequence[str]) -> dict[str, MetadataRecord]:
+        """Metadata for many papers, keyed by bare paper id, in as few requests as possible.
+
+        The Atom endpoint takes up to ``_METADATA_BATCH`` ids per ``id_list`` call, so a named
+        list of 1,500 papers costs ~15 requests instead of 1,500. That matters because arXiv
+        rate-limits by IP and a per-paper burst is what trips it — measured, 20 papers walked
+        one at a time (with retries) put ~100 requests through and left the source refusing us.
+
+        Licence enrichment is NOT batched and cannot be: the Atom feed no longer reliably carries
+        ``<arxiv:license>`` and OAI ``GetRecord`` takes one identifier at a time. So a record that
+        arrives without a licence still costs its own request — the saving here is on metadata,
+        not on the whole per-paper budget. Strict-OA gating reads that licence, so skipping the
+        enrichment would silently drop papers instead of speeding things up.
+
+        BEST EFFORT, per chunk. This is a prefetch, and every caller can still fetch a missing
+        paper the slow way, so one bad chunk must cost its own ~100 ids and nothing else — raising
+        would throw away the chunks that already succeeded and send the entire run back down the
+        per-paper path, which is the exact burst this exists to avoid. An id with no entry (a
+        withdrawn or mistyped paper) is simply absent from the result.
+        """
+        out: dict[str, MetadataRecord] = {}
+        refs = list(refs)
+        for start in range(0, len(refs), _METADATA_BATCH):
+            chunk = refs[start : start + _METADATA_BATCH]
+            params = {"id_list": ",".join(chunk), "max_results": str(len(chunk))}
+            try:
+                body = self._get_text(self._atom_base_url, params=params, stage="fetch_metadata")
+                records = parse_atom_feed(body)
+            except Exception:  # noqa: BLE001 — prefetch; the caller falls back per paper
+                _log.warning(
+                    "arXiv 메타데이터 일괄 조회 실패 — %d편은 논문별 조회로 넘긴다", len(chunk)
+                )
+                continue
+            for record in records:
+                if record.license_url is None:
+                    try:
+                        record = self._enrich_license_from_oai(record)
+                    except Exception:  # noqa: BLE001 — same prefetch contract as the chunk above
+                        continue
+                out[record.identifier.paper_id] = record
+        return out
 
     def _enrich_license_from_oai(self, record: MetadataRecord) -> MetadataRecord:
         # ponytail: bare-id heuristic — strip the "vN" version suffix; arXiv versions are
@@ -256,7 +302,10 @@ class ArxivHttpSource:
         html, url = self._try_get_html(metadata.identifier.arxiv_id)
         if html and mode == "prefer" and store is not None:
             store.put_raw(
-                pid, ver, SourceTier.ar5iv.value, html.encode("utf-8"),
+                pid,
+                ver,
+                SourceTier.ar5iv.value,
+                html.encode("utf-8"),
                 content_type="text/html; charset=utf-8",
             )
         return html, url
@@ -403,6 +452,7 @@ class ArxivHttpSource:
             root = _parse_xml(
                 self._fetch_oai_page(params), stage="parse_oai_records", label="OAI records"
             )
+            _raise_on_oai_error(root, stage="parse_oai_records")
             yield from _oai_records_from(root)
             token = _oai_token_from(root)
             if not token:
@@ -542,6 +592,36 @@ def _build_oai_record(metadata: ET.Element) -> MetadataRecord:
 
 def parse_oai_records(body: str) -> list[MetadataRecord]:
     return _oai_records_from(_parse_xml(body, stage="parse_oai_records", label="OAI records"))
+
+
+# noRecordsMatch is the one OAI error that legitimately means "nothing here" — an empty window is
+# not a fault. Every other code is a malformed request, and OAI reports all of them with HTTP 200
+# and a body carrying no records and no resumption token, which is byte-for-byte what a genuinely
+# empty harvest looks like.
+_OAI_EMPTY_ERROR_CODES = frozenset({"noRecordsMatch"})
+
+
+def _raise_on_oai_error(root: ET.Element, *, stage: str) -> None:
+    """Turn an OAI-PMH ``<error>`` body into a raised failure instead of a silent zero.
+
+    Measured the hard way: a one-day-too-far ``until`` bound answered ``badArgument: until date
+    too late`` with HTTP 200, the harvest generator yielded nothing, and the run reported success —
+    a corpus build that quietly harvested 0 papers. The same shape hides ``Set does not exist``
+    (see ``_oai_set``), so a typo'd category is equally invisible. A batch whose whole premise is
+    "how many papers did we get" cannot afford this failure to be indistinguishable from an empty
+    window.
+    """
+    error = root.find("oai:error", OAI_NS)
+    if error is None:
+        return
+    code = (error.get("code") or "unknown").strip()
+    if code in _OAI_EMPTY_ERROR_CODES:
+        return
+    raise PermanentIngestionError(
+        f"arXiv OAI rejected the request ({code}): {(error.text or '').strip()}",
+        reason=FailureReason.VALIDATION_VIOLATION,
+        stage=stage,
+    )
 
 
 def _oai_records_from(root: ET.Element) -> list[MetadataRecord]:

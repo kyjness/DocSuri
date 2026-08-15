@@ -1,14 +1,46 @@
 from __future__ import annotations
 
 import argparse
+import pathlib
 import sys
 
 from .application import new_job_id
 from .domain.enums import JobKind
 from .domain.models import IngestionJob
+from .foundational import (
+    DEFAULT_LEDGER as FOUNDATIONAL_LEDGER,
+)
+from .foundational import (
+    DEFAULT_LIST as FOUNDATIONAL_LIST,
+)
+from .foundational import (
+    ingest_foundational,
+)
 from .observability import configure_logging
-from .runtime import build_local_runtime, build_production_runtime
-from .settings import IngestionSettings, validate_corpus_build_settings
+from .runtime import (
+    PreflightError,
+    build_local_runtime,
+    build_production_runtime,
+    preflight_dependencies,
+    probe_grobid,
+)
+from .settings import GROBID_ONLY_SOURCES, IngestionSettings, validate_corpus_build_settings
+
+
+def _guard(check) -> bool:
+    """Run a pre-start check, reporting its failure as a message rather than a traceback.
+
+    Both checks raise the same ``RuntimeError("; ".join(errors))``: this is an operator being told
+    to go fix something, and a stack trace buries the one line that says what. Shared so the two
+    cannot drift — the settings check used to escape as a traceback while the liveness probe was
+    printed, three lines apart.
+    """
+    try:
+        check()
+    except RuntimeError as exc:
+        print(exc, file=sys.stderr)
+        return False
+    return True
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -23,11 +55,107 @@ def main(argv: list[str] | None = None) -> int:
     subcommands.add_parser("trigger-full-rebuild")
     subcommands.add_parser("schedule-tick")
 
+    # The named foundational papers (⑧-2). Separate from trigger-full-rebuild because a
+    # CategoryFilter cannot express an explicit id list, which is the whole point of that set.
+    foundational = subcommands.add_parser("ingest-foundational")
+    foundational.add_argument("--list", dest="list_path", default=FOUNDATIONAL_LIST)
+    foundational.add_argument("--ledger", dest="ledger_path", default=FOUNDATIONAL_LEDGER)
+    foundational.add_argument("--bucket")
+    foundational.add_argument("--limit", type=int)
+    foundational.add_argument("--retry-failed", action="store_true")
+    foundational.add_argument(
+        "--skip-stage",
+        dest="skip_stages",
+        # append, not store: the singular flag name invites `--skip-stage grobid --skip-stage
+        # embed`, and a store action silently keeps only the last one — every grobid failure then
+        # retries against a deliberately-down GROBID anyway. Each occurrence may also carry a
+        # comma list; ingest_foundational flattens.
+        action="append",
+        default=[],
+        type=lambda raw: tuple(p.strip() for p in raw.split(",") if p.strip()),
+        help="이 단계에서 실패한 논문은 --retry-failed 대상에서 뺀다 (예: grobid,extract_tei). "
+        "반복 지정 가능. 일부러 내려둔 의존성을 쓰는 논문을 다시 태우지 않기 위한 것",
+    )
+    foundational.add_argument(
+        "--redo",
+        dest="redo_path",
+        help="이 파일에 적힌 arXiv id를 원장 결과와 무관하게 다시 수집한다. "
+        "**파서가 바뀌었을 때만** 쓴다 — 청커·임베딩만 바뀐 경우 dedup이 DUPLICATE로 끊으므로 "
+        "tools/local/reindex_docmodels.py --ids 를 써야 한다. 한 줄에 하나, # 뒤는 주석",
+    )
+    foundational.add_argument("--dry-run", action="store_true")
+
     args = parser.parse_args(argv)
     settings = IngestionSettings.from_env()
+
+    # Dispatched BEFORE the shared runtime construction below. Building the runtime first
+    # discarded --local (a local runtime was built and thrown away while foundational.py went on
+    # to construct a production one and ingest 1,500 papers into the real corpus), violated
+    # --dry-run's documented no-runtime guarantee, and made normal runs build two runtimes.
+    if args.command == "ingest-foundational":
+        live = not args.local and not args.dry_run
+        # A typo'd --redo path must fail HERE, before the runtime build spends minutes loading
+        # Docling and torch to die on FileNotFoundError afterwards. (read_list guards the paper
+        # list the same way by simply being read first inside ingest_foundational — but redo is
+        # read after the runtime exists.)
+        if args.redo_path and not pathlib.Path(args.redo_path).exists():
+            print(f"--redo 파일이 없다: {args.redo_path}", file=sys.stderr)
+            return 1
+        if live:
+            # Writes a third of the corpus, so it needs the same preconditions the full rebuild
+            # checks (multimodal assets on, no v2 model shadow, GROBID reachable, rollout
+            # confirmed) — skipping them here would be discovered after the ~1.5-hour run.
+            # Before the runtime is built, so a misconfiguration costs no model loading.
+            if not _guard(lambda: validate_corpus_build_settings(settings)):
+                return 1
+            # GROBID needs only its URL, so probe it before Docling and pix2tex are imported.
+            # An id list is arXiv-only whatever the env lists, so a down GROBID is a warning here
+            # (probe_grobid logs it) rather than a stop. The in-run preflight does NOT probe it
+            # again — this is the one warn-only probe.
+            probe_grobid(settings, required=False)
+        foundational_runtime = None
+        if not args.dry_run:
+            foundational_runtime = (
+                build_local_runtime() if args.local else build_production_runtime(settings)
+            )
+        try:
+            return ingest_foundational(
+                settings,
+                runtime=foundational_runtime,
+                list_path=args.list_path,
+                ledger_path=args.ledger_path,
+                bucket=args.bucket,
+                limit=args.limit,
+                retry_failed=args.retry_failed,
+                redo_path=args.redo_path,
+                skip_stages=[st for group in args.skip_stages for st in group],
+                preflight=live,
+                dry_run=args.dry_run,
+            )
+        except PreflightError as exc:
+            # The in-run preflight sits after the ledger filter (a run with nothing to do pays no
+            # billed probe), so its failure surfaces here — as the same one-line message the other
+            # command paths print, not a traceback. Its own exception type so unrelated
+            # RuntimeErrors from inside the run are NOT swallowed into a tidy one-liner.
+            print(exc, file=sys.stderr)
+            return 1
+
     if args.command == "trigger-full-rebuild" and not args.local:
-        validate_corpus_build_settings(settings)
+        if not _guard(lambda: validate_corpus_build_settings(settings)):
+            return 1
+        # Warn-only early probe for configurations whose sources do NOT require GROBID: the
+        # preflight below only probes when required, so without this a down GROBID on an
+        # arXiv-only rebuild would go unmentioned entirely.
+        if not GROBID_ONLY_SOURCES & set(settings.parsed_corpus_sources):
+            probe_grobid(settings, required=False)
     runtime = build_local_runtime() if args.local else build_production_runtime(settings)
+    if args.command == "trigger-full-rebuild" and not args.local:
+        if not _guard(
+            lambda: preflight_dependencies(
+                runtime, settings, sources=settings.parsed_corpus_sources
+            )
+        ):
+            return 1
 
     if args.command == "ingest-one":
         decision = runtime.pipeline.ingest_one(

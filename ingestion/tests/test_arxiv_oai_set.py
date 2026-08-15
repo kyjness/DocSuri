@@ -114,3 +114,40 @@ def test_harvest_aborts_loudly_when_retries_exhausted():
     src._get_text = always_timeout  # type: ignore[method-assign]
     with pytest.raises(RetriableIngestionError):
         list(src.harvest_seed(_filter()))
+
+
+def test_oai_error_response_raises_instead_of_harvesting_zero() -> None:
+    """An OAI ``<error>`` body must fail loudly, not read as an empty window.
+
+    OAI reports malformed requests with HTTP 200 and a body carrying no records and no
+    resumption token — byte-for-byte what a genuinely empty harvest looks like. Measured: an
+    end bound one day past today answered `badArgument: until date too late`, the harvest
+    generator yielded nothing, and the corpus build reported success having collected 0 papers.
+    """
+    import xml.etree.ElementTree as ET
+
+    from docsuri_ingestion.adapters.arxiv import _raise_on_oai_error
+    from docsuri_ingestion.domain.errors import PermanentIngestionError
+
+    body = """<?xml version="1.0" encoding="UTF-8"?>
+    <OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/">
+      <responseDate>2026-08-13T13:58:42Z</responseDate>
+      <error code='badArgument'>Reason: until date too late</error>
+    </OAI-PMH>"""
+    with pytest.raises(PermanentIngestionError) as caught:
+        _raise_on_oai_error(ET.fromstring(body), stage="parse_oai_records")
+    assert "badArgument" in str(caught.value)
+    assert "until date too late" in str(caught.value)
+
+
+def test_oai_no_records_match_is_an_empty_window_not_a_failure() -> None:
+    """`noRecordsMatch` is the one code that legitimately means "nothing here"."""
+    import xml.etree.ElementTree as ET
+
+    from docsuri_ingestion.adapters.arxiv import _raise_on_oai_error
+
+    body = """<?xml version="1.0" encoding="UTF-8"?>
+    <OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/">
+      <error code='noRecordsMatch'>nothing in this window</error>
+    </OAI-PMH>"""
+    _raise_on_oai_error(ET.fromstring(body), stage="parse_oai_records")  # must not raise

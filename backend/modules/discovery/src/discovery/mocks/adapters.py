@@ -18,6 +18,27 @@ from ..ports.search_ports import (
 from . import fixtures
 
 
+def _one_per_paper(scored: list[ScoredRecord], top_k: int) -> list[ScoredRecord]:
+    """Keep each paper's best-scoring chunk, mirroring the real adapters' OpenSearch ``collapse``.
+
+    ``top_k`` counts PAPERS in the port contract. Without this the mocks would hand the retriever
+    a candidate set the real store never produces — one where a single paper fills the slice — so
+    every mock-backed test would exercise a breadth the deployment does not have.
+
+    ``scored`` must already be sorted best-first; the first record seen for a paper is its best.
+    """
+    seen: set[str] = set()
+    out: list[ScoredRecord] = []
+    for record, score in scored:
+        if record.paperId in seen:
+            continue
+        seen.add(record.paperId)
+        out.append((record, score))
+        if len(out) >= top_k:
+            break
+    return out
+
+
 class MockEmbeddingAdapter:
     """Deterministic query embedding (cross-lingual bag-of-keywords; reader=search_query)."""
 
@@ -42,7 +63,7 @@ class MockVectorStoreAdapter:
             if score > 0:
                 scored.append((record, score))
         scored.sort(key=lambda sr: (-sr[1], sr[0].chunkId))
-        return scored[:top_k]
+        return _one_per_paper(scored, top_k)
 
 
 class MockLexicalIndexAdapter:
@@ -78,7 +99,7 @@ class MockLexicalIndexAdapter:
             if overlap > 0:
                 scored.append((record, float(overlap)))
         scored.sort(key=lambda sr: (-sr[1], sr[0].chunkId))
-        return scored[:top_k]
+        return _one_per_paper(scored, top_k)
 
     def phrase_search(
         self,
@@ -97,7 +118,7 @@ class MockLexicalIndexAdapter:
             haystack = f"{record.abstract} {record.lexicalTerms}".lower()
             if needle in haystack:
                 scored.append((record, 1.0))
-        return scored[:top_k]
+        return _one_per_paper(scored, top_k)
 
 
 class MockRerankAdapter:

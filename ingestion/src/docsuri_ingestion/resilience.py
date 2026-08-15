@@ -150,6 +150,12 @@ class IngestFailureHandler:
         self._observability.emit_metric("ingestion.dlq.enqueued", 1.0, tags)
 
 
+# How much longer a 429 waits than a generic transient failure. With the default policy
+# (1s base, factor 2) this turns 1/2/4/8s into 15/30/60/120s — about four minutes of backing off
+# across a paper's attempts instead of fifteen seconds of hammering.
+_RATE_LIMIT_BACKOFF_MULTIPLIER = 15.0
+
+
 class IngestionResilienceService:
     def __init__(
         self,
@@ -196,6 +202,25 @@ class IngestionResilienceService:
 
         return self.retry(stage, guarded)
 
+    def _retry_delay(self, attempt: int, exc: Exception) -> float:
+        """Backoff for one retry, with 429 held far longer than a plain outage.
+
+        A 5xx means "the dependency stumbled" and coming back in a second or two is right. A 429
+        means "you are asking too often", and the fast schedule then makes things worse: measured
+        on arXiv, 20 papers x 5 attempts put ~100 requests through a source that was already
+        refusing us, and the source stayed shut afterwards. The rate limiter cannot prevent this
+        — it paces a steady stream correctly, but a retry storm is the source telling us its
+        budget is already spent.
+
+        The multiplier is deliberately large rather than tuned. Waiting too long costs wall-clock
+        on a batch that runs unattended; waiting too little costs the whole run, because the
+        source extends the block each time it is hit.
+        """
+        base = self._retry_policy.delay_for_attempt(attempt)
+        if isinstance(exc, IngestionError) and exc.reason is FailureReason.RATE_LIMITED:
+            return base * _RATE_LIMIT_BACKOFF_MULTIPLIER
+        return base
+
     def retry(self, stage: str, func: Callable[[], T]) -> T:
         last_error: Exception | None = None
         for attempt in range(1, self._retry_policy.max_attempts + 1):
@@ -212,7 +237,7 @@ class IngestionResilienceService:
                 )
                 if attempt >= self._retry_policy.max_attempts:
                     break
-                time.sleep(self._retry_policy.delay_for_attempt(attempt))
+                time.sleep(self._retry_delay(attempt, exc))
             else:
                 if attempt > 1:
                     self._observability.emit_metric(

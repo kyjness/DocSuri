@@ -25,6 +25,9 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .ruff_cache/
+# 외부 API 응답 캐시(S2/arXiv) — tools/local/build_foundational_list.py가 재실행을
+# 공짜로 만들려고 쓴다. 36MB대이고 재생성 가능하므로 추적하지 않는다.
+.cache/
 .hypothesis/
 *.egg-info/
 build/

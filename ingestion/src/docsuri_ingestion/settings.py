@@ -81,12 +81,36 @@ class IngestionSettings(BaseModel):
     # Cohere Embed Multilingual v3 is NOT in ap-northeast-2, so the worker must embed new papers
     # cross-region once on v3. None → embed in DOCSURI_AWS_REGION (unchanged single-region path).
     embed_region: str | None = Field(default=None, alias="DOCSURI_EMBED_REGION")
+    # Which embedding model the WRITER uses. Reads the same env name the U2 reader reads
+    # (`discovery/adapters/settings.py`), because the two must resolve to the SAME model or the
+    # vectors land in different spaces and k-NN returns semantic noise — and at 1024 dimensions
+    # on both sides, no dimension check can catch it. Until this field existed the writer
+    # hardcoded Bedrock while the reader followed the env, so setting the env to "openai"
+    # silently split them; only the index's embedding manifest would have caught it, after a
+    # full corpus build. Default matches the reader's default.
+    embedding_provider: Literal["bedrock", "openai"] = Field(
+        default="bedrock", alias="DOCSURI_EMBEDDING_PROVIDER"
+    )
+    openai_embedding_model: str = Field(
+        default="text-embedding-3-small", alias="DOCSURI_OPENAI_EMBEDDING_MODEL"
+    )
     # B3 fast full-re-parse (raw cache + bulk PDF prime + offline re-parse; see reparse.py /
     # raw_backfill.py / runbook). Default OFF → the live fetch path stays byte-identical.
     raw_cache_mode: Literal["off", "prefer", "only"] = Field(
         default="off", alias="DOCSURI_RAW_CACHE_MODE"
     )
     raw_cache_prefix: str = Field(default="raw", alias="DOCSURI_RAW_CACHE_PREFIX")
+    # TEI cache for the PDF/GROBID rung, on the SAME raw store under tier "tei". Exists to keep
+    # GROBID and Docling out of memory at the same time: measured on a 7.5GB box, GROBID holds
+    # 2.9GB while working (its image bakes in -Xmx4g and its `header`/`reference-segmenter` models
+    # run TensorFlow off-heap, so -Xmx alone does not bound it) and Docling peaks at 1.6GB — the
+    # kernel OOM-kills GROBID on the first paper that needs both. So the rung is run in two passes:
+    #   prefer  — GROBID up, Docling absent: extract TEI and cache it
+    #   only    — GROBID down, Docling on: build from cached TEI, never call GROBID
+    # `off` is the single-pass behaviour and stays the default (a box with room needs no split).
+    grobid_cache_mode: Literal["off", "prefer", "only"] = Field(
+        default="off", alias="DOCSURI_GROBID_CACHE_MODE"
+    )
     # arXiv requester-pays bulk PDF bucket + optional YYMM month shards (csv, e.g. "2501,2502").
     arxiv_bulk_bucket: str = Field(default="arxiv", alias="DOCSURI_ARXIV_BULK_BUCKET")
     # Run-scoped harvest window override (ISO dates). Lets a one-off backfill narrow the slice
@@ -147,7 +171,13 @@ class IngestionSettings(BaseModel):
     worker_queue_mode: Literal["all", "bulk", "docmodel"] = Field(
         default="all", alias="DOCSURI_WORKER_QUEUE_MODE"
     )
-    max_chunks_per_paper: int = Field(default=128, alias="DOCSURI_MAX_CHUNKS_PER_PAPER")
+    # Raised 128 -> 512 (2026-08-15). Chunking is per BLOCK, so this counts paragraphs, not
+    # 2,400-char windows: at 128 it cut the body of 217 of the 827 papers indexed so far (26%),
+    # dropping a median 9.7% and up to 64.6% of their text (2 of every 3 paragraphs in
+    # `1706.07269`). The papers it cut were surveys and reviews — the ones with the most
+    # paragraphs, and exactly what the foundational list was assembled to include. Measured cost
+    # of 512: +10.1% chunks, and nothing truncated (sample max was 487 blocks).
+    max_chunks_per_paper: int = Field(default=512, alias="DOCSURI_MAX_CHUNKS_PER_PAPER")
     max_chunk_chars: int = Field(default=2400, alias="DOCSURI_MAX_CHUNK_CHARS")
     chunk_overlap_chars: int = Field(default=240, alias="DOCSURI_CHUNK_OVERLAP_CHARS")
     # FR-17 multimodal assets (display-only). Safe default OFF — base worker unaffected.
@@ -228,6 +258,14 @@ class IngestionSettings(BaseModel):
         return data
 
 
+# Sources whose ONLY structure parser is GROBID — no ar5iv rung exists for them. THE one rule
+# behind both "is DOCSURI_GROBID_URL required" (below) and "must the live GROBID answer before a
+# batch starts" (runtime.preflight_dependencies). It lives here, not in runtime.py, because the
+# import direction only works this way — and the first attempt at "one rule" left a second literal
+# in this file, which is exactly the drift a named constant exists to prevent.
+GROBID_ONLY_SOURCES = frozenset({"SEMANTIC_SCHOLAR", "OPENALEX"})
+
+
 def validate_corpus_build_settings(settings: IngestionSettings) -> None:
     if settings.env == "local":
         return
@@ -242,7 +280,7 @@ def validate_corpus_build_settings(settings: IngestionSettings) -> None:
             "DOCSURI_CORPUS_BUILD_ROLLOUT_CONFIRMED must be true after worker rollout "
             "completion and during a worker deployment freeze"
         )
-    if sources.intersection({"SEMANTIC_SCHOLAR", "OPENALEX"}) and not settings.grobid_url:
+    if sources & GROBID_ONLY_SOURCES and not settings.grobid_url:
         errors.append("DOCSURI_GROBID_URL is required for Semantic Scholar/OpenAlex corpus build")
     if errors:
         raise RuntimeError("; ".join(errors))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+import logging
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from typing import cast
 
@@ -25,13 +26,16 @@ from .adapters.local import (
 )
 from .adapters.postgres import PostgresControlPlaneStore
 from .application import IngestionPipelineService, RefreshOrchestrationService
+from .config import CORPUS_SLICE_CATEGORIES
 from .corpus_sources import CorpusSourceAdapterSet
 from .domain.enums import SourceName
 from .observability import LoggingObservabilityHub
 from .ports import FormulaReaderPort, TableExtractorPort
 from .processors import Chunker
 from .resilience import IngestFailureHandler, IngestionResilienceService, TokenBucket
-from .settings import IngestionSettings
+from .settings import GROBID_ONLY_SOURCES, IngestionSettings
+
+_log = logging.getLogger("docsuri.ingestion.runtime")
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,12 +45,25 @@ class RuntimeServices:
     queue: object
     observability: object
     corpus_sources: object | None = None
+    # The arXiv source itself, for drivers that need bulk metadata before feeding the pipeline
+    # one job at a time (``foundational``). The pipeline holds the same instance; exposing it
+    # here beats reaching through the pipeline's private attribute.
+    arxiv: object | None = None
+    # The embedding port the pipeline will actually use, for the pre-flight probe below. Probing
+    # a freshly built port would test the configuration rather than the wiring.
+    embedding: object | None = None
     # Optional priority doc-model build queue (BR-30/D6). None → worker polls only `queue`.
     docmodel_queue: object | None = None
 
 
 def build_local_runtime() -> RuntimeServices:
-    metadata = [sample_metadata()]
+    # Seeded INSIDE the configured slice, or the offline smoke path goes dark: harvest_seed
+    # intersects the sample's categories with CORPUS_SLICE_CATEGORIES, and when the slice
+    # narrowed to cs.CL/cs.AI a default (cs.LG) sample made `--local trigger-full-rebuild`
+    # queue 0 and exit 0 — a smoke test that silently tests nothing. Unlike the assertion-side
+    # fixtures (which pin literals so the filter cannot be self-fulfilling), the runtime seed
+    # SHOULD follow the config: its job is to exercise the pipeline as currently configured.
+    metadata = [sample_metadata(category=CORPUS_SLICE_CATEGORIES[0])]
     arxiv = FakeArxivSource(metadata)
     control = InMemoryControlPlaneStore()
     queue = InMemoryQueue()
@@ -74,7 +91,32 @@ def build_local_runtime() -> RuntimeServices:
         observability=observability,
     )
     return RuntimeServices(
-        pipeline=pipeline, refresh=refresh, queue=queue, observability=observability
+        pipeline=pipeline,
+        refresh=refresh,
+        queue=queue,
+        observability=observability,
+        arxiv=arxiv,
+    )
+
+
+def _embedding_port(settings: IngestionSettings):
+    """The writer's embedding model, chosen by the SAME setting the U2 reader reads.
+
+    Reader and writer must resolve to one model: the vectors they produce only compare inside a
+    single embedding space, and both sides are 1024-dimensional, so a mismatch passes every
+    dimension check and shows up as semantically wrong neighbours. This used to be hardcoded to
+    Bedrock here while the reader followed ``DOCSURI_EMBEDDING_PROVIDER``, which meant a single
+    env value could split them with nothing failing until the index manifest was compared —
+    after a full corpus build.
+    """
+    if settings.embedding_provider == "openai":
+        from .adapters.openai_embedding import OpenAIEmbeddingPort
+
+        return OpenAIEmbeddingPort(model=settings.openai_embedding_model)
+    return BedrockCohereEmbeddingPort(
+        model_id=settings.bedrock_model_id or "",
+        # embed region decoupled from aws_region (OpenSearch SigV4): Cohere is not in apne2.
+        region_name=settings.embed_region or settings.aws_region,
     )
 
 
@@ -83,7 +125,16 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
     observability = LoggingObservabilityHub()
     # B3 raw-content cache wiring: only when explicitly enabled AND a bucket exists. Otherwise the
     # source keeps its default off mode → the live fetch path is byte-identical (raw_store=None).
-    raw_cache_on = settings.raw_cache_mode != "off" and bool(settings.s3_bucket)
+    # The TEI cache lives on the SAME store, so either mode being on is enough to build it —
+    # keyed off raw_cache_mode alone, `DOCSURI_GROBID_CACHE_MODE=prefer` on its own would leave
+    # the store None and the cache would do nothing at all while looking configured.
+    cache_wanted = settings.raw_cache_mode != "off" or settings.grobid_cache_mode != "off"
+    if cache_wanted and not settings.s3_bucket:
+        raise RuntimeError(
+            "DOCSURI_RAW_CACHE_MODE/DOCSURI_GROBID_CACHE_MODE need DOCSURI_S3_BUCKET — "
+            "without a bucket the cache silently does nothing"
+        )
+    raw_cache_on = cache_wanted
     # ONE store instance shared by every adapter that reads the cache: each S3RawContentStore
     # builds its own boto3 client (session/loader/endpoint resolution + a connection pool), so a
     # second instance is duplicated startup work against the same bucket.
@@ -110,6 +161,10 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
         grobid = GrobidHttpClient(
             base_url=settings.grobid_url,
             timeout_seconds=settings.request_timeout_seconds,
+            # Same store the raw source-byte cache uses, under tier "tei" — the two-pass split
+            # that keeps GROBID and Docling out of memory together.
+            raw_store=raw_store,
+            cache_mode=settings.grobid_cache_mode if raw_store is not None else "off",
         )
     enabled_sources = _enabled_sources(settings.parsed_corpus_sources)
     semantic_scholar = openalex = None
@@ -208,14 +263,11 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
         formula_reader=_formula_reader(settings),
         observability=observability,
     )
+    embedding = _embedding_port(settings)
     pipeline = IngestionPipelineService(
         arxiv=arxiv,
         full_text_store=S3FullTextStore(bucket=settings.s3_bucket or ""),
-        embedding=BedrockCohereEmbeddingPort(
-            model_id=settings.bedrock_model_id or "",
-            # embed region decoupled from aws_region (OpenSearch SigV4): Cohere v3 isn't in apne2.
-            region_name=settings.embed_region or settings.aws_region,
-        ),
+        embedding=embedding,
         vector_index=OpenSearchVectorIndex(
             endpoint=settings.opensearch_endpoint or "",
             index_name=settings.opensearch_index,
@@ -256,6 +308,8 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
         queue=queue,
         observability=observability,
         corpus_sources=corpus_sources,
+        arxiv=arxiv,
+        embedding=embedding,
         docmodel_queue=docmodel_queue,
     )
 
@@ -315,3 +369,105 @@ def _formula_reader(settings: IngestionSettings) -> FormulaReaderPort | None:
     return cast(
         "FormulaReaderPort | None", _optional_reader(settings.formula_reader, "pix2tex", build)
     )
+
+
+class PreflightError(RuntimeError):
+    """A pre-start dependency probe failed. Its own type so the CLI can turn exactly this into a
+    one-line operator message without also swallowing unrelated RuntimeErrors from deep inside
+    the run it wraps."""
+
+
+def probe_grobid(settings: IngestionSettings, *, required: bool) -> str | None:
+    """Ask GROBID whether it is alive. Returns a problem description, or None when it is fine.
+
+    Split from the rest of the pre-flight because it needs NOTHING but the URL, while
+    ``build_production_runtime`` imports Docling and pix2tex and loads their models. Probing after
+    that build made an operator whose GROBID was down wait out the whole torch import to be told.
+
+    ``required=False`` runs proceed without it — an arXiv-id list is served by the ar5iv rung for
+    all but a small minority, and on a small box GROBID is better left DOWN: it holds 1.7GB
+    resident while Docling needs 1.6GB to re-read a table, and the two together took out both the
+    container and the worker mid-paper on this 7.5GB machine. The minority fails and a later pass
+    recovers it — but it is still probed and still logged, because silently losing that slice is
+    how a whole run was lost once already.
+    """
+    if not settings.grobid_url:
+        return None
+    import httpx
+
+    problem = None
+    try:
+        response = httpx.get(f"{settings.grobid_url.rstrip('/')}/api/isalive", timeout=10.0)
+        if response.status_code != 200:
+            problem = f"GROBID {settings.grobid_url} answered {response.status_code}"
+    except Exception as exc:  # noqa: BLE001 — any failure to reach it is the same verdict
+        problem = f"GROBID {settings.grobid_url} unreachable ({type(exc).__name__})"
+    if problem and not required:
+        _log.warning(
+            "선행 점검 경고 — %s. PDF→GROBID 룽으로 내려가는 논문은 실패로 기록된다"
+            "(나중에 TEI 2패스로 회수).",
+            problem,
+        )
+        return None
+    return problem
+
+
+def preflight_dependencies(
+    runtime: RuntimeServices,
+    settings: IngestionSettings,
+    *,
+    sources: Collection[str] = (),
+) -> None:
+    """Probe the dependencies a corpus batch cannot run without, and refuse to start if one is
+    down. Raises ``RuntimeError`` listing every failure.
+
+    ``validate_corpus_build_settings`` already checks the SETTINGS; this checks that the things
+    they point at are alive. The distinction is the whole point — both failures this guards
+    against were correctly configured and simply not answering:
+
+    - GROBID was down for a whole 1,500-paper run (container exited 5s after start). ~42% of
+      arXiv papers fall to the PDF/GROBID rung, so that slice failed wholesale.
+    - Bedrock's daily token quota ran out mid-batch, and the run kept fetching, parsing and
+      rendering page crops for five and a half hours while nothing reached the index.
+
+    Neither shows up in the output — a paper that fails is simply absent — so they surface only as
+    a failure counter nobody is watching. Cheap to check up front, hours to discover otherwise.
+
+    ``sources`` is what THIS run will actually parse, not what the environment lists: an arXiv-id
+    list is arXiv-only however ``DOCSURI_CORPUS_SOURCES`` is set. Passing the set rather than a
+    "require GROBID" flag keeps one rule — the same ``GROBID_ONLY_SOURCES`` test the settings
+    check uses — instead of two that can disagree, which they already did: a hand-passed default
+    hard-blocked an arXiv-only rebuild that the settings layer says needs no GROBID at all.
+    """
+    errors: list[str] = []
+
+    # Probed ONLY when this run's sources hard-require it. The warn-only case is the CALLER's
+    # early probe_grobid (before the runtime build, where a down GROBID costs no model loading) —
+    # probing again here produced a second 10s timeout and a duplicate warning that read as two
+    # incidents.
+    if GROBID_ONLY_SOURCES & set(sources):
+        problem = probe_grobid(settings, required=True)
+        if problem:
+            errors.append(problem)
+
+    # Attribute access, not getattr: the field is declared on RuntimeServices, and a string lookup
+    # would let a builder that forgets to set it turn the embed probe into a silent no-op — the
+    # exact failure (a quota outage nobody noticed for five hours) this function exists to catch.
+    if runtime.embedding is None:
+        errors.append("runtime has no embedding port — the embed probe cannot run")
+    else:
+        try:
+            # The call is MOST of the check — both real ports validate the returned width against
+            # their own configured dimension, so re-checking width here would only disagree with
+            # them on the re-embed path. Emptiness is the one hole they leave: the Bedrock port
+            # reads ``payload.get("embeddings", [])``, so a 200 whose embeddings key is missing or
+            # reshaped yields [] and its per-vector width loop runs zero times. That would pass
+            # here and kill every paper later at the assembler's zip(..., strict=True).
+            vectors = runtime.embedding.embed_documents(["preflight"])
+            if not vectors or not vectors[0]:
+                errors.append("embedding returned an empty response for a non-empty input")
+        except Exception as exc:  # noqa: BLE001 — quota, credentials, region all land here
+            errors.append(f"embedding call failed ({type(exc).__name__}: {exc})")
+
+    if errors:
+        raise PreflightError("배치 선행 점검 실패 — " + "; ".join(errors))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections import Counter
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, replace
@@ -12,7 +13,13 @@ from docsuri_shared.dtos import DocModel, DocModelResultDTO, SourceTier, SourceU
 
 from .asset_extraction import AssetExtractor, crop_assets_from_specs
 from .config import CORPUS_SLICE_CATEGORIES
-from .corpus_sources import CorpusSourceAdapterSet, CorpusTextCandidate, SourcePaperRecord
+from .corpus_sources import (
+    POLICY_REJECTIONS,
+    CorpusSourceAdapterSet,
+    CorpusTextCandidate,
+    SourcePaperRecord,
+    admission_rejection,
+)
 from .docmodel import DocModelBuilder
 from .docmodel.tei import tei_crop_specs
 from .domain.assets import AssetCropSpec, FigureSpec
@@ -244,7 +251,9 @@ class IngestionPipelineService:
                 tei = self._resilience.dependency_call(
                     "grobid",
                     "extract_tei",
-                    lambda: grobid.extract_tei(pdf),
+                    lambda: grobid.extract_tei(
+                        pdf, paper_id=job.paper_id, version=job.version
+                    ),
                 )
             except Exception:  # noqa: BLE001 - GROBID is best-effort; degrade to pdfplumber.
                 self._observability.emit_metric(
@@ -389,6 +398,19 @@ class IngestionPipelineService:
             )
         record = SourcePaperRecord.from_payload(job.source_record or {})
         self._parser.validate_open_access(record.license_url)
+        # Re-asserted at consumption for the same reason the licence check above is, even though
+        # the enqueue path already applied it: a job can predate the current rule, and tightening
+        # the policy — populating BLOCKED_VENUE_MARKERS from the ⑧-2 harvest, say — would
+        # otherwise let the very records it was tightened against through. POLICY reasons only:
+        # judging old payloads on data-absence reasons would dead-letter every pre-gate job as
+        # `field_unknown` merely for lacking keys that did not exist when it was queued.
+        rejection = admission_rejection(record)
+        if rejection in POLICY_REJECTIONS:
+            raise PermanentIngestionError(
+                f"source record refused at admission: {rejection}",
+                reason=FailureReason.VALIDATION_VIOLATION,
+                stage="source",
+            )
         updated = record.updated_at or record.published_at or self._clock.now()
         record_keys = self._canonical_keys_for_record(record, record.year or updated.year)
         key = job.canonical_key or record_keys[0]
@@ -966,7 +988,13 @@ class IngestionPipelineService:
             return None
         try:
             tei = self._resilience.dependency_call(
-                "grobid", "extract_tei", lambda: grobid.extract_tei(pdf)
+                "grobid",
+                "extract_tei",
+                # Keyed so the two-pass TEI cache can serve this rung; without the key the cache
+                # is skipped and this is the plain call it has always been.
+                lambda: grobid.extract_tei(
+                    pdf, paper_id=metadata.paper_id, version=metadata.version
+                ),
             )
         except PermanentIngestionError:
             # GROBID REJECTED this PDF outright (400/415/422 — malformed/oversized/unsupported).
@@ -1310,31 +1338,69 @@ class RefreshOrchestrationService:
             )
             return 0
         queued = 0
-        for record in self._corpus_sources.fetch_incremental(
-            source_name, since, CORPUS_SLICE_CATEGORIES, until
-        ):
-            updated = record.updated_at or record.published_at or self._clock.now()
-            if updated <= since or (until is not None and updated > until):
-                continue
-            year = record.year or updated.year
-            self._queue.send_job(
-                IngestionJob(
-                    job_id=new_job_id("seed" if kind is JobKind.SEED_REBUILD else "incremental"),
-                    kind=kind,
-                    source_name=source_name,
-                    source_record=record.to_payload(),
-                    canonical_key=canonical_key(
-                        title=record.title,
-                        year=year,
-                        doi=record.doi,
-                        arxiv_id=record.arxiv_id,
-                        first_author=record.authors[0] if record.authors else None,
-                    ),
-                )
+        rejected: Counter[str] = Counter()
+        try:
+            yield_from_source = self._corpus_sources.fetch_incremental(
+                source_name, since, CORPUS_SLICE_CATEGORIES, until
             )
-            queued += 1
-            if tally is not None:
-                tally[0] = queued
+            for record in yield_from_source:
+                updated = record.updated_at or record.published_at or self._clock.now()
+                if updated <= since or (until is not None and updated > until):
+                    continue
+                rejection = admission_rejection(record)
+                if rejection is not None:
+                    # Counted here, emitted once per reason in the finally. Emitting per record
+                    # would flood exactly when it hurts — the gate is fail-closed, so a field
+                    # going missing upstream refuses EVERY record, and a widened S2 query has
+                    # been measured at 22,039 of them. A count is also the more useful datapoint.
+                    rejected[rejection] += 1
+                    continue
+                year = record.year or updated.year
+                prefix = "seed" if kind is JobKind.SEED_REBUILD else "incremental"
+                self._queue.send_job(
+                    IngestionJob(
+                        job_id=new_job_id(prefix),
+                        kind=kind,
+                        source_name=source_name,
+                        source_record=record.to_payload(),
+                        canonical_key=canonical_key(
+                            title=record.title,
+                            year=year,
+                            doi=record.doi,
+                            arxiv_id=record.arxiv_id,
+                            first_author=record.authors[0] if record.authors else None,
+                        ),
+                    )
+                )
+                queued += 1
+                if tally is not None:
+                    tally[0] = queued
+        finally:
+            # In a finally for the same reason ``tally`` exists: the source generator can raise
+            # part-way through a multi-page harvest, and a refusal count that only survives a
+            # clean run is missing exactly when something went wrong.
+            for reason, count in rejected.items():
+                self._observability.emit_metric(
+                    "ingestion.source.rejected",
+                    float(count),
+                    {"source": source_name.value, "reason": reason},
+                )
+            if rejected and queued == 0:
+                # Total collapse is upstream schema drift until proven otherwise (rename of
+                # s2FieldsOfStudy / primary_topic), and without this it reads exactly like "the
+                # source had nothing new" — return 0, exit 0, nobody looks. The exact zero/some
+                # condition needs no invented threshold.
+                self._observability.emit_metric(
+                    "ingestion.source.rejected_all", 1.0, {"source": source_name.value}
+                )
+                self._observability.emit_log(
+                    {
+                        "type": "ingestion_source_rejected_all",
+                        "source": source_name.value,
+                        "rejected": sum(rejected.values()),
+                        "hint": "every harvested record was refused — check upstream field names",
+                    }
+                )
         return queued
 
     def on_new_arxiv_event(self, event) -> bool:
