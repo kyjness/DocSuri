@@ -128,7 +128,7 @@ def build_evidence_runner(
         "input_usd_per_mtok": settings.input_usd_per_mtok,
         "output_usd_per_mtok": settings.output_usd_per_mtok,
     }
-    if settings.uses_bedrock:
+    if settings.llm_provider == 'bedrock':
         from .adapters.llm_bedrock import BedrockDecider, BedrockExtractor
 
         decider = BedrockDecider(

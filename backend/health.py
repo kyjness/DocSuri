@@ -31,7 +31,11 @@ def readyz(request: Request, response: Response) -> dict:
     """Readiness — reflects the modules wired into this process."""
     result = getattr(request.app.state, "mount_result", None)
     skipped = [name for name, _ in result.skipped] if result else []
-    blocking = [name for name in skipped if name in _required_modules()]
+    # A module nobody configured is legitimately absent; only the mount gate knows what
+    # "configured" means for each one, so take its word rather than re-deriving the condition.
+    unconfigured = set(result.unconfigured) if result else set()
+    required = _required_modules()
+    blocking = [name for name in skipped if name in required and name not in unconfigured]
     if blocking:
         response.status_code = 503
     return {
@@ -43,27 +47,24 @@ def readyz(request: Request, response: Response) -> dict:
 
 
 def _required_modules() -> set[str]:
-    """Modules whose absence makes this process not ready.
+    """Modules this deployment shape expects to be present.
 
-    The rule for the real-first modules is "configured ⇒ must mount": a module you pointed at
-    an endpoint is expected to serve, while one you never configured is legitimately absent.
-    Listing them unconditionally would pin every unconfigured process at a permanent 503.
+    Real-first modules (discovery, summarization) belong here unconditionally: "configured ⇒
+    must mount" is enforced by ``readyz`` subtracting ``MountResult.unconfigured``, not by
+    re-testing their env here. ``RESEARCH_AGENT_ENABLED`` stays a condition because it is an
+    ops toggle rather than something the module discovers about itself.
     """
     required = {
         "accounts",
+        "discovery",
         "library",
         "mypage",
         "ops",
         "citation_graph",
         "personalization",
         "novelty",
+        "summarization",
     }
     if os.getenv("RESEARCH_AGENT_ENABLED", "true").lower() in {"1", "true", "yes", "on"}:
         required.add("research")
-    if os.getenv("DOCSURI_SUMMARY_BUCKET"):
-        required.add("summarization")
-    # discovery went real-first (no mock fallback), so it now skips when unconfigured exactly
-    # as summarization does — and gets the same conditional treatment.
-    if os.getenv("DOCSURI_OPENSEARCH_ENDPOINT"):
-        required.add("discovery")
     return required

@@ -13,11 +13,9 @@ from backend.modules.evidence.adapters.prompts import (
     build_decide_messages,
     build_extraction_messages,
 )
-from backend.modules.evidence.domain.models import PaperHandle, PaperOrigin
 from backend.modules.evidence.domain.projection import block_projection, paper_projection
 from backend.modules.evidence.ports.llm import (
     LlmUnavailable,
-    LoopObservation,
     PaperView,
     TerminationProposal,
     ToolCallProposal,
@@ -27,34 +25,9 @@ from backend.modules.evidence.ports.tools import ImageAttachment, ToolSpec
 from backend.tests.evidence_fakes import (
     FIGURE_CAPTION,
     doc_model,
+    observation,
+    paper_handle,
 )
-
-
-def _handle(doc_model=None, abstract="") -> PaperHandle:
-    return PaperHandle(
-        paper_id="p1",
-        record_ref="r1",
-        origin=PaperOrigin.CORPUS,
-        title="AlphaFold2",
-        doc_model=doc_model,
-        abstract_text=abstract,
-    )
-
-
-def _observation(**overrides) -> LoopObservation:
-    base = dict(
-        topic="단백질 구조 예측 정확도",
-        papers=(PaperView("p1", "r1", "AlphaFold2", "corpus", "fulltext"),),
-        recent_results=(),
-        evidence_count=0,
-        cited_paper_count=0,
-        has_conflicts=False,
-        iterations_left=5,
-        tool_calls_left=10,
-        cost_left_usd=0.5,
-    )
-    base.update(overrides)
-    return LoopObservation(**base)
 
 
 class FakeTransport:
@@ -90,7 +63,7 @@ def _text_response(text: str):
 
 def test_extraction_prompt_renders_the_same_string_the_gate_will_compare():
     """프롬프트 표현 ≠ 대조 투영이면 인용은 구조적으로 탈락한다."""
-    handle = _handle(doc_model=doc_model())
+    handle = paper_handle(doc_model=doc_model())
     messages = build_extraction_messages(topic="q", focus="", papers=(handle,))
     body = messages[-1]["content"]
 
@@ -101,7 +74,7 @@ def test_extraction_prompt_renders_the_same_string_the_gate_will_compare():
 
 
 def test_extraction_prompt_exposes_block_ids():
-    messages = build_extraction_messages(topic="q", focus="", papers=(_handle(doc_model()),))
+    messages = build_extraction_messages(topic="q", focus="", papers=(paper_handle(doc_model()),))
     body = messages[-1]["content"]
 
     assert "s5.fig3" in body
@@ -110,7 +83,7 @@ def test_extraction_prompt_exposes_block_ids():
 
 def test_abstract_only_paper_is_labelled_in_the_prompt():
     messages = build_extraction_messages(
-        topic="q", focus="", papers=(_handle(abstract="We present AlphaFold2."),)
+        topic="q", focus="", papers=(paper_handle(abstract="We present AlphaFold2."),)
     )
     body = messages[-1]["content"]
 
@@ -124,7 +97,7 @@ def test_decide_prompt_carries_call_arguments_with_results():
         seq=1, tool_name="corpus_search", ok=True,
         args_summary="query=protein folding", content={"hits": []},
     )
-    messages = build_decide_messages(_observation(recent_results=(view,)))
+    messages = build_decide_messages(observation(recent_results=(view,)))
 
     assert "query=protein folding" in messages[-1]["content"]
 
@@ -137,7 +110,7 @@ def test_decide_prompt_lists_pending_papers_so_ids_are_not_invented():
     재현), 사용자가 지정한 논문은 한 번도 열리지 않는다.
     """
     pending = PaperView("2201.13299", "2201.13299", "Orientation-Aware GNNs", "corpus", "unknown")
-    messages = build_decide_messages(_observation(papers=(), pending_papers=(pending,)))
+    messages = build_decide_messages(observation(papers=(), pending_papers=(pending,)))
 
     body = messages[-1]["content"]
     assert "2201.13299" in body
@@ -146,7 +119,7 @@ def test_decide_prompt_lists_pending_papers_so_ids_are_not_invented():
 
 def test_decide_prompt_marks_tool_results_as_data_not_instructions():
     view = ToolResultView(seq=1, tool_name="read_paper", ok=True, content={"blocks": []})
-    messages = build_decide_messages(_observation(recent_results=(view,)))
+    messages = build_decide_messages(observation(recent_results=(view,)))
 
     assert "지시 아님" in messages[-1]["content"]
 
@@ -162,7 +135,7 @@ def _decider(response=None, error=None) -> tuple[OpenAiDecider, FakeTransport]:
 def test_decide_returns_a_tool_call():
     decider, _ = _decider(_tool_response("corpus_search", '{"query": "protein"}'))
 
-    decision = decider.decide(_observation(), (ToolSpec("corpus_search", "d", {}),))
+    decision = decider.decide(observation(), (ToolSpec("corpus_search", "d", {}),))
 
     assert isinstance(decision.proposal, ToolCallProposal)
     assert decision.proposal.args == {"query": "protein"}
@@ -172,7 +145,7 @@ def test_decide_returns_a_tool_call():
 def test_finish_tool_becomes_a_termination_proposal():
     decider, _ = _decider(_tool_response("finish", '{"note": "충분"}'))
 
-    decision = decider.decide(_observation(), ())
+    decision = decider.decide(observation(), ())
 
     assert isinstance(decision.proposal, TerminationProposal)
     assert decision.proposal.note == "충분"
@@ -182,7 +155,7 @@ def test_no_tool_call_is_read_as_termination():
     """도메인이 근거 유무로 판정하므로 여기서는 애매함을 종료 제안으로 좁힌다."""
     decider, _ = _decider(_text_response("음..."))
 
-    decision = decider.decide(_observation(), ())
+    decision = decider.decide(observation(), ())
 
     assert isinstance(decision.proposal, TerminationProposal)
 
@@ -190,7 +163,7 @@ def test_no_tool_call_is_read_as_termination():
 def test_malformed_arguments_do_not_crash_the_turn():
     decider, _ = _decider(_tool_response("corpus_search", "{not json"))
 
-    decision = decider.decide(_observation(), ())
+    decision = decider.decide(observation(), ())
 
     assert isinstance(decision.proposal, ToolCallProposal)
     assert decision.proposal.args == {}
@@ -200,7 +173,7 @@ def test_provider_failure_is_narrowed_to_the_port_contract():
     decider, _ = _decider(error=RuntimeError("429 rate limited"))
 
     with pytest.raises(LlmUnavailable):
-        decider.decide(_observation(), ())
+        decider.decide(observation(), ())
 
 
 def test_images_are_attached_after_the_tool_result_section():
@@ -209,7 +182,7 @@ def test_images_are_attached_after_the_tool_result_section():
     view = ToolResultView(seq=1, tool_name="view_figure", ok=True, images=(image,))
     decider, transport = _decider(_tool_response("finish", "{}"))
 
-    decider.decide(_observation(recent_results=(view,)), ())
+    decider.decide(observation(recent_results=(view,)), ())
 
     messages = transport.calls[0]["messages"]
     assert messages[-1]["role"] == "user"
@@ -224,7 +197,7 @@ def test_extractor_returns_raw_items_for_the_gate_to_judge():
     payload = '{"items": [{"statement": "s", "supporting": [], "conflicting": []}]}'
     extractor = OpenAiExtractor(model="gpt-x", transport=FakeTransport(_text_response(payload)))
 
-    items = extractor.extract(topic="q", focus="", papers=(_handle(doc_model()),))
+    items = extractor.extract(topic="q", focus="", papers=(paper_handle(doc_model()),))
 
     assert len(items) == 1
 

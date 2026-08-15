@@ -13,15 +13,17 @@ from docsuri_shared.env import env_flag as _env_flag
 from docsuri_shared.env import env_float as _env_float
 from docsuri_shared.env import env_int as _env_int
 
-# 프로바이더별 기본 모델. 모델 id는 프로바이더 어휘라 하나로 둘 수 없다 — 예전에
-# 한쪽 어휘만 기본값으로 두었다가, 실경로가 마운트되고도 매 호출이 모델 미존재로
-# 실패해 llm_unavailable로만 수렴했다(로컬 실측). 스위치와 기본값을 함께 둔다.
-DEFAULT_EVIDENCE_MODEL = 'gpt-4o-mini'
-DEFAULT_EVIDENCE_BEDROCK_MODEL = 'global.anthropic.claude-sonnet-4-6'
-# 단가도 프로바이더를 따라간다. gpt-4o-mini 단가를 Sonnet에 그대로 쓰면 예산 대장이
-# 20배 과소계상된다.
-_OPENAI_RATES = (0.15, 0.60)
-_BEDROCK_RATES = (3.0, 15.0)
+# 프로바이더에 묶인 사실 셋 — (기본 모델, 입력 단가, 출력 단가). 한 테이블에 두는 이유는
+# 셋이 함께 움직이기 때문이다: 모델 id는 프로바이더 어휘라 하나로 둘 수 없고(한쪽 어휘만
+# 기본값으로 뒀다가 실경로가 마운트되고도 매 호출이 모델 미존재로 실패한 적이 있다), 단가는
+# 모델을 따라간다(gpt-4o-mini 단가를 Sonnet에 쓰면 예산 대장이 20배 과소계상된다).
+# 흩어놓으면 프로바이더를 추가할 때 편집 지점이 셋이 되고, 과거에 드리프트한 필드가 정확히
+# 이 셋이다.
+_PROVIDERS: dict[str, tuple[str, float, float]] = {
+    'bedrock': ('global.anthropic.claude-sonnet-4-6', 3.0, 15.0),
+    'openai': ('gpt-4o-mini', 0.15, 0.60),
+}
+_DEFAULT_PROVIDER = 'bedrock'
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,19 +57,14 @@ class EvidenceSettings:
         # 실 경로 = DocModel S3 버킷 필요 (Bedrock는 항상 사용 가능 가정)
         return bool(self.docmodel_bucket)
 
-    @property
-    def uses_bedrock(self) -> bool:
-        return self.llm_provider == 'bedrock'
-
     @classmethod
     def from_env(cls) -> EvidenceSettings:
         # 기본은 bedrock. OPENAI_API_KEY가 저장소에서 제거된 뒤(2026-08-15) openai를
         # 기본값으로 두면 실경로가 마운트되고도 매 호출이 401로 끝난다.
-        provider = os.environ.get('DOCSURI_EVIDENCE_LLM_PROVIDER', 'bedrock').strip().lower()
-        default_model = (
-            DEFAULT_EVIDENCE_BEDROCK_MODEL if provider == 'bedrock' else DEFAULT_EVIDENCE_MODEL
+        provider = (
+            os.environ.get('DOCSURI_EVIDENCE_LLM_PROVIDER', _DEFAULT_PROVIDER).strip().lower()
         )
-        in_rate, out_rate = _BEDROCK_RATES if provider == 'bedrock' else _OPENAI_RATES
+        default_model, in_rate, out_rate = _PROVIDERS.get(provider, _PROVIDERS[_DEFAULT_PROVIDER])
         return cls(
             llm_provider=provider,
             model_id=os.environ.get('DOCSURI_EVIDENCE_MODEL_ID', default_model),

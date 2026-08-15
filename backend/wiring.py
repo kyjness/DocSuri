@@ -91,6 +91,17 @@ class MountResult:
     mounted: list[str] = field(default_factory=list)
     skipped: list[tuple[str, str]] = field(default_factory=list)  # (module, reason)
     cleanups: list[Cleanup] = field(default_factory=list)
+    # Subset of ``skipped`` that was skipped because it was never configured, as opposed to
+    # absent or broken. Readiness needs that distinction and must not re-derive it: the mount
+    # gate is the only place that knows what "configured" means for a given module, and a copy
+    # of the condition in health.py drifted from it (an endpoint with no embedder skipped the
+    # mount while readiness still demanded the module — a permanent 503).
+    unconfigured: list[str] = field(default_factory=list)
+
+    def skip_unconfigured(self, module: str, reason: str) -> None:
+        """Record a module that is legitimately absent because nobody configured it."""
+        self.skipped.append((module, reason))
+        self.unconfigured.append(module)
 
 
 def mount_modules(app: FastAPI, settings: Settings, integrations=None) -> MountResult:
@@ -165,8 +176,8 @@ def _mount_discovery(app: FastAPI, settings: Settings, result: MountResult) -> N
     # is indistinguishable from a search-quality bug, so a missing route is the honest outcome.
     discovery_settings = DiscoverySettings.from_env()
     if not discovery_settings.search_enabled:
-        result.skipped.append(
-            ("discovery", "real read path not configured (no OpenSearch endpoint / embedder)")
+        result.skip_unconfigured(
+            "discovery", "real read path not configured (no OpenSearch endpoint / embedder)"
         )
         log.info("app-shell: discovery real read path not configured — skipping mount")
         return
@@ -193,7 +204,7 @@ def _mount_discovery(app: FastAPI, settings: Settings, result: MountResult) -> N
     # SearchExecutedEvents reach the SQL DB without requiring a live event bus.
     from discovery.defaults.port_stubs import InMemoryEventPublisher
 
-    if isinstance(getattr(bundle, "event_publisher", None), InMemoryEventPublisher) and hasattr(
+    if isinstance(bundle.event_publisher, InMemoryEventPublisher) and hasattr(
         app.state, "library_session_factory"
     ):
         direct = _DirectHistoryPublisher(
@@ -261,10 +272,7 @@ def _mount_discovery(app: FastAPI, settings: Settings, result: MountResult) -> N
     register_search_unavailable_handler(app)
 
     # The paper-detail metadata endpoint (GET /api/papers/{id}) is U2-owned (corpus data).
-    # getattr keeps this resilient if a bundle predates paper_service.
-    app.include_router(
-        build_router(bundle.orchestrator, grounding_hook, getattr(bundle, "paper_service", None))
-    )
+    app.include_router(build_router(bundle.orchestrator, grounding_hook, bundle.paper_service))
     result.mounted.append("discovery")
     log.info(
         "app-shell: discovery mounted (read path = real(opensearch+%s))",
@@ -435,7 +443,7 @@ def _mount_summarization(app: FastAPI, settings: Settings, result: MountResult) 
             database_url=settings.database_url.replace("postgresql+psycopg://", "postgresql://"),
         )
     if not sm_settings.summarization_enabled:
-        result.skipped.append(("summarization", "real path not configured (no S3 bucket)"))
+        result.skip_unconfigured("summarization", "real path not configured (no S3 bucket)")
         log.info("app-shell: summarization real path not configured — skipping mount")
         return
 

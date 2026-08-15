@@ -34,13 +34,13 @@ import argparse
 import logging
 import sys
 import time
-from dataclasses import replace
 
 from docsuri_shared.dtos import SearchRequest, SearchResultPageDTO
 
 from ..adapters.settings import DiscoverySettings
 from ..api import run_search
 from ..domain.models import AuthSession, RequestContext
+from ..eval import recall_at_k
 from ..eval.live_cases import LIVE_CASES
 from ..real_wiring import build_real_orchestrator
 
@@ -62,18 +62,15 @@ class _Contamination(logging.Handler):
         self.msgs.append(record.getMessage())
 
 
-def _build(rerank: bool):
+def _build():
     settings = DiscoverySettings.from_env()
     if not settings.search_enabled:
         raise SystemExit("read path not configured — source .env first")
-    if not rerank:
-        settings = replace(settings, rerank_model_arn=None)
     return build_real_orchestrator(settings)
 
 
-def _ask(bundle, hook, query: str, cap: _Contamination, gap: float) -> tuple[list[str], list[str]]:
+def _ask(bundle, hook, query: str, cap: _Contamination) -> tuple[list[str], list[str]]:
     cap.msgs.clear()
-    time.sleep(gap)
     resp = run_search(
         bundle.orchestrator, hook, SearchRequest(query=query),
         RequestContext(auth_session=AuthSession(user_id="eval"), request_id="eval"),
@@ -88,8 +85,9 @@ def _ask(bundle, hook, query: str, cap: _Contamination, gap: float) -> tuple[lis
     return ids, warns
 
 
-def _rank(ids: list[str], paper_id: str) -> int | None:
-    return next((i for i, p in enumerate(ids, 1) if p == paper_id), None)
+def _rank(ids: list[str], relevant: set[str]) -> int | None:
+    """Display-only: position of the first relevant paper, for the per-case columns."""
+    return next((i for i, p in enumerate(ids, 1) if p in relevant), None)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -110,33 +108,50 @@ def main(argv: list[str] | None = None) -> int:
     from docsuri_ops.grounding import GroundingEnforcementHook
 
     hook = GroundingEnforcementHook()
-    arms = [("ON", _build(True))] + ([("OFF", _build(False))] if args.compare else [])
+    # ONE bundle for both arms. Building a second one would give each arm its own
+    # EmbeddingCache and its own wiring-time index-mapping read, so every query would be
+    # embedded twice — doubling exposure to the embedding throttle this script exists to
+    # detect. The arms differ only in whether a reranker is attached, so swap that instead.
+    bundle = _build()
+    reranker = bundle.orchestrator._reranker
+    arms = ["ON", "OFF"] if args.compare else ["ON"]
+    if args.compare and reranker is None:
+        print("리랭커가 배선되지 않았다 — --compare 는 DOCSURI_RERANK_MODEL_ARN 이 필요하다")
+        return 1
 
-    clean: list[tuple[str, dict[str, int | None]]] = []
-    dirty = 0
+    clean: list[dict[str, float]] = []
+    first_call = True
     for case in LIVE_CASES:
-        paper_id = next(iter(case.relevant))
+        scores: dict[str, float] = {}
         ranks: dict[str, int | None] = {}
         warns: list[str] = []
-        for label, bundle in arms:
-            ids, w = _ask(bundle, hook, case.query, cap, args.gap)
-            ranks[label] = _rank(ids, paper_id)
+        for label in arms:
+            if not first_call:
+                time.sleep(args.gap)   # space calls; nothing to space before the first
+            first_call = False
+            bundle.orchestrator._reranker = reranker if label == "ON" else None
+            ids, w = _ask(bundle, hook, case.query, cap)
+            # recall@k over the whole relevant set — a case with several defensible answers
+            # (which live_cases invites) would be miscounted by a single-target hit test.
+            scores[label] = recall_at_k(ids, case.relevant, args.k)
+            ranks[label] = _rank(ids, case.relevant)
             warns += w
+        bundle.orchestrator._reranker = reranker
         if warns:
-            dirty += 1
             print(f"  오염  {case.query[:56]}\n        ↳ {warns[0][:88]}")
         else:
-            clean.append((case.query, ranks))
-            cols = "  ".join(f"{lb} {str(ranks[lb] or '-'):>3}" for lb, _ in arms)
+            clean.append(scores)
+            cols = "  ".join(f"{lb} {str(ranks[lb] or '-'):>3}" for lb in arms)
             print(f"  {cols}   {case.query[:56]}")
 
+    dirty = len(LIVE_CASES) - len(clean)
     print(f"\n정상 쌍 {len(clean)}건 / 오염 {dirty}건 (오염은 집계 제외)")
     if not clean:
         print("비교 가능한 쌍이 없다 — --gap 을 늘리거나 쿼터 상향이 필요하다")
         return 1
-    for label, _ in arms:
-        hits = sum(1 for _, r in clean if r[label] and r[label] <= args.k)
-        print(f"  {label:<3} recall@{args.k} {hits}/{len(clean)} = {hits / len(clean):.3f}")
+    for label in arms:
+        mean = sum(s[label] for s in clean) / len(clean)
+        print(f"  {label:<3} recall@{args.k} {mean:.3f}  ({len(clean)}건 평균)")
     return 0
 
 

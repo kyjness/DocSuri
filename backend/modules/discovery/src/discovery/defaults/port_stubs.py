@@ -1,5 +1,10 @@
-"""U6 port stubs (MR-3) — TEST/LOCAL ONLY. Real enforcement/cost/observability are U6's
-single authority (INV-1/BR-12). These let U2 + U5 develop before U6 exists.
+"""U6 port defaults (MR-3) — the cost/observability/event path taken when the app-shell does
+not inject a hook. Real cost and observability are U6's single authority (BR-12); these keep a
+search serving when that authority is absent, so they run on the serving path.
+
+The grounding gate is deliberately NOT here. It has no safe default — an always-pass hook would
+serve ungrounded results — so it is required, and its test double lives in
+:mod:`discovery.testing`.
 """
 
 from __future__ import annotations
@@ -7,31 +12,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from docsuri_shared.events import SearchExecutedEvent
-from docsuri_shared.ports import Verdict
-
-
-@dataclass(frozen=True, slots=True)
-class _Decision:
-    """Concrete GroundingDecision (verdict + violations)."""
-
-    verdict: Verdict
-    violations: tuple = ()
-
-
-class StubGroundingHook:
-    """Pass-through grounding by default; set ``verdict='abstain'`` to force the abstain path.
-
-    Stands in for the U6 gateway's GroundingEnforcementHook — but note the orchestrator never
-    calls this; the gateway seam (``discovery.api``) does (INV-1)."""
-
-    def __init__(self, verdict: Verdict = "pass") -> None:
-        self._verdict = verdict
-
-    def enforce(self, candidate, retrieved) -> _Decision:  # noqa: ARG002
-        return _Decision(verdict=self._verdict)
-
-    def run_eval_set(self, eval_set):  # noqa: ARG002 — provisional
-        raise NotImplementedError("eval set is U6/OP owned")
 
 
 @dataclass(frozen=True, slots=True)

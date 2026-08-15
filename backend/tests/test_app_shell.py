@@ -6,7 +6,7 @@ discovery actually MOUNT here; the graceful-skip path is still exercised via an 
 absent module (``test_absent_module_skips_gracefully``).
 
 discovery is real-first (no mock fallback), so it mounts only when the read path is configured.
-The ``_search_configured`` autouse fixture points it at an unreachable endpoint: wiring-time
+The ``search_configured`` fixture points it at an unreachable endpoint: wiring-time
 construction does not touch the network (``space_guard`` treats an unreadable mapping as
 "unverified" and proceeds), so the mount is exercised for real while every request fails closed.
 That is what keeps ``test_discovery_and_accounts_actually_mount`` — the guard against discovery
@@ -32,15 +32,22 @@ _TEST_SETTINGS = Settings(env="test", database_url="sqlite://")
 _DEAD_OPENSEARCH = "http://127.0.0.1:1"
 
 
-@pytest.fixture(autouse=True)
-def _search_configured(monkeypatch) -> None:
-    """Configure discovery's real read path so it mounts. Undone per-test by monkeypatch."""
+@pytest.fixture
+def search_configured(monkeypatch) -> None:
+    """Configure discovery's real read path so it mounts.
+
+    Requested by name rather than autouse: every ``create_app`` in this file would otherwise
+    assemble the real read path (OpenSearch client + embedder + a wiring-time mapping read),
+    and only the discovery tests need it.
+    """
     monkeypatch.setenv("DOCSURI_OPENSEARCH_ENDPOINT", _DEAD_OPENSEARCH)
     monkeypatch.setenv("DOCSURI_EMBEDDING_PROVIDER", "openai")
 
 
-def _client() -> TestClient:
-    return TestClient(create_app(_TEST_SETTINGS))
+def _client(*, raise_server_exceptions: bool = True) -> TestClient:
+    return TestClient(
+        create_app(_TEST_SETTINGS), raise_server_exceptions=raise_server_exceptions
+    )
 
 
 def test_app_boots_and_is_fastapi() -> None:
@@ -70,7 +77,7 @@ def test_openapi_generates() -> None:
     assert schema.json()["info"]["title"] == "DocSuri Backend (modular monolith)"
 
 
-def test_module_registry_complete_and_disjoint() -> None:
+def test_module_registry_complete_and_disjoint(search_configured) -> None:
     # Env-independent: which modules are installed in this checkout varies, but every
     # registered module must land in exactly one bucket (never dropped, never both).
     readyz = _client().get("/readyz").json()
@@ -103,7 +110,7 @@ def test_readyz_fails_when_required_module_is_skipped() -> None:
     assert resp.json()["blocking"] == ["novelty"]
 
 
-def test_discovery_and_accounts_actually_mount() -> None:
+def test_discovery_and_accounts_actually_mount(search_configured) -> None:
     # Regression guard: discovery silently graceful-skipped on develop until it became a
     # declared dependency (pyproject path source). test_module_registry_complete_and_disjoint
     # only checks the registry *set* — which stayed green even while discovery was skipped.
@@ -117,19 +124,19 @@ def test_discovery_and_accounts_actually_mount() -> None:
     assert all(name == "summarization" for name, _ in result.skipped), result.skipped
 
 
-def test_discovery_search_route_is_registered() -> None:
+def test_discovery_search_route_is_registered(search_configured) -> None:
     # The route must EXIST once discovery is configured. With the store unreachable the request
     # fails closed (503, INV-3) rather than fabricating results — the distinction that matters
     # is 503-not-404: 404 would mean the router never mounted. End-to-end happy-path search is
     # covered in discovery's own suite against build_mock_orchestrator; here the app-shell
     # contract is only "configured ⇒ route present, and an outage is retryable, not missing".
-    resp = TestClient(create_app(_TEST_SETTINGS), raise_server_exceptions=False).post(
+    resp = _client(raise_server_exceptions=False).post(
         "/api/search", json={"query": "transformer attention"}
     )
     assert resp.status_code == 503, resp.text
 
 
-def test_search_store_outage_maps_to_fail_closed_503() -> None:
+def test_search_store_outage_maps_to_fail_closed_503(search_configured) -> None:
     # A store outage inside discovery raises SearchUnavailable. Mounted via build_router (not the
     # standalone build_app), the app-shell must map it to a fail-closed, no-leak 503 — otherwise
     # it falls through to the generic Exception→500 handler and a transient outage looks like a
@@ -149,36 +156,55 @@ def test_search_store_outage_maps_to_fail_closed_503() -> None:
     assert resp.json()["requestId"]  # echoes a correlation id, like the 500 handler (errors.py)
 
 
-def test_paper_metadata_route_is_registered() -> None:
+def test_paper_metadata_route_is_registered(search_configured) -> None:
     # GET /api/papers/{id} (paper-detail header metadata, U2-owned corpus data) rides the same
     # discovery router. Same contract as search: present when configured, and a store outage is
     # a fail-closed 503 — NOT the 404 the detail page uses to fall back to the arXiv link-out.
     # Conflating the two would make an outage look like "this paper does not exist".
     # Distinct from /api/papers/{id}/full-text (summarization/U7).
-    resp = TestClient(create_app(_TEST_SETTINGS), raise_server_exceptions=False).get(
-        "/api/papers/2401.00001"
-    )
+    resp = _client(raise_server_exceptions=False).get("/api/papers/2401.00001")
     assert resp.status_code == 503, resp.text
 
 
 def test_discovery_skips_when_unconfigured(monkeypatch) -> None:
-    # The other side of the real-first contract: no read path configured ⇒ discovery does not
-    # mount at all, and /api/search 404s instead of answering 200 with fabricated cards. The
-    # mock fallback this replaces was indistinguishable from a real answer at the HTTP layer.
+    # The other side of the real-first contract: unconfigured ⇒ no mount, and /api/search 404s.
     monkeypatch.delenv("DOCSURI_OPENSEARCH_ENDPOINT", raising=False)
     monkeypatch.delenv("DOCSURI_BEDROCK_MODEL_ID", raising=False)
     monkeypatch.setenv("DOCSURI_EMBEDDING_PROVIDER", "bedrock")
 
     app = create_app(_TEST_SETTINGS)
+    client = TestClient(app)
     skipped = dict(app.state.mount_result.skipped)
 
     assert "discovery" not in app.state.mount_result.mounted
     assert "not configured" in skipped["discovery"]
-    assert TestClient(app).post("/api/search", json={"query": "x"}).status_code == 404
+    assert client.post("/api/search", json={"query": "x"}).status_code == 404
     # ...and readiness stays green: an unconfigured module is legitimately absent, so /readyz
-    # must not pin the whole process at 503 (health._required_modules gates on the same env).
-    readyz = TestClient(app).get("/readyz")
+    # must not pin the whole process at 503.
+    readyz = client.get("/readyz")
     assert readyz.status_code == 200
+    assert readyz.json()["blocking"] == []
+
+
+def test_partial_search_config_does_not_pin_readyz_at_503(monkeypatch) -> None:
+    """An endpoint with no embedder is *unconfigured*, not broken — readiness must say so.
+
+    Regression guard for a gate the readiness check used to re-derive: it keyed on
+    DOCSURI_OPENSEARCH_ENDPOINT alone while the real gate is
+    ``endpoint AND (bedrock model id OR provider == "openai")``. Since the provider defaults
+    to bedrock, setting only the endpoint made discovery skip while readiness still demanded
+    it — a permanent 503 no amount of restarting would clear. The two conditions now come
+    from one place (the mount decision itself), so they cannot drift apart again.
+    """
+    monkeypatch.setenv("DOCSURI_OPENSEARCH_ENDPOINT", _DEAD_OPENSEARCH)
+    monkeypatch.setenv("DOCSURI_EMBEDDING_PROVIDER", "bedrock")
+    monkeypatch.delenv("DOCSURI_BEDROCK_MODEL_ID", raising=False)
+
+    app = create_app(_TEST_SETTINGS)
+    readyz = TestClient(app).get("/readyz")
+
+    assert "discovery" not in app.state.mount_result.mounted  # the gate did skip it
+    assert readyz.status_code == 200, readyz.text
     assert readyz.json()["blocking"] == []
 
 
@@ -194,7 +220,7 @@ def test_absent_module_skips_gracefully_not_fatal() -> None:
     assert [name for name, _ in result.skipped] == ["ghost"]
 
 
-def test_mount_modules_never_raises_and_records_reasons() -> None:
+def test_mount_modules_never_raises_and_records_reasons(search_configured) -> None:
     app = create_app(_TEST_SETTINGS)
     result: MountResult = mount_modules(app, _TEST_SETTINGS)
     assert isinstance(result, MountResult)
@@ -247,7 +273,7 @@ def test_u6_gateway_security_headers_and_request_id_live() -> None:
     assert resp.headers.get("X-Frame-Options") == "SAMEORIGIN"
 
 
-def test_u6_real_grounding_hook_is_wired_not_stub() -> None:
+def test_u6_real_grounding_hook_is_wired_not_stub(search_configured) -> None:
     # _mount_discovery injects the real docsuri-ops GroundingEnforcementHook (INV-1 single
     # authority), replacing the always-pass StubGroundingHook.
     from docsuri_ops.grounding import GroundingEnforcementHook

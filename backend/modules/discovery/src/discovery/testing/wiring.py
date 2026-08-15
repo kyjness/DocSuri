@@ -10,7 +10,6 @@ from ..defaults.port_stubs import (
     InMemoryEventPublisher,
     NoopObservabilityHub,
     StubCostGuard,
-    StubGroundingHook,
 )
 from ..domain.assembler import ResultAssembler
 from ..domain.expander import QueryUnderstandingExpander
@@ -26,6 +25,7 @@ from .adapters import (
     MockPaperLookupAdapter,
     MockVectorStoreAdapter,
 )
+from .grounding import StubGroundingHook
 
 
 @dataclass(frozen=True, slots=True)
