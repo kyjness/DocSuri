@@ -179,7 +179,10 @@ def main(argv: list[str] | None = None) -> int:
             if attempt < args.retries:
                 # Name the cause on every retry, not only on the final exclusion — the watched
                 # loggers don't propagate, so this line is the only place the operator sees it.
-                print(f"  재시도 {attempt + 1}/{args.retries}  {case.query[:40]}  ↳ {last_warn[:60]}")
+                print(
+                    f"  재시도 {attempt + 1}/{args.retries}  "
+                    f"{case.query[:40]}  ↳ {last_warn[:60]}"
+                )
         if done is None:
             stuck.append((case.query, last_warn))
             print(f"  오염  {case.query[:56]}\n        ↳ {last_warn[:88]}")
