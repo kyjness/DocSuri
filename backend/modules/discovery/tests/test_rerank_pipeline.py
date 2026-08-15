@@ -6,6 +6,7 @@ Driven through the gateway seam ``run_search`` like ``test_orchestrator`` (INV-1
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 
 from docsuri_shared.dtos import DegradedResultDTO, SearchRequest, SearchResultPageDTO
@@ -81,15 +82,22 @@ def test_mock_rerank_returns_valid_page() -> None:
     assert resp.root.cards[0].relevance == 1
 
 
-def test_rerank_failure_is_fail_soft_baseline() -> None:
+def test_rerank_failure_is_fail_soft_baseline(caplog) -> None:
     baseline = build_mock_orchestrator()
     base_ids = _ids(baseline)
 
     failing = build_mock_orchestrator(reranker=FailingRerankAdapter())
-    resp = _cards(failing.orchestrator, failing.grounding_hook)
+    with caplog.at_level(logging.WARNING, logger="discovery.service.orchestrator"):
+        resp = _cards(failing.orchestrator, failing.grounding_hook)
     # Search still succeeds and keeps the baseline order — rerank never blocks (BR-5).
     assert isinstance(resp.root, SearchResultPageDTO)
     assert [c.arxivId for c in resp.root.cards] == base_ids
+    # ...but it must not be SILENT. A rerank that always fails serves the same 200 + baseline
+    # order as a rerank that is switched off, so without this line "wired but throttled" is
+    # indistinguishable from "not wired". Throttling makes that a routine state, not a rare one.
+    assert any(
+        "rerank failed, serving baseline" in r.message for r in caplog.records
+    ), [r.message for r in caplog.records]
 
 
 def test_embedding_outage_skips_rerank_not_just_fail_soft() -> None:

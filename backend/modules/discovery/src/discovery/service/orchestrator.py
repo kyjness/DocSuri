@@ -14,6 +14,7 @@ fallback (degraded); index failure → ``SearchUnavailable`` (fail-closed, INV-3
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -53,6 +54,8 @@ from ..ports.search_ports import (
     RerankAdapter,
     SearchUnavailable,
 )
+
+_log = logging.getLogger(__name__)
 
 # Generic, non-technical messages (SEC-9/SEC-15 — no internal detail).
 _VALIDATION_MESSAGE = "Your search could not be processed. Please revise and try again."
@@ -256,7 +259,17 @@ class SearchOrchestrationService:
         try:
             scores = self._reranker.rerank(query, documents)
             reranked = apply_rerank(candidates.candidates, scores, width)
-        except Exception:  # noqa: BLE001 — best-effort: keep baseline order, never block search
+        except Exception as exc:  # noqa: BLE001 — best-effort: keep baseline order, never block
+            # Log as well as emit. The metric alone made this invisible outside a dashboard, and
+            # a rerank that always fails is indistinguishable from a rerank that is switched off:
+            # both serve baseline RRF with a 200. Throttling makes that a routine outcome, not a
+            # rare one — the per-account request-rate quota trips on ordinary bursts.
+            _log.warning(
+                "discovery: rerank failed, serving baseline RRF order (width=%d, scope=%s): %s",
+                width,
+                scope.value,
+                exc,
+            )
             self._emit_rerank_metric(0.0, "failed", scope)
             return candidates
         self._emit_rerank_metric(1.0, "applied", scope)

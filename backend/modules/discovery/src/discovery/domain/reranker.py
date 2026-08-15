@@ -14,13 +14,21 @@ from docsuri_shared.vector_spec import IndexRecord
 
 from .models import Candidate, SearchScope
 
-# Rerank breadth M per scope: the top-M slice of the fused pool sent to the cross-encoder. Start
-# conservative — cross-encoder latency is ~linear in M and LITE is the P50<3s hot path. M is tuned
-# up only once a quantitative signal exists (click logs or a labeled set); phase 7 ships these
-# starting values with functional + qualitative validation only. M ≥ top-N (20) by construction so
-# the reranked head fully covers the displayed page; the un-reranked tail never surfaces.
-RERANK_TOP_M_LITE = 30
-RERANK_TOP_M_FULL = 50
+# Rerank breadth M per scope: the top-M slice of the fused pool sent to the cross-encoder.
+#
+# M is NOT just a rerank knob — ``apply_rerank`` drops the tail, so M is also the size of the
+# candidate pool the ranker ever sees. Turning rerank on therefore NARROWS the pool: fusion
+# delivers ~150-300 papers (two 150-wide legs, PaperId-deduped) and the old 30/50 threw most of
+# them away, capping results below the depth pagination needs. These values restore that loss.
+#
+# They are a floor, not an optimum. The original "tune up once a quantitative signal exists"
+# gate still stands for finding the BEST M — the golden set is a 6-record synthetic corpus with
+# bag-of-keywords embeddings (see eval/golden_set.py), which cannot rank a 119k-paper index.
+# Measured 2026-08-15 against Bedrock Cohere Rerank v3.5 (Tokyo): latency is flat in M
+# (1.1-1.9s from 30 to 150 documents, 211KB payload), so the widening is essentially free on
+# the P50<3s LITE path. The binding constraint is the per-account request-rate quota, not M.
+RERANK_TOP_M_LITE = 100
+RERANK_TOP_M_FULL = 150
 
 
 def rerank_width(scope: SearchScope) -> int:
