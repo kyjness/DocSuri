@@ -42,6 +42,10 @@ def search_configured(monkeypatch) -> None:
     """
     monkeypatch.setenv("DOCSURI_OPENSEARCH_ENDPOINT", _DEAD_OPENSEARCH)
     monkeypatch.setenv("DOCSURI_EMBEDDING_PROVIDER", "openai")
+    # Hermetic regardless of a sourced .env: a region would make the OpenSearch factory resolve
+    # AWS credentials for SigV4, and a rerank ARN would build a live Bedrock client.
+    monkeypatch.delenv("DOCSURI_AWS_REGION", raising=False)
+    monkeypatch.delenv("DOCSURI_RERANK_MODEL_ARN", raising=False)
 
 
 def _client(*, raise_server_exceptions: bool = True) -> TestClient:
@@ -125,15 +129,18 @@ def test_discovery_and_accounts_actually_mount(search_configured) -> None:
 
 
 def test_discovery_search_route_is_registered(search_configured) -> None:
-    # The route must EXIST once discovery is configured. With the store unreachable the request
-    # fails closed (503, INV-3) rather than fabricating results — the distinction that matters
-    # is 503-not-404: 404 would mean the router never mounted. End-to-end happy-path search is
-    # covered in discovery's own suite against build_mock_orchestrator; here the app-shell
-    # contract is only "configured ⇒ route present, and an outage is retryable, not missing".
-    resp = _client(raise_server_exceptions=False).post(
-        "/api/search", json={"query": "transformer attention"}
-    )
-    assert resp.status_code == 503, resp.text
+    # The route must EXIST once discovery is configured — the app-shell contract is only
+    # "configured ⇒ router mounted". Asserted on the route table, NOT by POSTing a query: a real
+    # request runs the expander, which embeds BEFORE retrieval, so the OpenAI embedder made a
+    # live HTTPS call (billed with a sourced .env; a 4s connect wait in egress-less CI) before
+    # the dead endpoint ever produced its 503. The outage→503 mapping has its own test below
+    # with the failure injected inside the orchestrator.
+    app = create_app(_TEST_SETTINGS)
+    assert "discovery" in app.state.mount_result.mounted, app.state.mount_result.skipped
+    # ``app.routes`` holds opaque _IncludedRouter nodes in this FastAPI version; the OpenAPI
+    # document is the version-stable view of the effective path table.
+    paths = set(app.openapi()["paths"])
+    assert "/api/search" in paths, sorted(paths)
 
 
 def test_search_store_outage_maps_to_fail_closed_503(search_configured) -> None:
@@ -206,6 +213,27 @@ def test_partial_search_config_does_not_pin_readyz_at_503(monkeypatch) -> None:
     assert "discovery" not in app.state.mount_result.mounted  # the gate did skip it
     assert readyz.status_code == 200, readyz.text
     assert readyz.json()["blocking"] == []
+
+
+@pytest.mark.parametrize(
+    ("var", "value"),
+    [
+        ("DOCSURI_LLM_PROVIDER", "bedrok"),      # summarization — provider typo
+        ("DOCSURI_EMBEDDING_PROVIDER", "bedrok"),  # discovery — provider typo
+        ("DOCSURI_SUMMARY_TTL", "one-day"),       # summarization — malformed int
+    ],
+)
+def test_invalid_configuration_refuses_to_boot(monkeypatch, var, value) -> None:
+    """A misspelled provider or a malformed limit is not a broken module — it is the operator's
+    config, and mount_modules must NOT contain it as a "mount error". Contained, it boots a
+    process that silently lacks the module (or, if the module is required, pins readyz at 503)
+    with the offending variable named nowhere. Failing the boot puts the variable in the trace.
+    """
+    from docsuri_shared.env import EnvConfigError
+
+    monkeypatch.setenv(var, value)
+    with pytest.raises(EnvConfigError, match=var):
+        create_app(_TEST_SETTINGS)
 
 
 def test_absent_module_skips_gracefully_not_fatal() -> None:

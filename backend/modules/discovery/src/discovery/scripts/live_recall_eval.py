@@ -42,7 +42,7 @@ import logging
 import sys
 import time
 
-from docsuri_shared.dtos import SearchRequest, SearchResultPageDTO
+from docsuri_shared.dtos import AbstainDTO, DegradedResultDTO, SearchRequest
 
 from ..adapters.settings import DiscoverySettings
 from ..api import run_search
@@ -87,8 +87,14 @@ def _ask(bundle, hook, query: str, cap: _Contamination) -> tuple[list[str], list
     # genuine miss. The degrade is recorded as contamination instead.
     ids = [c.arxivId.split("v")[0] for c in getattr(root, "cards", [])]
     warns = list(cap.msgs)
-    if not isinstance(root, SearchResultPageDTO):
-        warns.append(f"degraded to {getattr(getattr(root, 'meta', None), 'mode', '?')}")
+    if isinstance(root, DegradedResultDTO):
+        warns.append(f"degraded to {root.mode.value}")  # ``mode`` is top-level on this DTO
+    elif not isinstance(root, AbstainDTO) and not ids:
+        # Anything else without cards (validation error, unknown shape) is not a measurement.
+        # An ABSTAIN is: the grounding gate judged the results unusable, and that IS the read
+        # path's answer for this query — score it as a miss, don't retry it into the exclusion
+        # bin, or recall is inflated on exactly the queries that matter.
+        warns.append(f"non-page response {type(root).__name__}")
     return ids, warns
 
 
@@ -139,6 +145,12 @@ def main(argv: list[str] | None = None) -> int:
             return
         time.sleep(args.gap + extra)
 
+    # Only the arm that reaches Bedrock needs spacing. ON runs first in each pair and pays the
+    # embedding + rerank calls; OFF then reuses the shared EmbeddingCache and has no reranker,
+    # so it touches only OpenSearch — sleeping before it protected nothing and doubled the run.
+    def needs_gap(label: str) -> bool:
+        return label == arms[0]
+
     for case in LIVE_CASES:
         done: tuple[dict[str, float], dict[str, int | None]] | None = None
         last_warn = ""
@@ -150,7 +162,8 @@ def main(argv: list[str] | None = None) -> int:
             ranks: dict[str, int | None] = {}
             warns: list[str] = []
             for label in arms:
-                pace(backoff if label == arms[0] else 0.0)
+                if needs_gap(label):
+                    pace(backoff)
                 bundle.orchestrator._reranker = reranker if label == "ON" else None
                 ids, w = _ask(bundle, hook, case.query, cap)
                 # recall@k over the whole relevant set — a case with several defensible answers
@@ -164,7 +177,9 @@ def main(argv: list[str] | None = None) -> int:
                 break
             last_warn = warns[0]
             if attempt < args.retries:
-                print(f"  재시도 {attempt + 1}/{args.retries}  {case.query[:48]}")
+                # Name the cause on every retry, not only on the final exclusion — the watched
+                # loggers don't propagate, so this line is the only place the operator sees it.
+                print(f"  재시도 {attempt + 1}/{args.retries}  {case.query[:40]}  ↳ {last_warn[:60]}")
         if done is None:
             stuck.append((case.query, last_warn))
             print(f"  오염  {case.query[:56]}\n        ↳ {last_warn[:88]}")

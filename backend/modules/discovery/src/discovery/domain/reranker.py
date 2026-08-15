@@ -27,13 +27,18 @@ from .models import Candidate, SearchScope
 # — contaminated ones retried rather than dropped): recall@10 is IDENTICAL with rerank on and off
 # (0.950 both). Rank of the first relevant paper moves more often than it doesn't, and moves the
 # right way ~2:1 — chain-of-thought 5→1, GPT-3 17→12, RAG 4→2, BERT 7→5, RLHF 3→2, 한국어 정렬
-# 4→2, against ViT 4→5, LoRA 1→2, U-Net 2→4. So M=100/150 is safe on quality and rerank earns
-# its place on rank, but this is still not evidence that 100/150 beats some other M.
-# Measured 2026-08-15 against Bedrock Cohere Rerank v3.5 (Tokyo): latency is flat in M
-# (1.1-1.9s from 30 to 150 documents, 211KB payload), so the widening is essentially free on
-# the P50<3s LITE path. The binding constraint is the per-account request-rate quota, not M.
-RERANK_TOP_M_LITE = 100
-RERANK_TOP_M_FULL = 150
+# 4→2, against ViT 4→5, LoRA 1→2, U-Net 2→4. So rerank earns its place on rank; this is still
+# not evidence that any particular M beats another.
+#
+# Latency is flat in M — measured 2026-08-15 against Bedrock Cohere Rerank v3.5 (Tokyo):
+# 1.1-1.9s from 30 to 150 documents (211KB payload). COST IS NOT: Bedrock bills Cohere Rerank per
+# search unit = one query × up to 100 documents, and a document over ~500 tokens is split into
+# chunks that each count. So M>100 is ≥2 units on every query, and M=100 tips to 2 whenever one
+# title+abstract runs long. 80/100 keeps every query inside one unit with headroom on the hot
+# path; raising M is a purchase, not a free widening. The other binding constraint is the
+# per-account request-rate quota, which does not depend on M at all.
+RERANK_TOP_M_LITE = 80
+RERANK_TOP_M_FULL = 100
 
 # Width of the score band the un-reranked tail is compressed into, immediately below the lowest
 # reranked score. Small enough that the tail never collides with the reranked range; the exact

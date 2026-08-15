@@ -16,6 +16,7 @@ import json
 
 import pytest
 
+from backend.modules.evidence.adapters._llm_shared import IMAGE_BOUNDARY_BANNER
 from backend.modules.evidence.adapters.llm_bedrock import BedrockDecider, BedrockExtractor
 from backend.modules.evidence.ports.llm import (
     LlmUnavailable,
@@ -54,9 +55,16 @@ def _text_response(text: str):
 
 
 
+_RATES = {"input_usd_per_mtok": 3.0, "output_usd_per_mtok": 15.0}
+
+
 def _decider(response=None, error=None) -> tuple[BedrockDecider, FakeBedrock]:
     client = FakeBedrock(response, error)
-    return BedrockDecider(model="anthropic.x", client=client), client
+    return BedrockDecider(model="anthropic.x", client=client, **_RATES), client
+
+
+def _extractor(response) -> BedrockExtractor:
+    return BedrockExtractor(model="anthropic.x", client=FakeBedrock(response), **_RATES)
 
 
 def test_decide_returns_a_tool_call():
@@ -137,9 +145,13 @@ def test_images_are_attached_after_the_tool_result_section():
 
     decider.decide(observation(recent_results=(view,)), ())
 
-    last = client.calls[0]["messages"][-1]
-    assert last["role"] == "user"
-    assert [block["type"] for block in last["content"]] == ["text", "image"]
+    messages = client.calls[0]["messages"]
+    # ONE user turn: observation text, then the boundary banner, then the image. A second
+    # consecutive user message would break Anthropic's role alternation exactly when the loop
+    # has a figure to look at.
+    assert [m["role"] for m in messages] == ["user"]
+    assert [block["type"] for block in messages[0]["content"]] == ["text", "text", "image"]
+    assert IMAGE_BOUNDARY_BANNER in messages[0]["content"][1]["text"]
 
 
 # --- extract -----------------------------------------------------------------
@@ -148,21 +160,34 @@ def test_images_are_attached_after_the_tool_result_section():
 
 def test_extractor_returns_raw_items_for_the_gate_to_judge():
     payload = '{"items": [{"statement": "s", "supporting": [], "conflicting": []}]}'
-    extractor = BedrockExtractor(model="anthropic.x", client=FakeBedrock(_text_response(payload)))
+    extractor = _extractor(_text_response(payload))
 
     assert len(extractor.extract(topic="q", focus="", papers=(paper_handle(doc_model()),))) == 1
 
 
 @pytest.mark.parametrize("payload", ["", "not json", '{"items": "nope"}', "{}"])
 def test_unparseable_extraction_yields_no_items_instead_of_raising(payload):
-    extractor = BedrockExtractor(model="anthropic.x", client=FakeBedrock(_text_response(payload)))
+    extractor = _extractor(_text_response(payload))
 
     assert extractor.extract(topic="q", focus="", papers=()) == []
+
+
+def test_extraction_reads_every_text_block():
+    """서문 블록 뒤에 JSON 블록이 오면 첫 블록만 읽는 파서는 조용히 []를 낸다."""
+    response = {
+        "content": [
+            {"type": "text", "text": "다음은 추출 결과입니다."},
+            {"type": "text", "text": '{"items": [{"statement": "s"}]}'},
+        ],
+        "usage": {},
+    }
+
+    assert len(_extractor(response).extract(topic="q", focus="", papers=())) == 1
 
 
 def test_extraction_tolerates_a_code_fenced_object():
     """Anthropic에는 OpenAI의 json_object 강제 모드가 없어 펜스가 섞일 수 있다."""
     fenced = '```json\n{"items": [{"statement": "s"}]}\n```'
-    extractor = BedrockExtractor(model="anthropic.x", client=FakeBedrock(_text_response(fenced)))
+    extractor = _extractor(_text_response(fenced))
 
     assert len(extractor.extract(topic="q", focus="", papers=())) == 1

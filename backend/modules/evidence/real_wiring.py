@@ -129,14 +129,23 @@ def build_evidence_runner(
         "output_usd_per_mtok": settings.output_usd_per_mtok,
     }
     if settings.llm_provider == 'bedrock':
+        import boto3
+        from botocore.config import Config
+
         from .adapters.llm_bedrock import BedrockDecider, BedrockExtractor
 
-        decider = BedrockDecider(
-            model=settings.model_id, region_name=settings.region_name, **rates
+        # ONE client for both adapters, with botocore's own retries turned off. The failure
+        # contract belongs to SourceBreaker (retry once, then trip) — botocore's default legacy
+        # mode would retry ~5x underneath it, so a sustained outage cost ~10 wire attempts per
+        # turn and the breaker saw one failure per ten, never opening. Timeouts bound a hung
+        # turn; the loop budget, not the transport, decides how long a job may run.
+        client = boto3.client(
+            "bedrock-runtime",
+            region_name=settings.region_name,
+            config=Config(connect_timeout=5, read_timeout=90, retries={"max_attempts": 1}),
         )
-        extractor = BedrockExtractor(
-            model=settings.model_id, region_name=settings.region_name, **rates
-        )
+        decider = BedrockDecider(model=settings.model_id, client=client, **rates)
+        extractor = BedrockExtractor(model=settings.model_id, client=client, **rates)
     else:
         from .adapters.llm_openai import OpenAiDecider, OpenAiExtractor
 

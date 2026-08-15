@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from docsuri_shared.env import env_choice, env_flag, env_float, env_int
+from docsuri_shared.env import EnvConfigError, env_choice, env_flag, env_float, env_int
 
 
 def test_env_flag_defaults_off_and_fails_closed(monkeypatch) -> None:
@@ -31,10 +31,12 @@ def test_env_int_and_float_parse_or_default(monkeypatch) -> None:
 
 def test_malformed_numeric_value_raises_loudly(monkeypatch) -> None:
     # 잘못된 한도 값으로 조용히 기동하지 않는다 — composition root에서 즉시 실패.
+    # 타입이 EnvConfigError인 것이 계약이다 — composition root가 "설정 오류"만 골라 재던지고
+    # 나머지 예외는 마운트 실패로 담아두려면 plain ValueError와 구별돼야 한다. 변수명도 포함.
     monkeypatch.setenv("X_NUM", "abc")
-    with pytest.raises(ValueError):
+    with pytest.raises(EnvConfigError, match="X_NUM"):
         env_int("X_NUM", 7)
-    with pytest.raises(ValueError):
+    with pytest.raises(EnvConfigError, match="X_NUM"):
         env_float("X_NUM", 0.5)
 
 
@@ -51,5 +53,5 @@ def test_env_choice_names_the_typo_instead_of_falling_through(monkeypatch) -> No
     # 이 헬퍼가 존재하는 이유: 전에는 오타가 비교문의 else 가지로 떨어져, 프로바이더를
     # 잘못 고른 사실이 어디에도 안 남고 "미구성"으로만 보였다.
     monkeypatch.setenv("X_PROVIDER", "bedrok")
-    with pytest.raises(ValueError, match="bedrok"):
+    with pytest.raises(EnvConfigError, match="bedrok"):
         env_choice("X_PROVIDER", ("bedrock", "openai"), "bedrock")

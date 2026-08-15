@@ -16,9 +16,21 @@ from __future__ import annotations
 import os
 from collections.abc import Collection
 
-__all__ = ["env_choice", "env_flag", "env_float", "env_int"]
+__all__ = ["EnvConfigError", "env_choice", "env_flag", "env_float", "env_int"]
 
 _TRUTHY = ("1", "true", "yes")
+
+
+class EnvConfigError(ValueError):
+    """A named environment variable holds a value this process cannot run with.
+
+    Distinct from a plain ``ValueError`` so composition roots can tell "the operator wrote the
+    config wrong" apart from "a dependency failed while mounting". The former must stop the
+    process — a wrong setting that gets swallowed into a "mount error" or a WARNING runs half a
+    system on a config nobody meant, with the offending variable named nowhere. The latter is
+    what defensive per-module error handling exists for. Catch-alls that contain mount failures
+    re-raise this type.
+    """
 
 
 def env_flag(name: str, default: bool = False) -> bool:
@@ -30,12 +42,22 @@ def env_flag(name: str, default: bool = False) -> bool:
 
 def env_int(name: str, default: int) -> int:
     raw = os.environ.get(name)
-    return int(raw) if raw else default
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise EnvConfigError(f"{name}={raw!r} is not an integer") from exc
 
 
 def env_float(name: str, default: float) -> float:
     raw = os.environ.get(name)
-    return float(raw) if raw else default
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise EnvConfigError(f"{name}={raw!r} is not a number") from exc
 
 
 def env_choice(name: str, allowed: Collection[str], default: str) -> str:
@@ -55,5 +77,5 @@ def env_choice(name: str, allowed: Collection[str], default: str) -> str:
     value = raw.strip().lower()
     if value not in allowed:
         expected = ", ".join(sorted(allowed))
-        raise ValueError(f"{name}={raw.strip()!r} is not one of: {expected}")
+        raise EnvConfigError(f"{name}={raw.strip()!r} is not one of: {expected}")
     return value

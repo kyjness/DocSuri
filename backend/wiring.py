@@ -24,6 +24,7 @@ from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
+from docsuri_shared.env import EnvConfigError
 from fastapi import FastAPI
 
 from .config import Settings
@@ -105,8 +106,9 @@ class MountResult:
 
 
 def mount_modules(app: FastAPI, settings: Settings, integrations=None) -> MountResult:
-    """Mount every available module. Never raises — a missing or broken module degrades to
-    a skip so the rest of the backend still serves.
+    """Mount every available module. A missing or broken module degrades to a skip so the
+    rest of the backend still serves. The ONE thing that does raise is invalid configuration
+    (``EnvConfigError``) — see below.
 
     ``integrations`` defaults to the real registry; tests inject a guaranteed-absent
     integration to exercise the skip path without depending on what's installed.
@@ -119,6 +121,13 @@ def mount_modules(app: FastAPI, settings: Settings, integrations=None) -> MountR
         except ModuleNotFoundError as exc:
             result.skipped.append((name, f"not present ({exc.name})"))
             log.info("app-shell: %s module not present yet — skipping mount", name)
+        except EnvConfigError:
+            # NOT contained. A misspelled provider or a malformed limit is the operator's config,
+            # not a broken module. Recording it as a "mount error" boots a process that silently
+            # lacks the module — or, for a required one, pins readyz at 503 with the offending
+            # variable named nowhere. Fail the boot with the variable in the traceback.
+            log.error("app-shell: %s has invalid configuration — refusing to start", name)
+            raise
         except Exception as exc:  # defensive: one broken module must not sink the shell
             result.skipped.append((name, f"mount error: {exc!r}"))
             log.warning("app-shell: failed to mount %s: %r", name, exc)
