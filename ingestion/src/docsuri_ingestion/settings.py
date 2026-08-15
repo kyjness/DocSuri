@@ -83,11 +83,11 @@ class IngestionSettings(BaseModel):
     embed_region: str | None = Field(default=None, alias="DOCSURI_EMBED_REGION")
     # NOTE: there is no writer-side embedding-provider switch. Bedrock/Cohere is the only
     # embedding path (U2 reads the same one), so writer and reader cannot resolve to different
-    # models. The switch used to exist for the solo-local OpenAI path and was the sharpest edge
-    # in this file: both providers are 1024-dimensional, so a split passed every dimension check
-    # and only surfaced as semantically wrong neighbours — after a full corpus build. The index
+    # models. A provider switch used to live here and was the sharpest edge in this file: the
+    # two providers were both 1024-dimensional, so a split passed every dimension check and
+    # surfaced only as semantically wrong neighbours — after a full corpus build. The index
     # embedding manifest (`vector_spec`) still records provider/model/dimensions, because a
-    # MODEL change within Bedrock splits the space just as badly.
+    # MODEL change alone splits the space just as badly (Cohere v3 and v4 are both 1024-dim).
     # B3 fast full-re-parse (raw cache + bulk PDF prime + offline re-parse; see reparse.py /
     # raw_backfill.py / runbook). Default OFF → the live fetch path stays byte-identical.
     raw_cache_mode: Literal["off", "prefer", "only"] = Field(

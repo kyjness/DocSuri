@@ -185,7 +185,7 @@ novelty 도메인과 무관한 부품인데 novelty 안에 있다. u7에도 같�
 
 ## ③ 유닛 리뷰 이관 이슈
 
-로컬 이관 검증 중 발견 (solo-local-migration.md §6):
+로컬 이관 검증 중 발견 ([solo-local-migration.md](solo-local-migration.md)):
 
 - refiner legacy `.txt` 경로 — 개행 없는 정규화 전문에서 저작권 패턴 매칭 시 문서 전체가 제거됨 (u7)
 - `tests/test_pbt.py::test_pbt_response_to_dict_sec9_all_states` hypothesis 실패 — 이관 이전부터 존재 (u7)

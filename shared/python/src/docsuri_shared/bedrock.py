@@ -60,9 +60,9 @@ def invoke_model(client: Any, model_id: str, body: dict[str, Any]) -> dict[str, 
 
 
 def tool_schema(name: str, description: str, parameters: dict[str, Any]) -> dict[str, Any]:
-    """Anthropic tool declaration. Note ``input_schema`` — OpenAI's equivalent key is
-    ``parameters`` nested under ``function``, which is why this shape belongs to the provider
-    and not to the port."""
+    """Anthropic tool declaration. The key is ``input_schema`` and the spec sits at the top
+    level; other vendors nest an equivalently-shaped object under a different key. That is why
+    this shape belongs to the provider adapter and never to the port."""
     return {"name": name, "description": description, "input_schema": parameters}
 
 

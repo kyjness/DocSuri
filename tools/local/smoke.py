@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Local-readiness smoke — walk the non-agent surface in-process against local infra.
 
-The solo-local migration only E2E-verified search/papers/summary (solo-local-migration.md §6);
+The 2026-07 local migration only E2E-verified search/papers/summary;
 everything else was left un-exercised, so gaps (a feature flag left off, a real_wiring adapter
 never switched off Bedrock, a mock read path) only surfaced when stumbled on by eye. This walks
 each non-agent module's representative flow ONCE, against the real adapters + local stores

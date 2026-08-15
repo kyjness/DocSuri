@@ -14,7 +14,7 @@ from docsuri_shared.env import env_float as _env_float
 from docsuri_shared.env import env_int as _env_int
 
 # 모델과 단가는 함께 움직인다 — 셋을 나란히 둔다. 모델만 바꾸고 단가를 두면 예산 대장이
-# 조용히 어긋난다(gpt-4o-mini 단가를 Sonnet에 쓰던 시절 20배 과소계상된 적이 있다).
+# 조용히 어긋난다 — 싼 모델의 단가를 20배 비싼 모델에 그대로 쓴 적이 있다.
 DEFAULT_MODEL = 'global.anthropic.claude-sonnet-4-6'
 DEFAULT_INPUT_USD_PER_MTOK = 3.0
 DEFAULT_OUTPUT_USD_PER_MTOK = 15.0
