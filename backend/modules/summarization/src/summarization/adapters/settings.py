@@ -8,6 +8,7 @@ required deps (Bedrock model ids + S3 bucket) are configured — otherwise it sk
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 
 from docsuri_shared.env import env_flag, env_int
@@ -19,13 +20,33 @@ from docsuri_shared.env import env_flag, env_int
 # profiles; both overridable via DOCSURI_SUMMARY_MODEL_ID / DOCSURI_TRANSLATE_MODEL_ID.
 DEFAULT_SUMMARY_MODEL = "global.anthropic.claude-sonnet-4-6"
 DEFAULT_TRANSLATE_MODEL = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
-# Cache-key dimension: cached summaries are keyed by it, so it must change whenever the output
-# distribution changes. KNOWN GAP: it is a hand-maintained constant, not derived from the model
-# ids above, so overriding DOCSURI_SUMMARY_MODEL_ID / DOCSURI_TRANSLATE_MODEL_ID does NOT rotate
-# the key and the cache keeps serving the previous model's output. Deriving it would be correct
-# but invalidates every cached summary at once, so it is a deliberate operational decision
-# rather than a code cleanup — bump this string by hand when the models change.
-MODEL_VER = "sonnet46-haiku45"
+
+
+def model_ver(summary_model_id: str, translate_model_id: str) -> str:
+    """The cache-key dimension, DERIVED from the model ids actually in use.
+
+    Cached summaries live at a path containing this string, and a read that finds the path
+    skips the LLM entirely. So it has to change whenever the output distribution changes —
+    otherwise pointing DOCSURI_SUMMARY_MODEL_ID at a new model regenerates nothing and every
+    already-summarised paper keeps serving the OLD model's text, with no error and no log line
+    (it is an ordinary cache hit).
+
+    It used to be a hand-maintained constant, which meant the rotation depended on someone
+    remembering. Deriving it removes that: any change to either id — model, version, or
+    inference-profile prefix — produces a different path by construction.
+
+    The ids are slugged rather than embedded raw so the path stays readable and free of the
+    ``.``/``:`` that Bedrock profile ids carry. The slug is total (it drops nothing that
+    distinguishes two ids), so it cannot collapse two models onto one key.
+    """
+    return f"{_slug(summary_model_id)}+{_slug(translate_model_id)}"
+
+
+def _slug(model_id: str) -> str:
+    # ``global.anthropic.claude-sonnet-4-6`` → ``sonnet-4-6``. Only the vendor/profile prefix is
+    # dropped; everything that identifies the model itself survives.
+    tail = model_id.rsplit(".", 1)[-1].removeprefix("claude-")
+    return re.sub(r"[^a-z0-9]+", "-", tail.lower()).strip("-")
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,17 +100,19 @@ class SummarizationSettings:
 
     @classmethod
     def from_env(cls) -> SummarizationSettings:
+        summary_model_id = os.environ.get("DOCSURI_SUMMARY_MODEL_ID", DEFAULT_SUMMARY_MODEL)
+        translate_model_id = os.environ.get(
+            "DOCSURI_TRANSLATE_MODEL_ID", DEFAULT_TRANSLATE_MODEL
+        )
         return cls(
-            summary_model_id=os.environ.get("DOCSURI_SUMMARY_MODEL_ID", DEFAULT_SUMMARY_MODEL),
-            translate_model_id=os.environ.get(
-                "DOCSURI_TRANSLATE_MODEL_ID", DEFAULT_TRANSLATE_MODEL
-            ),
+            summary_model_id=summary_model_id,
+            translate_model_id=translate_model_id,
             s3_bucket=os.environ.get("DOCSURI_SUMMARY_BUCKET"),
             redis_url=os.environ.get("DOCSURI_REDIS_URL"),
             database_url=os.environ.get("DATABASE_URL"),
             region_name=os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION"),
             redis_ttl_seconds=env_int("DOCSURI_SUMMARY_TTL", 86400),  # 24h (§11)
-            model_ver=MODEL_VER,
+            model_ver=model_ver(summary_model_id, translate_model_id),
             assets_enabled=env_flag("DOCSURI_MULTIMODAL_ASSETS_ENABLED"),
             asset_url_ttl_seconds=env_int("DOCSURI_ASSET_URL_TTL_SECONDS", 600),
             docmodel_viewer_enabled=env_flag("DOCSURI_DOCMODEL_VIEWER_ENABLED"),
