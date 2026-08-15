@@ -36,7 +36,7 @@ from ..ports.llm import (
 from ..ports.tools import ToolSpec
 from .prompts import build_decide_messages, build_extraction_messages
 
-__all__ = ["OpenAiDecider", "OpenAiExtractor"]
+__all__ = ["OpenAiDecider", "OpenAiExtractor", "parse_json_object"]
 
 log = logging.getLogger("docsuri.evidence.llm")
 
@@ -169,7 +169,7 @@ class OpenAiExtractor(_OpenAiBase):
             messages=build_extraction_messages(topic=topic, focus=focus, papers=papers),
             response_format={"type": "json_object"},
         )
-        payload = _parse_json(_first_text(response))
+        payload = parse_json_object(_first_text(response))
         items = payload.get("items")
         return items if isinstance(items, list) else []
 
@@ -218,7 +218,9 @@ def _first_text(response: dict[str, Any]) -> str:
     return str((choices[0].get("message") or {}).get("content") or "")
 
 
-def _parse_json(text: str) -> dict[str, Any]:
+def parse_json_object(text: str) -> dict[str, Any]:
+    """본문에서 첫 JSON 객체를 잘라낸다. Bedrock 어댑터가 그대로 쓴다 — 파서가 둘로
+    갈리면 모델이 코드펜스를 두르는 날 한쪽만 고쳐진다."""
     text = (text or "").strip()
     start, end = text.find("{"), text.rfind("}")
     if start == -1 or end == -1:
