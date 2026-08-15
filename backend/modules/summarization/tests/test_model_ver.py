@@ -41,7 +41,7 @@ def test_key_is_path_safe_and_readable() -> None:
     should still say which model it is, or a stale object can't be diagnosed by eye."""
     key = model_ver(DEFAULT_SUMMARY_MODEL, DEFAULT_TRANSLATE_MODEL)
 
-    assert not set(key) & set("./: _")
+    assert not set(key) & set("./: _+%")  # 경로에 이미 있던 문자(-)만 쓴다
     assert "sonnet-4-6" in key
     assert "haiku-4-5" in key
 

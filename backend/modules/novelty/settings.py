@@ -7,6 +7,7 @@ env 이름은 v1을 보존한다. 예산 시작값은 nfr-requirements §3 — �
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 
@@ -23,6 +24,8 @@ from .ports.tools import (
     TOOL_SAVE_ARTIFACT,
     TOOL_VIEW_FIGURE,
 )
+
+log = logging.getLogger("docsuri.novelty.settings")
 
 # 비용 추정 단가(USD/1M tokens) — 기본값은 아래 Bedrock 모델 기준. 모델을 env로 바꾸면
 # 단가도 함께 바꾼다: 코드에 박으면 비싼 모델로 갈아탄 뒤 예산 대장이 조용히 과소계상된다.
@@ -49,6 +52,27 @@ TOOL_CAP_GROUPS: dict[str, str] = {
     TOOL_VIEW_FIGURE: CAP_GROUP_VIEW_FIGURE,
     TOOL_SAVE_ARTIFACT: CAP_GROUP_SAVE_ARTIFACT,
 }
+
+
+def _rate(direction: str, default: float) -> float:
+    """단가 env 하나 — 이름이 바뀌었으므로 옛 이름도 읽고, 읽었으면 시끄럽게 알린다.
+
+    프로바이더 스위치를 걷어내면서 `DOCSURI_NOVELTY_OPENAI_*` → `DOCSURI_NOVELTY_*`로 이름이
+    바뀌었다. 옛 이름만 설정해 둔 환경은 조용히 기본값으로 떨어지는데, 지금 기본값이 마침
+    Sonnet 단가와 같아 **아무 증상 없이** 지나가고 나중에 모델을 바꾼 뒤 예산 대장(FR-45)이
+    틀어진 채로만 드러난다. 한 릴리스 동안 별칭을 읽어 주고 경고로 이전을 요구한다.
+    """
+    new_name = f"DOCSURI_NOVELTY_{direction}_USD_PER_MTOK"
+    if os.environ.get(new_name):
+        return _env_float(new_name, default)
+    legacy = f"DOCSURI_NOVELTY_OPENAI_{direction}_USD_PER_MTOK"
+    if os.environ.get(legacy):
+        log.warning(
+            "novelty: %s is deprecated and will stop being read — rename it to %s",
+            legacy, new_name,
+        )
+        return _env_float(legacy, default)
+    return default
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,12 +144,8 @@ class NoveltySettings:
     @classmethod
     def from_env(cls) -> NoveltySettings:
         return cls(
-            llm_input_usd_per_mtok=_env_float(
-                "DOCSURI_NOVELTY_INPUT_USD_PER_MTOK", DEFAULT_INPUT_USD_PER_MTOK
-            ),
-            llm_output_usd_per_mtok=_env_float(
-                "DOCSURI_NOVELTY_OUTPUT_USD_PER_MTOK", DEFAULT_OUTPUT_USD_PER_MTOK
-            ),
+            llm_input_usd_per_mtok=_rate("INPUT", DEFAULT_INPUT_USD_PER_MTOK),
+            llm_output_usd_per_mtok=_rate("OUTPUT", DEFAULT_OUTPUT_USD_PER_MTOK),
             bedrock_model_id=os.environ.get(
                 "DOCSURI_NOVELTY_LLM_MODEL_ID", DEFAULT_BEDROCK_MODEL
             ),

@@ -181,6 +181,29 @@ def test_iteration_cap_ends_the_loop():
     assert len(tool.calls) == 3
 
 
+def test_a_dropped_parallel_call_reaches_the_model_not_just_the_dataclass():
+    """어댑터가 `decision_note`에 폐기 목록을 담아도, 루프가 그걸 읽지 않으면 아무 데도
+    안 남는다(설정만 하고 소비처가 없던 상태). 다음 턴 관찰에 실려야 모델이 다시 요청할 수
+    있고, 그래야 "모델이 시킨 일이 조용히 사라지는" 상태가 실제로 닫힌다."""
+    tool = FakeTool(TOOL_CORPUS_SEARCH)
+    llm = ScriptedLlm(
+        script=[
+            ToolCallProposal(
+                TOOL_CORPUS_SEARCH,
+                {"query": "q"},
+                decision_note="dropped parallel calls: read_paper",
+            )
+        ]
+    )
+
+    run_loop(_state_with_evidence(), _deps(llm, _registry(tool)))
+
+    # 첫 턴의 관찰에는 없고(그때 막 생겼다), 다음 decide의 관찰에 실려야 한다.
+    assert len(llm.observations) >= 2
+    notes = " ".join(llm.observations[-1].notes)
+    assert "read_paper" in notes
+
+
 def test_per_tool_cap_stops_one_tool_from_eating_the_budget():
     tool = FakeTool(TOOL_CORPUS_SEARCH)
     llm = ScriptedLlm(script=[ToolCallProposal(TOOL_CORPUS_SEARCH, {"query": "q"})] * 50)

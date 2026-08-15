@@ -37,9 +37,12 @@ def model_ver(summary_model_id: str, translate_model_id: str) -> str:
 
     The ids are slugged rather than embedded raw so the path stays readable and free of the
     ``.``/``:`` that Bedrock profile ids carry. The slug is total (it drops nothing that
-    distinguishes two ids), so it cannot collapse two models onto one key.
+    distinguishes two ids), so it cannot collapse two models onto one key. The two halves join
+    with ``--`` rather than a new character class: the object path already carries ``-`` and
+    ``_``, and introducing e.g. ``+`` invites a proxy in front of the store to decode it as a
+    space on some paths.
     """
-    return f"{_slug(summary_model_id)}+{_slug(translate_model_id)}"
+    return f"{_slug(summary_model_id)}--{_slug(translate_model_id)}"
 
 
 def _slug(model_id: str) -> str:

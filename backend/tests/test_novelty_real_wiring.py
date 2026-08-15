@@ -191,6 +191,33 @@ def test_llm_assembly_lives_in_composition_root() -> None:
     assert isinstance(build_store(None), InMemoryNoveltyStore)  # 폴백 — 항상 마운트 가능
 
 
+def test_renamed_rate_env_still_reads_the_legacy_name_and_warns(monkeypatch, caplog) -> None:
+    """`DOCSURI_NOVELTY_OPENAI_*` → `DOCSURI_NOVELTY_*` 개명. 옛 이름만 설정된 환경이
+    조용히 기본값으로 떨어지면, 지금 기본값이 마침 Sonnet 단가와 같아 아무 증상 없이
+    지나가고 모델을 바꾼 뒤 예산 대장이 틀어진 채로만 드러난다."""
+    import logging as _logging
+
+    from backend.modules.novelty.settings import NoveltySettings
+
+    monkeypatch.delenv("DOCSURI_NOVELTY_INPUT_USD_PER_MTOK", raising=False)
+    monkeypatch.setenv("DOCSURI_NOVELTY_OPENAI_INPUT_USD_PER_MTOK", "0.15")
+
+    with caplog.at_level(_logging.WARNING, logger="docsuri.novelty.settings"):
+        settings = NoveltySettings.from_env()
+
+    assert settings.llm_input_usd_per_mtok == 0.15  # 무시되지 않는다
+    assert any("DOCSURI_NOVELTY_INPUT_USD_PER_MTOK" in r.message for r in caplog.records)
+
+
+def test_new_rate_env_wins_over_the_legacy_one(monkeypatch) -> None:
+    from backend.modules.novelty.settings import NoveltySettings
+
+    monkeypatch.setenv("DOCSURI_NOVELTY_OPENAI_INPUT_USD_PER_MTOK", "0.15")
+    monkeypatch.setenv("DOCSURI_NOVELTY_INPUT_USD_PER_MTOK", "3.0")
+
+    assert NoveltySettings.from_env().llm_input_usd_per_mtok == 3.0
+
+
 def test_tool_registry_shrinks_naturally_without_deps() -> None:
     from backend.modules.novelty.adapters.local_wiring import build_tool_registry
 

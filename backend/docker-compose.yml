@@ -72,7 +72,7 @@ services:
       timeout: 3s
       retries: 20
 
-  # S3 substitute (solo-local migration — aidlc-docs/operations/solo-local-migration.md §2).
+  # S3 substitute — s3proxy serves a downloaded mirror as a bucket, so client code is unchanged.
   # s3proxy (jclouds filesystem backend) serves the downloaded S3 mirror as plain files:
   # bucket ``docsuri`` = the mounted directory, keys = its file tree, no import/duplication.
   # (MinIO was tried first and rejected: it refuses sub-mounts under its export path and
@@ -115,7 +115,8 @@ services:
   # profile: default `up` skips this multi-GB, memory-heavy image. Bring it up only when you
   # (re-)ingest locally, and set DOCSURI_GROBID_URL=http://localhost:8070 to wire it:
   #   docker compose -f backend/docker-compose.yml --profile ingest up -d grobid
-  # NOTE: 0.8.0 mangles multi-row-header table cells (solo-local-migration.md §7) — swap for
+  # NOTE: 0.8.0 mangles multi-row-header table cells
+  # (aidlc-docs/operations/grobid-table-limits.md) — swap for
   # Docling if table-cell accuracy is required.
   grobid:
     container_name: docsuri-grobid

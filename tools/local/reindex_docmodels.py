@@ -1,4 +1,4 @@
-"""Reindex the downloaded doc-model mirror into a local OpenSearch (solo-local-migration §3).
+"""Reindex the downloaded doc-model mirror into a local OpenSearch.
 
 The AWS deployment is retired; the OpenSearch index was not backed up, but the parsed
 DocModels were. This script rebuilds the search index from them:

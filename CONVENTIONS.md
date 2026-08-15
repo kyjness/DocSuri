@@ -10,7 +10,7 @@ lifecycle; AIDLC is deliberately silent on git, so the git workflow is documente
 ## Branches (git-flow)
 
 - **`main`** — production/release line. The docsuri.org deployment is retired (redeploy
-  deferred — see `aidlc-docs/operations/solo-local-migration.md` §7); promote `develop`
+  deferred); promote `develop`
   into `main` when cutting a release/portfolio snapshot.
 - **`develop`** — integration target and default branch. **Direct commits and direct
   pushes to `develop` are allowed** (solo maintenance; a self-approved PR adds ceremony,

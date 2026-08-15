@@ -180,7 +180,6 @@ def test_discovery_skips_when_unconfigured(monkeypatch) -> None:
     # The other side of the real-first contract: unconfigured ⇒ no mount, and /api/search 404s.
     monkeypatch.delenv("DOCSURI_OPENSEARCH_ENDPOINT", raising=False)
     monkeypatch.delenv("DOCSURI_BEDROCK_MODEL_ID", raising=False)
-    monkeypatch.setenv("DOCSURI_EMBEDDING_PROVIDER", "bedrock")
 
     app = create_app(_TEST_SETTINGS)
     client = TestClient(app)
@@ -206,7 +205,6 @@ def test_partial_search_config_does_not_pin_readyz_at_503(monkeypatch) -> None:
     place (the mount decision itself), so they cannot drift apart again.
     """
     monkeypatch.setenv("DOCSURI_OPENSEARCH_ENDPOINT", _DEAD_OPENSEARCH)
-    monkeypatch.setenv("DOCSURI_EMBEDDING_PROVIDER", "bedrock")
     monkeypatch.delenv("DOCSURI_BEDROCK_MODEL_ID", raising=False)
 
     app = create_app(_TEST_SETTINGS)

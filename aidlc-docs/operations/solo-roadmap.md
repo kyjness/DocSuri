@@ -1318,5 +1318,5 @@ novelty를 "연구 리포트 생성기"에서 **"이 주제로 논문을 쓰려�
 ## 후속 검토 항목
 
 배포 재개(docsuri.org), rerank 로컬 대체, Anthropic API 병행 도입은
-[solo-local-migration.md](solo-local-migration.md) §7 미룬 결정 참조.
+[solo-local-migration.md](solo-local-migration.md) 참조(해당 문서는 폐기됐고 미룬 결정 표는 삭제됐다).
 전체 코퍼스 재색인은 위 ⑧로 승격됐다(더 이상 "후속 검토"가 아니다).

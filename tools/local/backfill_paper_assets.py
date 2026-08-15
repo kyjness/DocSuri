@@ -1,4 +1,4 @@
-"""Backfill the ``paper_asset`` manifest for the local stack (solo-local-migration).
+"""Backfill the ``paper_asset`` manifest for the local stack.
 
 The AWS deployment is retired. The figure/table/formula crop binaries were mirrored to
 ``~/data/docsuri-data/s3/assets/<paper>/v<ver>/*.webp``, but the ``paper_asset`` DB rows

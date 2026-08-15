@@ -140,6 +140,26 @@ def test_tool_choice_forces_a_call():
     assert {t["name"] for t in body["tools"]} == {"corpus_search", "finish"}
 
 
+def test_extra_parallel_calls_are_noted_not_silently_dropped():
+    """tool_choice는 최소 1개를 강제할 뿐 1개로 제한하지 않는다. 루프는 턴당 하나만
+    실행하므로 나머지는 버려지는데, 기록이 없으면 모델이 시킨 일이 그냥 사라진다."""
+    decider, _ = _decider(
+        {
+            "content": [
+                {"type": "tool_use", "name": "corpus_search", "input": {"q": "x"}},
+                {"type": "tool_use", "name": "read_paper", "input": {}},
+            ],
+            "usage": {},
+        }
+    )
+
+    decision = decider.decide(observation(), (ToolSpec("corpus_search", "d", {}),))
+
+    assert isinstance(decision.proposal, ToolCallProposal)
+    assert decision.proposal.tool_name == "corpus_search"
+    assert "dropped parallel calls: read_paper" in (decision.proposal.decision_note or "")
+
+
 def test_images_are_attached_after_the_tool_result_section():
     """그림 안의 문구가 지시로 읽히지 않도록 데이터 구획 뒤에 붙인다(BR-EV-17)."""
     image = ImageAttachment(media_type="image/webp", data_b64="AAA", asset_id="fig1")
