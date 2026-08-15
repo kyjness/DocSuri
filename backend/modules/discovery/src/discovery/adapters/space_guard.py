@@ -4,8 +4,10 @@ The design's same-space invariant: the active index's embedding manifest is vali
 against the reader's compiled embedding identity when the read path is wired; a mismatch
 disables the vector leg (lexical-only fallback + alarm) instead of silently returning
 semantically contaminated neighbors. The dimension guard in the embedders cannot catch a
-same-dimension/different-model swap (e.g. OpenAI 1024-dim queries against a Cohere 1024-dim
-index — exactly the solo-local provider switch), which is why the manifest check exists.
+same-dimension/different-model swap, which is why the manifest check exists — and the live case
+is not hypothetical: Cohere Embed Multilingual v3 and Embed v4 are BOTH 1024-dimensional, so
+re-pointing ``DOCSURI_BEDROCK_MODEL_ID`` at the other one passes every shape check and degrades
+only into wrong neighbours.
 
 The manifest is ``mappings._meta.embedding`` (``{"provider", "model", "dimensions"}``),
 stamped by whichever writer created the index (``docsuri_shared.index_spec.papers_index_body``).

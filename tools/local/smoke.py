@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Local-readiness smoke — walk the non-agent surface in-process against local infra.
 
-The solo-local migration only E2E-verified search/papers/summary (solo-local-migration.md §6);
+The 2026-07 local migration only E2E-verified search/papers/summary;
 everything else was left un-exercised, so gaps (a feature flag left off, a real_wiring adapter
 never switched off Bedrock, a mock read path) only surfaced when stumbled on by eye. This walks
 each non-agent module's representative flow ONCE, against the real adapters + local stores
@@ -164,7 +164,7 @@ def steps() -> list[Step]:
         # ops dashboard is ADMIN-gated; a USER 403 is the correct authz outcome, not a gap.
         Step("ops", "dashboard", "GET", "/ops/dashboard", expect={200, 403}),
         Step("ops", "incidents", "GET", "/ops/incidents", expect={200, 403}),
-        # --- paid (only with --with-llm): OpenAI a few cents, S2 live ---
+        # --- paid (only with --with-llm): Bedrock a few cents, S2 live ---
         Step("summarize", "summary", "POST", "/api/summarize",
              {"task": "summary", "paperId": p, "persona": "expert", "scope": "abstract"},
              paid=True, check=_summary_check),
@@ -230,7 +230,7 @@ def report(results: list[Result]) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--with-llm", action="store_true", help="include paid routes (OpenAI/S2)")
+    ap.add_argument("--with-llm", action="store_true", help="include paid routes (Bedrock/S2)")
     args = ap.parse_args()
     if "DATABASE_URL" not in os.environ:
         raise SystemExit("DATABASE_URL not set — run `set -a; source .env; set +a` first")

@@ -1,4 +1,4 @@
-"""Bedrock/OpenAI isolation (RES-9 / nfr-design §1.1) — now the SHARED breaker.
+"""Bedrock isolation (RES-9 / nfr-design §1.1) — now the SHARED breaker.
 
 The full state-machine contract (single HALF-OPEN probe, stale-success ignore,
 probe-slot expiry) lives in ``docsuri_shared.resilience`` and is verified by

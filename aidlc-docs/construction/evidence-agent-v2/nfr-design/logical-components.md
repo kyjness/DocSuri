@@ -62,7 +62,7 @@
 
 | 포트 | 구현(현행) | 실패 처리 |
 |---|---|---|
-| `LlmPort` | OpenAI 어댑터 | 재시도 1 + 브레이커 → `abstain(llm_unavailable)` |
+| `LlmPort` | Bedrock Anthropic 어댑터 | 재시도 1 + 브레이커 → `abstain(llm_unavailable)` |
 | `CorpusSearchPort` | U2 discovery 재사용 | 브레이커 → 근거 유무에 따라 기권/확인 범위 |
 | `ExternalPaperSearchPort` | arXiv 클라이언트 + payload allowlist + 허용 호스트 | 브레이커 → 그 도구만 실패 |
 | `PaperPromotionPort` | `BUILD_DOC_MODEL` **enqueue + bounded polling**(u1 워커가 빌드) | 실패·라이선스 차단·폴링 시간 초과는 **정상 결과값** — 예외로 루프를 깨지 않는다 |

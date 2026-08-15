@@ -17,7 +17,7 @@ from discovery.adapters.space_guard import (
 )
 from discovery.ports.search_ports import EmbeddingUnavailable
 
-_READER = {"provider": "openai", "model": "text-embedding-3-small", "dimensions": 1024}
+_READER = {"provider": "bedrock", "model": "cohere.embed-v4:0", "dimensions": 1024}
 
 
 class _Indices:
@@ -58,11 +58,13 @@ def test_read_manifest_distinguishes_absent_from_unreadable() -> None:
 
 
 def test_mismatch_detects_same_dim_different_model() -> None:
-    # The scenario the dimension guard cannot catch: 1024-dim Cohere index vs 1024-dim OpenAI
-    # reader — semantically incompatible spaces (N1 / vector-spec §4).
+    # The scenario the dimension guard cannot catch, and it is a REAL one: Cohere Embed
+    # Multilingual v3 and Embed v4 are both 1024-dimensional, so an index built with one and
+    # queried with the other passes every shape check while the spaces are incompatible
+    # (N1 / vector-spec §4).
     manifest = {"provider": "bedrock", "model": "cohere.embed-multilingual-v3", "dimensions": 1024}
     mismatch = embedding_space_mismatch(manifest, _READER)
-    assert mismatch is not None and "provider" in mismatch
+    assert mismatch is not None and "model" in mismatch
 
 
 def test_mismatch_none_when_manifest_matches_or_is_absent() -> None:

@@ -1,4 +1,4 @@
-"""Reindex the downloaded doc-model mirror into a local OpenSearch (solo-local-migration §3).
+"""Reindex the downloaded doc-model mirror into a local OpenSearch.
 
 The AWS deployment is retired; the OpenSearch index was not backed up, but the parsed
 DocModels were. This script rebuilds the search index from them:
@@ -7,7 +7,7 @@ DocModels were. This script rebuilds the search index from them:
                    → OpenSearchVectorIndex.bulk_upsert   (mapping: shared papers_index_body)
 
 THE EMBEDDING PORT COMES FROM THE ENVIRONMENT, exactly as the ingest pipeline picks it
-(``DOCSURI_EMBEDDING_PROVIDER``). It used to hardcode OpenAI, which was right for the corpus this
+(``DOCSURI_BEDROCK_MODEL_ID``). It used to hardcode the model, which was right for the corpus this
 tool was written for and silently wrong for any other: run against the Bedrock-embedded deployment
 index it would have written a few hundred papers into a DIFFERENT embedding space, and — worse —
 ``_ensure_index`` re-stamps the index manifest, so it would have overwritten the very manifest the
@@ -181,9 +181,10 @@ def _enumerate_papers(
 
 
 def _ensure_index(client, index: str, alias: str, *, provider: str, embedding_model: str) -> None:
-    # Embedding manifest: stamped with the provider/model THIS run embeds with, so the discovery
+    # Embedding manifest: stamped with the model THIS run embeds with, so the discovery
     # reader's space guard can verify it at wiring time (vector-spec §4 same-space invariant).
-    # Hardcoding "openai" here defeated that guard on any index built with another provider.
+    # It must never be hardcoded — that defeats the guard on any index built with another model,
+    # and Cohere v3/v4 are both 1024-dimensional so nothing else would catch the swap.
     embedding_meta = {
         "provider": provider,
         "model": embedding_model,
@@ -275,17 +276,13 @@ def main() -> int:
     # The SAME selection the ingest pipeline makes, so a rebuild lands in the corpus's existing
     # embedding space instead of silently opening a second one.
     embedder = _embedding_port(settings)
-    model = (
-        settings.bedrock_model_id
-        if settings.embedding_provider == "bedrock"
-        else settings.openai_embedding_model
-    )
-    print(f"[embed] {settings.embedding_provider} · {model}")
+    model = settings.bedrock_model_id
+    print(f"[embed] bedrock · {model}")
     _ensure_index(
         client,
         args.index,
         args.alias,
-        provider=settings.embedding_provider,
+        provider="bedrock",
         embedding_model=model or "",
     )
     writer = OpenSearchVectorIndex(endpoint=args.endpoint, index_name=args.index)

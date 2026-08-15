@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# DocSuri solo-local dev — one command for the whole stack (solo-local-migration.md §5).
+# DocSuri local dev — one command for the whole stack.
 #
 #   ./dev.sh          # docker deps up + backend(:8000) + frontend(:3000)
 #   Ctrl+C            # stops backend+frontend together (docker containers stay up)

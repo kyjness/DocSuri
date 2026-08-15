@@ -40,8 +40,8 @@ def test_invoke_model_encodes_body_and_decodes_stream_or_bytes() -> None:
 
 
 def test_tool_schema_uses_input_schema_key() -> None:
-    # ``input_schema``가 Anthropic 문법이다 — OpenAI는 function.parameters라, 이 모양이
-    # 포트가 아니라 프로바이더에 속하는 이유다.
+    # ``input_schema``는 Anthropic 문법이고 벤더마다 키와 중첩이 다르다 — 이 모양이 포트가
+    # 아니라 프로바이더 어댑터에 속하는 이유다.
     spec = tool_schema("finish", "끝낸다", {"type": "object"})
     assert spec == {
         "name": "finish",

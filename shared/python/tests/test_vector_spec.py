@@ -139,7 +139,7 @@ def test_papers_index_body_embedding_manifest_stamp():
     # Writers stamp mappings._meta.embedding so the U2 reader can verify the same-space
     # invariant at wiring time (vector-spec §4; u2 business-rules §6). Omitted → no _meta
     # (legacy callers unchanged).
-    meta = {"provider": "openai", "model": "text-embedding-3-small", "dimensions": 1024}
+    meta = {"provider": "bedrock", "model": "cohere.embed-v4:0", "dimensions": 1024}
     body = papers_index_body(embedding_meta=meta)
     assert body["mappings"]["_meta"] == {"embedding": meta}
     assert "_meta" not in papers_index_body()["mappings"]

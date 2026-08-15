@@ -21,7 +21,7 @@ backend/modules/novelty/
 │   ├── queue.py                잡 큐 포트(적재·소비·실행 잠금)
 │   └── store.py                잡·산출물·트레이스·대화 저장 포트
 ├── adapters/
-│   ├── local_wiring.py         redis 큐·postgres 저장·OpenAI tool-calling (1차)
+│   ├── local_wiring.py         redis 큐·postgres 저장·Bedrock tool-calling
 │   ├── real_wiring.py          SQS·RDS·Bedrock (배포 기준선 — 계약 보존)
 │   ├── external/               GitHub·데이터셋 (직접 구현 어댑터 — TD-NV2-4)
 │   │   └── sanitize.py         도구별 payload allowlist 강제(BR-RA7)

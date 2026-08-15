@@ -22,7 +22,6 @@ from docsuri_shared.vector_spec import DIMENSIONS
 from .adapters.bedrock_embedding import BedrockCohereQueryEmbedder
 from .adapters.bedrock_rerank import BedrockRerankAdapter
 from .adapters.event_publisher import EventBridgeEventPublisher
-from .adapters.openai_embedding import OpenAIQueryEmbedder
 from .adapters.opensearch_index import (
     OpenSearchClientFactory,
     OpenSearchLexicalIndexAdapter,
@@ -65,9 +64,8 @@ def build_real_orchestrator(
     """
     if not settings.search_enabled:
         raise ValueError(
-            "build_real_orchestrator requires DOCSURI_OPENSEARCH_ENDPOINT + an embedding "
-            "provider — DOCSURI_BEDROCK_MODEL_ID or DOCSURI_EMBEDDING_PROVIDER=openai "
-            "(use build_mock_orchestrator otherwise)"
+            "build_real_orchestrator requires DOCSURI_OPENSEARCH_ENDPOINT + "
+            "DOCSURI_BEDROCK_MODEL_ID (use build_mock_orchestrator otherwise)"
         )
 
     client = OpenSearchClientFactory.build(
@@ -78,27 +76,17 @@ def build_real_orchestrator(
         use_ssl=settings.opensearch_use_ssl,
         verify_certs=settings.opensearch_verify_certs,
     )
-    if settings.embedding_provider == "openai":
-        # Solo-local migration: personal OpenAI key replaces Bedrock (see the adapter's
-        # docstring for the same-space invariant with the reindex writer).
-        embedding: object = OpenAIQueryEmbedder(model=settings.openai_embedding_model)
-        reader_identity = {
-            "provider": "openai",
-            "model": settings.openai_embedding_model,
-            "dimensions": DIMENSIONS,
-        }
-    else:
-        embedding = BedrockCohereQueryEmbedder(
-            model_id=settings.bedrock_model_id or "",
-            # Bedrock region decoupled from aws_region (OpenSearch SigV4): Cohere v3 isn't in
-            # ap-northeast-2, so the reader embeds queries cross-region. Falls back to aws_region.
-            region_name=settings.bedrock_region or settings.aws_region,
-        )
-        reader_identity = {
-            "provider": "bedrock",
-            "model": settings.bedrock_model_id or "",
-            "dimensions": DIMENSIONS,
-        }
+    embedding: object = BedrockCohereQueryEmbedder(
+        model_id=settings.bedrock_model_id or "",
+        # Bedrock region decoupled from aws_region (OpenSearch SigV4): Cohere v3 isn't in
+        # ap-northeast-2, so the reader embeds queries cross-region. Falls back to aws_region.
+        region_name=settings.bedrock_region or settings.aws_region,
+    )
+    reader_identity = {
+        "provider": "bedrock",
+        "model": settings.bedrock_model_id or "",
+        "dimensions": DIMENSIONS,
+    }
     # Same-space guard (u2 business-rules §6 / N1): validate the active index's embedding
     # manifest against the reader identity ONCE here; a mismatch swaps in a sentinel that
     # degrades every request to lexical-only (vector leg off) instead of serving semantically

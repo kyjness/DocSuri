@@ -1,4 +1,4 @@
-"""Bedrock LLM 어댑터 — `test_evidence_llm`(OpenAI)과 **같은 계약**을 건다.
+"""Bedrock LLM 어댑터 계약 — 도구 호출·종료·실패 좁히기·이미지 순서.
 
 프로바이더가 둘이 되는 순간 위험한 것은 문법 차이가 아니라 계약이 갈리는 것이다.
 같은 관찰을 넣었을 때 같은 제안이 나오고, 같은 실패가 같은 예외로 좁혀지고,
@@ -16,8 +16,11 @@ import json
 
 import pytest
 
-from backend.modules.evidence.adapters._llm_shared import IMAGE_BOUNDARY_BANNER
-from backend.modules.evidence.adapters.llm_bedrock import BedrockDecider, BedrockExtractor
+from backend.modules.evidence.adapters.llm_bedrock import (
+    IMAGE_BOUNDARY_BANNER,
+    BedrockDecider,
+    BedrockExtractor,
+)
 from backend.modules.evidence.ports.llm import (
     LlmUnavailable,
     TerminationProposal,
@@ -127,7 +130,7 @@ def test_system_prompt_goes_to_the_system_field_not_messages():
 
 
 def test_tool_choice_forces_a_call():
-    """무-호출 턴을 막는다 — OpenAI 쪽 tool_choice='required'와 같은 의도."""
+    """무-호출 턴을 막는다 — 모델이 '아무 도구도 안 부른' 애매한 턴을 만들 수 없게 한다."""
     decider, client = _decider(_tool_response("finish", {}))
 
     decider.decide(observation(), (ToolSpec("corpus_search", "d", {}),))
@@ -135,6 +138,26 @@ def test_tool_choice_forces_a_call():
     body = client.calls[0]
     assert body["tool_choice"] == {"type": "any"}
     assert {t["name"] for t in body["tools"]} == {"corpus_search", "finish"}
+
+
+def test_extra_parallel_calls_are_noted_not_silently_dropped():
+    """tool_choice는 최소 1개를 강제할 뿐 1개로 제한하지 않는다. 루프는 턴당 하나만
+    실행하므로 나머지는 버려지는데, 기록이 없으면 모델이 시킨 일이 그냥 사라진다."""
+    decider, _ = _decider(
+        {
+            "content": [
+                {"type": "tool_use", "name": "corpus_search", "input": {"q": "x"}},
+                {"type": "tool_use", "name": "read_paper", "input": {}},
+            ],
+            "usage": {},
+        }
+    )
+
+    decision = decider.decide(observation(), (ToolSpec("corpus_search", "d", {}),))
+
+    assert isinstance(decision.proposal, ToolCallProposal)
+    assert decision.proposal.tool_name == "corpus_search"
+    assert "dropped parallel calls: read_paper" in (decision.proposal.decision_note or "")
 
 
 def test_images_are_attached_after_the_tool_result_section():
@@ -186,7 +209,7 @@ def test_extraction_reads_every_text_block():
 
 
 def test_extraction_tolerates_a_code_fenced_object():
-    """Anthropic에는 OpenAI의 json_object 강제 모드가 없어 펜스가 섞일 수 있다."""
+    """JSON 강제 모드가 없어 모델이 코드펜스를 두를 수 있다."""
     fenced = '```json\n{"items": [{"statement": "s"}]}\n```'
     extractor = _extractor(_text_response(fenced))
 

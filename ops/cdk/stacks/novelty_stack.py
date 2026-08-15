@@ -104,11 +104,6 @@ class NoveltyStack(Stack):
                 ),
                 "DOCSURI_OPENSEARCH_ENDPOINT": f"https://{opensearch_domain.domain_endpoint}",
                 "DOCSURI_BEDROCK_MODEL_ID": "global.cohere.embed-v4:0",
-                # provider와 모델 id는 함께 읽힌다 — 모델 id만 두면 스택만 봐서는 어느
-                # 프로바이더로 도는지 알 수 없고, 실제로 기본값이 openai이던 시절 이 조합이
-                # "Sonnet id + openai provider"로 해석돼 워커가 기동 즉시 죽었다.
-                # 기본값도 bedrock이지만(settings.DEFAULT_LLM_PROVIDER) 명시해 둔다.
-                "DOCSURI_NOVELTY_LLM_PROVIDER": "bedrock",
                 "DOCSURI_NOVELTY_LLM_MODEL_ID": "global.anthropic.claude-sonnet-4-6",
                 # view_figure(⑤3) 등록 조건. 워커가 도구 레지스트리를 만드는 유일한
                 # 프로세스라 여기 없으면 그림 조회 도구가 아무 신호 없이 사라진다

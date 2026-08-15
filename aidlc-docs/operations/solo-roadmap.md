@@ -1,5 +1,9 @@
 # 유지보수 로드맵 (2026-07)
 
+> **현행 정정(2026-08-16)**: 아래 ②는 당시 실행 기록이다. AWS가 복구되어 Bedrock·OpenSearch
+> 관리형이 다시 현행이고 OpenAI 경로는 저장소에서 제거됐다 —
+> [solo-local-migration.md](solo-local-migration.md) 상단 배너 참조.
+
 단독 유지보수 전환(로컬 인프라 이관) 이후의 작업 계획. 두 축으로 구성한다:
 (a) 기존 유닛(u1/u2/u7)의 설계 문서 대비 정합성 리뷰 및 결함 수리,
 (b) 두 에이전트 모듈(novelty, 문헌탐색·근거형성)을 자율 에이전트 아키텍처로 재설계 —
@@ -181,7 +185,7 @@ novelty 도메인과 무관한 부품인데 novelty 안에 있다. u7에도 같�
 
 ## ③ 유닛 리뷰 이관 이슈
 
-로컬 이관 검증 중 발견 (solo-local-migration.md §6):
+로컬 이관 검증 중 발견 ([solo-local-migration.md](solo-local-migration.md)):
 
 - refiner legacy `.txt` 경로 — 개행 없는 정규화 전문에서 저작권 패턴 매칭 시 문서 전체가 제거됨 (u7)
 - `tests/test_pbt.py::test_pbt_response_to_dict_sec9_all_states` hypothesis 실패 — 이관 이전부터 존재 (u7)
@@ -1314,5 +1318,5 @@ novelty를 "연구 리포트 생성기"에서 **"이 주제로 논문을 쓰려�
 ## 후속 검토 항목
 
 배포 재개(docsuri.org), rerank 로컬 대체, Anthropic API 병행 도입은
-[solo-local-migration.md](solo-local-migration.md) §7 미룬 결정 참조.
+[solo-local-migration.md](solo-local-migration.md) 참조(해당 문서는 폐기됐고 미룬 결정 표는 삭제됐다).
 전체 코퍼스 재색인은 위 ⑧로 승격됐다(더 이상 "후속 검토"가 아니다).

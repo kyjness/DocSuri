@@ -108,6 +108,13 @@ def _act(state: LoopState, deps: LoopDeps, proposal: ToolCallProposal) -> LoopOu
     tool = deps.registry.get(proposal.tool_name)
     args_summary = _summarize_args(proposal.args)
 
+    if proposal.decision_note:
+        # 한 턴에 도구 호출이 여럿 온 경우 첫 개만 실행되고 나머지는 버려진다. 버려졌다는
+        # 사실을 **모델에게** 알려야 다음 턴에 다시 요청할 수 있고(안 알리면 자기가 시킨
+        # 일이 그냥 사라진다), 운영자에게도 남겨야 "왜 그 도구가 안 불렸나"를 추적할 수 있다.
+        _note(state, f"이번 턴에서 실행되지 않은 호출이 있다 — {proposal.decision_note}")
+        log.warning("evidence: %s", proposal.decision_note)
+
     if tool is None:
         # 어휘 밖 도구를 고른 것은 모델의 오류다 — 예산을 태우지 않고 되돌린다.
         _record(state, deps, proposal.tool_name, args_summary, ToolCallOutcome.ERROR,

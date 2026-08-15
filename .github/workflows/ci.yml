@@ -190,8 +190,8 @@ jobs:
       - name: Tests (needs the `real` extra — s3_docmodel imports botocore)
         env:
           DOCSURI_TEST_PG_DSN: postgresql://postgres:docsuri@localhost:5432/docsuri
-          # Local stand-ins for the retired AWS deployment. The integration tests create the
-          # bucket themselves and never call an LLM, so the key is a placeholder.
+          # Local stand-ins for AWS. The integration tests create the bucket themselves and
+          # never call an LLM, so no Bedrock credentials are needed.
           DOCSURI_SUMMARY_BUCKET: docsuri
           DOCSURI_REDIS_URL: redis://localhost:6379/0
           DATABASE_URL: postgresql://postgres:docsuri@localhost:5432/docsuri
@@ -199,8 +199,6 @@ jobs:
           AWS_ACCESS_KEY_ID: docsuri
           AWS_SECRET_ACCESS_KEY: docsuri123
           AWS_REGION: us-east-1
-          DOCSURI_LLM_PROVIDER: openai
-          OPENAI_API_KEY: placeholder-no-llm-call-in-these-tests
         run: uv run --all-extras pytest -rs
 
   ops:

@@ -8,9 +8,10 @@ required deps (Bedrock model ids + S3 bucket) are configured — otherwise it sk
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 
-from docsuri_shared.env import env_choice, env_flag, env_int
+from docsuri_shared.env import env_flag, env_int
 
 # Concrete model bindings (TD-S3). modelVer is part of the immutable cache key.
 # Invoked via Bedrock inference profiles — the bare foundation-model ids (``anthropic.claude-*``)
@@ -19,15 +20,36 @@ from docsuri_shared.env import env_choice, env_flag, env_int
 # profiles; both overridable via DOCSURI_SUMMARY_MODEL_ID / DOCSURI_TRANSLATE_MODEL_ID.
 DEFAULT_SUMMARY_MODEL = "global.anthropic.claude-sonnet-4-6"
 DEFAULT_TRANSLATE_MODEL = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
-MODEL_VER = "sonnet46-haiku45"
-# Solo-local provider (DOCSURI_LLM_PROVIDER=openai — AWS retired). model_ver MUST differ per
-# provider: it is a cache-key dimension, so OpenAI generations key separately from the mirrored
-# Bedrock-era summaries instead of silently mixing under one version.
-DEFAULT_OPENAI_SUMMARY_MODEL = "gpt-4o-mini"
-DEFAULT_OPENAI_TRANSLATE_MODEL = "gpt-4o-mini"
-# Closed vocabulary: an unknown value used to pick the Bedrock defaults, so a typo mixed a
-# provider switch with a model_ver that says the other provider — and model_ver is a cache key.
-LLM_PROVIDERS = ("bedrock", "openai")
+
+
+def model_ver(summary_model_id: str, translate_model_id: str) -> str:
+    """The cache-key dimension, DERIVED from the model ids actually in use.
+
+    Cached summaries live at a path containing this string, and a read that finds the path
+    skips the LLM entirely. So it has to change whenever the output distribution changes —
+    otherwise pointing DOCSURI_SUMMARY_MODEL_ID at a new model regenerates nothing and every
+    already-summarised paper keeps serving the OLD model's text, with no error and no log line
+    (it is an ordinary cache hit).
+
+    It used to be a hand-maintained constant, which meant the rotation depended on someone
+    remembering. Deriving it removes that: any change to either id — model, version, or
+    inference-profile prefix — produces a different path by construction.
+
+    The ids are slugged rather than embedded raw so the path stays readable and free of the
+    ``.``/``:`` that Bedrock profile ids carry. The slug is total (it drops nothing that
+    distinguishes two ids), so it cannot collapse two models onto one key. The two halves join
+    with ``--`` rather than a new character class: the object path already carries ``-`` and
+    ``_``, and introducing e.g. ``+`` invites a proxy in front of the store to decode it as a
+    space on some paths.
+    """
+    return f"{_slug(summary_model_id)}--{_slug(translate_model_id)}"
+
+
+def _slug(model_id: str) -> str:
+    # ``global.anthropic.claude-sonnet-4-6`` → ``sonnet-4-6``. Only the vendor/profile prefix is
+    # dropped; everything that identifies the model itself survives.
+    tail = model_id.rsplit(".", 1)[-1].removeprefix("claude-")
+    return re.sub(r"[^a-z0-9]+", "-", tail.lower()).strip("-")
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,8 +95,6 @@ class SummarizationSettings:
     # runs on a thread here instead of a separate worker. Without either, a long generation runs
     # inline and outlives the client's deadline. OFF by default; a real deploy uses the queue.
     local_summary_worker_enabled: bool = False
-    # LLM provider: "bedrock" (team AWS deploy) | "openai" (solo-local, personal key).
-    llm_provider: str = "bedrock"
 
     @property
     def summarization_enabled(self) -> bool:
@@ -83,34 +103,19 @@ class SummarizationSettings:
 
     @classmethod
     def from_env(cls) -> SummarizationSettings:
-        provider = env_choice("DOCSURI_LLM_PROVIDER", LLM_PROVIDERS, "bedrock")
-        default_summary = (
-            DEFAULT_OPENAI_SUMMARY_MODEL if provider == "openai" else DEFAULT_SUMMARY_MODEL
-        )
-        default_translate = (
-            DEFAULT_OPENAI_TRANSLATE_MODEL if provider == "openai" else DEFAULT_TRANSLATE_MODEL
+        summary_model_id = os.environ.get("DOCSURI_SUMMARY_MODEL_ID", DEFAULT_SUMMARY_MODEL)
+        translate_model_id = os.environ.get(
+            "DOCSURI_TRANSLATE_MODEL_ID", DEFAULT_TRANSLATE_MODEL
         )
         return cls(
-            llm_provider=provider,
-            summary_model_id=os.environ.get("DOCSURI_SUMMARY_MODEL_ID", default_summary),
-            translate_model_id=os.environ.get(
-                "DOCSURI_TRANSLATE_MODEL_ID", default_translate
-            ),
+            summary_model_id=summary_model_id,
+            translate_model_id=translate_model_id,
             s3_bucket=os.environ.get("DOCSURI_SUMMARY_BUCKET"),
             redis_url=os.environ.get("DOCSURI_REDIS_URL"),
             database_url=os.environ.get("DATABASE_URL"),
             region_name=os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION"),
             redis_ttl_seconds=env_int("DOCSURI_SUMMARY_TTL", 86400),  # 24h (§11)
-            # OpenAI model_ver derives from the ACTUAL model ids so swapping models rotates
-            # the cache key (a fixed provider tag would silently serve stale-model output).
-            model_ver=(
-                "openai:"
-                + os.environ.get("DOCSURI_SUMMARY_MODEL_ID", default_summary)
-                + ":"
-                + os.environ.get("DOCSURI_TRANSLATE_MODEL_ID", default_translate)
-                if provider == "openai"
-                else MODEL_VER
-            ),
+            model_ver=model_ver(summary_model_id, translate_model_id),
             assets_enabled=env_flag("DOCSURI_MULTIMODAL_ASSETS_ENABLED"),
             asset_url_ttl_seconds=env_int("DOCSURI_ASSET_URL_TTL_SECONDS", 600),
             docmodel_viewer_enabled=env_flag("DOCSURI_DOCMODEL_VIEWER_ENABLED"),
