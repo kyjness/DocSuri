@@ -25,10 +25,12 @@ asset rendering, embedding and indexing all sit on top of the fetch.
 ONE PAPER'S FAILURE DOES NOT STOP THE RUN; A COLLAPSE DOES. A paper that 404s or fails to parse
 is recorded and skipped, and the summary groups them by reason so a systematic failure (a whole
 bucket, a whole source) is visible instead of being averaged into a success rate. Two gates sit
-on top: ``MAX_FAILURE_RATIO`` judges the finished run, while ``CONSECUTIVE_FAILURE_LIMIT`` (a dead
-dependency) and ``RECENT_FAILURE_LIMIT`` (a throttle) abort one that is already collapsing. All
-exit non-zero — unlike a date window, every id here was chosen because U12 needs it, so losing
-many is a reason to stop rather than proceed to the recent slice.
+on top, and they measure different things. ``CONSECUTIVE_FAILURE_LIMIT`` (a dead dependency) and
+``RECENT_FAILURE_LIMIT`` (a throttle) abort a run that is already collapsing — "something is
+broken right now". ``MAX_FAILURE_RATIO`` judges the finished run on PERMANENT loss only — "how
+much of this list is gone for good" — because a retriable failure is deferred to the next
+``--retry-failed``, not lost. All exit non-zero: unlike a date window, every id here was chosen
+because U12 needs it, so losing many is a reason to stop rather than proceed to the recent slice.
 
     python -m docsuri_ingestion.foundational --dry-run
     python -m docsuri_ingestion.foundational
@@ -328,12 +330,33 @@ def ingest_foundational(
                     return 1
 
     _log_outcomes(counts)
-    failed = sum(c for o, c in counts.items() if o.startswith("failed"))
-    ratio = failed / len(todo)
-    _log.info("성공 %d편 · 실패 %d편 (%.1f%%)", len(todo) - failed, failed, ratio * 100)
+    # LOST vs DEFERRED. The gate asks "how much of this list is gone for good", because the whole
+    # reason the list exists is that U12 needs these specific papers — so permanent losses (a
+    # blocked licence, a withdrawn id) are what it measures.
+    #
+    # Retriable and unexpected failures are DEFERRED, not lost: `--retry-failed` gets them on a
+    # later pass. Counting them made the gate fire on a run whose 28 failures were 20 papers
+    # waiting on a GROBID the operator had deliberately taken down plus 8 genuine licence
+    # exclusions — a 19% "loss" that was really 5.4%. A gate that cries wolf is a gate nobody
+    # reads. The in-flight gates above are what catch a dependency dying mid-run; this one is
+    # about coverage.
+    lost = sum(c for o, c in counts.items() if o.startswith("failed:permanent"))
+    deferred = sum(
+        c
+        for o, c in counts.items()
+        if o.startswith("failed") and not o.startswith("failed:permanent")
+    )
+    ratio = lost / len(todo)
+    _log.info(
+        "성공 %d편 · 영구 손실 %d편 (%.1f%%) · 재시도 대상 %d편",
+        len(todo) - lost - deferred,
+        lost,
+        ratio * 100,
+        deferred,
+    )
     if ratio > MAX_FAILURE_RATIO:
         _log.error(
-            "실패율 %.1f%%가 상한 %.0f%%를 넘었다 — 원인 확인 전에 다음 단계로 넘어가지 말 것",
+            "영구 손실 %.1f%%가 상한 %.0f%%를 넘었다 — 원인 확인 전에 다음 단계로 넘어가지 말 것",
             ratio * 100,
             MAX_FAILURE_RATIO * 100,
         )

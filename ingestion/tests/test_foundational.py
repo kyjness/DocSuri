@@ -750,3 +750,45 @@ def test_a_missing_redo_file_fails_before_the_runtime_is_built(tmp_path, monkeyp
     )
 
     assert rc == 1
+
+
+def test_the_loss_gate_measures_permanent_loss_not_deferred_retries(tmp_path, wired) -> None:
+    """LOST is not the same as NOT DONE YET, and only the first is a reason to stop.
+
+    Measured on the real run this was written for: 147 papers, 28 failures — 20 waiting on a
+    GROBID the operator had deliberately taken down (recoverable by the next --retry-failed) and
+    8 genuine licence exclusions. The old gate called that a 19% loss and refused; the real
+    coverage loss was 5.4%. A gate that cries wolf is a gate nobody reads.
+    """
+    gone = PermanentIngestionError("no licence", reason=FailureReason.NON_OA, stage="validate")
+    later = RetriableIngestionError(
+        "grobid down", reason=FailureReason.DEPENDENCY_UNAVAILABLE, stage="grobid"
+    )
+    rows = [(f"p{i}", "canon") for i in range(100)]
+    # Scattered, not clustered: an unbroken run of a dozen is a dead dependency and the in-flight
+    # gate would (correctly) stop first, which is a different contract from the one under test.
+    outcomes: dict[str, object] = {f"p{i}": later for i in range(0, 100, 5)}  # deferred, 20%
+    outcomes.update({f"p{i}": gone for i in range(2, 100, 20)})  # permanently lost, 5%
+    wired(_Pipeline(outcomes))
+
+    rc = ingest_foundational(
+        list_path=str(_write_list(tmp_path, rows)), ledger_path=str(tmp_path / "l.jsonl")
+    )
+
+    assert rc == 0, "deferred retries were counted as lost coverage"
+
+
+def test_permanent_loss_over_the_gate_still_stops_the_run(tmp_path, wired) -> None:
+    """The gate must not be softened into uselessness: papers that are gone for good are exactly
+    what it exists to count, because every id on this list was chosen because U12 needs it."""
+    gone = PermanentIngestionError("no licence", reason=FailureReason.NON_OA, stage="validate")
+    rows = [(f"p{i}", "canon") for i in range(100)]
+    # Scattered for the same reason — permanent failures do not feed the in-flight gates, but
+    # keeping the shape identical to the test above keeps the two comparable.
+    wired(_Pipeline({f"p{i}": gone for i in range(0, 99, 9)}))  # 11 papers = 11% > 10%
+
+    rc = ingest_foundational(
+        list_path=str(_write_list(tmp_path, rows)), ledger_path=str(tmp_path / "l.jsonl")
+    )
+
+    assert rc == 1
