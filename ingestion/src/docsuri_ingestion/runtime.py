@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from typing import cast
-
-from docsuri_shared.vector_spec import DIMENSIONS
 
 from .adapters.arxiv import ArxivHttpSource
 from .adapters.aws import (
@@ -373,8 +371,52 @@ def _formula_reader(settings: IngestionSettings) -> FormulaReaderPort | None:
     )
 
 
+# Sources whose ONLY structure parser is GROBID — the same set ``validate_corpus_build_settings``
+# tests, kept here so one rule answers "is GROBID required" for both the settings check and the
+# liveness probe.
+GROBID_ONLY_SOURCES = frozenset({"SEMANTIC_SCHOLAR", "OPENALEX"})
+
+
+def probe_grobid(settings: IngestionSettings, *, required: bool) -> str | None:
+    """Ask GROBID whether it is alive. Returns a problem description, or None when it is fine.
+
+    Split from the rest of the pre-flight because it needs NOTHING but the URL, while
+    ``build_production_runtime`` imports Docling and pix2tex and loads their models. Probing after
+    that build made an operator whose GROBID was down wait out the whole torch import to be told.
+
+    ``required=False`` runs proceed without it — an arXiv-id list is served by the ar5iv rung for
+    all but a small minority, and on a small box GROBID is better left DOWN: it holds 1.7GB
+    resident while Docling needs 1.6GB to re-read a table, and the two together took out both the
+    container and the worker mid-paper on this 7.5GB machine. The minority fails and a later pass
+    recovers it — but it is still probed and still logged, because silently losing that slice is
+    how a whole run was lost once already.
+    """
+    if not settings.grobid_url:
+        return None
+    import httpx
+
+    problem = None
+    try:
+        response = httpx.get(f"{settings.grobid_url.rstrip('/')}/api/isalive", timeout=10.0)
+        if response.status_code != 200:
+            problem = f"GROBID {settings.grobid_url} answered {response.status_code}"
+    except Exception as exc:  # noqa: BLE001 — any failure to reach it is the same verdict
+        problem = f"GROBID {settings.grobid_url} unreachable ({type(exc).__name__})"
+    if problem and not required:
+        _log.warning(
+            "선행 점검 경고 — %s. PDF→GROBID 룽으로 내려가는 논문은 실패로 기록된다"
+            "(나중에 TEI 2패스로 회수).",
+            problem,
+        )
+        return None
+    return problem
+
+
 def preflight_dependencies(
-    runtime: RuntimeServices, settings: IngestionSettings, *, require_grobid: bool = True
+    runtime: RuntimeServices,
+    settings: IngestionSettings,
+    *,
+    sources: Collection[str] = (),
 ) -> None:
     """Probe the dependencies a corpus batch cannot run without, and refuse to start if one is
     down. Raises ``RuntimeError`` listing every failure.
@@ -391,46 +433,32 @@ def preflight_dependencies(
     Neither shows up in the output — a paper that fails is simply absent — so they surface only as
     a failure counter nobody is watching. Cheap to check up front, hours to discover otherwise.
 
-    ``require_grobid=False`` for runs that can proceed without it — an arXiv-id list is mostly
-    served by the ar5iv rung, and on a small box GROBID is better left DOWN: it holds 1.7GB
-    resident while Docling needs 1.6GB to re-read a table, and the two together took out both the
-    container and the worker mid-paper on this 7.5GB machine. A down GROBID then costs the PDF-rung
-    minority, which a later pass recovers. It is still probed and still says so loudly — silently
-    losing that slice is how a whole run was lost once already.
+    ``sources`` is what THIS run will actually parse, not what the environment lists: an arXiv-id
+    list is arXiv-only however ``DOCSURI_CORPUS_SOURCES`` is set. Passing the set rather than a
+    "require GROBID" flag keeps one rule — the same ``GROBID_ONLY_SOURCES`` test the settings
+    check uses — instead of two that can disagree, which they already did: a hand-passed default
+    hard-blocked an arXiv-only rebuild that the settings layer says needs no GROBID at all.
     """
     errors: list[str] = []
-    warnings: list[str] = []
 
-    if settings.grobid_url:
-        import httpx
+    problem = probe_grobid(settings, required=bool(GROBID_ONLY_SOURCES & set(sources)))
+    if problem:
+        errors.append(problem)
 
-        problem = None
+    # Attribute access, not getattr: the field is declared on RuntimeServices, and a string lookup
+    # would let a builder that forgets to set it turn the embed probe into a silent no-op — the
+    # exact failure (a quota outage nobody noticed for five hours) this function exists to catch.
+    if runtime.embedding is None:
+        errors.append("runtime has no embedding port — the embed probe cannot run")
+    else:
         try:
-            response = httpx.get(f"{settings.grobid_url.rstrip('/')}/api/isalive", timeout=10.0)
-            if response.status_code != 200:
-                problem = f"GROBID {settings.grobid_url} answered {response.status_code}"
-        except Exception as exc:  # noqa: BLE001 — any failure to reach it is the same verdict
-            problem = f"GROBID {settings.grobid_url} unreachable ({type(exc).__name__})"
-        if problem:
-            (errors if require_grobid else warnings).append(problem)
-
-    embedding = getattr(runtime, "embedding", None)
-    if embedding is not None:
-        try:
-            vectors = embedding.embed_documents(["preflight"])
-            if not vectors or len(vectors[0]) != DIMENSIONS:
-                errors.append(
-                    f"embedding returned {len(vectors[0]) if vectors else 0} dims, "
-                    f"expected {DIMENSIONS}"
-                )
+            # The call IS the check. Both real ports already validate the returned width against
+            # their own configured dimension and raise, so re-checking here against the global
+            # constant would only disagree with them on the re-embed path, where the dimension is
+            # deliberately different.
+            runtime.embedding.embed_documents(["preflight"])
         except Exception as exc:  # noqa: BLE001 — quota, credentials, region all land here
             errors.append(f"embedding call failed ({type(exc).__name__}: {exc})")
 
-    for warning in warnings:
-        _log.warning(
-            "선행 점검 경고 — %s. PDF→GROBID 룽으로 내려가는 논문은 실패로 기록된다"
-            "(나중에 TEI 2패스로 회수).",
-            warning,
-        )
     if errors:
         raise RuntimeError("배치 선행 점검 실패 — " + "; ".join(errors))

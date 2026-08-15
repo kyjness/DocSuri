@@ -84,10 +84,18 @@ def _metadata(arxiv_id: str) -> MetadataRecord:
     )
 
 
+class _Embedding:
+    """Enough of an embedding port for the pre-flight probe to succeed."""
+
+    def embed_documents(self, texts, *, correlation_id=None):  # noqa: ARG002
+        return [[0.0] for _ in texts]
+
+
 class _Runtime:
     def __init__(self, pipeline: _Pipeline, arxiv: _Arxiv | None = None) -> None:
         self.pipeline = pipeline
         self.arxiv = arxiv
+        self.embedding = _Embedding()
 
 
 @pytest.fixture
@@ -205,7 +213,9 @@ def test_one_failing_paper_does_not_end_the_run(tmp_path, wired) -> None:
     # ...and the ledger classifies it, so a re-run skips the successes but can target b.
     recorded = load_ledger(ledger)
     assert recorded["a"] == DedupDecision.NEW.value
-    assert recorded["b"] == "failed:permanent:FETCH_FAILURE"
+    # The STAGE is part of the outcome — without it a retry run cannot tell "died on the embed
+    # quota, which is back" from "died on GROBID, which is still deliberately down".
+    assert recorded["b"] == "failed:permanent:FETCH_FAILURE:fetch_metadata"
 
 
 def test_retriable_failure_is_classified_without_a_second_retry_layer(tmp_path, wired) -> None:
@@ -229,7 +239,7 @@ def test_retriable_failure_is_classified_without_a_second_retry_layer(tmp_path, 
     ledger = tmp_path / "l.jsonl"
     assert ingest_foundational(list_path=str(path), ledger_path=str(ledger)) == 0
     assert pipeline.seen.count("a") == 1
-    assert load_ledger(ledger)["a"] == "failed:retriable:RATE_LIMITED"
+    assert load_ledger(ledger)["a"] == "failed:retriable:RATE_LIMITED:fetch_metadata"
 
 
 def test_loss_over_the_gate_exits_nonzero(tmp_path, wired) -> None:
@@ -317,6 +327,9 @@ def test_cli_production_path_checks_corpus_build_preconditions(tmp_path, monkeyp
     called = []
     monkeypatch.setattr(cli, "validate_corpus_build_settings", lambda settings: called.append(True))
     monkeypatch.setattr(cli, "build_production_runtime", lambda settings: _Runtime(_Pipeline()))
+    # GROBID is probed before the runtime is built (so a down one costs no model loading); this
+    # run is arXiv-only, so a miss is a warning rather than a stop.
+    monkeypatch.setattr(cli, "probe_grobid", lambda settings, *, required: None)
     path = _write_list(tmp_path, [("a", "canon")])
     assert (
         cli.main(
@@ -543,3 +556,94 @@ def test_scattered_failures_never_trip_the_consecutive_gate(tmp_path, wired) -> 
     )
 
     assert len(pipeline.seen) == len(rows)
+
+
+def test_skip_stage_holds_back_failures_from_a_deliberately_down_dependency(
+    tmp_path, wired
+) -> None:
+    """Not every recorded failure is worth retrying.
+
+    Half of the ⑧-2 retry set had died on the embed quota (back now, so worth a retry) and half on
+    GROBID (still deliberately down on a box where it and Docling cannot both fit). Retrying the
+    second half re-fetches and re-parses papers certain to fail again — and a long enough run of
+    them trips the collapse gate for a dependency nobody expected to be up.
+    """
+    rows = [("quota", "canon"), ("grobid", "canon"), ("fresh", "canon")]
+    ledger = tmp_path / "l.jsonl"
+    ledger.write_text(
+        json.dumps(
+            {"arxiv_id": "quota", "outcome": "failed:retriable:DEPENDENCY_UNAVAILABLE:embed"}
+        )
+        + "\n"
+        + json.dumps(
+            {"arxiv_id": "grobid", "outcome": "failed:retriable:DEPENDENCY_UNAVAILABLE:grobid"}
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    pipeline = wired(_Pipeline())
+
+    ingest_foundational(
+        list_path=str(_write_list(tmp_path, rows)),
+        ledger_path=str(ledger),
+        retry_failed=True,
+        skip_stages=("grobid",),
+    )
+
+    assert pipeline.seen == ["quota", "fresh"], "a GROBID-stage failure was retried anyway"
+
+
+def test_a_stageless_legacy_row_is_never_skipped(tmp_path, wired) -> None:
+    """Rows written before the stage was recorded have no stage. An unknown stage must not be
+    treated as a skippable one — that would quietly drop papers from a retry run."""
+    rows = [("old", "canon")]
+    ledger = tmp_path / "l.jsonl"
+    ledger.write_text(
+        json.dumps({"arxiv_id": "old", "outcome": "failed:retriable:DEPENDENCY_UNAVAILABLE"})
+        + "\n",
+        encoding="utf-8",
+    )
+    pipeline = wired(_Pipeline())
+
+    ingest_foundational(
+        list_path=str(_write_list(tmp_path, rows)),
+        ledger_path=str(ledger),
+        retry_failed=True,
+        skip_stages=("grobid", "embed"),
+    )
+
+    assert pipeline.seen == ["old"]
+
+
+def test_a_run_with_nothing_to_do_pays_no_probe(tmp_path, monkeypatch) -> None:
+    """The pre-flight costs a billed embed call and up to a 10s GROBID timeout, so it belongs
+    AFTER the ledger filter — a resumed run whose ledger is already complete should learn that for
+    free."""
+    from docsuri_ingestion import cli, foundational
+
+    def explode(*args, **kwargs):  # pragma: no cover - must not be called
+        raise AssertionError("a run with no papers must not probe dependencies")
+
+    monkeypatch.setattr(foundational, "preflight_dependencies", explode)
+    monkeypatch.setattr(cli, "validate_corpus_build_settings", lambda settings: None)
+    monkeypatch.setattr(cli, "build_production_runtime", lambda settings: _Runtime(_Pipeline()))
+    monkeypatch.setattr(cli, "probe_grobid", lambda settings, *, required: None)
+
+    ledger = tmp_path / "l.jsonl"
+    ledger.write_text(json.dumps({"arxiv_id": "a", "outcome": "NEW"}) + "\n", encoding="utf-8")
+    path = _write_list(tmp_path, [("a", "canon")])
+
+    assert cli.main(["ingest-foundational", "--list", str(path), "--ledger", str(ledger)]) == 0
+
+
+def test_the_module_entry_point_delegates_to_the_cli(tmp_path, monkeypatch) -> None:
+    """``python -m docsuri_ingestion.foundational`` is in this module's own docstring, and it used
+    to call ``ingest_foundational`` directly — skipping the pre-flight checks and ``--local``, and
+    re-declaring every flag in a second place that had already drifted."""
+    from docsuri_ingestion import cli, foundational
+
+    seen: list[list[str]] = []
+    monkeypatch.setattr(cli, "main", lambda argv: seen.append(argv) or 0)
+
+    assert foundational.main(["--dry-run", "--limit", "3"]) == 0
+    assert seen == [["ingest-foundational", "--dry-run", "--limit", "3"]]

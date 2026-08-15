@@ -37,19 +37,19 @@ many is a reason to stop rather than proceed to the recent slice.
 
 from __future__ import annotations
 
-import argparse
 import json
 import logging
 import pathlib
+import sys
 import time
 from collections import Counter, deque
+from collections.abc import Collection
 
 from .application import new_job_id
 from .domain.enums import JobKind
 from .domain.errors import PermanentIngestionError, RetriableIngestionError
 from .domain.models import IngestionJob
-from .observability import configure_logging
-from .runtime import build_production_runtime
+from .runtime import build_production_runtime, preflight_dependencies
 from .settings import IngestionSettings
 
 _log = logging.getLogger("docsuri.ingestion.foundational")
@@ -135,7 +135,7 @@ def load_ledger(path: pathlib.Path) -> dict[str, str]:
     return done
 
 
-def read_redo(path: pathlib.Path) -> set[str]:
+def read_redo(path: pathlib.Path) -> frozenset[str]:
     """arXiv ids to re-ingest even though the ledger says they succeeded, one per line.
 
     A paper that succeeded under an older parser or chunker is not "done" in any useful sense —
@@ -145,12 +145,22 @@ def read_redo(path: pathlib.Path) -> set[str]:
     append-only so a crash cannot corrupt it, and hand-editing it puts the whole resume record one
     slip away from being lost.
     """
-    ids: set[str] = set()
-    for line in path.read_text(encoding="utf-8").splitlines():
-        candidate = line.split("#", 1)[0].strip()
-        if candidate:
-            ids.add(candidate)
-    return ids
+    return frozenset(
+        candidate
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if (candidate := line.split("#", 1)[0].strip())
+    )
+
+
+def failure_stage(outcome: str) -> str:
+    """The stage a recorded failure died at, or "" for a success or an older stage-less row.
+
+    Outcomes are ``failed:<class>:<reason>:<stage>``; rows written before the stage was recorded
+    simply have no fourth field and are never filtered out by it — an unknown stage must not be
+    silently treated as a skippable one.
+    """
+    parts = outcome.split(":")
+    return parts[3] if len(parts) > 3 else ""
 
 
 def pending(
@@ -158,17 +168,27 @@ def pending(
     done: dict[str, str],
     *,
     retry_failed: bool,
-    redo: set[str] | None = None,
+    redo: frozenset[str] = frozenset(),
+    skip_stages: frozenset[str] = frozenset(),
 ) -> list[tuple[str, str]]:
     """Rows still to do. A failed paper is retried only on request — re-running the list should
-    not spend an hour re-attempting the same 404s every time. ``redo`` forces ids back in
-    regardless of their recorded outcome (see ``read_redo``)."""
-    forced = redo or set()
-    return [
-        (aid, bucket)
-        for aid, bucket in rows
-        if aid in forced or aid not in done or (retry_failed and done[aid].startswith("failed"))
-    ]
+    not spend an hour re-attempting the same 404s every time.
+
+    ``redo`` forces ids back in regardless of their recorded outcome (see ``read_redo``).
+    ``skip_stages`` holds a failure back: a paper that died at a stage whose dependency is
+    deliberately down would only fail again, wasting its fetch and parse and pushing the run
+    toward the collapse gate for a reason that is not a fault.
+    """
+
+    def wanted(aid: str) -> bool:
+        if aid in redo or aid not in done:
+            return True
+        outcome = done[aid]
+        if not (retry_failed and outcome.startswith("failed")):
+            return False
+        return failure_stage(outcome) not in skip_stages
+
+    return [(aid, bucket) for aid, bucket in rows if wanted(aid)]
 
 
 def ingest_foundational(
@@ -181,15 +201,26 @@ def ingest_foundational(
     limit: int | None = None,
     retry_failed: bool = False,
     redo_path: str | None = None,
+    skip_stages: Collection[str] = (),
+    preflight: bool = False,
     dry_run: bool = False,
 ) -> int:
     rows = read_list(pathlib.Path(list_path), bucket)
     ledger_file = pathlib.Path(ledger_path)
     ledger_file.parent.mkdir(parents=True, exist_ok=True)
-    redo = read_redo(pathlib.Path(redo_path)) if redo_path else set()
+    redo = read_redo(pathlib.Path(redo_path)) if redo_path else frozenset()
     if redo:
         _log.info("재수집 지정 %d편 (원장 결과와 무관하게 다시 돈다)", len(redo))
-    remaining = pending(rows, load_ledger(ledger_file), retry_failed=retry_failed, redo=redo)
+    skipped = frozenset(skip_stages)
+    if skipped:
+        _log.info("재시도 제외 단계: %s", ", ".join(sorted(skipped)))
+    remaining = pending(
+        rows,
+        load_ledger(ledger_file),
+        retry_failed=retry_failed,
+        redo=redo,
+        skip_stages=skipped,
+    )
     # Sliced AFTER the ledger filter, so successive --limit N runs advance through the list
     # instead of re-reading the same first N rows forever. `is not None`, not truthiness:
     # --limit 0 means "do nothing", not "do everything".
@@ -217,6 +248,14 @@ def ingest_foundational(
     if runtime is None:
         # The `python -m` path builds its own; the CLI passes one in so --local is honoured.
         runtime = build_production_runtime(settings or IngestionSettings.from_env())
+
+    if preflight:
+        # AFTER the `todo` check above, not before: a resumed run whose ledger is already complete
+        # (or `--limit 0`) would otherwise pay a billed embed call and a GROBID timeout to learn it
+        # has nothing to do. GROBID is probed separately by the caller, before the runtime is built.
+        preflight_dependencies(
+            runtime, settings or IngestionSettings.from_env(), sources=("ARXIV",)
+        )
 
     counts: Counter[str] = Counter()
     started = time.monotonic()
@@ -338,6 +377,12 @@ def _ingest_one_paper(runtime, arxiv_id: str, metadata=None) -> str:
     hammering a breaker that had just opened. A RetriableIngestionError surfacing here means the
     inner retries are already exhausted; the ledger records it and ``--retry-failed`` on a later
     run is the second chance.
+
+    THE STAGE IS PART OF THE OUTCOME. Without it every dependency failure reads the same, and
+    ``--retry-failed`` cannot tell "died on the embed quota, which is back now" from "died on
+    GROBID, which is still deliberately down" — so a retry run re-fetches and re-parses papers
+    that are certain to fail again, and a long enough run of them trips the collapse gate for a
+    dependency nobody expected to be up.
     """
     try:
         return runtime.pipeline.ingest_one(
@@ -351,33 +396,23 @@ def _ingest_one_paper(runtime, arxiv_id: str, metadata=None) -> str:
             )
         ).value
     except RetriableIngestionError as exc:
-        return f"failed:retriable:{exc.reason.value}"
+        return f"failed:retriable:{exc.reason.value}:{exc.stage}"
     except PermanentIngestionError as exc:
-        return f"failed:permanent:{exc.reason.value}"
+        return f"failed:permanent:{exc.reason.value}:{exc.stage}"
     except Exception as exc:  # noqa: BLE001 — classify and continue
         return f"failed:unexpected:{type(exc).__name__}"
 
 
 def main(argv: list[str] | None = None) -> int:
-    configure_logging()
-    ap = argparse.ArgumentParser(prog="python -m docsuri_ingestion.foundational")
-    ap.add_argument("--list", dest="list_path", default=DEFAULT_LIST)
-    ap.add_argument("--ledger", dest="ledger_path", default=DEFAULT_LEDGER)
-    ap.add_argument("--bucket", help="canon / cs.CL / cs.AI / cs.LG / cs.CV 중 하나만")
-    ap.add_argument("--limit", type=int)
-    ap.add_argument("--retry-failed", action="store_true", help="원장의 실패분을 다시 시도")
-    ap.add_argument("--redo", dest="redo_path", help="성공으로 적힌 id도 다시 도는 목록 파일")
-    ap.add_argument("--dry-run", action="store_true", help="목록·원장·재개만 확인, 수집 없음")
-    args = ap.parse_args(argv)
-    return ingest_foundational(
-        list_path=args.list_path,
-        ledger_path=args.ledger_path,
-        bucket=args.bucket,
-        limit=args.limit,
-        retry_failed=args.retry_failed,
-        redo_path=args.redo_path,
-        dry_run=args.dry_run,
-    )
+    """Delegate to the real CLI so this entry point cannot drift from it.
+
+    It used to re-declare every flag and call ``ingest_foundational`` directly, which meant the
+    documented ``python -m`` path silently skipped the pre-flight checks and ``--local`` — and the
+    two copies of ``--redo``'s help text had already diverged.
+    """
+    from .cli import main as cli_main
+
+    return cli_main(["ingest-foundational", *(argv if argv is not None else sys.argv[1:])])
 
 
 if __name__ == "__main__":

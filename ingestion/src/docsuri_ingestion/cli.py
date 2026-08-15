@@ -16,8 +16,29 @@ from .foundational import (
     ingest_foundational,
 )
 from .observability import configure_logging
-from .runtime import build_local_runtime, build_production_runtime, preflight_dependencies
+from .runtime import (
+    build_local_runtime,
+    build_production_runtime,
+    preflight_dependencies,
+    probe_grobid,
+)
 from .settings import IngestionSettings, validate_corpus_build_settings
+
+
+def _guard(check) -> bool:
+    """Run a pre-start check, reporting its failure as a message rather than a traceback.
+
+    Both checks raise the same ``RuntimeError("; ".join(errors))``: this is an operator being told
+    to go fix something, and a stack trace buries the one line that says what. Shared so the two
+    cannot drift — the settings check used to escape as a traceback while the liveness probe was
+    printed, three lines apart.
+    """
+    try:
+        check()
+    except RuntimeError as exc:
+        print(exc, file=sys.stderr)
+        return False
+    return True
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -41,6 +62,14 @@ def main(argv: list[str] | None = None) -> int:
     foundational.add_argument("--limit", type=int)
     foundational.add_argument("--retry-failed", action="store_true")
     foundational.add_argument(
+        "--skip-stage",
+        dest="skip_stages",
+        default=(),
+        type=lambda raw: tuple(p.strip() for p in raw.split(",") if p.strip()),
+        help="이 단계에서 실패한 논문은 --retry-failed 대상에서 뺀다 (예: grobid,extract_tei). "
+        "일부러 내려둔 의존성을 쓰는 논문을 다시 태우지 않기 위한 것",
+    )
+    foundational.add_argument(
         "--redo",
         dest="redo_path",
         help="이 파일에 적힌 arXiv id는 원장이 성공으로 적어뒀어도 다시 돈다 "
@@ -56,34 +85,23 @@ def main(argv: list[str] | None = None) -> int:
     # to construct a production one and ingest 1,500 papers into the real corpus), violated
     # --dry-run's documented no-runtime guarantee, and made normal runs build two runtimes.
     if args.command == "ingest-foundational":
-        if not args.local and not args.dry_run:
+        live = not args.local and not args.dry_run
+        if live:
             # Writes a third of the corpus, so it needs the same preconditions the full rebuild
             # checks (multimodal assets on, no v2 model shadow, GROBID reachable, rollout
             # confirmed) — skipping them here would be discovered after the ~1.5-hour run.
-            validate_corpus_build_settings(settings)
+            # Before the runtime is built, so a misconfiguration costs no model loading.
+            if not _guard(lambda: validate_corpus_build_settings(settings)):
+                return 1
+            # GROBID needs only its URL, so probe it before Docling and pix2tex are imported.
+            # An id list is arXiv-only whatever the env lists, so a down GROBID is a warning here
+            # (probe_grobid logs it) rather than a stop.
+            probe_grobid(settings, required=False)
         foundational_runtime = None
         if not args.dry_run:
             foundational_runtime = (
                 build_local_runtime() if args.local else build_production_runtime(settings)
             )
-            if not args.local:
-                # Settings being right is not the same as the things they name being up. Both
-                # failures this catches were correctly configured and simply not answering, and
-                # neither is visible in the output — see preflight_dependencies.
-                #
-                # Reported as a message, not a traceback: this is an operator telling the batch
-                # to go fix something, and a stack trace buries the one line that says what.
-                #
-                # GROBID is NOT required here: this list is arXiv ids, which the ar5iv rung serves
-                # for all but a small minority, and on a small box GROBID is better left down —
-                # it and Docling together took out the worker mid-paper. The minority fails and a
-                # later pass recovers it; the check still warns so that is a choice, not a
-                # surprise.
-                try:
-                    preflight_dependencies(foundational_runtime, settings, require_grobid=False)
-                except RuntimeError as exc:
-                    print(exc, file=sys.stderr)
-                    return 1
         return ingest_foundational(
             settings,
             runtime=foundational_runtime,
@@ -93,17 +111,21 @@ def main(argv: list[str] | None = None) -> int:
             limit=args.limit,
             retry_failed=args.retry_failed,
             redo_path=args.redo_path,
+            skip_stages=args.skip_stages,
+            preflight=live,
             dry_run=args.dry_run,
         )
 
     if args.command == "trigger-full-rebuild" and not args.local:
-        validate_corpus_build_settings(settings)
+        if not _guard(lambda: validate_corpus_build_settings(settings)):
+            return 1
     runtime = build_local_runtime() if args.local else build_production_runtime(settings)
     if args.command == "trigger-full-rebuild" and not args.local:
-        try:
-            preflight_dependencies(runtime, settings)
-        except RuntimeError as exc:
-            print(exc, file=sys.stderr)
+        if not _guard(
+            lambda: preflight_dependencies(
+                runtime, settings, sources=settings.parsed_corpus_sources
+            )
+        ):
             return 1
 
     if args.command == "ingest-one":
