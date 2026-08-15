@@ -14,7 +14,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from .models import CandidateSet, QueryPlan, RankedResults
+from .models import Candidate, CandidateSet, QueryPlan, RankedResults
 
 TOP_N = 20  # FR-3 (Q10=A)
 
@@ -44,6 +44,24 @@ def _record_boost(record, boosts: dict[str, float]) -> float:
     return 0.0
 
 
+def _boosted(candidate: Candidate, boosts: dict[str, float]) -> float:
+    """``ranking_score`` nudged by its category boost — MAGNITUDE-relative, not sign-relative.
+
+    Algebraically ``score * (1 + b)`` is ``score + score*b``, which silently inverts once the
+    score is negative: a positive boost makes it MORE negative, so a preferred paper sorts DOWN.
+    Scaling by ``abs(score)`` is identical wherever the score is non-negative and keeps "boost
+    means up" true everywhere else.
+
+    Negative scores are reachable: ``apply_rerank`` parks the un-reranked tail in a thin band
+    below the lowest rerank score, and that band crosses zero when the cross-encoder returns a
+    floor of 0.0. Today the ranker truncates to TOP_N before boosting and the rerank width is
+    wider than TOP_N, so the tail never gets here — but that is an invariant held one module
+    away, and this function should not be the thing that breaks when it moves.
+    """
+    boost = _record_boost(candidate.record, boosts)
+    return candidate.ranking_score + abs(candidate.ranking_score) * boost
+
+
 def apply_boosts(
     ranked: RankedResults,
     boosts: dict[str, float],
@@ -65,13 +83,7 @@ def apply_boosts(
         return ranked, ShadowDiff(0, 0, 0)
     # Nudge the CURRENT sort key (ranking_score) — post-rerank this is the rerank score, so
     # personalization correctly nudges the reranked order, not the raw retrieval order.
-    reordered = sorted(
-        head,
-        key=lambda c: (
-            -(c.ranking_score * (1.0 + _record_boost(c.record, boosts))),
-            c.record.paperId,
-        ),
-    )
+    reordered = sorted(head, key=lambda c: (-_boosted(c, boosts), c.record.paperId))
     baseline_ids = [c.record.paperId for c in head]
     new_pos = {c.record.paperId: i for i, c in enumerate(reordered)}
     positions_changed = sum(1 for i, pid in enumerate(baseline_ids) if new_pos[pid] != i)

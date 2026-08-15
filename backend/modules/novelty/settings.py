@@ -29,6 +29,14 @@ DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 # Closed vocabulary: ``llm_configured`` reads this as ``== "bedrock"``, so an unknown value used
 # to report "not configured" without ever naming the typo.
 LLM_PROVIDERS = ("openai", "bedrock")
+# 기본은 bedrock — evidence(U11)와 같은 근거다. OPENAI_API_KEY가 저장소에서 제거된 뒤
+# (2026-08-15) openai 기본값은 "설정된 적 없음"과 구별되지 않는다: `llm_configured`가
+# openai에서 키 유무를 보므로 False가 되고, 워커는 기동하자마자 SystemExit으로 죽는다.
+# 배포에서 정확히 그 상태였다 — CDK는 DOCSURI_NOVELTY_LLM_MODEL_ID(Sonnet)를 주면서
+# provider 스위치는 주지 않아, 모델 id는 Bedrock인데 provider는 openai였다. API는
+# novelty를 무조건 마운트하므로 잡은 접수되어 큐에 쌓이고 실행하는 프로세스만 없었다.
+# openai는 이제 opt-in이다(.env.example이 네 스위치를 모두 명시한다).
+DEFAULT_LLM_PROVIDER = "bedrock"
 # v1 승계 — Bedrock inference profile(배포 기준선).
 DEFAULT_BEDROCK_MODEL = "global.anthropic.claude-sonnet-4-6"
 
@@ -150,7 +158,9 @@ class NoveltySettings:
     @classmethod
     def from_env(cls) -> NoveltySettings:
         return cls(
-            llm_provider=_env_choice("DOCSURI_NOVELTY_LLM_PROVIDER", LLM_PROVIDERS, "openai"),
+            llm_provider=_env_choice(
+                "DOCSURI_NOVELTY_LLM_PROVIDER", LLM_PROVIDERS, DEFAULT_LLM_PROVIDER
+            ),
             openai_api_key=os.environ.get("OPENAI_API_KEY"),
             openai_model=os.environ.get("DOCSURI_NOVELTY_OPENAI_MODEL", DEFAULT_OPENAI_MODEL),
             openai_input_usd_per_mtok=_env_float(

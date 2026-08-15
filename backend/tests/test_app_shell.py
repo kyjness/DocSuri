@@ -248,7 +248,7 @@ def test_absent_module_skips_gracefully_not_fatal() -> None:
     assert [name for name, _ in result.skipped] == ["ghost"]
 
 
-def test_mount_modules_never_raises_and_records_reasons(search_configured) -> None:
+def test_mount_modules_contains_module_failures_and_records_reasons(search_configured) -> None:
     app = create_app(_TEST_SETTINGS)
     result: MountResult = mount_modules(app, _TEST_SETTINGS)
     assert isinstance(result, MountResult)
