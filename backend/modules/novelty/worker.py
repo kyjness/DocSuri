@@ -23,6 +23,7 @@ from datetime import timedelta
 from typing import Any
 
 # 계측 방출은 공유 best-effort 헬퍼(포트 시그니처 강제) — 유닛 사본 금지.
+from docsuri_shared.env import EnvConfigError
 from docsuri_shared.observability import emit_metric as _emit
 
 from .domain.agent_step import ON_DEMAND_UNAVAILABLE_NOTICE, append_agent_message
@@ -397,6 +398,8 @@ def _build_corpus_deps() -> tuple[Any | None, Any | None]:
             return None, None
         bundle = build_real_orchestrator(discovery_settings)
         return bundle.orchestrator, GroundingEnforcementHook()
+    except EnvConfigError:
+        raise  # 설정 오타는 부재가 아니다 — 도구만 줄이고 계속 돌면 오타가 어디에도 안 남는다
     except Exception:  # noqa: BLE001 — 코퍼스 검색은 선택 의존성, 부재 시 도구 축소
         log.warning("novelty worker: corpus search unavailable", exc_info=True)
         return None, None
@@ -414,6 +417,8 @@ def _build_evidence_port() -> Any | None:
             return None
         runner = build_evidence_runner(evidence_settings)
         return EvidenceFormationService(runner=runner)
+    except EnvConfigError:
+        raise  # 위와 같다
     except Exception:  # noqa: BLE001 — 근거형성은 선택 의존성(자연어 잡은 fatal로 표면화)
         log.warning("novelty worker: evidence engine unavailable", exc_info=True)
         return None

@@ -14,6 +14,7 @@ fallback (degraded); index failure → ``SearchUnavailable`` (fail-closed, INV-3
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -53,6 +54,8 @@ from ..ports.search_ports import (
     RerankAdapter,
     SearchUnavailable,
 )
+
+_log = logging.getLogger(__name__)
 
 # Generic, non-technical messages (SEC-9/SEC-15 — no internal detail).
 _VALIDATION_MESSAGE = "Your search could not be processed. Please revise and try again."
@@ -166,12 +169,19 @@ class SearchOrchestrationService:
         t_stage = perf_counter()
         try:
             plan = self._expander.expand(normalized, degradation, scope)
-        except EmbeddingUnavailable:
+        except EmbeddingUnavailable as exc:
             # Dependency fail-fast (Q1/BR-16): embedding down → lexical-only degrade. Also flip
             # ``degradation`` itself (not just the expander's copy) so the downstream rerank is
             # skipped — rerank is the SAME Bedrock provider that just failed, so attempting it
             # would only stall on the rerank timeout before failing soft (extra latency on an
             # already-degraded request).
+            #
+            # Log it. The client sees a DegradedResultDTO banner, but nothing reached the log,
+            # so from the server side a throttled embedding was indistinguishable from a normal
+            # hybrid search returning different results. That silence corrupted a rerank
+            # A/B measurement before it was noticed (2026-08-15) — the vector leg was simply
+            # off for some queries and nothing said so.
+            _log.warning("discovery: embedding unavailable, degrading to lexical-only: %s", exc)
             degrade_mode = DegradeMode.LEXICAL_ONLY
             degradation = DegradationSignal(llm_enabled=False, rerank_enabled=False)
             plan = self._expander.expand(normalized, degradation, scope)
@@ -245,7 +255,8 @@ class SearchOrchestrationService:
         budget disabled it (``rerank_enabled`` False → RERANK_OFF/LEXICAL_ONLY). Any adapter
         failure is swallowed and the baseline RRF order is kept — rerank is a ranking-QUALITY
         enhancement that MUST NEVER block or degrade the response (fail-soft, BR-5). It only
-        rewrites ``ranking_score`` on the head; the ranker re-sorts by that single key."""
+        rewrites ``ranking_score`` (scored head, then the tail demoted beneath it — the candidate
+        count is unchanged either way); the ranker re-sorts by that single key."""
         if self._reranker is None or not candidates.candidates:
             return candidates  # feature off, or nothing to rerank
         if not degradation.rerank_enabled:
@@ -256,7 +267,17 @@ class SearchOrchestrationService:
         try:
             scores = self._reranker.rerank(query, documents)
             reranked = apply_rerank(candidates.candidates, scores, width)
-        except Exception:  # noqa: BLE001 — best-effort: keep baseline order, never block search
+        except Exception as exc:  # noqa: BLE001 — best-effort: keep baseline order, never block
+            # Log as well as emit. The metric alone made this invisible outside a dashboard, and
+            # a rerank that always fails is indistinguishable from a rerank that is switched off:
+            # both serve baseline RRF with a 200. Throttling makes that a routine outcome, not a
+            # rare one — the per-account request-rate quota trips on ordinary bursts.
+            _log.warning(
+                "discovery: rerank failed, serving baseline RRF order (width=%d, scope=%s): %s",
+                width,
+                scope.value,
+                exc,
+            )
             self._emit_rerank_metric(0.0, "failed", scope)
             return candidates
         self._emit_rerank_metric(1.0, "applied", scope)

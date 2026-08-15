@@ -18,7 +18,7 @@ from discovery.domain.reranker import (
     rerank_text,
     rerank_width,
 )
-from discovery.mocks.fixtures import RECORDS
+from discovery.testing.fixtures import RECORDS
 
 
 def _cand(i: int, score: float) -> Candidate:
@@ -39,7 +39,8 @@ def test_ranking_score_seeded_from_retrieval_score() -> None:
 def test_rerank_width_per_scope() -> None:
     assert rerank_width(SearchScope.LITE) == RERANK_TOP_M_LITE
     assert rerank_width(SearchScope.FULL) == RERANK_TOP_M_FULL
-    # Width must cover the displayed page so the reranked head never leaves a tail item on screen.
+    # Width should still cover the displayed page — not for correctness (the tail is kept now,
+    # so a narrower M cannot empty the page) but so the page a user sees is fully cross-encoded.
     assert RERANK_TOP_M_LITE >= TOP_N
     assert RERANK_TOP_M_FULL >= TOP_N
 
@@ -51,17 +52,29 @@ def test_rerank_text_is_title_and_abstract() -> None:
     assert record.abstract in txt
 
 
-def test_apply_rerank_returns_reranked_head_drops_tail() -> None:
+def test_apply_rerank_scores_head_and_demotes_tail() -> None:
     cands = tuple(_cand(i, 1.0 / (i + 1)) for i in range(5))
     out = apply_rerank(cands, [0.2, 0.9], width=2)
-    # Only the reranked head is returned — the un-reranked tail (different score scale) is dropped.
-    assert len(out) == 2
+    # Nothing is dropped: M is a rerank-breadth policy, not the depth of the candidate pool.
+    assert len(out) == len(cands)
     assert out[0].ranking_score == 0.2
     assert out[1].ranking_score == 0.9
     # retrieval_score provenance is preserved on the head.
     assert out[0].retrieval_score == cands[0].retrieval_score
-    # The dropped tail must not leak through.
-    assert {c.record.chunkId for c in out} == {c.record.chunkId for c in cands[:2]}
+    tail = out[2:]
+    assert [c.record.chunkId for c in tail] == [c.record.chunkId for c in cands[2:]]
+    # The two score scales must never interleave: every tail item sits strictly below the LOWEST
+    # reranked score, so a high fusion score can't surface an un-scored paper above a scored one.
+    assert all(c.ranking_score < 0.2 for c in tail)
+    # ...and the tail keeps its fused order among itself.
+    assert [c.ranking_score for c in tail] == sorted((c.ranking_score for c in tail), reverse=True)
+
+
+def test_apply_rerank_keeps_pool_when_nothing_was_scored() -> None:
+    """width=0 means no rerank happened — there is no floor to demote anything beneath."""
+    cands = tuple(_cand(i, 1.0 / (i + 1)) for i in range(3))
+    out = apply_rerank(cands, [], width=0)
+    assert out == cands
 
 
 def test_apply_rerank_length_mismatch_raises() -> None:

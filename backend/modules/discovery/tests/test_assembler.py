@@ -18,7 +18,7 @@ from discovery.domain.models import (
     GroundedResults,
     NoMatchResult,
 )
-from discovery.mocks.fixtures import RECORDS
+from discovery.testing.fixtures import RECORDS
 
 _assembler = ResultAssembler()
 

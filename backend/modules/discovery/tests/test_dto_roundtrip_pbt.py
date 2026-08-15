@@ -14,7 +14,7 @@ from hypothesis import strategies as st
 
 from discovery.domain.assembler import ResultAssembler
 from discovery.domain.models import Candidate, DegradeMode, GroundedResults, NoMatchResult
-from discovery.mocks.fixtures import RECORDS
+from discovery.testing.fixtures import RECORDS
 
 _assembler = ResultAssembler()
 # Phase 2 (Q2): the card additively exposes source-neutral sourceName/sourceUrl. blockRefs/

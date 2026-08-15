@@ -10,7 +10,8 @@ Summarization(U7) 어댑터 재사용:
   S3DocModelReader → EvidenceDocModelTool
 
 신규:
-  EvidenceExtractor → Bedrock Sonnet 4.6 (claude-sonnet-4-6)
+  EvidenceExtractor/Decider → 프로바이더 스위치(DOCSURI_EVIDENCE_LLM_PROVIDER):
+    bedrock=Anthropic Sonnet 4.6(기본) · openai=gpt-4o-mini
 """
 
 from __future__ import annotations
@@ -121,14 +122,35 @@ def build_evidence_runner(
     doc_models = DocModelReader(doc_model_reader)
 
     # --- LLM (결정 + 추출) ---
-    from .adapters.llm_openai import OpenAiDecider, OpenAiExtractor
-
+    # 프로바이더 선택은 여기, composition root에서만 일어난다(TD-EV2-2). 루프 코어와
+    # 프롬프트는 어느 쪽이 조립됐는지 모른다 — 포트가 같기 때문이다.
     rates = {
         "input_usd_per_mtok": settings.input_usd_per_mtok,
         "output_usd_per_mtok": settings.output_usd_per_mtok,
     }
-    decider = OpenAiDecider(model=settings.model_id, **rates)
-    extractor = OpenAiExtractor(model=settings.model_id, **rates)
+    if settings.llm_provider == 'bedrock':
+        import boto3
+        from botocore.config import Config
+
+        from .adapters.llm_bedrock import BedrockDecider, BedrockExtractor
+
+        # ONE client for both adapters, with botocore's own retries turned off. The failure
+        # contract belongs to SourceBreaker (retry once, then trip) — botocore's default legacy
+        # mode would retry ~5x underneath it, so a sustained outage cost ~10 wire attempts per
+        # turn and the breaker saw one failure per ten, never opening. Timeouts bound a hung
+        # turn; the loop budget, not the transport, decides how long a job may run.
+        client = boto3.client(
+            "bedrock-runtime",
+            region_name=settings.region_name,
+            config=Config(connect_timeout=5, read_timeout=90, retries={"max_attempts": 1}),
+        )
+        decider = BedrockDecider(model=settings.model_id, client=client, **rates)
+        extractor = BedrockExtractor(model=settings.model_id, client=client, **rates)
+    else:
+        from .adapters.llm_openai import OpenAiDecider, OpenAiExtractor
+
+        decider = OpenAiDecider(model=settings.model_id, **rates)
+        extractor = OpenAiExtractor(model=settings.model_id, **rates)
 
     # --- 선택 도구: 없으면 등록되지 않고 도구 목록이 자연 축소된다 ---
     external_search = None

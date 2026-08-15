@@ -38,10 +38,11 @@ backend/modules/discovery/
 │   │   └── embedding_cache.py    # read-through TTL 캐시(인메모리 mock; 공유 캐시는 Infra)
 │   ├── service/
 │   │   └── orchestrator.py       # SearchOrchestrationService.execute_search (동기 파이프라인+degrade 매트릭스) + publish_search_executed(비차단)  [전 스토리]
-│   ├── mocks/
+│   ├── defaults/
+│   │   └── port_stubs.py         # StubGroundingHook(pass-through+abstain)·StubCostGuard(NORMAL)·NoopObservability·InMemoryEventPublisher — 훅 미주입 시 프로덕션이 쓰는 기본값 (MR-3)
+│   ├── testing/
 │   │   ├── fixtures.py           # 샘플 IndexRecord 집합(QT-2 평가셋 + 한국어↔영어 cross-lingual, MR-2)
-│   │   ├── adapters.py           # MockVectorStore/Lexical/Embedding 어댑터(결정적)
-│   │   └── port_stubs.py         # StubGroundingHook(pass-through+abstain)·StubCostGuard(NORMAL)·NoopObservability·InMemoryEventPublisher (MR-3)
+│   │   └── adapters.py           # MockVectorStore/Lexical/Embedding 어댑터(결정적)
 │   └── api/
 │       └── router.py             # QueryIntakeController — FastAPI 라우터(thin; ⏳ FastAPI 합의 전제, app-shell 마운트). 도메인은 FastAPI 없이도 동작
 └── tests/
@@ -66,7 +67,7 @@ backend/modules/discovery/
 - [x] **Step 4 — 비즈니스 로직(도메인 6 컴포넌트)**: validator·expander·retriever(RRF·PaperId 디덥)·ranker(N=20)·grounding_adapter(INV-1)·assembler(카드 7필드·SEC-9). [US-D1~D6]
 - [x] **Step 5 — 캐시**: `cache/embedding_cache.py`(read-through·TTL·인메모리).
 - [x] **Step 6 — 오케스트레이터**: `service/orchestrator.py`(execute_search 파이프라인 + degrade 매트릭스 + fail-fast/폴백 + publish_search_executed 비차단). [전 스토리·US-L3]
-- [x] **Step 7 — mock 어댑터/스텁**: `mocks/`(fixtures 한국어 cross-lingual+QT-2 · 결정적 mock 어댑터 · 포트 스텁 pass-through/NORMAL/Noop/InMemory). [MR-2/3]
+- [x] **Step 7 — mock 어댑터/스텁**: `testing/`(fixtures 한국어 cross-lingual+QT-2 · 결정적 mock 어댑터) + `defaults/`(포트 기본값 pass-through/NORMAL/Noop/InMemory). [MR-2/3]
 - [x] **Step 8 — API 라우터**: `api/router.py`(QueryIntakeController FastAPI thin 라우터 · 전역 예외 핸들러 SEC-15). ⏳ FastAPI 합의 전제 — 도메인은 라우터 없이도 import/test 가능.
 - [x] **Step 9 — 단위/PBT 테스트**: `tests/`(PBT-02/03/07/09 + 종단 상태 + degrade + RES-12 폴트 인젝션). Hypothesis 도메인 제너레이터(다국어 질의).
 - [x] **Step 10 — 문서**: `aidlc-docs/construction/u2-discovery/code/`(README·생성 요약·실행/테스트 방법). 코드 외 마크다운만.

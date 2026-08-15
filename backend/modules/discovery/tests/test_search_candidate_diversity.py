@@ -26,8 +26,8 @@ from discovery.adapters.opensearch_index import (
     OpenSearchLexicalIndexAdapter,
     OpenSearchVectorStoreAdapter,
 )
-from discovery.mocks import fixtures
-from discovery.mocks.adapters import MockLexicalIndexAdapter, MockVectorStoreAdapter
+from discovery.testing import fixtures
+from discovery.testing.adapters import MockLexicalIndexAdapter, MockVectorStoreAdapter
 
 from .test_opensearch_adapter import FakeSearchClient
 

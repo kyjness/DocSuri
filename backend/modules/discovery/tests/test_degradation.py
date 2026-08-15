@@ -8,8 +8,8 @@ from docsuri_shared.dtos import DegradedResultDTO
 
 from discovery.api import run_search
 from discovery.domain.models import AuthSession, DegradeMode, RequestContext
-from discovery.mocks import build_mock_orchestrator
 from discovery.service.orchestrator import _derive_degradation
+from discovery.testing import build_mock_orchestrator
 
 
 def _ctx() -> RequestContext:

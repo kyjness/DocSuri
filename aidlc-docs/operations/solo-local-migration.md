@@ -28,7 +28,7 @@
 | SQS (ingestion job queue) | **당장 불필요** | 없음 | doc-model이 전부 사전 빌드돼 있어 BUILD_DOC_MODEL 경로가 콜드스타트에 필요 없음. 필요해지면 ElasticMQ 또는 인프로세스 큐로 재결정 |
 | Bedrock 임베딩 (Cohere Embed v4, 1024-dim) | **OpenAI `text-embedding-3-small` + `dimensions=1024`** | 어댑터 2개 추가 | 차원 파라미터로 shared `vector_spec.DIMENSIONS=1024` 계약을 그대로 유지 → 인덱스 매핑/IndexRecord 무수정. Cohere의 reader/writer `input_type` 비대칭은 대칭 모델이라 삭제 |
 | Bedrock LLM (Claude Sonnet/Haiku) | OpenAI API (추후 Anthropic API 선택 가능) | 어댑터 추가 | summarization의 forced-tool-call 구조화 출력 패턴을 OpenAI tool-choice로 동일 재현. novelty/evidence는 에이전트 재설계(별도 유닛)에서 함께 교체 |
-| Bedrock rerank (cross-encoder) | **비활성** | 없음 | 이미 feature-off 와이어링 지원 (`reranker=None` → RRF 기본 순서). 검색 품질 튜닝이 필요해지면 로컬 cross-encoder 재검토 |
+| Bedrock rerank (cross-encoder) | **활성** *(2026-08-15)* | 도쿄 `cohere.rerank-v3-5:0` | `DOCSURI_RERANK_MODEL_ARN` 설정만으로 켜짐(코드 변경 없음). 모델 액세스 승인·`bedrock:Rerank` 별도 신청 **불필요**(2026-08-15 실측). 서울엔 모델이 없어 크로스리전이며 리전은 ARN에서 역산. 요청속도 쿼터가 실질 제약 — 스로틀 시 baseline fail-soft + WARNING |
 | CloudWatch | stdout 구조화 로그 | 없음 | ObservabilityHub는 이미 주입식 |
 
 *S3 예외 1건: `summarization/adapters/rds_assets.py:56`이 presign URL을 `https://s3.{region}.amazonaws.com`으로
@@ -183,7 +183,7 @@ backend/.venv/bin/python tools/local/smoke.py --with-llm  # + 유료 소수(Open
 |---|---|---|
 | 배포 (docsuri.org 재연결) | 서버 비용. 도메인 갱신(연 ~$13 + 호스팅존 $0.5/월)만 유지 | 비용 확보 시. **AWS 재배포**(이관 이전 구성 복귀)가 전제 — 대체 호스팅은 검토 대상 아님 |
 | SQS 대체 | 사전 빌드된 DocModel로 큐 없이 동작 | 신규 논문 인제스트가 필요해질 때 |
-| rerank 로컬 대체 | feature-off로 무해 | 검색 품질 튜닝 단계 |
+| rerank 로컬 대체 | 불필요 — 도쿄 Bedrock 직접 호출(2026-08-15 활성) | — |
 | 전체 30k 재색인 | 서브셋으로 개발 충분 | 검색 품질 평가 필요 시 ($6–9) |
 | Anthropic API 병행 | OpenAI 키로 시작 | 에이전트 재설계에서 모델 비교가 필요할 때 |
 | GROBID 표 구조 복원 교체 | 노출 범위가 fallback 티어뿐 (아래) | 비-arXiv 소스 비중이 커지거나 표 숫자 정확도가 요구될 때 |

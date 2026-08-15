@@ -3,7 +3,7 @@
 Each ``GoldenCase`` pins a query to the set of paperIds a correct search MUST surface
 (``relevant``) OR marks the query as out-of-domain junk that MUST abstain (``expect_abstain``,
 US-D6 / F2 — near-noise k-NN neighbors are not "관련 논문"). The paperIds are drawn from
-``discovery.mocks.fixtures.RECORDS`` so the set is self-contained and deterministic.
+``discovery.testing.fixtures.RECORDS`` so the set is self-contained and deterministic.
 
 The corpus + mock embedding are coarse bag-of-keywords stand-ins (see fixtures.py), so this
 is a *wiring + regression* golden set, not a quality model — the Recall@10 ≥ 0.7 bar it

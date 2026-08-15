@@ -16,13 +16,14 @@ from discovery.domain.models import (
     RetrievalMode,
 )
 from discovery.domain.ranker import (
+    _BR_P8_BOOST_CEILING,
     TOP_N,
     RelevanceRanker,
     ShadowDiff,
     apply_boosts,
     shadow_rerank_diff,
 )
-from discovery.mocks.fixtures import RECORDS
+from discovery.testing.fixtures import RECORDS
 
 _ranker = RelevanceRanker()
 _plan = QueryPlan(lexical_terms=(), mode=RetrievalMode.HYBRID)
@@ -109,6 +110,28 @@ def test_apply_boosts_reorders_head_and_matches_diff() -> None:
     assert [c.record.paperId for c in boosted.ranked] == ["B", "A", "C", "D"]
     assert diff == shadow_rerank_diff(ranked, {"cs.AI": 0.1}, top_fraction=1.0)
     assert ranked.ranked[0].record.paperId == "A"  # input is not mutated
+
+
+def test_apply_boosts_lifts_a_preferred_paper_even_at_a_negative_score() -> None:
+    """A boost must mean UP regardless of the score's sign.
+
+    ``score * (1 + b)`` reads as "nudge up" only while the score is positive; on a negative one
+    it pushes the preferred paper DOWN. Negative scores are reachable — ``apply_rerank`` parks
+    the un-reranked tail just below the lowest rerank score, and that band crosses zero when the
+    cross-encoder floors at 0.0. Baseline is A > B (−0.0010 > −0.0011) and the boost is capped at
+    10% of the score's magnitude, so B gains 0.00011 — just enough to pass A. Under the old
+    ``score * (1 + b)`` B would land at −0.00121, i.e. FURTHER from A: boosted and demoted.
+    """
+    ranked = RankedResults(
+        ranked=(_shadow_c("A", -0.0010, ["cs.LG"]), _shadow_c("B", -0.0011, ["cs.AI"])),
+    )
+
+    boosted, diff = apply_boosts(ranked, {"cs.AI": _BR_P8_BOOST_CEILING}, top_fraction=1.0)
+
+    assert [c.record.paperId for c in boosted.ranked] == ["B", "A"]
+    assert diff == shadow_rerank_diff(
+        ranked, {"cs.AI": _BR_P8_BOOST_CEILING}, top_fraction=1.0
+    )
 
 
 def test_apply_boosts_noop_returns_input_order() -> None:

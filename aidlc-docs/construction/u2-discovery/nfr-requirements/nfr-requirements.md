@@ -33,7 +33,7 @@
   - **임베딩(Bedrock) 장애/타임아웃 → lexical-only 폴백**(DegradedResultDTO, US-R2) — degradeMode와 별개의 의존성 장애 폴백.
   - **OpenSearch(인덱스) 장애 → fail-closed 에러**(검색 불가; 조용한 오답 금지, NFR-R1).
   - 명시 타임아웃 + 서킷 브레이커 + 정의된 저하 동작(BR-16, RES-10).
-- **저하 모드(Q6=A, NFR-C1/R2)**: `getBudgetState().degradeMode`(U6 단일 권위 조회) → RERANK_OFF(U2 baseline상 무변화·배너만)/LEXICAL_ONLY(임베딩 생략·BM25). `ResultMeta.degraded`/`mode` 명시.
+- **저하 모드(Q6=A, NFR-C1/R2)**: `getBudgetState().degradeMode`(U6 단일 권위 조회) → RERANK_OFF(cross-encoder 재랭킹 skip → RRF 순서·배너 — *2026-07-06 BR-11 이전의 '무변화' 서술은 폐기*)/LEXICAL_ONLY(임베딩 생략·BM25). `ResultMeta.degraded`/`mode` 명시.
 - **부분/조용한 결과 금지(NFR-R1)**: 종단 상태 명시(SearchResponse union). "조용한 결과"란 *무표시*를 뜻하며, **count:0을 명시한 빈 페이지(SearchResultPageDTO, resultCount=0)는 허용** — 무매치는 이 명시적 빈 페이지로 종단(BR-9). 금지되는 것은 근거 없는 카드를 성공인 양 섞는 것(→ AbstainDTO로 거부).
 
 ## 4. 비용 (Cost) — NFR-C1

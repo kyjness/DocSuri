@@ -67,7 +67,7 @@ U2 동기 읽기 경로의 단일 도메인 오케스트레이터. 요청→응�
 | `RERANK_OFF` | rerankEnabled=false | 동일 | hybrid | baseline 상위 N | **DegradedResultDTO**(mode=RERANK_OFF) |
 | `LEXICAL_ONLY` | llmEnabled=false | **임베딩 생략** | **lexical-only(BM25)** | baseline 상위 N | **DegradedResultDTO**(mode=LEXICAL_ONLY) |
 
-> **Q1=A/Q3=A 정합 주석**: U2 baseline은 **LLM 질의 재작성 없음(Q1=A)·LLM 리랭킹 없음(Q3=A)**이다. 따라서 `RERANK_OFF` 단계는 U2에선 **동작 무변화**(이미 리랭킹 미사용)이나 `BudgetState` 계약상 노출되므로 그대로 표면화(저하 배너). **실효 저하**는 `LEXICAL_ONLY`(질의 임베딩 = U2 동기 경로의 주 비용 동인을 차단 → BM25 폴백)다. 임베딩 공간 자체는 불변(vector-spec.md §1).
+> **Q1=A/Q3=A 정합 주석**: U2 baseline은 **LLM 질의 재작성 없음(Q1=A)·LLM 리랭킹 없음(Q3=A)**이다. ~~따라서 `RERANK_OFF` 단계는 U2에선 **동작 무변화**(이미 리랭킹 미사용)~~ → **폐기(BR-11, 2026-07-06)**: 페이즈 7이 cross-encoder 재랭킹을 도입했고 2026-08-15 실배선됐으므로 `RERANK_OFF`는 **실효 저하**다(재랭킹 skip → RRF 순서). 저하 배너도 그대로 표면화. **실효 저하**는 `LEXICAL_ONLY`(질의 임베딩 = U2 동기 경로의 주 비용 동인을 차단 → BM25 폴백)다. 임베딩 공간 자체는 불변(vector-spec.md §1).
 > **저하 vs 기권 우선순위(Q4=A)**: degradeMode 활성 중에도 verdict=abstain/block이면 **기권(AbstainDTO) 우선**(날조 금지가 최우선) — 저하 카드를 내보내지 않는다.
 
 ---

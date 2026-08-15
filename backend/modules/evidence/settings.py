@@ -9,19 +9,29 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from docsuri_shared.env import env_choice as _env_choice
 from docsuri_shared.env import env_flag as _env_flag
 from docsuri_shared.env import env_float as _env_float
 from docsuri_shared.env import env_int as _env_int
 
-# v2 어댑터는 OpenAI 호환 HTTP를 친다(TD-EV2-2) — 기본값도 그 어휘여야 한다.
-# v1의 Bedrock 추론 프로파일명을 그대로 두면 실경로가 마운트되고도 매 호출이
-# 모델 미존재로 실패해 llm_unavailable로만 수렴한다(로컬 실측에서 드러났다).
-DEFAULT_EVIDENCE_MODEL = 'gpt-4o-mini'
+# 프로바이더에 묶인 사실 셋 — (기본 모델, 입력 단가, 출력 단가). 한 테이블에 두는 이유는
+# 셋이 함께 움직이기 때문이다: 모델 id는 프로바이더 어휘라 하나로 둘 수 없고(한쪽 어휘만
+# 기본값으로 뒀다가 실경로가 마운트되고도 매 호출이 모델 미존재로 실패한 적이 있다), 단가는
+# 모델을 따라간다(gpt-4o-mini 단가를 Sonnet에 쓰면 예산 대장이 20배 과소계상된다).
+# 흩어놓으면 프로바이더를 추가할 때 편집 지점이 셋이 되고, 과거에 드리프트한 필드가 정확히
+# 이 셋이다.
+_PROVIDERS: dict[str, tuple[str, float, float]] = {
+    'bedrock': ('global.anthropic.claude-sonnet-4-6', 3.0, 15.0),
+    'openai': ('gpt-4o-mini', 0.15, 0.60),
+}
+_DEFAULT_PROVIDER = 'bedrock'
 
 
 @dataclass(frozen=True, slots=True)
 class EvidenceSettings:
     model_id: str
+    # 'openai' | 'bedrock' — 어댑터 선택은 composition root에서만 일어난다(TD-EV2-2).
+    llm_provider: str
     docmodel_bucket: str | None   # S3 bucket (U1 소유 DocModel 버킷)
     region_name: str | None
     # 비동기 잡 경로 게이트 (BR-EV-6, NFR-P6)
@@ -50,14 +60,20 @@ class EvidenceSettings:
 
     @classmethod
     def from_env(cls) -> EvidenceSettings:
+        # 기본은 bedrock. OPENAI_API_KEY가 저장소에서 제거된 뒤(2026-08-15) openai를
+        # 기본값으로 두면 실경로가 마운트되고도 매 호출이 401로 끝난다. 테이블 자체가
+        # 허용 어휘라 오타는 여기서 이름이 불린 채 죽는다 — 조용한 기본값 폴백이 아니다.
+        provider = _env_choice('DOCSURI_EVIDENCE_LLM_PROVIDER', _PROVIDERS, _DEFAULT_PROVIDER)
+        default_model, in_rate, out_rate = _PROVIDERS[provider]
         return cls(
-            model_id=os.environ.get('DOCSURI_EVIDENCE_MODEL_ID', DEFAULT_EVIDENCE_MODEL),
+            llm_provider=provider,
+            model_id=os.environ.get('DOCSURI_EVIDENCE_MODEL_ID', default_model),
             docmodel_bucket=os.environ.get('DOCSURI_DOCMODEL_BUCKET'),
             region_name=os.environ.get('AWS_REGION') or os.environ.get('AWS_DEFAULT_REGION'),
             async_enabled=_env_flag('DOCSURI_EVIDENCE_ASYNC_ENABLED'),
             job_queue_url=os.environ.get('DOCSURI_EVIDENCE_JOB_QUEUE_URL'),
-            input_usd_per_mtok=_env_float('DOCSURI_EVIDENCE_INPUT_USD_PER_MTOK', 0.15),
-            output_usd_per_mtok=_env_float('DOCSURI_EVIDENCE_OUTPUT_USD_PER_MTOK', 0.60),
+            input_usd_per_mtok=_env_float('DOCSURI_EVIDENCE_INPUT_USD_PER_MTOK', in_rate),
+            output_usd_per_mtok=_env_float('DOCSURI_EVIDENCE_OUTPUT_USD_PER_MTOK', out_rate),
             max_iterations=_env_int('DOCSURI_EVIDENCE_MAX_ITERATIONS', 12),
             max_tool_calls_total=_env_int('DOCSURI_EVIDENCE_MAX_TOOL_CALLS', 30),
             cap_corpus_search=_env_int('DOCSURI_EVIDENCE_CAP_CORPUS_SEARCH', 5),

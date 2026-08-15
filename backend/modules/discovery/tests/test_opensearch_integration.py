@@ -32,8 +32,8 @@ from discovery.domain.models import (  # noqa: E402
     RetrievalMode,
 )
 from discovery.domain.retriever import HybridRetriever  # noqa: E402
-from discovery.mocks import fixtures  # noqa: E402
 from discovery.scripts.seed_local_opensearch import seed  # noqa: E402
+from discovery.testing import fixtures  # noqa: E402
 
 pytestmark = pytest.mark.integration
 

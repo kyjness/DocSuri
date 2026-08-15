@@ -9,9 +9,9 @@ already exist.
 Per-module integration idioms differ (see each ``_mount_*``):
   • accounts (U3) exposes a ready ``router`` + a ``get_db_session`` seam to override, and a
     Redis ``SessionRepository`` singleton to close on shutdown.
-  • discovery (U2) exposes *factories* (``build_mock_orchestrator`` + ``build_router``) that
-    need dependency injection — the mock orchestrator is wired with the REAL U6 grounding hook
-    (docsuri-ops); only the OpenSearch/Bedrock data adapters remain mock-first.
+  • discovery (U2) exposes *factories* (``build_real_orchestrator`` + ``build_router``) that
+    need dependency injection — the orchestrator is wired with the REAL U6 grounding hook
+    (docsuri-ops). Real-first like summarization: unconfigured → skipped, never a mock fallback.
 
 The shell owns this file (CODEOWNERS ``/backend/``); module owners change only their lane.
 """
@@ -24,6 +24,7 @@ from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
+from docsuri_shared.env import EnvConfigError
 from fastapi import FastAPI
 
 from .config import Settings
@@ -91,11 +92,23 @@ class MountResult:
     mounted: list[str] = field(default_factory=list)
     skipped: list[tuple[str, str]] = field(default_factory=list)  # (module, reason)
     cleanups: list[Cleanup] = field(default_factory=list)
+    # Subset of ``skipped`` that was skipped because it was never configured, as opposed to
+    # absent or broken. Readiness needs that distinction and must not re-derive it: the mount
+    # gate is the only place that knows what "configured" means for a given module, and a copy
+    # of the condition in health.py drifted from it (an endpoint with no embedder skipped the
+    # mount while readiness still demanded the module — a permanent 503).
+    unconfigured: list[str] = field(default_factory=list)
+
+    def skip_unconfigured(self, module: str, reason: str) -> None:
+        """Record a module that is legitimately absent because nobody configured it."""
+        self.skipped.append((module, reason))
+        self.unconfigured.append(module)
 
 
 def mount_modules(app: FastAPI, settings: Settings, integrations=None) -> MountResult:
-    """Mount every available module. Never raises — a missing or broken module degrades to
-    a skip so the rest of the backend still serves.
+    """Mount every available module. A missing or broken module degrades to a skip so the
+    rest of the backend still serves. The ONE thing that does raise is invalid configuration
+    (``EnvConfigError``) — see below.
 
     ``integrations`` defaults to the real registry; tests inject a guaranteed-absent
     integration to exercise the skip path without depending on what's installed.
@@ -108,6 +121,13 @@ def mount_modules(app: FastAPI, settings: Settings, integrations=None) -> MountR
         except ModuleNotFoundError as exc:
             result.skipped.append((name, f"not present ({exc.name})"))
             log.info("app-shell: %s module not present yet — skipping mount", name)
+        except EnvConfigError:
+            # NOT contained. A misspelled provider or a malformed limit is the operator's config,
+            # not a broken module. Recording it as a "mount error" boots a process that silently
+            # lacks the module — or, for a required one, pins readyz at 503 with the offending
+            # variable named nowhere. Fail the boot with the variable in the traceback.
+            log.error("app-shell: %s has invalid configuration — refusing to start", name)
+            raise
         except Exception as exc:  # defensive: one broken module must not sink the shell
             result.skipped.append((name, f"mount error: {exc!r}"))
             log.warning("app-shell: failed to mount %s: %r", name, exc)
@@ -157,10 +177,24 @@ def _mount_discovery(app: FastAPI, settings: Settings, result: MountResult) -> N
     from discovery.api.router import build_router, register_search_unavailable_handler
     from docsuri_ops.grounding import GroundingEnforcementHook
 
-    # Read path selection (U2 real adapters, critical path ⑥): when the shared OpenSearch
-    # cluster + Bedrock model are configured (DOCSURI_OPENSEARCH_ENDPOINT + _BEDROCK_MODEL_ID),
-    # wire the REAL OpenSearch/Bedrock read path; otherwise stay mock-first. The cluster itself
-    # is provisioned by the shared infra track (U1 infra + system event bus) — U2 only reads it.
+    # Read path gate (U2 real adapters, critical path ⑥): the real OpenSearch/Bedrock path is
+    # the ONLY path. Unconfigured → skip the mount entirely, exactly as summarization (U7) does
+    # — never a mock fallback. A mock read path answers /api/search with 200 and fabricated
+    # cards, and the only signal separating that from a real answer was one startup log line
+    # (read_path was recorded nowhere on app.state or MountResult). Against a live corpus that
+    # is indistinguishable from a search-quality bug, so a missing route is the honest outcome.
+    discovery_settings = DiscoverySettings.from_env()
+    if not discovery_settings.search_enabled:
+        result.skip_unconfigured(
+            "discovery", "real read path not configured (no OpenSearch endpoint / embedder)"
+        )
+        log.info("app-shell: discovery real read path not configured — skipping mount")
+        return
+
+    # Heavy wiring is imported only past the gate (the U7 idiom): an unconfigured process pays
+    # neither the opensearch-py/boto3 import nor a ModuleNotFoundError it cannot act on.
+    from discovery.real_wiring import build_real_orchestrator
+
     # The process-wide U6 hub the app-shell built (CloudWatch-backed when CLOUDWATCH_NAMESPACE
     # is set, else in-memory). Injecting it here is what routes U2's app metrics to CloudWatch
     # (US-R4): the factories default to NoopObservabilityHub, so without this discovery's
@@ -168,28 +202,18 @@ def _mount_discovery(app: FastAPI, settings: Settings, result: MountResult) -> N
     observability = getattr(app.state, "observability", None)
     cost_guard = getattr(app.state, "cost_guard", None)
 
-    discovery_settings = DiscoverySettings.from_env()
-    if discovery_settings.search_enabled:
-        from discovery.real_wiring import build_real_orchestrator
-
-        bundle = build_real_orchestrator(
-            discovery_settings,
-            observability=observability,
-            cost_guard=cost_guard,
-        )
-        read_path = f"real(opensearch+{discovery_settings.embedding_provider})"
-    else:
-        from discovery.mocks.wiring import build_mock_orchestrator
-
-        bundle = build_mock_orchestrator(observability=observability, cost_guard=cost_guard)
-        read_path = "mock"
+    bundle = build_real_orchestrator(
+        discovery_settings,
+        observability=observability,
+        cost_guard=cost_guard,
+    )
 
     # Wire direct history recording when EventBridge is absent but library is mounted.
     # _DirectHistoryPublisher replaces the InMemoryEventPublisher inside the orchestrator so
     # SearchExecutedEvents reach the SQL DB without requiring a live event bus.
-    from discovery.mocks.port_stubs import InMemoryEventPublisher
+    from discovery.defaults.port_stubs import InMemoryEventPublisher
 
-    if isinstance(getattr(bundle, "event_publisher", None), InMemoryEventPublisher) and hasattr(
+    if isinstance(bundle.event_publisher, InMemoryEventPublisher) and hasattr(
         app.state, "library_session_factory"
     ):
         direct = _DirectHistoryPublisher(
@@ -205,11 +229,11 @@ def _mount_discovery(app: FastAPI, settings: Settings, result: MountResult) -> N
         result.cleanups.append(_close_direct_publisher)
         log.info("app-shell: discovery wired direct history publisher (no EventBridge)")
 
-    # The grounding gate is the REAL U6 single authority (INV-1) in BOTH modes — replacing the
-    # always-pass StubGroundingHook: enforce() blocks any exposed arXiv id/url absent from the
-    # retrieved records and abstains when there is nothing to ground against. With the real
-    # OpenSearch adapter the retrieved set is independent of the ranked candidates, so the hook
-    # is now load-bearing (not trivially passing as it did against the mock adapter).
+    # The grounding gate is the REAL U6 single authority (INV-1), never the always-pass
+    # StubGroundingHook: enforce() blocks any exposed arXiv id/url absent from the retrieved
+    # records and abstains when there is nothing to ground against. Against the real OpenSearch
+    # adapter the retrieved set is independent of the ranked candidates, so the hook is
+    # load-bearing rather than trivially passing.
     grounding_hook = GroundingEnforcementHook()
     app.state.discovery_bundle = bundle
     app.state.grounding_hook = grounding_hook
@@ -256,13 +280,13 @@ def _mount_discovery(app: FastAPI, settings: Settings, result: MountResult) -> N
     # stays single-sourced (no dev/app-shell drift).
     register_search_unavailable_handler(app)
 
-    # The paper-detail metadata endpoint (GET /api/papers/{id}) is U2-owned (corpus data); both
-    # bundles expose a paper_service. getattr keeps this resilient if a bundle predates it.
-    app.include_router(
-        build_router(bundle.orchestrator, grounding_hook, getattr(bundle, "paper_service", None))
-    )
+    # The paper-detail metadata endpoint (GET /api/papers/{id}) is U2-owned (corpus data).
+    app.include_router(build_router(bundle.orchestrator, grounding_hook, bundle.paper_service))
     result.mounted.append("discovery")
-    log.info("app-shell: discovery mounted (read path = %s)", read_path)
+    log.info(
+        "app-shell: discovery mounted (read path = real(opensearch+%s))",
+        discovery_settings.embedding_provider,
+    )
 
 
 def _is_postgres(database_url: str) -> bool:
@@ -428,7 +452,7 @@ def _mount_summarization(app: FastAPI, settings: Settings, result: MountResult) 
             database_url=settings.database_url.replace("postgresql+psycopg://", "postgresql://"),
         )
     if not sm_settings.summarization_enabled:
-        result.skipped.append(("summarization", "real path not configured (no S3 bucket)"))
+        result.skip_unconfigured("summarization", "real path not configured (no S3 bucket)")
         log.info("app-shell: summarization real path not configured — skipping mount")
         return
 

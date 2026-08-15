@@ -6,6 +6,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..cache.embedding_cache import EmbeddingCache
+from ..defaults.port_stubs import (
+    InMemoryEventPublisher,
+    NoopObservabilityHub,
+    StubCostGuard,
+)
 from ..domain.assembler import ResultAssembler
 from ..domain.expander import QueryUnderstandingExpander
 from ..domain.grounding_adapter import GroundingAdapter
@@ -20,12 +25,7 @@ from .adapters import (
     MockPaperLookupAdapter,
     MockVectorStoreAdapter,
 )
-from .port_stubs import (
-    InMemoryEventPublisher,
-    NoopObservabilityHub,
-    StubCostGuard,
-    StubGroundingHook,
-)
+from .grounding import StubGroundingHook
 
 
 @dataclass(frozen=True, slots=True)

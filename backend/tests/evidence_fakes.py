@@ -12,6 +12,9 @@ from uuid import uuid4
 
 from docsuri_shared.authz import Principal, UserRole
 
+from backend.modules.evidence.domain.models import PaperHandle, PaperOrigin
+from backend.modules.evidence.ports.llm import LoopObservation, PaperView
+
 TABLE_ROW = "AlphaFold2 | 92.4 | 87.0"
 FIGURE_CAPTION = "Figure 3 Accuracy versus training set size across three model scales"
 INTRO = "Protein structure prediction has progressed rapidly in recent years."
@@ -53,3 +56,32 @@ def doc_model() -> SimpleNamespace:
 
 def principal() -> Principal:
     return Principal(user_id=str(uuid4()), role=UserRole.USER)
+
+
+def paper_handle(doc_model=None, abstract: str = "") -> PaperHandle:
+    """확보한 논문 1편 — 프로바이더 중립이라 어댑터 테스트가 공유한다."""
+    return PaperHandle(
+        paper_id="p1",
+        record_ref="r1",
+        origin=PaperOrigin.CORPUS,
+        title="AlphaFold2",
+        doc_model=doc_model,
+        abstract_text=abstract,
+    )
+
+
+def observation(**overrides) -> LoopObservation:
+    """`decide` 입력의 기본형. 케이스별로 바꿀 필드만 키워드로 덮어쓴다."""
+    base = dict(
+        topic="단백질 구조 예측 정확도",
+        papers=(PaperView("p1", "r1", "AlphaFold2", "corpus", "fulltext"),),
+        recent_results=(),
+        evidence_count=0,
+        cited_paper_count=0,
+        has_conflicts=False,
+        iterations_left=5,
+        tool_calls_left=10,
+        cost_left_usd=0.5,
+    )
+    base.update(overrides)
+    return LoopObservation(**base)

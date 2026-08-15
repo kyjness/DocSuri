@@ -6,7 +6,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from discovery.domain.retriever import _reciprocal_rank_fusion
-from discovery.mocks.fixtures import RECORDS
+from discovery.testing.fixtures import RECORDS
 
 _record_strategy = st.lists(st.sampled_from(RECORDS), max_size=20)
 

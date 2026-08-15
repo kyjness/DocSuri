@@ -15,6 +15,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from docsuri_shared.env import env_choice
+
 _TRUTHY = {"1", "true", "yes", "on"}
 
 # Defaults live at module scope (NOT referenced via ``cls.<field>``): with ``slots=True`` the
@@ -25,6 +27,10 @@ _DEFAULT_USE_SSL = True
 _DEFAULT_VERIFY_CERTS = True
 _DEFAULT_CACHE_TTL_SECONDS = 300.0
 _DEFAULT_EMBEDDING_PROVIDER = "bedrock"
+# Closed vocabulary — an unknown value used to fall through to the Bedrock branch, and with no
+# model id set that made ``search_enabled`` False, so a one-character typo took the whole read
+# path down while every log line said "not configured".
+_EMBEDDING_PROVIDERS = ("bedrock", "openai")
 _DEFAULT_OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
 
 
@@ -102,9 +108,11 @@ class DiscoverySettings:
             opensearch_use_ssl=_flag("DOCSURI_OPENSEARCH_USE_SSL", _DEFAULT_USE_SSL),
             opensearch_verify_certs=_flag("DOCSURI_OPENSEARCH_VERIFY_CERTS", _DEFAULT_VERIFY_CERTS),
             bedrock_model_id=os.getenv("DOCSURI_BEDROCK_MODEL_ID") or None,
-            embedding_provider=(
-                os.getenv("DOCSURI_EMBEDDING_PROVIDER") or _DEFAULT_EMBEDDING_PROVIDER
-            ).strip().lower(),
+            embedding_provider=env_choice(
+                "DOCSURI_EMBEDDING_PROVIDER",
+                _EMBEDDING_PROVIDERS,
+                _DEFAULT_EMBEDDING_PROVIDER,
+            ),
             openai_embedding_model=os.getenv("DOCSURI_OPENAI_EMBEDDING_MODEL")
             or _DEFAULT_OPENAI_EMBEDDING_MODEL,
             aws_region=os.getenv("DOCSURI_AWS_REGION") or None,

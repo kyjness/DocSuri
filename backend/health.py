@@ -31,7 +31,11 @@ def readyz(request: Request, response: Response) -> dict:
     """Readiness — reflects the modules wired into this process."""
     result = getattr(request.app.state, "mount_result", None)
     skipped = [name for name, _ in result.skipped] if result else []
-    blocking = [name for name in skipped if name in _required_modules()]
+    # A module nobody configured is legitimately absent; only the mount gate knows what
+    # "configured" means for each one, so take its word rather than re-deriving the condition.
+    unconfigured = set(result.unconfigured) if result else set()
+    required = _required_modules()
+    blocking = [name for name in skipped if name in required and name not in unconfigured]
     if blocking:
         response.status_code = 503
     return {
@@ -43,6 +47,13 @@ def readyz(request: Request, response: Response) -> dict:
 
 
 def _required_modules() -> set[str]:
+    """Modules this deployment shape expects to be present.
+
+    Real-first modules (discovery, summarization) belong here unconditionally: "configured ⇒
+    must mount" is enforced by ``readyz`` subtracting ``MountResult.unconfigured``, not by
+    re-testing their env here. ``RESEARCH_AGENT_ENABLED`` stays a condition because it is an
+    ops toggle rather than something the module discovers about itself.
+    """
     required = {
         "accounts",
         "discovery",
@@ -52,9 +63,8 @@ def _required_modules() -> set[str]:
         "citation_graph",
         "personalization",
         "novelty",
+        "summarization",
     }
     if os.getenv("RESEARCH_AGENT_ENABLED", "true").lower() in {"1", "true", "yes", "on"}:
         required.add("research")
-    if os.getenv("DOCSURI_SUMMARY_BUCKET"):
-        required.add("summarization")
     return required

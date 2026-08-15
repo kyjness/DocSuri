@@ -10,7 +10,7 @@ from docsuri_shared.dtos import SearchRequest
 
 from discovery.api import run_search
 from discovery.domain.models import AuthSession, RequestContext
-from discovery.mocks import build_mock_orchestrator
+from discovery.testing import build_mock_orchestrator
 
 
 class RecordingHub:

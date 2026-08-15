@@ -247,7 +247,11 @@ jobs:
           enable-cache: true
       - name: Lint
         run: uv run ruff check .
-      - name: Tests (asserts discovery actually mounts)
+      # discovery is real-first: it mounts only when a read path is configured. test_app_shell
+      # sets an unreachable endpoint itself (wiring touches no network), so the "discovery
+      # actually mounts" guard still runs here with no OpenSearch service in the lane — and the
+      # unconfigured half of the contract is asserted in the same file.
+      - name: Tests (asserts discovery mounts when configured, skips when not)
         env:
           NOVELTY_TEST_REDIS_URL: redis://localhost:6379/1
         run: uv run pytest -rs
