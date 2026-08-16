@@ -28,7 +28,7 @@ _log = logging.getLogger(__name__)
 BEDROCK_EMBED_BATCH_LIMIT = 96
 
 
-def s3_client(client: Any = None) -> Any:
+def build_s3_client(client: Any = None) -> Any:
     """A boto3 S3 client, reusing the caller's when it has one.
 
     Every store below takes an optional client so a runtime that wires several of them against the
@@ -36,6 +36,10 @@ def s3_client(client: Any = None) -> Any:
     own connection pool, and this module builds four of them under one worker — the cost the
     runtime's raw-cache comment already names, applied to a single store and none of its siblings.
     Omitting it keeps each store standalone, which is how the one-off tools construct them.
+
+    ``build_`` to match ``build_opensearch_client`` below, the file's other adapter-side factory —
+    and to stay clear of ``s3_client``, which is the name the backend's own adapters give the
+    injected client PARAMETER. One spelling should not mean both the factory and its argument.
     """
     if client is not None:
         return client
@@ -53,7 +57,7 @@ class S3FullTextStore:
         kms_key_id: str | None = None,
         client: Any = None,
     ) -> None:
-        self._client = s3_client(client)
+        self._client = build_s3_client(client)
         self._bucket = bucket
         self._prefix = prefix.strip("/")
         self._kms_key_id = kms_key_id
@@ -91,7 +95,7 @@ class S3DocModelStore:
         kms_key_id: str | None = None,
         client: Any = None,
     ) -> None:
-        self._client = s3_client(client)
+        self._client = build_s3_client(client)
         self._bucket = bucket
         self._prefix = prefix.strip("/")
         self._kms_key_id = kms_key_id
@@ -159,7 +163,7 @@ class S3RawContentStore:
         kms_key_id: str | None = None,
         client: Any = None,
     ) -> None:
-        self._client = s3_client(client)
+        self._client = build_s3_client(client)
         self._bucket = bucket
         self._prefix = prefix.strip("/")
         self._kms_key_id = kms_key_id
@@ -203,7 +207,7 @@ class S3UserDocumentSource:
     def __init__(
         self, *, bucket: str, max_bytes: int = 10 * 1024 * 1024, client: Any = None
     ) -> None:
-        self._client = s3_client(client)
+        self._client = build_s3_client(client)
         self._bucket = bucket
         self._max_bytes = max_bytes
 

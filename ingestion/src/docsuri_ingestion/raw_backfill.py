@@ -79,7 +79,7 @@ def _prime_from_tar(
     targets: dict[str, int],
     raw_store: RawContentStorePort,
     tmp_dir: str,
-    skipped: Counter[str] | None = None,
+    skipped: Counter[str],
 ) -> set[str]:
     """Download one bulk tar (requester-pays) and cache every member PDF whose id is a target.
 
@@ -92,6 +92,10 @@ def _prime_from_tar(
       shared ``is_pdf_payload``, whose contract says "applied to cache reads as well as fetches"),
       and the one tool that WRITES the cache did not — so a poisoned entry read as a miss and the
       paper was excluded downstream with nothing pointing back to here.
+
+    ``skipped`` is owned and reported by the caller — every Counter in this package is local to
+    the function that reports it, and this one is no exception; it is passed in only because the
+    refusals happen a level down.
 
     Returns the set of paperIds cached; the temp tar is deleted on block exit.
     """
@@ -109,16 +113,14 @@ def _prime_from_tar(
                     continue
                 wanted = targets[identifier.paper_id]
                 if identifier.version != wanted:
-                    if skipped is not None:
-                        skipped["version_mismatch"] += 1
+                    skipped["version_mismatch"] += 1
                     continue
                 fobj = tar.extractfile(member)
                 if fobj is None:
                     continue
                 data = fobj.read()
                 if not is_pdf_payload(data):
-                    if skipped is not None:
-                        skipped["not_pdf"] += 1
+                    skipped["not_pdf"] += 1
                     continue
                 raw_store.put_raw(
                     identifier.paper_id, wanted, "pdf", data,
@@ -135,10 +137,8 @@ def raw_backfill(settings: IngestionSettings | None = None) -> int:
     if not settings.s3_bucket:
         raise SystemExit("DOCSURI_S3_BUCKET is required for raw_backfill")
 
-    import boto3
-
     from .adapters.arxiv import ArxivHttpSource
-    from .adapters.aws import S3RawContentStore
+    from .adapters.aws import S3RawContentStore, build_s3_client
     from .config import CORPUS_END, CORPUS_SLICE_CATEGORIES, CORPUS_START
     from .domain.models import CategoryFilter
 
@@ -167,7 +167,7 @@ def raw_backfill(settings: IngestionSettings | None = None) -> int:
         prefix=settings.raw_cache_prefix,
         kms_key_id=settings.asset_kms_key_id,
     )
-    client = boto3.client("s3")
+    client = build_s3_client()
     bucket = settings.arxiv_bulk_bucket
     tmp_dir = _tmp_dir()
 
@@ -191,6 +191,10 @@ def raw_backfill(settings: IngestionSettings | None = None) -> int:
                     client, bucket, key, targets, raw_store, tmp_dir, skipped
                 )
             except Exception as exc:  # noqa: BLE001 — one bad tar must not abort the prime
+                # Counted, not just logged: without it the reason breakdown below does not add up
+                # to the missed targets, and a run whose tars are systematically unreadable looks
+                # the same as one whose papers were simply in other months.
+                skipped["tar_failed"] += 1
                 log.warning("FAILED tar %s: %s", key, exc)
             tars_processed += 1
             log.info(
@@ -201,11 +205,12 @@ def raw_backfill(settings: IngestionSettings | None = None) -> int:
             )
     log.info(
         "raw_backfill complete: %d tars, %d pdfs cached, %d targets missed"
-        " (version_mismatch=%d, not_pdf=%d)",
+        " (version_mismatch=%d, not_pdf=%d, tar_failed=%d)",
         tars_processed,
         len(cached_ids),
         len(targets) - len(cached_ids),
         skipped["version_mismatch"],
         skipped["not_pdf"],
+        skipped["tar_failed"],
     )
     return 0

@@ -12,7 +12,7 @@ from .adapters.aws import (
     S3FullTextStore,
     S3RawContentStore,
     SqsQueue,
-    s3_client,
+    build_s3_client,
 )
 from .adapters.local import (
     CapturingObservabilityHub,
@@ -137,7 +137,7 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
     # say exactly that about a second raw-cache store while four sibling stores each built one
     # anyway. Passed in rather than made a module global so the one-off tools that construct a
     # single store keep working untouched.
-    s3 = s3_client()
+    s3 = build_s3_client()
     # ONE store instance shared by every adapter that reads the cache, for the same reason.
     raw_store = (
         S3RawContentStore(

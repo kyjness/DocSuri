@@ -159,9 +159,10 @@ class ArxivHttpSource:
         records rather than the ones nearest the watermark. The next tick re-covers those, while a
         gap just above the watermark would never be revisited.
         """
+        categories_query = " OR ".join(f"cat:{category}" for category in categories)
         query = (
-            "(" + " OR ".join(f"cat:{category}" for category in categories) + ")"
-            f" AND lastUpdatedDate:[{_atom_stamp(since)} TO {_ATOM_RANGE_END}]"
+            f"({categories_query}) "
+            f"AND lastUpdatedDate:[{_atom_stamp(since)} TO {_ATOM_RANGE_END}]"
         )
         for page in range(_MAX_INCREMENTAL_PAGES):
             params = {

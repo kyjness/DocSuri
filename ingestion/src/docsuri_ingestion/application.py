@@ -546,22 +546,7 @@ class IngestionPipelineService:
             if doc_model is not None
             else self._chunker.chunk(paper)
         )
-        if chunks.truncated:
-            # The per-paper chunk cap cut this body short. Counted, not just logged: a batch reads
-            # metrics, and the last time this went unreported it removed part of the body of 26%
-            # of the papers indexed so far without a single line saying so. The paper still
-            # indexes — what it loses is the tail of its text, so this is a signal, not a failure.
-            self._observability.emit_metric(
-                "ingestion.chunks.truncated", 1.0, {"paperId": paper.paper_id}
-            )
-            self._observability.emit_log(
-                {
-                    "type": "chunk_cap_reached",
-                    "paperId": paper.paper_id,
-                    "chunks": len(chunks.chunks),
-                    "hint": "raise DOCSURI_MAX_CHUNKS_PER_PAPER — this paper's body was cut",
-                }
-            )
+        self._report_chunk_truncation(paper, chunks)
         vectors = self._resilience.dependency_call(
             "bedrock",
             "embed",
@@ -939,6 +924,28 @@ class IngestionPipelineService:
             self._report_asset_failure(paper.paper_id, FailureReason.ASSET_EXTRACT_FAILURE, exc)
             return
         self._render_and_store_crops(paper.paper_id, paper.version, pdf, specs)
+
+    def _report_chunk_truncation(self, paper, chunks) -> None:
+        """Say that the per-paper chunk cap cut this body short. No-op when it did not.
+
+        Counted, not merely logged: a corpus batch reads metrics, and the last time this went
+        unreported the cap removed part of the body of 26% of the papers indexed so far without a
+        single line saying so. The paper still indexes — what it loses is the tail of its text —
+        so this is a signal, not a failure, and it never interrupts the ingest.
+        """
+        if not chunks.truncated:
+            return
+        self._observability.emit_metric(
+            "ingestion.chunks.truncated", 1.0, {"paperId": paper.paper_id}
+        )
+        self._observability.emit_log(
+            {
+                "type": "chunk_cap_reached",
+                "paperId": paper.paper_id,
+                "chunks": len(chunks.chunks),
+                "hint": "raise DOCSURI_MAX_CHUNKS_PER_PAPER — this paper's body was cut",
+            }
+        )
 
     def _report_asset_failure(
         self, paper_id: str, reason: FailureReason, exc: Exception

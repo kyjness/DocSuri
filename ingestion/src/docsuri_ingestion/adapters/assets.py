@@ -11,7 +11,7 @@ import json
 from collections.abc import Sequence
 from typing import Any
 
-from docsuri_ingestion.adapters.aws import s3_client, s3_put
+from docsuri_ingestion.adapters.aws import build_s3_client, s3_put
 from docsuri_ingestion.domain.assets import AssetManifest, ExtractedAsset, FigureTableAsset
 from docsuri_ingestion.domain.enums import AssetSourceMode, AssetType
 from docsuri_ingestion.domain.models import MetadataRecord
@@ -112,7 +112,7 @@ class S3RdsAssetStore:
         kms_key_id: str | None = None,
         client: Any = None,
     ) -> None:
-        self._s3 = s3_client(client)
+        self._s3 = build_s3_client(client)
         self._bucket = bucket
         self._prefix = prefix.strip("/")
         self._kms_key_id = kms_key_id

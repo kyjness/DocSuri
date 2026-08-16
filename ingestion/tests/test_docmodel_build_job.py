@@ -362,21 +362,35 @@ def test_build_doc_model_requires_arxiv_ref() -> None:
         )
 
 
+# A valid BUILD_USER_DOC_MODEL payload. Every userdoc test below starts here and names only
+# what it changes, so a test reads as the ONE field it is about — and so a new contract field
+# cannot be added to three of four literals and silently forgotten in the fourth.
+_USERDOC_OWNER = "acct-1"
+_USERDOC_OBJECT_KEY = f"uploads/evidence/{_USERDOC_OWNER}/scope/attachment/paper.pdf"
+
+
+def _userdoc_payload(**overrides) -> dict:
+    return {
+        "jobId": _USERDOC_JOB_ID,
+        "kind": "BUILD_USER_DOC_MODEL",
+        "paperId": _USERDOC_PAPER_ID,
+        "version": 1,
+        "objectKey": _USERDOC_OBJECT_KEY,
+        "module": "evidence",
+        "ownerId": _USERDOC_OWNER,
+        "recordRef": _USERDOC_RECORD_REF,
+        **overrides,
+    }
+
+
 def test_user_docmodel_payload_refuses_a_key_outside_the_owners_area() -> None:
     """``objectKey`` is the field that actually reads bytes, and it was checked for nothing but
     "non-empty string" while the six around it had their shape pinned. A job naming another
     owner's upload — or any other object in the bucket — would have been fetched and returned
     under this owner's paper id."""
-    payload = {
-        "jobId": _USERDOC_JOB_ID,
-        "kind": "BUILD_USER_DOC_MODEL",
-        "paperId": _USERDOC_PAPER_ID,
-        "version": 1,
-        "objectKey": "novelty/someone-else/attachment/attachment.pdf",
-        "module": "novelty",
-        "ownerId": "acct-1",
-        "recordRef": _USERDOC_RECORD_REF,
-    }
+    payload = _userdoc_payload(
+        objectKey="novelty/someone-else/attachment/attachment.pdf", module="novelty"
+    )
 
     with pytest.raises(PermanentIngestionError):
         job_from_payload(payload)
@@ -390,30 +404,14 @@ def test_user_docmodel_payload_accepts_the_owner_at_either_depth() -> None:
         "novelty/acct-1/attachment/attachment.pdf",
         "uploads/evidence/acct-1/scope/attachment/paper.pdf",
     ):
-        payload = {
-            "jobId": _USERDOC_JOB_ID,
-            "kind": "BUILD_USER_DOC_MODEL",
-            "paperId": _USERDOC_PAPER_ID,
-            "version": 1,
-            "objectKey": object_key,
-            "module": "evidence",
-            "ownerId": "acct-1",
-            "recordRef": _USERDOC_RECORD_REF,
-        }
+        payload = _userdoc_payload(objectKey=object_key)
         assert job_from_payload(payload).object_key == object_key
 
 
 def test_user_docmodel_payload_accepts_s3_source_without_arxiv_ref() -> None:
-    payload = {
-        "jobId": _USERDOC_JOB_ID,
-        "kind": "BUILD_USER_DOC_MODEL",
-        "paperId": _USERDOC_PAPER_ID,
-        "version": 1,
-        "objectKey": "novelty/acct-1/attachment/attachment.pdf",
-        "module": "novelty",
-        "ownerId": "acct-1",
-        "recordRef": _USERDOC_RECORD_REF,
-    }
+    payload = _userdoc_payload(
+        objectKey="novelty/acct-1/attachment/attachment.pdf", module="novelty"
+    )
 
     job = job_from_payload(payload)
 
@@ -449,20 +447,13 @@ def test_user_docmodel_payload_accepts_s3_source_without_arxiv_ref() -> None:
     ],
 )
 def test_user_docmodel_payload_rejects_contract_drift(override: dict) -> None:
-    payload = {
-        "jobId": _USERDOC_JOB_ID,
-        "kind": "BUILD_USER_DOC_MODEL",
-        "paperId": _USERDOC_PAPER_ID,
-        "version": 1,
-        "objectKey": "uploads/owner/job/attachment.pdf",
-        "module": "evidence",
-        "ownerId": "acct-1",
-        "recordRef": _USERDOC_RECORD_REF,
-        **override,
-    }
+    # The base has to be VALID, or every case here raises on the base rather than on the drift
+    # it names — which is exactly what the hand-written literal had started doing once the
+    # objectKey owner check landed: its "uploads/owner/…" key belongs to no owner at all.
+    assert job_from_payload(_userdoc_payload()) is not None
 
     with pytest.raises(PermanentIngestionError):
-        job_from_payload(payload)
+        job_from_payload(_userdoc_payload(**override))
 
 
 def test_worker_dispatches_build_job_and_acks() -> None:
