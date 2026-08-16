@@ -95,3 +95,34 @@ def test_guard_swaps_in_sentinel_on_mismatch() -> None:
     assert isinstance(guarded, MismatchedSpaceEmbedder)
     with pytest.raises(EmbeddingUnavailable, match="space mismatch"):
         guarded.embed_query("확산 모델")
+
+
+def test_cross_region_routing_prefix_is_not_a_space_difference() -> None:
+    """``global.cohere.embed-v4:0`` and ``cohere.embed-v4:0`` are one space, not two.
+
+    A cross-region inference profile routes the request to more regions — which is why the
+    account's daily token allowance doubles — and returns the same vectors from the same model
+    (verified byte-for-byte). Treating the prefix as a mismatch would disable the vector leg over
+    a delivery detail, and it bites in exactly the situation the switch exists for: an index
+    stamped before the switch, read after it.
+    """
+    stamped = {"provider": "bedrock", "model": "cohere.embed-v4:0", "dimensions": 1024}
+    for reader_model in ("global.cohere.embed-v4:0", "us.cohere.embed-v4:0", "cohere.embed-v4:0"):
+        reader = {**stamped, "model": reader_model}
+        assert embedding_space_mismatch(stamped, reader) is None
+    # …and the reverse direction: an index built through the profile, read directly.
+    profiled = {**stamped, "model": "us.cohere.embed-v4:0"}
+    assert embedding_space_mismatch(profiled, dict(stamped)) is None
+
+
+def test_stripping_the_prefix_does_not_hide_a_real_model_swap() -> None:
+    """The guard's whole purpose survives normalization — v3 vs v4 still differs after stripping,
+    with or without a routing prefix on either side."""
+    v4 = {"provider": "bedrock", "model": "cohere.embed-v4:0", "dimensions": 1024}
+    for reader_model in (
+        "cohere.embed-multilingual-v3",
+        "global.cohere.embed-multilingual-v3",
+        "us.amazon.titan-embed-text-v2:0",
+    ):
+        mismatch = embedding_space_mismatch(v4, {**v4, "model": reader_model})
+        assert mismatch is not None and "model" in mismatch

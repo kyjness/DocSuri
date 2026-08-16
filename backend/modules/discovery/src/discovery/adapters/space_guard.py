@@ -46,19 +46,45 @@ def read_embedding_manifest(client: Any, index: str) -> tuple[str, dict[str, Any
     return "absent", None
 
 
+# Bedrock cross-region inference profiles: ``global.``/``us.``/``eu.``/``apac.`` prefixes on an
+# otherwise identical model id. They route the request to more regions — in exchange the account's
+# daily token allowance doubles — and return the SAME vectors from the SAME model (verified
+# byte-for-byte across all three ids for cohere.embed-v4). The routing prefix is therefore not a
+# space difference, and comparing it as one would disable the vector leg over a delivery detail.
+# Stripping it here rather than re-stamping every index keeps the manifest describing the model
+# that actually made the vectors.
+_ROUTING_PREFIXES = ("global.", "us.", "eu.", "apac.", "us-gov.")
+
+
+def _same_space_model(model: Any) -> Any:
+    if not isinstance(model, str):
+        return model
+    for prefix in _ROUTING_PREFIXES:
+        if model.startswith(prefix):
+            return model[len(prefix) :]
+    return model
+
+
 def embedding_space_mismatch(
     manifest: dict[str, Any] | None, reader_identity: dict[str, Any]
 ) -> str | None:
     """A human-readable mismatch description, or None when the spaces agree (or cannot be
     compared). Only keys present on BOTH sides are compared — a partial legacy manifest
-    verifies what it can instead of false-alarming on missing fields."""
+    verifies what it can instead of false-alarming on missing fields.
+
+    ``model`` is compared with its cross-region routing prefix stripped (see ``_ROUTING_PREFIXES``);
+    everything the guard exists to catch — v3 vs v4, a provider swap, a dimension change — still
+    differs after stripping."""
     if manifest is None:
         return None
-    mismatched = [
-        f"{key}: index={manifest[key]!r} reader={reader_identity[key]!r}"
-        for key in ("provider", "model", "dimensions")
-        if key in manifest and key in reader_identity and manifest[key] != reader_identity[key]
-    ]
+    normalize = {"model": _same_space_model}
+    mismatched = []
+    for key in ("provider", "model", "dimensions"):
+        if key not in manifest or key not in reader_identity:
+            continue
+        as_space = normalize.get(key, lambda value: value)
+        if as_space(manifest[key]) != as_space(reader_identity[key]):
+            mismatched.append(f"{key}: index={manifest[key]!r} reader={reader_identity[key]!r}")
     return "; ".join(mismatched) or None
 
 
