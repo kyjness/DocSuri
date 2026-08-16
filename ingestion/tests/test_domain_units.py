@@ -160,6 +160,50 @@ def test_reaching_the_chunk_cap_is_reported_on_the_chunk_set() -> None:
     assert len(whole.chunks) > 3
 
 
+def test_a_paper_that_fills_the_cap_exactly_is_not_reported_as_cut() -> None:
+    """The cap is a ceiling, not a tripwire. A body that produces exactly ``max_chunks_per_paper``
+    chunks with nothing left over is complete — reporting it as cut over-counts the corpus-level
+    signal, and with the cap (512) close to the measured maximum (487) an exact fit is realistic.
+    """
+    whole = Chunker(max_chunk_chars=200, overlap_chars=0).chunk(_paper_of("alpha " * 4000))
+    exact = len(whole.chunks)
+
+    fitted = Chunker(
+        max_chunk_chars=200, overlap_chars=0, max_chunks_per_paper=exact
+    ).chunk(_paper_of("alpha " * 4000))
+
+    assert len(fitted.chunks) == exact
+    assert fitted.truncated is False
+
+
+def test_an_exact_fill_with_a_later_section_still_counts_as_cut() -> None:
+    """The counterpart of the exact-fit case: the cap fills on the last part of section N and
+    section N+1 still carries text. Nothing was skipped INSIDE a split, but a whole section is
+    about to be — that is truncation, and it must not hide behind the exact fit.
+
+    Pinned because it is exactly what a naive "exact fit is never cut" fix would get wrong. It
+    holds without a special seam check: the loop does not stop on an exact fill, so the NEXT
+    section's ``_fill`` finds no room for its first part and reports the cut itself.
+    """
+    # An abstract that splits into EXACTLY three full parts with no remainder, so its own
+    # ``_fill`` places all three, fills a cap of 3 to the brim, and returns False — it skipped
+    # nothing. The body behind it is what has to make this read as cut.
+    abstract = " ".join(["x" * 99] * 3)
+    paper = replace(_paper_of("alpha " * 800), abstract=abstract)
+    chunker = Chunker(max_chunk_chars=100, overlap_chars=0, max_chunks_per_paper=3)
+
+    fitted = chunker.chunk(paper)
+
+    assert [c.section for c in fitted.chunks] == ["abstract"] * 3  # the body got none
+    assert fitted.truncated is True  # the body was never reached — that IS a cut
+
+
+def _paper_of(body: str):
+    return FetchParseProcessor().parse(
+        RawDocument(metadata=sample_metadata(), text="INTRODUCTION\n" + body, source_url="local://p")
+    )
+
+
 def test_docmodel_chunker_uses_docmodel_blocks_only() -> None:
     doc = DocModel.model_validate(
         {

@@ -14,7 +14,7 @@ import io
 import logging
 import re
 from collections.abc import Callable, Sequence
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from functools import partial
 from typing import Any
@@ -426,16 +426,13 @@ class AssetExtractor:
         positionally (tables). Best-effort: any backend failure yields an empty list (BR-27)."""
         try:
             import pdfplumber
-            import pypdfium2 as pdfium
         except ImportError as exc:  # pragma: no cover - assets extra not installed
             raise RuntimeError(_ASSETS_EXTRA_MISSING) from exc
 
         hits: list[_CropHit] = []
-        pdfium_doc = None
         try:
-            pdfium_doc = pdfium.PdfDocument(pdf)
-            bitmaps = _PageBitmapCache()
-            with pdfplumber.open(io.BytesIO(pdf)) as plumber:
+            with _pdfium_document(pdf) as pdfium_doc, pdfplumber.open(io.BytesIO(pdf)) as plumber:
+                bitmaps = _PageBitmapCache()
                 for page_no, page in enumerate(plumber.pages):
                     lines = page.extract_text_lines() or []
                     texts = [ln.get("text", "") or "" for ln in lines]
@@ -478,14 +475,6 @@ class AssetExtractor:
                         )
         except Exception:  # noqa: BLE001 - best-effort; skip assets for this paper
             return []
-        finally:
-            # pypdfium2 closes nothing on its own — the same rule ``crop_assets_from_specs``
-            # already applies to its own document. Left to GC-time finalizers this holds one
-            # parsed PDF per paper for an indeterminate while and ends a long sweep in a wall of
-            # teardown warnings, which on the caption path is EVERY assets-enabled arXiv paper.
-            if pdfium_doc is not None:
-                with suppress(Exception):
-                    pdfium_doc.close()
         return hits
 
     def _page_crop(self, pdf: bytes, *, want_figures: bool) -> list[RawAssetCandidate]:
@@ -884,6 +873,30 @@ def _is_columnar(row: Sequence[dict]) -> bool:
     if sum(1 for g in gaps if g >= _TABLE_COL_GAP_PT) >= _TABLE_MIN_COL_GAPS:
         return True
     return any(g >= _TABLE_WIDE_GAP_PT for g in gaps)
+
+
+@contextmanager
+def _pdfium_document(pdf: bytes):
+    """A pypdfium2 document that is CLOSED when the block ends, whatever ended it.
+
+    pypdfium2 closes nothing on its own: left to GC-time finalizers a document lingers for an
+    indeterminate while and a long sweep ends in a wall of teardown warnings. Both crop paths open
+    one per paper, and each used to carry its own hand-rolled ``None / try / finally / suppress``
+    teardown — the same six lines twice, with the same comment twice. One lifecycle here means the
+    next opener cannot copy the wrong one or forget the close.
+
+    ``suppress`` on close, not on open: a document that cannot be OPENED is a real failure the
+    caller's own best-effort handling decides about; a handle that cannot be closed must never
+    cost the assets already rendered from it.
+    """
+    import pypdfium2 as pdfium
+
+    doc = pdfium.PdfDocument(pdf)
+    try:
+        yield doc
+    finally:
+        with suppress(Exception):
+            doc.close()
 
 
 class _PageBitmapCache:
@@ -1519,10 +1532,6 @@ def crop_assets_from_specs(
     if not specs:
         return ()
     normalizer = normalizer or ImageNormalizer()
-    try:
-        import pypdfium2 as pdfium
-    except ImportError as exc:  # pragma: no cover - assets extra not installed
-        raise RuntimeError(_ASSETS_EXTRA_MISSING) from exc
 
     # pdfplumber is opened only when a table crop could actually need its rows back — it walks
     # every character on a page, and most papers on this path have nothing for it to do.
@@ -1543,87 +1552,86 @@ def crop_assets_from_specs(
     # refusals collected before it — and both consumers read that as a complete, mostly-designed
     # run instead of a paper that lost every image.
     refusals_base = len(refusals) if refusals is not None else 0
-    doc = None
     try:
-        doc = pdfium.PdfDocument(pdf)
-        page_count = len(doc)
-        bitmaps = _PageBitmapCache()
-        graphics = _PageCache(_graphic_boxes)
-        page_words = _PageCache(_page_words)
-        def refused(asset_id: str, reason: str) -> None:
-            if refusals is not None:
-                refusals.append((asset_id, reason))
+        with _pdfium_document(pdf) as doc:
+            page_count = len(doc)
+            bitmaps = _PageBitmapCache()
+            graphics = _PageCache(_graphic_boxes)
+            page_words = _PageCache(_page_words)
+            def refused(asset_id: str, reason: str) -> None:
+                if refusals is not None:
+                    refusals.append((asset_id, reason))
 
-        # Page order, which the single-entry caches above assume and the TEI walk does not give:
-        # specs arrive in document order, so a paper whose floats interleave pages re-read one to
-        # three pages from scratch per cache. The output is keyed by ``asset_id`` at both callers,
-        # so only the work moves; a stable sort keeps document order inside a page.
-        for spec in sorted(specs, key=lambda s: s.page):
-            page_idx = spec.page - 1  # GROBID coords are 1-based
-            if page_idx < 0 or page_idx >= page_count:
-                refused(spec.asset_id, "page_missing")
-                continue
-            # Each branch pays for its own page scan, and only where the answer can be used: the
-            # figure recovery ignores its graphics unless the bbox is the float's own coords, and
-            # the table regrowth ignores its words unless there is a float box to bound them.
-            bbox, recovered = spec.bbox, False
-            if spec.type is AssetType.FIGURE and not spec.content_coords:
-                bbox = crop_bbox_for(
-                    spec,
-                    graphics.of(doc, page_idx),
-                    partial(page_text.text_in, doc, page_idx),
+            # Page order, which the single-entry caches above assume and the TEI walk does not
+            # give: specs arrive in document order, so a paper whose floats interleave pages
+            # re-read one to three pages from scratch per cache. The output is keyed by
+            # ``asset_id`` at both callers, so only the work moves; a stable sort keeps document
+            # order inside a page.
+            for spec in sorted(specs, key=lambda s: s.page):
+                page_idx = spec.page - 1  # GROBID coords are 1-based
+                if page_idx < 0 or page_idx >= page_count:
+                    refused(spec.asset_id, "page_missing")
+                    continue
+                # Each branch pays for its own page scan, and only where the answer can be used:
+                # the figure recovery ignores its graphics unless the bbox is the float's own
+                # coords, and the table regrowth ignores its words unless there is a float box to
+                # bound them.
+                bbox, recovered = spec.bbox, False
+                if spec.type is AssetType.FIGURE and not spec.content_coords:
+                    bbox = crop_bbox_for(
+                        spec,
+                        graphics.of(doc, page_idx),
+                        partial(page_text.text_in, doc, page_idx),
+                    )
+                    recovered = bbox != spec.bbox
+                elif (
+                    spec.type is AssetType.TABLE
+                    and plumber_doc is not None
+                    and spec.float_bbox is not None
+                ):
+                    bbox = table_body_bbox(spec, page_words.of(plumber_doc, page_idx))
+                if not crop_is_renderable(bbox):
+                    refused(spec.asset_id, "not_renderable")
+                    continue
+                if _has_no_figure_evidence(spec, recovered, partial(graphics.of, doc, page_idx)):
+                    refused(spec.asset_id, "no_figure_evidence")
+                    continue
+                # Asked only of a bbox nothing moved — a recovered one is the graphic, by
+                # construction.
+                if not recovered and _is_caption_only(spec, bbox, page_text, doc, page_idx):
+                    # DESIGNED, not a loss — see the docstring.
+                    refused(spec.asset_id, "caption_only")
+                    continue
+                raw = _render_bbox_to_png(doc, page_idx, bbox, bitmap_cache=bitmaps)
+                image = normalizer.normalize(raw) if raw else None
+                if image is None:
+                    refused(spec.asset_id, "render_failed")
+                    continue
+                meta = FigureTableAsset(
+                    asset_id=spec.asset_id,
+                    paper_id=paper_id,
+                    version=version,
+                    type=spec.type,
+                    ordinal=spec.ordinal,
+                    source_mode=AssetSourceMode.PAGE_CROP,
+                    caption=spec.caption,
+                    page_ref=spec.page,
+                    bbox=bbox,  # the rendered region, which recovery may have widened
                 )
-                recovered = bbox != spec.bbox
-            elif (
-                spec.type is AssetType.TABLE
-                and plumber_doc is not None
-                and spec.float_bbox is not None
-            ):
-                bbox = table_body_bbox(spec, page_words.of(plumber_doc, page_idx))
-            if not crop_is_renderable(bbox):
-                refused(spec.asset_id, "not_renderable")
-                continue
-            if _has_no_figure_evidence(spec, recovered, partial(graphics.of, doc, page_idx)):
-                refused(spec.asset_id, "no_figure_evidence")
-                continue
-            # Asked only of a bbox nothing moved — a recovered one is the graphic, by construction.
-            if not recovered and _is_caption_only(spec, bbox, page_text, doc, page_idx):
-                refused(spec.asset_id, "caption_only")  # DESIGNED, not a loss — see the docstring
-                continue
-            raw = _render_bbox_to_png(doc, page_idx, bbox, bitmap_cache=bitmaps)
-            image = normalizer.normalize(raw) if raw else None
-            if image is None:
-                refused(spec.asset_id, "render_failed")
-                continue
-            meta = FigureTableAsset(
-                asset_id=spec.asset_id,
-                paper_id=paper_id,
-                version=version,
-                type=spec.type,
-                ordinal=spec.ordinal,
-                source_mode=AssetSourceMode.PAGE_CROP,
-                caption=spec.caption,
-                page_ref=spec.page,
-                bbox=bbox,  # the rendered region, which recovery may have widened
+                out.append(ExtractedAsset(meta=meta, image=image))
+            out = _without_duplicate_regions(
+                out, refused, {s.asset_id: s.label or "" for s in specs}
             )
-            out.append(ExtractedAsset(meta=meta, image=image))
-        out = _without_duplicate_regions(
-            out, refused, {s.asset_id: s.label or "" for s in specs}
-        )
     except Exception:  # noqa: BLE001 - best-effort; skip assets for this paper
         if refusals is not None:
             del refusals[refusals_base:]
         return ()
     finally:
+        # The pdfium document closed itself with its ``with`` above; these two are the other
+        # handles this function opens, on their own lifecycles.
         page_text.close()
         if plumber_doc is not None:
             plumber_doc.close()
-        # pypdfium2 closes nothing on its own; leaving the document to GC-time finalizers is how
-        # a long sweep ends in a wall of teardown warnings (the same rationale the audit's
-        # _assets.py already applies to its own document).
-        if doc is not None:
-            with suppress(Exception):
-                doc.close()
     return tuple(out)
 
 

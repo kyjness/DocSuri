@@ -32,10 +32,11 @@ def _identifier_from_member(name: str) -> ArxivIdentifier | None:
 
     The version is returned, not discarded, because the cache key carries one: this used to hand
     back the bare paper id, and the caller then wrote whatever bytes the tar held under the
-    version the HARVEST wanted. A paper revised between arXiv's bulk snapshot and the harvest
-    therefore got its OLD version's PDF filed as the new one — and ``reparse`` reads that cache
-    exclusively (``raw_cache_mode=only``), so the wrong version's text and structure were indexed
-    with nothing anywhere saying so.
+    version the HARVEST wanted — so for a paper with several versions in the tar, whichever
+    member the walk met LAST won the key, regardless of which one the harvest named. ``reparse``
+    reads that cache exclusively (``raw_cache_mode=only``), so the wrong version's text and
+    structure were indexed with nothing anywhere saying so. Matching the member's version to the
+    target's makes the write deterministic.
 
     ``None`` for a directory, a non-PDF member, or a stem the id grammar does not accept. A member
     with no ``vN`` suffix reads as v1 and will simply not match a target on a later version, which
@@ -113,7 +114,16 @@ def _prime_from_tar(
                     continue
                 wanted = targets[identifier.paper_id]
                 if identifier.version != wanted:
-                    skipped["version_mismatch"] += 1
+                    # Counted ONLY when nothing for this paper has been cached yet. arXiv's bulk
+                    # tars carry every version of a paper as its own member, and every harvest
+                    # target is v1 (OAI ids are versionless), so a revised paper's v2+ members
+                    # are the NORMAL shape — not a snapshot lagging the harvest. Counting them
+                    # made a healthy run report hundreds of mismatches, which is exactly the
+                    # signal this counter was added to distinguish. What it must explain is why
+                    # a target ended up with NO cached bytes, so a member is a mismatch only
+                    # while its paper is still uncached.
+                    if identifier.paper_id not in cached:
+                        skipped["version_mismatch"] += 1
                     continue
                 fobj = tar.extractfile(member)
                 if fobj is None:
@@ -162,12 +172,15 @@ def raw_backfill(settings: IngestionSettings | None = None) -> int:
         }
     log.info("raw_backfill targets: %d papers (months=%s)", len(targets), sorted(months) or "all")
 
+    # One client for the raw store and the bulk-bucket reads alike — the reason the factory
+    # exists, applied here too (this site built two while calling the factory for one of them).
+    client = build_s3_client()
     raw_store = S3RawContentStore(
         bucket=settings.s3_bucket,
         prefix=settings.raw_cache_prefix,
         kms_key_id=settings.asset_kms_key_id,
+        client=client,
     )
-    client = build_s3_client()
     bucket = settings.arxiv_bulk_bucket
     tmp_dir = _tmp_dir()
 

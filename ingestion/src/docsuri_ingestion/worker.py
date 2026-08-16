@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import logging
-import re
 import signal
 import sys
 import threading
 from uuid import UUID
+
+from docsuri_shared.upload_keys import key_segment
 
 from .domain.enums import FailureClass, FailureReason, JobKind, SourceName
 from .domain.errors import IngestionError, PermanentIngestionError
@@ -296,16 +297,6 @@ def _validate_userdoc_record_ref(record_ref: str, *, owner_id: str, job_id: str)
         raise _invalid_payload()
 
 
-# Characters an S3 key path segment may carry, mirroring the producer's own key builder. Anything
-# else collapses to "-" there, so the owner's segment has to be derived the same way to be found.
-_UNSAFE_KEY_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
-
-
-def _owner_handle(owner_id: str) -> str:
-    """The owner's key-path segment, derived the way the producer derives it."""
-    return (_UNSAFE_KEY_CHARS.sub("-", (owner_id or "").strip()).strip("-") or "x")[:128]
-
-
 def _validate_userdoc_object_key(object_key: str, *, owner_id: str) -> None:
     """Refuse a user-document key that is not inside this owner's area.
 
@@ -317,14 +308,16 @@ def _validate_userdoc_object_key(object_key: str, *, owner_id: str) -> None:
     Only the owner SEGMENT is asserted, not the producer's full prefix tree. That tree is two
     environment variables, a per-module branch and a repeated attachment segment; copying it here
     would put a second, quietly-diverging definition of the layout in another module, and the
-    layout is not what protects anyone. Which owner's area the key sits in is.
+    layout is not what protects anyone. Which owner's area the key sits in is. The segment
+    grammar itself is NOT copied either — ``key_segment`` is the one shared definition the
+    producer builds the key with, so the two sides cannot drift apart on it.
 
     Matched as a whole path SEGMENT, not a substring: the owner sits at a different depth per
     module (``novelty/<owner>/…`` against ``uploads/<module>/<owner>/…``), so a depth-free segment
     test covers both without either being spelled here, and it cannot be satisfied by an owner
     handle that merely appears inside some longer name.
     """
-    if _owner_handle(owner_id) not in object_key.split("/"):
+    if key_segment(owner_id) not in object_key.split("/"):
         raise _invalid_payload()
 
 

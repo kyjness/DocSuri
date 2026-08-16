@@ -14,7 +14,7 @@ the wire, rebuilt the way ``_get_bytes`` builds it.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from urllib.parse import unquote_plus
 
 import httpx
@@ -153,10 +153,49 @@ def test_a_full_final_page_still_ends_the_walk(source) -> None:
     assert len(recorder.calls) == 2
 
 
-def test_the_boundary_minute_is_still_filtered_in_python(source) -> None:
-    """The query stamp is minute-resolution and rounds DOWN, so the bound is inclusive and can
-    re-serve a record already ingested. The ``> since`` test is what drops it."""
-    at_the_bound = _SINCE.strftime("%Y-%m-%dT%H:%M:%SZ")
-    _Recorder(source, [_feed(1, updated=at_the_bound)])
+def test_the_watermark_second_is_re_served_not_dropped(source) -> None:
+    """Inclusive at the boundary SECOND, exclusive below it.
 
-    assert list(source.fetch_incremental(_SINCE, ("cs.CL",))) == []
+    The walk can stop part-way (page cap, a transport failure on page k). The workers then advance
+    the watermark to the last yielded record's second, and with a strict ``>`` any un-yielded
+    record sharing that exact second was dropped on the next tick — forever, since the watermark
+    only grows. ``>=`` re-serves it; a re-queued paper costs nothing because the DUPLICATE
+    short-circuit absorbs it before any fetch (BR-4). Records genuinely older than the watermark
+    (the minute-rounded query bound re-serves the whole boundary minute) are still filtered.
+    """
+    at_the_second = _SINCE.strftime("%Y-%m-%dT%H:%M:%SZ")
+    a_second_earlier = (_SINCE - timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    _Recorder(
+        source,
+        [
+            _feed(1, updated=at_the_second)
+            .replace("</feed>", _entry(99, a_second_earlier) + "</feed>")
+        ],
+    )
+
+    records = list(source.fetch_incremental(_SINCE, ("cs.CL",)))
+
+    assert [r.updated_at for r in records] == [_SINCE]
+
+
+def test_an_empty_page_past_the_first_is_said_out_loud(source, caplog) -> None:
+    """arXiv is known to answer a transient empty page for start>0 with HTTP 200. Reading that
+    silently as "window exhausted" is the same quiet no-op this method was broken by twice; the
+    walk still ends (the next tick re-covers from the watermark), but it says so."""
+    _Recorder(source, [_feed(_ATOM_PAGE_SIZE), _feed(0)])
+
+    with caplog.at_level("WARNING", logger="docsuri.ingestion.arxiv"):
+        list(source.fetch_incremental(_SINCE, ("cs.CL",)))
+
+    assert any("비어 있어" in rec.message for rec in caplog.records)
+
+
+def test_a_short_but_non_empty_final_page_ends_quietly(source, caplog) -> None:
+    """The ordinary end of a window — a partial last page — must NOT warn, or the warning above
+    fires on every healthy tick and stops meaning anything."""
+    _Recorder(source, [_feed(_ATOM_PAGE_SIZE), _feed(7, start=_ATOM_PAGE_SIZE)])
+
+    with caplog.at_level("WARNING", logger="docsuri.ingestion.arxiv"):
+        list(source.fetch_incremental(_SINCE, ("cs.CL",)))
+
+    assert not caplog.records

@@ -125,6 +125,36 @@ def test_a_non_pdf_member_is_refused(tmp_path):
     assert skipped["not_pdf"] == 1
 
 
+def test_a_revised_papers_other_versions_are_not_counted_once_it_is_cached(tmp_path):
+    """The NORMAL shape of the bulk tars, and it used to read as a fault.
+
+    Every harvest target is v1 (OAI ids are versionless), and arXiv's tars carry every version of
+    a paper as its own member. So a revised paper's v2 and v3 members are not a snapshot lagging
+    the harvest — they are what a revised paper looks like — and counting them made a healthy run
+    report hundreds of mismatches, the very signal the counter was added to distinguish. Only a
+    member of a paper that ends up with NOTHING cached says something went wrong.
+    """
+    cached, store, skipped = _prime(
+        {"2501.11111v1.pdf": _PDF, "2501.11111v2.pdf": _PDF, "2501.11111v3.pdf": _PDF},
+        {"2501.11111": 1},
+        tmp_path,
+    )
+
+    assert cached == {"2501.11111"}
+    assert store.written == {("2501.11111", 1, "pdf"): _PDF}
+    assert skipped["version_mismatch"] == 0
+
+
+def test_a_paper_whose_only_members_are_the_wrong_version_is_still_counted(tmp_path):
+    # The signal survives for the case that matters: nothing for this paper was cached at all.
+    cached, store, skipped = _prime(
+        {"2501.11111v2.pdf": _PDF, "2501.11111v3.pdf": _PDF}, {"2501.11111": 1}, tmp_path
+    )
+
+    assert cached == set()
+    assert skipped["version_mismatch"] == 2
+
+
 def test_members_outside_the_target_set_are_ignored_without_being_counted(tmp_path):
     # Not a refusal — the tar simply holds the whole month and most of it is not wanted.
     cached, store, skipped = _prime(

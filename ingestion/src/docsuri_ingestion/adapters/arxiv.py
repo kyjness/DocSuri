@@ -67,9 +67,10 @@ def _oai_set(category: str) -> str:
 def _atom_stamp(moment: datetime) -> str:
     """A datetime as the Atom search grammar's ``YYYYMMDDHHMM`` date-range bound (UTC).
 
-    Minute resolution is all the grammar carries, and it rounds DOWN — so the bound is inclusive
-    of the boundary minute and the caller keeps its own ``> since`` test to drop the re-served
-    records that produces.
+    Minute resolution is all the grammar carries, and it rounds DOWN — so the query re-serves the
+    boundary minute, and the caller's ``>= since`` post-filter (deliberately inclusive at the
+    second, see ``fetch_incremental``) narrows that to the boundary second. Anything re-served
+    from there is absorbed downstream by the DUPLICATE short-circuit.
     """
     return moment.astimezone(UTC).strftime("%Y%m%d%H%M")
 
@@ -175,11 +176,32 @@ class ArxivHttpSource:
             body = self._get_text(self._atom_base_url, params=params, stage="fetch_incremental")
             records = parse_atom_feed(body)
             for record in records:
-                # Kept even with the server-side bound: the stamp is minute-resolution and rounds
-                # down, so the boundary minute can return a record already ingested.
-                if record.updated_at > since:
+                # INCLUSIVE at the watermark, and the post-filter is kept at all only because the
+                # query stamp is minute-resolution and rounds down. Strict ``>`` was wrong here:
+                # this walk can stop part-way (the page cap, a transport failure on page k), the
+                # workers then advance the watermark to the LAST yielded record's second, and any
+                # un-yielded record sharing that exact second is dropped by ``>`` on the next tick
+                # — forever, since the watermark only grows. Same-second ties are rare but nothing
+                # rules them out. ``>=`` re-serves the boundary second instead, and a re-queued
+                # paper costs nothing: the DUPLICATE short-circuit absorbs it before any fetch
+                # (BR-4). That is what makes "the remainder stays above the watermark and the next
+                # tick continues from there" actually true.
+                if record.updated_at >= since:
                     yield record
             if len(records) < _ATOM_PAGE_SIZE:
+                if records or page == 0:
+                    return
+                # An EMPTY page past the first is not proof the window is exhausted: arXiv is
+                # known to answer a transient empty page for start>0 with HTTP 200, and reading
+                # that as "done" is the same silent "success that queued nothing" this method was
+                # broken by twice over. Not retried here — the fetch already sits under the
+                # resilience layer and the next tick re-covers from the watermark — but said out
+                # loud, so a persistent short page reads as a symptom rather than a quiet day.
+                _log.warning(
+                    "증분 수집 %d페이지가 비어 있어 걷기를 끝낸다 — 창 소진일 수도, arXiv의 일시적 "
+                    "빈 페이지일 수도 있다. 남은 분량은 다음 틱이 워터마크부터 다시 본다",
+                    page,
+                )
                 return
         _log.warning(
             "증분 수집이 %d페이지(%d편) 상한에 걸렸다 — 나머지는 워터마크 위에 남아 "

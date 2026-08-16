@@ -649,6 +649,60 @@ def test_schedule_tick_isolates_a_failing_external_source() -> None:
     assert failed_tags[0]["source"] == "OPENALEX"
 
 
+def test_schedule_tick_isolates_a_failing_arxiv_walk_and_keeps_partial_progress() -> None:
+    """The arXiv branch gets the same per-source boundary the external sources have.
+
+    It did without one while its harvest was a single request that in practice always answered
+    200. The walk is now up to twenty rate-limited pages, and a 5xx on page k with no boundary
+    escaped process_message, took the worker down, and sent the tick round SQS into the DLQ. The
+    jobs queued before the failure are real — counted through a tally, since the generator dies
+    mid-iteration and no return value would carry them.
+    """
+    control = InMemoryControlPlaneStore()
+    queue = InMemoryQueue()
+    observability = type(
+        "Obs",
+        (),
+        {
+            "metrics": [],
+            "emit_metric": lambda self, name, value, tags=None: self.metrics.append(
+                (name, value, tags or {})
+            ),
+            "emit_log": lambda self, entry: None,
+            "emit_failure_signal": lambda self, job_id, stage, error: None,
+        },
+    )()
+
+    class _ArxivDiesOnPageTwo(FakeArxivSource):
+        def fetch_incremental(self, since, categories):
+            yield sample_metadata("2401.00001v1", category="cs.CL")
+            yield sample_metadata("2401.00002v1", category="cs.CL")
+            raise RetriableIngestionError(
+                "arXiv returned 503", reason=FailureReason.FETCH_FAILURE, stage="fetch_incremental"
+            )
+
+    service = RefreshOrchestrationService(
+        arxiv=_ArxivDiesOnPageTwo([]),
+        control_plane=control,
+        queue=queue,
+        observability=observability,
+        enabled_sources=(SourceName.ARXIV,),
+    )
+
+    queued = service.on_schedule_tick()  # must not raise
+
+    assert queued == 2  # the two papers yielded before the failure are in the queue
+    assert len(queue.jobs) == 2
+    names = [name for name, _, _ in observability.metrics]
+    assert "ingestion.source.incremental.failed" in names
+    assert "ingestion.incremental.queued" in names  # the tick still reached completion
+    failed_tags = [
+        tags for name, _, tags in observability.metrics
+        if name == "ingestion.source.incremental.failed"
+    ]
+    assert failed_tags[0]["source"] == "ARXIV"
+
+
 def test_full_rebuild_wires_configured_external_sources_as_seed_jobs() -> None:
     control = InMemoryControlPlaneStore()
     queue = InMemoryQueue()

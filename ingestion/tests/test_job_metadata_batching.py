@@ -2,12 +2,13 @@
 
 from datetime import UTC, datetime
 
+from docsuri_shared.upload_keys import key_segment
 from hypothesis import given
 from hypothesis import strategies as st
 
 from docsuri_ingestion.domain.enums import JobKind
 from docsuri_ingestion.domain.models import IngestionJob, MetadataRecord
-from docsuri_ingestion.worker import _owner_handle, job_from_payload
+from docsuri_ingestion.worker import job_from_payload
 
 
 def _record() -> MetadataRecord:
@@ -79,10 +80,10 @@ def _user_docmodel_job_strategy(draw):
         kind=JobKind.BUILD_USER_DOC_MODEL,
         paper_id=f"userdoc:{draw(st.uuids())}",
         version=1,
-        # Built from the OWNER HANDLE, as the producer builds it — the worker refuses a key
-        # outside the owner's area, and a raw id is not always its own handle ("-" -> "x").
+        # Built with the SHARED segment rule, as the producer builds it — the worker refuses a
+        # key outside the owner's area, and a raw id is not always its own segment ("-" -> "x").
         object_key=(
-            f"uploads/{_owner_handle(owner_id)}/{job_id}/{attachment_id}/{filename}.pdf"
+            f"uploads/{key_segment(owner_id)}/{job_id}/{attachment_id}/{filename}.pdf"
         ),
         module=draw(st.sampled_from(("evidence", "novelty"))),
         owner_id=owner_id,

@@ -156,6 +156,17 @@ class PostgresControlPlaneStore:
         redelivery of unchanged content never reaches here. A retriable failure after the claim
         leaves the fingerprint NULL and the redelivery classifies CHANGED and reprocesses — which
         is already what a first ingest does.
+
+        KNOWN LIMIT — single writer assumed. The ``<=`` guard admits a SAME-version re-claim (so an
+        idempotent reprocess is a no-op rather than a rejection, BR-C12), and that re-claim now
+        nulls the fingerprint too. Under a concurrent writer that means: A claims and completes v1;
+        B, which evaluated CHANGED while A was still half-open, re-claims v1 after A's
+        ``mark_ingested`` and nulls A's fingerprint; if B's build then fails permanently,
+        ``mark_excluded`` matches a row whose chunks and full text A left live. The deploy runs one
+        worker (``max_capacity=1``) and the in-memory store has always behaved this way, so the two
+        stores agree and the window is closed today. Opening it up (a second writer, a manual
+        ingest beside the worker) needs a CAS that refuses a same-version claim on a completed row
+        — not a wider ``mark_excluded`` guard, which would just move the inconsistency.
         """
         del fingerprint
         with self._connect() as conn:
