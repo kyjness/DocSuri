@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 
+from docsuri_shared.upload_keys import key_segment
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -79,7 +80,11 @@ def _user_docmodel_job_strategy(draw):
         kind=JobKind.BUILD_USER_DOC_MODEL,
         paper_id=f"userdoc:{draw(st.uuids())}",
         version=1,
-        object_key=f"uploads/{owner_id}/{job_id}/{attachment_id}/{filename}.pdf",
+        # Built with the SHARED segment rule, as the producer builds it — the worker refuses a
+        # key outside the owner's area, and a raw id is not always its own segment ("-" -> "x").
+        object_key=(
+            f"uploads/{key_segment(owner_id)}/{job_id}/{attachment_id}/{filename}.pdf"
+        ),
         module=draw(st.sampled_from(("evidence", "novelty"))),
         owner_id=owner_id,
         record_ref=f"upload:{owner_id}:{job_id}:{attachment_id}",

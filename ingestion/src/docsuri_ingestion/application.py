@@ -574,6 +574,10 @@ class IngestionPipelineService:
             ),
         )
         dedup.mark_ingested(paper)
+        # After the ledger closes, not when the chunks were cut: a retriable failure between the
+        # two (Bedrock throttling on embed) redelivers the job and re-chunks the same paper, and
+        # a count taken before it inflated the corpus-level rate by every paper's retry count.
+        self._report_chunk_truncation(paper, chunks)
         self._control_plane.advance_watermark(watermark_name, paper.updated_at)
         # FR-17 assets: best-effort, AFTER the index commit so it can never block (BR-27).
         if isinstance(asset_extra, _TeiAssetContext):
@@ -923,6 +927,28 @@ class IngestionPipelineService:
             self._report_asset_failure(paper.paper_id, FailureReason.ASSET_EXTRACT_FAILURE, exc)
             return
         self._render_and_store_crops(paper.paper_id, paper.version, pdf, specs)
+
+    def _report_chunk_truncation(self, paper, chunks) -> None:
+        """Say that the per-paper chunk cap cut this body short. No-op when it did not.
+
+        Counted, not merely logged: a corpus batch reads metrics, and the last time this went
+        unreported the cap removed part of the body of 26% of the papers indexed so far without a
+        single line saying so. The paper still indexes — what it loses is the tail of its text —
+        so this is a signal, not a failure, and it never interrupts the ingest.
+        """
+        if not chunks.truncated:
+            return
+        self._observability.emit_metric(
+            "ingestion.chunks.truncated", 1.0, {"paperId": paper.paper_id}
+        )
+        self._observability.emit_log(
+            {
+                "type": "chunk_cap_reached",
+                "paperId": paper.paper_id,
+                "chunks": len(chunks.chunks),
+                "hint": "raise DOCSURI_MAX_CHUNKS_PER_PAPER — this paper's body was cut",
+            }
+        )
 
     def _report_asset_failure(
         self, paper_id: str, reason: FailureReason, exc: Exception
@@ -1274,19 +1300,26 @@ class RefreshOrchestrationService:
             return 0
         queued = 0
         if SourceName.ARXIV in self._enabled_sources:
-            watermark = self._control_plane.get_watermark("arxiv")
-            for metadata in self._arxiv.fetch_incremental(
-                watermark.updated_at, CORPUS_SLICE_CATEGORIES
-            ):
-                self._queue.send_job(
-                    IngestionJob(
-                        job_id=new_job_id("incremental"),
-                        kind=JobKind.INCREMENTAL,
-                        arxiv_ref=metadata.arxiv_ref,
-                        source_name=SourceName.ARXIV,
-                    )
+            # Same per-source boundary the external sources get below. arXiv did without one
+            # while its harvest was a single request that in practice always answered 200; the
+            # walk is now up to twenty rate-limited pages, and a 5xx on page k with no boundary
+            # left process_message, took the worker down, and sent the tick round SQS into the
+            # DLQ. The jobs queued before the failure are real and stay counted.
+            # Counted through a tally rather than the return value, for the reason
+            # ``backfill_external_sources`` already gives: the walk is a generator, and a page
+            # failure aborts it mid-iteration so ``return queued`` never runs — the jobs enqueued
+            # before that point are real and already in the queue.
+            tally = [0]
+            try:
+                self._queue_arxiv_incremental(tally)
+            except Exception as exc:  # noqa: BLE001 — defensive boundary around one source
+                self._observability.emit_metric(
+                    "ingestion.source.incremental.failed",
+                    1.0,
+                    {"source": SourceName.ARXIV.value, "error": type(exc).__name__},
                 )
-                queued += 1
+            finally:
+                queued += tally[0]
         for source_name in self._enabled_sources:
             if source_name is SourceName.ARXIV:
                 continue
@@ -1302,6 +1335,27 @@ class RefreshOrchestrationService:
                 )
         self._observability.emit_metric("ingestion.incremental.queued", float(queued), {})
         return queued
+
+    def _queue_arxiv_incremental(self, tally: list[int]) -> None:
+        """Enqueue one INCREMENTAL job per arXiv paper updated since the watermark.
+
+        ``tally[0]`` mirrors the count as it goes (same idiom as ``_queue_external_source``), so a
+        walk that dies on page k still reports the jobs it queued from pages 1..k-1 to the caller's
+        boundary — they are in the queue whether or not this returns.
+        """
+        watermark = self._control_plane.get_watermark("arxiv")
+        for metadata in self._arxiv.fetch_incremental(
+            watermark.updated_at, CORPUS_SLICE_CATEGORIES
+        ):
+            self._queue.send_job(
+                IngestionJob(
+                    job_id=new_job_id("incremental"),
+                    kind=JobKind.INCREMENTAL,
+                    arxiv_ref=metadata.arxiv_ref,
+                    source_name=SourceName.ARXIV,
+                )
+            )
+            tally[0] += 1
 
     def _queue_external_incremental(self, source_name: SourceName) -> int:
         watermark_name = source_name.value.lower()

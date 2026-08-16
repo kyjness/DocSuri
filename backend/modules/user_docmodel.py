@@ -9,6 +9,7 @@ from urllib.parse import quote
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from docsuri_shared.dtos import DocModel
+from docsuri_shared.upload_keys import key_segment
 
 USER_DOCMODEL_VERSION = 1
 USER_DOCMODEL_MODULES = frozenset({"evidence", "novelty"})
@@ -332,8 +333,10 @@ def _safe_filename(value: str) -> str:
 
 
 def _handle(value: str, *, fallback: str = "x") -> str:
-    handle = _SAFE_CHARS.sub("-", (value or "").strip()).strip("-")
-    return (handle or fallback)[:128]
+    # The owner/scope/attachment segment grammar is a CONTRACT with the ingestion worker, which
+    # checks a queued job's objectKey against the owner it claims. Both sides import the one
+    # definition so they cannot drift — a local copy here is exactly what would let them.
+    return key_segment(value, fallback=fallback)
 
 
 def _float_env(name: str, default: float) -> float:

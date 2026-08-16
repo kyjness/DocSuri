@@ -111,7 +111,12 @@ class Chunker:
     ) -> bool:
         """Split ``text`` and append chunks in ordinal order until the per-paper cap is reached.
 
-        Returns True once the cap is full, so callers can stop feeding sections.
+        Returns True only when a part was actually DROPPED — that is the truncation signal the
+        callers turn into ``ChunkSet.truncated``. A paper that fills the cap exactly, with nothing
+        left over, is complete, not cut; reporting it as cut would over-count the corpus-level
+        signal, and with the cap (512) close to the measured maximum (487) an exact fit is not a
+        corner case. An exact fill followed by MORE text is still caught: the next section's call
+        finds no room for its first part and returns True. Callers stop feeding on True.
         """
         for part in split_text(text, self.max_chunk_chars, self.overlap_chars):
             if len(chunks) >= self.max_chunks_per_paper:
@@ -127,17 +132,27 @@ class Chunker:
                     block_refs=refs,
                 )
             )
-        return len(chunks) >= self.max_chunks_per_paper
+        return False
 
     def chunk(self, paper: ParsedPaper) -> ChunkSet:
         sections = [("abstract", paper.abstract), *split_sections(paper.full_text)]
         chunks: list[Chunk] = []
+        truncated = False
         for section, section_text in sections:
+            # No early exit on an exact fill: if the cap filled on this section's LAST part, the
+            # next section's ``_fill`` is what notices — it finds no room for its first part and
+            # returns True — and a paper with nothing after this section correctly stays uncut.
             if self._fill(chunks, paper.paper_id, section, section_text):
+                truncated = True
                 break
         if not chunks:
             raise ValidationViolationError("paper produced no chunks", stage="chunk")
-        return ChunkSet(paper_id=paper.paper_id, version=paper.version, chunks=tuple(chunks))
+        return ChunkSet(
+            paper_id=paper.paper_id,
+            version=paper.version,
+            chunks=tuple(chunks),
+            truncated=truncated,
+        )
 
     def chunk_doc_model(self, doc: DocModel) -> ChunkSet:
         """Chunk structured doc-model blocks while preserving block id refs internally."""
@@ -186,12 +201,16 @@ class Chunker:
             walk(section)
 
         chunks: list[Chunk] = []
+        truncated = False
         for section, text, refs in entries:
             if self._fill(chunks, doc.meta.paperId, section or "body", text, refs):
+                truncated = True
                 break
 
         if not chunks and doc.fullText and fallback_refs:
-            self._fill(chunks, doc.meta.paperId, "body", doc.fullText, fallback_refs)
+            truncated = self._fill(
+                chunks, doc.meta.paperId, "body", doc.fullText, fallback_refs
+            )
 
         referenced = {
             (ref.section_id, ref.block_id, ref.block_type)
@@ -204,7 +223,12 @@ class Chunker:
             )
         if not chunks:
             raise ValidationViolationError("doc-model produced no chunks", stage="chunk")
-        return ChunkSet(paper_id=doc.meta.paperId, version=doc.meta.version, chunks=tuple(chunks))
+        return ChunkSet(
+            paper_id=doc.meta.paperId,
+            version=doc.meta.version,
+            chunks=tuple(chunks),
+            truncated=truncated,
+        )
 
 
 class DeduplicationGuard:

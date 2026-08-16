@@ -369,7 +369,12 @@ def _semantic_record(item: dict[str, Any]) -> SourcePaperRecord | None:
             if author.get("name")
         ),
         published_at=_parse_date(item.get("publicationDate")),
-        updated_at=_parse_date(item.get("updated")),
+        # No updated timestamp, and there is none to read: the bulk endpoint has no ``updated``
+        # field and would 400 if it were requested (see ``fetch_incremental``). This used to read
+        # ``item["updated"]``, which is absent from every response and so always parsed to None —
+        # a dead branch that made an S2 record look as though it could carry one. Windowing is by
+        # ``published_at``, uniform with OpenAlex, which sets this to None for its own reason.
+        updated_at=None,
         year=_int_or_none(item.get("year")),
         pdf_url=pdf_url,
         license_url=license_url,

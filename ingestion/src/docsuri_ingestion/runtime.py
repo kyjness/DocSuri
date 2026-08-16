@@ -12,6 +12,7 @@ from .adapters.aws import (
     S3FullTextStore,
     S3RawContentStore,
     SqsQueue,
+    build_s3_client,
 )
 from .adapters.local import (
     CapturingObservabilityHub,
@@ -131,14 +132,19 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
             "without a bucket the cache silently does nothing"
         )
     raw_cache_on = cache_wanted
-    # ONE store instance shared by every adapter that reads the cache: each S3RawContentStore
-    # builds its own boto3 client (session/loader/endpoint resolution + a connection pool), so a
-    # second instance is duplicated startup work against the same bucket.
+    # ONE boto3 S3 client for every store below. They all address the same bucket, and building a
+    # client is session/loader/endpoint resolution plus its own connection pool — this file used to
+    # say exactly that about a second raw-cache store while four sibling stores each built one
+    # anyway. Passed in rather than made a module global so the one-off tools that construct a
+    # single store keep working untouched.
+    s3 = build_s3_client()
+    # ONE store instance shared by every adapter that reads the cache, for the same reason.
     raw_store = (
         S3RawContentStore(
             bucket=settings.s3_bucket or "",
             prefix=settings.raw_cache_prefix,
             kms_key_id=settings.asset_kms_key_id,
+            client=s3,
         )
         if raw_cache_on
         else None
@@ -239,6 +245,7 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
             control_plane_dsn=settings.control_plane_dsn or "",
             prefix=settings.asset_s3_prefix,
             kms_key_id=settings.asset_kms_key_id,
+            client=s3,
         )
     # Doc-model builder (BR-30/D6): reuses the arXiv source (HTML→ar5iv tier) and the
     # single bucket's doc-model/ prefix. Phase-1 Corpus builds eagerly during ingest; the
@@ -251,6 +258,7 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
         store=S3DocModelStore(
             bucket=settings.s3_bucket or "",
             kms_key_id=settings.asset_kms_key_id,
+            client=s3,
         ),
         # Reuse the asset e-print source (when assets are enabled) to read the author's LaTeX
         # preamble for KaTeX macros — best-effort, so None (assets off) just omits macros.
@@ -262,7 +270,7 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
     embedding = _embedding_port(settings)
     pipeline = IngestionPipelineService(
         arxiv=arxiv,
-        full_text_store=S3FullTextStore(bucket=settings.s3_bucket or ""),
+        full_text_store=S3FullTextStore(bucket=settings.s3_bucket or "", client=s3),
         embedding=embedding,
         vector_index=OpenSearchVectorIndex(
             endpoint=settings.opensearch_endpoint or "",
@@ -285,6 +293,7 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
         user_document_source=S3UserDocumentSource(
             bucket=settings.s3_bucket or "",
             max_bytes=settings.user_document_max_bytes,
+            client=s3,
         ),
         grobid=grobid,
         doc_model_builder=doc_model_builder,

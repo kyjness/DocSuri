@@ -185,8 +185,12 @@ def test_semantic_scholar_provider_fetches_oa_pdf_records() -> None:
                         "abstract": "Abstract",
                         "authors": [{"name": "Ada"}],
                         "year": 2025,
-                        "publicationDate": "2025-01-01",
-                        "updated": "2026-01-02T00:00:00Z",
+                        # In-window by PUBLICATION date. This used to sit outside the window
+                        # and be pulled in by an "updated" field — which the bulk endpoint does
+                        # not return and this adapter no longer requests (see the guard in
+                        # test_semantic_scholar_bulk_request_omits_limit_and_updated_field), so
+                        # the fixture was keeping a path alive that production cannot reach.
+                        "publicationDate": "2026-01-02",
                         "isOpenAccess": True,
                         "externalIds": {"DOI": "10.1000/x", "ArXiv": "2401.00001"},
                         "openAccessPdf": {
