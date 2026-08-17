@@ -7,7 +7,7 @@
 
 ## 1. 산출물
 
-`aidlc-docs/construction/novelty-agent-v2/nfr-design/`에 작성:
+`aidlc-docs/solo-agent/novelty-agent-v2/nfr-design/`에 작성:
 
 - [x] `logical-components.md`
 - [x] `nfr-design-patterns.md`

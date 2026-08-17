@@ -2,11 +2,11 @@
 
 **단계**: INCEPTION → Requirements Analysis (솔로 유지보수 사이클)
 **일자**: 2026-07-17
-**상태**: ✅ 확정 (2026-07-18)
-**결정 요약**: 최종형은 supervisor–서브 에이전트 구조(Q1=C). novelty 단일 루프부터 착수(Q3=A), 모듈 내부 재작성(Q4=A), 단일 루프는 직접 구현하고 supervisor 단계에서 LangGraph 도입(Q5=A). API·화면 계약은 유지(Q6=A)였다가 **기능 정의 확정(2026-07-18, `requirement-verification-questions-novelty-v2-function.md` Q7=B)으로 B(새 산출물에 맞춘 재설계 허용)로 개정** — 결정 트레이스 서버 저장 조건은 유지. requirements는 소규모 델타 개정(Q7=A, 기능 정의 개정 포함), 이번 사이클은 설계 문서까지(Q8=A).
+**상태**: 확정 (2026-07-18) — 단 **Q1·Q5는 2026-08-15 재개방(미정)**
+**결정 요약**: novelty 단일 루프부터 착수(Q3=A), 모듈 내부 재작성(Q4=A). **최종 구조(Q1)와 프레임워크 채택(Q5)은 미정** — 종전 답(supervisor 완성형 / supervisor 단계 LangGraph)을 실행 계획에서 내린 뒤 대체 답을 정하지 않았고, 새 질문지에서 다시 묻는다. API·화면 계약은 유지(Q6=A)였다가 **기능 정의 확정(2026-07-18, `requirement-verification-questions-novelty-v2-function.md` Q7=B)으로 B(새 산출물에 맞춘 재설계 허용)로 개정** — 결정 트레이스 서버 저장 조건은 유지. requirements는 소규모 델타 개정(Q7=A, 기능 정의 개정 포함), 이번 사이클은 설계 문서까지(Q8=A).
 **대상**: 문헌탐색·근거형성(U11, `backend/modules/{evidence,research}/`)과 연구 아이디어(U12, `backend/modules/novelty/`) 두 기능의 에이전트 아키텍처 전면 재검토.
 **목적**: 에이전트 개발 역량(Tool Calling·Planning·Memory·MCP·멀티 에이전트)을 실제 동작하는 시스템으로 완성. 배포는 비용 확보 전까지 로컬 완성 우선.
-**결정 방식**: 각 질문의 `[Answer]:`에 선택지 문자를 기입. 이 질문지의 답이 확정되면 → ① `solo-roadmap.md` 개정, ② 기존 유닛 질문지(`construction/plans/novelty-agent-v2-functional-design-plan.md`) 답 상속·갱신, ③ 유닛 설계 문서 작성 순으로 기계적으로 진행한다.
+**결정 방식**: 각 질문의 `[Answer]:`에 선택지 문자를 기입. 이 질문지의 답이 확정되면 → ① `solo-roadmap.md` 개정, ② 기존 유닛 질문지(`solo-agent/plans/novelty-agent-v2-functional-design-plan.md`) 답 상속·갱신, ③ 유닛 설계 문서 작성 순으로 기계적으로 진행한다.
 
 ## 전제 (현황)
 
@@ -25,7 +25,7 @@
 - **C) supervisor 완성형** — supervisor(연구 오케스트레이터)가 서브 에이전트들(문헌탐색 탐색 워커, 아이디어 생성)을 지휘·병렬 실행하는 멀티 에이전트 시스템까지 완주. *Tool Calling·Planning·Memory·MCP·멀티 에이전트 전부 커버 / 작업량 최대, 중간 단계마다 동작 가능 상태 유지 필요.* (권장)
 - **X) 기타**
 
-[Answer]: C
+[Answer]: **미정 (2026-08-15 재개방)** — 종전 답 C(supervisor 완성형)는 실행 계획에서 내렸고, 대체 답은 아직 정하지 않았다. 최종 구조는 새 질문지에서 다시 묻는다.
 
 ## Q2 — 문헌탐색 에이전트화의 자율 범위
 
@@ -66,7 +66,7 @@
 - **C) 끝까지 직접 구현** — LangGraph 미사용. *외부 의존 0 / 병렬 실행·상태 전달·재시도·체크포인트를 전부 수작업으로 구현·유지해야 함.*
 - **X) 기타**
 
-[Answer]: A
+[Answer]: **미정 (2026-08-15 재개방)** — 종전 답 A(supervisor 단계에서 LangGraph 도입)는 그 단계가 사라져 성립하지 않는다. 프레임워크 채택 여부는 아직 정하지 않았다. 현재 구현이 프레임워크 없이 돼 있는 것은 사실 기술일 뿐 결정이 아니다. 새 질문지에서 다시 묻는다.
 
 ## Q6 — 기존 API·화면 계약
 
@@ -103,6 +103,6 @@ FE 채팅 화면과 REST 계약(진행상태 enum 포함)을 유지하는가?
 
 ## 답변 후 진행 (자동)
 
-1. `operations/solo-roadmap.md` 개정 — ⑤ 재정의 + 신설 항목(문헌탐색 에이전트화, supervisor+프레임워크)을 Q1·Q3·Q5 답대로 등재
-2. `construction/plans/novelty-agent-v2-functional-design-plan.md` — Q1/Q3/Q12/Q14 등에 본 질문지 답 상속, 잔여 질문만 남김
+1. `operations/solo-roadmap.md` 개정 — ⑤ 재정의 + 신설 항목(문헌탐색 에이전트화)을 Q1·Q3·Q5 답대로 등재
+2. `solo-agent/plans/novelty-agent-v2-functional-design-plan.md` — Q1/Q3/Q12/Q14 등에 본 질문지 답 상속, 잔여 질문만 남김
 3. Q8 범위대로 설계 문서 작성 → (다음 사이클) 구현
