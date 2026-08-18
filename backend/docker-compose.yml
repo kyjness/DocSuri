@@ -102,7 +102,13 @@ services:
     ports:
       - "9000:80"
     volumes:
-      - ${DOCSURI_S3_MIRROR:-~/data/docsuri-data/s3}:/data/docsuri
+      # 기본값을 두지 않는다. `:-~/data/docsuri-data/s3`였을 때, .env를 소스하지 않고
+      # `docker compose up -d`를 한 번 한 것만으로 24GB 개발 코퍼스가 조용히 마운트됐다.
+      # 컨테이너는 healthy로 뜨고 S3 API도 정상 응답하므로 어디에도 오류가 안 보이는데,
+      # 재색인 도구는 배포 코퍼스 781편 중 771편을 "doc-model 없음"으로 건너뛰고 exit 0을
+      # 냈고, 인제스천은 개발 코퍼스 파일 376개를 덮어썼다(2026-08-18). 조용히 틀린 데이터를
+      # 붙드느니 뜨지 않는 편이 낫다.
+      - ${DOCSURI_S3_MIRROR:?DOCSURI_S3_MIRROR must be set — source .env first}:/data/docsuri
     healthcheck:
       # curl, not /dev/tcp: that redirect is a bash builtin and CMD-SHELL runs /bin/sh, so the
       # probe failed on every single tick ("Directory nonexistent") while s3proxy served fine.
