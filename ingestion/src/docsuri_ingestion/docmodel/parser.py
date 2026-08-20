@@ -617,7 +617,7 @@ def _is_table_float(node: Tag) -> bool:
         return True
     if classes and "ltx_figure" not in classes:
         return False
-    if node.find("img") is not None or node.find("svg") is not None:
+    if node.find("img") is not None or _vector_graphic(node):
         return False
     if node.find(_is_tabular) is None:
         return False
@@ -728,7 +728,11 @@ def _numbered_figure_panels(figure_el: Tag) -> list[Tag]:
         for panel in figure_el.find_all("figure")
         if _nearest_figure_ancestor(panel) is figure_el
         and not _caption_only_float(panel)
-        and (panel.find_all("img") or _numbered_figure_label(_own_figcaption(panel)))
+        and (
+            panel.find_all("img")
+            or _vector_graphic(panel)
+            or _numbered_figure_label(_own_figcaption(panel))
+        )
     ]
     numbered = [p for p in panels if _numbered_figure_label(_own_figcaption(p))]
     return numbered if len(numbered) == len(panels) else []
@@ -764,6 +768,30 @@ def _numbered_figure_label(figcaption: Tag | None) -> bool:
     return tag is not None and bool(_FIGURE_TAG_RE.match(_WS_RE.sub(" ", tag.get_text()).strip()))
 
 
+def _vector_graphic(el: Tag) -> bool:
+    """Whether the float holds a graphic LaTeXML drew as vector art rather than a raster ``<img>``.
+
+    Two shapes, and only the first was ever recognised. An INLINE ``<svg>`` is the one this parser
+    already knew about. The other is an EXTERNAL svg, which LaTeXML embeds as
+    ``<object type="image/svg+xml" data="....svg" class="ltx_graphics">`` — and that is how both
+    ar5iv and arxiv.org/html deliver the majority of TikZ/pgfplots figures. Requiring ``<img>``
+    made every one of them invisible: measured over 21 corpus papers, 56 of 149 figures (38%)
+    arrive as ``<object>`` and were dropped whole, caption and number included, while only 9 (6%)
+    genuinely had no graphic at all. The browser renders them, which is why the same paper looks
+    complete on arXiv and half-empty here.
+
+    Recognising it is enough to repair the figure: ``_figure_block`` records a blank ``src`` for a
+    graphic it cannot point at, which routes the asset extractor to the whole-figure PDF page-crop
+    matched by caption number — the path multi-panel figures already take.
+    """
+    if el.find("svg") is not None:
+        return True
+    return any(
+        "ltx_graphics" in _classes(obj) or str(obj.get("type") or "").startswith("image/")
+        for obj in el.find_all("object")
+    )
+
+
 def _figure_block(figure_el: Tag, sec_ctx: _SectionCtx, doc_ctx: _DocCtx) -> dict | None:
     imgs = figure_el.find_all("img")
     label, caption = _caption(figure_el)
@@ -774,7 +802,7 @@ def _figure_block(figure_el: Tag, sec_ctx: _SectionCtx, doc_ctx: _DocCtx) -> dic
         adopted = _adopted_caption_float(figure_el)
         if adopted is not None:
             label, caption = _caption(adopted)
-    if not imgs and not (label and figure_el.find("svg") is not None):
+    if not imgs and not (label and _vector_graphic(figure_el)):
         return None  # no graphic to reference
     # A numbered float whose graphic LaTeXML drew as an inline <svg> — a TikZ/pgfplots vector
     # plot — has no <img> to point at, and requiring one dropped the figure with its caption and

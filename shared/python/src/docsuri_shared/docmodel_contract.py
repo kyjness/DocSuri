@@ -70,7 +70,12 @@ from __future__ import annotations
 #   decomposes into one block per panel (the mixed-float trigger scans descendants, not just direct
 #   children — arXiv:2510.12615 packs 104 tables this way), where the panels' rows and captions were
 #   previously merged or dropped.
-DOCMODEL_PARSER_VERSION = "docmodel-parser@10"
+# @11: an external svg embedded as <object type="image/svg+xml" class="ltx_graphics"> now counts
+# as a graphic. Requiring <img> made every TikZ/pgfplots figure invisible — 56 of 149 figures
+# (38%) over a 21-paper sample arrived this way and were dropped whole, caption and number
+# included, while the browser rendered them fine. Cached doc-models built before this carry the
+# loss, so the bump is what forces their rebuild.
+DOCMODEL_PARSER_VERSION = "docmodel-parser@11"
 # 1.1.0: additive optional meta.macros (consumers ignore if unset).
 # 1.2.0: two additive optional fields for the PDF path, both keeping an approximation searchable
 # without letting it become what the reader sees. CodeBlock.assetRef — a listing the path could
