@@ -74,6 +74,48 @@ lifecycle; AIDLC is deliberately silent on git, so the git workflow is documente
 - 이미 푸시된 커밋의 메시지를 바꾸는 history rewrite(+force-push)는 SHA가 바뀌고 머지된
   이력에 영향을 주므로 지양한다 — 필요하면 명시적으로 합의한 뒤에만.
 
+### 커밋을 잘게 쪼개지 않는다
+
+**기본은 한 작업 = 한 커밋**이다. 같은 작업의 **코드·테스트·도구·문서는 한 커밋에 함께** 간다
+— 파일 종류나 변경 성격(fix/docs)은 분할 사유가 아니다.
+
+나누는 것은 *정말 필요할 때*만이다:
+- 서로 **무관한** 결함을 한 브랜치에서 같이 고쳤을 때
+- 한쪽만 되돌려야 할 실질적 이유가 있을 때
+
+커밋 전에 **"같은 종류의 자리를 전수로 확인했나"**를 묻는다. 세 곳 중 둘만 고치면 나머지
+하나가 다음 커밋이 되고, 로그에는 같은 제목이 두 번 남는다. 그건 커밋 위생 문제가 아니라
+**덜 된 걸 내보내고 고친 흔적**이다.
+
+이 저장소는 squash가 아니라 **merge commit**으로 통합하므로 중간 커밋이 `develop`에 영구히
+남는다. 커밋 하나하나가 단독으로 빌드·테스트를 통과해야 `git bisect`가 성립한다.
+
+## PR
+
+- **base는 `develop`** (릴리스 PR `develop → main` 제외).
+- 제목은 커밋 제목과 **같은 형식 규칙**을 따른다 — `type(scope):` + 한국어 명사구.
+- 절 이름은 [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md)를 그대로
+  쓴다: **Description · Related Issues · Changes Made · Screenshots or Video · Testing ·
+  Checklist · Additional Notes**. 임의로 바꾸지 않는다. **해당 없는 절은 지운다** — 빈 절을
+  남기면 템플릿이 잡음이 된다.
+- **Description은 "왜"로 시작한다.** "무엇을 바꿨나"는 Changes Made와 diff가 말한다.
+  결함 수정이라면 **재현 조건과 영향 범위**를 먼저 적는다.
+- 검증 결과(테스트 수·정적 검사)를 Testing에 남긴다. 결함 수정이면 **그 테스트가 수정 전
+  코드에서 실패하는 것을 확인했는지**도 적는다 — 통과만 보고한 테스트는 아무것도 증명하지
+  않는다.
+- 선행 조건이 있으면(다른 PR 머지·배포 등) Description 최상단에 경고로 둔다.
+
+### 분량은 영향 범위에 비례한다
+
+긴 본문이 항상 좋은 게 아니다. **작은 수정에 긴 본문은 오히려 판단력 부족으로 읽힌다.**
+
+| PR 성격 | 적정 분량 |
+|---|---|
+| 오타·상수 변경 | 제목 한 줄. 본문 없어도 된다 |
+| 일반 버그 수정 | Description 2~3줄 + Testing |
+| 기능 추가 | 필요한 절만 쓰되 각각 짧게 |
+| 아키텍처·마이그레이션·다건 결함 | 소제목·표를 동원한 긴 본문이 정당하다 |
+
 ## Version tags
 
 - SemVer, `v` prefix, **annotated** tags on `main`: `v1.0.0`.
