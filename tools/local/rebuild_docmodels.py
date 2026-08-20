@@ -25,6 +25,9 @@ from docsuri_ingestion.domain.assets import FigureSpec  # noqa: E402
 from docsuri_ingestion.runtime import build_production_runtime  # noqa: E402
 from docsuri_ingestion.settings import IngestionSettings  # noqa: E402
 
+# 어댑터의 id_list 한 번 분량과 같게 맞춘다 — 여기서 나눈 한 덩어리가 거기서 요청 하나다.
+METADATA_CHUNK = 100
+
 
 def _read_ids(path: Path) -> list[str]:
     return [
@@ -61,9 +64,35 @@ def main() -> int:
     print(f"[plan] {len(ids)}편 · 파서 {builder._parser_version}")  # noqa: SLF001
     rebuilt = cached = failed = assets = 0
     started = time.time()
+    # 메타데이터는 100편씩 묶어서 받는다. 한 편씩 걸면 arXiv가 IP 단위로 막는다 —
+    # 어댑터 주석이 "20편을 하나씩 걸었더니 요청 100건에 거절당했다"고 적어둔 그 함정이고,
+    # 이 도구가 그대로 밟아 242편 중 13편이 429로 죽었다. 묶으면 논문당 요청이 사라진다.
+    meta_by_id: dict = {}
+    for start in range(0, len(ids), METADATA_CHUNK):
+        chunk = ids[start : start + METADATA_CHUNK]
+        try:
+            meta_by_id.update(runtime.arxiv.fetch_metadata_batch(chunk))
+        except Exception as exc:  # noqa: BLE001 — 묶음 하나가 실패해도 나머지는 간다
+            print(f"[warn] 메타데이터 묶음 {start}~{start + len(chunk)} 실패: {type(exc).__name__}")
+    print(f"[plan] 메타데이터 확보 {len(meta_by_id)}/{len(ids)}편")
+    # 한 건도 못 받았다면 arXiv가 이미 우리를 막고 있다는 뜻이다. 여기서 개별 조회로
+    # 내려가면 논문마다 요청을 하나씩 더 얹어 벌칙을 늘리기만 한다 — 오늘 실제로 그렇게
+    # 17편이 죽었다. 조용히 느려지는 대신 멈춘다.
+    if not meta_by_id:
+        print(
+            "메타데이터를 한 건도 받지 못했다 — arXiv가 막고 있을 때 개별 조회로 내려가면\n"
+            "벌칙만 키운다. 잠시 뒤 다시 실행하라(같은 명령이 끝난 논문을 건너뛴다).",
+            file=sys.stderr,
+        )
+        return 1
+
     for i, paper_id in enumerate(ids, 1):
         try:
-            metadata = runtime.arxiv.fetch_metadata(paper_id)
+            metadata = meta_by_id.get(paper_id)
+            if metadata is None:
+                # 묶음에 없던 편만 개별로 메운다. 전량이 아니라 빠진 것만이므로 요청이 몇 건에
+                # 그치고, 그 몇 건은 묶음 응답이 실제로 누락한 논문이다.
+                metadata = runtime.arxiv.fetch_metadata(paper_id)
             specs: list[FigureSpec] = []
             result = builder.build(metadata, figure_specs=specs)
             if getattr(result, "status", "") != "ok":
