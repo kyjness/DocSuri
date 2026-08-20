@@ -29,6 +29,10 @@ from .ports import ControlPlaneStorePort
 
 _HEADING_RE = re.compile(r"^(?P<title>[A-Z][A-Za-z0-9 ,.()/_:-]{2,80})$", re.MULTILINE)
 _WHITESPACE_RE = re.compile(r"\s+")
+# A single space, not a blank line: ``split_text`` runs ``normalize_text`` over every chunk, so
+# chunk text is single-line by contract and any richer separator is collapsed a step later.
+# Chunk text is embedding/BM25 input only — the read path renders doc-model blocks, not this.
+_BLOCK_JOIN = " "
 
 
 class FetchParseProcessor:
@@ -96,10 +100,21 @@ class Chunker:
 
     max_chunk_chars: int = 2400
     overlap_chars: int = 240
+    # Doc-model chunking is per block, and ``max_chunk_chars`` only ever SPLITS a long block — it
+    # never packs short ones, so for two months every paragraph became its own chunk whatever its
+    # length. Measured over 80 indexed papers (8,455 blocks): median 372 chars, 29% under 200,
+    # p10 57 — a retrieval unit too short to carry the antecedent of its own "this method".
+    # Packing consecutive blocks of the SAME section up to this target moves the median to 862
+    # chars and 88 -> 56 chunks per paper, the band conventional hybrid-search sizing asks for.
+    # Section-bounded because a chunk carries one ``section`` label and its anchors are read per
+    # section; a chunk spanning two sections breaks both. See GQ1 in
+    # aidlc-docs/construction/plans/docmodel-fulltext-index-pivot-plan.md — this is the granularity
+    # that plan left open, and block-dense was its named cost lever.
+    chunk_pack_chars: int = 1200
     # Kept in step with IngestionSettings.max_chunks_per_paper — see the rationale there. Both
     # matter: the worker passes the setting in, but tools and tests that build a Chunker directly
     # take this default, so a single-sided change silently keeps the old cap for them.
-    max_chunks_per_paper: int = 512
+    max_chunks_per_paper: int = 2048
 
     def _fill(
         self,
@@ -134,6 +149,37 @@ class Chunker:
             )
         return False
 
+    def _pack(
+        self, entries: list[tuple[str, str, str, tuple[ChunkBlockRef, ...]]]
+    ) -> list[tuple[str, str, str, tuple[ChunkBlockRef, ...]]]:
+        """Merge consecutive same-section blocks up to ``chunk_pack_chars``.
+
+        Document order is preserved and nothing is dropped: a block that does not fit starts the
+        next chunk rather than being split here, so the only splitting stays in ``_fill`` against
+        ``max_chunk_chars``. A single block already over the target is emitted alone — packing
+        must never make a chunk longer than leaving it be would.
+
+        The merged chunk keeps EVERY constituent block's ref, in order. That is what makes this
+        safe to do at all: ``blockRefs`` is declared as "block refs covered by this chunk", so a
+        packed chunk is still traceable to the exact paragraphs it came from and DF-5's block
+        locator stays expressible.
+        """
+        packed: list[tuple[str, str, str, tuple[ChunkBlockRef, ...]]] = []
+        for section_id, label, text, refs in entries:
+            if packed:
+                prev_id, prev_label, prev_text, prev_refs = packed[-1]
+                joined = len(prev_text) + len(_BLOCK_JOIN) + len(text)
+                if prev_id == section_id and joined <= self.chunk_pack_chars:
+                    packed[-1] = (
+                        section_id,
+                        prev_label,
+                        f"{prev_text}{_BLOCK_JOIN}{text}",
+                        prev_refs + refs,
+                    )
+                    continue
+            packed.append((section_id, label, text, refs))
+        return packed
+
     def chunk(self, paper: ParsedPaper) -> ChunkSet:
         sections = [("abstract", paper.abstract), *split_sections(paper.full_text)]
         chunks: list[Chunk] = []
@@ -157,7 +203,10 @@ class Chunker:
     def chunk_doc_model(self, doc: DocModel) -> ChunkSet:
         """Chunk structured doc-model blocks while preserving block id refs internally."""
         block_ids: set[tuple[str, str, str]] = set()
-        entries: list[tuple[str, str, tuple[ChunkBlockRef, ...]]] = []
+        # section_id rides along only so packing can tell two sections apart: the label is the
+        # section TITLE, and a paper with an "Appendix"/"References" heading at two different
+        # depths would otherwise have their blocks merged into one chunk across the boundary.
+        entries: list[tuple[str, str, str, tuple[ChunkBlockRef, ...]]] = []
         fallback_refs: tuple[ChunkBlockRef, ...] = ()
 
         def walk(section) -> None:
@@ -185,7 +234,7 @@ class Chunker:
                     )
                     if refs and not fallback_refs:
                         fallback_refs = refs
-                    entries.append((section_label, text, refs))
+                    entries.append((section_id, section_label, text, refs))
                 elif block_id and not fallback_refs:
                     fallback_refs = (
                         ChunkBlockRef(
@@ -202,7 +251,7 @@ class Chunker:
 
         chunks: list[Chunk] = []
         truncated = False
-        for section, text, refs in entries:
+        for _, section, text, refs in self._pack(entries):
             if self._fill(chunks, doc.meta.paperId, section or "body", text, refs):
                 truncated = True
                 break

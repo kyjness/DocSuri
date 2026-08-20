@@ -285,6 +285,7 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
         chunker=Chunker(
             max_chunk_chars=settings.max_chunk_chars,
             overlap_chars=settings.chunk_overlap_chars,
+            chunk_pack_chars=settings.chunk_pack_chars,
             max_chunks_per_paper=settings.max_chunks_per_paper,
         ),
         asset_extractor=asset_extractor,

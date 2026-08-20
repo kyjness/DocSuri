@@ -104,7 +104,11 @@ services:
     volumes:
       - ${DOCSURI_S3_MIRROR:-~/data/docsuri-data/s3}:/data/docsuri
     healthcheck:
-      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/80 || exit 1"]
+      # curl, not /dev/tcp: that redirect is a bash builtin and CMD-SHELL runs /bin/sh, so the
+      # probe failed on every single tick ("Directory nonexistent") while s3proxy served fine.
+      # A container that is permanently unhealthy reports nothing — the next real outage reads
+      # identically to this one.
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:80/ || exit 1"]
       interval: 5s
       timeout: 3s
       retries: 10
