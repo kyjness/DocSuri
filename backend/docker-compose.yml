@@ -141,7 +141,11 @@ services:
       # (`docker update --memory`) does not help and actively hurts: the JVM still believes it has
       # 4GB of heap, so the cgroup kills it (exit 137) before it ever feels pressure to collect.
       # The number to lower is this one.
-      JAVA_OPTS: "-Xmx2g"
+      # 2g는 이 박스에서 부족했다: 재기동 직후 2.0GB로 뜨고, 한 편을 파싱하는 사이 남은
+      # 1.7GB를 다 먹어 커널이 죽였다(exit 137, 8편 라운드에서 즉시). 컨테이너 상한을
+      # 거는 것은 도움이 안 된다 — JVM은 여전히 자기 힙이 다 있다고 믿어서, 압박을 느끼기
+      # 전에 cgroup이 먼저 죽인다. 낮출 수 있는 숫자는 이것뿐이라 env로 뺀다.
+      JAVA_OPTS: "-Xmx${DOCSURI_GROBID_HEAP:-2g}"
     # Model load takes a while; a port-open check is a fine readiness proxy (the image ships no curl).
     # `/dev/tcp` is a bash feature, so invoke bash explicitly — CMD-SHELL runs /bin/sh (dash on this
     # Debian-based image), which has no /dev/tcp and would report the container perpetually unhealthy.

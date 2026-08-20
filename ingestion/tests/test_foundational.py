@@ -845,3 +845,22 @@ def test_an_empty_batch_answer_counts_as_a_refusal(tmp_path, wired) -> None:
     )
     assert partial.seen == ["a", "b"]
     assert partial.metadata_seen[1] is None  # b fetches its own, as designed
+
+
+
+def test_grobid_timeout_stays_under_the_dependency_wall_clock_cap() -> None:
+    """A GROBID timeout above the outer cap reproduces the bug it was raised to fix.
+
+    ``dependency_timeout_seconds`` caps the whole resilience call. If GROBID's own timeout exceeds
+    it, the outer cap fires first — the client abandons a parse GROBID is still running, and the
+    retry stacks a second parse on top of the first inside the container. That is what drove it to
+    5.7GB and an OOM kill (2026-08-20). The two numbers are only correct in relation to each
+    other, so the relation is what gets pinned rather than either value.
+    """
+    from docsuri_ingestion.settings import IngestionSettings
+
+    settings = IngestionSettings(DOCSURI_S3_BUCKET="b")
+    assert settings.grobid_timeout_seconds < settings.dependency_timeout_seconds
+    # And it must exceed a plain request timeout — inheriting that one is the defect itself:
+    # 30s is sized for an Atom feed, and a 62-page survey measured past it.
+    assert settings.grobid_timeout_seconds > settings.request_timeout_seconds

@@ -162,7 +162,7 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
 
         grobid = GrobidHttpClient(
             base_url=settings.grobid_url,
-            timeout_seconds=settings.request_timeout_seconds,
+            timeout_seconds=settings.grobid_timeout_seconds,
             # Same store the raw source-byte cache uses, under tier "tei" — the two-pass split
             # that keeps GROBID and Docling out of memory together.
             raw_store=raw_store,

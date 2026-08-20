@@ -149,6 +149,21 @@ class IngestionSettings(BaseModel):
     contact_email: str | None = Field(default=None, alias="DOCSURI_CONTACT_EMAIL")
 
     request_timeout_seconds: float = Field(default=30.0, alias="DOCSURI_REQUEST_TIMEOUT_SECONDS")
+    # GROBID gets its OWN timeout because it is not the same kind of request. The value above is
+    # sized for fetching an Atom feed; GROBID is parsing a PDF, and a 62-page survey measured well
+    # past 30s. Sharing one number cut those papers off mid-parse — and the cut is worse than a
+    # lost paper: the client gives up but GROBID keeps working, so a retry stacks a second parse on
+    # top of the first inside the container. That is what drove it to 5.7GB and an OOM kill; the
+    # memory was the symptom, the timeout was the cause.
+    #
+    # MUST STAY BELOW ``dependency_timeout_seconds`` (below). That is the wall-clock cap on the
+    # whole dependency_call, so a larger value here is not merely useless — it reproduces the bug
+    # at a different layer: the outer cap fires first, the client abandons a parse GROBID is still
+    # running, and the retry stacks another one on top. 150s is 4x the 35s a 62-page survey
+    # measured, and still 30s under the outer cap.
+    grobid_timeout_seconds: float = Field(
+        default=150.0, alias="DOCSURI_GROBID_TIMEOUT_SECONDS"
+    )
     # Wall-clock cap for one resilience dependency_call. Must exceed the worst LEGITIMATE
     # multi-request chain (politeness-paced html→ar5iv→pdf + pdfplumber on a big PDF ≈ 2-3 min);
     # 30s (= one request's timeout) killed slow-but-healthy papers and tripped the arxiv
