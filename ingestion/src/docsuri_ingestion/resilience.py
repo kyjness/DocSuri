@@ -129,10 +129,16 @@ class IngestFailureHandler:
             jobId=job_id,
             error=IngestError(stage=error.stage, error=error.public_error()),
         )
+        # The SIGNAL carries the bare reason code — consumers key off it and the DLQ payload is a
+        # contract. The LOG carries the message too, because the code alone cannot be acted on:
+        # DEPENDENCY_UNAVAILABLE covers an AWS throttle, an open circuit and a dead container
+        # alike. Logging only the code is how a batch spent two days being diagnosed from a guess
+        # (2026-08-21) — the run recorded nothing that could confirm or refute it.
+        detail = str(error).strip()
         self._observability.emit_failure_signal(
             job_id,
             stage=signal.error.stage,
-            error=signal.error.error,
+            error=f"{signal.error.error}: {detail}" if detail else signal.error.error,
         )
         return signal
 
@@ -248,11 +254,19 @@ class IngestionResilienceService:
                 return result
         if isinstance(last_error, IngestionError):
             raise last_error
+        # CARRY THE ORIGINAL. A botocore ClientError is not an IngestionError, so this branch is
+        # the one every AWS throttle takes — and dropping the message made three different causes
+        # (AWS throttling, a circuit that opened, a genuinely dead dependency) come out as the
+        # byte-identical outcome `failed:retriable:DEPENDENCY_UNAVAILABLE:<stage>`. Measured cost
+        # (2026-08-21): a batch was diagnosed as "daily token quota exhausted" for two days on the
+        # strength of a message seen once in a probe, because the run itself recorded nothing that
+        # could confirm or refute it.
+        detail = f"{type(last_error).__name__}: {last_error}" if last_error else "no error recorded"
         raise RetriableIngestionError(
-            f"retry exhausted at stage {stage}",
+            f"retry exhausted at stage {stage} — {detail}",
             reason=FailureReason.DEPENDENCY_UNAVAILABLE,
             stage=stage,
-        )
+        ) from last_error
 
 
 def is_retriable(exc: Exception) -> bool:
