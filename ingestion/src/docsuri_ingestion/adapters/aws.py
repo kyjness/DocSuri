@@ -262,8 +262,28 @@ class BedrockCohereEmbeddingPort:
         output_dimension: int | None = None,
     ) -> None:
         import boto3
+        from botocore.config import Config
 
-        self._client = boto3.client("bedrock-runtime", region_name=region_name)
+        # ADAPTIVE, not the default. boto's default retry mode is `legacy`: it retries a throttle
+        # five times on a fixed schedule and has no client-side rate limiting at all — so a
+        # response that means "you are asking too often" is answered by asking again, faster.
+        # Adaptive mode adds the token-bucket limiter AWS built for throttling-prone APIs: it
+        # measures the throttles it receives and slows the client down before the next call.
+        #
+        # It matters more than the request count suggests, because one paper is not one call:
+        # Cohere caps a request at 96 texts and the loop below pages with no gap, so a long
+        # PDF-rung paper fires four to nine InvokeModel calls back to back.
+        #
+        # WHAT THIS DOES NOT FIX, so nobody re-reads it as a cure: the DAILY token quota. That
+        # answers with the same ThrottlingException and no pacing can help — measured 2026-08-21,
+        # adaptive mode retried eleven times over 82s and every attempt came back "Too many tokens
+        # per day". Rate shaping is for the per-minute limits; a spent daily budget needs a bigger
+        # quota or a batch spread across days.
+        self._client = boto3.client(
+            "bedrock-runtime",
+            region_name=region_name,
+            config=Config(retries={"mode": "adaptive", "max_attempts": 10}),
+        )
         self._model_id = model_id
         # Cohere Embed v3 (multilingual/english) is a DIFFERENT request shape than v4: fixed
         # 1024-dim (no output_dimension param — sending it 400s) and a 512-token input cap (needs
