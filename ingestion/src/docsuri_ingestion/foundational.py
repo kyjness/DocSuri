@@ -51,6 +51,7 @@ from .application import new_job_id
 from .domain.enums import JobKind
 from .domain.errors import PermanentIngestionError, RetriableIngestionError
 from .domain.models import IngestionJob
+from .resilience import CIRCUIT_RECOVERY_SECONDS, CircuitOpenError
 from .runtime import build_production_runtime, preflight_dependencies
 from .settings import IngestionSettings
 
@@ -325,6 +326,18 @@ def ingest_foundational(
                 recent.append(
                     outcome.startswith("failed") and not outcome.startswith("failed:permanent")
                 )
+                if ":CIRCUIT_OPEN:" in outcome:
+                    # WAIT INSTEAD OF FEEDING THE BREAKER. An open circuit refuses instantly, so
+                    # without this the run pours the rest of its papers into it and marks them all
+                    # failed in a few seconds — one throttled embed cost three more papers, one
+                    # GROBID 5xx cost two. Nothing is lost (they stay retriable) but the round is
+                    # spent. Sleeping the recovery window turns "burn the queue" into "carry on".
+                    _log.warning(
+                        "%s 회로가 열렸다 — %.0f초 뒤 재개한다(그동안 넣으면 전건 실패한다)",
+                        failure_stage(outcome) or "의존성",
+                        CIRCUIT_RECOVERY_SECONDS,
+                    )
+                    time.sleep(CIRCUIT_RECOVERY_SECONDS)
                 if n % 25 == 0 or n == len(todo):
                     rate = (time.monotonic() - started) / n
                     _log.info(
@@ -468,6 +481,12 @@ def _ingest_one_paper(runtime, arxiv_id: str, metadata=None) -> str:
                 arxiv_metadata=metadata.to_payload() if metadata is not None else None,
             )
         ).value
+    except CircuitOpenError as exc:
+        # Its own reason, not DEPENDENCY_UNAVAILABLE. This paper never reached the dependency —
+        # an earlier one did and tripped the breaker — so recording it as the same thing hides
+        # the amplification: measured, 2 genuine failures in a round of 8 produced 7 failed
+        # papers, and the ledger showed 7 identical DEPENDENCY_UNAVAILABLE rows (2026-08-21).
+        return f"failed:retriable:CIRCUIT_OPEN:{exc.stage}"
     except RetriableIngestionError as exc:
         return f"failed:retriable:{exc.reason.value}:{exc.stage}"
     except PermanentIngestionError as exc:

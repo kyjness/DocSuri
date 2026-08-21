@@ -75,6 +75,8 @@ class TimeoutRunner:
 # Carried over from the per-unit breaker this replaced.
 _CIRCUIT_FAILURE_THRESHOLD = 5
 _CIRCUIT_RECOVERY_SECONDS = 60.0
+# Public so a batch can WAIT for recovery instead of feeding papers into an open breaker.
+CIRCUIT_RECOVERY_SECONDS = _CIRCUIT_RECOVERY_SECONDS
 
 
 class CircuitOpenError(RetriableIngestionError):

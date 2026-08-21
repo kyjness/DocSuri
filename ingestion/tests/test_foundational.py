@@ -864,3 +864,34 @@ def test_grobid_timeout_stays_under_the_dependency_wall_clock_cap() -> None:
     # And it must exceed a plain request timeout — inheriting that one is the defect itself:
     # 30s is sized for an Atom feed, and a 62-page survey measured past it.
     assert settings.grobid_timeout_seconds > settings.request_timeout_seconds
+
+
+def test_an_open_circuit_waits_instead_of_feeding_the_rest_of_the_queue(
+    tmp_path, wired, monkeypatch
+) -> None:
+    """One genuine failure must not cost the whole round.
+
+    An open breaker refuses instantly, so a run that keeps going pours its remaining papers into
+    it and marks them all failed in seconds. Measured 2026-08-21: 2 genuine failures in a round of
+    8 (a throttled embed, a GROBID 5xx) produced 7 failed papers, and every one of them was
+    recorded as the same DEPENDENCY_UNAVAILABLE — the amplification was invisible.
+    """
+    from docsuri_ingestion.resilience import CircuitOpenError
+
+    pipeline = wired(_Pipeline({"b": CircuitOpenError("bedrock")}), _Arxiv())
+    slept: list[float] = []
+    monkeypatch.setattr("docsuri_ingestion.foundational.time.sleep", slept.append)
+
+    ledger = tmp_path / "l.jsonl"
+    rows = [("a", "canon"), ("b", "canon"), ("c", "canon")]
+    ingest_foundational(list_path=str(_write_list(tmp_path, rows)), ledger_path=str(ledger))
+
+    written = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
+    outcomes = {r["arxiv_id"]: r["outcome"] for r in written}
+    # Its own reason: this paper never reached the dependency, so calling it DEPENDENCY_UNAVAILABLE
+    # would hide that an EARLIER paper is what actually failed.
+    assert outcomes["b"] == "failed:retriable:CIRCUIT_OPEN:bedrock"
+    # And the run paused rather than racing the rest of the queue into the same refusal.
+    assert slept and slept[0] >= 60.0
+    # The papers after it still run — waiting is not stopping.
+    assert pipeline.seen == ["a", "b", "c"]
