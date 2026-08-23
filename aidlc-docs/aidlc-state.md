@@ -1128,7 +1128,7 @@ _Resiliency 옵트인은 `requirements.md` 확정 전에 필수 요구사항 명
   스텝 상한 `2n+2` 예산 유도(`GraphRecursionError` 미포착)·체크포인터는 PR 2.
 - 검증: 루프 테스트 24건(기존 16 무수정) · 차등 검사 2000 examples 0 diffs · backend 564 passed ·
   ruff 2레인. /simplify 12건 반영, /code-review 2건 반영(배포 정확 고정·트레이싱 차단).
-- 전달: push·PR 사용자 승인. /security-review는 PR에서.
+- 전달: push·PR 사용자 승인 → PR #30. /security-review는 권장하지 않음(순수 내부 리팩터; 새로 바깥으로 나가는 경로는 오히려 차단했다).
 
 ## ⑤ 3단계 — 멀티모달 `view_figure`
 
