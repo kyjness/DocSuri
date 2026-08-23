@@ -31,12 +31,18 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ingestion" / "src"))
 
+from dataclasses import replace  # noqa: E402
+
+from docsuri_shared.dtos import SourceTier  # noqa: E402
+
 from docsuri_ingestion.domain.assets import FigureSpec  # noqa: E402
 from docsuri_ingestion.runtime import build_production_runtime  # noqa: E402
 from docsuri_ingestion.settings import IngestionSettings  # noqa: E402
 
 # 어댑터의 id_list 한 번 분량과 같게 맞춘다 — 여기서 나눈 한 덩어리가 거기서 요청 하나다.
 METADATA_CHUNK = 100
+# doc-model 버전을 위에서부터 훑을 상한. arXiv 개정이 이보다 많은 논문은 실질적으로 없다.
+_MAX_PROBED_VERSION = 12
 
 
 def _read_ids(path: Path) -> list[str]:
@@ -45,6 +51,30 @@ def _read_ids(path: Path) -> list[str]:
         for line in path.read_text(encoding="utf-8").splitlines()
         if (candidate := line.split("#", 1)[0].strip())
     ]
+
+
+def _progress(i: int, total: int, rebuilt: int, cached: int, failed: int, started: float) -> None:
+    """25편마다 진행을 찍는다. TEI 단이 `continue`로 빠져나가며 이 출력을 건너뛰는 바람에 58편
+    실행이 통째로 무음이었다 — 진행을 보려고 저장된 doc-model의 파일 시각을 세야 했다."""
+    if i % 25 and i != total:
+        return
+    rate = i / max(time.time() - started, 1e-9)
+    print(
+        f"[{i}/{total}] 재빌드 {rebuilt} · 캐시신선 {cached} · 실패 {failed} "
+        f"({rate:.1f} papers/s)"
+    )
+
+
+def _stored_doc_model(builder, paper_id: str) -> tuple[int, str] | None:
+    """저장된 doc-model의 (version, sourceTier). 없으면 None.
+
+    버전을 모르면 읽을 수가 없으므로 최신부터 내려가며 찾는다 — arXiv 개정은 잦지 않고,
+    저장소 나열은 이 도구가 쓰는 포트에 없다."""
+    for version in range(_MAX_PROBED_VERSION, 0, -1):
+        doc = builder._store.get(paper_id, version)  # noqa: SLF001
+        if doc is not None:
+            return version, doc.meta.provenance.sourceTier.value
+    return None
 
 
 def main() -> int:
@@ -133,41 +163,45 @@ def main() -> int:
                 # 그치고, 그 몇 건은 묶음 응답이 실제로 누락한 논문이다.
                 metadata = runtime.arxiv.fetch_metadata(paper_id)
             if args.rung == "tei":
-                # 파이프라인의 GROBID 단(_grobid_doc_model)과 같은 순서: PDF → TEI(캐시) →
-                # build_from_tei → 크롭 저장. 다른 점은 force뿐이다.
-                pdf = runtime.arxiv.fetch_pdf(metadata)
-                if pdf is None:
+                # 저장된 doc-model을 먼저 읽어 그 버전과 등급을 쓴다. arXiv가 주는 최신 버전을
+                # 쓰면 두 가지가 어긋난다: 수집 뒤 개정된 논문은 TEI 캐시 키가 안 맞아
+                # (cache_mode=only에서) 실패하고, 새 버전으로 써 넣으면 색인된 doc-model이
+                # 고아가 된다.
+                stored = _stored_doc_model(builder, paper_id)
+                if stored is None:
                     failed += 1
-                    print(f"[fail] {paper_id}: PDF 없음")
+                    print(f"[fail] {paper_id}: 저장된 doc-model이 없다 (이 단은 재빌드 전용이다)")
                     continue
-                tei = grobid.extract_tei(pdf, paper_id=metadata.paper_id, version=metadata.version)
-                crops: list = []
-                result = builder.build_from_tei(
-                    metadata.paper_id,
-                    metadata.version,
-                    metadata.title,
-                    metadata.abstract or "",
-                    tei,
-                    crops=crops,
-                    pdf=pdf,
-                    force=not args.dry_run,
-                )
-                if getattr(result, "status", "") != "ok":
+                version, tier = stored
+                if tier != SourceTier.pdf.value:
+                    # 이 단은 TEI로 다시 만든다. ar5iv HTML로 만든 문서를 여기 태우면 더 나은
+                    # 등급을 PDF 등급으로 갈아엎는다 — force가 신선도 검사까지 껐으므로 막을
+                    # 것이 없다.
                     failed += 1
-                    print(f"[fail] {paper_id}: {getattr(result, 'status', '?')}")
+                    print(f"[fail] {paper_id}: sourceTier={tier} — PDF 단 문서가 아니다")
                     continue
+                # version은 arxiv_ref에서 파생되는 속성이라 ref 자체를 저장본 버전으로 맞춘다.
+                metadata = replace(metadata, arxiv_ref=f"{paper_id}v{version}")
+                # 파이프라인의 GROBID 단을 그대로 부른다. 손으로 옮겨 적으면 resilience 래핑과
+                # no-coords 분기가 빠진다(실제로 빠졌다).
+                out = pipeline._grobid_doc_model(metadata, force=not args.dry_run)  # noqa: SLF001
+                if out is None:
+                    failed += 1
+                    print(f"[fail] {paper_id}: GROBID 단이 doc-model을 못 냈다")
+                    continue
+                result, ctx = out
                 if getattr(result, "cached", False):
                     # dry-run은 force를 끄므로 전건이 캐시로 돌아온다. 그것을 재빌드로 세면
                     # "실제로 무엇이 바뀌나"라는 dry-run의 유일한 질문에 항상 틀린 답을 준다.
                     cached += 1
-                    continue
-                rebuilt += 1
-                if not crops:
-                    continue
-                pipeline._render_and_store_crops(  # noqa: SLF001
-                    metadata.paper_id, metadata.version, pdf, crops
-                )
-                assets += len(crops)
+                elif not args.dry_run:
+                    rebuilt += 1
+                    if ctx is not None and ctx.crops:
+                        pipeline._render_and_store_crops(  # noqa: SLF001
+                            metadata.paper_id, metadata.version, ctx.pdf, list(ctx.crops)
+                        )
+                        assets += len(ctx.crops)
+                _progress(i, len(ids), rebuilt, cached, failed, started)
                 continue
             specs: list[FigureSpec] = []
             result = builder.build(metadata, figure_specs=specs)
@@ -193,10 +227,7 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001 — 한 편이 전체를 멈추지 않는다
             failed += 1
             print(f"[fail] {paper_id}: {type(exc).__name__}: {exc}")
-        if i % 25 == 0 or i == len(ids):
-            rate = i / max(time.time() - started, 1e-9)
-            print(f"[{i}/{len(ids)}] 재빌드 {rebuilt} · 캐시신선 {cached} · 실패 {failed} "
-                  f"({rate:.1f} papers/s)")
+        _progress(i, len(ids), rebuilt, cached, failed, started)
 
     print(f"[done] 재빌드 {rebuilt} · 캐시신선 {cached} · 실패 {failed} · 그림스펙 {assets}")
     return 0 if failed == 0 else 1

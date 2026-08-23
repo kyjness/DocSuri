@@ -977,7 +977,7 @@ class IngestionPipelineService:
             self._observability.emit_metric("ingestion.assets.remove_failed", 1.0, {})
 
     def _grobid_doc_model(
-        self, metadata: MetadataRecord
+        self, metadata: MetadataRecord, *, force: bool = False
     ) -> tuple[DocModelResultDTO, _TeiAssetContext | None] | None:
         """arXiv PDF → GROBID rung of the Q6 ladder (BR-30 2026-08-10).
 
@@ -991,7 +991,15 @@ class IngestionPipelineService:
 
         The PDF comes from the arXiv source, NOT the FR-17 asset source: same bytes
         ``fetch_full_text`` already pulled for this paper (one memoized download), behind the
-        arXiv rate limiter, and inside the failure taxonomy."""
+        arXiv rate limiter, and inside the failure taxonomy.
+
+        ``force`` rebuilds even when the stored doc-model is at the current parser version. It
+        exists for the offline repair of doc-models built while an OPTIONAL reader was disabled —
+        freshness is a version comparison and cannot see that the formula OCR was off. It is a
+        parameter rather than a second copy of this method because a hand-copied rung drifts:
+        the copy that prompted this had no ``dependency_call`` wrapping and no no-coords
+        fallback, so a transient GROBID blip failed the paper outright and a coordinate-less TEI
+        left figure blocks pointing at assets nobody rendered."""
         grobid, builder = self._grobid, self._doc_model_builder
         if grobid is None or builder is None:
             self._observability.emit_metric(
@@ -1041,6 +1049,7 @@ class IngestionPipelineService:
             source_tier=SourceTier.pdf,
             crops=crops,
             pdf=pdf,
+            force=force,
         )
         if isinstance(result, SourceUnavailableDTO):
             return None
