@@ -82,6 +82,15 @@ def main() -> int:
         if grobid is None:
             print("TEI 단에는 GROBID 어댑터 배선이 필요하다 (DOCSURI_GROBID_URL)", file=sys.stderr)
             return 2
+        if builder._formula_reader is None:  # noqa: SLF001
+            # 이 단은 수식 LaTeX을 채우려고 존재하는데, 리더가 없으면 force가 신선도 검사까지
+            # 건너뛴 채 LaTeX이 0인 doc-model로 기존 것을 덮어쓴다 — 목적의 정반대다.
+            print(
+                "--rung tei에는 수식 리더가 필요하다. DOCSURI_FORMULA_READER를 끄지 말고,\n"
+                "pix2tex 엑스트라가 설치돼 있는지 확인하라 (없으면 LaTeX 0으로 덮어쓴다).",
+                file=sys.stderr,
+            )
+            return 2
         if settings.grobid_cache_mode != "only":
             # "prefer"면 캐시에 없는 편에서 GROBID를 실제로 부른다. 이 도구는 저장된 TEI를 다시
             # 빌드하는 것이지 파싱을 다시 하는 게 아니다 — 빠진 편은 실패로 보이는 게 맞다.
@@ -147,8 +156,13 @@ def main() -> int:
                     failed += 1
                     print(f"[fail] {paper_id}: {getattr(result, 'status', '?')}")
                     continue
+                if getattr(result, "cached", False):
+                    # dry-run은 force를 끄므로 전건이 캐시로 돌아온다. 그것을 재빌드로 세면
+                    # "실제로 무엇이 바뀌나"라는 dry-run의 유일한 질문에 항상 틀린 답을 준다.
+                    cached += 1
+                    continue
                 rebuilt += 1
-                if args.dry_run or not crops:
+                if not crops:
                     continue
                 pipeline._render_and_store_crops(  # noqa: SLF001
                     metadata.paper_id, metadata.version, pdf, crops
