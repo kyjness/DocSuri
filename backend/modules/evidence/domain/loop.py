@@ -11,6 +11,13 @@
   않는다(INV-EV-2).
 - 이미지 첨부는 `decide` **직후** 소비하고 폐기한다(BR-EV-17) — 도구 실행 뒤에
   두면 종료 제안이 거부돼 도구 없이 되도는 경로에서 재전송이 남는다.
+
+실행 틀은 LangGraph `StateGraph`다(evidence-agent-v3 설계 §3.1, 아키텍처 Q5=B).
+노드는 평범한 함수이고 위 불변 조건은 노드 안에 그대로 산다 — 그래프는 "다음에
+어느 노드로 가는가"만 안다. `deps`(LLM·도구·예산·트레이스 싱크)는 직렬화할 수
+없으므로 채널에 넣지 않고 노드 클로저로 묶는다. `LoopState`는 채널에 **참조로**
+실린다 — runner가 `outcome.state`가 아니라 자기 객체를 조립에 넘기므로 in-place
+변경이 보여야 한다. 체크포인터는 PR 2(상태 직렬화와 함께).
 """
 
 from __future__ import annotations
@@ -18,7 +25,9 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypedDict
+
+from langgraph.graph import END, START, StateGraph
 
 from ..ports.llm import (
     EvidenceLlmPort,
@@ -75,32 +84,98 @@ class LoopOutcome:
 
 def run_loop(state: LoopState, deps: LoopDeps) -> LoopOutcome:
     """한 턴의 자율 탐색을 종료까지 구동한다."""
-    while True:
+    graph = _build_graph(deps)
+    result = graph.invoke(
+        {"loop": state}, config={"recursion_limit": _recursion_limit(deps.budget)}
+    )
+    return result["outcome"]
+
+
+class _GraphState(TypedDict, total=False):
+    # 호출자의 LoopState 그 객체 — 복사 없이 참조로 싣는다(체크포인터 없음).
+    loop: LoopState
+    # decide → check_floor / act 로 넘기는 임시 값. 다음 decide가 덮어쓴다.
+    proposal: Any
+    # 종료 경로 3곳(예산 거부·LLM 불가·종료 수용, 그리고 _act의 예산 거부)에서만 채워진다.
+    outcome: LoopOutcome | None
+
+
+def _recursion_limit(budget: LoopBudget) -> int:
+    """그래프 스텝 상한 — 예산에서 유도한다. 기본값(25)에 맡기면 정상 루프가 잘린다.
+
+    반복 하나는 `decide` + (`act` 또는 `check_floor`) 최대 2스텝이다. 거부된 종료 제안은
+    `decide`로 되돌아가 **새 반복**을 시작하므로 한 반복이 3스텝이 될 수 없다. 반복 상한을
+    다 쓴 뒤 마지막 `decide`가 예산 검사에서 거부돼 1스텝 → 최대 2n+1 스텝. LangGraph는
+    N스텝을 돌리려면 `recursion_limit ≥ N+1`을 요구한다(1.2.x 실측) → 2n+2.
+
+    `GraphRecursionError`는 잡지 않는다 — 상한이 정확하므로 잡아서 예산 소진으로
+    바꾸면 현행에 없던 종료 경로를 발명하는 것이고, 노드를 더하면서 이 공식을 안 고친
+    실수를 가린다. PR 2에서 `answer`·`assemble` 노드가 붙으면 그만큼 더해야 한다.
+    """
+    return 2 * budget.max_iterations + 2
+
+
+def _build_graph(deps: LoopDeps):
+    """턴마다 새로 조립한다 — 노드가 deps를 닫으므로 턴 사이에 공유하면 상태가 섞인다."""
+
+    def decide(gs: _GraphState) -> dict | None:
+        state = gs["loop"]
         denial = budget_rules.begin_iteration(deps.budget)
         if denial is not None:
-            return _finish(state, TerminationReason.BUDGET_EXHAUSTED, denial.detail, deps)
+            return {
+                "outcome": _finish(
+                    state, TerminationReason.BUDGET_EXHAUSTED, denial.detail, deps
+                )
+            }
 
         observation = _observe(state, deps)
         try:
             decision = deps.llm.decide(observation, deps.registry.specs())
         except LlmUnavailable as exc:
-            return _finish(state, TerminationReason.FATAL_ERROR, f"llm_unavailable: {exc}", deps)
+            return {
+                "outcome": _finish(
+                    state, TerminationReason.FATAL_ERROR, f"llm_unavailable: {exc}", deps
+                )
+            }
 
         budget_rules.record_cost(deps.budget, decision.cost_estimate_usd)
         # 전달된 이미지는 여기서 소비된다 — 남기면 매 턴 재전송된다.
         _drop_images(state)
+        return {"proposal": decision.proposal, "outcome": None}
 
-        proposal = decision.proposal
-        if isinstance(proposal, TerminationProposal):
-            if state.accumulator.items:
-                return _finish(state, TerminationReason.SUFFICIENT, proposal.note, deps)
-            # 종료 제안 거부 — 사유를 관찰에 실어 다음 판단이 달라지게 한다.
-            _note(state, _NO_EVIDENCE_NOTE)
-            continue
+    def check_floor(gs: _GraphState) -> dict | None:
+        state = gs["loop"]
+        proposal: TerminationProposal = gs["proposal"]
+        if state.accumulator.items:
+            return {"outcome": _finish(state, TerminationReason.SUFFICIENT, proposal.note, deps)}
+        # 종료 제안 거부 — 사유를 관찰에 실어 다음 판단이 달라지게 한다.
+        _note(state, _NO_EVIDENCE_NOTE)
+        return None
 
-        outcome = _act(state, deps, proposal)
-        if outcome is not None:
-            return outcome
+    def act(gs: _GraphState) -> dict:
+        return {"outcome": _act(gs["loop"], deps, gs["proposal"])}
+
+    graph = StateGraph(_GraphState)
+    graph.add_node("decide", decide)
+    graph.add_node("check_floor", check_floor)
+    graph.add_node("act", act)
+    graph.add_edge(START, "decide")
+    graph.add_conditional_edges("decide", _route_after_decide)
+    graph.add_conditional_edges("check_floor", _route_back_or_end)
+    graph.add_conditional_edges("act", _route_back_or_end)
+    return graph.compile(checkpointer=None)
+
+
+def _route_after_decide(gs: _GraphState) -> str:
+    if gs.get("outcome") is not None:
+        return END
+    if isinstance(gs["proposal"], TerminationProposal):
+        return "check_floor"
+    return "act"
+
+
+def _route_back_or_end(gs: _GraphState) -> str:
+    return END if gs.get("outcome") is not None else "decide"
 
 
 def _act(state: LoopState, deps: LoopDeps, proposal: ToolCallProposal) -> LoopOutcome | None:

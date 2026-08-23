@@ -38,6 +38,11 @@ dependencies = [
     "pyotp>=2.9",
     # boto3 → SES (verification email) + CloudWatch observability adapter.
     "boto3>=1.34",
+    # langgraph → U11 evidence 루프(modules/evidence/domain/loop.py). observe→decide→act를
+    # LangGraph StateGraph로 돌린다(evidence-agent-v3 설계 §3.1, Q5=B). langchain-core가 전이로
+    # 오지만 모델 바인딩은 쓰지 않고(Bedrock 어댑터 유지) LangSmith env도 없어 바깥으로 나가는
+    # 것이 없다. 체크포인터는 PR 2.
+    "langgraph>=1.0,<2",
 ]
 
 [dependency-groups]
