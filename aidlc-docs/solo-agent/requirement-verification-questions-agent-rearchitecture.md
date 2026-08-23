@@ -2,11 +2,11 @@
 
 **단계**: INCEPTION → Requirements Analysis (솔로 유지보수 사이클)
 **일자**: 2026-07-17
-**상태**: ✅ 확정 (2026-07-18)
-**결정 요약**: 최종형은 supervisor–서브 에이전트 구조(Q1=C). novelty 단일 루프부터 착수(Q3=A), 모듈 내부 재작성(Q4=A), 단일 루프는 직접 구현하고 supervisor 단계에서 LangGraph 도입(Q5=A). API·화면 계약은 유지(Q6=A)였다가 **기능 정의 확정(2026-07-18, `requirement-verification-questions-novelty-v2-function.md` Q7=B)으로 B(새 산출물에 맞춘 재설계 허용)로 개정** — 결정 트레이스 서버 저장 조건은 유지. requirements는 소규모 델타 개정(Q7=A, 기능 정의 개정 포함), 이번 사이클은 설계 문서까지(Q8=A).
+**상태**: ✅ 확정 (2026-07-18; Q1·Q5는 2026-08-15 재개방 → **2026-08-21 재확정**)
+**결정 요약**: **최종 구조 = 독립 에이전트 2개, supervisor 없음(Q1=B, 2026-08-21 재확정)** — novelty가 evidence를 도구로 부르는 단방향 의존만 둔다. **프레임워크 = LangGraph, 두 에이전트 루프 모두(Q5=B, 2026-08-21 재확정)** — 목적에서 확정된 3기능(취소·취소 시 부분 결과·진행 스트리밍)을 외부 엔진 없이 기존 Postgres로 단독 제공하는 유일한 후보. novelty 단일 루프부터 착수(Q3=A)였으나 ⑩에서 **evidence 선행으로 역전**(근거는 `solo-roadmap.md` ⑩). 모듈 내부 재작성(Q4=A). API·화면 계약은 유지(Q6=A)였다가 **기능 정의 확정(2026-07-18, `requirement-verification-questions-novelty-v2-function.md` Q7=B)으로 B(새 산출물에 맞춘 재설계 허용)로 개정** — 결정 트레이스 서버 저장 조건은 유지. requirements는 소규모 델타 개정(Q7=A, 기능 정의 개정 포함), 이번 사이클은 설계 문서까지(Q8=A).
 **대상**: 문헌탐색·근거형성(U11, `backend/modules/{evidence,research}/`)과 연구 아이디어(U12, `backend/modules/novelty/`) 두 기능의 에이전트 아키텍처 전면 재검토.
 **목적**: 에이전트 개발 역량(Tool Calling·Planning·Memory·MCP·멀티 에이전트)을 실제 동작하는 시스템으로 완성. 배포는 비용 확보 전까지 로컬 완성 우선.
-**결정 방식**: 각 질문의 `[Answer]:`에 선택지 문자를 기입. 이 질문지의 답이 확정되면 → ① `solo-roadmap.md` 개정, ② 기존 유닛 질문지(`construction/plans/novelty-agent-v2-functional-design-plan.md`) 답 상속·갱신, ③ 유닛 설계 문서 작성 순으로 기계적으로 진행한다.
+**결정 방식**: 각 질문의 `[Answer]:`에 선택지 문자를 기입. 이 질문지의 답이 확정되면 → ① `solo-roadmap.md` 개정, ② 기존 유닛 질문지(`solo-agent/plans/novelty-agent-v2-functional-design-plan.md`) 답 상속·갱신, ③ 유닛 설계 문서 작성 순으로 기계적으로 진행한다.
 
 ## 전제 (현황)
 
@@ -25,7 +25,9 @@
 - **C) supervisor 완성형** — supervisor(연구 오케스트레이터)가 서브 에이전트들(문헌탐색 탐색 워커, 아이디어 생성)을 지휘·병렬 실행하는 멀티 에이전트 시스템까지 완주. *Tool Calling·Planning·Memory·MCP·멀티 에이전트 전부 커버 / 작업량 최대, 중간 단계마다 동작 가능 상태 유지 필요.* (권장)
 - **X) 기타**
 
-[Answer]: C
+[Answer]: **B — 독립 에이전트 2개, supervisor 없음** (2026-08-21 재확정. 종전 C는 2026-08-15에 실행 계획에서 내렸다.)
+
+각자 목적(evidence = 문헌 근거로 조건부 판단까지 답하는 챗봇 / novelty = 조사 + 여백 분석)과 화면을 가진 별개 에이전트다. 둘 사이 관계는 **novelty → evidence 단방향 도구 호출**(`form_evidence`) 하나뿐이고 지휘자는 두지 않는다 — 하나의 루프가 두 목적을 가지면 프롬프트·예산·종료 조건이 갈라진다(역할 혼재). 루프·예산·취소·진행 같은 **공통 부품은 같은 것을 쓰되**(Q5) 도구 목록·종료 조건·프롬프트·산출물은 각자 것이다. "목적으로 설명되지 않는 차이는 없앤다"가 두 에이전트를 가르는 기준이다.
 
 ## Q2 — 문헌탐색 에이전트화의 자율 범위
 
@@ -66,7 +68,34 @@
 - **C) 끝까지 직접 구현** — LangGraph 미사용. *외부 의존 0 / 병렬 실행·상태 전달·재시도·체크포인트를 전부 수작업으로 구현·유지해야 함.*
 - **X) 기타**
 
-[Answer]: A
+[Answer]: **B — LangGraph, 두 에이전트 루프 모두** (2026-08-21 재확정. 종전 A는 supervisor 단계가 사라져 성립하지 않는다.)
+
+**프레임워크를 쓰는 이유** (넷 다 사실이다):
+1. 필요한 기능 3개가 목적에서 확정됐다 — **취소 · 취소해도 부분 결과 · 진행 스트리밍**.
+2. 이 3개는 직접 만들면 크다 — 루프 중간 상태 저장, 끊긴 데서 재개, 이벤트 방출.
+3. 손으로 두 벌 만들었더니 **실제로 갈라졌다** — 취소는 novelty에만, 진행 표시는 경로마다 다르다.
+4. ⑩에서 어차피 루프를 다시 짠다(Answer 층·취소·진입 경로 통합). 지금 안 옮기면 옮길 시점이 다시 오지 않는다.
+
+**LangGraph인 이유** — 후보 3개를 위 3기능 + Bedrock으로 비교했다(2026-08-21 조사):
+
+| 기준 | LangGraph | Strands (AWS) | Pydantic AI |
+|---|---|---|---|
+| 취소(밖에서 멈춤) | ○ asyncio 취소 → 현재 단계에서 정지 | ✗ 문서에 없음(interrupt는 안에서만) | △ 단독은 단계 사이 / DBOS는 `CancellationToken` 미지원 |
+| 중간 저장 → 부분 결과 | ○ 매 super-step 체크포인트, **Postgres saver 내장** | ✗ 대화 단위만, 루프 중간 없음 | ✗ 단독 없음 / ○ DBOS·Temporal 추가 시 |
+| 진행 스트리밍 | ○ 단계·토큰·이벤트 모드 | ○ | ○ 단독 / △ DBOS는 버퍼링 |
+| Bedrock | ○ 노드가 평범한 파이썬 함수 — 기존 어댑터 유지 | ◎ Bedrock 전용 | ○ |
+| 추가 의존성 | 1 | 1 | 1 + 엔진 1(DBOS/Temporal) |
+
+Strands는 "취소해도 부분 결과"가 안 되고(세션 저장이 대화 단위), Pydantic AI는 중간 저장에 엔진이 하나 더 필요하며 그 경로에서 스트리밍이 버퍼링된다("침묵 금지"와 어긋남). LangGraph만 셋을 단독으로, 이미 있는 Postgres로 준다.
+
+**쓸 때 지킬 규칙** (조사에서 나온 함정):
+- 체크포인트는 기록이지 되돌리기가 아니다 — 취소 전 실행된 도구는 실행된 것이다. 부작용 있는 도구(본문 승격 enqueue)는 재실행에 안전해야 한다.
+- 같은 세션에 요청이 겹치면 체크포인트가 갈라진다 — 세션별 잠금을 우리가 건다.
+- 재개 시 입력을 다시 주면 처음부터 돈다 — `None`으로 호출해야 끊긴 데서 잇는다.
+
+**바뀌지 않는 것**: 날조 게이트·도구 6개·조립·프롬프트·저장·Bedrock 어댑터. 노드는 평범한 함수이므로 LLM 연결을 LangChain으로 바꾸지 않는다. 바뀌는 것은 `domain/loop.py` 두 벌뿐이다.
+
+출처: [LangGraph durable execution](https://docs.langchain.com/oss/python/langgraph/durable-execution) · [FastAPI + LangGraph disconnect](https://ranjankumar.in/fastapi-langgraph-client-disconnect-durability) · [Strands interrupts](https://strandsagents.com/docs/user-guide/concepts/interrupts/) · [Strands session management](https://strandsagents.com/docs/user-guide/concepts/agents/session-management/) · [Pydantic AI + DBOS](https://pydantic.dev/docs/ai/integrations/durable_execution/dbos/)
 
 ## Q6 — 기존 API·화면 계약
 
@@ -103,6 +132,6 @@ FE 채팅 화면과 REST 계약(진행상태 enum 포함)을 유지하는가?
 
 ## 답변 후 진행 (자동)
 
-1. `operations/solo-roadmap.md` 개정 — ⑤ 재정의 + 신설 항목(문헌탐색 에이전트화, supervisor+프레임워크)을 Q1·Q3·Q5 답대로 등재
-2. `construction/plans/novelty-agent-v2-functional-design-plan.md` — Q1/Q3/Q12/Q14 등에 본 질문지 답 상속, 잔여 질문만 남김
+1. `operations/solo-roadmap.md` 개정 — ⑤ 재정의 + 신설 항목(문헌탐색 에이전트화)을 Q1·Q3·Q5 답대로 등재
+2. `solo-agent/plans/novelty-agent-v2-functional-design-plan.md` — Q1/Q3/Q12/Q14 등에 본 질문지 답 상속, 잔여 질문만 남김
 3. Q8 범위대로 설계 문서 작성 → (다음 사이클) 구현

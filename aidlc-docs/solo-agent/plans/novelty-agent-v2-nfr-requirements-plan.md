@@ -3,7 +3,7 @@
 **단계**: CONSTRUCTION → NFR Requirements
 **일자**: 2026-07-18
 **상태**: ✅ 확정 (2026-07-18) — Q1~Q6 전부 권장안(A). 산출물 생성 진행.
-**전제**: Functional Design 확정(`construction/novelty-agent-v2/functional-design/` 4종). 여기서는 "무엇으로 어떻게 돌릴 것인가"의 비기능 결정만 다룬다 — 기능·규칙은 FD에서 동결.
+**전제**: Functional Design 확정(`solo-agent/novelty-agent-v2/functional-design/` 4종). 여기서는 "무엇으로 어떻게 돌릴 것인가"의 비기능 결정만 다룬다 — 기능·규칙은 FD에서 동결.
 
 **환경 원칙 (모든 문항 공통)**: 코드는 특정 실행 환경이 아니라 **헥사고날 포트 기준**으로 짠다 — 루프 코어·도메인은 큐가 redis인지 SQS인지, LLM이 OpenAI인지 Bedrock인지 모른다. 아래 질문들은 "포트 뒤에 **1차 어댑터를 무엇으로** 구현하느냐"의 결정이다. 현재 개발·검증 환경은 로컬 컨테이너 체제(AWS 은퇴 — postgres/redis/opensearch/s3proxy + OpenAI 어댑터, `operations/solo-local-migration.md`)이므로 로컬 어댑터가 1차이고, 기존 `real_wiring`(SQS·Bedrock·RDS 등) 계약은 배포 재개 시의 교체 기준선으로 보존한다. `tech-stack-decisions.md`의 모든 TD 항목에 배포 어댑터 경로를 병기한다.
 
@@ -14,7 +14,7 @@
 
 ## 2. 산출물 (답변 확정 후)
 
-`aidlc-docs/construction/novelty-agent-v2/nfr-requirements/`에 작성:
+`aidlc-docs/solo-agent/novelty-agent-v2/nfr-requirements/`에 작성:
 
 - [x] `nfr-requirements.md`
 - [x] `tech-stack-decisions.md`

@@ -3,13 +3,13 @@
 **단계**: CONSTRUCTION → Functional Design (재설계 라운드)
 **일자**: 2026-07-17 (2026-07-18 기능 정의 반영 + 평문 개정)
 **상태**: ✅ 확정 (2026-07-18) — 전 문항 답변 완료(Q1~Q11·Q13·Q14 권장안, Q12 상속). Functional Design 산출물 생성 단계로 진행.
-**기능 정의(확정 — `inception/requirements/requirement-verification-questions-novelty-v2-function.md`)**: 임무 = **조사 + 여백 분석**(방향 제안·실험 계획은 대화 요청 시 온디맨드) · 입력 = 주제 + 선택적 원고 · 산출물 = 구조화 세트(유사 연구 표 + 여백 분석, 근거 링크 필수) · 상호작용 = 채팅 모드 + 잡 + 대화 스티어링 · 원고 위험 신호 폐기 · Notion export 유지(승인 게이트) · 화면·API는 새 산출물에 맞춰 재설계 허용.
-**근거 SSOT**: `inception/requirements/requirements.md` FR-30~35 · NFR-P5/R3 · QT-10 [U12] · 유지보수 로드맵 ④~⑦(`operations/solo-roadmap.md`) · **아키텍처 결정** `inception/requirements/requirement-verification-questions-agent-rearchitecture.md`(2026-07-18 확정) · **기능 정의** `requirement-verification-questions-novelty-v2-function.md`(2026-07-18 확정) · 현행 frozen 설계 `construction/novelty-agent/`(BR-NV1~19, PBT-NV1~7) · 공유 계약 `EvidenceFormationPort`/`SourceRef`(D5).
+**기능 정의(확정 — `solo-agent/requirement-verification-questions-novelty-v2-function.md`)**: 임무 = **조사 + 여백 분석**(방향 제안·실험 계획은 대화 요청 시 온디맨드) · 입력 = 주제 + 선택적 원고 · 산출물 = 구조화 세트(유사 연구 표 + 여백 분석, 근거 링크 필수) · 상호작용 = 채팅 모드 + 잡 + 대화 스티어링 · 원고 위험 신호 폐기 · Notion export 유지(승인 게이트) · 화면·API는 새 산출물에 맞춰 재설계 허용.
+**근거 SSOT**: `inception/requirements/requirements.md` FR-30~35 · NFR-P5/R3 · QT-10 [U12] · 유지보수 로드맵 ④~⑦(`operations/solo-roadmap.md`) · **아키텍처 결정** `solo-agent/requirement-verification-questions-agent-rearchitecture.md`(2026-07-18 확정) · **기능 정의** `requirement-verification-questions-novelty-v2-function.md`(2026-07-18 확정) · 현행 frozen 설계 `construction/novelty-agent/`(BR-NV1~19, PBT-NV1~7) · 공유 계약 `EvidenceFormationPort`/`SourceRef`(D5).
 
 **상속된 아키텍처 결정** (재논의 없음):
-- 최종형은 supervisor–서브 에이전트 구조이며, **본 유닛은 그 1단계 — novelty를 단일 자율 루프 에이전트로** (arch Q1=C, Q3=A).
+- **본 유닛은 novelty를 단일 자율 루프 에이전트로** 만든다 (arch Q3=A). 최종 구조(arch Q1)는 2026-08-15 재개방·미정. 현재 novelty는 evidence를 `form_evidence` 도구로 부른다(단방향, 현행 코드 기술).
 - 코드 전략은 **모듈 내부 재작성** — 기존 파이프라인 위 개조가 아니라 새 루프 코어를 짜고 가치 있는 부품만 이식 (arch Q4=A).
-- 단일 루프는 **프레임워크 없이 직접 구현** — LangGraph는 로드맵 ⑦ supervisor 단계에서 도입 (arch Q5=A).
+- 단일 루프는 **프레임워크 없이 직접 구현돼 있다**(현행 코드) — 프레임워크 채택(arch Q5)은 2026-08-15 재개방·미정.
 - 화면·API 계약은 **새 산출물에 맞춰 재설계 허용** — 채팅 화면·모드 구조는 유지 (arch Q6, 기능 정의 Q7=B로 개정). **결정 트레이스(도구·질의·종료 사유) 구조화 저장은 루프 도입과 동시 시작** (불변 조건).
 - requirements.md는 소규모 개정 블록 — 기능 정의 개정 + 델타 6건 — 근거 대상 확장(표·그림·수식) 포함 (arch Q7=A → 본 문서 Q12).
 - 이번 사이클 산출물은 설계 문서까지, 구현은 로드맵 ⑤ (arch Q8=A).
@@ -19,15 +19,15 @@
 ## 1. 유닛 컨텍스트
 
 - **대상**: Novelty Agent v2 — 현행 novelty 모듈(고정 상태머신 QUEUED→…→EXPORTING_NOTION)의 **도구 호출 루프 기반 재설계** 목표 아키텍처.
-- **명칭**: 유닛명·코드 경로 모두 **novelty 유지**. "research*" 계열 명칭은 로드맵 ⑦ supervisor 명명 후보로 예약 (`backend/modules/research/`는 문헌탐색·근거형성 Agent(U11)의 대화 표면 — 본 유닛과 무관).
+- **명칭**: 유닛명·코드 경로 모두 **novelty 유지** (`backend/modules/research/`는 문헌탐색·근거형성 Agent(U11)의 대화 표면 — 본 유닛과 무관).
 - **책임**(2026-07-18 기능 정의 확정): 자연어 연구 주제 또는 업로드 원고에서 **관련 연구 조사 + 여백 분석**(무엇이 이미 있고 어디가 비어 있는지, 근거 링크 필수)을 기본 산출물로 제공하고, **방향 제안·실험 계획은 대화 요청 시 온디맨드**로 생성한다. 진행상태·선택적 Notion export(승인 게이트) 포함. 원고 위험 신호는 v2 범위에서 폐기.
-- **문서 위치**: 설계 문서는 `construction/novelty-agent-v2/`에 둔다 (`construction/novelty-agent/`는 v1 frozen 기준선).
+- **문서 위치**: 설계 문서는 `solo-agent/novelty-agent-v2/`에 둔다 (`construction/novelty-agent/`는 v1 frozen 기준선).
 - **범위 경계 (로드맵 ④/⑤)**: 이번 라운드는 **설계 문서만** 산출한다. 코드 재작성(에이전트 루프 → 세션 메모리 → 멀티모달)은 로드맵 ⑤ — 본 설계는 그 3단계 도입을 수용할 수 있어야 한다(2026-07-25 개정: MCP 연동은 고정 단계에서 해제 — Q3·Q5 개정 주석 참조). 모듈 경로는 유지하되, API·화면 계약은 새 산출물 기준으로 재설계한다(기능 정의 Q7=B).
 - **v2 제외**: 뉴스 검색, novelty 점수, "새로움 확정" 판정, 논문화 가능성 점수, 코드 skeleton/실행 스크립트 생성(이상 승계), **원고 위험 신호(표절 유사도·AI 어투 — 기능 정의 Q5=B로 폐기)**.
 
 ## 2. Functional Design 실행 계획
 
-답변 확정 후 아래 산출물을 `aidlc-docs/construction/novelty-agent-v2/functional-design/`에 작성한다.
+답변 확정 후 아래 산출물을 `aidlc-docs/solo-agent/novelty-agent-v2/functional-design/`에 작성한다.
 
 - [x] `domain-entities.md`
 - [x] `business-logic-model.md`
@@ -98,8 +98,8 @@
 [Answer]: A — 포트 뒤 어댑터. MCP 서버·제품 선정은 NFR Requirements 단계(`tech-stack-decisions.md`)에서.
 
 > **개정 (2026-07-25)**: 본 문항은 **"MCP를 쓴다"를 전제하고 위치만** 물었다는 점을 명시한다 —
-> 도입 여부를 물은 문항은 어느 질문지에도 없었고, 유일한 상위 근거는 아키텍처 Q1=C **선택지
-> 설명문**의 역량 나열(`…Memory·MCP·멀티 에이전트…`)이었다. MCP 도입은 ⑤ 고정 단계에서 해제됐다
+> 도입 여부를 물은 문항은 어느 질문지에도 없었고, 유일한 상위 근거는 아키텍처 Q1의 한 **선택지
+> 설명문**에 있던 역량 나열(`…Memory·MCP·멀티 에이전트…`)이었다. MCP 도입은 ⑤ 고정 단계에서 해제됐다
 > (근거는 `operations/solo-roadmap.md` 개정 블록 — 외부 도구 3종이 이미 어댑터로 구현돼 있어 교체
 > 이득이 0이고, 서드파티 서버에 자격증명을 위임하게 됨).
 >

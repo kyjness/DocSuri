@@ -907,13 +907,13 @@ _Resiliency 옵트인은 `requirements.md` 확정 전에 필수 요구사항 명
 - Stage: INCEPTION(아키텍처·기능 정의) → CONSTRUCTION / Functional Design
 - Trigger: 유지보수 로드맵 ④ — novelty 모듈(고정 상태머신)의 자율 에이전트 재설계.
 - Decisions (질문지 3장 확정):
-  - 아키텍처(`requirement-verification-questions-agent-rearchitecture.md` Q1~Q8): 최종형 supervisor–서브(Q1=C), 문헌탐색은 검색 전략만 자율(Q2=A), novelty 선행(Q3=A), 모듈 내부 재작성(Q4=A), 직접 구현→supervisor 단계 LangGraph(Q5=A), 계약은 이후 B로 개정, requirements 소규모 델타(Q7=A), 이번 사이클은 설계까지(Q8=A). 로드맵 ⑤~⑦ 재편.
+  - 아키텍처(`requirement-verification-questions-agent-rearchitecture.md` Q1~Q8): 최종 구조는 독립 에이전트 2개·supervisor 없음(Q1=B, 2026-08-21 재확정), 문헌탐색은 검색 전략만 자율(Q2=A), novelty 선행(Q3=A → ⑩에서 evidence 선행으로 역전), 모듈 내부 재작성(Q4=A), 프레임워크는 LangGraph 두 루프 모두(Q5=B, 2026-08-21 재확정), 계약은 이후 B로 개정, requirements 소규모 델타(Q7=A), 이번 사이클은 설계까지(Q8=A). 로드맵 ⑤·⑥ 재편.
   - 기능 정의(`requirement-verification-questions-novelty-v2-function.md` Q1~Q7): 임무=조사+여백 분석(제안·실험계획은 대화 온디맨드), 입력=주제+선택적 원고, 구조화 세트, 채팅 모드+잡+대화 스티어링, 위험 신호 폐기, Notion 유지, 화면·API 재설계 허용.
-  - FD 게이트(`construction/plans/novelty-agent-v2-functional-design-plan.md` Q1~Q14): 완전 자율 루프, 거시 상태+트레이스 활동 피드, 보수적 도구 코어, 기본 세트 필수, MCP=포트 뒤 어댑터, 세션 메모리 잡 내 먼저, view_figure 온디맨드, 저장 시점 결정론 게이트, 3중 예산, 협조적 취소, payload allowlist, BR 승계표, Evidence First 유지.
+  - FD 게이트(`solo-agent/plans/novelty-agent-v2-functional-design-plan.md` Q1~Q14): 완전 자율 루프, 거시 상태+트레이스 활동 피드, 보수적 도구 코어, 기본 세트 필수, MCP=포트 뒤 어댑터, 세션 메모리 잡 내 먼저, view_figure 온디맨드, 저장 시점 결정론 게이트, 3중 예산, 협조적 취소, payload allowlist, BR 승계표, Evidence First 유지.
 - Outputs:
   - `requirements.md` 개정 블록(2026-07-18): FR-30~33·35 v2 개정, FR-34 폐기, FR-44~47 신규(세션 메모리·루프 예산·결정 추적성·근거 대상 확장[U11/U12]), NFR-P5/R3·QT-10·성공기준 #9·추적성 갱신.
-  - `construction/novelty-agent-v2/functional-design/` 4종: domain-entities(AgentLoopRun·LoopBudget·ToolCallRecord·GapAnalysis 신설, ManuscriptRiskSignal 폐기), business-logic-model(루프 수명주기·저장 게이트·온디맨드·⑤ 4단계 지도), business-rules(BR-NV1~19 승계표 + BR-RA1~12 + PBT-RA1~3), frontend-components(거시 상태·활동 피드·여백 분석 렌더·온디맨드 UI).
-  - 유닛명 novelty 유지("research*"는 supervisor 명명 후보로 예약), v1 문서는 `construction/novelty-agent/` frozen 기준선.
+  - `solo-agent/novelty-agent-v2/functional-design/` 4종: domain-entities(AgentLoopRun·LoopBudget·ToolCallRecord·GapAnalysis 신설, ManuscriptRiskSignal 폐기), business-logic-model(루프 수명주기·저장 게이트·온디맨드·⑤ 4단계 지도), business-rules(BR-NV1~19 승계표 + BR-RA1~12 + PBT-RA1~3), frontend-components(거시 상태·활동 피드·여백 분석 렌더·온디맨드 UI).
+  - 유닛명 novelty 유지, v1 문서는 `construction/novelty-agent/` frozen 기준선.
 - Verification: 신규 문서 경로 함정 grep 0건(`backend/modules/research` 미참조), 추적성 매트릭스 미커버 0(FR-30~33·35·44~47·QT-10).
 - Delivery: branch `docs/novelty-v2-unit-design`(구 research-agent-unit-design). Current gate: Functional Design 사용자 리뷰 → NFR Requirements 질문 게이트. push/PR은 사용자 승인 대기.
 
@@ -921,25 +921,25 @@ _Resiliency 옵트인은 `requirements.md` 확정 전에 필수 요구사항 명
 
 - Date: 2026-07-18
 - Stage: CONSTRUCTION / NFR Requirements
-- Decisions (`construction/plans/novelty-agent-v2-nfr-requirements-plan.md` Q1~Q6=A): 포트 기준 환경 원칙(로컬 어댑터 1차, real_wiring 계약은 배포 기준선) 하에 — 잡 큐 포트+별도 워커(redis→SQS), LLM 프로바이더 스위치 유지(OpenAI tool-calling 1차), MCP 기존 서버 셀프호스트(⑤ 2단계 구축), 루프 예산 시작값(반복 24 / 도구 호출 40 / per-job $0.50), 폴링 피드(SSE 후속), postgres 잡 귀속 트레이스(cascade 삭제).
-- Outputs: `construction/novelty-agent-v2/nfr-requirements/` — nfr-requirements.md(NFR-NV2-1~18: 실행 표면·멱등·stale 복구·성능 프로파일·예산 수치표·협조적 취소·트레이스 계약·allowlist·U6 연동), tech-stack-decisions.md(TD-NV2-1~8 — 전 항목 배포 교체 경로 병기).
+- Decisions (`solo-agent/plans/novelty-agent-v2-nfr-requirements-plan.md` Q1~Q6=A): 포트 기준 환경 원칙(로컬 어댑터 1차, real_wiring 계약은 배포 기준선) 하에 — 잡 큐 포트+별도 워커(redis→SQS), LLM 프로바이더 스위치 유지(OpenAI tool-calling 1차), MCP 기존 서버 셀프호스트(⑤ 2단계 구축), 루프 예산 시작값(반복 24 / 도구 호출 40 / per-job $0.50), 폴링 피드(SSE 후속), postgres 잡 귀속 트레이스(cascade 삭제).
+- Outputs: `solo-agent/novelty-agent-v2/nfr-requirements/` — nfr-requirements.md(NFR-NV2-1~18: 실행 표면·멱등·stale 복구·성능 프로파일·예산 수치표·협조적 취소·트레이스 계약·allowlist·U6 연동), tech-stack-decisions.md(TD-NV2-1~8 — 전 항목 배포 교체 경로 병기).
 - Current gate: NFR Requirements 사용자 리뷰 → NFR Design 질문 게이트. push/PR은 사용자 승인 대기.
 
 ## Novelty Agent v2 — NFR Design (로드맵 ④ 완료)
 
 - Date: 2026-07-18
 - Stage: CONSTRUCTION / NFR Design
-- Decisions (`construction/plans/novelty-agent-v2-nfr-design-plan.md` Q1~Q4=A, 선행 결정 귀결로 일괄 적용): 모듈 내부 헥사고날 배치(conditional mounting 유지), u2/u7 패턴 재사용(의존성별 서킷 브레이커·도구 1회 기계 재시도 후 에이전트 판단), 트레이스=1차 관측+보조 카운터, v2 신규 캐시 없음.
-- Outputs: `construction/novelty-agent-v2/nfr-design/` — logical-components.md(컴포넌트 지도·잡 수명 시퀀스·마운팅 조건·Notion 도구 미등록), nfr-design-patterns.md(재시도 저하 계단·멱등 잠금·예산 단일 집행·관측·테스트 전략).
+- Decisions (`solo-agent/plans/novelty-agent-v2-nfr-design-plan.md` Q1~Q4=A, 선행 결정 귀결로 일괄 적용): 모듈 내부 헥사고날 배치(conditional mounting 유지), u2/u7 패턴 재사용(의존성별 서킷 브레이커·도구 1회 기계 재시도 후 에이전트 판단), 트레이스=1차 관측+보조 카운터, v2 신규 캐시 없음.
+- Outputs: `solo-agent/novelty-agent-v2/nfr-design/` — logical-components.md(컴포넌트 지도·잡 수명 시퀀스·마운팅 조건·Notion 도구 미등록), nfr-design-patterns.md(재시도 저하 계단·멱등 잠금·예산 단일 집행·관측·테스트 전략).
 - 로드맵 ④ ✅ 완료 — 산출물 총계: 질문지 3장(inception 2 + FD 게이트 1) + NFR 게이트 2 + requirements 개정 블록 + 설계 문서 8종.
 - Current gate: 사용자 최종 리뷰 → push + PR(develop) 승인 대기. 다음 = 로드맵 ⑤(novelty 코어 재작성 — 구현)는 별도 사이클·명시적 착수 지시 후.
 
-## 에이전트 로드맵 개정 — MCP 고정 슬롯 해제 · supervisor 구성 방식
+## 에이전트 로드맵 개정 — MCP 고정 슬롯 해제
 
 - Date: 2026-07-25
 - Stage: OPERATIONS / 로드맵 개정 (구현 사이클 아님 — 문서만)
 - Trigger: 로드맵 ⑤ 2단계 착수 검토 중, **MCP 도입을 정면으로 물은 문항이 어느 질문지에도 없다**는 것이
-  확인됨. 유일한 상위 근거는 아키텍처 Q1=C **선택지 설명문**의 역량 나열이었고, FD 게이트 Q5는 도입을
+  확인됨. 유일한 상위 근거는 아키텍처 Q1의 한 **선택지 설명문**에 있던 역량 나열이었고, FD 게이트 Q5는 도입을
   전제하고 위치만, NFR 게이트 Q3은 도입을 전제하고 서버 제품만 물었다(Q3 선택지 C의 기각 사유가
   "⑤ 2단계 목표와 상충"인 것이 그 전제를 드러낸다).
 - Decisions:
@@ -947,11 +947,8 @@ _Resiliency 옵트인은 `requirements.md` 확정 전에 필수 요구사항 명
     (`adapters/external/github.py`·`datasets.py`, arXiv는 u1 클라이언트) 교체로 늘어나는 기능이 0인 반면,
     배포 환경 프로세스 증가와 GitHub·Notion 자격증명의 서드파티 위임이라는 비용은 실재한다. 프라이버시
     방어선이 우리 어댑터의 allowlist라는 종전 관찰의 귀결은 경계를 늘리지 않는 쪽이다.
-  - **supervisor는 별도 신설** — ⑦의 미결이던 "⑤ 루프의 계획층 승격 vs 별도 신설"을 확정. 승격안은
-    역할 혼재(단일 루프가 두 목적의 프롬프트·예산·종료 조건을 가짐)·진입점 상실(문헌탐색 단독 사용이
-    novelty 하위로 묻힘)·확장 경로 악화로 기각. Q1=C 원문이 "아이디어 생성"도 서브로 두므로 정합.
-  - **용어 경계 고정** — 도구=스스로 판단하지 않는 부품(검색·요약·DocModel·figure), 서브 에이전트=스스로
-    판단하는 단위(문헌탐색·차별화).
+  - **용어 경계 고정** — 도구=스스로 판단하지 않는 부품(검색·요약·DocModel·figure), 에이전트=스스로
+    판단하는 단위(문헌탐색·차별화). `form_evidence`는 이 경계에 안 맞는다 — novelty가 evidence(에이전트)를 도구로 부른다(현행 코드).
   - **⑥ 문헌탐색은 새로 작성** — 기존 `orchestrator.py` 고정 파이프라인은 승계 대상 아님(arch Q4=A 상속).
     자율/기계식 경계 명시: 질의 설계·깊이·종료 판단은 에이전트, 앵커 실재성·수치 정합은 게이트(C-2 불변).
   - **⑤ 단계 재편** — 4단계(루프→MCP→메모리→멀티모달) → 3단계(루프→메모리→멀티모달) + 시점 미정
@@ -959,8 +956,8 @@ _Resiliency 옵트인은 `requirements.md` 확정 전에 필수 요구사항 명
   - `solo-local-migration.md` §7 배포 항목의 대체 호스팅 후보(Lightsail/Vercel/데모 영상) 삭제 —
     결정된 바 없음. **AWS 재배포**가 전제.
 - Outputs: `operations/solo-roadmap.md`(개정 블록 + ③·⑤·⑤a·⑥·⑦ 행), `operations/solo-local-migration.md`,
-  `construction/plans/novelty-agent-v2-{functional-design,nfr-requirements}-plan.md`(Q3·Q5 / Q3 개정 주석),
-  `construction/novelty-agent-v2/` 5종(BLM·domain-entities·business-rules·tech-stack-decisions·
+  `solo-agent/plans/novelty-agent-v2-{functional-design,nfr-requirements}-plan.md`(Q3·Q5 / Q3 개정 주석),
+  `solo-agent/novelty-agent-v2/` 5종(BLM·domain-entities·business-rules·tech-stack-decisions·
   logical-components), `inception/requirements/requirements.md`(FR-31·NFR-R3),
   `requirement-verification-questions-novelty-v2-function.md`(Q6), 코드 주석 5곳(novelty 모듈).
 - 종전 답은 지우지 않고 개정 주석을 덧붙이는 기존 관례를 따랐다 — 무엇이 왜 바뀌었는지가 남아야 한다.
@@ -1040,7 +1037,7 @@ _Resiliency 옵트인은 `requirements.md` 확정 전에 필수 요구사항 명
 
 ## ⑥ 질문 게이트 — 확정 (2026-07-28)
 
-- 산출물: `inception/requirements/requirement-verification-questions-evidence-agent-v2.md` (Q1~Q15).
+- 산출물: `solo-agent/requirement-verification-questions-evidence-agent-v2.md` (Q1~Q15).
   상속 답안(아키텍처 재설계 Q2=A 검색 전략만 자율 · Q4=A 모듈 내부 재작성)은 재질문 없이 계승.
 - **탐색 자율화**: 고정 파이프라인(검색 1회 → 추출 1회) → 자율 루프. 질의 설계·깊이 판단·종료
   판단은 LLM, 추출·조립·날조 검사는 기계식 유지. 정규식 의도 분류기(`intent.py`)는 폐기.
@@ -1054,8 +1051,8 @@ _Resiliency 옵트인은 `requirements.md` 확정 전에 필수 요구사항 명
   차단 대신 `SourceRef.sourceScope=figure`로 표시 — 검증 강도 차이를 감추지 않는다.
 - **D5 계약 개정**: `SourceRef`에 `anchorType`(인용 객체 종류) + `sourceScope`(`fulltext|abstract|figure`,
   근거 범위) 추가. 범위는 출처 **한 건 단위** — 한 답변에 세 종류가 섞이므로 `EvidenceCoverage`가 아니다.
-- **표면·모듈 정리**: `/api/evidence` 한 벌만 남기고 껍데기 `research` 모듈 제거 → `research*` 이름을
-  ⑦ supervisor에 반납. 자산 리더는 **비전 입력용만** `shared/`로 공용화(u7 표시용 리더는 목적이 달라 유지).
+- **표면·모듈 정리**: `/api/evidence` 한 벌만 남기고 껍데기 `research` 모듈 제거. 자산 리더는
+  **비전 입력용만** `shared/`로 공용화(u7 표시용 리더는 목적이 달라 유지).
 - **범위 확장**: FR-45(루프 예산)·FR-46(결정 추적성) [U12] → [U11/U12]. 온디맨드 취득·임베딩 비용도 계상.
 - **멀티모달 카브아웃 재개정**: ⑤3이 "여전히 제외"로 남긴 두 항목(U11 비전 추론, 그림의 SourceRef 인용)이
   모두 해제. U7 요약·번역의 비전은 계속 제외.
@@ -1066,7 +1063,7 @@ _Resiliency 옵트인은 `requirements.md` 확정 전에 필수 요구사항 명
   근거는 루프 안에서 게이트 통과분만 점진 축적, 승격은 명시 도구(예산 계상 단위), 저장은 owner-scoped 3테이블,
   활동 피드는 트레이스 단일 원천. **외부 초록 스냅샷 테이블은 두지 않는다** — 인용 식별자에 버전을 고정해
   (`arxiv:{id}v{n}`) 재취득으로 재현한다(arXiv 버전 영구 보존).
-- **설계 세트 작성 완료 (2026-07-28)** — `construction/evidence-agent-v2/` 8종
+- **설계 세트 작성 완료 (2026-07-28)** — `solo-agent/evidence-agent-v2/` 8종
   (functional-design 4 / nfr-requirements 2 / nfr-design 2). `u11-evidence-agent/`는 frozen 원본 보존.
   신설 규칙: INV-EV-6(근거 단일 유입 경로)·INV-EV-7(DocModel 단일 writer)·BR-EV-13~20(루프 상한·승격 비용·
   확인 범위·트레이스·신뢰 경계·수리 지시성·범위 표기·payload 경계), PBT-EV-6~8 신설.
@@ -1121,7 +1118,8 @@ _Resiliency 옵트인은 `requirements.md` 확정 전에 필수 요구사항 명
   같은 질의가 abstain → `state=ok`(지정 논문 101블록 열람, 실앵커 `s0.p1` 인용 2건).
 - **교훈**: 리뷰·CI가 전부 초록이어도 마지막 실스택 검증 이후 동작 변경분이 쌓였으면
   머지 전 스모크를 돌린다. 특히 **평소 안 쓰는 분기**(explicit scope)가 결함이 나온 자리다.
-- 다음: ⑦ supervisor 신설 + LangGraph — 별도 사이클, 명시적 착수 지시 후.
+- 다음: ⑩ 두 에이전트 완성 — evidence(목적 확정·중간 취소) → novelty(산출물 재정의·종료
+  판단). 구 ⑨는 ⑩에 흡수(2026-08-20). 별도 사이클, 명시적 착수 지시 후.
 
 ## ⑤ 3단계 — 멀티모달 `view_figure`
 

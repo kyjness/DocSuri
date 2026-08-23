@@ -3,14 +3,14 @@
 **단계**: CONSTRUCTION → Functional Design (재설계 라운드)
 **일자**: 2026-07-28
 **상태**: ✅ 확정 (2026-07-28) — Q1~Q12 전 문항 권장안. Functional Design 산출물 생성 단계로 진행.
-**요구사항 게이트(확정)**: `inception/requirements/requirement-verification-questions-evidence-agent-v2.md` Q1~Q15 (2026-07-28).
+**요구사항 게이트(확정)**: `solo-agent/requirement-verification-questions-evidence-agent-v2.md` Q1~Q15 (2026-07-28).
 **근거 SSOT**: `requirements.md` FR-36~38 · FR-31 · FR-45~47 · NFR-P6 · NFR-C1 · QT-8 · C-2 · D5 · 현행 frozen 설계 `construction/u11-evidence-agent/`(INV-EV-1~5, BR-EV-1~12, PBT-EV-1~5) · 공유 계약 `shared/dtos/evidence.schema.json`.
 
 **상속된 결정** (재논의 없음):
 
 - **검색 전략만 자율** — 질의 설계·깊이 판단·종료 판단은 LLM, 문장 추출·근거표 조립·날조 검사는 기계식(arch Q2=A).
 - **모듈 내부 재작성** — 현행 `orchestrator.py` 고정 파이프라인은 승계 대상이 아니다(arch Q4=A).
-- **루프는 프레임워크 없이 직접 구현** — LangGraph는 ⑦(arch Q5=A).
+- **루프는 프레임워크 없이 직접 구현돼 있다**(현행 코드) — 프레임워크 채택(arch Q5)은 재개방·미정.
 - **근거 대상 = DocModel 전 블록 타입**, 인용문은 앵커 블록 안에 있어야 한다(요구사항 게이트 Q1·Q2).
 - **`SourceRef`에 `anchorType`·`sourceScope` 추가**(Q3), **외부 논문은 온디맨드 본문 취득**(Q5), **그림은 비전 입력으로 읽되 등급 표시**(Q4=D).
 - **표면은 `/api/evidence` 1모듈**, `research` 모듈 제거(Q6=B, Q7=A). **인제스천은 인프로세스 호출**(Q15=A).
@@ -20,7 +20,7 @@
 ## 1. 유닛 컨텍스트
 
 - **대상**: U11 문헌탐색·근거형성 — 고정 파이프라인(검색 1회 → 추출 1회)의 자율 루프 재설계.
-- **문서 위치**: `construction/evidence-agent-v2/`. `construction/u11-evidence-agent/`는 v1 frozen 기준선으로 보존.
+- **문서 위치**: `solo-agent/evidence-agent-v2/`. `construction/u11-evidence-agent/`는 v1 frozen 기준선으로 보존.
 - **불변**: C-2 날조 금지(기계식·LLM-judge 없음), INV-EV-1(소유권)·INV-EV-2(빈 성공 금지)·INV-EV-5(내부 정보 비노출), U6 비용 단일 권위, DocModel 단일 writer=U1, `EvidenceFormationPort`(D5) 유지.
 - **범위**: 설계 + 구현(요구사항 게이트 Q14=B).
 
@@ -158,4 +158,4 @@ U12(novelty)가 이 엔진을 호출하는 방식.
 
 ## 확정 후 산출물
 
-`construction/evidence-agent-v2/` — functional-design(domain-entities · business-logic-model · business-rules · frontend-components) / nfr-requirements(nfr-requirements · tech-stack-decisions) / nfr-design(nfr-design-patterns · logical-components).
+`solo-agent/evidence-agent-v2/` — functional-design(domain-entities · business-logic-model · business-rules · frontend-components) / nfr-requirements(nfr-requirements · tech-stack-decisions) / nfr-design(nfr-design-patterns · logical-components).
