@@ -29,6 +29,7 @@ from typing import Any, Literal, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
+from langsmith import tracing_context
 
 from ..ports.llm import (
     EvidenceLlmPort,
@@ -86,9 +87,13 @@ class LoopOutcome:
 def run_loop(state: LoopState, deps: LoopDeps) -> LoopOutcome:
     """한 턴의 자율 탐색을 종료까지 구동한다."""
     graph = _build_graph(deps)
-    result = graph.invoke(
-        {"loop": state}, config={"recursion_limit": _recursion_limit(deps.budget)}
-    )
+    # langchain-core는 LANGSMITH_TRACING 류 env만 있으면 트레이서를 **자동으로** 붙여 노드
+    # 입출력(질문·논문 본문·이미지가 든 LoopState)을 외부로 보낸다. env의 부재에 기대지
+    # 않고 여기서 끈다 — 이 루프의 관찰 경로는 on_trace 하나다(SEC-9).
+    with tracing_context(enabled=False):
+        result = graph.invoke(
+            {"loop": state}, config={"recursion_limit": _recursion_limit(deps.budget)}
+        )
     return result["outcome"]
 
 

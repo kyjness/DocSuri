@@ -497,3 +497,21 @@ def test_recursion_limit_is_exactly_the_loop_bound(storm):
     state, deps, _, _ = storm(3)
     run_loop(state, deps)  # 정확히 상한으로 돈다
     assert deps.budget.consumed.iterations == 3
+
+
+def test_langsmith_env_does_not_attach_a_tracer(monkeypatch):
+    """env만으로 켜지는 외부 트레이싱을 루프가 막는다 — 노드 입출력에 논문 본문이 실린다."""
+    from langsmith import run_helpers
+
+    monkeypatch.setenv("LANGSMITH_TRACING", "true")
+    monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_test")
+    seen: list = []
+
+    class Spy:
+        def decide(self, observation, tools):
+            seen.append(run_helpers.get_tracing_context().get("enabled"))
+            return LlmDecision(proposal=TerminationProposal(note="done"))
+
+    run_loop(_state_with_evidence(), _deps(Spy(), _registry()))
+
+    assert seen == [False]
