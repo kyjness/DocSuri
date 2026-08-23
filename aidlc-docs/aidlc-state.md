@@ -1121,6 +1121,15 @@ _Resiliency 옵트인은 `requirements.md` 확정 전에 필수 요구사항 명
 - 다음: ⑩ 두 에이전트 완성 — evidence(목적 확정·중간 취소) → novelty(산출물 재정의·종료
   판단). 구 ⑨는 ⑩에 흡수(2026-08-20). 별도 사이클, 명시적 착수 지시 후.
 
+## ⑩-1 evidence — PR 1 루프 LangGraph 이전
+
+- Date: 2026-08-23 · Branch: `feature/evidence-langgraph-loop` (3커밋, 각각 독립 통과)
+- 결정: 노드 3개(decide/check_floor/act)·`LoopState`는 채널에 참조로·deps는 클로저·
+  스텝 상한 `2n+2` 예산 유도(`GraphRecursionError` 미포착)·체크포인터는 PR 2.
+- 검증: 루프 테스트 24건(기존 16 무수정) · 차등 검사 2000 examples 0 diffs · backend 564 passed ·
+  ruff 2레인. /simplify 12건 반영, /code-review 2건 반영(배포 정확 고정·트레이싱 차단).
+- 전달: push·PR 사용자 승인. /security-review는 PR에서.
+
 ## ⑤ 3단계 — 멀티모달 `view_figure`
 
 - Date: 2026-07-27 · Branch: `feature/u12-view-figure`
