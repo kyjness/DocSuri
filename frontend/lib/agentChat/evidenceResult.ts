@@ -39,7 +39,7 @@ export interface EvidenceCoverage {
   /** 확인한 논문 수 / 발견한 후보 수 — 탐색이 어디까지 갔는지(FR-37 v2). */
   examined?: number | null;
   candidates?: number | null;
-  stoppedReason?: 'sufficient' | 'budget_exhausted' | 'partial_failure' | null;
+  stoppedReason?: 'sufficient' | 'budget_exhausted' | 'partial_failure' | 'cancelled' | null;
 }
 
 export interface EvidenceResultPayload {

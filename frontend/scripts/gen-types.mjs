@@ -26,6 +26,7 @@ const SCHEMAS = [
   'docmodel.schema.json',
   'mypage.schema.json',
   'summarization.schema.json',
+  'evidence.schema.json',
 ];
 
 // A schema's $id is its canonical https://docsuri.dev/ URL, and cross-schema $refs use it —
