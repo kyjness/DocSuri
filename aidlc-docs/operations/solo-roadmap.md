@@ -1245,6 +1245,13 @@ ThrottlingException (InvokeModel, cohere.embed-v4:0, us-east-1):
 novelty의 산출물·게이트·종료 조건도 정할 수 없다. evidence는 단독 채팅 표면(`/api/evidence`)을
 가지므로 먼저 끝나면 그것만으로 쓸 수 있다.
 
+**구조·프레임워크 (2026-08-21 확정, 아키텍처 질문지 Q1=B·Q5=B)**: 독립 에이전트 2개,
+supervisor 없음. 루프는 **LangGraph**로 두 에이전트 모두 옮긴다 — 목적에서 확정된 3기능
+(취소·취소 시 부분 결과·진행 스트리밍)을 외부 엔진 없이 기존 Postgres로 단독 제공하는 유일한
+후보(Strands는 루프 중간 저장이 없고, Pydantic AI는 엔진이 하나 더 필요). 비교표·지킬 규칙은
+질문지 Q5. 게이트·도구·조립·Bedrock 어댑터는 그대로이고 `domain/loop.py` 두 벌만 바뀐다.
+evidence 루프를 먼저 옮기고 novelty는 ⑩-2에서 같은 틀로 옮긴다.
+
 ---
 
 ## ⑩-1 evidence

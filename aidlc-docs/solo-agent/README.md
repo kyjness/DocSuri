@@ -8,7 +8,7 @@ novelty(차별화 판정)와 evidence(문헌탐색·근거형성) 두 에이전�
 
 | 경로 | 내용 |
 |---|---|
-| `requirement-verification-questions-agent-rearchitecture.md` | 2026-07-18 아키텍처 질문지 (Q1·Q5는 2026-08-15 재개방·미정) |
+| `requirement-verification-questions-agent-rearchitecture.md` | 2026-07-18 아키텍처 질문지 (Q1·Q5는 2026-08-21 재확정 — 독립 에이전트 2개 · LangGraph) |
 | `requirement-verification-questions-novelty-v2-function.md` | novelty v2 기능 정의 질문지 (2026-07-18) |
 | `requirement-verification-questions-evidence-agent-v2.md` | evidence v2 질문 게이트 (2026-07-28) |
 | `plans/` | 유닛 설계 계획서(질문 게이트) 4종 |

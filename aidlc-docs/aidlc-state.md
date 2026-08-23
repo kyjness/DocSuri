@@ -907,7 +907,7 @@ _Resiliency 옵트인은 `requirements.md` 확정 전에 필수 요구사항 명
 - Stage: INCEPTION(아키텍처·기능 정의) → CONSTRUCTION / Functional Design
 - Trigger: 유지보수 로드맵 ④ — novelty 모듈(고정 상태머신)의 자율 에이전트 재설계.
 - Decisions (질문지 3장 확정):
-  - 아키텍처(`requirement-verification-questions-agent-rearchitecture.md` Q1~Q8): 최종 구조(Q1)는 2026-08-15 재개방·미정, 문헌탐색은 검색 전략만 자율(Q2=A), novelty 선행(Q3=A), 모듈 내부 재작성(Q4=A), 프레임워크 채택(Q5)은 2026-08-15 재개방·미정, 계약은 이후 B로 개정, requirements 소규모 델타(Q7=A), 이번 사이클은 설계까지(Q8=A). 로드맵 ⑤·⑥ 재편.
+  - 아키텍처(`requirement-verification-questions-agent-rearchitecture.md` Q1~Q8): 최종 구조는 독립 에이전트 2개·supervisor 없음(Q1=B, 2026-08-21 재확정), 문헌탐색은 검색 전략만 자율(Q2=A), novelty 선행(Q3=A → ⑩에서 evidence 선행으로 역전), 모듈 내부 재작성(Q4=A), 프레임워크는 LangGraph 두 루프 모두(Q5=B, 2026-08-21 재확정), 계약은 이후 B로 개정, requirements 소규모 델타(Q7=A), 이번 사이클은 설계까지(Q8=A). 로드맵 ⑤·⑥ 재편.
   - 기능 정의(`requirement-verification-questions-novelty-v2-function.md` Q1~Q7): 임무=조사+여백 분석(제안·실험계획은 대화 온디맨드), 입력=주제+선택적 원고, 구조화 세트, 채팅 모드+잡+대화 스티어링, 위험 신호 폐기, Notion 유지, 화면·API 재설계 허용.
   - FD 게이트(`solo-agent/plans/novelty-agent-v2-functional-design-plan.md` Q1~Q14): 완전 자율 루프, 거시 상태+트레이스 활동 피드, 보수적 도구 코어, 기본 세트 필수, MCP=포트 뒤 어댑터, 세션 메모리 잡 내 먼저, view_figure 온디맨드, 저장 시점 결정론 게이트, 3중 예산, 협조적 취소, payload allowlist, BR 승계표, Evidence First 유지.
 - Outputs:
