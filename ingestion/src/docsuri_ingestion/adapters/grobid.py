@@ -5,6 +5,9 @@ from docsuri_ingestion.domain.enums import FailureReason
 from docsuri_ingestion.domain.errors import PermanentIngestionError, RetriableIngestionError
 from docsuri_ingestion.ports import RawContentStorePort
 
+# GROBID writes this when its own parse throws. The text is the only thing that separates
+# "this PDF broke the parser" from "the server is unwell" — both are 500.
+_DOCUMENT_CRASH_MARKER = "An exception occurred while running Grobid"
 _TEMPORARY_4XX = {408, 409, 423, 425, 429}
 
 # Tier name under which TEI lives in the shared raw store, beside "pdf" / "ar5iv". Same store,
@@ -118,6 +121,21 @@ class GrobidHttpClient:
                 stage="grobid",
             ) from exc
         if response.status_code >= 500:
+            # A 500 CARRYING GROBID'S OWN EXCEPTION MARKER IS ABOUT THE DOCUMENT, NOT THE SERVER.
+            # GROBID answers a PDF it cannot handle with 500 and this body; a server that is
+            # actually unwell does not get far enough to write it (the connection errors above
+            # cover that). Treating it as an availability failure is what let one paper take
+            # others down: it is retried five times, the breaker reads five consecutive failures
+            # as "GROBID is down", and every paper queued behind it fails without reaching the
+            # dependency at all. Measured 2026-08-23 on the last three of the ⑧-2 list —
+            # 1911.01941 raises IndexOutOfBoundsException inside GROBID on every attempt, and the
+            # other two parsed fine the moment they were sent on their own.
+            if _DOCUMENT_CRASH_MARKER in response.text:
+                raise PermanentIngestionError(
+                    "GROBID crashed on this PDF",
+                    reason=FailureReason.PARSE_FAILURE,
+                    stage="grobid",
+                )
             raise RetriableIngestionError(
                 "GROBID server error",
                 reason=FailureReason.DEPENDENCY_UNAVAILABLE,

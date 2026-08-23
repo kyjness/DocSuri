@@ -96,3 +96,41 @@ def test_grobid_bad_pdf_400_is_permanent(monkeypatch) -> None:
 
     with pytest.raises(PermanentIngestionError):
         client.extract_text(b"%PDF")
+
+
+def _client_answering(monkeypatch, *, status: int, body: str) -> GrobidHttpClient:
+    import httpx
+
+    class _Response:
+        status_code = status
+        text = body
+
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: _Response())
+    return GrobidHttpClient(base_url="http://grobid:8070")
+
+
+def test_a_500_carrying_grobids_own_exception_is_the_document_not_the_server(monkeypatch) -> None:
+    """One unparseable PDF must not take the papers queued behind it.
+
+    GROBID answers a PDF it cannot handle with 500 and its own exception text; a server that is
+    actually unwell never gets far enough to write that body (a connection error covers it).
+    Classing it as an availability failure is what let one paper kill others: it is retried five
+    times, the breaker reads five consecutive failures as "GROBID is down", and everything behind
+    it fails without reaching the dependency. Measured 2026-08-23 on the last three papers of the
+    ⑧-2 list — 1911.01941 raises IndexOutOfBoundsException inside GROBID on every attempt, and
+    the other two parsed fine the moment they were sent on their own.
+    """
+    client = _client_answering(
+        monkeypatch, status=500, body="[GENERAL] An exception occurred while running Grobid."
+    )
+    with pytest.raises(PermanentIngestionError) as caught:
+        client.extract_tei(b"%PDF-1.4")
+    assert caught.value.stage == "grobid"
+
+
+def test_a_plain_500_is_still_the_server_and_still_retriable(monkeypatch) -> None:
+    """The split has to keep a genuinely unwell sidecar retriable — otherwise a restart window
+    turns into permanent losses across the whole batch."""
+    client = _client_answering(monkeypatch, status=503, body="Service Unavailable")
+    with pytest.raises(RetriableIngestionError):
+        client.extract_tei(b"%PDF-1.4")
