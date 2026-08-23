@@ -181,6 +181,7 @@ Q. 오늘 뭐 먹을까?
 - **노드는 평범한 파이썬 함수**다. `decide`는 현행 Bedrock 어댑터를 그대로 부르고, `act`는 현행 `ToolRegistry`를 그대로 쓴다. LLM 연결을 LangChain으로 바꾸지 않는다.
 - 현행 `run_loop()`의 불변 조건은 그대로 노드에 산다 — 예산 검사는 act 직전 1회, 도구 호출은 `ToolCallRecord` 1:1, 이미지는 decide 직후 소비.
 - **PR 1**은 이 그래프로 옮기되 `answer` 노드 없이(현행 `_narrative`), `check_floor`는 현행 규칙(근거 0건 거부)만으로 만든다 — 동작 변화 0을 증명한 뒤 PR 2에서 나머지를 얹는다.
+- **PR 1 실행 결과(2026-08-23, `feature/evidence-langgraph-loop`)**: 노드 3개(`decide`/`check_floor`/`act`), `compile()`에 체크포인터 없음 — `LoopState`가 doc_model·이미지를 들고 있어 직렬화가 안 되므로 **Postgres saver·`thread_id=turn_id`는 PR 2**(상태 직렬화와 함께). `finish`/`assemble` 노드도 없다 — runner가 여전히 `assemble()`을 부르고 종료는 `_finish` 4곳이 `outcome`을 채우는 것으로 표현된다; PR 2가 이를 `answer → assemble` 꼬리로 모은다. deps는 노드 클로저(턴마다 컴파일 3ms) — PR 2에서 `context_schema=LoopDeps`로 넘기고 한 번만 컴파일한다. 스텝 상한은 예산에서 유도: `_STEPS_PER_ITERATION(2)·n + _TAIL_STEPS(1) + 1`(LangGraph 1.2.x는 N스텝에 limit ≥ N+1, 실측). PR 2의 `answer`·`assemble`은 꼬리 스텝이라 `_TAIL_STEPS`를 올린다. 배포는 `langgraph==1.2.11` 정확 고정(상한이 여유 없이 잡혀 있어서). LangSmith 자동 트레이싱은 `tracing_context(enabled=False)`로 차단.
 
 ### 3.2 도구
 

@@ -11,6 +11,13 @@
   않는다(INV-EV-2).
 - 이미지 첨부는 `decide` **직후** 소비하고 폐기한다(BR-EV-17) — 도구 실행 뒤에
   두면 종료 제안이 거부돼 도구 없이 되도는 경로에서 재전송이 남는다.
+
+실행 틀은 LangGraph `StateGraph`다(evidence-agent-v3 설계 §3.1, 아키텍처 Q5=B). 위
+불변 조건은 노드 안에 그대로 산다. `deps`(LLM·도구·예산·트레이스 싱크)는 직렬화할 수
+없으므로 채널에 넣지 않고 노드 클로저로 묶는다. `LoopState`는 채널에 **참조로** 실린다 —
+runner가 `outcome.state`가 아니라 자기 객체를 조립에 넘기므로 in-place 변경이 보여야
+한다. 종료는 `_finish` 호출 지점 4곳(노드 3곳 + `_act`)에서 `outcome`을 채우는 것으로
+표현한다 — PR 2가 이를 `answer → assemble` 꼬리로 모은다. 체크포인터도 PR 2.
 """
 
 from __future__ import annotations
@@ -18,7 +25,11 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal, TypedDict
+
+from langgraph.graph import END, START, StateGraph
+from langgraph.graph.state import CompiledStateGraph
+from langsmith import tracing_context
 
 from ..ports.llm import (
     EvidenceLlmPort,
@@ -75,32 +86,105 @@ class LoopOutcome:
 
 def run_loop(state: LoopState, deps: LoopDeps) -> LoopOutcome:
     """한 턴의 자율 탐색을 종료까지 구동한다."""
-    while True:
+    graph = _build_graph(deps)
+    # langchain-core는 LANGSMITH_TRACING 류 env만 있으면 트레이서를 **자동으로** 붙여 노드
+    # 입출력(질문·논문 본문·이미지가 든 LoopState)을 외부로 보낸다. env의 부재에 기대지
+    # 않고 여기서 끈다 — 이 루프의 관찰 경로는 on_trace 하나다(SEC-9).
+    with tracing_context(enabled=False):
+        result = graph.invoke(
+            {"loop": state}, config={"recursion_limit": _recursion_limit(deps.budget)}
+        )
+    return result["outcome"]
+
+
+class _GraphState(TypedDict, total=False):
+    # 호출자의 LoopState 그 객체 — 복사 없이 참조로 싣는다(체크포인터 없음).
+    loop: LoopState
+    # decide → check_floor / act 로 넘기는 임시 값. 다음 decide가 덮어쓴다.
+    proposal: ToolCallProposal | TerminationProposal
+    # 종료 경로(`_finish` 호출 지점)에서만 채워진다. 채워지면 라우터가 END로 보낸다.
+    outcome: LoopOutcome | None
+
+
+# 반복 하나가 쓰는 최대 스텝 — `decide` + (`act` | `check_floor`). 거부된 종료 제안은
+# `decide`로 되돌아가 **새 반복**이 되므로 한 반복이 3스텝이 될 수 없다.
+_STEPS_PER_ITERATION = 2
+# 반복 상한을 다 쓴 뒤 마지막 `decide`가 예산 검사에서 거부되는 1스텝.
+_TAIL_STEPS = 1
+
+
+def _recursion_limit(budget: LoopBudget) -> int:
+    """그래프 스텝 상한 — 예산에서 유도한다. 기본값(25)에 맡기면 정상 루프가 잘린다.
+
+    최대 스텝 = 반복당 2 × n + 꼬리 1. LangGraph는 N스텝을 돌리려면 `recursion_limit ≥ N+1`을
+    요구한다(1.2.x 실측) → 2n+2. `GraphRecursionError`는 잡지 않는다 — 잡아서 예산 소진으로
+    바꾸면 현행에 없던 종료 경로가 생기고, 노드를 더하면서 이 상수를 안 고친 실수를 가린다.
+    PR 2의 `answer`·`assemble`은 반복당이 아니라 **꼬리** 스텝이다 — `_TAIL_STEPS`를 올린다.
+    """
+    return _STEPS_PER_ITERATION * budget.max_iterations + _TAIL_STEPS + 1
+
+
+def _build_graph(deps: LoopDeps) -> CompiledStateGraph:
+    """노드가 deps를 클로저로 닫으므로 턴마다 조립한다(약 3ms).
+
+    PR 2에서 `context_schema=LoopDeps`로 deps를 invoke 인자로 넘기고 그래프는 한 번만
+    컴파일한다 — context는 체크포인트에 실리지 않으므로 직렬화 불가인 deps의 제자리다.
+    """
+
+    def end(state: LoopState, reason: TerminationReason, detail: str | None) -> dict:
+        return {"outcome": _finish(state, reason, detail, deps)}
+
+    def decide(gs: _GraphState) -> dict:
+        state = gs["loop"]
         denial = budget_rules.begin_iteration(deps.budget)
         if denial is not None:
-            return _finish(state, TerminationReason.BUDGET_EXHAUSTED, denial.detail, deps)
+            return end(state, TerminationReason.BUDGET_EXHAUSTED, denial.detail)
 
         observation = _observe(state, deps)
         try:
             decision = deps.llm.decide(observation, deps.registry.specs())
         except LlmUnavailable as exc:
-            return _finish(state, TerminationReason.FATAL_ERROR, f"llm_unavailable: {exc}", deps)
+            return end(state, TerminationReason.FATAL_ERROR, f"llm_unavailable: {exc}")
 
         budget_rules.record_cost(deps.budget, decision.cost_estimate_usd)
         # 전달된 이미지는 여기서 소비된다 — 남기면 매 턴 재전송된다.
         _drop_images(state)
+        return {"proposal": decision.proposal}
 
-        proposal = decision.proposal
-        if isinstance(proposal, TerminationProposal):
-            if state.accumulator.items:
-                return _finish(state, TerminationReason.SUFFICIENT, proposal.note, deps)
-            # 종료 제안 거부 — 사유를 관찰에 실어 다음 판단이 달라지게 한다.
-            _note(state, _NO_EVIDENCE_NOTE)
-            continue
+    def check_floor(gs: _GraphState) -> dict:
+        state = gs["loop"]
+        if state.accumulator.items:
+            return end(state, TerminationReason.SUFFICIENT, gs["proposal"].note)
+        # 종료 제안 거부 — 사유를 관찰에 실어 다음 판단이 달라지게 한다.
+        _note(state, _NO_EVIDENCE_NOTE)
+        return {}
 
-        outcome = _act(state, deps, proposal)
-        if outcome is not None:
-            return outcome
+    def act(gs: _GraphState) -> dict:
+        return {"outcome": _act(gs["loop"], deps, gs["proposal"])}
+
+    graph = StateGraph(_GraphState)
+    graph.add_node("decide", decide)
+    graph.add_node("check_floor", check_floor)
+    graph.add_node("act", act)
+    graph.add_edge(START, "decide")
+    graph.add_conditional_edges("decide", _route_after_decide)
+    graph.add_conditional_edges("check_floor", _route_back_or_end)
+    graph.add_conditional_edges("act", _route_back_or_end)
+    return graph.compile()
+
+
+# 라우터 반환형은 Literal이어야 한다 — 그래야 컴파일된 그래프가 자기 간선을 안다
+# (`get_graph()`·렌더·트레이스). 맨 str이면 조건부 간선이 전부 빠진 두 노드 그래프로 보인다.
+def _route_after_decide(gs: _GraphState) -> Literal["check_floor", "act", "__end__"]:
+    if gs.get("outcome") is not None:
+        return END
+    if isinstance(gs["proposal"], TerminationProposal):
+        return "check_floor"
+    return "act"
+
+
+def _route_back_or_end(gs: _GraphState) -> Literal["decide", "__end__"]:
+    return END if gs.get("outcome") is not None else "decide"
 
 
 def _act(state: LoopState, deps: LoopDeps, proposal: ToolCallProposal) -> LoopOutcome | None:
