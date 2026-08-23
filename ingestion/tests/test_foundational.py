@@ -382,19 +382,25 @@ def test_bulk_fetch_is_chunked_so_the_ledger_advances_during_a_long_run(tmp_path
     assert [len(call) for call in arxiv.calls] == [METADATA_CHUNK, 3]
 
 
-def test_a_failed_bulk_fetch_falls_back_to_per_paper_instead_of_ending_the_run(tmp_path, wired):
-    """The batch is an optimisation, not a dependency — losing it must cost speed, not papers."""
+def test_a_refused_bulk_fetch_stops_the_run_rather_than_walking_it_per_paper(tmp_path, wired):
+    """REVERSED 2026-08-20. This test used to assert the opposite — "the batch is an optimisation,
+    not a dependency, so losing it must cost speed, not papers" — and that reasoning is wrong for
+    the reason the batch exists at all. arXiv refuses the batch when it is already rate-limiting
+    us, and the per-paper walk is the burst that caused the limit: the adapter measured 20 papers
+    walked one at a time putting ~100 requests through and leaving arXiv refusing us. So the
+    fallback feeds itself — refused batch, per-paper burst, longer penalty, next batch refused.
+
+    Measured on the live run: round 1 covered 8/8 and every paper succeeded; round 2's batch was
+    refused, fell to per-paper, and 7 of its 8 papers died. Stopping costs nothing, because
+    nothing is written and the ledger leaves every paper of the chunk pending."""
     rows = [("2401.00001", "canon"), ("2401.00002", "canon")]
     arxiv = _Arxiv(raises=RuntimeError("arXiv down"))
     pipeline = wired(_Pipeline(), arxiv)
-    rc = ingest_foundational(
-        list_path=str(_write_list(tmp_path, rows)),
-        ledger_path=str(tmp_path / "ledger.jsonl"),
-    )
-    assert rc == 0
-    assert pipeline.seen == [aid for aid, _ in rows]
-    # No metadata on the job → ingest_one fetches it itself, the pre-batch behaviour.
-    assert pipeline.metadata_seen == [None, None]
+    ledger = tmp_path / "ledger.jsonl"
+    rc = ingest_foundational(list_path=str(_write_list(tmp_path, rows)), ledger_path=str(ledger))
+    assert rc == 1
+    assert pipeline.seen == []
+    assert not ledger.exists() or ledger.read_text(encoding="utf-8").strip() == ""
 
 
 def test_a_paper_missing_from_the_batch_still_gets_ingested(tmp_path, wired):
@@ -792,3 +798,100 @@ def test_permanent_loss_over_the_gate_still_stops_the_run(tmp_path, wired) -> No
     )
 
     assert rc == 1
+
+
+def test_a_refused_metadata_batch_stops_instead_of_walking_it_per_paper(tmp_path, wired) -> None:
+    """The fallback was the trap, not the slowdown.
+
+    Returning {} on a refused batch made the caller fetch each paper on its own — the exact burst
+    the batch exists to avoid, which extends the penalty that refused the batch in the first
+    place. Measured 2026-08-20: round 1 covered 8/8 and every paper succeeded; round 2's batch was
+    refused, fell to per-paper, and 7 of 8 papers died.
+    """
+    pipeline = wired(_Pipeline(), _Arxiv(raises=RuntimeError("429")))
+    rows = [(f"p{i}", "canon") for i in range(5)]
+    ledger = tmp_path / "l.jsonl"
+
+    rc = ingest_foundational(list_path=str(_write_list(tmp_path, rows)), ledger_path=str(ledger))
+
+    assert rc == 1
+    # Not one paper may have been walked individually...
+    assert pipeline.seen == []
+    # ...and nothing is written, so a later run picks up every one of them unchanged.
+    assert not ledger.exists() or ledger.read_text(encoding="utf-8").strip() == ""
+
+
+def test_an_empty_batch_answer_counts_as_a_refusal(tmp_path, wired) -> None:
+    """arXiv answering with nothing for a non-empty id list is the same verdict as raising —
+    asking again per paper only deepens it. A PARTIAL answer is not: the ids it omits are
+    withdrawn or mistyped papers, and those few individual fetches are what that path is for."""
+    refusing = wired(_Pipeline(), _Arxiv(known=set()))
+    assert (
+        ingest_foundational(
+            list_path=str(_write_list(tmp_path, [("a", "canon"), ("b", "canon")])),
+            ledger_path=str(tmp_path / "refused.jsonl"),
+        )
+        == 1
+    )
+    assert refusing.seen == []
+
+    partial = wired(_Pipeline(), _Arxiv(known={"a"}))
+    assert (
+        ingest_foundational(
+            list_path=str(_write_list(tmp_path, [("a", "canon"), ("b", "canon")])),
+            ledger_path=str(tmp_path / "partial.jsonl"),
+        )
+        == 0
+    )
+    assert partial.seen == ["a", "b"]
+    assert partial.metadata_seen[1] is None  # b fetches its own, as designed
+
+
+
+def test_grobid_timeout_stays_under_the_dependency_wall_clock_cap() -> None:
+    """A GROBID timeout above the outer cap reproduces the bug it was raised to fix.
+
+    ``dependency_timeout_seconds`` caps the whole resilience call. If GROBID's own timeout exceeds
+    it, the outer cap fires first — the client abandons a parse GROBID is still running, and the
+    retry stacks a second parse on top of the first inside the container. That is what drove it to
+    5.7GB and an OOM kill (2026-08-20). The two numbers are only correct in relation to each
+    other, so the relation is what gets pinned rather than either value.
+    """
+    from docsuri_ingestion.settings import IngestionSettings
+
+    settings = IngestionSettings(DOCSURI_S3_BUCKET="b")
+    assert settings.grobid_timeout_seconds < settings.dependency_timeout_seconds
+    # And it must exceed a plain request timeout — inheriting that one is the defect itself:
+    # 30s is sized for an Atom feed, and a 62-page survey measured past it.
+    assert settings.grobid_timeout_seconds > settings.request_timeout_seconds
+
+
+def test_an_open_circuit_waits_instead_of_feeding_the_rest_of_the_queue(
+    tmp_path, wired, monkeypatch
+) -> None:
+    """One genuine failure must not cost the whole round.
+
+    An open breaker refuses instantly, so a run that keeps going pours its remaining papers into
+    it and marks them all failed in seconds. Measured 2026-08-21: 2 genuine failures in a round of
+    8 (a throttled embed, a GROBID 5xx) produced 7 failed papers, and every one of them was
+    recorded as the same DEPENDENCY_UNAVAILABLE — the amplification was invisible.
+    """
+    from docsuri_ingestion.resilience import CircuitOpenError
+
+    pipeline = wired(_Pipeline({"b": CircuitOpenError("bedrock")}), _Arxiv())
+    slept: list[float] = []
+    monkeypatch.setattr("docsuri_ingestion.foundational.time.sleep", slept.append)
+
+    ledger = tmp_path / "l.jsonl"
+    rows = [("a", "canon"), ("b", "canon"), ("c", "canon")]
+    ingest_foundational(list_path=str(_write_list(tmp_path, rows)), ledger_path=str(ledger))
+
+    written = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
+    outcomes = {r["arxiv_id"]: r["outcome"] for r in written}
+    # Its own reason: this paper never reached the dependency, so calling it DEPENDENCY_UNAVAILABLE
+    # would hide that an EARLIER paper is what actually failed.
+    assert outcomes["b"] == "failed:retriable:CIRCUIT_OPEN:bedrock"
+    # And the run paused rather than racing the rest of the queue into the same refusal.
+    assert slept and slept[0] >= 60.0
+    # The papers after it still run — waiting is not stopping.
+    assert pipeline.seen == ["a", "b", "c"]

@@ -149,6 +149,21 @@ class IngestionSettings(BaseModel):
     contact_email: str | None = Field(default=None, alias="DOCSURI_CONTACT_EMAIL")
 
     request_timeout_seconds: float = Field(default=30.0, alias="DOCSURI_REQUEST_TIMEOUT_SECONDS")
+    # GROBID gets its OWN timeout because it is not the same kind of request. The value above is
+    # sized for fetching an Atom feed; GROBID is parsing a PDF, and a 62-page survey measured well
+    # past 30s. Sharing one number cut those papers off mid-parse — and the cut is worse than a
+    # lost paper: the client gives up but GROBID keeps working, so a retry stacks a second parse on
+    # top of the first inside the container. That is what drove it to 5.7GB and an OOM kill; the
+    # memory was the symptom, the timeout was the cause.
+    #
+    # MUST STAY BELOW ``dependency_timeout_seconds`` (below). That is the wall-clock cap on the
+    # whole dependency_call, so a larger value here is not merely useless — it reproduces the bug
+    # at a different layer: the outer cap fires first, the client abandons a parse GROBID is still
+    # running, and the retry stacks another one on top. 150s is 4x the 35s a 62-page survey
+    # measured, and still 30s under the outer cap.
+    grobid_timeout_seconds: float = Field(
+        default=150.0, alias="DOCSURI_GROBID_TIMEOUT_SECONDS"
+    )
     # Wall-clock cap for one resilience dependency_call. Must exceed the worst LEGITIMATE
     # multi-request chain (politeness-paced html→ar5iv→pdf + pdfplumber on a big PDF ≈ 2-3 min);
     # 30s (= one request's timeout) killed slow-but-healthy papers and tripped the arxiv
@@ -165,14 +180,23 @@ class IngestionSettings(BaseModel):
     worker_queue_mode: Literal["all", "bulk", "docmodel"] = Field(
         default="all", alias="DOCSURI_WORKER_QUEUE_MODE"
     )
-    # Raised 128 -> 512 (2026-08-15). Chunking is per BLOCK, so this counts paragraphs, not
-    # 2,400-char windows: at 128 it cut the body of 217 of the 827 papers indexed so far (26%),
-    # dropping a median 9.7% and up to 64.6% of their text (2 of every 3 paragraphs in
-    # `1706.07269`). The papers it cut were surveys and reviews — the ones with the most
-    # paragraphs, and exactly what the foundational list was assembled to include. Measured cost
-    # of 512: +10.1% chunks, and nothing truncated (sample max was 487 blocks).
-    max_chunks_per_paper: int = Field(default=512, alias="DOCSURI_MAX_CHUNKS_PER_PAPER")
+    # Raised 128 -> 512 (2026-08-15) -> 2048 (2026-08-16). Chunking is per BLOCK, so this counts
+    # paragraphs, not 2,400-char windows: at 128 it cut the body of 217 of the 827 papers indexed
+    # so far (26%), dropping a median 9.7% and up to 64.6% of their text (2 of every 3 paragraphs
+    # in `1706.07269`). The papers it cut were surveys and reviews — the ones with the most
+    # paragraphs, and exactly what the foundational list was assembled to include.
+    #
+    # 512 was set from a sample whose largest paper was 487 blocks, i.e. from a maximum that had
+    # never been exceeded rather than from one that had been measured. It was exceeded on the
+    # next run: 4 of 1,238 papers hit it, and `1706.02515` has 1,415 blocks, so 64% of its body
+    # reached neither the index nor a citable anchor. 2048 covers that measured maximum and still
+    # bounds a pathological document. The cap is rare enough to price directly — 4 papers over
+    # 1,238 (0.3%), about +1% chunks corpus-wide.
+    max_chunks_per_paper: int = Field(default=2048, alias="DOCSURI_MAX_CHUNKS_PER_PAPER")
     max_chunk_chars: int = Field(default=2400, alias="DOCSURI_MAX_CHUNK_CHARS")
+    # Doc-model chunking packs consecutive same-section blocks up to this length — see the
+    # rationale on ``Chunker.chunk_pack_chars``. Distinct from max_chunk_chars, which only splits.
+    chunk_pack_chars: int = Field(default=1200, alias="DOCSURI_CHUNK_PACK_CHARS")
     chunk_overlap_chars: int = Field(default=240, alias="DOCSURI_CHUNK_OVERLAP_CHARS")
     # FR-17 multimodal assets (display-only). Safe default OFF — base worker unaffected.
     multimodal_assets_enabled: bool = Field(

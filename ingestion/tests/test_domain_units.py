@@ -589,6 +589,126 @@ def test_chunk_cap_does_not_truncate_a_survey_sized_paper() -> None:
         }
     )
 
-    chunks = Chunker().chunk_doc_model(doc).chunks
+    result = Chunker().chunk_doc_model(doc)
 
-    assert len(chunks) == 300, "the survey lost paragraphs to the per-paper cap"
+    # Asserted on refs, not on chunk count: packing merges short paragraphs, so "one chunk per
+    # block" stopped being the invariant. What the cap must never do is LOSE a paragraph, and
+    # every block id surviving into blockRefs is that property stated directly.
+    covered = [ref.block_id for chunk in result.chunks for ref in chunk.block_refs]
+    assert covered == [f"s1.p{i}" for i in range(300)], "the survey lost paragraphs to the cap"
+    assert not result.truncated
+
+
+def _doc_with_sections(sections: list[dict]) -> DocModel:
+    return DocModel.model_validate(
+        {
+            "meta": {
+                "paperId": "2401.00003",
+                "version": 1,
+                "title": "Packing",
+                "provenance": {
+                    "sourceTier": "pdf",
+                    "parserVersion": "test",
+                    "schemaVersion": "1",
+                    "generatedAt": "1970-01-01T00:00:00Z",
+                },
+            },
+            "fullText": "body",
+            "sections": sections,
+        }
+    )
+
+
+def test_short_blocks_are_packed_into_one_chunk_carrying_every_ref() -> None:
+    """Consecutive short blocks of one section become ONE chunk that still names every block.
+
+    Without packing each paragraph was its own chunk whatever its length: measured over 80
+    indexed papers the median chunk was 372 chars and 29% were under 200 — too short to carry
+    the antecedent of their own "this method" into the embedding or the reranker. Packing is
+    only safe because ``blockRefs`` is a LIST ("block refs covered by this chunk"), so the
+    merged chunk stays traceable to the exact paragraphs it came from.
+    """
+    from docsuri_ingestion.processors import Chunker
+
+    doc = _doc_with_sections(
+        [
+            {
+                "id": "s1",
+                "title": "Body",
+                "blocks": [
+                    {"id": f"s1.p{i}", "type": "paragraph", "text": "word " * 20}
+                    for i in range(4)
+                ],
+            }
+        ]
+    )
+
+    chunks = Chunker(chunk_pack_chars=1200).chunk_doc_model(doc).chunks
+
+    assert len(chunks) == 1
+    assert [ref.block_id for ref in chunks[0].block_refs] == [f"s1.p{i}" for i in range(4)]
+    # Every block's text survives the merge — packing joins, it does not sample.
+    assert chunks[0].text == " ".join(["word " * 20] * 4).replace("  ", " ").strip()
+
+
+def test_packing_never_crosses_a_section_boundary() -> None:
+    """Two sections' blocks never share a chunk — even when both fit and share a title.
+
+    A chunk carries ONE ``section`` label and its anchors are read per section, so a chunk
+    spanning two sections mislabels itself and breaks the anchor. Same-title sections (a paper
+    with "References" at two depths) are the case a label-only comparison would merge, which is
+    why packing keys on section id.
+    """
+    from docsuri_ingestion.processors import Chunker
+
+    doc = _doc_with_sections(
+        [
+            {
+                "id": "s1",
+                "title": "References",
+                "blocks": [{"id": "s1.p0", "type": "paragraph", "text": "short one"}],
+            },
+            {
+                "id": "s2",
+                "title": "References",
+                "blocks": [{"id": "s2.p0", "type": "paragraph", "text": "short two"}],
+            },
+        ]
+    )
+
+    chunks = Chunker(chunk_pack_chars=1200).chunk_doc_model(doc).chunks
+
+    assert len(chunks) == 2
+    assert [ref.block_id for chunk in chunks for ref in chunk.block_refs] == ["s1.p0", "s2.p0"]
+
+
+def test_packing_never_lengthens_a_chunk_past_the_target() -> None:
+    """A block that does not fit starts the next chunk instead of overflowing the current one.
+
+    And a block already longer than the target is emitted alone: packing must never make a chunk
+    longer than leaving the block untouched would. Splitting stays with ``max_chunk_chars``.
+    """
+    from docsuri_ingestion.processors import Chunker
+
+    doc = _doc_with_sections(
+        [
+            {
+                "id": "s1",
+                "title": "Body",
+                "blocks": [
+                    {"id": "s1.p0", "type": "paragraph", "text": "a" * 700},
+                    {"id": "s1.p1", "type": "paragraph", "text": "b" * 700},
+                    {"id": "s1.p2", "type": "paragraph", "text": "c" * 1500},
+                ],
+            }
+        ]
+    )
+
+    chunks = Chunker(chunk_pack_chars=1200, max_chunk_chars=2400).chunk_doc_model(doc).chunks
+
+    assert [len(chunk.text) for chunk in chunks] == [700, 700, 1500]
+    assert [ref.block_id for chunk in chunks for ref in chunk.block_refs] == [
+        "s1.p0",
+        "s1.p1",
+        "s1.p2",
+    ]

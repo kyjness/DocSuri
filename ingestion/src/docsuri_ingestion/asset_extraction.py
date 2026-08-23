@@ -500,6 +500,18 @@ class AssetExtractor:
 # the single primitive is large enough to be a one-path diagram/plot. Padding gives breathing room.
 _MIN_GRAPHIC_OBJS = 2
 _REGION_PAD = 4.0
+# Gap left between a figure's artwork and its own caption when the crop is trimmed off it.
+# MUST exceed _REGION_PAD: the pad is applied after this trim and would otherwise push the box
+# back over the caption's first line, which is exactly what it was trimmed to avoid.
+_CAPTION_GAP_PT = _REGION_PAD + 2.0
+# How far outside the drawn artwork a word may sit and still be part of the figure — axis tick
+# labels, rotated axis titles, legends. Also the hard bound on how far the crop may grow sideways,
+# so admitting them cannot reach into an adjacent column.
+_LABEL_MARGIN_PT = 26.0
+# The same idea vertically, but tighter: x tick labels sit about one line under the axis (8.1pt on
+# arXiv:2210.11416 Figure 6), while what lies above a figure is the preceding paragraph. Below is
+# guarded twice — this bound, then the caption trim.
+_LABEL_MARGIN_V_PT = 12.0
 _SINGLE_PRIM_MIN_W_FRAC = 0.3  # a lone primitive counts only if it spans ≥30% width AND ≥10% height
 _SINGLE_PRIM_MIN_H_FRAC = 0.1
 
@@ -791,27 +803,84 @@ def _caption_bbox(page, prims: dict[str, list], words: Sequence[dict], caption: 
     img_boxes, vec_boxes = prims["img"], prims["vec"]
     if not _accept_graphics(img_boxes, vec_boxes, page):
         return None
-    boxes = img_boxes + vec_boxes
+    boxes = _artwork_boxes(img_boxes + vec_boxes, caption)
     gx0 = min(b[0] for b in boxes)
     gt0 = min(b[1] for b in boxes)
     gx1 = max(b[2] for b in boxes)
     gt1 = max(b[3] for b in boxes)
+    # Axis furniture sits just OUTSIDE the drawn plot, not overlapping it: on arXiv:2210.11416
+    # Figure 6 the y tick labels end 3.5pt left of the artwork and the rotated axis title 21.7pt
+    # left, so a strict-overlap test cropped the plot with its scale missing. The margin admits
+    # them; the clamp below is what keeps it from becoming the runaway the frozen-span rule exists
+    # to prevent — a word inside the margin can no longer drag the box out to a neighbouring
+    # column, because the box cannot leave the margin either way.
+    lx0, lx1 = gx0 - _LABEL_MARGIN_PT, gx1 + _LABEL_MARGIN_PT
+    lt0, lt1 = gt0 - _LABEL_MARGIN_V_PT, gt1 + _LABEL_MARGIN_V_PT
     x0, t0, x1, t1 = gx0, gt0, gx1, gt1
     for w in words:
         cy = (float(w["top"]) + float(w["bottom"])) / 2.0
-        if gt0 - 2.0 <= cy <= gt1 + 2.0 and float(w["x1"]) >= gx0 and float(w["x0"]) <= gx1:
+        if lt0 <= cy <= lt1 and float(w["x1"]) >= lx0 and float(w["x0"]) <= lx1:
             x0 = min(x0, float(w["x0"]))
             x1 = max(x1, float(w["x1"]))
             t0 = min(t0, float(w["top"]))
             t1 = max(t1, float(w["bottom"]))
+    x0, x1 = max(x0, lx0), min(x1, lx1)
+    t0, t1 = max(t0, lt0), min(t1, lt1)
     if caption is not None and caption["kind"] is AssetType.TABLE:
         t0, t1 = _table_row_span(words, caption, (gx0, gx1), (t0, t1))
+    elif caption is not None:
+        t0, t1 = _figure_span_without_caption(caption, (t0, t1))
     return (
         max(0.0, x0 - _REGION_PAD),
         max(0.0, t0 - _REGION_PAD),
         min(float(page.width), x1 + _REGION_PAD),
         min(float(page.height), t1 + _REGION_PAD),
     )
+
+
+def _artwork_boxes(boxes: list, caption: dict | None) -> list:
+    """The primitives that are the artwork, with the float's container rectangle removed.
+
+    LaTeX draws a float's background/clipping rectangle around the WHOLE float — the artwork, the
+    white space above it and the caption below — and it reaches the page long before the artwork
+    does. Taking it into the span pulled the crop up over the preceding body text: on
+    arXiv:2309.12307 page 1 the container starts at y=408 while the first artwork primitive starts
+    at y=480, so 72pt of the abstract rendered into the figure.
+
+    A primitive that spans ACROSS the caption band cannot be artwork — a figure never draws over
+    its own caption — which separates the container from a genuinely tall one-path diagram without
+    guessing at sizes. Everything is kept when the test would empty the list, so a float whose only
+    primitive happens to straddle its caption still yields its old box rather than none.
+    """
+    if caption is None:
+        return boxes
+    cap_top, cap_bottom = float(caption["top"]), float(caption["bottom"])
+    artwork = [b for b in boxes if not (b[1] <= cap_top and b[3] >= cap_bottom)]
+    return artwork or boxes
+
+
+def _figure_span_without_caption(
+    caption: dict, v_span: tuple[float, float]
+) -> tuple[float, float]:
+    """Trim a figure's crop so it stops AT its caption instead of swallowing it.
+
+    A figure's artwork is often drawn inside a frame or a set of panel boxes whose vector extent
+    runs past the artwork and down over the caption line. The word-growth rule then reads the
+    caption as content that sits "inside the graphic span" — the same rule that correctly keeps
+    axis labels and legends — and the crop comes out with the caption rendered into the image,
+    directly above the caption the reader is already shown as text (arXiv:2309.12307 Figure 1).
+
+    The caption's own band is known (it is what located this figure), so the fix is to clamp
+    against it rather than to weaken the word rule that legends depend on. Which side to clamp is
+    decided by where the caption sits relative to the artwork, because journals put figure
+    captions below and a minority put them above. A caption already outside the span leaves the
+    box untouched — the common case is a no-op.
+    """
+    t0, t1 = v_span
+    cap_top, cap_bottom = float(caption["top"]), float(caption["bottom"])
+    if cap_top >= (t0 + t1) / 2.0:
+        return t0, min(t1, cap_top - _CAPTION_GAP_PT)
+    return max(t0, cap_bottom + _CAPTION_GAP_PT), t1
 
 
 def _table_row_span(

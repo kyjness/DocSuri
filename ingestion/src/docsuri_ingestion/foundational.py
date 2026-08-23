@@ -51,6 +51,7 @@ from .application import new_job_id
 from .domain.enums import JobKind
 from .domain.errors import PermanentIngestionError, RetriableIngestionError
 from .domain.models import IngestionJob
+from .resilience import CIRCUIT_RECOVERY_SECONDS, CircuitOpenError
 from .runtime import build_production_runtime, preflight_dependencies
 from .settings import IngestionSettings
 
@@ -293,6 +294,19 @@ def ingest_foundational(
         for offset in range(0, len(todo), METADATA_CHUNK):
             chunk = todo[offset : offset + METADATA_CHUNK]
             metadata_by_id = _batch_metadata(runtime, [aid for aid, _ in chunk])
+            if metadata_by_id is None:
+                # Stop rather than walk the chunk per paper. Nothing is written for this chunk, so
+                # the ledger leaves its papers pending and a later run picks them up unchanged —
+                # whereas continuing spends a request per paper against a source that is already
+                # refusing, and extends the very penalty that caused this.
+                _log_outcomes(counts)
+                _log.error(
+                    "arXiv가 묶음 조회를 거부한다 — %d/%d편에서 멈춘다. "
+                    "벌칙 창은 실측 약 1시간이니 잠시 뒤 같은 명령으로 재개하라.",
+                    n,
+                    len(todo),
+                )
+                return 1
             for arxiv_id, row_bucket in chunk:
                 n += 1
                 # .get, not [] — a paper absent from the batch (withdrawn, mistyped, a failed
@@ -312,6 +326,18 @@ def ingest_foundational(
                 recent.append(
                     outcome.startswith("failed") and not outcome.startswith("failed:permanent")
                 )
+                if ":CIRCUIT_OPEN:" in outcome:
+                    # WAIT INSTEAD OF FEEDING THE BREAKER. An open circuit refuses instantly, so
+                    # without this the run pours the rest of its papers into it and marks them all
+                    # failed in a few seconds — one throttled embed cost three more papers, one
+                    # GROBID 5xx cost two. Nothing is lost (they stay retriable) but the round is
+                    # spent. Sleeping the recovery window turns "burn the queue" into "carry on".
+                    _log.warning(
+                        "%s 회로가 열렸다 — %.0f초 뒤 재개한다(그동안 넣으면 전건 실패한다)",
+                        failure_stage(outcome) or "의존성",
+                        CIRCUIT_RECOVERY_SECONDS,
+                    )
+                    time.sleep(CIRCUIT_RECOVERY_SECONDS)
                 if n % 25 == 0 or n == len(todo):
                     rate = (time.monotonic() - started) / n
                     _log.info(
@@ -395,25 +421,34 @@ def _recently_collapsed(recent: deque[bool]) -> str | None:
     return None
 
 
-def _batch_metadata(runtime, arxiv_ids: list[str]) -> dict[str, object]:
-    """Bulk metadata for one chunk, keyed by bare paper id. Never raises: this is a prefetch, and
-    an empty result just means every paper in the chunk fetches its own the way it used to.
+def _batch_metadata(runtime, arxiv_ids: list[str]) -> dict[str, object] | None:
+    """Bulk metadata for one chunk, keyed by bare paper id. ``None`` means arXiv is refusing us.
 
-    The COVERAGE is logged, not just the failures. Falling back is invisible from the outside —
-    the run still succeeds, it just spends 15x the arXiv requests and eventually gets throttled
-    off the source — so an unattended 1,500-paper run must say how many papers the batch actually
-    covered rather than only speaking up when it raised.
+    THE FALLBACK WAS THE TRAP, NOT THE SLOWDOWN. This used to return ``{}`` on failure, and the
+    caller then fetched each paper on its own — precisely the burst the batch exists to avoid.
+    The adapter records the measurement: 20 papers walked one at a time put ~100 requests through
+    and left arXiv refusing us. So the degradation feeds itself — one refused batch becomes a
+    per-paper burst, the burst extends the penalty, and the penalty refuses the next batch.
+    Measured on this path (2026-08-20): round 1 covered 8/8 and every paper succeeded; round 2's
+    batch was refused, fell to per-paper, and 7 of 8 papers died.
+
+    A PARTIAL result is different and still returns a dict: an id with no entry is a withdrawn or
+    mistyped paper, and the handful of individual fetches that costs is what the per-paper path is
+    actually for.
     """
     arxiv = getattr(runtime, "arxiv", None)
     if arxiv is None or not hasattr(arxiv, "fetch_metadata_batch"):
         return {}
     try:
         found = arxiv.fetch_metadata_batch(arxiv_ids)
-    except Exception as exc:  # noqa: BLE001 — fall back to per-paper fetch
-        _log.warning(
-            "메타데이터 일괄 조회 실패(%s) — %d편 논문별 조회", type(exc).__name__, len(arxiv_ids)
-        )
-        return {}
+    except Exception as exc:  # noqa: BLE001 — the source is refusing; do not walk it per paper
+        _log.warning("메타데이터 일괄 조회 실패(%s)", type(exc).__name__)
+        return None
+    if not found and arxiv_ids:
+        # Answered, but with nothing for a non-empty id list. Same verdict as a raise: arXiv is
+        # not serving us right now, and asking again per paper only deepens it.
+        _log.warning("메타데이터 일괄 조회 0/%d편", len(arxiv_ids))
+        return None
     _log.info("메타데이터 일괄 조회 %d/%d편", len(found), len(arxiv_ids))
     return found
 
@@ -446,6 +481,12 @@ def _ingest_one_paper(runtime, arxiv_id: str, metadata=None) -> str:
                 arxiv_metadata=metadata.to_payload() if metadata is not None else None,
             )
         ).value
+    except CircuitOpenError as exc:
+        # Its own reason, not DEPENDENCY_UNAVAILABLE. This paper never reached the dependency —
+        # an earlier one did and tripped the breaker — so recording it as the same thing hides
+        # the amplification: measured, 2 genuine failures in a round of 8 produced 7 failed
+        # papers, and the ledger showed 7 identical DEPENDENCY_UNAVAILABLE rows (2026-08-21).
+        return f"failed:retriable:CIRCUIT_OPEN:{exc.stage}"
     except RetriableIngestionError as exc:
         return f"failed:retriable:{exc.reason.value}:{exc.stage}"
     except PermanentIngestionError as exc:

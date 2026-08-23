@@ -88,3 +88,39 @@ def test_a_permanent_failure_is_not_retried_at_all() -> None:
     with pytest.raises(PermanentIngestionError):
         service.retry("fetch_metadata", boom)
     assert len(calls) == 1
+
+
+def test_retry_exhaustion_carries_the_original_error_forward() -> None:
+    """Three different causes used to come out byte-identical.
+
+    A botocore ClientError is not an IngestionError, so retry exhaustion took the branch that
+    builds a FRESH error — and an AWS throttle, an open circuit and a dead container all ended up
+    as `failed:retriable:DEPENDENCY_UNAVAILABLE:<stage>` with nothing to tell them apart. That is
+    not a logging nicety: a corpus batch was diagnosed as "daily token quota exhausted" for two
+    days on the strength of a message seen once in a probe, because the run itself recorded
+    nothing that could confirm or refute it (2026-08-21).
+    """
+
+    class _Throttled(Exception):
+        response = {"Error": {"Code": "ThrottlingException"}}
+
+        def __str__(self) -> str:
+            return "Too many tokens, please wait before trying again."
+
+    service = IngestionResilienceService(
+        _Obs(),
+        retry_policy=RetryPolicy(max_attempts=2, base_delay_seconds=0.0),
+    )
+
+    def always_throttled():
+        raise _Throttled()
+
+    with pytest.raises(RetriableIngestionError) as caught:
+        service.retry("bedrock", always_throttled)
+
+    assert "Too many tokens" in str(caught.value)
+    assert "_Throttled" in str(caught.value)
+    # Chained, so a traceback still reaches the real one.
+    assert isinstance(caught.value.__cause__, _Throttled)
+    # The reason code is unchanged — consumers key off it and the DLQ payload is a contract.
+    assert caught.value.reason is FailureReason.DEPENDENCY_UNAVAILABLE

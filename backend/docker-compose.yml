@@ -102,9 +102,19 @@ services:
     ports:
       - "9000:80"
     volumes:
-      - ${DOCSURI_S3_MIRROR:-~/data/docsuri-data/s3}:/data/docsuri
+      # 기본값을 두지 않는다. `:-~/data/docsuri-data/s3`였을 때, .env를 소스하지 않고
+      # `docker compose up -d`를 한 번 한 것만으로 24GB 개발 코퍼스가 조용히 마운트됐다.
+      # 컨테이너는 healthy로 뜨고 S3 API도 정상 응답하므로 어디에도 오류가 안 보이는데,
+      # 재색인 도구는 배포 코퍼스 781편 중 771편을 "doc-model 없음"으로 건너뛰고 exit 0을
+      # 냈고, 인제스천은 개발 코퍼스 파일 376개를 덮어썼다(2026-08-18). 조용히 틀린 데이터를
+      # 붙드느니 뜨지 않는 편이 낫다.
+      - ${DOCSURI_S3_MIRROR:?DOCSURI_S3_MIRROR must be set — source .env first}:/data/docsuri
     healthcheck:
-      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/80 || exit 1"]
+      # curl, not /dev/tcp: that redirect is a bash builtin and CMD-SHELL runs /bin/sh, so the
+      # probe failed on every single tick ("Directory nonexistent") while s3proxy served fine.
+      # A container that is permanently unhealthy reports nothing — the next real outage reads
+      # identically to this one.
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:80/ || exit 1"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -131,7 +141,11 @@ services:
       # (`docker update --memory`) does not help and actively hurts: the JVM still believes it has
       # 4GB of heap, so the cgroup kills it (exit 137) before it ever feels pressure to collect.
       # The number to lower is this one.
-      JAVA_OPTS: "-Xmx2g"
+      # 2g는 이 박스에서 부족했다: 재기동 직후 2.0GB로 뜨고, 한 편을 파싱하는 사이 남은
+      # 1.7GB를 다 먹어 커널이 죽였다(exit 137, 8편 라운드에서 즉시). 컨테이너 상한을
+      # 거는 것은 도움이 안 된다 — JVM은 여전히 자기 힙이 다 있다고 믿어서, 압박을 느끼기
+      # 전에 cgroup이 먼저 죽인다. 낮출 수 있는 숫자는 이것뿐이라 env로 뺀다.
+      JAVA_OPTS: "-Xmx${DOCSURI_GROBID_HEAP:-2g}"
     # Model load takes a while; a port-open check is a fine readiness proxy (the image ships no curl).
     # `/dev/tcp` is a bash feature, so invoke bash explicitly — CMD-SHELL runs /bin/sh (dash on this
     # Debian-based image), which has no /dev/tcp and would report the container perpetually unhealthy.

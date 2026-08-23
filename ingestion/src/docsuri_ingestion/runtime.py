@@ -162,7 +162,7 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
 
         grobid = GrobidHttpClient(
             base_url=settings.grobid_url,
-            timeout_seconds=settings.request_timeout_seconds,
+            timeout_seconds=settings.grobid_timeout_seconds,
             # Same store the raw source-byte cache uses, under tier "tei" — the two-pass split
             # that keeps GROBID and Docling out of memory together.
             raw_store=raw_store,
@@ -285,6 +285,7 @@ def build_production_runtime(settings: IngestionSettings) -> RuntimeServices:
         chunker=Chunker(
             max_chunk_chars=settings.max_chunk_chars,
             overlap_chars=settings.chunk_overlap_chars,
+            chunk_pack_chars=settings.chunk_pack_chars,
             max_chunks_per_paper=settings.max_chunks_per_paper,
         ),
         asset_extractor=asset_extractor,

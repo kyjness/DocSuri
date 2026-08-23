@@ -1168,3 +1168,86 @@ def test_a_class_less_figure_needs_a_NUMBERED_caption_to_be_promoted() -> None:
     doc = _parse_custom(html)
     tables = [b.root for s in doc.sections for b in s.blocks if isinstance(b.root, TableBlock)]
     assert tables == []  # not a referenceable float, so never promoted to one
+
+
+def _figure_blocks_of(doc) -> list:
+    def walk(sections):
+        for section in sections:
+            for block in section.blocks:
+                if getattr(block.root, "type", "") == "figure":
+                    yield block.root
+            yield from walk(section.sections or [])
+
+    return list(walk(doc.sections))
+
+
+def test_svg_figure_embedded_as_object_is_a_figure() -> None:
+    """LaTeXML embeds an EXTERNAL svg as ``<object class="ltx_graphics">``, not ``<img>``.
+
+    That is how both ar5iv and arxiv.org/html deliver most TikZ/pgfplots figures, and requiring an
+    ``<img>`` dropped every one of them whole — caption and number included. Measured over 21
+    corpus papers: 56 of 149 figures (38%) arrive this way, against 9 (6%) that genuinely have no
+    graphic. The browser renders them, which is why the same paper looked complete on arXiv and
+    half-empty here.
+
+    The block carries a BLANK ``FigureSpec.src``: there is no raster to point at, so the asset
+    extractor falls through to the whole-figure PDF page-crop matched by caption number — the same
+    path a multi-panel figure already takes.
+    """
+    specs: list = []
+    doc = _parse_custom(
+        '<html><body><div class="ltx_document"><section class="ltx_section" id="S1">'
+        '<h2 class="ltx_title">Body</h2>'
+        '<figure class="ltx_figure">'
+        '<object class="ltx_graphics" type="image/svg+xml" data="plot.svg"></object>'
+        '<figcaption class="ltx_caption"><span class="ltx_tag">Figure 3: </span>'
+        "Scaling behaviour</figcaption></figure>"
+        "</section></div></body></html>",
+        specs,
+    )
+
+    figures = _figure_blocks_of(doc)
+    assert len(figures) == 1
+    assert figures[0].anchorLabel == "Figure 3"
+    assert figures[0].caption == "Scaling behaviour"
+    assert [spec.src for spec in specs] == [""]
+
+
+def test_object_figure_holding_a_layout_tabular_is_not_retyped_as_a_table() -> None:
+    """A vector figure whose panels are laid out with a tabular stays a figure.
+
+    Without the graphic being visible, such a float looked like "no graphic + a tabular inside",
+    which routes to the table path — and that is what put an empty two-column box under a
+    "Figure 3" caption on screen (arXiv:1902.00751).
+    """
+    doc = _parse_custom(
+        '<html><body><div class="ltx_document"><section class="ltx_section" id="S1">'
+        '<h2 class="ltx_title">Body</h2>'
+        '<figure class="ltx_figure">'
+        '<table class="ltx_tabular"><tr><td>GLUE</td><td>Additional</td></tr></table>'
+        '<object class="ltx_graphics" type="image/svg+xml" data="panels.svg"></object>'
+        '<figcaption class="ltx_caption"><span class="ltx_tag">Figure 3: </span>'
+        "Accuracy versus parameters</figcaption></figure>"
+        "</section></div></body></html>"
+    )
+
+    figures = _figure_blocks_of(doc)
+    assert len(figures) == 1
+    assert figures[0].anchorLabel == "Figure 3"
+
+
+def test_unnumbered_object_graphic_still_yields_no_figure_block() -> None:
+    """Recognising ``<object>`` must not start minting figures that can never be imaged.
+
+    A float with no number has nothing for the page-crop to match on, so its assetRef would
+    dangle. That guard predates this change and applies to both vector shapes alike.
+    """
+    doc = _parse_custom(
+        '<html><body><div class="ltx_document"><section class="ltx_section" id="S1">'
+        '<h2 class="ltx_title">Body</h2>'
+        '<figure class="ltx_figure">'
+        '<object class="ltx_graphics" type="image/svg+xml" data="logo.svg"></object>'
+        "</figure></section></div></body></html>"
+    )
+
+    assert _figure_blocks_of(doc) == []

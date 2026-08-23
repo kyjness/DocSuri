@@ -46,7 +46,12 @@ from docsuri_shared.dtos import DocModel
 from docsuri_shared.index_spec import papers_index_body
 from docsuri_shared.vector_spec import DIMENSIONS
 
-from docsuri_ingestion.adapters.aws import OpenSearchVectorIndex, build_opensearch_client
+from docsuri_ingestion.adapters.aws import (
+    OpenSearchVectorIndex,
+    S3DocModelStore,
+    build_opensearch_client,
+    build_s3_client,
+)
 from docsuri_ingestion.domain.models import EmbeddingBatch, ParsedPaper
 from docsuri_ingestion.ports import EmbeddingPort
 from docsuri_ingestion.processors import Chunker, IndexRecordAssembler
@@ -105,9 +110,54 @@ def _load_meta_cache(path: Path) -> dict[str, dict]:
     return {}
 
 
-def _resolve_metadata(paper_ids: list[str], cache_path: Path) -> dict[str, dict]:
-    """arXiv metadata for every arXiv-style id, via the batch export API + on-disk cache."""
+def _metadata_from_index(client, index: str, paper_ids: list[str]) -> dict[str, dict]:
+    """Card metadata for papers ALREADY in the index, read back out of it.
+
+    A re-chunk rewrites records for papers the index already holds, and those records carry the
+    authors/categories/year this tool would otherwise ask arXiv for. Asking again is a needless
+    dependency on an external service that rate-limits by IP — and when it refuses, the tool falls
+    back to placeholders, so a paper silently comes back with "Unknown" as its author list. Reading
+    the index instead is exact, free, and cannot be throttled.
+
+    ``published`` is synthesised from the indexed ``year`` because that is the only thing the
+    caller reads it for (``_paper_from_doc`` derives the year from it); nothing else consumes it.
+    """
+    found: dict[str, dict] = {}
+    for start in range(0, len(paper_ids), 500):
+        chunk = paper_ids[start : start + 500]
+        body = {
+            "size": 0,
+            "query": {"terms": {"paperId": chunk}},
+            "aggs": {
+                "p": {
+                    "terms": {"field": "paperId", "size": len(chunk)},
+                    "aggs": {"top": {"top_hits": {
+                        "size": 1, "_source": ["authors", "categories", "year"]}}},
+                }
+            },
+        }
+        for bucket in client.search(index=index, body=body)["aggregations"]["p"]["buckets"]:
+            src = bucket["top"]["hits"]["hits"][0]["_source"]
+            year = src.get("year")
+            found[bucket["key"]] = {
+                "authors": list(src.get("authors") or ()),
+                "categories": list(src.get("categories") or ()),
+                "published": f"{year}-01-01T00:00:00Z" if year else "",
+                "updated": "",
+            }
+    return found
+
+
+def _resolve_metadata(
+    paper_ids: list[str], cache_path: Path, seed: dict | None = None
+) -> dict[str, dict]:
+    """arXiv metadata for every arXiv-style id, via the batch export API + on-disk cache.
+
+    ``seed`` (the index-backed records above) is consulted first, so a re-chunk of already-indexed
+    papers makes no arXiv request at all.
+    """
     cache = _load_meta_cache(cache_path)
+    cache.update(seed or {})
     missing = [p for p in paper_ids if _is_arxiv_id(p) and p not in cache]
     if missing:
         print(f"[meta] fetching arXiv metadata for {len(missing)} papers "
@@ -155,29 +205,37 @@ def _paper_from_doc(doc: DocModel, meta: dict | None) -> ParsedPaper:
 
 
 def _enumerate_papers(
-    docmodel_dir: Path, limit: int | None, only: frozenset[str] = frozenset()
-) -> list[Path]:
-    """Latest-version doc-model JSON per paper, deterministic order.
+    s3, bucket: str, prefix: str, limit: int | None, only: frozenset[str] = frozenset()
+) -> list[tuple[str, int]]:
+    """``(paperId, latest version)`` per paper, deterministic order — read over the S3 API.
+
+    NOT off the mirror directory. s3proxy writes as root, so every doc-model the pipeline has
+    ever stored is root-owned: all 1,341 of them were unreadable to this tool, which walked the
+    filesystem and failed on the first ``read_text``. The mirror is s3proxy's private storage;
+    the contract both this tool and the pipeline share is the S3 API, and going through it also
+    means a real S3 bucket works unchanged.
 
     ``only`` restricts to named paper ids — the shape a targeted rebuild needs. Re-chunking a
     known subset (a chunker setting changed, so the stored doc-models are fine but the index rows
     are stale) is not expressible as "the first N papers", and walking the whole corpus to fix
     200 of them re-embeds everything.
     """
-    picked: list[Path] = []
-    for paper_dir in sorted(docmodel_dir.iterdir()):
-        if not paper_dir.is_dir():
-            continue
-        if only and paper_dir.name not in only:
-            continue
-        versions = sorted(
-            paper_dir.glob("v*.json"), key=lambda p: int(p.stem[1:]) if p.stem[1:].isdigit() else 0
-        )
-        if versions:
-            picked.append(versions[-1])
-        if limit is not None and len(picked) >= limit:
-            break
-    return picked
+    latest: dict[str, int] = {}
+    root = f"{prefix.strip('/')}/"
+    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=root):
+        for obj in page.get("Contents", ()):
+            rest = obj["Key"][len(root) :]
+            paper_id, _, name = rest.partition("/")
+            stem = name.removesuffix(".json")
+            if not paper_id or not stem.startswith("v") or not stem[1:].isdigit():
+                continue
+            if only and paper_id not in only:
+                continue
+            version = int(stem[1:])
+            if version > latest.get(paper_id, 0):
+                latest[paper_id] = version
+    picked = sorted(latest.items())
+    return picked[:limit] if limit is not None else picked
 
 
 def _ensure_index(client, index: str, alias: str, *, provider: str, embedding_model: str) -> None:
@@ -203,6 +261,32 @@ def _ensure_index(client, index: str, alias: str, *, provider: str, embedding_mo
     if alias and not client.indices.exists_alias(name=alias):
         client.indices.put_alias(index=index, name=alias)
         print(f"[index] alias {alias} → {index}")
+
+
+def _swap_alias(client, alias: str, index: str, *, failed: int, indexed: int) -> None:
+    """Point ``alias`` at ``index`` and at nothing else, in one atomic actions call.
+
+    This is how a chunker or embedding change reaches readers without a window where the corpus
+    is half old and half new: build the whole thing into a fresh index, verify, then move the
+    alias (nfr-requirements §"index generation" — bulk write outside the active alias, cut over
+    after the check). Removing the alias from its previous index is part of the same call, so a
+    reader never sees two indices behind one name.
+
+    Refuses on a partial run: an alias moved to a corpus missing papers is worse than no swap,
+    and the failures are printed above for the operator to act on.
+    """
+    if not alias:
+        print("[alias] --alias가 비어 있어 교체를 건너뛴다")
+        return
+    if failed or not indexed:
+        print(f"[alias] 교체하지 않는다 — 실패 {failed}편 · 색인 {indexed}편")
+        return
+    actions = [{"remove": {"index": "*", "alias": alias}}] if client.indices.exists_alias(
+        name=alias
+    ) else []
+    actions.append({"add": {"index": index, "alias": alias}})
+    client.indices.update_aliases(body={"actions": actions})
+    print(f"[alias] {alias} → {index} (이전 인덱스에서 제거 포함)")
 
 
 def _already_indexed(client, index: str, paper_id: str) -> bool:
@@ -236,6 +320,17 @@ def main() -> int:
         help="이 파일에 적힌 paperId만 재색인한다 (한 줄에 하나, # 뒤는 주석). "
         "청커 설정이 바뀌어 일부 논문만 낡았을 때 쓴다",
     )
+    parser.add_argument(
+        "--skip-indexed",
+        action="store_true",
+        help="이미 색인된 논문은 건너뛴다 (빈 자리 채우기·중단된 실행 재개용). "
+        "재청킹에는 쓰지 말 것 — 대상이 전부 이미 색인돼 있어 전건 skip된다",
+    )
+    parser.add_argument(
+        "--swap-alias",
+        action="store_true",
+        help="전건 성공하면 alias를 이 인덱스로 원자적으로 옮긴다 (새 인덱스에 재구축할 때)",
+    )
     parser.add_argument("--dry-run", action="store_true", help="chunk only; no embed/index")
     args = parser.parse_args()
 
@@ -259,15 +354,19 @@ def main() -> int:
         print(f"[plan] --ids 지정 {len(only)}편만 재색인")
 
     mirror = Path(args.mirror)
-    docmodel_dir = mirror / "doc-model"
-    if not docmodel_dir.is_dir():
-        print(f"doc-model mirror not found: {docmodel_dir}", file=sys.stderr)
+    if not (mirror / "doc-model").is_dir():
+        print(f"doc-model mirror not found: {mirror / 'doc-model'}", file=sys.stderr)
         return 2
 
-    files = _enumerate_papers(docmodel_dir, args.limit, only)
+    # The mirror path is still checked above — it is how an operator confirms which corpus this
+    # points at — but the doc-models themselves are read over the S3 API, because s3proxy owns
+    # those files as root and the directory is unreadable to us.
+    docmodels = S3DocModelStore(bucket=settings.s3_bucket or "", kms_key_id=None)
+    s3 = build_s3_client()
+    files = _enumerate_papers(s3, settings.s3_bucket or "", "doc-model", args.limit, only)
     print(f"[plan] {len(files)} papers (mirror: {mirror} · index: {args.index})")
     if only and len(files) != len(only):
-        missing = sorted(only - {f.parent.name for f in files})
+        missing = sorted(only - {pid for pid, _ in files})
         print(f"[plan] doc-model이 없는 id {len(missing)}편: {', '.join(missing[:5])}…")
 
     # TLS follows the endpoint scheme inside the client factory now — this tool used to be the
@@ -289,19 +388,32 @@ def main() -> int:
     chunker = Chunker()
     assembler = IndexRecordAssembler()
 
+    paper_ids = [pid for pid, _ in files]
+    seed = _metadata_from_index(client, args.index, paper_ids)
+    print(f"[meta] 색인에서 확보 {len(seed)}/{len(paper_ids)}편 (나머지만 arXiv 조회)")
     meta_cache = _resolve_metadata(
-        [f.parent.name for f in files], mirror.parent / "arxiv-meta-cache.json"
+        paper_ids, mirror.parent / "arxiv-meta-cache.json", seed=seed
     )
 
     done = skipped = failed = 0
     started = time.time()
-    for i, path in enumerate(files, 1):
-        pid = path.parent.name
+    for i, (pid, version) in enumerate(files, 1):
         try:
-            if _already_indexed(client, args.index, pid):
+            # Opt-in, and off by default: this check used to be unconditional, which made the
+            # tool's own headline use — "the chunker changed, rebuild these papers" — a silent
+            # no-op, because every such paper is already indexed. It printed indexed=0 and
+            # exited 0.
+            if args.skip_indexed and _already_indexed(client, args.index, pid):
                 skipped += 1
                 continue
-            doc = DocModel.model_validate_json(path.read_text())
+            doc = docmodels.get(pid, version)
+            if doc is None:
+                # The store returns None both for a missing object and for one that no longer
+                # deserializes under the current schema. Either way there is nothing to re-chunk
+                # from, and counting it as a failure is what makes it visible.
+                print(f"[fail] {pid}: doc-model v{version} 읽기 실패(부재 또는 스키마 불일치)")
+                failed += 1
+                continue
             chunks = chunker.chunk_doc_model(doc)
             if not chunks.chunks:
                 skipped += 1
@@ -315,7 +427,14 @@ def main() -> int:
                 chunk_ids=tuple(c.chunk_id for c in chunks.chunks),
                 vectors=tuple(tuple(v) for v in vectors),
             )
-            writer.bulk_upsert(assembler.assemble(paper, chunks, embeddings))
+            records = assembler.assemble(paper, chunks, embeddings)
+            writer.bulk_upsert(records)
+            # Chunk ids are (paperId, ordinal). Re-chunking a paper into FEWER chunks leaves the
+            # old high ordinals behind — an upsert overwrites 0..N-1 and never touches N..M, so
+            # the tail keeps its old text and old vector and stays searchable. The ingest
+            # pipeline deletes them; this tool did not, and a shrinking re-chunk is exactly what
+            # it exists for.
+            writer.delete_stale_chunks(pid, {record.chunkId for record in records.records})
             done += 1
         except Exception as exc:  # noqa: BLE001 — one bad paper must not kill a long run
             failed += 1
@@ -326,6 +445,8 @@ def main() -> int:
                   f"({rate:.1f} papers/s)")
 
     print(f"[done] indexed={done} skipped={skipped} failed={failed}")
+    if args.swap_alias and not args.dry_run:
+        _swap_alias(client, args.alias, args.index, failed=failed, indexed=done)
     return 0 if failed == 0 else 1
 
 
