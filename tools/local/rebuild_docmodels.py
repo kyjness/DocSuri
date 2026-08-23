@@ -9,7 +9,17 @@
 청크 56→56개, 56개 중 50개가 글자까지 동일, 전체 45,983→45,977자). 바뀌는 것은 블록의
 타입과 assetRef이고, 그건 화면이 읽는 doc-model 쪽이다. 그래서 쿼터를 쓰지 않는다.
 
+**두 단(rung)이 있다.** ``--rung html``(기본)은 ar5iv HTML을 다시 받아 파싱한다. ``--rung tei``는
+GROBID 단으로 들어온 논문용이다 — ar5iv가 없어 HTML 단으로는 애초에 다시 만들 수 없고, 캐시된
+TEI(raw 저장소 tier "tei")와 arXiv PDF로 ``build_from_tei``를 다시 돌린다. GROBID는 부르지
+않는다(``DOCSURI_GROBID_CACHE_MODE=only``로 강제). 이 단이 필요한 이유: PDF 단 배치를 GROBID와
+메모리를 나눌 수 없어 수식 OCR을 끈 채 돌렸고, 그 doc-model은 현행 파서 버전이면서 수식
+LaTeX이 전건 0이다(⑧-2 실측 202편 중 58편). 버전 판정으로는 "같은 파서인데 리더가 꺼져
+있었다"를 표현할 수 없으므로 ``force``로 신선도 검사를 건너뛴다.
+
     uv run python ../tools/local/rebuild_docmodels.py --ids ../reports/ids.txt
+    DOCSURI_GROBID_CACHE_MODE=only uv run python ../tools/local/rebuild_docmodels.py \
+        --rung tei --ids ../reports/rebuild-formula-targets.txt
 """
 
 from __future__ import annotations
@@ -41,6 +51,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--ids", required=True, help="paperId 목록 파일 (한 줄에 하나, # 주석)")
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument(
+        "--rung",
+        choices=("html", "tei"),
+        default="html",
+        help="html: ar5iv를 다시 받아 파싱 · "
+        "tei: 캐시된 TEI+PDF로 GROBID 단을 다시 빌드(GROBID 호출 없음)",
+    )
     parser.add_argument("--dry-run", action="store_true", help="빌드만; 자산 추출·저장 없음")
     args = parser.parse_args()
 
@@ -60,8 +77,21 @@ def main() -> int:
     if builder is None:
         print("doc-model 빌더가 배선되지 않았다 (DOCSURI_S3_BUCKET 확인)", file=sys.stderr)
         return 2
+    grobid = pipeline._grobid  # noqa: SLF001
+    if args.rung == "tei":
+        if grobid is None:
+            print("TEI 단에는 GROBID 어댑터 배선이 필요하다 (DOCSURI_GROBID_URL)", file=sys.stderr)
+            return 2
+        if settings.grobid_cache_mode != "only":
+            # "prefer"면 캐시에 없는 편에서 GROBID를 실제로 부른다. 이 도구는 저장된 TEI를 다시
+            # 빌드하는 것이지 파싱을 다시 하는 게 아니다 — 빠진 편은 실패로 보이는 게 맞다.
+            print(
+                "--rung tei는 DOCSURI_GROBID_CACHE_MODE=only로 돌려라 (GROBID를 부르지 않기 위해)",
+                file=sys.stderr,
+            )
+            return 2
 
-    print(f"[plan] {len(ids)}편 · 파서 {builder._parser_version}")  # noqa: SLF001
+    print(f"[plan] {len(ids)}편 · 단 {args.rung} · 파서 {builder._parser_version}")  # noqa: SLF001
     rebuilt = cached = failed = assets = 0
     started = time.time()
     # 메타데이터는 100편씩 묶어서 받는다. 한 편씩 걸면 arXiv가 IP 단위로 막는다 —
@@ -93,6 +123,38 @@ def main() -> int:
                 # 묶음에 없던 편만 개별로 메운다. 전량이 아니라 빠진 것만이므로 요청이 몇 건에
                 # 그치고, 그 몇 건은 묶음 응답이 실제로 누락한 논문이다.
                 metadata = runtime.arxiv.fetch_metadata(paper_id)
+            if args.rung == "tei":
+                # 파이프라인의 GROBID 단(_grobid_doc_model)과 같은 순서: PDF → TEI(캐시) →
+                # build_from_tei → 크롭 저장. 다른 점은 force뿐이다.
+                pdf = runtime.arxiv.fetch_pdf(metadata)
+                if pdf is None:
+                    failed += 1
+                    print(f"[fail] {paper_id}: PDF 없음")
+                    continue
+                tei = grobid.extract_tei(pdf, paper_id=metadata.paper_id, version=metadata.version)
+                crops: list = []
+                result = builder.build_from_tei(
+                    metadata.paper_id,
+                    metadata.version,
+                    metadata.title,
+                    metadata.abstract or "",
+                    tei,
+                    crops=crops,
+                    pdf=pdf,
+                    force=not args.dry_run,
+                )
+                if getattr(result, "status", "") != "ok":
+                    failed += 1
+                    print(f"[fail] {paper_id}: {getattr(result, 'status', '?')}")
+                    continue
+                rebuilt += 1
+                if args.dry_run or not crops:
+                    continue
+                pipeline._render_and_store_crops(  # noqa: SLF001
+                    metadata.paper_id, metadata.version, pdf, crops
+                )
+                assets += len(crops)
+                continue
             specs: list[FigureSpec] = []
             result = builder.build(metadata, figure_specs=specs)
             if getattr(result, "status", "") != "ok":

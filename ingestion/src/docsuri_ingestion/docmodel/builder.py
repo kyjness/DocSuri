@@ -314,8 +314,18 @@ class DocModelBuilder:
         source_tier: SourceTier = SourceTier.pdf,
         crops: list[AssetCropSpec] | None = None,
         pdf: bytes | None = None,
+        force: bool = False,
     ) -> DocModelResultDTO | SourceUnavailableDTO:
         """Structured doc-model from GROBID TEI (sections/tables/figures).
+
+        ``force`` skips the freshness check. Freshness is decided by parser and schema VERSION,
+        which cannot express "same parser, but built with an optional reader switched off": the
+        PDF rung ran with the formula OCR disabled while it could not share memory with GROBID,
+        and those doc-models are at the current version with no formula LaTeX at all (measured
+        on the ⑧-2 list: 58 of 202 GROBID-rung papers, e.g. 45 / 43 / 258 formulas, zero LaTeX).
+        Bumping the version to reach them would mark the WHOLE corpus stale. A caller-scoped
+        force reaches exactly the papers the caller names, and leaves the stored doc-model in
+        place if the rebuild fails.
 
         TEI missing or unparseable returns ``SourceUnavailableDTO`` — unconditionally. A
         structureless text blob must not become a doc-model (BR-30 2026-08-10), and expressing
@@ -332,7 +342,7 @@ class DocModelBuilder:
         On a cache hit the TEI is not parsed, so ``crops`` stays empty — the caller distinguishes
         that via the returned ``cached`` flag.
         """
-        cached = self._fresh_cached(paper_id, version)
+        cached = None if force else self._fresh_cached(paper_id, version)
         if cached is not None:
             return DocModelResultDTO(status="ok", cached=True, docModel=cached)
         doc = None
