@@ -560,24 +560,24 @@ def test_api_topic_over_2000_rejected_with_422(monkeypatch) -> None:
 def _success_result_with_conflict() -> TurnSuccessResult:
     from docsuri_shared._generated.dtos.evidence_schema import (
         EvidenceCoverage,
-        EvidenceItem,
         EvidenceResult,
         SourceRef,
     )
+
+    from backend.modules.evidence.testing import evidence_item
 
     return TurnSuccessResult(
         outcome=EvidenceResult(
             state='ok',
             claims=[
-                EvidenceItem(
-                    statement='self-attention reduces sequential operations',
-                    supporting=[
-                        SourceRef(
-                            paperId='2401.00001',
-                            recordRef='rec-1',
-                            quote='a constant number of sequential operations',
-                        )
-                    ],
+                evidence_item(
+                    'self-attention reduces sequential operations',
+                    paper_id='2401.00001',
+                    record_ref='rec-1',
+                    anchor=None,
+                    quote='a constant number of sequential operations',
+                    anchor_type=None,
+                    source_scope=None,
                     conflicting=[
                         SourceRef(
                             paperId='2401.00002',

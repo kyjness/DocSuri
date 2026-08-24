@@ -10,7 +10,6 @@ from __future__ import annotations
 from docsuri_shared._generated.dtos.evidence_schema import (
     AnswerSegmentKind,
     EvidenceItem,
-    SourceRef,
 )
 from hypothesis import given
 from hypothesis import strategies as st
@@ -24,15 +23,17 @@ from backend.modules.evidence.domain.answer_checks import (
     check_answer,
 )
 from backend.modules.evidence.ports.llm import AnswerSentence
+from backend.modules.evidence.testing import evidence_item
 
 
 def _claim(statement: str, *, paper_id: str = "2310.11511", quote: str = "") -> EvidenceItem:
-    return EvidenceItem(
-        statement=statement,
-        supporting=[
-            SourceRef(paperId=paper_id, recordRef=paper_id, quote=quote or statement)
-        ],
-        conflicting=[],
+    return evidence_item(
+        statement,
+        paper_id=paper_id,
+        record_ref=paper_id,
+        anchor=None,
+        quote=quote or statement,
+        anchor_type=None,
     )
 
 

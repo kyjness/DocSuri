@@ -7,11 +7,7 @@ from typing import Any
 
 import pytest
 from docsuri_shared._generated.dtos.evidence_schema import (
-    AnchorType,
     AnswerSegmentKind,
-    EvidenceItem,
-    SourceRef,
-    SourceScope,
 )
 from hypothesis import given, settings
 from hypothesis import strategies as st
@@ -26,9 +22,7 @@ from backend.modules.evidence.domain.loop import (
     run_loop,
 )
 from backend.modules.evidence.domain.models import (
-    AgentRunContext,
     BudgetConsumed,
-    EvidenceAccumulator,
     LoopBudget,
     LoopState,
     PaperHandle,
@@ -38,8 +32,6 @@ from backend.modules.evidence.domain.models import (
     ToolCallRecord,
 )
 from backend.modules.evidence.ports.llm import (
-    AnswerDraft,
-    AnswerRequest,
     AnswerSentence,
     LlmDecision,
     LlmUnavailable,
@@ -53,6 +45,14 @@ from backend.modules.evidence.ports.tools import (
     ToolRegistry,
     ToolResult,
     ToolSpec,
+)
+from backend.modules.evidence.testing import (
+    ScriptedAnswer,
+    ScriptedLlm,
+    accumulator,
+    evidence_item,
+    loop_budget,
+    run_context,
 )
 
 
@@ -78,41 +78,12 @@ class FakeTool:
         return self.result
 
 
-@dataclass
-class ScriptedLlm:
-    """미리 정한 결정을 순서대로 돌려준다 — 소진되면 종료를 제안한다."""
-
-    script: list[Any]
-    observations: list[Any] = field(default_factory=list)
-    raises: Exception | None = None
-
-    def decide(self, observation, tools) -> LlmDecision:
-        self.observations.append(observation)
-        if self.raises is not None:
-            raise self.raises
-        if not self.script:
-            return LlmDecision(proposal=TerminationProposal(note="done"))
-        return LlmDecision(proposal=self.script.pop(0), cost_estimate_usd=0.001)
-
-
-def _budget(**overrides) -> LoopBudget:
-    base = {
-        "max_iterations": 12,
-        "max_tool_calls_total": 20,
-        "max_tool_calls": {TOOL_CORPUS_SEARCH: 5, TOOL_EXTRACT_EVIDENCE: 8},
-        "token_cost_limit_usd": 1.0,
-        "consumed": BudgetConsumed(),
-    }
-    base.update(overrides)
-    return LoopBudget(**base)
-
-
 def _deps(llm, registry, budget=None, **kwargs) -> LoopDeps:
     return LoopDeps(
         llm=llm,
         registry=registry,
-        budget=budget or _budget(),
-        ctx=AgentRunContext(owner_id="o1", session_id="s1", turn_id="t1"),
+        budget=budget or loop_budget(),
+        ctx=run_context(),
         **kwargs,
     )
 
@@ -124,27 +95,10 @@ def _registry(*tools: FakeTool) -> ToolRegistry:
     return registry
 
 
-def _evidence_item() -> EvidenceItem:
-    return EvidenceItem(
-        statement="AlphaFold2 reaches high accuracy",
-        supporting=[
-            SourceRef(
-                paperId="p1",
-                recordRef="r1",
-                anchor="s4.tbl1",
-                quote="AlphaFold2 | 92.4 | 87.0",
-                anchorType=AnchorType.table,
-                sourceScope=SourceScope.fulltext,
-            )
-        ],
-        conflicting=[],
-    )
-
-
 def _state_with_evidence(topic="q") -> LoopState:
     """근거가 이미 하나 쌓인 상태 — 종료 제안이 수용될 수 있는 최소 조건."""
     state = LoopState(topic=topic)
-    state.accumulator = EvidenceAccumulator(items=[_evidence_item()])
+    state.accumulator = accumulator(evidence_item(record_ref="r1"))
     return state
 
 
@@ -186,7 +140,7 @@ def test_llm_failure_terminates_as_fatal_without_masking_it_as_abstain():
 def test_iteration_cap_ends_the_loop():
     tool = FakeTool(TOOL_CORPUS_SEARCH)
     llm = ScriptedLlm(script=[ToolCallProposal(TOOL_CORPUS_SEARCH, {"query": "q"})] * 50)
-    budget = _budget(max_iterations=3)
+    budget = loop_budget(max_iterations=3)
 
     outcome = run_loop(_state_with_evidence(), _deps(llm, _registry(tool), budget))
 
@@ -221,7 +175,7 @@ def test_a_dropped_parallel_call_reaches_the_model_not_just_the_dataclass():
 def test_per_tool_cap_stops_one_tool_from_eating_the_budget():
     tool = FakeTool(TOOL_CORPUS_SEARCH)
     llm = ScriptedLlm(script=[ToolCallProposal(TOOL_CORPUS_SEARCH, {"query": "q"})] * 50)
-    budget = _budget(max_tool_calls={TOOL_CORPUS_SEARCH: 2})
+    budget = loop_budget(max_tool_calls={TOOL_CORPUS_SEARCH: 2})
 
     outcome = run_loop(_state_with_evidence(), _deps(llm, _registry(tool), budget))
 
@@ -248,7 +202,7 @@ def test_tool_cap_denial_leaves_the_other_tools_usable():
             ToolCallProposal(TOOL_EXTRACT_EVIDENCE, {"focus": "f"}),
         ]
     )
-    budget = _budget(max_tool_calls={TOOL_CORPUS_SEARCH: 1, TOOL_EXTRACT_EVIDENCE: 8})
+    budget = loop_budget(max_tool_calls={TOOL_CORPUS_SEARCH: 1, TOOL_EXTRACT_EVIDENCE: 8})
 
     outcome = run_loop(_state_with_evidence(), _deps(llm, _registry(capped, other), budget))
 
@@ -261,7 +215,7 @@ def test_tool_cap_denial_tells_the_model_which_tool_is_gone():
     """거부 사실이 관찰에 실려야 모델이 다른 수를 고른다 — 안 실으면 같은 도구를 반복한다."""
     capped = FakeTool(TOOL_CORPUS_SEARCH)
     llm = ScriptedLlm(script=[ToolCallProposal(TOOL_CORPUS_SEARCH, {"query": "q"})] * 3)
-    budget = _budget(max_tool_calls={TOOL_CORPUS_SEARCH: 1})
+    budget = loop_budget(max_tool_calls={TOOL_CORPUS_SEARCH: 1})
 
     run_loop(_state_with_evidence(), _deps(llm, _registry(capped), budget))
 
@@ -273,7 +227,7 @@ def test_global_tool_budget_still_ends_the_turn():
     """전역 소진은 여전히 종료다 — 상한 하나만 예외로 만든 것이지 예산을 무르지 않았다."""
     tool = FakeTool(TOOL_CORPUS_SEARCH)
     llm = ScriptedLlm(script=[ToolCallProposal(TOOL_CORPUS_SEARCH, {"query": "q"})] * 10)
-    budget = _budget(max_tool_calls_total=2, max_tool_calls={TOOL_CORPUS_SEARCH: 9})
+    budget = loop_budget(max_tool_calls_total=2, max_tool_calls={TOOL_CORPUS_SEARCH: 9})
 
     outcome = run_loop(_state_with_evidence(), _deps(llm, _registry(tool), budget))
 
@@ -284,7 +238,7 @@ def test_global_tool_budget_still_ends_the_turn():
 def test_budget_denied_is_traced():
     tool = FakeTool(TOOL_CORPUS_SEARCH)
     llm = ScriptedLlm(script=[ToolCallProposal(TOOL_CORPUS_SEARCH, {"query": "q"})] * 5)
-    budget = _budget(max_tool_calls={TOOL_CORPUS_SEARCH: 1})
+    budget = loop_budget(max_tool_calls={TOOL_CORPUS_SEARCH: 1})
     state = _state_with_evidence()
 
     run_loop(state, _deps(llm, _registry(tool), budget))
@@ -296,7 +250,7 @@ def test_budget_denied_is_traced():
 def test_denied_call_consumes_nothing():
     tool = FakeTool(TOOL_CORPUS_SEARCH)
     llm = ScriptedLlm(script=[ToolCallProposal(TOOL_CORPUS_SEARCH, {"query": "q"})] * 5)
-    budget = _budget(max_tool_calls={TOOL_CORPUS_SEARCH: 1})
+    budget = loop_budget(max_tool_calls={TOOL_CORPUS_SEARCH: 1})
 
     run_loop(_state_with_evidence(), _deps(llm, _registry(tool), budget))
 
@@ -344,7 +298,7 @@ def test_tool_exception_does_not_break_the_turn():
 
 def test_unknown_tool_is_refused_without_consuming_budget():
     llm = ScriptedLlm(script=[ToolCallProposal("delete_everything", {})])
-    budget = _budget()
+    budget = loop_budget()
     state = _state_with_evidence()
 
     run_loop(state, _deps(llm, _registry(), budget))
@@ -409,7 +363,7 @@ def test_images_are_consumed_after_one_decide():
 def test_pbt_ev7_tool_calls_never_exceed_caps(proposals, iteration_cap, tool_cap):
     """PBT-EV-7 — 어떤 제안 열에도 실행 수가 캡을 넘지 않는다."""
     tools = [FakeTool(TOOL_CORPUS_SEARCH), FakeTool(TOOL_EXTRACT_EVIDENCE)]
-    budget = _budget(
+    budget = loop_budget(
         max_iterations=iteration_cap,
         max_tool_calls_total=iteration_cap * 2,
         max_tool_calls={TOOL_CORPUS_SEARCH: tool_cap, TOOL_EXTRACT_EVIDENCE: tool_cap},
@@ -486,7 +440,7 @@ def test_loop_mutates_the_callers_state_in_place():
 
 
 def _wide_budget(max_iterations: int) -> LoopBudget:
-    return _budget(
+    return loop_budget(
         max_iterations=max_iterations,
         max_tool_calls_total=100,
         max_tool_calls={TOOL_CORPUS_SEARCH: 100},
@@ -541,7 +495,7 @@ def test_rejected_termination_storm_ends_at_the_iteration_cap():
 
 def test_recursion_limit_formula():
     # 반복당 2 × 12 + 꼬리 2(예산 거부 decide + answer) + 1(LangGraph는 N스텝에 limit ≥ N+1)
-    assert _recursion_limit(_budget(max_iterations=12)) == 27
+    assert _recursion_limit(loop_budget(max_iterations=12)) == 27
 
 
 def test_recursion_limit_is_exactly_the_bound_for_a_run_that_reaches_answer():
@@ -769,23 +723,6 @@ def test_stop_reasons_survive_an_empty_accumulator(reason):
 # --- 판단 층(§4.2·§4.3) -------------------------------------------------------
 
 
-@dataclass
-class ScriptedAnswer:
-    """정해진 문장 묶음을 순서대로 돌려준다 — 소진되면 마지막 것을 반복한다."""
-
-    script: list[tuple[AnswerSentence, ...]]
-    requests: list[AnswerRequest] = field(default_factory=list)
-    raises: Exception | None = None
-    cost: float | None = 0.02
-
-    def write(self, request: AnswerRequest) -> AnswerDraft:
-        self.requests.append(request)
-        if self.raises is not None:
-            raise self.raises
-        sentences = self.script.pop(0) if len(self.script) > 1 else self.script[0]
-        return AnswerDraft(sentences=sentences, cost_estimate_usd=self.cost)
-
-
 def _ok_sentences() -> tuple[AnswerSentence, ...]:
     return (AnswerSentence(text="AlphaFold2가 높은 정확도를 낸다", refs=(1,)),)
 
@@ -854,7 +791,7 @@ def test_a_dead_answer_llm_does_not_break_the_turn():
 
 def test_the_judgement_cost_is_charged_to_the_turn_budget():
     answer = ScriptedAnswer(script=[_ok_sentences()], cost=0.07)
-    budget = _budget()
+    budget = loop_budget()
 
     run_loop(
         _state_with_evidence(),

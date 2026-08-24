@@ -84,20 +84,22 @@ class _FakeEvidencePort:
 def _evidence_result():
     from docsuri_shared._generated.dtos.evidence_schema import (
         EvidenceCoverage,
-        EvidenceItem,
         EvidenceResult,
-        SourceRef,
     )
+
+    from backend.modules.evidence.testing import evidence_item
 
     return EvidenceResult(
         state="ok",
         claims=[
-            EvidenceItem(
-                statement="DP retrieval degrades nDCG modestly",
-                supporting=[
-                    SourceRef(paperId="2401.00001", recordRef="rec:2401.00001", quote="…")
-                ],
-                conflicting=[],
+            evidence_item(
+                "DP retrieval degrades nDCG modestly",
+                paper_id="2401.00001",
+                record_ref="rec:2401.00001",
+                anchor=None,
+                quote="…",
+                anchor_type=None,
+                source_scope=None,
             )
         ],
         coverage=EvidenceCoverage(paperCount=1, queryUsed="dp retrieval"),

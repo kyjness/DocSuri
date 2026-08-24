@@ -18,8 +18,6 @@ from docsuri_shared._generated.dtos.evidence_schema import (
     AnchorType,
     EvidenceAbstainResult,
     EvidenceItem,
-    SourceRef,
-    SourceScope,
 )
 
 from backend.db import make_engine, make_session_factory
@@ -27,7 +25,6 @@ from backend.modules.evidence.checkpoints import TurnCheckpoints, build_postgres
 from backend.modules.evidence.domain.loop import LoopDeps, load_snapshot, run_loop
 from backend.modules.evidence.domain.models import (
     AgentRunContext,
-    BudgetConsumed,
     LoopBudget,
     LoopState,
     TerminationReason,
@@ -41,7 +38,7 @@ from backend.modules.evidence.models import (
     TurnPendingResult,
     TurnSuccessResult,
 )
-from backend.modules.evidence.ports.llm import LlmDecision, TerminationProposal, ToolCallProposal
+from backend.modules.evidence.ports.llm import ToolCallProposal
 from backend.modules.evidence.ports.tools import (
     TOOL_CORPUS_SEARCH,
     ToolRegistry,
@@ -53,6 +50,7 @@ from backend.modules.evidence.repository import (
     SessionBusy,
     SqlEvidenceRepository,
 )
+from backend.modules.evidence.testing import ScriptedLlm, evidence_item, loop_budget
 from backend.modules.evidence.worker import process_job
 
 DSN = os.environ.get("DOCSURI_TEST_PG_DSN")
@@ -105,33 +103,21 @@ class _Tool:
         return ToolResult(ok=True, content={"hits": 1})
 
 
-class _Llm:
-    def __init__(self, calls: int) -> None:
-        self.calls = calls
-
-    def decide(self, observation, tools):
-        if self.calls <= 0:
-            return LlmDecision(proposal=TerminationProposal(note="done"))
-        self.calls -= 1
-        return LlmDecision(
-            proposal=ToolCallProposal(tool_name=TOOL_CORPUS_SEARCH, args={"q": "a"}),
-            cost_estimate_usd=0.001,
-        )
-
-
-def _item() -> EvidenceItem:
-    return EvidenceItem(
-        statement="s",
-        supporting=[SourceRef(paperId="p1", recordRef="r1", anchor="a", quote="q",
-                              anchorType=AnchorType.paragraph, sourceScope=SourceScope.fulltext)],
-        conflicting=[],
+def _llm(calls: int) -> ScriptedLlm:
+    """검색을 `calls`번 제안한 뒤 종료한다."""
+    return ScriptedLlm(
+        script=[ToolCallProposal(tool_name=TOOL_CORPUS_SEARCH, args={"q": "a"})] * calls
     )
 
 
+def _item() -> EvidenceItem:
+    return evidence_item("s", record_ref="r1", anchor="a", quote="q",
+                         anchor_type=AnchorType.paragraph)
+
+
 def _budget() -> LoopBudget:
-    return LoopBudget(max_iterations=5, max_tool_calls_total=10,
-                      max_tool_calls={TOOL_CORPUS_SEARCH: 5}, token_cost_limit_usd=1.0,
-                      consumed=BudgetConsumed())
+    return loop_budget(max_iterations=5, max_tool_calls_total=10,
+                       max_tool_calls={TOOL_CORPUS_SEARCH: 5})
 
 
 def _seed(session_factory, owner_id: str) -> tuple[str, str]:
@@ -152,7 +138,7 @@ def test_checkpointer_writes_reads_and_deletes_the_turn_thread(pg, owner):
     registry.register(_Tool())
     state = LoopState(topic="q")
     state.accumulator.items.append(_item())
-    deps = LoopDeps(llm=_Llm(2), registry=registry, budget=_budget(),
+    deps = LoopDeps(llm=_llm(2), registry=registry, budget=_budget(),
                     ctx=AgentRunContext(owner_id=owner, session_id="s", turn_id=turn_id))
     checkpoints = TurnCheckpoints(saver)
 

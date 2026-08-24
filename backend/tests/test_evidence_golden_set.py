@@ -11,119 +11,53 @@ CI에서 매 PR 돈다. 비용이 0이어야 하므로 실모델을 타지 않�
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
-from docsuri_shared._generated.dtos.evidence_schema import (
-    EvidenceItem,
-    SourceRef,
-    SourceScope,
-)
 
 from backend.modules.evidence.domain.loop import LoopDeps, run_loop
 from backend.modules.evidence.domain.models import (
-    AgentRunContext,
-    BudgetConsumed,
-    EvidenceAccumulator,
-    LoopBudget,
     LoopState,
 )
 from backend.modules.evidence.eval import GOLDEN_CASES, QuestionType, score_turn
 from backend.modules.evidence.eval.golden_set import labelled_cases, pending_review
 from backend.modules.evidence.eval.layer1 import summarise
 from backend.modules.evidence.models import to_turn_result
-from backend.modules.evidence.ports.llm import (
-    AnswerDraft,
-    AnswerSentence,
-    LlmDecision,
-    TerminationProposal,
-)
+from backend.modules.evidence.ports.llm import AnswerSentence
 from backend.modules.evidence.ports.tools import ToolRegistry
+from backend.modules.evidence.testing import (
+    ScriptedAnswer,
+    ScriptedLlm,
+    accumulator,
+    evidence_item,
+    loop_budget,
+    run_context,
+)
 
-# --- 녹화 대역 ----------------------------------------------------------------
-
-
-@dataclass
-class RecordedLlm:
-    """`decide` 대역 — 첫 턴에 곧바로 종료를 제안하고 질문 유형만 선언한다.
-
-    탐색 자체는 다른 테스트가 본다. 여기서 필요한 것은 "종료 → 판단 → 마감" 꼬리가
-    골든셋 문항마다 같은 모양으로 도는가다.
-    """
-
-    question_kind: str | None
-
-    def decide(self, observation, tools) -> LlmDecision:  # noqa: ARG002
-        return LlmDecision(
-            proposal=TerminationProposal(note="done", question_kind=self.question_kind),
-            cost_estimate_usd=0.001,
-        )
-
-
-@dataclass
-class RecordedAnswer:
-    """`answer` 대역 — 근거 번호를 붙인 문장 하나 + 종합 문장 하나."""
-
-    sentences: tuple[AnswerSentence, ...] | None = None
-    calls: list = field(default_factory=list)
-
-    def write(self, request) -> AnswerDraft:
-        self.calls.append(request)
-        if self.sentences is not None:
-            return AnswerDraft(sentences=self.sentences, cost_estimate_usd=0.01)
-        numbers = tuple(view.number for view in request.evidence)
-        return AnswerDraft(
-            sentences=(
-                AnswerSentence(text="근거가 이렇게 말한다", refs=numbers[:1]),
-                AnswerSentence(text="갈리는 지점은 조건이다"),
-            ),
-            cost_estimate_usd=0.01,
-        )
-
-
-def _budget() -> LoopBudget:
-    return LoopBudget(
-        max_iterations=4,
-        max_tool_calls_total=8,
-        max_tool_calls={},
-        token_cost_limit_usd=1.0,
-        consumed=BudgetConsumed(),
-    )
-
-
-def _evidence(paper_ids: tuple[str, ...]) -> EvidenceAccumulator:
-    """게이트를 통과한 뒤의 상태를 그대로 흉내낸다 — 게이트 자체는 test_evidence_gate가 본다."""
-    return EvidenceAccumulator(
-        items=[
-            EvidenceItem(
-                statement=f"{pid}가 그 주장을 뒷받침한다",
-                supporting=[
-                    SourceRef(
-                        paperId=pid,
-                        recordRef=f"rec-{pid}",
-                        anchor="s1.p1",
-                        quote="a verbatim quote from the paper body",
-                        sourceScope=SourceScope.fulltext,
-                    )
-                ],
-                conflicting=[],
-            )
-            for pid in paper_ids
-        ]
-    )
+# --- 실행 하네스 --------------------------------------------------------------
+#
+# `decide`·`answer`는 대역(`evidence.testing`)이고 도구·게이트·루프·검사기는 **실제 코드**를
+# 그대로 지난다. 그래서 이 파일이 잡는 것은 답변 품질이 아니라 배선과 불변식이다.
+# `decide` 대역은 첫 턴에 곧바로 종료를 제안한다 — 탐색 자체는 다른 테스트가 본다.
 
 
 def _run(case, *, papers: tuple[str, ...], answer=None) -> tuple[Any, LoopState]:
     state = LoopState(topic=case.question)
     if papers:
-        state.accumulator = _evidence(papers)
+        # 게이트를 통과한 뒤의 상태 — 게이트 자체는 test_evidence_gate가 본다.
+        state.accumulator = accumulator(
+            *(
+                evidence_item(f"{pid}가 그 주장을 뒷받침한다", paper_id=pid, anchor="s1.p1",
+                              quote="a verbatim quote from the paper body", anchor_type=None)
+                for pid in papers
+            )
+        )
     deps = LoopDeps(
-        llm=RecordedLlm(case.expected_kind),
+        llm=ScriptedLlm(question_kind=case.expected_kind),
         registry=ToolRegistry(),
-        budget=_budget(),
-        ctx=AgentRunContext(owner_id="o1", session_id="s1", turn_id="t1"),
-        answer=answer or RecordedAnswer(),
+        budget=loop_budget(max_iterations=4, max_tool_calls_total=8, max_tool_calls={}),
+        ctx=run_context(),
+        answer=answer or ScriptedAnswer(),
     )
     outcome = run_loop(state, deps)
     result = to_turn_result(state, outcome.reason, query_used=case.question)
@@ -228,7 +162,7 @@ def test_an_out_of_scope_question_must_not_search():
 def test_a_synthesis_only_answer_is_caught_as_a_fallback_not_a_pass():
     """검사가 거부한 판단은 폴백으로 떨어진다 — 지표에 그렇게 잡혀야 한다(§4.3)."""
     case = next(c for c in labelled_cases() if c.type is QuestionType.FACT)
-    answer = RecordedAnswer(sentences=(AnswerSentence(text="대체로 그렇습니다"),))
+    answer = ScriptedAnswer(script=[(AnswerSentence(text="대체로 그렇습니다"),)])
 
     result, state = _run(case, papers=case.expected_papers, answer=answer)
 

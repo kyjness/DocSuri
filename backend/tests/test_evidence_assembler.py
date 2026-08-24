@@ -9,7 +9,6 @@ from docsuri_shared._generated.dtos.evidence_schema import (
     EvidenceAnswer,
     EvidenceItem,
     SourceRef,
-    SourceScope,
 )
 
 from backend.modules.evidence.domain.assembler import (
@@ -25,18 +24,15 @@ from backend.modules.evidence.domain.models import (
     PaperOrigin,
     TerminationReason,
 )
+from backend.modules.evidence.testing import evidence_item
 
 
 def _item(paper_id="p1", conflicting=False) -> EvidenceItem:
-    ref = SourceRef(
-        paperId=paper_id,
-        recordRef=f"r-{paper_id}",
-        quote="AlphaFold2 | 92.4 | 87.0",
-        sourceScope=SourceScope.fulltext,
-    )
-    return EvidenceItem(
-        statement=f"claim about {paper_id}",
-        supporting=[ref],
+    return evidence_item(
+        f"claim about {paper_id}",
+        paper_id=paper_id,
+        anchor=None,
+        anchor_type=None,
         conflicting=[SourceRef(paperId="p2", recordRef="r-p2")] if conflicting else [],
     )
 
