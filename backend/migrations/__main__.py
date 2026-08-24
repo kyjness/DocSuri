@@ -9,17 +9,12 @@ from __future__ import annotations
 import os
 import sys
 
+from backend.app import STARTUP_MIGRATION_DIRS
+
 from . import apply_migrations, pending_migrations
 
-_DEFAULT_PATHS = [
-    "backend/modules/accounts/migrations",
-    "backend/modules/library/migrations",
-    "backend/modules/personalization/migrations",
-    "backend/modules/research/migrations",
-    "backend/modules/novelty/migrations",
-    "backend/modules/evidence/migrations",
-    "ingestion/migrations/postgres",
-]
+# 부팅 자가 적용과 같은 목록(backend/app.py) — 여기만 따로 두면 갈린다(실제로 갈렸다).
+_DEFAULT_PATHS = list(STARTUP_MIGRATION_DIRS)
 
 
 def main() -> int:
