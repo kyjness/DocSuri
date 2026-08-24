@@ -1121,6 +1121,26 @@ _Resiliency 옵트인은 `requirements.md` 확정 전에 필수 요구사항 명
 - 다음: ⑩ 두 에이전트 완성 — evidence(목적 확정·중간 취소) → novelty(산출물 재정의·종료
   판단). 구 ⑨는 ⑩에 흡수(2026-08-20). 별도 사이클, 명시적 착수 지시 후.
 
+## ⑩-1 evidence — PR 2 실행 경로 통합
+
+- Date: 2026-08-24 · Branch: `feature/evidence-turn-execution` (6커밋: 계약 / 백엔드 / FE /
+  novelty fix / 마이그레이션 러너 / 문서 — 각각 자기 레인 단독 통과)
+- 결정: 진입 경로 하나(202 수락 → `GET /turns/{id}/events` → cancel → 폴링) · 실행자 2종이
+  `process_job` 공유 · 이벤트 원천은 Postgres 트레이스 행(API 2태스크) · 취소는 행 플래그 +
+  `decide` 경계(owner 스코프 `heartbeat`) · 세션 잠금은 부분 유니크 인덱스 · 그래프 채널 순수
+  JSON + context 주입 · 그래프는 `TurnCheckpoints`가 소유(러너는 돌리기만) · 스냅샷은 마감이
+  읽는 것만 · Postgres saver(보존 7일, 완료마다 상각 + `checkpoints_pruned_at` 도장) · 고아 턴은
+  하트비트 600s 끊기면 스냅샷으로 마감 · 재개는 PR 4 · `GET /jobs/{jobId}`·`job_id`·
+  `budget_signal`·`cancelRequested` 와이어 필드 제거.
+- 검증: backend 595 passed(PG 게이트 5건 — 트레이스 가시성·saver·잠금·취소 플래그·정리 전진) ·
+  차등 검사 2000 examples 0 diffs · frontend 323 passed · 실스택: 7도구 턴 체크포인트 16건·
+  59.7 kB, 취소 후 부분 답, 겹침 409, SIGKILL 고아 턴을 근거 4건 부분 답으로 마감, SIGTERM 2s,
+  세션 삭제 시 체크포인트 0.
+- 교훈: 러너 빌더 인자 이름이 갈리자 evidence 마운트가 실패했는데 **앱은 초록으로 떴다**
+  (WARNING 한 줄 + `skipped=['evidence']`). 실 경로에서만 실행되는 배선 호출은 단위 테스트가
+  밟지 않는다 — `wiring.py`의 호출 키워드와 빌더 서명을 AST로 대조하는 가드를 뒀다.
+- 전달: 커밋까지. push·PR은 사용자 승인 후.
+
 ## ⑩-1 evidence — PR 1 루프 LangGraph 이전
 
 - Date: 2026-08-23 · Branch: `feature/evidence-langgraph-loop` (3커밋, 각각 독립 통과)
