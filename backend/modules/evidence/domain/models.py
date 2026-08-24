@@ -58,6 +58,10 @@ class TerminationReason(StrEnum):
     BUDGET_EXHAUSTED = "budget_exhausted"
     NO_EVIDENCE = "no_evidence"
     FATAL_ERROR = "fatal_error"
+    # 사용자가 취소했다 — 그 시점까지의 근거로 부분 답을 만든다(v3 §2.8).
+    CANCELLED = "cancelled"
+    # 실행자가 멈췄다(종료 신호·고아 마감) — 사용자 취소가 아니므로 따로 센다.
+    INTERRUPTED = "interrupted"
 
 
 class ToolCallOutcome(StrEnum):
@@ -73,6 +77,10 @@ class PaperHandle:
 
     `scope`는 선언이 아니라 사실이다: DocModel을 확보했으면 `fulltext`, 초록만
     있으면 `abstract`. 게이트가 이 값을 권위로 삼아 모델의 범위 선언을 강등한다.
+
+    `fulltext_available`은 스냅샷 복원용이다 — 체크포인트는 DocModel 객체를 싣지 않으므로
+    복원된 핸들은 `doc_model=None`이지만 "본문을 확보했었다"는 사실(확인 범위·근거 범위)은
+    남아야 한다. 살아 있는 핸들에서는 `doc_model`이 권위다.
     """
 
     paper_id: str
@@ -81,6 +89,7 @@ class PaperHandle:
     title: str = ""
     doc_model: Any | None = None
     abstract_text: str = ""
+    fulltext_available: bool = False
     # 투영 캐시 — doc_model은 확보 후 불변이라 무효화가 필요 없다. 캐시가 없으면
     # extract·read_paper·프롬프트 렌더가 같은 문서를 턴당 수십 번 재투영한다
     # (전 블록 정규식 + 표 행 join이 매번 다시 돈다).
@@ -88,11 +97,44 @@ class PaperHandle:
     _source_cache: PaperEvidenceSource | None = None
 
     @property
+    def has_fulltext(self) -> bool:
+        """본문을 확보했는가 — 살아 있는 핸들은 `doc_model`이, 복원된 핸들은 플래그가 근거다.
+
+        판정을 여기 하나로 모은다. 두 곳에서 재유도하면 한쪽이 `or`를 빠뜨린다.
+        """
+        return self.doc_model is not None or self.fulltext_available
+
+    @property
     def scope(self) -> str:
-        return (
-            SourceScope.fulltext.value
-            if self.doc_model is not None
-            else SourceScope.abstract.value
+        return SourceScope.fulltext.value if self.has_fulltext else SourceScope.abstract.value
+
+    def to_snapshot(self, *, brief: bool = False) -> dict[str, Any]:
+        """`brief`는 후보(discovered)용 — 초록 본문을 싣지 않는다.
+
+        복원된 상태의 소비자(`assemble`)는 후보를 **개수로만** 쓴다. 초록까지 실으면 스냅샷의
+        절반 가까이가 후보 초록이 되고, 검색 recall에 비례해 super-step마다 다시 쓰인다.
+        이어가기(설계 §3.4)의 씨앗도 id·제목이면 되고 초록은 그때 재조회하는 편이 맞다.
+        """
+        snapshot: dict[str, Any] = {
+            "paper_id": self.paper_id,
+            "record_ref": self.record_ref,
+            "origin": self.origin.value,
+            "title": self.title,
+            "fulltext_available": self.has_fulltext,
+        }
+        if not brief:
+            snapshot["abstract_text"] = self.abstract_text
+        return snapshot
+
+    @classmethod
+    def from_snapshot(cls, data: dict[str, Any]) -> PaperHandle:
+        return cls(
+            paper_id=data["paper_id"],
+            record_ref=data["record_ref"],
+            origin=PaperOrigin(data["origin"]),
+            title=data.get("title", ""),
+            abstract_text=data.get("abstract_text", ""),
+            fulltext_available=bool(data.get("fulltext_available", False)),
         )
 
     def blocks(self) -> list[tuple[str, str, str]]:
@@ -229,6 +271,74 @@ class LoopState:
         self.discovered.pop(handle.paper_id, None)
         self.papers[handle.paper_id] = handle
         return handle
+
+    # -- 체크포인트 스냅샷 ----------------------------------------------------
+    # 순수 JSON만 싣는다(enum은 값, set은 정렬 list, Counter는 dict). 체크포인터의 기본
+    # 직렬화기가 dataclass·enum을 받기는 하지만 "미등록 타입은 막힌다"고 경고하므로
+    # 그쪽 동작에 기대지 않는다.
+    #
+    # **싣는 것은 마감(`assemble`)이 읽는 것 + 이어가기(PR 4)의 씨앗이다.** 마감은 확인·후보
+    # 논문 수와 누적 근거만 본다; trace·notes·termination_reason·rejections는 마감엔 불필요하지만
+    # 작고(수 kB) 이어가기가 "무엇을 했었나"를 복원할 재료라 남긴다. DocModel·투영 캐시·이미지는
+    # 직렬화가 안 되고, 도구 결과(`recent_results`)는 관찰 윈도우일 뿐 되읽는 소비자가 없다 —
+    # 프리뷰만 실어도 스냅샷의 4분의 1이었다. 소모 예산(`BudgetConsumed`)도 복원처가 없어 뺐다.
+
+    def to_snapshot(self) -> dict[str, Any]:
+        return {
+            "topic": self.topic,
+            "discovered": [h.to_snapshot(brief=True) for h in self.discovered.values()],
+            "papers": [h.to_snapshot() for h in self.papers.values()],
+            "items": [item.model_dump(mode="json") for item in self.accumulator.items],
+            "rejections": dict(self.accumulator.rejections),
+            "trace": [
+                {
+                    "seq": r.seq,
+                    "tool": r.tool,
+                    "args_summary": r.args_summary,
+                    "outcome": r.outcome.value,
+                    "result_summary": r.result_summary,
+                    "cost_usd": r.cost_usd,
+                    "at": r.at.isoformat(),
+                }
+                for r in self.trace
+            ],
+            "candidates_seen": sorted(self.candidates_seen),
+            "termination_reason": (
+                self.termination_reason.value if self.termination_reason else None
+            ),
+            "notes": list(self.notes),
+        }
+
+    @classmethod
+    def from_snapshot(cls, data: dict[str, Any]) -> LoopState:
+        state = cls(topic=data["topic"])
+        for row in data.get("discovered", []):
+            handle = PaperHandle.from_snapshot(row)
+            state.discovered[handle.paper_id] = handle
+        for row in data.get("papers", []):
+            handle = PaperHandle.from_snapshot(row)
+            state.papers[handle.paper_id] = handle
+        state.accumulator.items = [
+            EvidenceItem.model_validate(item) for item in data.get("items", [])
+        ]
+        state.accumulator.rejections = Counter(data.get("rejections", {}))
+        state.trace = [
+            ToolCallRecord(
+                seq=int(r["seq"]),
+                tool=r["tool"],
+                args_summary=r.get("args_summary", ""),
+                outcome=ToolCallOutcome(r["outcome"]),
+                result_summary=r.get("result_summary", ""),
+                cost_usd=r.get("cost_usd"),
+                at=datetime.fromisoformat(r["at"]),
+            )
+            for r in data.get("trace", [])
+        ]
+        state.candidates_seen = set(data.get("candidates_seen", []))
+        reason = data.get("termination_reason")
+        state.termination_reason = TerminationReason(reason) if reason else None
+        state.notes = list(data.get("notes", []))
+        return state
 
 
 @dataclass(slots=True)

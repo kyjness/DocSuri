@@ -20,7 +20,7 @@ from backend.modules.evidence.repository import InMemoryEvidenceRepository
 
 
 class _StubRunner:
-    def run(self, ctx, request, *, budget_signal=None, attachments=(), on_trace=None):
+    def run(self, ctx, request, *, attachments=(), on_trace=None, should_stop=None):
         if on_trace is not None:
             from backend.modules.evidence.domain.models import ToolCallOutcome, ToolCallRecord
 
@@ -43,7 +43,16 @@ def _client(monkeypatch, principal: Principal, repo) -> TestClient:
     app = create_app(Settings(env="test", database_url="sqlite://"))
     app.dependency_overrides[controller.get_principal] = lambda: principal
     app.dependency_overrides[controller.get_repo] = lambda: repo
-    app.dependency_overrides[controller.get_runner] = lambda: _StubRunner()
+    runner = _StubRunner()
+    app.dependency_overrides[controller.get_repo_factory] = lambda: (lambda: repo)
+
+    def dispatch(payload: dict) -> None:
+        # 테스트 실행자 — 수락 직후 같은 스레드에서 끝까지 돌린다.
+        from backend.modules.evidence.worker import process_sqs_payload
+
+        process_sqs_payload(lambda: repo, payload, runner=runner)
+
+    app.dependency_overrides[controller.get_dispatch] = lambda: dispatch
     return TestClient(app)
 
 
@@ -53,7 +62,7 @@ def _principal() -> Principal:
 
 def _seed_turn(client: TestClient, topic: str = "질문") -> dict:
     resp = client.post("/api/evidence/turns", json={"topic": topic})
-    assert resp.status_code == 200
+    assert resp.status_code == 202
     return resp.json()
 
 

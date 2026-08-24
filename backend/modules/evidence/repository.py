@@ -11,6 +11,7 @@ v1과 달리 **턴 결과가 전용 컬럼**에 있다. v1은 result를 attachme
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime
 from threading import RLock
 from typing import Any, Protocol
@@ -18,13 +19,18 @@ from typing import Any, Protocol
 from sqlalchemy import (
     JSON,
     BigInteger,
+    Boolean,
     DateTime,
     Double,
+    Index,
     Integer,
     String,
     Text,
     Uuid,
+    text,
+    update,
 )
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
 from .models import (
@@ -43,14 +49,41 @@ log = logging.getLogger("docsuri.evidence.repository")
 
 __all__ = [
     "Base",
+    "in_transaction",
     "EvidenceRepository",
     "EvidenceSessionTable",
     "EvidenceTraceTable",
     "EvidenceTurnTable",
     "InMemoryEvidenceRepository",
+    "SessionBusy",
     "SqlEvidenceRepository",
 ]
 
+
+
+def in_transaction(
+    repo_factory: Callable[[], EvidenceRepository], fn: Callable[[EvidenceRepository], Any]
+) -> Any:
+    """짧은 트랜잭션 하나 — 열고, 실행하고, 커밋(예외면 롤백)하고, 닫는다.
+
+    실행자와 이벤트 스트림이 같은 행을 서로 다른 프로세스에서 보므로 "한 번의 접촉 = 한 번의
+    커밋"이 이 설계의 load-bearing 불변식이다(`turn_control` docstring). 네 곳이 각자 이 틀을
+    베껴 쓰다 한 곳에서 롤백이 빠져 있었다 — 여기 하나만 둔다.
+    """
+    repo = repo_factory()
+    try:
+        value = fn(repo)
+        repo.commit()
+        return value
+    except Exception:
+        repo.rollback()
+        raise
+    finally:
+        repo.close()
+
+
+class SessionBusy(Exception):
+    """같은 세션에 진행 중 턴이 이미 있다(§5.4) — controller가 409."""
 
 
 class EvidenceRepository(Protocol):
@@ -67,10 +100,22 @@ class EvidenceRepository(Protocol):
         self, owner_id: str, session_id: str, limit: int
     ) -> list[EvidenceTurn]: ...
     def get_turn(self, owner_id: str, turn_id: str) -> EvidenceTurn: ...
-    def get_turn_by_job_id(self, owner_id: str, job_id: str) -> EvidenceTurn: ...
     def update_turn_result(self, owner_id: str, turn_id: str, result: TurnResult) -> None: ...
+    # 세션당 진행 중 턴은 하나(§5.4) — 있으면 그 턴, 없으면 None.
+    def active_turn(self, owner_id: str, session_id: str) -> EvidenceTurn | None: ...
+    # 협조적 취소(§5.2). 이미 종단이면 False.
+    def request_cancel(self, owner_id: str, turn_id: str) -> bool: ...
+    # 실행자가 super-step 경계마다 부른다 — 하트비트를 찍고 취소 플래그를 돌려준다(한 문장).
+    def heartbeat(self, owner_id: str, turn_id: str) -> bool: ...
     def append_trace(self, owner_id: str, turn_id: str, row: dict) -> None: ...
-    def list_trace(self, owner_id: str, turn_id: str) -> list[dict]: ...
+    # 이벤트 스트림의 커서 조회 — seq > after_seq만(전체는 after_seq=0).
+    def list_trace_after(self, owner_id: str, turn_id: str, after_seq: int) -> list[dict]: ...
+    # -- 체크포인트 정리(소유자 무관 유지보수) --------------------------------
+    # 아직 정리하지 않은, 종단이고 오래된 턴 id. 정리 후 mark_checkpoints_pruned로 도장을 찍어야
+    # 다음 호출에서 빠진다 — 도장이 없으면 같은 id가 영원히 다시 나오고 그 뒤는 영영 안 나온다.
+    def expired_turn_ids(self, older_than: datetime, limit: int = 200) -> list[str]: ...
+    def mark_checkpoints_pruned(self, turn_ids: list[str]) -> None: ...
+    def turn_ids_for_sessions(self, owner_id: str, session_ids: list[str]) -> list[str]: ...
     def commit(self) -> None: ...
     def rollback(self) -> None: ...
     def close(self) -> None: ...
@@ -78,17 +123,20 @@ class EvidenceRepository(Protocol):
 
 # --- 직렬화 ------------------------------------------------------------------
 
-def _serialize(result: TurnResult) -> tuple[dict | None, str, str | None]:
-    """(result JSON, status, job_id)."""
+def _serialize(result: TurnResult) -> tuple[dict | None, str]:
+    """(result JSON, status)."""
     if isinstance(result, TurnSuccessResult):
-        return _dump(result.outcome), "ok", None
+        return _dump(result.outcome), "ok"
     if isinstance(result, TurnAbstainResult):
-        return _dump(result.outcome), "abstain", None
-    if isinstance(result, TurnPendingResult):
-        return None, "pending", result.job_id
+        return _dump(result.outcome), "abstain"
     if isinstance(result, TurnErrorResult):
-        return {"errorCode": result.error_code}, "error", None
-    return None, "pending", None
+        return {"errorCode": result.error_code}, "error"
+    return None, "pending"
+
+
+def _is_pending(result: TurnResult | None) -> bool:
+    """"아직 실행 중"의 단일 권위 — SQL 쪽 `status == 'pending'`과 같은 판정이다."""
+    return isinstance(result, TurnPendingResult | type(None))
 
 
 def _dump(outcome: Any) -> dict:
@@ -96,7 +144,7 @@ def _dump(outcome: Any) -> dict:
     return dump(mode="json", exclude_none=True) if dump else dict(outcome)
 
 
-def _restore(status: str, payload: dict | None, job_id: str | None) -> TurnResult:
+def _restore(status: str, payload: dict | None, started_at: datetime | None = None) -> TurnResult:
     from docsuri_shared._generated.dtos.evidence_schema import (
         EvidenceAbstainResult,
         EvidenceResult,
@@ -108,7 +156,7 @@ def _restore(status: str, payload: dict | None, job_id: str | None) -> TurnResul
         return TurnAbstainResult(outcome=EvidenceAbstainResult.model_validate(payload))
     if status == "error":
         return TurnErrorResult(error_code=str((payload or {}).get("errorCode", "unknown")))
-    return TurnPendingResult(job_id=job_id or "", started_at=_utc_now())
+    return TurnPendingResult(started_at=started_at or _utc_now())
 
 
 # --- In-Memory (개발·테스트) --------------------------------------------------
@@ -119,6 +167,7 @@ class InMemoryEvidenceRepository:
         self._sessions: dict[str, EvidenceSession] = {}
         self._turns: dict[str, list[EvidenceTurn]] = {}
         self._trace: dict[str, list[dict]] = {}
+        self._pruned: set[str] = set()
 
     def create_session(self, session: EvidenceSession) -> EvidenceSession:
         with self._lock:
@@ -159,8 +208,12 @@ class InMemoryEvidenceRepository:
             if session is None or session.status is SessionStatus.DELETED:
                 raise KeyError(turn.session_id)
             # 소유자는 세션이 권위다 — SQL 경로가 세션 행에서 가져오는 것과 같다.
-            # 호출자가 비워 보내도 턴 단독 조회(잡 폴링)에서 격리가 유지된다.
+            # 호출자가 비워 보내도 턴 단독 조회(폴링)에서 격리가 유지된다.
             turn.owner_id = turn.owner_id or session.owner_id
+            if _is_pending(turn.result) and any(
+                _is_pending(t.result) for t in self._turns.get(turn.session_id, [])
+            ):
+                raise SessionBusy(turn.session_id)
             self._turns.setdefault(turn.session_id, []).append(turn)
             session.updated_at = _utc_now()
             return turn
@@ -182,14 +235,6 @@ class InMemoryEvidenceRepository:
                         return turn
         raise KeyError(turn_id)
 
-    def get_turn_by_job_id(self, owner_id: str, job_id: str) -> EvidenceTurn:
-        with self._lock:
-            for turns in self._turns.values():
-                for turn in turns:
-                    if turn.job_id == job_id and turn.owner_id == owner_id:
-                        return turn
-        raise KeyError(job_id)
-
     def update_turn_result(self, owner_id: str, turn_id: str, result: TurnResult) -> None:
         """SQL 경로와 **같은 규칙**: 이미 종단인 턴은 덮지 않는다.
 
@@ -200,7 +245,7 @@ class InMemoryEvidenceRepository:
             for turns in self._turns.values():
                 for turn in turns:
                     if turn.turn_id == turn_id and turn.owner_id == owner_id:
-                        if not isinstance(turn.result, TurnPendingResult | type(None)):
+                        if not _is_pending(turn.result):
                             log.info(
                                 "evidence turn %s already resolved; skipping duplicate update",
                                 turn_id,
@@ -210,13 +255,60 @@ class InMemoryEvidenceRepository:
                         return
         raise KeyError(turn_id)
 
+    def active_turn(self, owner_id: str, session_id: str) -> EvidenceTurn | None:
+        with self._lock:
+            for turn in self._turns.get(session_id, []):
+                if turn.owner_id == owner_id and _is_pending(turn.result):
+                    return turn
+        return None
+
+    def request_cancel(self, owner_id: str, turn_id: str) -> bool:
+        with self._lock:
+            turn = self.get_turn(owner_id, turn_id)
+            if not _is_pending(turn.result):
+                return False
+            turn.cancel_requested = True
+            return True
+
+    def heartbeat(self, owner_id: str, turn_id: str) -> bool:
+        with self._lock:
+            turn = self.get_turn(owner_id, turn_id)
+            turn.heartbeat_at = _utc_now()
+            return turn.cancel_requested
+
     def append_trace(self, owner_id: str, turn_id: str, row: dict) -> None:
         with self._lock:
             self._trace.setdefault(turn_id, []).append({**row, "ownerId": owner_id})
 
-    def list_trace(self, owner_id: str, turn_id: str) -> list[dict]:
+    def list_trace_after(self, owner_id: str, turn_id: str, after_seq: int) -> list[dict]:
         with self._lock:
-            return [r for r in self._trace.get(turn_id, []) if r.get("ownerId") == owner_id]
+            rows = [r for r in self._trace.get(turn_id, []) if r.get("ownerId") == owner_id]
+        return [r for r in rows if int(r.get("seq", 0)) > after_seq]
+
+    def expired_turn_ids(self, older_than: datetime, limit: int = 200) -> list[str]:
+        with self._lock:
+            found = [
+                t.turn_id
+                for turns in self._turns.values()
+                for t in turns
+                if _is_pending(t.result) is False
+                and t.created_at < older_than
+                and t.turn_id not in self._pruned
+            ]
+        return found[:limit]
+
+    def mark_checkpoints_pruned(self, turn_ids: list[str]) -> None:
+        with self._lock:
+            self._pruned.update(turn_ids)
+
+    def turn_ids_for_sessions(self, owner_id: str, session_ids: list[str]) -> list[str]:
+        with self._lock:
+            return [
+                t.turn_id
+                for sid in session_ids
+                for t in self._turns.get(sid, [])
+                if t.owner_id == owner_id
+            ]
 
     def commit(self) -> None: ...
     def rollback(self) -> None: ...
@@ -249,9 +341,25 @@ class EvidenceTurnTable(Base):
     topic: Mapped[str] = mapped_column(Text, nullable=False, default="")
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
     result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    job_id: Mapped[str | None] = mapped_column(Uuid(as_uuid=False), nullable=True)
     attachments: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), nullable=False)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    heartbeat_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    checkpoints_pruned_at: Mapped[Any | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # 세션당 pending 하나(§5.4). 003 마이그레이션과 같은 인덱스 — SQLite 테스트에서도
+    # 같은 규칙이 서야 잠금 테스트가 실 DB와 같은 길을 밟는다.
+    __table_args__ = (
+        Index(
+            "uq_evidence_turns_session_pending",
+            "session_id",
+            unique=True,
+            postgresql_where=text("status = 'pending'"),
+            sqlite_where=text("status = 'pending'"),
+        ),
+    )
 
 
 class EvidenceTraceTable(Base):
@@ -341,7 +449,7 @@ class SqlEvidenceRepository:
         row = self._s.get(EvidenceSessionTable, turn.session_id)
         if row is None or row.status == SessionStatus.DELETED:
             raise KeyError(turn.session_id)
-        payload, status, job_id = _serialize(turn.result)
+        payload, status = _serialize(turn.result)
         self._s.add(
             EvidenceTurnTable(
                 turn_id=turn.turn_id,
@@ -350,15 +458,18 @@ class SqlEvidenceRepository:
                 topic=turn.topic,
                 status=status,
                 result=payload,
-                # 빈 문자열을 UUID 컬럼에 넣으면 실 DB만 터진다(인메모리·SQLite는
-                # 통과시킨다). 동기 경로의 pending 자리표시자가 그 형태였다.
-                job_id=(turn.job_id or job_id) or None,
                 attachments=list(turn.attachments or []),
                 created_at=turn.created_at,
+                cancel_requested=False,
             )
         )
         row.updated_at = _utc_now()
-        self._s.flush()
+        try:
+            self._s.flush()
+        except IntegrityError as exc:
+            # 부분 유니크 인덱스가 막았다 — 같은 세션에 pending 턴이 이미 있다(§5.4).
+            self._s.rollback()
+            raise SessionBusy(turn.session_id) from exc
         return turn
 
     def list_turns(self, owner_id: str, session_id: str) -> list[EvidenceTurn]:
@@ -396,21 +507,8 @@ class SqlEvidenceRepository:
             raise KeyError(turn_id)
         return _turn_from_row(row)
 
-    def get_turn_by_job_id(self, owner_id: str, job_id: str) -> EvidenceTurn:
-        row = (
-            self._s.query(EvidenceTurnTable)
-            .filter(
-                EvidenceTurnTable.owner_id == owner_id,
-                EvidenceTurnTable.job_id == job_id,
-            )
-            .first()
-        )
-        if row is None:
-            raise KeyError(job_id)
-        return _turn_from_row(row)
-
     def update_turn_result(self, owner_id: str, turn_id: str, result: TurnResult) -> None:
-        payload, status, _job = _serialize(result)
+        payload, status = _serialize(result)
         # 조건부 UPDATE로 원자성을 보장한다 — 큐의 at-least-once 재배달로 두 워커가
         # 같은 잡을 처리해도 먼저 확정된 결과가 덮이지 않는다(v1 선례 승계).
         updated = (
@@ -424,6 +522,45 @@ class SqlEvidenceRepository:
         )
         if not updated:
             log.info("evidence turn %s already resolved; skipping duplicate update", turn_id)
+
+    def active_turn(self, owner_id: str, session_id: str) -> EvidenceTurn | None:
+        row = (
+            self._s.query(EvidenceTurnTable)
+            .filter(
+                EvidenceTurnTable.owner_id == owner_id,
+                EvidenceTurnTable.session_id == session_id,
+                EvidenceTurnTable.status == "pending",
+            )
+            .first()
+        )
+        return _turn_from_row(row) if row is not None else None
+
+    def request_cancel(self, owner_id: str, turn_id: str) -> bool:
+        self.get_turn(owner_id, turn_id)
+        updated = (
+            self._s.query(EvidenceTurnTable)
+            .filter(
+                EvidenceTurnTable.turn_id == turn_id,
+                EvidenceTurnTable.owner_id == owner_id,
+                EvidenceTurnTable.status == "pending",
+            )
+            .update({"cancel_requested": True}, synchronize_session=False)
+        )
+        return bool(updated)
+
+    def heartbeat(self, owner_id: str, turn_id: str) -> bool:
+        row = self._s.execute(
+            update(EvidenceTurnTable)
+            .where(
+                EvidenceTurnTable.turn_id == turn_id,
+                EvidenceTurnTable.owner_id == owner_id,
+            )
+            .values(heartbeat_at=_utc_now())
+            .returning(EvidenceTurnTable.cancel_requested)
+        ).first()
+        if row is None:
+            raise KeyError(turn_id)
+        return bool(row[0])
 
     # -- 트레이스 ------------------------------------------------------------
     def append_trace(self, owner_id: str, turn_id: str, row: dict) -> None:
@@ -442,12 +579,13 @@ class SqlEvidenceRepository:
         )
         self._s.flush()
 
-    def list_trace(self, owner_id: str, turn_id: str) -> list[dict]:
+    def list_trace_after(self, owner_id: str, turn_id: str, after_seq: int) -> list[dict]:
         rows = (
             self._s.query(EvidenceTraceTable)
             .filter(
                 EvidenceTraceTable.owner_id == owner_id,
                 EvidenceTraceTable.turn_id == turn_id,
+                EvidenceTraceTable.seq > after_seq,
             )
             .order_by(EvidenceTraceTable.seq.asc())
             .all()
@@ -464,6 +602,42 @@ class SqlEvidenceRepository:
             }
             for row in rows
         ]
+
+    def expired_turn_ids(self, older_than: datetime, limit: int = 200) -> list[str]:
+        rows = (
+            self._s.query(EvidenceTurnTable.turn_id)
+            .filter(
+                EvidenceTurnTable.status != "pending",
+                EvidenceTurnTable.created_at < older_than,
+                EvidenceTurnTable.checkpoints_pruned_at.is_(None),
+            )
+            .order_by(EvidenceTurnTable.created_at.asc())
+            .limit(limit)
+            .all()
+        )
+        return [str(row[0]) for row in rows]
+
+    def mark_checkpoints_pruned(self, turn_ids: list[str]) -> None:
+        if not turn_ids:
+            return
+        self._s.execute(
+            update(EvidenceTurnTable)
+            .where(EvidenceTurnTable.turn_id.in_(turn_ids))
+            .values(checkpoints_pruned_at=_utc_now())
+        )
+
+    def turn_ids_for_sessions(self, owner_id: str, session_ids: list[str]) -> list[str]:
+        if not session_ids:
+            return []
+        rows = (
+            self._s.query(EvidenceTurnTable.turn_id)
+            .filter(
+                EvidenceTurnTable.owner_id == owner_id,
+                EvidenceTurnTable.session_id.in_(session_ids),
+            )
+            .all()
+        )
+        return [str(row[0]) for row in rows]
 
     def commit(self) -> None:
         self._s.commit()
@@ -492,10 +666,11 @@ def _turn_from_row(row: EvidenceTurnTable) -> EvidenceTurn:
         session_id=str(row.session_id),
         owner_id=str(row.owner_id),
         topic=row.topic or "",
-        result=_restore(row.status, row.result, str(row.job_id) if row.job_id else None),
-        job_id=str(row.job_id) if row.job_id else None,
+        result=_restore(row.status, row.result, _ensure_utc(row.created_at)),
         attachments=list(row.attachments or []),
         created_at=_ensure_utc(row.created_at),
+        cancel_requested=bool(row.cancel_requested),
+        heartbeat_at=_ensure_utc(row.heartbeat_at) if row.heartbeat_at else None,
     )
 
 

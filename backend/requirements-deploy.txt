@@ -4,8 +4,9 @@ fastapi>=0.110
 uvicorn[standard]>=0.29
 sqlalchemy>=2.0,<3
 # psycopg 3 (binary wheel — no build toolchain in the slim image). Used by BOTH the
-# SQLAlchemy Postgres engine (db.py) and the migration runner (backend/migrations).
-psycopg[binary]>=3.1
+# SQLAlchemy Postgres engine (db.py), the migration runner (backend/migrations) and the
+# evidence checkpointer (langgraph-checkpoint-postgres requires >=3.2).
+psycopg[binary]>=3.2
 redis>=5.0
 pydantic>=2.7,<3
 argon2-cffi>=23.0
@@ -25,3 +26,7 @@ boto3>=1.34
 # 없이 잡은 값이라, 이미지가 락과 다른 1.x를 받으면 예산을 다 쓴 턴이 GraphRecursionError로
 # 죽을 수 있다. 올릴 때는 backend/uv.lock과 같이 올리고 test_evidence_loop의 상한 테스트로 확인.
 langgraph==1.2.11
+# langgraph-checkpoint-postgres → U11 턴 체크포인트(super-step마다 루프 스냅샷을 Postgres에,
+# thread_id=turn_id). psycopg-pool을 같이 끌어온다(여기 없으면 PostgresSaver import가 죽는다).
+# langgraph-checkpoint(4.x) 전이 의존과 같이 움직이므로 langgraph와 함께 올린다.
+langgraph-checkpoint-postgres==3.1.2

@@ -19,8 +19,9 @@ from langgraph.errors import GraphRecursionError
 from backend.modules.evidence.domain.loop import (
     _NO_EVIDENCE_NOTE,
     LoopDeps,
-    _build_graph,
+    LoopRun,
     _recursion_limit,
+    compile_loop_graph,
     run_loop,
 )
 from backend.modules.evidence.domain.models import (
@@ -33,6 +34,7 @@ from backend.modules.evidence.domain.models import (
     PaperOrigin,
     TerminationReason,
     ToolCallOutcome,
+    ToolCallRecord,
 )
 from backend.modules.evidence.ports.llm import (
     LlmDecision,
@@ -490,8 +492,10 @@ def test_recursion_limit_is_exactly_the_loop_bound(storm):
     """공식을 양쪽에서 고정한다 — 하나 작으면 터지고, 정확히 그 값이면 완주한다."""
     state, deps, _, _ = storm(3)
     with pytest.raises(GraphRecursionError):
-        _build_graph(deps).invoke(
-            {"loop": state}, config={"recursion_limit": _recursion_limit(deps.budget) - 1}
+        compile_loop_graph(None).invoke(
+            {"snapshot": state.to_snapshot()},
+            config={"recursion_limit": _recursion_limit(deps.budget) - 1},
+            context=LoopRun(state=state, deps=deps),
         )
 
     state, deps, _, _ = storm(3)
@@ -515,3 +519,182 @@ def test_langsmith_env_does_not_attach_a_tracer(monkeypatch):
     run_loop(_state_with_evidence(), _deps(Spy(), _registry()))
 
     assert seen == [False]
+
+
+# --- 체크포인트 · 스냅샷 · 협조적 취소 ---
+
+
+def _snapshot_roundtrip(state: LoopState) -> LoopState:
+    import json
+
+    return LoopState.from_snapshot(json.loads(json.dumps(state.to_snapshot())))
+
+
+def json_dumps(value) -> str:
+    import json
+
+    return json.dumps(value, ensure_ascii=False)
+
+
+def test_snapshot_roundtrip_preserves_what_assemble_reads():
+    from backend.modules.evidence.domain.assembler import assemble
+
+    state = _state_with_evidence()
+    state.discovered["d1"] = PaperHandle(
+        "d1", "r-d1", PaperOrigin.CORPUS, title="D", abstract_text="a"
+    )
+    state.examine(PaperHandle("p1", "r1", PaperOrigin.CORPUS, doc_model=object()))
+    state.candidates_seen.add("x9")
+    state.notes.append("n")
+    state.trace.append(
+        ToolCallRecord(seq=1, tool="t", args_summary="a", outcome=ToolCallOutcome.OK)
+    )
+    state.termination_reason = TerminationReason.SUFFICIENT
+
+    restored = _snapshot_roundtrip(state)
+
+    assert restored.papers["p1"].doc_model is None
+    assert restored.papers["p1"].scope == "fulltext"  # 본문 확보 사실은 남는다
+    assert restored.discovered["d1"].scope == "abstract"
+    assert (restored.examined, restored.candidates) == (state.examined, state.candidates)
+    assert restored.accumulator.cited_paper_ids == state.accumulator.cited_paper_ids
+    assert restored.accumulator.has_conflicts == state.accumulator.has_conflicts
+    assert restored.trace == state.trace
+    assert restored.notes == state.notes
+    assert restored.termination_reason is TerminationReason.SUFFICIENT
+    assert assemble(restored, TerminationReason.SUFFICIENT, query_used="q") == assemble(
+        state, TerminationReason.SUFFICIENT, query_used="q"
+    )
+
+
+def test_snapshot_carries_only_what_the_finalizer_reads():
+    """체크포인트 크기를 정하는 규칙 — 마감(assemble)이 읽지 않는 것은 싣지 않는다."""
+    image = ImageAttachment(media_type="image/png", data_b64="AAAA", asset_id="f1")
+    tool = FakeTool(TOOL_CORPUS_SEARCH, result=ToolResult(ok=True, content={"big": "x" * 5000},
+                                                          images=(image,)))
+    llm = ScriptedLlm(script=[ToolCallProposal(tool_name=TOOL_CORPUS_SEARCH, args={"q": "a"})])
+    state = _state_with_evidence()
+    state.discovered["d1"] = PaperHandle(
+        "d1", "r-d1", PaperOrigin.CORPUS, title="D", abstract_text="x" * 900
+    )
+    run_loop(state, _deps(llm, _registry(tool)))
+
+    snap = state.to_snapshot()
+    # 도구 결과 관찰 윈도우·소모 예산은 되읽는 소비자가 없다.
+    assert "recent_results" not in snap and "consumed" not in snap
+    # 후보는 개수로만 쓰이므로 초록 본문을 싣지 않는다 — 스냅샷의 절반이던 자리.
+    assert "abstract_text" not in snap["discovered"][0]
+    assert snap["discovered"][0]["title"] == "D"
+    # 확인한 논문은 그대로(초록이 근거 범위의 재료다).
+    state.examine(PaperHandle("p9", "r9", PaperOrigin.CORPUS, abstract_text="kept"))
+    snap = state.to_snapshot()
+    assert "abstract_text" in snap["papers"][0]
+    assert "x" * 900 not in json_dumps(snap)
+
+
+def test_checkpointer_sees_the_latest_snapshot_every_super_step():
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    tool = FakeTool(TOOL_CORPUS_SEARCH)
+    llm = ScriptedLlm(
+        script=[
+            ToolCallProposal(tool_name=TOOL_CORPUS_SEARCH, args={"q": "a"}),
+            ToolCallProposal(tool_name=TOOL_CORPUS_SEARCH, args={"q": "b"}),
+        ]
+    )
+    saver = InMemorySaver()
+    graph = compile_loop_graph(saver)
+    state = _state_with_evidence()
+    deps = _deps(llm, _registry(tool))
+    outcome = run_loop(state, deps, graph=graph)
+
+    assert outcome.reason is TerminationReason.SUFFICIENT
+    cfg = {"configurable": {"thread_id": "t1"}}
+    history = list(graph.get_state_history(cfg))
+    # 입력 + decide/act 쌍 ×2 + 마지막 decide + check_floor — 노드마다 체크포인트 하나
+    snapshots = [h.values.get("snapshot") for h in history if h.values.get("snapshot")]
+    trace_lengths = [len(s["trace"]) for s in snapshots]
+    assert max(trace_lengths) == 2
+    assert snapshots[0]["termination_reason"] == "sufficient"  # 최신이 먼저
+    # 복원은 assemble이 읽는 것만 살린다
+    restored = LoopState.from_snapshot(snapshots[0])
+    assert len(restored.trace) == 2 and restored.accumulator.items
+
+
+def test_load_snapshot_returns_none_for_an_unknown_thread():
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from backend.modules.evidence.domain.loop import load_snapshot
+
+    graph = compile_loop_graph(InMemorySaver())
+    assert load_snapshot(graph, "never-ran") is None
+    assert load_snapshot(compile_loop_graph(None), "t1") is None
+
+
+def test_rerunning_the_same_thread_starts_over_instead_of_short_circuiting():
+    """SQS 재배달 경로 — 남은 outcome이 라우터를 END로 보내면 두 번째 실행이 빈손으로 끝난다."""
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    graph = compile_loop_graph(InMemorySaver())
+    for _ in range(2):
+        tool = FakeTool(TOOL_CORPUS_SEARCH)
+        llm = ScriptedLlm(script=[ToolCallProposal(tool_name=TOOL_CORPUS_SEARCH, args={"q": "a"})])
+        state = _state_with_evidence()
+        outcome = run_loop(state, _deps(llm, _registry(tool)), graph=graph)
+        assert outcome.reason is TerminationReason.SUFFICIENT
+        assert len(tool.calls) == 1
+        assert len(llm.observations) == 2
+
+
+def test_should_stop_ends_at_the_decide_boundary_without_spending_an_iteration():
+    tool = FakeTool(TOOL_CORPUS_SEARCH)
+    llm = ScriptedLlm(
+        script=[
+            ToolCallProposal(tool_name=TOOL_CORPUS_SEARCH, args={"q": str(i)}) for i in range(5)
+        ]
+    )
+    stops = iter([None, None, TerminationReason.CANCELLED])
+    state = _state_with_evidence()
+    deps = _deps(llm, _registry(tool), should_stop=lambda: next(stops))
+    outcome = run_loop(state, deps)
+
+    assert outcome.reason is TerminationReason.CANCELLED
+    assert state.termination_reason is TerminationReason.CANCELLED
+    # 두 반복이 돌았고(도구 2회), 세 번째 decide 진입에서 멈췄다 — 반복·트레이스 미소모
+    assert len(tool.calls) == 2
+    assert deps.budget.consumed.iterations == 2
+    assert [r.seq for r in state.trace] == [1, 2]
+    assert len(llm.observations) == 2
+
+
+def test_should_stop_lets_the_running_act_finish_and_keeps_its_result():
+    """취소는 하던 단계가 끝난 뒤다(§2.8) — act 중 들어온 취소도 그 결과를 부분 답에 싣는다."""
+    flag = {"cancel": False}
+
+    @dataclass
+    class CancellingTool(FakeTool):
+        def invoke(self, args, ctx):
+            flag["cancel"] = True  # 도구 실행 중 취소 요청이 들어온다
+            return super().invoke(args, ctx)
+
+    tool = CancellingTool(TOOL_CORPUS_SEARCH)
+    llm = ScriptedLlm(script=[ToolCallProposal(tool_name=TOOL_CORPUS_SEARCH, args={"q": "a"})])
+    state = _state_with_evidence()
+    deps = _deps(llm, _registry(tool),
+                 should_stop=lambda: TerminationReason.CANCELLED if flag["cancel"] else None)
+    outcome = run_loop(state, deps)
+
+    assert outcome.reason is TerminationReason.CANCELLED
+    assert len(tool.calls) == 1
+    assert state.trace[-1].outcome is ToolCallOutcome.OK
+
+
+@pytest.mark.parametrize("reason", [TerminationReason.CANCELLED, TerminationReason.INTERRUPTED])
+def test_stop_reasons_survive_an_empty_accumulator(reason):
+    """근거 0건이어도 '왜 멈췄는지'는 NO_EVIDENCE로 뭉개지지 않는다."""
+    llm = ScriptedLlm(script=[ToolCallProposal(tool_name=TOOL_CORPUS_SEARCH, args={"q": "a"})])
+    state = LoopState(topic="q")
+    outcome = run_loop(state, _deps(llm, _registry(FakeTool(TOOL_CORPUS_SEARCH)),
+                                    should_stop=lambda: reason))
+    assert outcome.reason is reason
+    assert state.trace == [] and llm.observations == []

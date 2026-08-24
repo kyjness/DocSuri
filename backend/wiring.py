@@ -24,7 +24,7 @@ from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
-from docsuri_shared.env import EnvConfigError
+from docsuri_shared.env import EnvConfigError, env_flag
 from fastapi import FastAPI
 
 from .config import Settings
@@ -637,6 +637,8 @@ def _mount_novelty(app: FastAPI, settings: Settings, result: MountResult) -> Non
 
 
 def _mount_evidence(app: FastAPI, settings: Settings, result: MountResult) -> None:
+    from datetime import timedelta
+
     from backend.modules.evidence import controller as evidence
     from backend.modules.evidence.repository import (
         InMemoryEvidenceRepository,
@@ -665,12 +667,54 @@ def _mount_evidence(app: FastAPI, settings: Settings, result: MountResult) -> No
                 raise
             finally:
                 session.close()
+
+        def repo_factory():
+            return SqlEvidenceRepository(session_factory())
     else:
         repo = InMemoryEvidenceRepository()
 
         def get_evidence_repo():
             return repo
 
+        def repo_factory():
+            return repo
+
+        log.warning(
+            "app-shell: evidence without Postgres — no turn checkpoints; an executor that dies "
+            "leaves the turn to finish as internal_error"
+        )
+
+    # 턴 체크포인트(v3 §5). 이 프로세스가 턴을 돌리거나(러너) 다른 프로세스가 돌린 턴을
+    # 읽어야 할 때(SQS dispatch — 고아 마감·세션 삭제 정리) 만든다. 둘 다 아니면 DB 연결을
+    # 열 이유가 없다. 테이블은 부팅 마이그레이션과 같은 게이트 아래 saver가 만든다.
+    from backend.modules.evidence.checkpoints import TurnCheckpoints
+
+    sqs_configured = bool(ev_settings.async_enabled and ev_settings.job_queue_url)
+    runner = None
+    checkpoints = None
+    checkpointer = None
+    checkpointer_open = False
+    wants_checkpoints = ev_settings.evidence_enabled or sqs_configured
+    if _is_postgres(settings.database_url) and wants_checkpoints:
+        from backend.modules.evidence.checkpoints import build_postgres_checkpointer
+
+        checkpointer, close_checkpointer = build_postgres_checkpointer(
+            settings.database_url,
+            setup=env_flag("RUN_MIGRATIONS_ON_STARTUP", True),
+        )
+        checkpointer_open = True
+        executor_drained = {"ok": True}
+
+        async def _close_checkpointer() -> None:
+            # 실행자가 턴을 다 못 비웠으면 풀을 닫지 않는다 — 아직 도는 스레드의 다음
+            # 체크포인트 쓰기가 닫힌 풀에서 터져 INTERRUPTED 대신 internal_error가 된다.
+            # 그 경우 풀은 프로세스 종료가 닫는다.
+            if executor_drained["ok"]:
+                close_checkpointer()
+
+        result.cleanups.append(_close_checkpointer)
+    if wants_checkpoints:
+        checkpoints = TurnCheckpoints(checkpointer)
     if ev_settings.evidence_enabled:
         from backend.modules.evidence.real_wiring import build_evidence_runner
 
@@ -679,19 +723,15 @@ def _mount_evidence(app: FastAPI, settings: Settings, result: MountResult) -> No
             cost_guard=getattr(app.state, "cost_guard", None),
             # 앱쉘이 이미 가진 세션 팩토리 재사용 — 없으면 러너가 자체 생성한다.
             session_factory=evidence_session_factory,
+            graph=checkpoints.graph,
         )
-
-        def get_evidence_runner():
-            return runner
     else:
-        def get_evidence_runner():
-            raise RuntimeError("evidence real path not configured (no S3 DocModel bucket)")
-
         log.info("app-shell: evidence real path not configured — running in repo-only mode")
 
-    # 비동기 잡 경로(BR-EV-6): sqs_enqueue 콜백을 chat service에 주입
-    sqs_enqueue = None
-    if ev_settings.async_enabled and ev_settings.job_queue_url:
+    # 실행자(v3 §5.1): SQS가 구성됐으면 enqueue, 아니면 이 프로세스의 스레드풀. 둘 다 같은
+    # process_job을 돌리고 API·이벤트 계약은 같다.
+    dispatch = None
+    if sqs_configured:
         import json as _json
 
         import boto3 as _boto3
@@ -699,20 +739,56 @@ def _mount_evidence(app: FastAPI, settings: Settings, result: MountResult) -> No
         _sqs = _boto3.client('sqs', region_name=ev_settings.region_name or 'ap-northeast-2')
         _queue_url = ev_settings.job_queue_url
 
-        def sqs_enqueue(payload: dict) -> None:
+        def dispatch(payload: dict) -> None:
             _sqs.send_message(QueueUrl=_queue_url, MessageBody=_json.dumps(payload))
+    elif runner is not None:
+        from backend.modules.evidence.executor import LocalTurnExecutor
+        from backend.modules.user_docmodel import build_default_user_docmodel_coordinator
 
-    app.state.evidence_sqs_enqueue = sqs_enqueue
+        def shared_user_docmodel():
+            # 요청 경로(controller.get_user_docmodel)와 **같은 자리**에 캐시한다 — 따로 만들면
+            # boto3 클라이언트와 자격증명 해석이 프로세스에 두 벌 생긴다.
+            coordinator = getattr(app.state, "user_docmodel", None)
+            if coordinator is None:
+                coordinator = build_default_user_docmodel_coordinator()
+                app.state.user_docmodel = coordinator
+            return coordinator
+
+        local = LocalTurnExecutor(
+            repo_factory=repo_factory,
+            runner=runner,
+            user_docmodel_factory=shared_user_docmodel,
+            workers=ev_settings.local_turn_workers,
+            checkpoints=checkpoints,
+            checkpoint_retention=timedelta(days=ev_settings.checkpoint_retention_days),
+        )
+        dispatch = local.submit
+
+        async def _close_executor() -> None:
+            import asyncio
+
+            drained = await asyncio.to_thread(local.close)
+            if checkpointer_open:
+                executor_drained["ok"] = drained
+
+        # lifespan이 역순으로 돌린다 — 실행자가 풀·엔진보다 먼저 닫혀야 한다.
+        result.cleanups.append(_close_executor)
+
+    app.state.evidence_dispatch = dispatch
+    app.state.evidence_repo_factory = repo_factory
+    app.state.evidence_execution = ev_settings.turn_execution
 
     app.dependency_overrides[evidence.get_repo] = get_evidence_repo
-    app.dependency_overrides[evidence.get_runner] = get_evidence_runner
+    app.dependency_overrides[evidence.get_checkpoints] = lambda: checkpoints
     for router in evidence.routers:
         app.include_router(router)
     result.mounted.append("evidence")
     log.info(
-        "app-shell: evidence mounted (real_agent=%s, async=%s)",
+        "app-shell: evidence mounted (real_agent=%s, executor=%s, checkpoints=%s)",
         ev_settings.evidence_enabled,
-        ev_settings.async_enabled,
+        "sqs" if ev_settings.async_enabled and ev_settings.job_queue_url else
+        ("local" if dispatch else "none"),
+        checkpoints is not None and checkpoints.enabled,
     )
 
 

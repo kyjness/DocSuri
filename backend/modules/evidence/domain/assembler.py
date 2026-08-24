@@ -20,17 +20,27 @@ from docsuri_shared._generated.dtos.evidence_schema import (
 
 from .models import LoopState, TerminationReason
 
-__all__ = ["ABSTAIN_INSUFFICIENT", "ABSTAIN_LLM_FAILURE", "ABSTAIN_OUT_OF_CORPUS", "assemble"]
+__all__ = [
+    "ABSTAIN_CANCELLED",
+    "ABSTAIN_INSUFFICIENT",
+    "ABSTAIN_LLM_FAILURE",
+    "ABSTAIN_OUT_OF_CORPUS",
+    "assemble",
+]
 
 # 비기술 사유만(SEC-9, INV-EV-5). 내부 상태·예외 상세는 절대 싣지 않는다.
 ABSTAIN_OUT_OF_CORPUS = "out_of_corpus"
 ABSTAIN_INSUFFICIENT = "insufficient_evidence"
 ABSTAIN_LLM_FAILURE = "llm_unavailable"
+ABSTAIN_CANCELLED = "cancelled"
 
 _STOPPED_BY_REASON = {
     TerminationReason.SUFFICIENT: StoppedReason.sufficient,
     TerminationReason.BUDGET_EXHAUSTED: StoppedReason.budget_exhausted,
     TerminationReason.FATAL_ERROR: StoppedReason.partial_failure,
+    TerminationReason.CANCELLED: StoppedReason.cancelled,
+    # 실행자가 멈춘 것은 사용자 취소가 아니다 — 화면에는 "탐색이 중단됐다"로만 보인다.
+    TerminationReason.INTERRUPTED: StoppedReason.partial_failure,
 }
 
 
@@ -44,6 +54,9 @@ def assemble(
         # 못 뽑았으면 근거 부족 — 사용자에게 다른 행동을 시사하는 구분이다.
         if reason is TerminationReason.FATAL_ERROR:
             return EvidenceAbstainResult(state="abstain", abstainReason=ABSTAIN_LLM_FAILURE)
+        if reason is TerminationReason.CANCELLED:
+            # 근거를 찾기 전에 취소했다 — "근거 부족"으로 읽히면 다음 행동을 잘못 고른다.
+            return EvidenceAbstainResult(state="abstain", abstainReason=ABSTAIN_CANCELLED)
         reason_code = (
             ABSTAIN_OUT_OF_CORPUS if state.candidates == 0 else ABSTAIN_INSUFFICIENT
         )

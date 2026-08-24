@@ -15,6 +15,17 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 
+def libpq_dsn(database_url: str) -> str:
+    """SQLAlchemy URL → libpq DSN. `make_engine`이 붙이는 드라이버 태그의 역변환이다.
+
+    psycopg.connect / psycopg_pool을 직접 쓰는 쪽(마이그레이션 러너, 턴 체크포인터)이 이걸 쓴다.
+    세 곳이 각자 인라인으로 문자열을 바꾸고 있었고, 그중 하나만 `postgres://`도 처리했다.
+    """
+    return database_url.replace("postgresql+psycopg://", "postgresql://", 1).replace(
+        "postgres://", "postgresql://", 1
+    )
+
+
 def make_engine(database_url: str) -> Engine:
     """Create the process-wide engine. Lazy connect — no server contact until first use."""
     # Bare `postgresql://` makes SQLAlchemy reach for psycopg2 (not installed). We ship

@@ -55,7 +55,6 @@ class FormEvidenceTool:
         port_ctx = SimpleNamespace(
             owner_id=ctx.owner_id,
             request_id=f"novelty-evidence-{uuid4().hex}",
-            budget_signal={},
         )
         try:
             result = self._breaker.call(

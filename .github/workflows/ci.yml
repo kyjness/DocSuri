@@ -228,6 +228,9 @@ jobs:
     # u12's redis job-queue adapter (locks, claim/release, visibility timeout) was verified only
     # against a fake: its integration test is URL-gated and this lane had no redis, so it skipped.
     # The loop's execution lock is exactly the thing a fake cannot prove.
+    # u11's turn checkpointer and the "trace rows are visible mid-turn from another session"
+    # guarantee are the same kind of thing — the in-memory repo shares objects, so only a real
+    # Postgres can show a flushed-but-uncommitted row staying invisible.
     services:
       redis:
         image: redis:7-alpine
@@ -235,6 +238,18 @@ jobs:
           - 6379:6379
         options: >-
           --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: docsuri
+          POSTGRES_DB: docsuri
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
@@ -252,6 +267,7 @@ jobs:
       - name: Tests (asserts discovery mounts when configured, skips when not)
         env:
           NOVELTY_TEST_REDIS_URL: redis://localhost:6379/1
+          DOCSURI_TEST_PG_DSN: postgresql://postgres:docsuri@localhost:5432/docsuri
         run: uv run pytest -rs
 
   root-suites:

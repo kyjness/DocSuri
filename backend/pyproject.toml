@@ -28,8 +28,9 @@ dependencies = [
     #   argon2-cffi → password hashing · httpx → reCAPTCHA/OIDC HTTP · cryptography → ORCID JWKS
     #   verification · pyotp → admin TOTP MFA.
     "sqlalchemy>=2.0,<3",
-    # psycopg 3 — SQLAlchemy Postgres driver (db.py) + the migration runner. binary wheel.
-    "psycopg[binary]>=3.1",
+    # psycopg 3 — SQLAlchemy Postgres driver (db.py) + the migration runner + the evidence
+    # checkpointer(langgraph-checkpoint-postgres가 >=3.2를 요구). binary wheel.
+    "psycopg[binary]>=3.2",
     "redis>=5.0",
     "pydantic>=2.7,<3",
     "argon2-cffi>=23.0",
@@ -41,8 +42,13 @@ dependencies = [
     # langgraph → U11 evidence 루프(modules/evidence/domain/loop.py). observe→decide→act를
     # LangGraph StateGraph로 돌린다(evidence-agent-v3 설계 §3.1, Q5=B). langchain-core가 전이로
     # 오지만 모델 바인딩은 쓰지 않고(Bedrock 어댑터 유지) LangSmith env도 없어 바깥으로 나가는
-    # 것이 없다. 체크포인터는 PR 2.
+    # 것이 없다.
     "langgraph>=1.0,<2",
+    # langgraph-checkpoint-postgres → U11 턴 체크포인트(modules/evidence/domain/loop.py,
+    # thread_id=turn_id). super-step마다 루프 스냅샷을 기존 Postgres에 남겨 실행자가 죽은
+    # 턴을 부분 답으로 마감한다(설계 §5.2·§5.5). psycopg-pool이 같이 온다. 테이블은 부팅
+    # 마이그레이션 게이트 아래 saver.setup()이 자기 원장으로 만든다.
+    "langgraph-checkpoint-postgres>=3.1,<4",
 ]
 
 [dependency-groups]
