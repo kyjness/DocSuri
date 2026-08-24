@@ -70,6 +70,8 @@ class RunnerDeps:
     live_lookup: Any | None = None
     doc_models: Any | None = None
     promotion: Any | None = None
+    # 백그라운드 색인 큐(§2.6 4단계). 없으면 코퍼스가 안 자랄 뿐 턴은 그대로 돈다.
+    index_queue: Any | None = None
     assets: Any | None = None
     cost_guard: Any | None = None
     budget_factory: Callable[[], LoopBudget] | None = None
@@ -143,6 +145,7 @@ class EvidenceTurnRunner:
             ),
             graph=self._graph,
         )
+        _queue_for_indexing(state, self._deps.index_queue)
         return to_turn_result(state, outcome.reason, query_used=request.topic)
 
     def _build_registry(self, state: LoopState, *, scope: str) -> ToolRegistry:
@@ -224,6 +227,32 @@ def _seed_continuation(
     for handle in prior.discovered.values():
         if state.handle(handle.paper_id) is None:
             state.discovered[handle.paper_id] = handle
+
+
+def _queue_for_indexing(state: LoopState, queue: Any | None) -> None:
+    """실시간 조회로 찾아 **실제로 확인한** 논문을 백그라운드 색인에 올린다(설계 §2.6 4단계).
+
+    이것이 "쓸수록 코퍼스가 그쪽으로 자란다"의 구현이다. 없으면 같은 논문을 매 턴 실시간으로
+    다시 조회하고 코퍼스는 영원히 자라지 않는다 — 승격(`fetch_paper`)만으로는 본문만 생기고
+    색인은 안 된다(U1의 `BUILD_DOC_MODEL`은 "이미 색인된 논문"을 위한 잡이다).
+
+    **확인한 것만 올린다.** 검색 히트를 전부 올리면 질의 한 번에 열 편이 큐로 가고, 그중
+    모델이 열어보지도 않은 논문이 대부분이다. 확인분은 `fetch_paper`·`read_paper`·추출이
+    실제로 건드린 논문이고 도구 상한이 그 수를 묶는다.
+
+    **턴이 끝난 뒤에 부른다.** 루프 안에서 부르면 사용자가 기다리는 시간에 SQS 왕복이 얹힌다.
+
+    실패는 전부 삼킨다 — 색인은 다음 질문을 위한 것이라 이 턴의 답에 아무 영향이 없다.
+    """
+    if queue is None:
+        return
+    for handle in state.papers.values():
+        if handle.origin is not PaperOrigin.EXTERNAL:
+            continue  # 코퍼스 논문은 이미 색인돼 있고, 첨부는 사적 문서라 코퍼스에 안 넣는다
+        try:
+            queue.enqueue_index(handle.paper_id)
+        except Exception:  # noqa: BLE001 — 색인 요청 실패가 답을 깨뜨리면 안 된다
+            log.warning("evidence: index enqueue failed for %s", handle.paper_id, exc_info=True)
 
 
 def _effective_scope(request: EvidenceRequest) -> str:

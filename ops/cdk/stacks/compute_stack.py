@@ -310,6 +310,15 @@ class ComputeStack(Stack):
             # 배포에서 한 번도 돈 적이 없다 — 코드에만 있고 아무도 그 사실을 몰랐다.
             # 자격증명(S2 키·OpenAlex mailto·연락처)은 ingestion이 쓰는 이름 그대로다.
             "DOCSURI_EVIDENCE_LIVE_LOOKUP_ENABLED": "false",
+            # U11 실시간 조회로 찾은 논문의 **백그라운드 색인**(설계 v3 §2.6 4단계) — U1 본 큐에
+            # EVENT 잡을 넣어 수집·파싱·색인까지 태운다. 위 docmodel 우선순위 큐가 아니다:
+            # 그쪽은 사용자가 기다리는 본문 확보용이고 색인 잡을 섞으면 기다리는 쪽이 밀린다.
+            # 이것이 없으면 승격이 본문만 만들고(BUILD_DOC_MODEL은 "이미 색인된 논문"용 잡이다)
+            # 코퍼스는 자라지 않아 같은 논문을 매 턴 실시간으로 다시 조회한다.
+            # SendMessage 권한은 아래 정책에 이미 있다(docsuri-ingestion-queue).
+            "DOCSURI_SQS_QUEUE_URL": (
+                f"https://sqs.{self.region}.amazonaws.com/{self.account}/docsuri-ingestion-queue"
+            ),
             "DOCSURI_NOVELTY_ARTIFACT_BUCKET": f"docsuri-papers-fulltext-{self.account}",
             "DOCSURI_NOVELTY_ARTIFACT_PREFIX": "novelty/",
             # doc-model rich view (본문): on a read miss the API enqueues a BUILD_DOC_MODEL job to

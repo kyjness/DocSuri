@@ -15,6 +15,7 @@ __all__ = [
     "DocModelReadPort",
     "LivePaperLookupPort",
     "PaperCandidate",
+    "PaperIndexQueuePort",
     "PaperPromotionPort",
     "PromotionResult",
     "SearchUnavailable",
@@ -83,6 +84,20 @@ class LivePaperLookupPort(Protocol):
 
         구현이 여러 소스를 합성하더라도 **부분 저하는 예외가 아니다** — 살아 있는 소스의
         결과를 돌려준다. 셋 다 죽었을 때만 `SearchUnavailable`이다(§7).
+        """
+        ...
+
+
+class PaperIndexQueuePort(Protocol):
+    def enqueue_index(self, paper_id: str) -> None:
+        """실시간 조회로 찾은 논문을 **백그라운드 색인**에 올린다(설계 §2.6 4단계).
+
+        색인은 U1이 한다 — 여기서 하는 것은 요청뿐이고 결과를 기다리지 않는다(INV-EV-7과
+        같은 경계). 그래서 반환값이 없고 **실패는 삼킨다**: 색인은 다음 질문을 위한 것이라
+        지금 이 턴의 답에 아무 영향이 없고, 실패로 턴을 깨면 사용자가 얻는 것만 잃는다.
+
+        이것이 "쓸수록 코퍼스가 그쪽으로 자란다"의 구현이다 — 없으면 같은 논문을 매 턴
+        실시간으로 다시 조회하고, 코퍼스는 영원히 자라지 않는다.
         """
         ...
 

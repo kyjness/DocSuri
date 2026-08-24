@@ -52,6 +52,7 @@ __all__ = [
     "LiveLookupTool",
     "ReadPaperTool",
     "ViewFigureTool",
+    "promotable",
 ]
 
 log = logging.getLogger("docsuri.evidence.tools")
@@ -323,7 +324,7 @@ class FetchPaperTool:
             self._state.examine(handle)
             return _fetched(handle)
 
-        if not _promotable(paper_id):
+        if not promotable(paper_id):
             # arXiv id가 없는 논문(학회·저널 전용)은 **빌드할 수 없다.** 막지 않으면 승격
             # 큐에 못 만드는 잡이 들어가고 20초 폴링을 태운 뒤 `timed_out`으로 끝난다 —
             # 결과는 "초록 범위로 계속"으로 같지만 매 호출마다 큐 메시지와 20초가 나간다.
@@ -367,15 +368,17 @@ class FetchPaperTool:
         return _fetched(handle)
 
 
-# 본문 승격은 arXiv 논문만 가능하다 — U1의 BUILD_DOC_MODEL 잡이 arxivRef를 나른다.
-# `live_lookup`이 arXiv에 없는 논문을 `doi:` 네임스페이스로 실어 오므로 그 경계가 필요하다.
+# 본문 승격은 arXiv 논문만 가능하다 — U1의 잡이 arxivRef를 나른다. `live_lookup`이 arXiv에
+# 없는 논문을 `doi:` 네임스페이스로 실어 오므로 그 경계가 필요하다. **공개 이름인 이유**는
+# 백그라운드 색인(§2.6 4단계)도 같은 판정을 쓰기 때문이다 — 두 곳이 각자 정규식을 들면
+# 한쪽만 고쳐져 못 만드는 잡이 큐로 간다.
 _PROMOTABLE_ID = re.compile(
     r"^(?:arxiv:)?(?:\d{4}\.\d{4,5}|[a-z-]{2,}(?:\.[A-Z]{2})?/\d{7})(?:v\d+)?$",
     re.IGNORECASE,
 )
 
 
-def _promotable(paper_id: str) -> bool:
+def promotable(paper_id: str) -> bool:
     return bool(_PROMOTABLE_ID.match(paper_id.strip()))
 
 

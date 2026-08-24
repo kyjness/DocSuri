@@ -158,9 +158,13 @@ def build_evidence_runner(
     # --- 선택 도구: 없으면 등록되지 않고 도구 목록이 자연 축소된다 ---
     live_lookup = None
     promotion = None
+    index_queue = None
     if _live_lookup_enabled():
         live_lookup = _build_live_lookup()
         promotion = _build_promotion(doc_models)
+        # 실시간 조회로 찾은 논문을 코퍼스로 되먹인다(§2.6 4단계). 실시간 조회와 한 플래그에
+        # 묶는다 — 조회가 꺼져 있으면 코퍼스 밖 논문이 애초에 안 들어온다.
+        index_queue = _build_index_queue()
 
     assets = _build_asset_reader(session_factory)
 
@@ -173,6 +177,7 @@ def build_evidence_runner(
             live_lookup=live_lookup,
             doc_models=doc_models,
             promotion=promotion,
+            index_queue=index_queue,
             assets=assets,
             cost_guard=cost_guard,
             budget_factory=settings.build_loop_budget,
@@ -219,6 +224,20 @@ def _build_live_lookup() -> object:
         mailto=os.environ.get('DOCSURI_OPENALEX_MAILTO'),
         contact=os.environ.get('DOCSURI_CONTACT_EMAIL'),
     )
+
+
+def _build_index_queue() -> object | None:
+    """U1 **본 큐**에 색인 잡을 넣는 어댑터. 큐 URL이 없으면 None(기능이 자연히 꺼진다).
+
+    승격이 쓰는 우선순위 큐(`DOCSURI_DOCMODEL_BUILD_QUEUE_URL`)가 아니다 — 그쪽은 사용자가
+    기다리는 본문 확보용이고, 색인 잡을 섞으면 기다리는 쪽이 밀린다.
+    """
+    queue_url = os.environ.get('DOCSURI_SQS_QUEUE_URL')
+    if not queue_url:
+        return None
+    from .adapters.indexing import SqsPaperIndexQueue
+
+    return SqsPaperIndexQueue(queue_url=queue_url)
 
 
 def _build_promotion(doc_models: object) -> object | None:
