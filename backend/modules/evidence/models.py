@@ -43,7 +43,8 @@ class TurnAbstainResult:
 
 @dataclass(frozen=True)
 class TurnPendingResult:
-    job_id: str
+    """수락됐고 실행자가 돌리는 중 — 폴링·이벤트·취소는 전부 turn_id로 한다."""
+
     started_at: datetime = field(default_factory=_utc_now)
 
 
@@ -54,6 +55,18 @@ class TurnErrorResult:
 
 
 TurnResult = TurnSuccessResult | TurnAbstainResult | TurnPendingResult | TurnErrorResult
+
+
+def to_turn_result(state, reason, *, query_used: str) -> TurnResult:
+    """루프 상태 + 종료 사유 → 턴 결과. 러너의 정상 종료와 고아 마감이 같은 길을 쓴다."""
+    from .domain.assembler import assemble
+
+    outcome = assemble(state, reason, query_used=query_used)
+    if outcome.state == 'ok':
+        return TurnSuccessResult(
+            outcome=outcome, resolved_paper_ids=state.accumulator.cited_paper_ids
+        )
+    return TurnAbstainResult(outcome=outcome)
 
 
 @dataclass
@@ -68,11 +81,10 @@ class EvidenceTurn:
     request: EvidenceRequest | None = None
     result: TurnResult | None = None
     created_at: datetime = field(default_factory=_utc_now)
-    # 비동기 잡 폴링용 식별자(BR-EV-6) — TurnPendingResult.job_id에서 생성 시 한 번만
-    # 복사해온다. result가 terminal로 교체된 뒤에도 get_turn_by_job_id가 계속 조회할 수
-    # 있어야 하는데, job_id가 result 안에만 있으면 완료 즉시 사라져 404가 났었다
-    # (PR #338 리뷰 Blocking #2).
-    job_id: str | None = None
+    # 협조적 취소(v3 §5.2) — API가 세우고 실행자가 super-step 경계에서 읽는다.
+    cancel_requested: bool = False
+    # 실행자가 살아 있다는 마지막 흔적 — 없으면 created_at이 기준이다(§5.5 고아 마감).
+    heartbeat_at: datetime | None = None
 
 
 @dataclass
@@ -98,5 +110,8 @@ class AttachmentInput:
     record_ref: str | None = None
     object_key: str | None = None
     doc_model: Any | None = None
+    # 업로드 시 발급된 첨부 id — 실행자가 페이로드에서 재수화할 때 신원 검증의 키다.
+    # 없으면 이름으로 대신하는데, 이름은 발급 키가 아니라서 검증이 반드시 실패한다.
+    attachment_id: str | None = None
 
 

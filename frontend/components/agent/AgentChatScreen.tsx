@@ -85,7 +85,12 @@ export function AgentChatScreen() {
   const seenAgentMessageIdsRef = useRef<Set<string>>(new Set());
   const activeSessionId = state.session?.id;
   const activeMode = state.session?.mode;
-  const pollSession = shouldPollSession(state.jobState, state.messages, state.submitting);
+  const pollSession = shouldPollSession(
+    state.jobState,
+    state.messages,
+    state.submitting,
+    state.activeTurnId,
+  );
 
   useEffect(() => {
     let alive = true;
@@ -154,6 +159,44 @@ export function AgentChatScreen() {
       if (timer) clearTimeout(timer);
     };
   }, [activeSessionId, api, pollSession, state.jobState]);
+
+  // v3 §5.3 — evidence 턴 이벤트 구독. activeTurnId가 있는 동안 이 effect가 답변의 유일한
+  // 작성자다(스냅샷 폴링은 멈춘다). 끊기면 클라이언트가 after=seq로 다시 붙고, 그래도 안
+  // 되면 GET /turns/{id} 폴링으로 내려간다 — 새로고침 뒤에도 같은 길로 재부착된다.
+  const activeTurnId = state.activeTurnId;
+  useEffect(() => {
+    if (!activeTurnId || activeMode !== 'evidence') return;
+    let alive = true;
+    // 버려진 구독은 서버 제너레이터를 상한(10분)까지 초당 폴링하게 둔다 — 끊어 준다.
+    const subscription = new AbortController();
+    awaitingAgentResponseRef.current = true;
+    api
+      .followEvidenceTurn(
+        activeTurnId,
+        (events) => {
+          if (alive) dispatch({ type: 'eventsReceived', events });
+        },
+        subscription.signal,
+      )
+      .then((finished) => {
+        if (alive) dispatch({ type: 'turnFinished', finished });
+      })
+      .catch((error) => {
+        if (!alive) return;
+        awaitingAgentResponseRef.current = false;
+        dispatch({
+          type: 'sendFailure',
+          message:
+            error instanceof UserFacingError
+              ? error.message
+              : '답변을 받지 못했습니다. 세션을 다시 열어 주세요.',
+        });
+      });
+    return () => {
+      alive = false;
+      subscription.abort();
+    };
+  }, [activeTurnId, activeMode, api]);
 
   useEffect(() => {
     if (
@@ -234,17 +277,21 @@ export function AgentChatScreen() {
     dispatch({ type: 'sendStart', message: userMessage });
 
     try {
-      const result = await api.sendAgentMessage(
-        state.session.id,
-        {
+      if (state.mode === 'evidence') {
+        // v3 §5.1 — 수락만 받고 돌아온다. 진행·답변은 activeTurnId 구독 effect가 받는다.
+        const accepted = await api.acceptEvidenceTurn(state.session.id, {
           content,
           mode: state.mode,
           attachments,
-        },
-        // US-EV2/NFR-P6 — 동기 evidence 턴 SSE 진행 이벤트를 timeline에 점진 반영.
-        // 최종 claims는 터미널 result(sendSuccess 스냅샷)에서만 렌더링된다(C-2).
-        (events) => dispatch({ type: 'eventsReceived', events }),
-      );
+        });
+        dispatch({ type: 'turnAccepted', accepted });
+        return;
+      }
+      const result = await api.sendAgentMessage(state.session.id, {
+        content,
+        mode: state.mode,
+        attachments,
+      });
       dispatch({ type: 'sendSuccess', result });
     } catch (error) {
       awaitingAgentResponseRef.current = false;
@@ -282,6 +329,16 @@ export function AgentChatScreen() {
       }
     });
     if (fileInputRef.current) fileInputRef.current.value = '';
+  }
+
+  async function cancelTurn() {
+    if (!state.activeTurnId || state.cancelRequested) return;
+    dispatch({ type: 'cancelRequested' });
+    try {
+      await api.cancelEvidenceTurn(state.activeTurnId);
+    } catch {
+      // 취소 요청 실패 — 턴은 계속 돌고 결과는 구독이 받는다. 버튼만 되살릴 이유가 없다.
+    }
   }
 
   function resetStreamingState() {
@@ -344,7 +401,7 @@ export function AgentChatScreen() {
           onClick={() => fileInputRef.current?.click()}
           aria-label="파일 추가"
           data-testid="agent-attach-button"
-          disabled={!state.mode || state.submitting}
+          disabled={!state.mode || state.submitting || Boolean(state.activeTurnId)}
         >
           +
         </button>
@@ -364,17 +421,31 @@ export function AgentChatScreen() {
           placeholder={state.mode ? '메시지를 입력하세요' : '먼저 모드를 선택하세요'}
           aria-label="에이전트 메시지"
           data-testid="agent-composer-input"
-          disabled={!state.mode || state.submitting}
+          disabled={!state.mode || state.submitting || Boolean(state.activeTurnId)}
           rows={1}
         />
-        <button
-          type="submit"
-          className={styles.sendButton}
-          disabled={!canSend(state)}
-          data-testid="agent-composer-submit"
-        >
-          전송
-        </button>
+        {state.mode === 'evidence' && state.activeTurnId ? (
+          // v3 §2.8 — 취소는 처음부터 끝까지 가능하다. 하던 단계가 끝나는 대로 멈추고
+          // 그때까지의 근거로 부분 답을 만든다.
+          <button
+            type="button"
+            className={styles.sendButton}
+            onClick={() => void cancelTurn()}
+            disabled={state.cancelRequested}
+            data-testid="agent-composer-cancel"
+          >
+            {state.cancelRequested ? '취소 중…' : '취소'}
+          </button>
+        ) : (
+          <button
+            type="submit"
+            className={styles.sendButton}
+            disabled={!canSend(state)}
+            data-testid="agent-composer-submit"
+          >
+            전송
+          </button>
+        )}
       </form>
 
       {/* 조사 중에도 입력은 열려 있다 — 다만 지시는 즉시가 아니라 다음 판단 시점에
@@ -1075,7 +1146,11 @@ export function shouldPollSession(
   jobState: AgentJobState,
   messages: AgentMessage[],
   submitting = false,
+  activeTurnId: string | null = null,
 ): boolean {
+  // evidence 턴이 실행 중이면 이벤트 구독이 유일한 작성자다 — 스냅샷이 끼어들면 답변
+  // 자리를 먼저 채우고 폴링을 꺼 버린다.
+  if (activeTurnId) return false;
   if (jobState === 'queued' || jobState === 'running') return true;
   if (submitting) return false;
   const last = messages.at(-1);

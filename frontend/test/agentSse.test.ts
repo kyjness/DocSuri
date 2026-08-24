@@ -1,12 +1,13 @@
-// US-EV2/NFR-P6 — 동기 evidence 턴 SSE 소비(스트리밍 리더 + JSON 폴백).
+// v3 §5.3 — evidence 턴 이벤트 스트림 소비(GET 리더 + after 재접속 + 폴링 폴백).
 // novelty SSE 파서 테스트(agentChatScreen.test.tsx)와 동일한 프레임 형식을 공유한다.
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApiClient } from '@/lib/api/apiClient';
 import type { Transport, TransportRequest, TransportResponse } from '@/lib/api/transport';
-import { parseNoveltySseEvents, streamAgentTurn } from '@/lib/agentChat/sse';
+import { parseNoveltySseEvents, readTurnEvents } from '@/lib/agentChat/sse';
 import type { AgentTimelineEvent } from '@/lib/agentChat/types';
 
 const CLAIM_STATEMENT = '벤치마크 재사용은 데이터 누수 위험을 높인다.';
+const EVENTS_PATH = '/api/evidence/turns/t1/events';
 
 function frame(event: string, data: unknown): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -35,6 +36,10 @@ function sseResponse(chunks: string[], contentType = 'text/event-stream'): Respo
           index < chunks.length
             ? { done: false, value: encoder.encode(chunks[index++]) }
             : { done: true, value: undefined },
+        // 실제 리더 계약 — 구독을 버릴 때 스트림을 끊는 경로가 여기 있다.
+        cancel: async () => {
+          index = chunks.length;
+        },
       }),
     },
   } as unknown as Response;
@@ -53,275 +58,273 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe('streamAgentTurn (US-EV2 sync SSE)', () => {
+describe('readTurnEvents (v3 §5.3 turn event stream)', () => {
   it('delivers progress events progressively, terminal payload only from the result frame', async () => {
     const seen: Array<{ atEvent: string; stage: string }> = [];
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () =>
-        sseResponse([
-          progressFrame('e1', 'started', { jobId: 'job-9' }),
-          progressFrame('e2', 'papers_fetched', { count: 3 }),
-          // 터미널 프레임에만 검증된 claims가 실린다(C-2/INV-EV-3).
-          frame('result', {
-            jobId: 'job-9',
-            state: 'completed',
-            claims: [{ statement: CLAIM_STATEMENT }],
-          }),
-        ]),
-      ),
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        expect(String(input)).toBe(`/bff${EVENTS_PATH}?after=2`);
+        expect(init?.method).toBe('GET');
+        return sseResponse([
+          progressFrame('t1:accepted', 'accepted', { seq: 0 }),
+          progressFrame('t1:3', 'tool', { tool: 'corpus_search', seq: 3 }),
+          frame('result', { turnId: 't1', result: { state: 'ok', claims: [{ statement: CLAIM_STATEMENT }] } }),
+        ]);
+      }),
     );
 
-    const events: AgentTimelineEvent[] = [];
-    const outcome = await streamAgentTurn({
-      path: '/api/evidence/turns',
-      body: { content: 'q' },
-      onEvents: (incoming) => {
-        events.push(...incoming);
-        seen.push({ atEvent: incoming[0].id, stage: incoming[0].stage });
-      },
+    const outcome = await readTurnEvents({
+      path: `${EVENTS_PATH}?after=2`,
+      onEvents: (events: AgentTimelineEvent[]) =>
+        events.forEach((event) => seen.push({ atEvent: event.id, stage: event.stage })),
     });
 
+    expect(seen).toEqual([
+      { atEvent: 't1:accepted', stage: 'accepted' },
+      { atEvent: 't1:3', stage: 'tool' },
+    ]);
     expect(outcome).toEqual({
       kind: 'terminal',
-      payload: { jobId: 'job-9', state: 'completed', claims: [{ statement: CLAIM_STATEMENT }] },
+      payload: { turnId: 't1', result: { state: 'ok', claims: [{ statement: CLAIM_STATEMENT }] } },
     });
-    // 진행 이벤트는 프레임마다 점진 도착했고(터미널 이전), claim 텍스트를 싣지 않는다.
-    expect(seen.map((s) => s.stage)).toEqual(['started', 'papers_fetched']);
-    for (const event of events) {
-      expect(JSON.stringify(event)).not.toContain(CLAIM_STATEMENT);
-    }
-    expect(events[1].detail).toBe('결과 3건');
   });
 
-  it('returns the JSON body as-is when the server answers application/json (no resend)', async () => {
-    const fetchMock = vi.fn(async () =>
-      jsonResponse(200, { jobId: 'job-1', state: 'completed' }),
-    );
-    vi.stubGlobal('fetch', fetchMock);
+  it('returns the JSON body as-is when the server answers application/json (mock path)', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(200, { events: [], turn: { turnId: 't1' } })));
 
-    const outcome = await streamAgentTurn({ path: '/api/evidence/turns', body: {} });
+    const outcome = await readTurnEvents({ path: EVENTS_PATH });
 
-    expect(outcome).toEqual({
-      kind: 'json',
-      status: 200,
-      body: { jobId: 'job-1', state: 'completed' },
-    });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(outcome).toEqual({ kind: 'json', status: 200, body: { events: [], turn: { turnId: 't1' } } });
   });
 
-  it('reports failed with the observed jobId when the stream breaks before the terminal', async () => {
+  it('reports failed with the last seq when the stream breaks before the terminal', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => sseResponse([progressFrame('e1', 'started', { jobId: 'job-7' })])),
+      vi.fn(async () => sseResponse([progressFrame('t1:1', 'tool', { seq: 1 }), progressFrame('t1:4', 'tool', { seq: 4 })])),
     );
 
-    const outcome = await streamAgentTurn({ path: '/api/evidence/turns', body: {} });
+    const outcome = await readTurnEvents({ path: EVENTS_PATH });
 
-    expect(outcome).toEqual({ kind: 'failed', jobId: 'job-7', started: true });
-  });
-
-  it('reports failed with the accepted sessionId when a sync turn (no jobId) breaks', async () => {
-    // 동기 턴에는 jobId가 없다 — 서버의 'accepted' 신호가 복구 좌표(sessionId)를 준다.
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () =>
-        sseResponse([
-          progressFrame('e1', 'started'),
-          progressFrame('e2', 'accepted', { sessionId: 'sess-5', turnId: 't1' }),
-        ]),
-      ),
-    );
-
-    const outcome = await streamAgentTurn({ path: '/api/evidence/turns', body: {} });
-
-    expect(outcome).toEqual({ kind: 'failed', sessionId: 'sess-5', started: true });
+    expect(outcome).toEqual({ kind: 'failed', lastSeq: 4 });
   });
 
   it('maps an error frame to failed (fail-soft, no crash)', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () =>
-        sseResponse([
-          progressFrame('e1', 'started', { jobId: 'job-3' }),
-          frame('error', { message: '일시적인 오류로 답변을 생성하지 못했습니다.' }),
-        ]),
-      ),
+      vi.fn(async () => sseResponse([progressFrame('t1:1', 'tool', { seq: 1 }), frame('error', { message: 'x' })])),
     );
 
-    const outcome = await streamAgentTurn({ path: '/api/evidence/turns', body: {} });
+    const outcome = await readTurnEvents({ path: EVENTS_PATH });
 
-    expect(outcome).toEqual({ kind: 'failed', jobId: 'job-3', started: true });
+    expect(outcome).toEqual({ kind: 'failed', lastSeq: 1 });
   });
 
-  it('parses split frames across chunk boundaries', async () => {
-    const whole = progressFrame('e1', 'extracting', { paperCount: 2 }) + frame('result', { ok: 1 });
+  it('passes the abort signal through and cancels the reader when the subscription is dropped', async () => {
+    // 안 끊으면 서버 제너레이터가 상한(10분)까지 초당 폴링을 계속한다.
+    const controller = new AbortController();
+    let seenSignal: AbortSignal | undefined;
+    let cancelled = false;
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => sseResponse([whole.slice(0, 25), whole.slice(25, 60), whole.slice(60)])),
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        seenSignal = init?.signal ?? undefined;
+        const res = sseResponse([progressFrame('t1:1', 'tool', { seq: 1 })]);
+        const reader = res.body!.getReader();
+        const wrapped = { ...reader, cancel: async () => { cancelled = true; } };
+        return { ...res, body: { getReader: () => wrapped } } as unknown as Response;
+      }),
     );
 
+    const outcome = await readTurnEvents({ path: EVENTS_PATH, signal: controller.signal });
+
+    expect(seenSignal).toBe(controller.signal);
+    expect(cancelled).toBe(true);
+    expect(outcome).toEqual({ kind: 'failed', lastSeq: 1 });
+  });
+
+  it('parses split frames across chunk boundaries and carries seq into sequence', async () => {
     const events: AgentTimelineEvent[] = [];
-    const outcome = await streamAgentTurn({
-      path: '/api/evidence/turns',
-      body: {},
-      onEvents: (incoming) => events.push(...incoming),
+    const whole = progressFrame('t1:7', 'tool', { tool: 'read_paper', seq: 7 }) + frame('result', { ok: true });
+    const cut = Math.floor(whole.length / 2);
+    vi.stubGlobal('fetch', vi.fn(async () => sseResponse([whole.slice(0, cut), whole.slice(cut)])));
+
+    const outcome = await readTurnEvents({
+      path: EVENTS_PATH,
+      onEvents: (incoming: AgentTimelineEvent[]) => events.push(...incoming),
     });
 
-    expect(events.map((e) => e.stage)).toEqual(['extracting']);
-    expect(outcome).toEqual({ kind: 'terminal', payload: { ok: 1 } });
+    expect(events.map((event) => [event.id, event.sequence])).toEqual([['t1:7', 7]]);
+    expect(outcome.kind).toBe('terminal');
   });
 });
 
-describe('ApiClient.sendAgentMessage streaming integration', () => {
-  function snapshotTransport(): Transport & { calls: TransportRequest[] } {
+describe('ApiClient evidence turn lifecycle (accept → follow → snapshot)', () => {
+  const TURN_OK = {
+    sessionId: 'job-9',
+    turnId: 't1',
+    topic: 'q',
+    result: { state: 'ok', claims: [], coverage: { paperCount: 0 } },
+    createdAt: '2026-07-10',
+  };
+
+  function transportOf(
+    answer: (req: TransportRequest) => TransportResponse,
+    streams = true,
+  ): Transport & { calls: TransportRequest[] } {
     const t = {
       calls: [] as TransportRequest[],
-      streamsAgentTurns: true,
+      streamsAgentTurns: streams,
       async send(req: TransportRequest): Promise<TransportResponse> {
         t.calls.push(req);
-        if (req.method === 'GET' && req.path === '/api/evidence/sessions/job-9') {
-          // v2 SessionDetailOut — 실 컨트롤러 형태를 그대로 흉내낸다.
-          return {
-            status: 200,
-            body: {
-              id: 'job-9',
-              title: 'q',
-              createdAt: '2026-07-10',
-              updatedAt: '2026-07-10',
-              turns: [
-                {
-                  sessionId: 'job-9',
-                  turnId: 't1',
-                  topic: 'q',
-                  result: { state: 'ok', claims: [], coverage: { paperCount: 0 } },
-                  createdAt: '2026-07-10',
-                },
-              ],
-            },
-          };
-        }
-        // v2 TurnOut — 턴 생성·잡 폴링 응답.
-        return {
-          status: 200,
-          body: {
-            sessionId: 'job-9',
-            turnId: 't1',
-            topic: 'q',
-            result: { state: 'ok', claims: [], coverage: { paperCount: 0 } },
-            createdAt: '2026-07-10',
-          },
-        };
+        return answer(req);
       },
     };
     return t;
   }
 
-  it('streams progress then resolves with the snapshot (claims only after terminal)', async () => {
+  function snapshotAnswer(req: TransportRequest): TransportResponse {
+    if (req.method === 'POST' && req.path === '/api/evidence/turns') {
+      return { status: 202, body: { ...TURN_OK, result: { state: 'pending' } } };
+    }
+    if (req.method === 'GET' && req.path === '/api/evidence/sessions/job-9') {
+      return {
+        status: 200,
+        body: { id: 'job-9', title: 'q', createdAt: '2026-07-10', updatedAt: '2026-07-10', turns: [TURN_OK] },
+      };
+    }
+    if (req.method === 'GET' && req.path === '/api/evidence/turns/t1') {
+      return { status: 200, body: TURN_OK };
+    }
+    return { status: 500, body: null };
+  }
+
+  it('accepts with 202, then streams progress and resolves from the terminal frame', async () => {
+    const t = transportOf(snapshotAnswer);
+    const streamed: string[] = [];
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () =>
-        sseResponse([
-          progressFrame('e1', 'started', { jobId: 'job-9' }),
-          progressFrame('e2', 'validating', { claimCount: 1 }),
-          frame('result', { sessionId: 'job-9', turnId: 't1', result: { state: 'ok', claims: [], coverage: { paperCount: 0 } } }),
-        ]),
-      ),
-    );
-    const t = snapshotTransport();
-    const client = new ApiClient(t, { timeoutMs: 1000, retryBackoffMs: 1 });
-
-    const order: string[] = [];
-    const result = await client.sendAgentMessage(
-      'agent-evidence-local',
-      { content: 'q', mode: 'evidence' },
-      (events) => order.push(...events.map((e) => e.stage)),
-    );
-
-    // 진행 이벤트가 스냅샷(최종 결과)보다 먼저 도착했다 — 점진 렌더링 시퀀스.
-    expect(order).toEqual(['started', 'validating']);
-    expect(result.session.id).toBe('evidence:job-9');
-    expect(result.outcome).toBe('completed');
-    // 최종 본문은 터미널 이후 스냅샷에서만 온다 — POST가 transport로 중복 전송되지 않았다.
-    expect(t.calls.filter((req) => req.method === 'POST')).toHaveLength(0);
-  });
-
-  it('falls back to the JSON transport path when the SSE fetch is unavailable', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => {
-        throw new Error('network down');
+      vi.fn(async (input: RequestInfo | URL) => {
+        streamed.push(String(input));
+        return sseResponse([
+          progressFrame('t1:accepted', 'accepted', { sessionId: 'job-9', turnId: 't1', seq: 0 }),
+          progressFrame('t1:1', 'tool', { tool: 'corpus_search', seq: 1 }),
+          frame('result', TURN_OK),
+        ]);
       }),
     );
-    const t = snapshotTransport();
+    const timeline: AgentTimelineEvent[] = [];
     const client = new ApiClient(t, { timeoutMs: 1000, retryBackoffMs: 1 });
 
-    const result = await client.sendAgentMessage('agent-evidence-local', {
+    const accepted = await client.acceptEvidenceTurn('agent-evidence-local', {
       content: 'q',
       mode: 'evidence',
     });
-
-    expect(result.session.id).toBe('evidence:job-9');
-    expect(t.calls.some((req) => req.method === 'POST' && req.path === '/api/evidence/turns')).toBe(
-      true,
+    const finished = await client.followEvidenceTurn(accepted.turnId, (incoming) =>
+      timeline.push(...incoming),
     );
+
+    // 수락은 한 번의 POST뿐 — 답변은 터미널 프레임에서 나오므로 세션 스냅샷을 다시 읽지 않는다.
+    expect(t.calls.map((c) => `${c.method} ${c.path}`)).toEqual(['POST /api/evidence/turns']);
+    expect(streamed).toEqual(['/bff/api/evidence/turns/t1/events']);
+    expect(timeline.map((event) => event.stage)).toEqual(['accepted', 'tool']);
+    expect(accepted.session.id).toBe('evidence:job-9');
+    expect(finished.message.id).toBe('t1-agent');
   });
 
-  it('recovers via snapshot (not a resend) when the stream breaks after start', async () => {
+  it('reconnects with after=<seq> after a short backoff when the stream breaks, then resolves', async () => {
+    const t = transportOf(snapshotAnswer);
+    const urls: string[] = [];
+    const at: number[] = [];
+    let attempt = 0;
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => sseResponse([progressFrame('e1', 'started', { jobId: 'job-9' })])),
+      vi.fn(async (input: RequestInfo | URL) => {
+        urls.push(String(input));
+        at.push(Date.now());
+        attempt += 1;
+        if (attempt === 1) return sseResponse([progressFrame('t1:2', 'tool', { seq: 2 })]); // 끊김
+        return sseResponse([progressFrame('t1:3', 'tool', { seq: 3 }), frame('result', TURN_OK)]);
+      }),
     );
-    const t = snapshotTransport();
-    const client = new ApiClient(t, { timeoutMs: 1000, retryBackoffMs: 1 });
 
-    const result = await client.sendAgentMessage('agent-evidence-local', {
-      content: 'q',
-      mode: 'evidence',
-    });
+    const finished = await new ApiClient(t, { timeoutMs: 1000, retryBackoffMs: 1 }).followEvidenceTurn('t1');
 
-    expect(result.session.id).toBe('evidence:job-9');
-    // 백엔드는 턴을 계속 완결하므로 재전송하지 않는다(비용 이중 지출 금지).
-    expect(t.calls.filter((req) => req.method === 'POST')).toHaveLength(0);
+    expect(urls).toEqual(['/bff/api/evidence/turns/t1/events', '/bff/api/evidence/turns/t1/events?after=2']);
+    // 즉시 재접속하지 않는다 — 끊긴 원인이 그대로면 3회를 한꺼번에 태운다.
+    expect(at[1] - at[0]).toBeGreaterThanOrEqual(400);
+    expect(finished.turnId).toBe('t1');
+    expect(finished.outcome).toBe('completed');
+    expect(finished.cancelled).toBe(false);
   });
 
-  it('recovers a broken sync turn via the accepted sessionId without resending', async () => {
-    // 동기 턴(jobId 없음)이 중간에 끊겨도, accepted가 준 sessionId로 스냅샷 복구한다.
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () =>
-        sseResponse([
-          progressFrame('e1', 'started'),
-          progressFrame('e2', 'accepted', { sessionId: 'job-9', turnId: 't1' }),
-        ]),
-      ),
-    );
-    const t = snapshotTransport();
-    const client = new ApiClient(t, { timeoutMs: 1000, retryBackoffMs: 1 });
+  it('falls back to polling GET /turns/{id} when the stream keeps failing (no resend)', async () => {
+    const t = transportOf(snapshotAnswer);
+    vi.stubGlobal('fetch', vi.fn(async () => sseResponse([])));
 
-    const result = await client.sendAgentMessage('agent-evidence-local', {
-      content: 'q',
-      mode: 'evidence',
-    });
+    const finished = await new ApiClient(t, { timeoutMs: 1000, retryBackoffMs: 1 }).followEvidenceTurn('t1');
 
-    expect(result.session.id).toBe('evidence:job-9');
-    expect(t.calls.filter((req) => req.method === 'POST')).toHaveLength(0);
+    expect(t.calls.map((c) => `${c.method} ${c.path}`)).toEqual(['GET /api/evidence/turns/t1']);
+    expect(finished.message.id).toBe('t1-agent');
   });
 
-  it('surfaces an error instead of resending when the stream breaks without coordinates', async () => {
-    // 서버가 턴을 돌리기 시작했는데(started) 좌표(jobId·sessionId)를 못 받은 창 —
-    // JSON 폴백으로 재전송하면 같은 턴이 두 번 실행되므로 오류로 멈춘다.
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => sseResponse([progressFrame('e1', 'started')])),
+  it('uses the JSON events snapshot on a non-streaming transport (mock mode)', async () => {
+    const t = transportOf((req) => {
+      if (req.method === 'GET' && req.path === '/api/evidence/turns/t1/events') {
+        return {
+          status: 200,
+          body: {
+            events: [
+              { eventId: 't1:1', state: 'completed', stage: 'tool', message: '도구 실행', payload: { seq: 1 } },
+            ],
+            turn: TURN_OK,
+          },
+        };
+      }
+      return snapshotAnswer(req);
+    }, false);
+    const timeline: AgentTimelineEvent[] = [];
+
+    const finished = await new ApiClient(t, { timeoutMs: 1000, retryBackoffMs: 1 }).followEvidenceTurn(
+      't1',
+      (incoming: AgentTimelineEvent[]) => timeline.push(...incoming),
     );
-    const t = snapshotTransport();
-    const client = new ApiClient(t, { timeoutMs: 1000, retryBackoffMs: 1 });
+
+    expect(timeline.map((event) => event.id)).toEqual(['t1:1']);
+    expect(finished.outcome).toBe('completed');
+  });
+
+  it('marks a cancelled turn so the screen can close the timeline', async () => {
+    const cancelledTurn = {
+      ...TURN_OK,
+      result: { state: 'ok', claims: [], coverage: { paperCount: 1, stoppedReason: 'cancelled' } },
+    };
+    const t = transportOf(
+      (req) =>
+        req.path === '/api/evidence/turns/t1/events'
+          ? { status: 200, body: { events: [], turn: cancelledTurn } }
+          : snapshotAnswer(req),
+      false,
+    );
+
+    const finished = await new ApiClient(t, { timeoutMs: 1000, retryBackoffMs: 1 }).followEvidenceTurn('t1');
+
+    expect(finished.cancelled).toBe(true);
+  });
+
+  it('surfaces 409 from accept when the session already has a running turn', async () => {
+    const t = transportOf((req) =>
+      req.path === '/api/evidence/turns'
+        ? { status: 409, body: { detail: '이 대화에서 아직 진행 중인 질문이 있습니다.' } }
+        : snapshotAnswer(req),
+    );
 
     await expect(
-      client.sendAgentMessage('agent-evidence-local', { content: 'q', mode: 'evidence' }),
-    ).rejects.toThrow('연결이 끊겼습니다');
-    expect(t.calls.filter((req) => req.method === 'POST')).toHaveLength(0);
+      new ApiClient(t, { timeoutMs: 1000, retryBackoffMs: 1 }).acceptEvidenceTurn('evidence:job-9', {
+        content: 'q2',
+        mode: 'evidence',
+      }),
+    ).rejects.toThrow();
   });
 });
 

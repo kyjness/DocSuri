@@ -67,6 +67,22 @@ export interface AgentSessionSnapshot {
   session: AgentSessionSummary;
   messages: AgentMessage[];
   events: AgentTimelineEvent[];
+  /** evidence — 아직 실행 중인 턴(v3 §5). 새로고침 뒤 이벤트 구독을 다시 붙이는 좌표다. */
+  activeTurnId?: string | null;
+}
+
+/** evidence 턴 수락(202) — 실행은 백그라운드, 진행은 turnId로 구독한다(v3 §5.1). */
+export interface AgentTurnAccepted {
+  session: AgentSessionSummary;
+  turnId: string;
+}
+
+/** evidence 턴 종단 — 터미널 result 프레임(또는 폴링)에서 만든 답변 메시지. */
+export interface AgentTurnFinished {
+  turnId: string;
+  message: AgentMessage;
+  outcome: AgentJobState;
+  cancelled: boolean;
 }
 
 export interface AgentSessionListResponse {

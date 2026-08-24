@@ -92,7 +92,7 @@ describe('BFF proxy (app/bff/[...path]/route)', () => {
     await expect(res.text()).resolves.toContain('event: progress');
   });
 
-  it('streams a sync evidence turn POST through the SSE hop (US-EV2)', async () => {
+  it('streams evidence turn events (GET) through the SSE hop (v3 §5.3)', async () => {
     process.env.DOCSURI_GATEWAY_URL = 'https://api.example.test';
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => {
       return new Response('event: progress\ndata: {"eventId":"e1"}\n\nevent: result\ndata: {}\n\n', {
@@ -102,45 +102,52 @@ describe('BFF proxy (app/bff/[...path]/route)', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    const { POST } = await import('@/app/bff/[...path]/route');
-    const req = new NextRequest('http://localhost/bff/api/evidence/turns', {
-      method: 'POST',
-      body: JSON.stringify({ content: '근거 질문' }),
-      headers: {
-        accept: 'text/event-stream',
-        'content-type': 'application/json',
-        cookie: 'sid=abc',
-      },
+    const { GET } = await import('@/app/bff/[...path]/route');
+    const req = new NextRequest('http://localhost/bff/api/evidence/turns/t-1/events?after=3', {
+      method: 'GET',
+      headers: { accept: 'text/event-stream', cookie: 'sid=abc' },
     });
-    const res = await POST(req, {
-      params: Promise.resolve({ path: ['api', 'evidence', 'turns'] }),
+    const res = await GET(req, {
+      params: Promise.resolve({ path: ['api', 'evidence', 'turns', 't-1', 'events'] }),
     });
     const [url, init] = fetchMock.mock.calls[0];
     const headers = init?.headers as Headers;
 
-    expect(String(url)).toBe('https://api.example.test/api/evidence/turns');
-    expect(init?.method).toBe('POST');
+    expect(String(url)).toBe('https://api.example.test/api/evidence/turns/t-1/events?after=3');
+    expect(init?.method).toBe('GET');
     expect(headers.get('accept')).toBe('text/event-stream');
-    expect(headers.get('content-type')).toBe('application/json');
     expect(headers.get('cookie')).toBe('sid=abc');
-    expect(init?.body).toBe(JSON.stringify({ content: '근거 질문' }));
     expect(res.headers.get('content-type')).toContain('text/event-stream');
     await expect(res.text()).resolves.toContain('event: result');
   });
 
-  it('falls through to the JSON proxy for turn SSE requests when no gateway is set (mock mode)', async () => {
+  it('falls through to the JSON proxy for turn events when no gateway is set (mock mode)', async () => {
+    const { GET } = await import('@/app/bff/[...path]/route');
+    const req = new NextRequest('http://localhost/bff/api/evidence/turns/t-1/events', {
+      method: 'GET',
+      headers: { accept: 'text/event-stream' },
+    });
+    const res = await GET(req, {
+      params: Promise.resolve({ path: ['api', 'evidence', 'turns', 't-1', 'events'] }),
+    });
+
+    // 핵심은 SSE 홉이 아니라 일반 proxy로 갔다는 것 — MockTransport가 JSON으로 답한다.
+    expect(res.headers.get('content-type') ?? '').not.toContain('text/event-stream');
+  });
+
+  it('does not treat the turn accept POST as a stream', async () => {
+    process.env.DOCSURI_GATEWAY_URL = 'https://api.example.test';
+    const fetchMock = vi.fn(async () => new Response('{}', { status: 202 }));
+    vi.stubGlobal('fetch', fetchMock);
     const { POST } = await import('@/app/bff/[...path]/route');
     const req = new NextRequest('http://localhost/bff/api/evidence/turns', {
       method: 'POST',
-      body: JSON.stringify({ content: 'mock turn' }),
+      body: JSON.stringify({ topic: '근거 질문' }),
       headers: { accept: 'text/event-stream', 'content-type': 'application/json' },
     });
     const res = await POST(req, {
       params: Promise.resolve({ path: ['api', 'evidence', 'turns'] }),
     });
-
-    // 스텁 MockTransport는 204를 돌려준다 — 핵심은 SSE 홉이 아니라 일반 proxy로 갔다는 것.
-    expect(res.status).toBe(204);
     expect(res.headers.get('content-type') ?? '').not.toContain('text/event-stream');
   });
 

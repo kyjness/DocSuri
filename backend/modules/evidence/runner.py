@@ -5,6 +5,10 @@
 
 비용 게이트는 루프 **시작 전**에 본다(BR-EV-7). 호출을 시작한 뒤 중단하면 이미
 지출한 뒤이고, U6가 저하를 알린 이유가 사라지지 않는다.
+
+그래프는 프로세스당 한 번 컴파일된 것을 **받아서** 쓴다(deps는 context로 가므로 턴마다 다시
+만들 이유가 없다). 체크포인트 조회·정리는 `checkpoints.TurnCheckpoints`가 소유한다 — 러너는
+돌리기만 한다.
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ from docsuri_shared._generated.dtos.evidence_schema import (
     EvidenceAbstainResult,
     EvidenceRequest,
 )
+from langgraph.graph.state import CompiledStateGraph
 
 from .adapters.tools import (
     CorpusSearchTool,
@@ -28,8 +33,7 @@ from .adapters.tools import (
     ReadPaperTool,
     ViewFigureTool,
 )
-from .domain.assembler import assemble
-from .domain.loop import LoopDeps, run_loop
+from .domain.loop import LoopDeps, compile_loop_graph, run_loop
 from .domain.models import (
     AgentRunContext,
     BudgetConsumed,
@@ -37,9 +41,10 @@ from .domain.models import (
     LoopState,
     PaperHandle,
     PaperOrigin,
+    TerminationReason,
     ToolCallRecord,
 )
-from .models import TurnAbstainResult, TurnResult, TurnSuccessResult
+from .models import TurnAbstainResult, TurnResult, to_turn_result
 from .ports.tools import ToolRegistry
 
 log = logging.getLogger("docsuri.evidence.runner")
@@ -69,13 +74,13 @@ class RunnerDeps:
 
 
 class EvidenceTurnRunner:
-    def __init__(self, deps: RunnerDeps) -> None:
+    def __init__(self, deps: RunnerDeps, *, graph: CompiledStateGraph | None = None) -> None:
         self._deps = deps
+        # 그래프를 안 주면 체크포인트 없이 돈다(테스트·U12 포트 경로).
+        self._graph = graph if graph is not None else compile_loop_graph(None)
 
     # -- 비용 -----------------------------------------------------------------
-    def _cost_degraded(self, budget_signal: dict | None) -> bool:
-        if (budget_signal or {}).get("state", "ok") != "ok":
-            return True
+    def _cost_degraded(self) -> bool:
         guard = self._deps.cost_guard
         if guard is None:
             return False
@@ -93,11 +98,11 @@ class EvidenceTurnRunner:
         ctx: AgentRunContext,
         request: EvidenceRequest,
         *,
-        budget_signal: dict | None = None,
         attachments: tuple[Any, ...] = (),
         on_trace: Callable[[ToolCallRecord], None] | None = None,
+        should_stop: Callable[[], TerminationReason | None] | None = None,
     ) -> TurnResult:
-        if self._cost_degraded(budget_signal):
+        if self._cost_degraded():
             return TurnAbstainResult(
                 outcome=EvidenceAbstainResult(
                     state="abstain", abstainReason=ABSTAIN_COST_DEGRADED
@@ -121,15 +126,11 @@ class EvidenceTurnRunner:
                 budget=budget,
                 ctx=ctx,
                 on_trace=on_trace,
+                should_stop=should_stop,
             ),
+            graph=self._graph,
         )
-
-        result = assemble(state, outcome.reason, query_used=request.topic)
-        if result.state == "ok":
-            return TurnSuccessResult(
-                outcome=result, resolved_paper_ids=state.accumulator.cited_paper_ids
-            )
-        return TurnAbstainResult(outcome=result)
+        return to_turn_result(state, outcome.reason, query_used=request.topic)
 
     def _build_registry(self, state: LoopState, *, scope: str) -> ToolRegistry:
         """설정이 없는 도구는 등록되지 않는다 — 도구 목록이 자연 축소된다.

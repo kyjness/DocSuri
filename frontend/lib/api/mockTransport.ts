@@ -72,6 +72,26 @@ import type {
 // US-NV8(#258) — mock Notion 연결 상태(모듈 수준, 세션 초기화와 무관한 사용자 설정).
 let mockNotionConnection: { parentPageId: string } | null = null;
 
+// v3 §5 — 수락된 evidence 턴. 수락은 202 pending, 이벤트·폴링은 turnId로 터미널을 돌려준다.
+type MockEvidenceTurn = {
+  turn: ReturnType<typeof turnsFromMessages>[number];
+  events: AgentTimelineEvent[];
+  cancelled: boolean;
+  reads: number;
+};
+const mockEvidenceTurns = new Map<string, MockEvidenceTurn>();
+// 테스트 훅 — 처음 n번의 events/폴링 읽기를 pending으로 답해 "실행 중" 구간을 만든다.
+let mockEvidenceTurnHoldReads = 0;
+
+export function setMockEvidenceTurnHoldReads(reads: number) {
+  mockEvidenceTurnHoldReads = reads;
+}
+
+export function resetMockEvidenceTurns() {
+  mockEvidenceTurns.clear();
+  mockEvidenceTurnHoldReads = 0;
+}
+
 export function resetMockNotionConnection() {
   mockNotionConnection = null;
 }
@@ -411,17 +431,46 @@ export class MockTransport implements Transport {
         attachments: body.attachments,
       });
       const turns = turnsFromMessages(result.session.id, result.messages);
-      const last = turns.at(-1);
-      return {
-        status: 200,
-        body: last ?? {
-          sessionId: result.session.id,
-          turnId: `turn-${Date.now()}`,
-          topic: String(body.topic ?? ''),
-          result: { state: 'error', errorCode: 'internal_error' },
-          createdAt: new Date().toISOString(),
-        },
+      const last = turns.at(-1) ?? {
+        sessionId: result.session.id,
+        turnId: `turn-${Date.now()}`,
+        topic: String(body.topic ?? ''),
+        result: { state: 'error', errorCode: 'internal_error' },
+        createdAt: new Date().toISOString(),
       };
+      // 수락은 202 pending이다 — 실행은 백그라운드, 결과는 events/폴링에서(v3 §5.1).
+      mockEvidenceTurns.set(last.turnId, {
+        turn: last,
+        events: result.events,
+        cancelled: false,
+        reads: 0,
+      });
+      return {
+        status: 202,
+        body: { ...last, result: { state: 'pending', startedAt: last.createdAt } },
+      };
+    }
+    const evidenceTurnMatch = path.match(/^\/api\/evidence\/turns\/([^/]+)(\/events|\/cancel)?$/);
+    if (evidenceTurnMatch) {
+      const pending = mockEvidenceTurns.get(decodeURIComponent(evidenceTurnMatch[1]));
+      if (!pending) return { status: 404, body: null };
+      if (evidenceTurnMatch[2] === '/cancel' && req.method === 'POST') {
+        pending.cancelled = true;
+        return {
+          status: 200,
+          body: { turnId: pending.turn.turnId, state: 'pending', cancelRequested: true },
+        };
+      }
+      if (evidenceTurnMatch[2] === '/events' && req.method === 'GET') {
+        // 게이트웨이가 없는 mock 경로의 JSON 스냅샷 — 실 BFF는 SSE로 흘린다.
+        return {
+          status: 200,
+          body: { events: pending.events.map(progressWire), turn: mockTurnOut(pending) },
+        };
+      }
+      if (!evidenceTurnMatch[2] && req.method === 'GET') {
+        return { status: 200, body: mockTurnOut(pending) };
+      }
     }
     if (path === '/api/novelty/jobs' && req.method === 'POST') {
       const body = req.body as {
@@ -584,6 +633,40 @@ function evidenceSession(session: AgentSessionSummary) {
  * 메시지가 그 턴의 결과가 된다. JSON이면 EvidenceResult로, `[abstain]`이면 기권으로,
  * 평문이면 answer로 접는다(실 서버의 answer 필드에 대응).
  */
+// 한 번 읽을 때마다 "아직 실행 중" 구간을 소비한다(setMockEvidenceTurnHoldReads).
+function mockTurnOut(pending: MockEvidenceTurn) {
+  if (pending.reads++ < mockEvidenceTurnHoldReads) {
+    return { ...pending.turn, result: { state: 'pending' } };
+  }
+  if (!pending.cancelled || pending.turn.result.state !== 'ok') return pending.turn;
+  // 취소된 턴은 서버처럼 stoppedReason=cancelled를 실어 돌려준다.
+  return {
+    ...pending.turn,
+    result: {
+      ...pending.turn.result,
+      coverage: {
+        ...(pending.turn.result.coverage as Record<string, unknown>),
+        stoppedReason: 'cancelled',
+      },
+    },
+  };
+}
+
+// 타임라인 픽스처 → 서버 progress wire shape(eventId/state/stage/message/payload/createdAt).
+function progressWire(event: AgentTimelineEvent) {
+  return {
+    eventId: event.id,
+    state: event.state,
+    stage: event.stage,
+    message: event.label,
+    payload: {
+      ...(event.detail ? { outputSummary: event.detail } : {}),
+      ...(event.sequence !== undefined ? { seq: event.sequence } : {}),
+    },
+    createdAt: new Date().toISOString(),
+  };
+}
+
 function turnsFromMessages(sessionId: string, messages: AgentMessage[]) {
   const turns: Array<{
     sessionId: string;

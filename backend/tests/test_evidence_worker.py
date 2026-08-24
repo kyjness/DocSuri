@@ -66,8 +66,8 @@ class _StubRunner:
         self.contexts: list = []
         self.attachments: list = []
 
-    def run(self, ctx, request: EvidenceRequest, *, budget_signal=None,
-            attachments=(), on_trace=None):
+    def run(self, ctx, request: EvidenceRequest, *, attachments=(), on_trace=None,
+            should_stop=None):
         self.calls += 1
         self.requests.append(request)
         self.contexts.append(ctx)
@@ -80,7 +80,7 @@ class _StubRunner:
 def _seeded_repo() -> tuple[InMemoryEvidenceRepository, str, str]:
     repo = InMemoryEvidenceRepository()
     session = repo.create_session(EvidenceSession(owner_id='owner-1'))
-    turn = EvidenceTurn(session_id=session.session_id, result=TurnPendingResult(job_id='job-1'))
+    turn = EvidenceTurn(session_id=session.session_id, result=TurnPendingResult())
     repo.add_turn(turn)
     return repo, session.session_id, turn.turn_id
 
@@ -90,8 +90,8 @@ def test_pending_turn_is_processed_once() -> None:
     runner = _StubRunner()
 
     process_job(
-        repo, runner=runner, owner_id='owner-1', session_id=session_id,
-        turn_id=turn_id, job_id='job-1', topic='transformer attention',
+        lambda: repo, runner=runner, owner_id='owner-1', session_id=session_id,
+        turn_id=turn_id, topic='transformer attention',
     )
 
     assert runner.calls == 1
@@ -105,7 +105,6 @@ def test_parse_sqs_payload_preserves_attachment_handles() -> None:
             'ownerId': 'owner-1',
             'sessionId': 'session-1',
             'turnId': 'turn-1',
-            'jobId': 'job-1',
             'topic': 'attachment handling',
             'attachments': ['att-1', 'att-2'],
         })
@@ -120,7 +119,6 @@ def test_parse_sqs_payload_preserves_attachment_doc_contract() -> None:
             'ownerId': 'owner-1',
             'sessionId': 'session-1',
             'turnId': 'turn-1',
-            'jobId': 'job-1',
             'topic': 'attachment handling',
             'attachmentDocs': [
                 {
@@ -146,8 +144,8 @@ def test_worker_passes_attachment_handles_to_evidence_request() -> None:
     runner = _StubRunner()
 
     process_job(
-        repo, runner=runner, owner_id='owner-1', session_id=session_id,
-        turn_id=turn_id, job_id='job-1', topic='attachment handling',
+        lambda: repo, runner=runner, owner_id='owner-1', session_id=session_id,
+        turn_id=turn_id, topic='attachment handling',
         attachments=['att-1', 'att-2'],
     )
 
@@ -181,12 +179,11 @@ def test_worker_polls_user_pdf_attachment_docmodel() -> None:
     )
 
     process_job(
-        repo,
+        lambda: repo,
         runner=runner,
         owner_id='owner-1',
         session_id=session_id,
         turn_id=turn_id,
-        job_id='job-1',
         topic='attachment handling',
         attachment_docs=[
             {
@@ -212,12 +209,12 @@ def test_duplicate_delivery_of_already_resolved_turn_is_skipped() -> None:
     runner = _StubRunner()
 
     process_job(
-        repo, runner=runner, owner_id='owner-1', session_id=session_id,
-        turn_id=turn_id, job_id='job-1', topic='transformer attention',
+        lambda: repo, runner=runner, owner_id='owner-1', session_id=session_id,
+        turn_id=turn_id, topic='transformer attention',
     )
     process_job(  # 중복 배달
-        repo, runner=runner, owner_id='owner-1', session_id=session_id,
-        turn_id=turn_id, job_id='job-1', topic='transformer attention',
+        lambda: repo, runner=runner, owner_id='owner-1', session_id=session_id,
+        turn_id=turn_id, topic='transformer attention',
     )
 
     assert runner.calls == 1
@@ -243,13 +240,13 @@ def test_runner_failure_stores_error_result_and_raises() -> None:
     repo, session_id, turn_id = _seeded_repo()
 
     class _FailingOrchestrator:
-        def run(self, ctx, request):
+        def run(self, ctx, request, **kwargs):
             raise RuntimeError('bedrock throttled')
 
     with pytest.raises(JobProcessingFailed):
         process_job(
-            repo, runner=_FailingOrchestrator(), owner_id='owner-1', session_id=session_id,
-            turn_id=turn_id, job_id='job-1', topic='transformer attention',
+            lambda: repo, runner=_FailingOrchestrator(), owner_id='owner-1', session_id=session_id,
+            turn_id=turn_id, topic='transformer attention',
         )
 
     from backend.modules.evidence.models import TurnErrorResult
@@ -263,13 +260,13 @@ def test_runner_failure_stores_error_result_and_raises() -> None:
 
 def test_soft_deleted_session_turn_is_terminated_not_left_pending() -> None:
     """PR #338 리뷰 Medium #12 — 세션이 소프트 삭제된 뒤 도착한 job은 turn을 pending으로
-    방치하면 안 된다(GET /jobs/{id}가 영원히 pending을 반환하게 됨)."""
+    방치하면 안 된다(GET /turns/{id}가 영원히 pending을 반환하게 됨)."""
     repo, session_id, turn_id = _seeded_repo()
     repo.soft_delete_session('owner-1', session_id)
 
     process_job(
-        repo, runner=_StubRunner(), owner_id='owner-1', session_id=session_id,
-        turn_id=turn_id, job_id='job-1', topic='transformer attention',
+        lambda: repo, runner=_StubRunner(), owner_id='owner-1', session_id=session_id,
+        turn_id=turn_id, topic='transformer attention',
     )
 
     from backend.modules.evidence.models import TurnErrorResult
@@ -278,3 +275,167 @@ def test_soft_deleted_session_turn_is_terminated_not_left_pending() -> None:
     resolved = next(t for t in turns if t.turn_id == turn_id)
     assert isinstance(resolved.result, TurnErrorResult)
     assert resolved.result.error_code == 'session_unavailable'
+
+
+# ---------------------------------------------------------------------------
+# v3 §5.2 — 취소·중단은 실행자 경계에서
+# ---------------------------------------------------------------------------
+
+def test_cancel_before_pickup_finishes_without_running_the_loop() -> None:
+    repo, session_id, turn_id = _seeded_repo()
+    repo.request_cancel('owner-1', turn_id)
+    runner = _StubRunner()
+
+    process_job(
+        lambda: repo, runner=runner, owner_id='owner-1', session_id=session_id,
+        turn_id=turn_id, topic='q',
+    )
+
+    assert runner.calls == 0
+    resolved = repo.list_turns('owner-1', session_id)[0]
+    assert isinstance(resolved.result, TurnAbstainResult)
+    assert resolved.result.outcome.abstainReason == 'cancelled'
+
+
+def test_should_stop_reads_the_flag_and_the_shutdown_event_each_super_step() -> None:
+    """하트비트 한 번 = 취소 플래그 한 번 — 취소가 종료 신호보다 먼저다."""
+    import threading
+
+    from backend.modules.evidence.domain.models import TerminationReason
+
+    repo, session_id, turn_id = _seeded_repo()
+    shutdown = threading.Event()
+    seen: list = []
+
+    class _ProbingRunner(_StubRunner):
+        def run(self, ctx, request, *, attachments=(), on_trace=None, should_stop=None):
+            seen.append(should_stop())           # 아무 신호 없음
+            shutdown.set()
+            seen.append(should_stop())           # 종료 신호
+            repo.request_cancel('owner-1', turn_id)
+            seen.append(should_stop())           # 취소가 우선
+            return super().run(ctx, request)
+
+    process_job(
+        lambda: repo, runner=_ProbingRunner(), owner_id='owner-1', session_id=session_id,
+        turn_id=turn_id, topic='q', shutdown=shutdown,
+    )
+
+    assert seen == [None, TerminationReason.INTERRUPTED, TerminationReason.CANCELLED]
+    assert repo.get_turn('owner-1', turn_id).heartbeat_at is not None
+
+
+def test_trace_rows_are_committed_as_they_happen_not_with_the_result() -> None:
+    """이벤트 스트림의 원천 — 러너가 도는 동안 다른 세션이 트레이스 행을 본다."""
+    from backend.modules.evidence.domain.models import ToolCallOutcome, ToolCallRecord
+
+    repo, session_id, turn_id = _seeded_repo()
+    visible_during_run: list[int] = []
+
+    class _TracingRunner(_StubRunner):
+        def run(self, ctx, request, *, attachments=(), on_trace=None, should_stop=None):
+            on_trace(ToolCallRecord(seq=1, tool='corpus_search', args_summary='q=a',
+                                    outcome=ToolCallOutcome.OK))
+            visible_during_run.extend(
+                r['seq'] for r in repo.list_trace_after('owner-1', turn_id, 0)
+            )
+            return super().run(ctx, request)
+
+    process_job(
+        lambda: repo, runner=_TracingRunner(), owner_id='owner-1', session_id=session_id,
+        turn_id=turn_id, topic='q',
+    )
+
+    assert visible_during_run == [1]
+
+
+def _second_pending_turn(repo, session_id: str) -> str:
+    turn = EvidenceTurn(session_id=session_id, result=TurnPendingResult())
+    repo.add_turn(turn)
+    return turn.turn_id
+
+
+def test_completed_turn_prunes_expired_checkpoints() -> None:
+    from datetime import timedelta
+
+    repo, session_id, turn_id = _seeded_repo()
+    old = EvidenceTurn(
+        session_id=session_id, result=TurnAbstainResult(
+            outcome=EvidenceAbstainResult(state='abstain', abstainReason='out_of_corpus')
+        ),
+    )
+    old.created_at = old.created_at - timedelta(days=30)
+    repo.add_turn(old)
+
+    class _Checkpoints:
+        enabled = True
+
+        def __init__(self) -> None:
+            self.deleted: list[str] = []
+
+        def delete(self, turn_ids):
+            self.deleted.extend(turn_ids)
+            return len(self.deleted)
+
+    checkpoints = _Checkpoints()
+    process_job(
+        lambda: repo, runner=_StubRunner(), owner_id='owner-1', session_id=session_id,
+        turn_id=turn_id, topic='q', checkpoints=checkpoints,
+        checkpoint_retention=timedelta(days=7),
+    )
+
+    assert checkpoints.deleted == [old.turn_id]  # 방금 끝난 턴은 보존 기간 안이라 남는다
+
+    # 정리 도장이 찍혔으므로 다음 턴이 같은 스레드를 다시 지우지 않는다 —
+    # 도장이 없으면 앞쪽 N건만 영원히 재삭제되고 그 뒤는 영영 안 지워진다.
+    checkpoints.deleted.clear()
+    process_job(
+        lambda: repo, runner=_StubRunner(), owner_id='owner-1',
+        session_id=session_id, turn_id=_second_pending_turn(repo, session_id), topic='q2',
+        checkpoints=checkpoints, checkpoint_retention=timedelta(days=7),
+    )
+    assert checkpoints.deleted == []
+
+
+def test_failure_before_the_runner_still_closes_the_turn() -> None:
+    """첨부 재수화(S3 대기)에서 죽어도 pending을 남기지 않는다 — 남기면 세션이 stale까지 잠긴다."""
+    repo, session_id, turn_id = _seeded_repo()
+
+    class _ExplodingDocModel:
+        def enqueue_and_poll(self, ref):
+            raise TimeoutError('s3')
+
+    from backend.modules.user_docmodel import user_docmodel_ref
+
+    issued = user_docmodel_ref(owner_id='owner-1', scope_id='att-1', attachment_id='att-1',
+                               object_key='uploads/evidence/owner-1/att-1/att-1/scan.pdf',
+                               module='evidence')
+    runner = _StubRunner()
+    with pytest.raises(JobProcessingFailed):
+        process_job(
+            lambda: repo, runner=runner, owner_id='owner-1', session_id=session_id,
+            turn_id=turn_id, topic='q',
+            attachment_docs=[{'id': 'att-1', 'name': 'scan.pdf', 'kind': 'pdf',
+                              'objectKey': issued.object_key, 'paperId': issued.paper_id,
+                              'recordRef': issued.record_ref}],
+            user_docmodel=_ExplodingDocModel(),
+        )
+
+    from backend.modules.evidence.models import TurnErrorResult
+
+    assert runner.calls == 0
+    assert isinstance(repo.list_turns('owner-1', session_id)[0].result, TurnErrorResult)
+
+
+def test_local_executor_closes_the_turn_when_the_payload_cannot_even_be_parsed() -> None:
+    from backend.modules.evidence.executor import LocalTurnExecutor
+    from backend.modules.evidence.models import TurnErrorResult
+
+    repo, session_id, turn_id = _seeded_repo()
+    executor = LocalTurnExecutor(repo_factory=lambda: repo, runner=_StubRunner(), workers=1)
+    try:
+        # topic이 없어 parse_sqs_payload가 던진다 — process_job 관문 앞이다.
+        executor.submit({'ownerId': 'owner-1', 'sessionId': session_id, 'turnId': turn_id})
+    finally:
+        assert executor.close(timeout=5) is True
+    assert isinstance(repo.get_turn('owner-1', turn_id).result, TurnErrorResult)

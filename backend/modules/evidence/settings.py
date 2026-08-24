@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from datetime import timedelta
 
 from docsuri_shared.env import env_flag as _env_flag
 from docsuri_shared.env import env_float as _env_float
@@ -18,6 +19,22 @@ from docsuri_shared.env import env_int as _env_int
 DEFAULT_MODEL = 'global.anthropic.claude-sonnet-4-6'
 DEFAULT_INPUT_USD_PER_MTOK = 3.0
 DEFAULT_OUTPUT_USD_PER_MTOK = 15.0
+
+
+@dataclass(frozen=True, slots=True)
+class TurnExecutionSettings:
+    """턴 실행 표면이 쓰는 값만 — 컨트롤러가 env 이름이나 dict 키를 알 이유가 없다.
+
+    문자열 dict로 넘기던 동안 기본값이 여기와 컨트롤러 두 곳에 있었고, 키 오타는 조용히
+    폴백으로 떨어졌다.
+    """
+
+    stale_after: timedelta
+    poll_seconds: float
+
+    @classmethod
+    def defaults(cls) -> TurnExecutionSettings:
+        return cls(stale_after=timedelta(seconds=600), poll_seconds=1.0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +60,20 @@ class EvidenceSettings:
     cap_view_figure: int
     cap_extract_evidence: int
     token_cost_limit_usd: float
+    # 실행 경로(v3 §5) — SQS가 없을 때 프로세스 안에서 턴을 돌리는 스레드 수, 하트비트가
+    # 이만큼 끊기면 고아로 보고 마지막 체크포인트로 마감하는 초(가장 긴 단일 단계인
+    # 본문 승격 폴링 20s보다 충분히 크게), 체크포인트 보존 일수, 이벤트 스트림 폴링 간격.
+    local_turn_workers: int = 2
+    turn_stale_seconds: int = 600
+    checkpoint_retention_days: int = 7
+    events_poll_seconds: float = 1.0
+
+    @property
+    def turn_execution(self) -> TurnExecutionSettings:
+        return TurnExecutionSettings(
+            stale_after=timedelta(seconds=self.turn_stale_seconds),
+            poll_seconds=self.events_poll_seconds,
+        )
 
     @property
     def evidence_enabled(self) -> bool:
@@ -72,6 +103,10 @@ class EvidenceSettings:
             cap_view_figure=_env_int('DOCSURI_EVIDENCE_CAP_VIEW_FIGURE', 6),
             cap_extract_evidence=_env_int('DOCSURI_EVIDENCE_CAP_EXTRACT_EVIDENCE', 8),
             token_cost_limit_usd=_env_float('DOCSURI_EVIDENCE_TURN_COST_LIMIT_USD', 0.50),
+            local_turn_workers=_env_int('DOCSURI_EVIDENCE_LOCAL_TURN_WORKERS', 2),
+            turn_stale_seconds=_env_int('DOCSURI_EVIDENCE_TURN_STALE_SECONDS', 600),
+            checkpoint_retention_days=_env_int('DOCSURI_EVIDENCE_CHECKPOINT_RETENTION_DAYS', 7),
+            events_poll_seconds=_env_float('DOCSURI_EVIDENCE_EVENTS_POLL_SECONDS', 1.0),
         )
 
     def build_loop_budget(self):

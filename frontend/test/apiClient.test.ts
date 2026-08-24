@@ -169,7 +169,7 @@ describe('ApiClient agent chat mapping', () => {
     const t = transportOf(async () => ({ status: 200, body: null }));
     try {
       await expect(
-        new ApiClient(t, fast).sendAgentMessage('agent-evidence-local', {
+        new ApiClient(t, fast).acceptEvidenceTurn('agent-evidence-local', {
           content: 'research check',
           mode: 'evidence',
         }),
@@ -278,15 +278,30 @@ describe('ApiClient agent chat mapping', () => {
           recordRef: uploadRef.recordRef,
         });
         expect(body.attachments?.[0]).not.toHaveProperty('sourceFile');
-        // v2 TurnOut — 클라이언트는 sessionId로 세션을 잇는다.
+        // v3 수락(202) — 클라이언트는 sessionId로 세션을 잇고 turnId로 진행을 따라간다.
         return {
-          status: 200,
+          status: 202,
           body: {
             sessionId: 'r1',
             turnId: 't1',
             topic: 'PDF evidence',
-            result: { state: 'ok', claims: [], coverage: { paperCount: 0 } },
+            result: { state: 'pending' },
             createdAt: '2026-07-01T00:00:00Z',
+          },
+        };
+      }
+      if (req.path === '/api/evidence/turns/t1/events') {
+        return {
+          status: 200,
+          body: {
+            events: [],
+            turn: {
+              sessionId: 'r1',
+              turnId: 't1',
+              topic: 'PDF evidence',
+              result: { state: 'ok', claims: [], coverage: { paperCount: 0 } },
+              createdAt: '2026-07-01T00:00:00Z',
+            },
           },
         };
       }
@@ -305,7 +320,8 @@ describe('ApiClient agent chat mapping', () => {
       return { status: 500, body: null };
     });
 
-    await new ApiClient(t, fast).sendAgentMessage('agent-evidence-local', {
+    const client = new ApiClient(t, fast);
+    const accepted = await client.acceptEvidenceTurn('agent-evidence-local', {
       content: 'PDF evidence',
       mode: 'evidence',
       attachments: [
@@ -320,11 +336,12 @@ describe('ApiClient agent chat mapping', () => {
       ],
     });
 
+    // 수락까지가 전송이다 — 진행·답변은 turnId 구독이 받는다.
     expect(requests.map((req) => req.path.split('?')[0])).toEqual([
       '/api/evidence/attachments',
       '/api/evidence/turns',
-      '/api/evidence/sessions/r1',
     ]);
+    expect(accepted.turnId).toBe('t1');
   });
 
   it('uploads novelty PDF manuscripts as raw PDF after creating the manuscript job', async () => {
@@ -444,7 +461,7 @@ describe('ApiClient agent chat mapping', () => {
     const t = transportOf(async () => ({ status: 200, body: null }));
     const bigPdf = new Blob([new Uint8Array(10 * 1024 * 1024 + 1)], { type: 'application/pdf' });
     await expect(
-      new ApiClient(t, fast).sendAgentMessage('agent-evidence-local', {
+      new ApiClient(t, fast).acceptEvidenceTurn('agent-evidence-local', {
         content: 'oversize pdf',
         mode: 'evidence',
         attachments: [

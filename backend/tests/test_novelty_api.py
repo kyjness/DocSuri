@@ -73,6 +73,41 @@ def test_job_lifecycle_create_poll_cancel_delete(app_bundle) -> None:
     assert client.get(f"/api/novelty/jobs/{job_id}").status_code == 404
 
 
+def test_events_snapshot_serves_the_feed_as_progress_frames(app_bundle) -> None:
+    """FE가 1초마다 읽는 `/events?after=`가 비어 있던 라우트 — 피드와 같은 자료가 흘러야 한다."""
+    from backend.modules.novelty.domain.models import ToolCallRecord, ToolOutcome, utc_now
+
+    app, store, _queue = app_bundle
+    client = TestClient(app)
+    job_id = _create_job(client)
+    for seq, tool in enumerate(["corpus_search", "github_search"], 1):
+        now = utc_now()
+        store.append_trace(ToolCallRecord(
+            job_id=job_id, seq=seq, tool_name=tool, args_summary=f"query='q{seq}'",
+            result_summary="ok", outcome=ToolOutcome.OK, started_at=now, finished_at=now,
+        ))
+
+    resp = client.get(f"/api/novelty/jobs/{job_id}/events", headers={"accept": "text/event-stream"})
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/event-stream")
+    frames = [line for line in resp.text.split("\n") if line.startswith("data:")]
+    assert len(frames) == 2
+    import json
+
+    first = json.loads(frames[0][5:])
+    assert (first["eventId"], first["state"]) == ("1", "running")
+    assert first["payload"]["tool"] == "corpus_search"
+    assert first["payload"]["seq"] == 1 and first["message"]
+
+    # 커서 — 이미 받은 seq 뒤만
+    after = client.get(f"/api/novelty/jobs/{job_id}/events?after=1")
+    ids = [json.loads(ln[5:])["eventId"] for ln in after.text.split("\n") if ln.startswith("data:")]
+    assert ids == ["2"]
+    # 남의 잡은 404
+    other = client.get(f"/api/novelty/jobs/{job_id}/events", headers={"x-test-user": _OTHER})
+    assert other.status_code == 404
+
+
 def test_create_without_queue_returns_machine_readable_503(app_bundle) -> None:
     app, _, _ = app_bundle
     app.state.novelty_queue = None

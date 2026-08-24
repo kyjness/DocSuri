@@ -60,3 +60,12 @@ def test_declared_migration_dirs_exist():
     """반대 방향 — 목록이 삭제된 모듈(research 사례)을 가리키지 않는지."""
     ghosts = [d for d in _declared_migration_dirs() if not (REPO / d).is_dir()]
     assert not ghosts, f"마이그레이션 목록이 존재하지 않는 디렉터리를 가리킨다: {ghosts}"
+
+
+def test_manual_runner_uses_the_same_list_as_startup():
+    """수동 러너(`python -m backend.migrations`)가 부팅 목록과 갈리지 않는지."""
+    from backend.app import STARTUP_MIGRATION_DIRS
+    from backend.migrations.__main__ import _DEFAULT_PATHS
+
+    assert list(STARTUP_MIGRATION_DIRS) == _DEFAULT_PATHS
+    assert _declared_migration_dirs() == set(STARTUP_MIGRATION_DIRS)

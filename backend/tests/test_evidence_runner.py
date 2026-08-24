@@ -81,11 +81,19 @@ def _raw_item() -> dict:
 
 
 def test_cost_degraded_abstains_before_the_loop_starts():
-    """호출을 시작한 뒤 중단하면 이미 지출한 뒤다(BR-EV-7)."""
-    llm = ScriptedLlm([])
-    runner = EvidenceTurnRunner(RunnerDeps(llm=llm, extractor=Extractor()))
+    """호출을 시작한 뒤 중단하면 이미 지출한 뒤다(BR-EV-7). 판정 권위는 U6 cost_guard 하나다."""
+    from types import SimpleNamespace
 
-    result = runner.run(CTX, _request(), budget_signal={"state": "degraded"})
+    class _CriticalGuard:
+        def get_budget_state(self):
+            return SimpleNamespace(tier="critical", degrade_mode="normal", circuit_state="closed")
+
+    llm = ScriptedLlm([])
+    runner = EvidenceTurnRunner(
+        RunnerDeps(llm=llm, extractor=Extractor(), cost_guard=_CriticalGuard())
+    )
+
+    result = runner.run(CTX, _request())
 
     assert isinstance(result, TurnAbstainResult)
     assert result.outcome.abstainReason == ABSTAIN_COST_DEGRADED

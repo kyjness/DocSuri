@@ -9,6 +9,7 @@ from docsuri_shared._generated.dtos.evidence_schema import (
 )
 
 from backend.modules.evidence.domain.assembler import (
+    ABSTAIN_CANCELLED,
     ABSTAIN_INSUFFICIENT,
     ABSTAIN_LLM_FAILURE,
     ABSTAIN_OUT_OF_CORPUS,
@@ -127,3 +128,28 @@ def test_answer_is_absent_when_there_is_nothing_to_summarise():
     result = assemble(_state(candidates=1), TerminationReason.NO_EVIDENCE)
 
     assert getattr(result, "answer", None) is None
+
+
+def test_cancelled_with_evidence_is_a_partial_answer_marked_cancelled():
+    state = _state(items=[_item()], examined=2, candidates=9)
+    result = assemble(state, TerminationReason.CANCELLED)
+
+    assert result.state == "ok"
+    assert result.coverage.stoppedReason.value == "cancelled"
+    assert (result.coverage.examined, result.coverage.candidates) == (2, 11)  # 확인분 포함
+
+
+def test_cancelled_before_any_evidence_says_so():
+    """취소는 근거 부족이 아니다 — 후보가 있었어도 '취소됨'으로 남는다."""
+    result = assemble(_state(candidates=5), TerminationReason.CANCELLED)
+
+    assert result.state == "abstain"
+    assert result.abstainReason == ABSTAIN_CANCELLED
+
+
+def test_interrupted_reads_as_partial_failure_not_cancel():
+    ok = assemble(_state(items=[_item()]), TerminationReason.INTERRUPTED)
+    assert ok.coverage.stoppedReason.value == "partial_failure"
+
+    empty = assemble(_state(candidates=3), TerminationReason.INTERRUPTED)
+    assert empty.abstainReason == ABSTAIN_INSUFFICIENT

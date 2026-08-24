@@ -135,32 +135,34 @@ def _apply_startup_migrations(database_url: str) -> None:
     against a *fresh* DB, move this to a one-off migrate job / add an advisory lock — concurrent
     first-run CREATEs could otherwise race.
     """
-    import os
+    from docsuri_shared.env import env_flag
 
-    if os.getenv("RUN_MIGRATIONS_ON_STARTUP", "1").lower() in {"0", "false", "no"}:
+    if not env_flag("RUN_MIGRATIONS_ON_STARTUP", True):
         return
     if not database_url.startswith(("postgresql://", "postgresql+psycopg://", "postgres://")):
         return  # sqlite / local — nothing to migrate
-    # The migration runner uses psycopg.connect directly, which wants a libpq DSN — strip the
-    # SQLAlchemy `+psycopg` dialect tag that make_engine relies on.
-    dsn = database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+    # The migration runner uses psycopg.connect directly, which wants a libpq DSN.
+    from backend.db import libpq_dsn
     from backend.migrations import apply_migrations
 
-    applied = apply_migrations(
-        dsn,
-        [
-            "backend/modules/accounts/migrations",
-            "backend/modules/library/migrations",
-            "backend/modules/personalization/migrations",
-            "backend/modules/mypage/migrations",
-            "backend/modules/evidence/migrations",
-            "backend/modules/novelty/migrations",
-            # U7 personal glossary — summarization mounts in this app-shell, so its schema
-            # belongs to this runner too (the AWS deploy applied it from the worker image).
-            "backend/modules/summarization/migrations",
-        ],
-    )
+    applied = apply_migrations(libpq_dsn(database_url), list(STARTUP_MIGRATION_DIRS))
     log.info("startup migrations: applied=%s", applied or "(none pending)")
+
+
+# 이 이미지가 적용하는 마이그레이션 디렉터리 — 부팅 자가 적용과 수동 러너(`python -m
+# backend.migrations`)가 같은 목록을 본다. 둘이 따로 있던 동안 수동 목록이 삭제된 research를
+# 가리키고 mypage·summarization을 빼먹은 채 남아 있었다. ingestion은 자기 이미지의 몫이다.
+STARTUP_MIGRATION_DIRS: tuple[str, ...] = (
+    "backend/modules/accounts/migrations",
+    "backend/modules/library/migrations",
+    "backend/modules/personalization/migrations",
+    "backend/modules/mypage/migrations",
+    "backend/modules/evidence/migrations",
+    "backend/modules/novelty/migrations",
+    # U7 personal glossary — summarization mounts in this app-shell, so its schema
+    # belongs to this runner too (the AWS deploy applied it from the worker image).
+    "backend/modules/summarization/migrations",
+)
 
 
 def _build_observability():

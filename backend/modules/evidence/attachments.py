@@ -32,10 +32,11 @@ def attachment_inputs_from_dicts(
             inputs.append(AttachmentInput(name=name, kind=kind))
             continue
 
+        attachment_id = str(item.get("id") or name)
         ref = ref_from_attachment(
             owner_id=owner_id,
             scope_id=scope_id,
-            attachment_id=str(item.get("id") or name),
+            attachment_id=attachment_id,
             object_key=object_key,
             module="evidence",
             paper_id=item.get("paperId"),
@@ -50,6 +51,7 @@ def attachment_inputs_from_dicts(
                 record_ref=ref.record_ref,
                 object_key=ref.object_key,
                 doc_model=doc_model,
+                attachment_id=attachment_id,
             )
         )
     return tuple(inputs)
@@ -64,6 +66,7 @@ def attachment_inputs_to_payloads(
             {
                 key: value
                 for key, value in {
+                    "id": doc.attachment_id,
                     "name": doc.name,
                     "kind": doc.kind,
                     "contentText": doc.text,

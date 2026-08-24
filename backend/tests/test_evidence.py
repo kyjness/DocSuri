@@ -23,32 +23,89 @@ from backend.modules.evidence.service import (
 )
 
 
+def _instant_stale():
+    """하트비트가 끊긴 즉시 고아로 보는 실행 설정 — 테스트가 10분을 기다리지 않게."""
+    from datetime import timedelta
+
+    from backend.modules.evidence.settings import TurnExecutionSettings
+
+    return TurnExecutionSettings(stale_after=timedelta(0), poll_seconds=0.01)
+
+
 def _principal(user_id: str | None = None) -> Principal:
     return Principal(user_id=user_id or str(uuid4()), role=UserRole.USER)
+
+
+class _StubRunner:
+    """Orchestrator 없이 테스트 — real_wiring 없이 controller만 마운트."""
+
+    def run(self, ctx, request, *, attachments=(), on_trace=None, should_stop=None):
+        return TurnAbstainResult(
+            outcome=__import__(
+                'docsuri_shared._generated.dtos.evidence_schema',
+                fromlist=['EvidenceAbstainResult'],
+            ).EvidenceAbstainResult(
+                state='abstain',
+                abstainReason='out_of_corpus',
+            )
+        )
+
+
+class _StubCheckpoints:
+    """체크포인트 없는 배포 — 고아 턴은 마감할 스냅샷이 없다."""
+
+    enabled = False
+
+    def finalize(self, turn_id, topic):
+        return None
+
+    def delete(self, turn_ids):
+        return 0
+
+
+class _InlineDispatch:
+    """테스트용 실행자 — 수락 직후 같은 스레드에서 process_job을 돌린다.
+
+    실서비스의 실행자(스레드풀·SQS 워커)와 같은 본문을 밟되 비동기만 걷어낸 것이라,
+    '수락 → 실행 → 결과' 경로가 API 테스트에서 끝까지 보인다.
+    """
+
+    def __init__(self, app, repo, *, run_inline: bool = True) -> None:
+        self._app = app
+        self._repo = repo
+        self.run_inline = run_inline
+        # 러너는 더 이상 요청 의존이 아니다(실행자가 쥔다) — 테스트가 여기서 갈아끼운다.
+        self.runner = _StubRunner()
+        self.payloads: list[dict] = []
+
+    def __call__(self, payload: dict) -> None:
+        self.payloads.append(payload)
+        if not self.run_inline:
+            return
+        from backend.modules.evidence.worker import process_sqs_payload
+
+        docmodel_dep = self._app.dependency_overrides.get(controller.get_user_docmodel)
+        process_sqs_payload(
+            lambda: self._repo,
+            payload,
+            runner=self.runner,
+            user_docmodel=docmodel_dep() if docmodel_dep else None,
+        )
 
 
 def _client(monkeypatch, principal: Principal | None = None, repo=None) -> TestClient:
     monkeypatch.setenv('EVIDENCE_AGENT_ENABLED', 'true')
     app = create_app(Settings(env='test', database_url='sqlite://'))
     app.dependency_overrides[controller.get_principal] = lambda: principal or _principal()
-    if repo is not None:
-        app.dependency_overrides[controller.get_repo] = lambda: repo
-
-    # Orchestrator 없이 테스트 — real_wiring 없이 controller만 마운트
-    class _StubRunner:
-        def run(self, ctx, request, *, budget_signal=None, attachments=(), on_trace=None):
-            return TurnAbstainResult(
-                outcome=__import__(
-                    'docsuri_shared._generated.dtos.evidence_schema',
-                    fromlist=['EvidenceAbstainResult'],
-                ).EvidenceAbstainResult(
-                    state='abstain',
-                    abstainReason='out_of_corpus',
-                )
-            )
-
-    app.dependency_overrides[controller.get_runner] = lambda: _StubRunner()
-    return TestClient(app)
+    repo = repo if repo is not None else InMemoryEvidenceRepository()
+    app.dependency_overrides[controller.get_repo] = lambda: repo
+    app.dependency_overrides[controller.get_repo_factory] = lambda: (lambda: repo)
+    app.dependency_overrides[controller.get_checkpoints] = lambda: _StubCheckpoints()
+    dispatch = _InlineDispatch(app, repo)
+    app.dependency_overrides[controller.get_dispatch] = lambda: dispatch
+    client = TestClient(app)
+    client.dispatch = dispatch  # type: ignore[attr-defined]
+    return client
 
 
 class _FakeUserDocModel:
@@ -178,10 +235,10 @@ def test_list_sessions_returns_updated_at_desc() -> None:
 
 
 # ---------------------------------------------------------------------------
-# API: POST /api/evidence/turns → 201 + abstain (stub runner)
+# API: POST /api/evidence/turns → 202 수락 → GET /turns/{id}에서 결과 (stub runner)
 # ---------------------------------------------------------------------------
 
-def test_api_create_turn_returns_turn_out(monkeypatch) -> None:
+def test_api_create_turn_accepts_then_result_is_polled(monkeypatch) -> None:
     principal = _principal()
     repo = InMemoryEvidenceRepository()
     client = _client(monkeypatch, principal, repo)
@@ -191,11 +248,16 @@ def test_api_create_turn_returns_turn_out(monkeypatch) -> None:
         json={'topic': 'transformer attention mechanism', 'scope': 'auto'},
     )
 
-    assert resp.status_code == 200
+    assert resp.status_code == 202
     body = resp.json()
-    assert body['result']['state'] == 'abstain'
-    assert 'sessionId' in body
-    assert 'turnId' in body
+    assert body['result']['state'] == 'pending'
+    assert body['result']['startedAt']
+    assert 'jobId' not in body['result']
+    assert 'sessionId' in body and 'turnId' in body
+
+    done = client.get(f"/api/evidence/turns/{body['turnId']}")
+    assert done.status_code == 200
+    assert done.json()['result']['state'] == 'abstain'
 
 
 def test_api_turn_accepts_fe_attachment_objects_not_500(monkeypatch) -> None:
@@ -221,7 +283,7 @@ def test_api_turn_accepts_fe_attachment_objects_not_500(monkeypatch) -> None:
         },
     )
 
-    assert resp.status_code == 200
+    assert resp.status_code == 202
 
 
 def test_api_uploads_user_pdf_and_turn_polls_docmodel(monkeypatch) -> None:
@@ -231,26 +293,16 @@ def test_api_uploads_user_pdf_and_turn_polls_docmodel(monkeypatch) -> None:
     fake_user_docmodel = _FakeUserDocModel(_doc_model("PDF extracted text"))
     captured: dict = {}
 
-    class _CapturingRunner:
-        def run(self, ctx, request, *, budget_signal=None, attachments=(), on_trace=None):
+    class _CapturingRunner(_StubRunner):
+        def run(self, ctx, request, *, attachments=(), on_trace=None, should_stop=None):
             captured["ctx"] = ctx
             captured["attachments"] = attachments
-            return TurnAbstainResult(
-                outcome=__import__(
-                    "docsuri_shared._generated.dtos.evidence_schema",
-                    fromlist=["EvidenceAbstainResult"],
-                ).EvidenceAbstainResult(
-                    state="abstain",
-                    abstainReason="out_of_corpus",
-                )
-            )
+            return super().run(ctx, request)
 
     client.app.dependency_overrides[controller.get_user_docmodel] = (
         lambda: fake_user_docmodel
     )
-    client.app.dependency_overrides[controller.get_runner] = (
-        lambda: _CapturingRunner()
-    )
+    client.dispatch.runner = _CapturingRunner()
 
     uploaded = client.post(
         "/api/evidence/attachments?fileName=scan.pdf&id=att-1",
@@ -268,11 +320,11 @@ def test_api_uploads_user_pdf_and_turn_polls_docmodel(monkeypatch) -> None:
         json={"topic": "attachment handling", "attachments": [attachment]},
     )
 
-    assert turn.status_code == 200
+    assert turn.status_code == 202
     assert fake_user_docmodel.uploads[0]["pdf"] == b"%PDF-1.4"
     assert fake_user_docmodel.enqueued[0].payload()["kind"] == "BUILD_USER_DOC_MODEL"
     assert fake_user_docmodel.polled[0].paper_id == attachment["paperId"]
-    # v2: 첨부는 컨텍스트가 아니라 실행 인자로 전달된다(러너가 확인 대상으로 seed한다).
+    # 첨부는 실행 인자로 전달된다(러너가 확인 대상으로 seed한다) — 실행자가 핸들에서 재수화.
     docs = captured["attachments"]
     assert docs[0].paper_id == attachment["paperId"]
     assert docs[0].record_ref == attachment["recordRef"]
@@ -400,39 +452,33 @@ def test_api_requires_authentication(monkeypatch) -> None:
 
 
 # ---------------------------------------------------------------------------
-# FR-38: 동기 경로 턴 영속화 (PR #338 리뷰 Blocking #1)
+# FR-38: 수락된 턴은 실행 전에 영속된다 — turnId가 세션 이력(list_turns)에서 조회된다
 # ---------------------------------------------------------------------------
 
-def test_api_sync_turn_is_persisted(monkeypatch) -> None:
-    """동기 경로 실행 후 반환된 turnId가 세션 이력(list_turns)에서 조회돼야 한다.
-    회귀: 동기 분기가 add_turn을 빠뜨려 저장된 턴이 0건이라 turnId를 되찾을 수 없었다."""
+def test_api_accepted_turn_is_persisted(monkeypatch) -> None:
     principal = _principal()
     repo = InMemoryEvidenceRepository()
-    client = _client(monkeypatch, principal, repo)  # sqs_enqueue 미주입 → 동기 경로
+    client = _client(monkeypatch, principal, repo)
 
     resp = client.post(
         '/api/evidence/turns',
         json={'topic': 'transformer attention', 'scope': 'auto'},
     )
-    assert resp.status_code == 200
+    assert resp.status_code == 202
     body = resp.json()
 
     turns = repo.list_turns(principal.user_id, body['sessionId'])
     assert [t.turn_id for t in turns] == [body['turnId']]
 
 
-def test_async_turn_enqueue_preserves_attachment_handles() -> None:
+def test_accept_turn_dispatch_payload_preserves_attachment_handles() -> None:
     from docsuri_shared._generated.dtos.evidence_schema import EvidenceRequest
 
     repo = InMemoryEvidenceRepository()
     enqueued: list[dict] = []
-    service = EvidenceChatService(
-        repo=repo,
-        runner=object(),
-        sqs_enqueue=enqueued.append,
-    )
+    service = EvidenceChatService(repo=repo, dispatch=enqueued.append)
 
-    resp = service.run_turn(
+    resp = service.accept_turn(
         owner_id='owner-1',
         request=EvidenceRequest(
             topic='attachment handling',
@@ -445,6 +491,36 @@ def test_async_turn_enqueue_preserves_attachment_handles() -> None:
     assert isinstance(resp.result, TurnPendingResult)
     assert enqueued[0]['attachments'] == ['att-1', 'att-2']
     assert enqueued[0]['attachmentDocs'] == []
+    assert enqueued[0]['turnId'] == resp.turn_id
+    assert 'jobId' not in enqueued[0]
+
+
+def test_accept_turn_commits_before_dispatch_and_closes_on_dispatch_failure() -> None:
+    """dispatch가 실패하면 pending 행이 세션 잠금으로 남지 않는다 — error로 닫고 올린다."""
+    import pytest as _pytest
+    from docsuri_shared._generated.dtos.evidence_schema import EvidenceRequest
+
+    from backend.modules.evidence.models import TurnErrorResult
+    from backend.modules.evidence.service import DispatchFailed
+
+    repo = InMemoryEvidenceRepository()
+    seen: list[str] = []
+
+    def failing_dispatch(payload: dict) -> None:
+        # 실행자 스레드는 수락 직후 출발한다 — 이 시점에 행이 보여야 한다.
+        seen.append(repo.get_turn('o1', payload['turnId']).turn_id)
+        raise RuntimeError('queue down')
+
+    service = EvidenceChatService(repo=repo, dispatch=failing_dispatch)
+    with _pytest.raises(DispatchFailed):
+        service.accept_turn(owner_id='o1', request=EvidenceRequest(topic='q'))
+
+    session = repo.list_sessions('o1')[0]
+    turn = repo.list_turns('o1', session.session_id)[0]
+    assert seen == [turn.turn_id]
+    assert isinstance(turn.result, TurnErrorResult)
+    assert turn.result.error_code == 'dispatch_failed'
+    assert repo.active_turn('o1', session.session_id) is None  # 잠금이 풀렸다
 
 
 # ---------------------------------------------------------------------------
@@ -458,8 +534,9 @@ def test_api_topic_2000_succeeds_not_500(monkeypatch) -> None:
 
     resp = client.post('/api/evidence/turns', json={'topic': 'a' * 2000, 'scope': 'auto'})
 
-    assert resp.status_code == 200
-    assert resp.json()['result']['state'] == 'abstain'
+    assert resp.status_code == 202
+    done = client.get(f"/api/evidence/turns/{resp.json()['turnId']}")
+    assert done.json()['result']['state'] == 'abstain'
 
 
 def test_api_topic_over_2000_rejected_with_422(monkeypatch) -> None:
@@ -520,88 +597,256 @@ def test_api_turn_serializes_conflict_overlay_with_both_source_kinds(monkeypatch
     """상충 출처가 있는 근거 명제는 지지/상충 출처가 함께 표시된다(쟁점 오버레이)."""
     client = _client(monkeypatch, _principal(), InMemoryEvidenceRepository())
 
-    class _ConflictOrchestrator:
-        def run(self, ctx, request, *, budget_signal=None, attachments=(), on_trace=None):
+    class _ConflictOrchestrator(_StubRunner):
+        def run(self, ctx, request, *, attachments=(), on_trace=None, should_stop=None):
             return _success_result_with_conflict()
 
-    client.app.dependency_overrides[controller.get_runner] = (
-        lambda: _ConflictOrchestrator()
-    )
+    client.dispatch.runner = _ConflictOrchestrator()
 
     resp = client.post('/api/evidence/turns', json={'topic': 'self-attention', 'scope': 'auto'})
 
-    assert resp.status_code == 200
-    claim = resp.json()['result']['claims'][0]
+    assert resp.status_code == 202
+    done = client.get(f"/api/evidence/turns/{resp.json()['turnId']}")
+    claim = done.json()['result']['claims'][0]
     assert [ref['paperId'] for ref in claim['supporting']] == ['2401.00001']
     assert [ref['paperId'] for ref in claim['conflicting']] == ['2401.00002']
     assert claim['conflicting'][0]['quote']  # 상충 출처도 원문 인용을 유지한다
 
 
 # ---------------------------------------------------------------------------
-# US-EV2(#266) AC1 / NFR-P6 — 점진 표시의 현존 구현(비동기 잡 경로) 수명주기
-# 토큰 스트리밍(SSE)은 미구현 — "스트리밍으로 점진 표시" AC 문구 대비 편차로 QA 리포트에
-# 기록(스토리 오너 승인 필요). 여기서는 실제로 존재하는 점진 경로를 고정한다:
-# pending 즉시 응답(결과 확정 전) → GET /jobs/{id} 폴링 → 동일 표면에서 terminal 결과.
+# v3 §5.1 — 수락 → 실행자 → 같은 turn_id로 폴링. 요청 스레드는 orchestrator를 돌리지 않는다.
 # ---------------------------------------------------------------------------
 
-def test_api_async_turn_progressive_lifecycle_pending_then_polled_terminal(monkeypatch) -> None:
+def test_api_turn_lifecycle_pending_then_executor_then_polled_terminal(monkeypatch) -> None:
     principal = _principal()
     repo = InMemoryEvidenceRepository()
     client = _client(monkeypatch, principal, repo)
+    client.dispatch.run_inline = False  # 실행자가 아직 집지 않은 상태를 흉내 낸다
 
-    class _MustNotRunInline:
-        """비동기 경로에서는 요청 스레드가 orchestrator를 실행하지 않는다(BR-EV-6) —
-        pending 응답은 LLM/검색 작업 시작 전에 즉시 나가야 한다."""
+    class _MustNotRunInline(_StubRunner):
+        def run(self, ctx, request, *, attachments=(), on_trace=None, should_stop=None):
+            raise AssertionError('the request thread must not run the orchestrator')
 
-        def run(self, ctx, request, *, budget_signal=None, attachments=(), on_trace=None):
-            raise AssertionError('async path must not run the orchestrator inline')
+    client.dispatch.runner = _MustNotRunInline()
 
-    client.app.dependency_overrides[controller.get_runner] = lambda: _MustNotRunInline()
-    enqueued: list[dict] = []
-    client.app.state.evidence_sqs_enqueue = enqueued.append
-
-    # 1단계 — 결과 확정 전 즉시 pending + jobId 반환
+    # 1단계 — 결과 확정 전 즉시 pending
     resp = client.post(
         '/api/evidence/turns', json={'topic': 'transformer attention', 'scope': 'auto'}
     )
-    assert resp.status_code == 200
+    assert resp.status_code == 202
     body = resp.json()
     assert body['result']['state'] == 'pending'
-    job_id = body['result']['jobId']
-    assert job_id
-    assert enqueued[0]['jobId'] == job_id
-    assert enqueued[0]['topic'] == 'transformer attention'
+    turn_id = body['turnId']
+    assert client.dispatch.payloads[0]['turnId'] == turn_id
+    assert client.dispatch.payloads[0]['topic'] == 'transformer attention'
 
-    # 2단계 — 실행 중 폴링은 같은 jobId로 pending을 반환
-    polled = client.get(f'/api/evidence/jobs/{job_id}')
+    # 2단계 — 실행 중 폴링은 pending
+    polled = client.get(f'/api/evidence/turns/{turn_id}')
     assert polled.status_code == 200
     assert polled.json()['result']['state'] == 'pending'
 
-    # 3단계 — 워커가 잡을 terminal로 전이(BR-EV-6)
+    # 3단계 — 실행자가 턴을 terminal로 전이
     from backend.modules.evidence.worker import process_job
 
-    class _ResolvingOrchestrator:
-        def run(self, ctx, request, *, budget_signal=None, attachments=(), on_trace=None):
+    class _ResolvingOrchestrator(_StubRunner):
+        def run(self, ctx, request, *, attachments=(), on_trace=None, should_stop=None):
             return _success_result_with_conflict()
 
-    msg = enqueued[0]
+    msg = client.dispatch.payloads[0]
     process_job(
-        repo,
+        lambda: repo,
         runner=_ResolvingOrchestrator(),
         owner_id=msg['ownerId'],
         session_id=msg['sessionId'],
         turn_id=msg['turnId'],
-        job_id=msg['jobId'],
         topic=msg['topic'],
     )
 
-    # 4단계 — 동일 폴링 표면에서 terminal 결과(쟁점 오버레이 포함)가 나온다
-    done = client.get(f'/api/evidence/jobs/{job_id}')
+    # 4단계 — 같은 폴링 표면에서 terminal 결과(쟁점 오버레이 포함)
+    done = client.get(f'/api/evidence/turns/{turn_id}')
     assert done.status_code == 200
     result = done.json()['result']
     assert result['state'] == 'ok'
     assert result['claims'][0]['supporting'][0]['paperId'] == '2401.00001'
     assert result['claims'][0]['conflicting'][0]['paperId'] == '2401.00002'
+
+
+def test_api_second_turn_on_a_busy_session_is_409_and_refunds_quota(monkeypatch) -> None:
+    """세션당 진행 중 턴 하나(§5.4) — 수락되지 않은 턴은 쿼터를 소모하지 않는다."""
+    principal = _principal()
+    client = _client(monkeypatch, principal, InMemoryEvidenceRepository())
+    client.dispatch.run_inline = False
+    refunds: list[str] = []
+
+    async def fake_refund(request):
+        refunds.append('evidence')
+
+    monkeypatch.setattr(controller, 'refund_evidence_turn_quota', fake_refund)
+
+    first = client.post('/api/evidence/turns', json={'topic': 'q1'})
+    assert first.status_code == 202
+    session_id = first.json()['sessionId']
+
+    second = client.post('/api/evidence/turns', json={'topic': 'q2', 'sessionId': session_id})
+    assert second.status_code == 409
+    assert refunds == ['evidence']
+    # 새 세션은 막히지 않는다
+    other = client.post('/api/evidence/turns', json={'topic': 'q3'})
+    assert other.status_code == 202
+
+
+def test_api_cancel_sets_the_flag_and_the_executor_sees_it(monkeypatch) -> None:
+    principal = _principal()
+    repo = InMemoryEvidenceRepository()
+    client = _client(monkeypatch, principal, repo)
+    client.dispatch.run_inline = False
+
+    resp = client.post('/api/evidence/turns', json={'topic': 'q'})
+    turn_id = resp.json()['turnId']
+
+    cancelled = client.post(f'/api/evidence/turns/{turn_id}/cancel')
+    assert cancelled.status_code == 200
+    assert cancelled.json() == {'turnId': turn_id, 'state': 'pending', 'cancelRequested': True}
+    assert repo.heartbeat(principal.user_id, turn_id) is True  # 실행자가 읽는 것
+
+    # 실행자가 집으면 루프 없이 취소로 마감된다
+    from backend.modules.evidence.worker import process_job
+
+    class _MustNotRun(_StubRunner):
+        def run(self, *a, **k):
+            raise AssertionError('cancelled before start must not run the loop')
+
+    msg = client.dispatch.payloads[0]
+    process_job(lambda: repo, runner=_MustNotRun(), owner_id=msg['ownerId'],
+                session_id=msg['sessionId'], turn_id=turn_id, topic=msg['topic'])
+    done = client.get(f'/api/evidence/turns/{turn_id}').json()
+    assert (done['result']['state'], done['result']['abstainReason']) == ('abstain', 'cancelled')
+
+    # 끝난 턴의 취소는 409, 남의/없는 턴은 404
+    assert client.post(f'/api/evidence/turns/{turn_id}/cancel').status_code == 409
+    assert client.post('/api/evidence/turns/nope/cancel').status_code == 404
+
+
+def test_api_stale_turn_is_finalized_from_the_checkpoint_on_poll(monkeypatch) -> None:
+    """실행자가 죽은 턴(하트비트 없음)은 폴링이 마지막 스냅샷으로 부분 답을 만든다(§5.5)."""
+    principal = _principal()
+    repo = InMemoryEvidenceRepository()
+    client = _client(monkeypatch, principal, repo)
+    client.dispatch.run_inline = False
+    client.app.state.evidence_execution = _instant_stale()
+
+    class _CheckpointedRun(_StubCheckpoints):
+        enabled = True
+
+        def finalize(self, turn_id, topic):
+            return _success_result_with_conflict()
+
+    client.app.dependency_overrides[controller.get_checkpoints] = lambda: _CheckpointedRun()
+
+    turn_id = client.post('/api/evidence/turns', json={'topic': 'q'}).json()['turnId']
+    done = client.get(f'/api/evidence/turns/{turn_id}').json()
+    assert done['result']['state'] == 'ok'
+    # 마감된 턴은 잠금이 아니다 — 같은 세션에 다음 질문이 들어간다
+    follow = client.post(
+        '/api/evidence/turns', json={'topic': 'q2', 'sessionId': done['sessionId']}
+    )
+    assert follow.status_code == 202
+
+
+def test_api_stale_turn_without_a_snapshot_closes_as_internal_error(monkeypatch) -> None:
+    principal = _principal()
+    client = _client(monkeypatch, principal, InMemoryEvidenceRepository())
+    client.dispatch.run_inline = False
+    client.app.state.evidence_execution = _instant_stale()
+
+    turn_id = client.post('/api/evidence/turns', json={'topic': 'q'}).json()['turnId']
+    done = client.get(f'/api/evidence/turns/{turn_id}').json()
+    assert (done['result']['state'], done['result']['errorCode']) == ('error', 'internal_error')
+
+
+def test_session_crud_works_without_a_configured_agent(monkeypatch) -> None:
+    """repo-only 배포(러너 미구성)에서도 세션 표면은 산다.
+
+    회귀: 체크포인트 정리를 러너에 매달았더니 세션 삭제·초기화가 러너 의존을 선언하게 됐고,
+    러너가 구성되지 않는 배포에서 `RuntimeError` → 500이 났다.
+    """
+    monkeypatch.setenv('EVIDENCE_AGENT_ENABLED', 'true')
+    monkeypatch.delenv('DOCSURI_DOCMODEL_BUCKET', raising=False)
+    principal = _principal()
+    repo = InMemoryEvidenceRepository()
+    app = create_app(Settings(env='test', database_url='sqlite://'))
+    app.dependency_overrides[controller.get_principal] = lambda: principal
+    app.dependency_overrides[controller.get_repo] = lambda: repo
+    client = TestClient(app)
+
+    session = repo.create_session(EvidenceSession(owner_id=principal.user_id))
+    assert client.get('/api/evidence/sessions').status_code == 200
+    assert client.delete(f'/api/evidence/sessions/{session.session_id}').status_code == 204
+    assert client.delete('/api/evidence/sessions').status_code == 204
+
+
+def test_api_cancel_that_loses_the_race_to_completion_is_409(monkeypatch) -> None:
+    """get_turn(pending)과 조건부 UPDATE 사이에 턴이 끝나면 취소된 척하지 않는다."""
+    principal = _principal()
+    repo = InMemoryEvidenceRepository()
+    client = _client(monkeypatch, principal, repo)
+    client.dispatch.run_inline = False
+    turn_id = client.post('/api/evidence/turns', json={'topic': 'q'}).json()['turnId']
+
+    original = repo.request_cancel
+
+    def finish_then_cancel(owner_id, tid):
+        repo.update_turn_result(owner_id, tid, TurnAbstainResult(
+            outcome=__import__('docsuri_shared._generated.dtos.evidence_schema',
+                               fromlist=['EvidenceAbstainResult']).EvidenceAbstainResult(
+                state='abstain', abstainReason='out_of_corpus')))
+        return original(owner_id, tid)
+
+    monkeypatch.setattr(repo, 'request_cancel', finish_then_cancel)
+    assert client.post(f'/api/evidence/turns/{turn_id}/cancel').status_code == 409
+
+
+def test_api_turn_without_an_executor_is_503_and_refunds_quota(monkeypatch) -> None:
+    """repo-only 배포 — 의존성 단계에서 503이 나면 먼저 오른 쿼터를 못 되돌린다."""
+    principal = _principal()
+    client = _client(monkeypatch, principal, InMemoryEvidenceRepository())
+    client.app.dependency_overrides[controller.get_dispatch] = lambda: None
+    refunds: list[str] = []
+
+    async def fake_refund(request):
+        refunds.append('evidence')
+
+    monkeypatch.setattr(controller, 'refund_evidence_turn_quota', fake_refund)
+
+    assert client.post('/api/evidence/turns', json={'topic': 'q'}).status_code == 503
+    assert refunds == ['evidence']
+
+
+def test_api_unpicked_turn_waits_three_times_longer_before_stale_finalize(monkeypatch) -> None:
+    """실행자가 한 번도 집지 않은 턴(큐 대기)은 실행 중 고아보다 3배 길게 기다린다."""
+    from datetime import timedelta
+
+    from backend.modules.evidence.settings import TurnExecutionSettings
+
+    principal = _principal()
+    repo = InMemoryEvidenceRepository()
+    client = _client(monkeypatch, principal, repo)
+    client.dispatch.run_inline = False
+    client.app.state.evidence_execution = TurnExecutionSettings(
+        stale_after=timedelta(seconds=10), poll_seconds=0.01
+    )
+    turn_id = client.post('/api/evidence/turns', json={'topic': 'q'}).json()['turnId']
+    turn = repo.get_turn(principal.user_id, turn_id)
+    turn.created_at = turn.created_at - timedelta(seconds=20)  # 10s 기준은 넘었지만 30s는 아직
+
+    assert client.get(f'/api/evidence/turns/{turn_id}').json()['result']['state'] == 'pending'
+    turn.created_at = turn.created_at - timedelta(seconds=20)  # 이제 40s
+    assert client.get(f'/api/evidence/turns/{turn_id}').json()['result']['state'] == 'error'
+
+
+def test_api_jobs_polling_surface_is_gone(monkeypatch) -> None:
+    client = _client(monkeypatch, _principal(), InMemoryEvidenceRepository())
+    assert client.get('/api/evidence/jobs/anything').status_code in {404, 405}
 
 
 # v1에서 사라진 테스트들의 행방(대상이 없어진 것이지 커버리지가 준 것이 아니다):
@@ -611,62 +856,28 @@ def test_api_async_turn_progressive_lifecycle_pending_then_polled_terminal(monke
 #   - Bedrock 지출 기록      → test_evidence_llm.py (토큰이 없으면 계상하지 않는다)
 
 
-def test_sync_turn_crash_leaves_a_terminal_turn_not_a_phantom_pending() -> None:
-    """러너가 예상 밖 예외를 던져도 턴은 error로 종단된다(/code-review 잔여 지적).
-
-    그냥 전파하면 SQL 경로는 롤백으로 기록이 사라지고, 인메모리 경로는 pending
-    유령 턴이 영원히 남아 폴링이 끝나지 않는다.
-    """
+def test_executor_crash_leaves_a_terminal_turn_not_a_phantom_pending() -> None:
+    """러너가 예상 밖 예외를 던져도 턴은 error로 종단된다 — pending 유령 턴이 남으면
+    폴링·이벤트가 끝나지 않고 세션 잠금이 stale 시간까지 막힌다."""
     import pytest as _pytest
     from docsuri_shared._generated.dtos.evidence_schema import EvidenceRequest
 
     from backend.modules.evidence.models import TurnErrorResult
-    from backend.modules.evidence.repository import InMemoryEvidenceRepository
-    from backend.modules.evidence.service import EvidenceChatService
+    from backend.modules.evidence.worker import JobProcessingFailed, process_job
 
-    class _ExplodingRunner:
-        def run(self, ctx, request, *, budget_signal=None, attachments=(), on_trace=None):
+    class _ExplodingRunner(_StubRunner):
+        def run(self, ctx, request, *, attachments=(), on_trace=None, should_stop=None):
             raise RuntimeError('unexpected')
 
     repo = InMemoryEvidenceRepository()
-    service = EvidenceChatService(repo=repo, runner=_ExplodingRunner())
+    payloads: list[dict] = []
+    service = EvidenceChatService(repo=repo, dispatch=payloads.append)
+    resp = service.accept_turn(owner_id='o1', request=EvidenceRequest(topic='q'))
 
-    with _pytest.raises(RuntimeError):
-        service.run_turn(owner_id='o1', request=EvidenceRequest(topic='q'))
+    with _pytest.raises(JobProcessingFailed):
+        process_job(lambda: repo, runner=_ExplodingRunner(), owner_id='o1',
+                    session_id=resp.session_id, turn_id=resp.turn_id, topic='q')
 
-    sessions = repo.list_sessions('o1')
-    turns = repo.list_turns('o1', sessions[0].session_id)
+    turns = repo.list_turns('o1', resp.session_id)
     assert isinstance(turns[0].result, TurnErrorResult)
     assert turns[0].result.error_code == 'internal_error'
-
-
-def test_sync_turn_emits_accepted_coordinates_before_running() -> None:
-    """동기 경로는 러너 실행 전에 'accepted'(sessionId·turnId)를 흘린다.
-
-    동기 턴에는 jobId가 없다 — 이 신호가 없으면 클라이언트는 스트림 단절을
-    "시작도 못 함"과 구분하지 못해 JSON 폴백으로 같은 턴을 두 번 실행한다.
-    """
-    from docsuri_shared._generated.dtos.evidence_schema import EvidenceRequest
-
-    from backend.modules.evidence.models import TurnErrorResult as _Err
-    from backend.modules.evidence.repository import InMemoryEvidenceRepository
-    from backend.modules.evidence.service import EvidenceChatService
-
-    events: list[tuple[str, dict]] = []
-
-    class _Runner:
-        def run(self, ctx, request, *, budget_signal=None, attachments=(), on_trace=None):
-            # 러너 도착 시점에 이미 accepted가 나가 있어야 한다(단절 창 최소화).
-            assert [stage for stage, _ in events] == ['accepted']
-            return _Err(error_code='internal_error')
-
-    service = EvidenceChatService(repo=InMemoryEvidenceRepository(), runner=_Runner())
-    resp = service.run_turn(
-        owner_id='o1',
-        request=EvidenceRequest(topic='q'),
-        on_progress=lambda stage, payload: events.append((stage, payload)),
-    )
-
-    stage, payload = events[0]
-    assert stage == 'accepted'
-    assert payload == {'sessionId': resp.session_id, 'turnId': resp.turn_id}

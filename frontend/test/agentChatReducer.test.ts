@@ -186,4 +186,124 @@ describe('agent chat reducer/helpers', () => {
     expect(merged.detail).toBe('소스 arXiv · 쿼리 "diffusion" · 결과 12건');
     expect(merged.sequence).toBe(3);
   });
+
+  // --- v3 §5 evidence 턴 수명주기: 수락 → 구독 → 종단/취소 ---
+
+  function acceptedState() {
+    const started = agentReducer(
+      agentReducer(initialAgentChatState, { type: 'startSession', session: evidenceSession }),
+      { type: 'sendStart', message: createUserMessage('질문') },
+    );
+    return agentReducer(started, {
+      type: 'turnAccepted',
+      accepted: {
+        session: { ...evidenceSession, id: 'evidence:s1', state: 'running' },
+        turnId: 't1',
+      },
+    });
+  }
+
+  it('accepting a turn keeps the user message, opens the active turn, and closes the composer', () => {
+    const state = acceptedState();
+
+    expect(state.activeTurnId).toBe('t1');
+    expect(state.jobState).toBe('running');
+    expect(state.submitting).toBe(false);
+    expect(state.messages.map((m) => [m.role, m.status])).toEqual([['user', 'sent']]);
+    expect(state.session?.id).toBe('evidence:s1');
+    expect(canSend({ ...state, draft: '다음 질문' })).toBe(false); // 진행 중엔 입력이 닫힌다
+  });
+
+  it('finishing the turn appends the answer once and reopens the composer', () => {
+    const answer = {
+      id: 't1-agent',
+      role: 'agent' as const,
+      content: '[abstain] out_of_corpus',
+      createdAt: '2026-07-01T00:00:02Z',
+      status: 'sent' as const,
+    };
+    const finished = agentReducer(acceptedState(), {
+      type: 'turnFinished',
+      finished: { turnId: 't1', message: answer, outcome: 'completed', cancelled: false },
+    });
+    const twice = agentReducer(finished, {
+      type: 'turnFinished',
+      finished: { turnId: 't1', message: answer, outcome: 'completed', cancelled: false },
+    });
+
+    expect(finished.activeTurnId).toBeNull();
+    expect(finished.jobState).toBe('completed');
+    expect(finished.messages.map((m) => m.id)).toEqual([finished.messages[0].id, 't1-agent']);
+    expect(twice.messages).toHaveLength(2); // 스냅샷과 같은 id — 두 번 붙지 않는다
+    expect(canSend({ ...finished, draft: '다음 질문' })).toBe(true);
+  });
+
+  it('a cancelled turn closes the timeline with a 취소됨 line', () => {
+    const withEvents = agentReducer(acceptedState(), {
+      type: 'eventsReceived',
+      events: [{ id: 't1:1', stage: 'tool', label: '도구 실행', state: 'running', sequence: 1 }],
+    });
+    const requested = agentReducer(withEvents, { type: 'cancelRequested' });
+    expect(requested.cancelRequested).toBe(true);
+
+    const finished = agentReducer(requested, {
+      type: 'turnFinished',
+      finished: {
+        turnId: 't1',
+        message: { id: 't1-agent', role: 'agent', content: '[abstain] cancelled', createdAt: 'x', status: 'sent' },
+        outcome: 'completed',
+        cancelled: true,
+      },
+    });
+
+    expect(finished.cancelRequested).toBe(false);
+    expect(finished.events.map((e) => [e.id, e.state])).toEqual([
+      ['t1:1', 'running'],
+      ['t1:cancelled', 'failed'],
+    ]);
+  });
+
+  it('loading a session with a pending turn re-attaches the subscription', () => {
+    const loaded = agentReducer(initialAgentChatState, {
+      type: 'loadSession',
+      snapshot: {
+        session: { ...evidenceSession, id: 'evidence:s1', state: 'completed' },
+        messages: [],
+        events: [],
+        activeTurnId: 't9',
+      },
+    });
+
+    expect(loaded.activeTurnId).toBe('t9');
+    expect(loaded.jobState).toBe('running');
+  });
+
+  it('ignores a stale turnFinished for a different turn', () => {
+    const state = acceptedState();
+    const other = agentReducer(state, {
+      type: 'turnFinished',
+      finished: {
+        turnId: 't0',
+        message: { id: 't0-agent', role: 'agent', content: 'x', createdAt: 'x', status: 'sent' },
+        outcome: 'completed',
+        cancelled: false,
+      },
+    });
+    expect(other).toBe(state);
+  });
+
+  it('keeps the session title on a follow-up turn (the accept response carries the new topic)', () => {
+    const first = acceptedState(); // 제목 '근거 세션'
+    const followUp = agentReducer(first, {
+      type: 'turnAccepted',
+      accepted: {
+        session: { ...evidenceSession, id: 'evidence:s1', title: '두 번째 질문', state: 'running' },
+        turnId: 't2',
+      },
+    });
+
+    expect(followUp.session?.title).toBe(first.session?.title);
+    expect(followUp.session?.state).toBe('running');
+    expect(followUp.activeTurnId).toBe('t2');
+  });
 });

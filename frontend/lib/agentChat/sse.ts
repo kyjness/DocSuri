@@ -1,5 +1,5 @@
-// Agent SSE plumbing — novelty 스냅샷 SSE(N-001 #257)와 evidence 동기 턴 스트리밍(US-EV2,
-// NFR-P6)이 같은 프레이밍(`event: <name>\ndata: {...}`)과 progress wire shape
+// Agent SSE plumbing — novelty 스냅샷 SSE(N-001 #257)와 evidence 턴 이벤트 스트림(v3 §5.3)이
+// 같은 프레이밍(`event: <name>\ndata: {...}`)과 progress wire shape
 // (eventId/state/message/payload/createdAt)를 공유한다. AgentChatScreen에 있던 파서를
 // 이 모듈로 옮겨 두 경로가 한 벌의 코드로 동작한다.
 import type { AgentTimelineEvent, AgentTimelineState } from './types';
@@ -9,10 +9,13 @@ export interface SseBlock {
   data: string;
 }
 
+/** SSE 블록 구분자 — 스냅샷 파서와 스트림 리더가 같은 프레이밍 규칙을 봐야 한다. */
+const SSE_BLOCK_DELIM = /\r?\n\r?\n/;
+
 /** SSE 텍스트(블록 구분 \n\n) → {event, data} 목록. 불완전/빈 블록은 버린다. */
 export function parseSseBlocks(text: string): SseBlock[] {
   return text
-    .split(/\r?\n\r?\n/)
+    .split(SSE_BLOCK_DELIM)
     .map(parseSseBlock)
     .filter((block): block is SseBlock => Boolean(block));
 }
@@ -39,6 +42,8 @@ export function mapProgressEvent(raw: unknown): AgentTimelineEvent | null {
     record.payload && typeof record.payload === 'object'
       ? (record.payload as Record<string, unknown>)
       : undefined;
+  // evidence 이벤트는 트레이스 seq를 싣는다 — 재접속 병합 때 삽입순이 아니라 이 값으로 정렬한다.
+  const seq = payload && typeof payload.seq === 'number' ? payload.seq : undefined;
   return {
     id,
     stage: stringValue(record.stage) ?? stage,
@@ -46,6 +51,7 @@ export function mapProgressEvent(raw: unknown): AgentTimelineEvent | null {
     // N-001 — REST polling과 동일한 payload→detail 매핑(#257): source/query/count/사유.
     detail: timelineDetail(payload),
     state: mapTimelineState(stage),
+    ...(seq !== undefined ? { sequence: seq } : {}),
   };
 }
 
@@ -56,18 +62,26 @@ function mapTimelineState(stage: string): AgentTimelineState {
   return 'running';
 }
 
+/** progress wire 객체 목록 → timeline 이벤트. 형식이 어긋난 항목은 버린다. */
+export function mapProgressEvents(raws: unknown[]): AgentTimelineEvent[] {
+  return raws
+    .map((raw) => mapProgressEvent(raw))
+    .filter((event): event is AgentTimelineEvent => Boolean(event));
+}
+
 /** novelty 스냅샷 SSE 텍스트 → timeline 이벤트 목록 (기존 parseNoveltySseEvents). */
 export function parseNoveltySseEvents(text: string): AgentTimelineEvent[] {
-  return parseSseBlocks(text)
+  const payloads = parseSseBlocks(text)
     .filter((block) => block.event === 'progress')
     .map((block) => {
       try {
-        return mapProgressEvent(JSON.parse(block.data));
+        return JSON.parse(block.data) as unknown;
       } catch {
         return null;
       }
     })
-    .filter((event): event is AgentTimelineEvent => Boolean(event));
+    .filter((raw): raw is unknown => raw !== null);
+  return mapProgressEvents(payloads);
 }
 
 // N-001(#257) — SSE 경로도 REST polling과 동일 payload→detail 매핑을 쓴다.
@@ -85,34 +99,39 @@ export function timelineDetail(payload?: Record<string, unknown>): string | unde
   return parts.filter(Boolean).join(' · ') || undefined;
 }
 
-export type AgentTurnStreamOutcome =
+export type TurnEventStreamOutcome =
   | { kind: 'terminal'; payload: unknown }
   | { kind: 'json'; status: number; body: unknown }
-  | { kind: 'failed'; jobId?: string; sessionId?: string; started?: boolean };
+  | { kind: 'failed'; lastSeq: number };
 
 /**
- * 동기 evidence 턴 SSE 소비(US-EV2) — POST + Accept: text/event-stream.
+ * evidence 턴 이벤트 스트림 소비(v3 §5.3) — GET /turns/{id}/events?after=<seq>.
  *
  * - progress 프레임 → onEvents(점진 렌더링). 최종 claims는 터미널 `result` 프레임에만
- *   실려 온다(C-2/INV-EV-3) — 이 함수는 터미널 payload를 그대로 반환할 뿐 중간
- *   프레임에서 결과를 조립하지 않는다.
- * - 서버가 JSON으로 응답하면(비동기 pending·mock 등) 재전송 없이 그 본문을 그대로
- *   JSON 경로 결과로 넘긴다.
- * - 스트림이 터미널 없이 끊기면 'failed' + 관측된 jobId(started 이벤트 payload) 반환 —
- *   백엔드는 턴을 끝까지 완결하므로 호출자가 스냅샷으로 복구한다(PR #338 교훈).
+ *   실려 온다(C-2/INV-EV-3) — 중간 프레임에서 결과를 조립하지 않는다.
+ * - 서버가 JSON으로 응답하면(mock 경로) 재요청 없이 그 본문을 그대로 넘긴다.
+ * - 스트림이 터미널 없이 끊기면 'failed' + 마지막으로 받은 seq — 호출자가 `after=`로
+ *   다시 붙는다. 백엔드는 턴을 계속 돌리므로 재전송은 없다.
  */
-export async function streamAgentTurn(options: {
+export async function readTurnEvents(options: {
   path: string;
-  body: unknown;
   onEvents?: (events: AgentTimelineEvent[]) => void;
-}): Promise<AgentTurnStreamOutcome> {
-  const res = await fetch(`/bff${options.path}`, {
-    method: 'POST',
-    headers: { accept: 'text/event-stream', 'content-type': 'application/json' },
-    credentials: 'same-origin',
-    cache: 'no-store',
-    body: JSON.stringify(options.body),
-  });
+  /** 구독을 버릴 때 끊는다 — 안 끊으면 서버 제너레이터가 상한(10분)까지 초당 폴링을 계속한다. */
+  signal?: AbortSignal;
+}): Promise<TurnEventStreamOutcome> {
+  let lastSeq = 0;
+  let res: Response;
+  try {
+    res = await fetch(`/bff${options.path}`, {
+      method: 'GET',
+      headers: { accept: 'text/event-stream' },
+      credentials: 'same-origin',
+      cache: 'no-store',
+      signal: options.signal,
+    });
+  } catch {
+    return { kind: 'failed', lastSeq };
+  }
 
   const contentType = res.headers.get('content-type') ?? '';
   if (!contentType.includes('text/event-stream')) {
@@ -124,18 +143,13 @@ export async function streamAgentTurn(options: {
     }
     return { kind: 'json', status: res.status, body };
   }
-  if (!res.ok || !res.body) return { kind: 'failed' };
+  if (!res.ok || !res.body) return { kind: 'failed', lastSeq };
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
-  let jobId: string | undefined;
-  let sessionId: string | undefined;
-  // 이벤트를 하나라도 받았다 = 서버가 턴을 돌리기 시작했다. 이 뒤의 단절에서
-  // JSON 폴백으로 재전송하면 같은 턴이 두 번 실행된다(이중 과금).
-  let started = false;
 
-  const handleBlock = (block: SseBlock): AgentTurnStreamOutcome | null => {
+  const handleBlock = (block: SseBlock): TurnEventStreamOutcome | null => {
     if (block.event === 'progress') {
       let raw: unknown;
       try {
@@ -143,21 +157,21 @@ export async function streamAgentTurn(options: {
       } catch {
         return null;
       }
-      started = true;
-      jobId = extractJobId(raw) ?? jobId;
-      sessionId = extractSessionId(raw) ?? sessionId;
       const event = mapProgressEvent(raw);
-      if (event) options.onEvents?.([event]);
+      if (event) {
+        if (event.sequence !== undefined) lastSeq = Math.max(lastSeq, event.sequence);
+        options.onEvents?.([event]);
+      }
       return null;
     }
     if (block.event === 'result') {
       try {
         return { kind: 'terminal', payload: JSON.parse(block.data) };
       } catch {
-        return { kind: 'failed', jobId, sessionId, started };
+        return { kind: 'failed', lastSeq };
       }
     }
-    if (block.event === 'error') return { kind: 'failed', jobId, sessionId, started };
+    if (block.event === 'error') return { kind: 'failed', lastSeq };
     return null;
   };
 
@@ -165,7 +179,7 @@ export async function streamAgentTurn(options: {
     for (;;) {
       const { done, value } = await reader.read();
       if (value) buffer += decoder.decode(value, { stream: true });
-      const blocks = buffer.split(/\r?\n\r?\n/);
+      const blocks = buffer.split(SSE_BLOCK_DELIM);
       buffer = done ? '' : (blocks.pop() ?? '');
       for (const text of blocks) {
         const block = parseSseBlock(text);
@@ -176,24 +190,12 @@ export async function streamAgentTurn(options: {
       if (done) break;
     }
   } catch {
-    return { kind: 'failed', jobId, sessionId, started };
+    return { kind: 'failed', lastSeq };
+  } finally {
+    await reader.cancel().catch(() => undefined);
   }
-  // 터미널 없이 스트림 종료 — 백엔드가 계속 완결하므로 호출자 복구에 맡긴다.
-  return { kind: 'failed', jobId, sessionId, started };
-}
-
-function extractSessionId(raw: unknown): string | undefined {
-  if (!raw || typeof raw !== 'object') return undefined;
-  const payload = (raw as Record<string, unknown>).payload;
-  if (!payload || typeof payload !== 'object') return undefined;
-  return stringValue((payload as Record<string, unknown>).sessionId);
-}
-
-function extractJobId(raw: unknown): string | undefined {
-  if (!raw || typeof raw !== 'object') return undefined;
-  const payload = (raw as Record<string, unknown>).payload;
-  if (!payload || typeof payload !== 'object') return undefined;
-  return stringValue((payload as Record<string, unknown>).jobId);
+  // 터미널 없이 스트림 종료(서버 상한 10분 등) — 호출자가 after=lastSeq로 다시 붙는다.
+  return { kind: 'failed', lastSeq };
 }
 
 function labeled(label: string, value: unknown): string | undefined {

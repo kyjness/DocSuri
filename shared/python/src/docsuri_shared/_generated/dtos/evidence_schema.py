@@ -98,12 +98,13 @@ class EvidenceItem(BaseModel):
 
 class StoppedReason(StrEnum):
     """
-    탐색 종료 사유(선택, v2). 비기술 사유만 — 내부 상태·예외 상세 비노출(SEC-9). sufficient이면 화면에 확인 범위를 표시하지 않는다. 터미널 상태는 ok|abstain 2종을 유지하며 이 필드는 상태가 아니라 부가 정보다. Trace: FR-37 v2, SEC-9.
+    탐색 종료 사유(선택, v2). 비기술 사유만 — 내부 상태·예외 상세 비노출(SEC-9). sufficient이면 화면에 확인 범위를 표시하지 않는다. cancelled = 사용자가 취소해 그 시점까지 검증된 근거로 만든 부분 답(v3 §2.8). 터미널 상태는 ok|abstain 2종을 유지하며 이 필드는 상태가 아니라 부가 정보다. Trace: FR-37 v2, SEC-9.
     """
 
     sufficient = 'sufficient'
     budget_exhausted = 'budget_exhausted'
     partial_failure = 'partial_failure'
+    cancelled = 'cancelled'
 
 
 class EvidenceCoverage(BaseModel):
@@ -129,7 +130,7 @@ class EvidenceCoverage(BaseModel):
     )
     stoppedReason: StoppedReason | None = Field(
         None,
-        description='탐색 종료 사유(선택, v2). 비기술 사유만 — 내부 상태·예외 상세 비노출(SEC-9). sufficient이면 화면에 확인 범위를 표시하지 않는다. 터미널 상태는 ok|abstain 2종을 유지하며 이 필드는 상태가 아니라 부가 정보다. Trace: FR-37 v2, SEC-9.',
+        description='탐색 종료 사유(선택, v2). 비기술 사유만 — 내부 상태·예외 상세 비노출(SEC-9). sufficient이면 화면에 확인 범위를 표시하지 않는다. cancelled = 사용자가 취소해 그 시점까지 검증된 근거로 만든 부분 답(v3 §2.8). 터미널 상태는 ok|abstain 2종을 유지하며 이 필드는 상태가 아니라 부가 정보다. Trace: FR-37 v2, SEC-9.',
     )
 
 
@@ -166,7 +167,7 @@ class EvidenceAbstainResult(BaseModel):
     state: Literal['abstain'] = Field(..., description='abstain 고정. Trace: FR-5.')
     abstainReason: str = Field(
         ...,
-        description='비기술 기권 사유(내부 위반 상세·점수 비노출 — SEC-9). 예: out_of_corpus, insufficient_evidence.',
+        description='비기술 기권 사유(내부 위반 상세·점수 비노출 — SEC-9). 예: out_of_corpus, insufficient_evidence, cancelled(근거를 찾기 전에 사용자가 취소).',
     )
 
 

@@ -38,6 +38,11 @@ async def enforce_novelty_turn_quota(request: Request) -> None:
     await _enforce(request, scope="novelty_turn", limit=_NOVELTY_TURN_DAILY_LIMIT)
 
 
+async def refund_evidence_turn_quota(request: Request) -> None:
+    """수락되지 못한 evidence 턴(세션 잠금 409·dispatch 실패 503)의 한도를 되돌린다."""
+    await _refund(request, scope="evidence")
+
+
 async def refund_novelty_turn_quota(request: Request) -> None:
     """승인된 턴이 실행에 들어가지 못했을 때 한도를 되돌린다.
 

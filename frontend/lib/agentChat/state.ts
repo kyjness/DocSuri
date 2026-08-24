@@ -8,6 +8,8 @@ import type {
   AgentSessionSnapshot,
   AgentSessionSummary,
   AgentTimelineEvent,
+  AgentTurnAccepted,
+  AgentTurnFinished,
 } from './types';
 
 export const MAX_AGENT_MESSAGE_CHARS = 4000;
@@ -27,6 +29,9 @@ export interface AgentChatState {
   jobState: AgentJobState;
   submitting: boolean;
   error: string | null;
+  /** evidence — 실행 중인 턴(v3 §5). 있으면 이벤트 구독이 유일한 답변 작성자이고 입력은 닫힌다. */
+  activeTurnId: string | null;
+  cancelRequested: boolean;
 }
 
 export const initialAgentChatState: AgentChatState = {
@@ -40,6 +45,8 @@ export const initialAgentChatState: AgentChatState = {
   jobState: 'idle',
   submitting: false,
   error: null,
+  activeTurnId: null,
+  cancelRequested: false,
 };
 
 export type AgentChatAction =
@@ -56,6 +63,9 @@ export type AgentChatAction =
   | { type: 'sendStart'; message: AgentMessage }
   | { type: 'sendSuccess'; result: AgentSendMessageResult }
   | { type: 'sendFailure'; message: string }
+  | { type: 'turnAccepted'; accepted: AgentTurnAccepted }
+  | { type: 'turnFinished'; finished: AgentTurnFinished }
+  | { type: 'cancelRequested' }
   | { type: 'deleteSession'; id: string }
   | { type: 'resetSessions' };
 
@@ -85,7 +95,10 @@ export function agentReducer(state: AgentChatState, action: AgentChatAction): Ag
         events: sortTimelineEvents(action.snapshot.events),
         draft: '',
         attachments: [],
-        jobState: action.snapshot.session.state,
+        // 새로고침 뒤에도 실행 중인 턴은 구독을 다시 붙인다 — 아니면 답변이 영영 안 온다.
+        jobState: action.snapshot.activeTurnId ? 'running' : action.snapshot.session.state,
+        activeTurnId: action.snapshot.activeTurnId ?? null,
+        cancelRequested: false,
         error: null,
       };
     case 'refreshSession':
@@ -103,6 +116,53 @@ export function agentReducer(state: AgentChatState, action: AgentChatAction): Ag
       return action.events.length
         ? { ...state, events: mergeTimelineEvents(state.events, action.events) }
         : state;
+    case 'turnAccepted': {
+      // 후속 턴의 수락 응답은 그 질문을 topic으로 싣는다 — 세션 제목은 첫 질문이므로
+      // 같은 세션이면 기존 제목을 지키고 상태만 running으로 올린다.
+      const accepted = action.accepted.session;
+      const session =
+        state.session && state.session.id === accepted.id
+          ? { ...state.session, state: accepted.state, updatedAt: accepted.updatedAt }
+          : accepted;
+      return {
+        ...state,
+        session,
+        sessions: sortSessions(upsertSession(state.sessions, session)),
+        messages: markLastPending(state.messages, 'sent'),
+        draft: '',
+        attachments: [],
+        jobState: 'running',
+        submitting: false,
+        activeTurnId: action.accepted.turnId,
+        cancelRequested: false,
+        error: null,
+      };
+    }
+    case 'turnFinished': {
+      if (state.activeTurnId && state.activeTurnId !== action.finished.turnId) return state;
+      const { message, outcome, cancelled, turnId } = action.finished;
+      const session = state.session
+        ? { ...state.session, state: outcome, updatedAt: message.createdAt }
+        : state.session;
+      return {
+        ...state,
+        session,
+        sessions: session ? sortSessions(upsertSession(state.sessions, session)) : state.sessions,
+        messages: state.messages.some((item) => item.id === message.id)
+          ? state.messages
+          : [...state.messages, message],
+        // 취소는 타임라인에도 남는다 — 마지막 줄이 영원히 돌지 않게 닫는다.
+        events: cancelled
+          ? mergeTimelineEvents(state.events, [cancelledTimelineEvent(turnId)])
+          : state.events,
+        jobState: outcome,
+        activeTurnId: null,
+        cancelRequested: false,
+        error: outcome === 'failed' ? jobStateMessage(outcome) : null,
+      };
+    }
+    case 'cancelRequested':
+      return state.activeTurnId ? { ...state, cancelRequested: true } : state;
     case 'newChat':
       return { ...initialAgentChatState, sessions: state.sessions };
     case 'resetSessions':
@@ -156,9 +216,11 @@ export function agentReducer(state: AgentChatState, action: AgentChatAction): Ag
     case 'sendFailure':
       return {
         ...state,
-        messages: markLastPendingFailed(state.messages),
+        messages: markLastPending(state.messages, 'failed'),
         jobState: 'failed',
         submitting: false,
+        activeTurnId: null,
+        cancelRequested: false,
         error: action.message,
       };
     case 'deleteSession':
@@ -179,6 +241,8 @@ export function agentReducer(state: AgentChatState, action: AgentChatAction): Ag
         jobState: 'idle',
         submitting: false,
         error: null,
+        activeTurnId: null,
+        cancelRequested: false,
       };
     default:
       return state;
@@ -216,8 +280,19 @@ export function canSend(state: AgentChatState): boolean {
       state.session &&
       state.draft.trim() &&
       !state.submitting &&
+      !state.activeTurnId &&
       state.attachments.every((item) => item.status === 'ready'),
   );
+}
+
+export function cancelledTimelineEvent(turnId: string): AgentTimelineEvent {
+  return {
+    id: `${turnId}:cancelled`,
+    stage: 'cancelled',
+    label: '취소됨',
+    state: 'failed',
+    sequence: Number.MAX_SAFE_INTEGER,
+  };
 }
 
 export function mergeTimelineEvents(
@@ -317,12 +392,14 @@ function upsertSession(
   return [session, ...sessions.filter((item) => item.id !== session.id)];
 }
 
-function markLastPendingFailed(messages: AgentMessage[]): AgentMessage[] {
+/** 낙관적으로 붙여둔 마지막 사용자 메시지의 상태를 확정한다(수락=sent, 실패=failed). */
+function markLastPending(
+  messages: AgentMessage[],
+  status: 'sent' | 'failed',
+): AgentMessage[] {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     if (messages[i].status === 'pending') {
-      return messages.map((message, idx) =>
-        idx === i ? { ...message, status: 'failed' as const } : message,
-      );
+      return messages.map((message, idx) => (idx === i ? { ...message, status } : message));
     }
   }
   return messages;

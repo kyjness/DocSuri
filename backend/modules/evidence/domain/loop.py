@@ -13,22 +13,39 @@
   두면 종료 제안이 거부돼 도구 없이 되도는 경로에서 재전송이 남는다.
 
 실행 틀은 LangGraph `StateGraph`다(evidence-agent-v3 설계 §3.1, 아키텍처 Q5=B). 위
-불변 조건은 노드 안에 그대로 산다. `deps`(LLM·도구·예산·트레이스 싱크)는 직렬화할 수
-없으므로 채널에 넣지 않고 노드 클로저로 묶는다. `LoopState`는 채널에 **참조로** 실린다 —
-runner가 `outcome.state`가 아니라 자기 객체를 조립에 넘기므로 in-place 변경이 보여야
-한다. 종료는 `_finish` 호출 지점 4곳(노드 3곳 + `_act`)에서 `outcome`을 채우는 것으로
-표현한다 — PR 2가 이를 `answer → assemble` 꼬리로 모은다. 체크포인터도 PR 2.
+불변 조건은 노드 안에 그대로 산다. 채널에는 **JSON만** 싣는다 — 매 super-step의 `snapshot`
+(`LoopState.to_snapshot`), 노드 사이를 건너는 `proposal`, 종료 경로가 채우는 `outcome`. 살아
+있는 `LoopState`와 `deps`(LLM·도구·예산·트레이스 싱크·취소 신호)는 직렬화할 수 없으므로
+`context`(`LoopRun`)로 주입한다 — context는 체크포인트에 실리지 않는다. runner가
+`outcome.state`가 아니라 자기 객체를 조립에 넘기므로 in-place 변경은 여전히 보여야 하고,
+스냅샷은 그 객체의 투영일 뿐이다.
+
+체크포인터(`compile_loop_graph(checkpointer)`)가 있으면 `thread_id=turn_id`로 super-step마다
+저장된다. 이번 단계는 **재개하지 않는다** — 남은 체크포인트는 실행자가 죽은 턴을 부분 답으로
+마감하는 데만 쓴다(`load_snapshot`). 그래서 invoke 전에 스레드를 비운다: **완료된 thread는 다시
+invoke해도 아예 돌지 않는다**(입력 쓰기조차 반영되지 않는다 — 1.2.x 실측). 재배달된 잡이 조용히
+"아무 일도 안 하고 성공"으로 끝나는 것을 막는 유일한 방법이다.
+
+스냅샷은 상태를 **바꾼 노드만** 돌려준다(`act`와 종료 지점). `decide`·`check_floor`가 만지는 것은
+예산·이미지·노트뿐이라 마감이 읽는 것에 영향이 없고, LastValue 채널이 직전 값을 유지한다 —
+매 노드가 전체 투영을 다시 쓰면 같은 바이트가 체크포인트마다 두 번씩(blob + writes) 쌓인다.
+
+취소·중단은 `deps.should_stop`이 `decide` 진입(super-step 경계)에서 사유를 돌려주는 것으로
+표현한다 — 진행 중인 `act`는 끝까지 돌고 그 결과도 부분 답에 들어간다(§2.8). 종료는 `_finish`
+호출 지점에서 `outcome`을 채우는 것으로 표현한다 — PR 3이 이를 `answer → assemble` 꼬리로 모은다.
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any, Literal, TypedDict
 
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
+from langgraph.runtime import Runtime
 from langsmith import tracing_context
 
 from ..ports.llm import (
@@ -51,7 +68,7 @@ from .models import (
     ToolCallRecord,
 )
 
-__all__ = ["LoopDeps", "LoopOutcome", "run_loop"]
+__all__ = ["LoopDeps", "LoopOutcome", "LoopRun", "compile_loop_graph", "load_snapshot", "run_loop"]
 
 log = logging.getLogger("docsuri.evidence.loop")
 
@@ -74,6 +91,9 @@ class LoopDeps:
     # 트레이스 1건이 확정될 때마다 부른다(스트리밍·영속). 실패는 루프를 깨지 않는다 —
     # 진행 표시는 advisory이고 근거형성이 본 경로다(NFR-O1).
     on_trace: Callable[[ToolCallRecord], None] | None = None
+    # 협조적 취소·중단 — super-step 경계(decide 진입)마다 묻는다. 사유를 돌려주면 반복을
+    # 소모하지 않고 그 자리에서 끝낸다(novelty BR-RA8과 같은 방식).
+    should_stop: Callable[[], TerminationReason | None] | None = None
 
 
 @dataclass(slots=True)
@@ -84,26 +104,62 @@ class LoopOutcome:
     notes: list[str] = field(default_factory=list)
 
 
-def run_loop(state: LoopState, deps: LoopDeps) -> LoopOutcome:
-    """한 턴의 자율 탐색을 종료까지 구동한다."""
-    graph = _build_graph(deps)
+@dataclass(slots=True)
+class LoopRun:
+    """그래프 context — 살아 있는 상태와 의존성. 체크포인트에 실리지 않는다."""
+
+    state: LoopState
+    deps: LoopDeps
+
+
+def run_loop(
+    state: LoopState, deps: LoopDeps, *, graph: CompiledStateGraph | None = None
+) -> LoopOutcome:
+    """한 턴의 자율 탐색을 종료까지 구동한다.
+
+    `graph`가 없으면 체크포인터 없이 컴파일한다(테스트·포트 경로). 있으면
+    `thread_id=deps.ctx.turn_id`로 super-step마다 저장된다.
+    """
+    if graph is None:
+        graph = compile_loop_graph(None)
+    config: dict[str, Any] = {"recursion_limit": _recursion_limit(deps.budget)}
+    if graph.checkpointer is not None:
+        # 재개가 아니라 새 실행이다 — 완료된 thread는 비우지 않으면 재invoke가 무동작으로 끝난다.
+        graph.checkpointer.delete_thread(deps.ctx.turn_id)
+        config["configurable"] = {"thread_id": deps.ctx.turn_id}
     # langchain-core는 LANGSMITH_TRACING 류 env만 있으면 트레이서를 **자동으로** 붙여 노드
     # 입출력(질문·논문 본문·이미지가 든 LoopState)을 외부로 보낸다. env의 부재에 기대지
     # 않고 여기서 끈다 — 이 루프의 관찰 경로는 on_trace 하나다(SEC-9).
     with tracing_context(enabled=False):
         result = graph.invoke(
-            {"loop": state}, config={"recursion_limit": _recursion_limit(deps.budget)}
+            {"snapshot": state.to_snapshot()},
+            config=config,
+            context=LoopRun(state=state, deps=deps),
         )
-    return result["outcome"]
+    outcome = result["outcome"]
+    return LoopOutcome(
+        reason=TerminationReason(outcome["reason"]),
+        state=state,
+        detail=outcome["detail"],
+        notes=list(state.notes),
+    )
+
+
+def load_snapshot(graph: CompiledStateGraph, turn_id: str) -> dict[str, Any] | None:
+    """마지막 체크포인트의 스냅샷 — 없으면(안 돈 스레드·체크포인터 없음) None."""
+    if graph.checkpointer is None:
+        return None
+    values = graph.get_state({"configurable": {"thread_id": turn_id}}).values
+    return values.get("snapshot") if values else None
 
 
 class _GraphState(TypedDict, total=False):
-    # 호출자의 LoopState 그 객체 — 복사 없이 참조로 싣는다(체크포인터 없음).
-    loop: LoopState
-    # decide → check_floor / act 로 넘기는 임시 값. 다음 decide가 덮어쓴다.
-    proposal: ToolCallProposal | TerminationProposal
+    # 살아 있는 LoopState의 JSON 투영 — 노드마다 갱신해 체크포인트에 최신이 실리게 한다.
+    snapshot: dict[str, Any]
+    # decide → check_floor / act 로 넘기는 임시 값. `{"kind": "tool"|"end", ...}`.
+    proposal: dict[str, Any] | None
     # 종료 경로(`_finish` 호출 지점)에서만 채워진다. 채워지면 라우터가 END로 보낸다.
-    outcome: LoopOutcome | None
+    outcome: dict[str, Any] | None
 
 
 # 반복 하나가 쓰는 최대 스텝 — `decide` + (`act` | `check_floor`). 거부된 종료 제안은
@@ -124,45 +180,55 @@ def _recursion_limit(budget: LoopBudget) -> int:
     return _STEPS_PER_ITERATION * budget.max_iterations + _TAIL_STEPS + 1
 
 
-def _build_graph(deps: LoopDeps) -> CompiledStateGraph:
-    """노드가 deps를 클로저로 닫으므로 턴마다 조립한다(약 3ms).
+def compile_loop_graph(checkpointer: BaseCheckpointSaver | None) -> CompiledStateGraph:
+    """그래프는 deps를 닫지 않으므로 프로세스당 한 번 컴파일하면 된다."""
 
-    PR 2에서 `context_schema=LoopDeps`로 deps를 invoke 인자로 넘기고 그래프는 한 번만
-    컴파일한다 — context는 체크포인트에 실리지 않으므로 직렬화 불가인 deps의 제자리다.
-    """
+    def end(run: LoopRun, reason: TerminationReason, detail: str | None) -> dict:
+        outcome = _finish(run.state, reason, detail, run.deps)
+        return {"outcome": _dump_outcome(outcome), "snapshot": run.state.to_snapshot()}
 
-    def end(state: LoopState, reason: TerminationReason, detail: str | None) -> dict:
-        return {"outcome": _finish(state, reason, detail, deps)}
+    def decide(gs: _GraphState, runtime: Runtime[LoopRun]) -> dict:
+        run = runtime.context
+        state, deps = run.state, run.deps
+        if deps.should_stop is not None:
+            stop = deps.should_stop()
+            if stop is not None:
+                return end(run, stop, None)
 
-    def decide(gs: _GraphState) -> dict:
-        state = gs["loop"]
         denial = budget_rules.begin_iteration(deps.budget)
         if denial is not None:
-            return end(state, TerminationReason.BUDGET_EXHAUSTED, denial.detail)
+            return end(run, TerminationReason.BUDGET_EXHAUSTED, denial.detail)
 
         observation = _observe(state, deps)
         try:
             decision = deps.llm.decide(observation, deps.registry.specs())
         except LlmUnavailable as exc:
-            return end(state, TerminationReason.FATAL_ERROR, f"llm_unavailable: {exc}")
+            return end(run, TerminationReason.FATAL_ERROR, f"llm_unavailable: {exc}")
 
         budget_rules.record_cost(deps.budget, decision.cost_estimate_usd)
         # 전달된 이미지는 여기서 소비된다 — 남기면 매 턴 재전송된다.
         _drop_images(state)
-        return {"proposal": decision.proposal}
+        # 스냅샷은 쓰지 않는다 — 이 노드가 바꾸는 것(예산·이미지)은 마감이 읽지 않는다.
+        return {"proposal": _dump_proposal(decision.proposal), "outcome": None}
 
-    def check_floor(gs: _GraphState) -> dict:
-        state = gs["loop"]
+    def check_floor(gs: _GraphState, runtime: Runtime[LoopRun]) -> dict:
+        run = runtime.context
+        state = run.state
         if state.accumulator.items:
-            return end(state, TerminationReason.SUFFICIENT, gs["proposal"].note)
-        # 종료 제안 거부 — 사유를 관찰에 실어 다음 판단이 달라지게 한다.
+            return end(run, TerminationReason.SUFFICIENT, (gs.get("proposal") or {}).get("note"))
+        # 종료 제안 거부 — 사유를 관찰에 실어 다음 판단이 달라지게 한다(노트는 마감이 안 읽는다).
         _note(state, _NO_EVIDENCE_NOTE)
-        return {}
+        return {"proposal": None, "outcome": None}
 
-    def act(gs: _GraphState) -> dict:
-        return {"outcome": _act(gs["loop"], deps, gs["proposal"])}
+    def act(gs: _GraphState, runtime: Runtime[LoopRun]) -> dict:
+        run = runtime.context
+        outcome = _act(run.state, run.deps, _load_proposal(gs["proposal"]))
+        return {
+            "outcome": _dump_outcome(outcome) if outcome is not None else None,
+            "snapshot": run.state.to_snapshot(),
+        }
 
-    graph = StateGraph(_GraphState)
+    graph = StateGraph(_GraphState, context_schema=LoopRun)
     graph.add_node("decide", decide)
     graph.add_node("check_floor", check_floor)
     graph.add_node("act", act)
@@ -170,7 +236,7 @@ def _build_graph(deps: LoopDeps) -> CompiledStateGraph:
     graph.add_conditional_edges("decide", _route_after_decide)
     graph.add_conditional_edges("check_floor", _route_back_or_end)
     graph.add_conditional_edges("act", _route_back_or_end)
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)
 
 
 # 라우터 반환형은 Literal이어야 한다 — 그래야 컴파일된 그래프가 자기 간선을 안다
@@ -178,13 +244,33 @@ def _build_graph(deps: LoopDeps) -> CompiledStateGraph:
 def _route_after_decide(gs: _GraphState) -> Literal["check_floor", "act", "__end__"]:
     if gs.get("outcome") is not None:
         return END
-    if isinstance(gs["proposal"], TerminationProposal):
+    if (gs.get("proposal") or {}).get("kind") == _PROPOSAL_END:
         return "check_floor"
     return "act"
 
 
 def _route_back_or_end(gs: _GraphState) -> Literal["decide", "__end__"]:
     return END if gs.get("outcome") is not None else "decide"
+
+
+# 채널에는 JSON만 싣는다 — 제안은 종류 태그를 붙인 dict로, 결과는 사유·상세만.
+_PROPOSAL_TOOL = "tool"
+_PROPOSAL_END = "end"
+
+
+def _dump_proposal(proposal: ToolCallProposal | TerminationProposal) -> dict[str, Any]:
+    kind = _PROPOSAL_END if isinstance(proposal, TerminationProposal) else _PROPOSAL_TOOL
+    return {"kind": kind, **asdict(proposal)}
+
+
+def _load_proposal(data: dict[str, Any]) -> ToolCallProposal:
+    return ToolCallProposal(
+        tool_name=data["tool_name"], args=data["args"], decision_note=data.get("decision_note")
+    )
+
+
+def _dump_outcome(outcome: LoopOutcome) -> dict[str, Any]:
+    return {"reason": outcome.reason.value, "detail": outcome.detail}
 
 
 def _act(state: LoopState, deps: LoopDeps, proposal: ToolCallProposal) -> LoopOutcome | None:
@@ -352,10 +438,16 @@ def _summarize_args(args: dict) -> str:
     return ", ".join(parts)[:300]
 
 
+# 근거 0건이어도 사유를 유지하는 종료 — "왜 멈췄는지"가 사용자에게 보여야 하는 것들.
+_REASON_KEPT_WITHOUT_EVIDENCE = frozenset(
+    {TerminationReason.FATAL_ERROR, TerminationReason.CANCELLED, TerminationReason.INTERRUPTED}
+)
+
+
 def _finish(
     state: LoopState, reason: TerminationReason, detail: str | None, deps: LoopDeps
 ) -> LoopOutcome:
-    if reason is not TerminationReason.FATAL_ERROR and not state.accumulator.items:
+    if reason not in _REASON_KEPT_WITHOUT_EVIDENCE and not state.accumulator.items:
         # 예산이 끝났든 충분하다고 판단했든, 근거가 없으면 기권이다(INV-EV-2).
         reason = TerminationReason.NO_EVIDENCE
     state.termination_reason = reason

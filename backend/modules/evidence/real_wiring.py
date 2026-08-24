@@ -62,11 +62,13 @@ def build_evidence_runner(
     *,
     cost_guard: Any | None = None,
     session_factory: Any | None = None,
+    graph: Any | None = None,
 ) -> EvidenceTurnRunner:
     """실 어댑터 조립 — DOCSURI_DOCMODEL_BUCKET + OpenSearch 설정 필요.
 
     cost_guard(U6 단일 권위)를 주면 턴 실행의 비용 게이트에
-    연결된다(NFR-C1).
+    연결된다(NFR-C1). graph(=TurnCheckpoints.graph)를 주면 super-step마다 루프 스냅샷이
+    저장된다(v3 §5). 안 주면 체크포인트 없이 돈다.
     """
     # --- Discovery 어댑터 (U2 재사용) ---
     from discovery.adapters.opensearch_index import (
@@ -155,7 +157,8 @@ def build_evidence_runner(
             assets=assets,
             cost_guard=cost_guard,
             budget_factory=settings.build_loop_budget,
-        )
+        ),
+        graph=graph,
     )
     return runner
 

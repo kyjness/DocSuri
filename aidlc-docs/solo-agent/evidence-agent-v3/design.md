@@ -181,7 +181,12 @@ Q. 오늘 뭐 먹을까?
 - **노드는 평범한 파이썬 함수**다. `decide`는 현행 Bedrock 어댑터를 그대로 부르고, `act`는 현행 `ToolRegistry`를 그대로 쓴다. LLM 연결을 LangChain으로 바꾸지 않는다.
 - 현행 `run_loop()`의 불변 조건은 그대로 노드에 산다 — 예산 검사는 act 직전 1회, 도구 호출은 `ToolCallRecord` 1:1, 이미지는 decide 직후 소비.
 - **PR 1**은 이 그래프로 옮기되 `answer` 노드 없이(현행 `_narrative`), `check_floor`는 현행 규칙(근거 0건 거부)만으로 만든다 — 동작 변화 0을 증명한 뒤 PR 2에서 나머지를 얹는다.
-- **PR 1 실행 결과(2026-08-23, `feature/evidence-langgraph-loop`)**: 노드 3개(`decide`/`check_floor`/`act`), `compile()`에 체크포인터 없음 — `LoopState`가 doc_model·이미지를 들고 있어 직렬화가 안 되므로 **Postgres saver·`thread_id=turn_id`는 PR 2**(상태 직렬화와 함께). `finish`/`assemble` 노드도 없다 — runner가 여전히 `assemble()`을 부르고 종료는 `_finish` 4곳이 `outcome`을 채우는 것으로 표현된다; PR 2가 이를 `answer → assemble` 꼬리로 모은다. deps는 노드 클로저(턴마다 컴파일 3ms) — PR 2에서 `context_schema=LoopDeps`로 넘기고 한 번만 컴파일한다. 스텝 상한은 예산에서 유도: `_STEPS_PER_ITERATION(2)·n + _TAIL_STEPS(1) + 1`(LangGraph 1.2.x는 N스텝에 limit ≥ N+1, 실측). PR 2의 `answer`·`assemble`은 꼬리 스텝이라 `_TAIL_STEPS`를 올린다. 배포는 `langgraph==1.2.11` 정확 고정(상한이 여유 없이 잡혀 있어서). LangSmith 자동 트레이싱은 `tracing_context(enabled=False)`로 차단.
+- **PR 1 실행 결과(2026-08-23, `feature/evidence-langgraph-loop`)**: 노드 3개(`decide`/`check_floor`/`act`), `compile()`에 체크포인터 없음 — `LoopState`가 doc_model·이미지를 들고 있어 직렬화가 안 되므로 **Postgres saver·`thread_id=turn_id`는 PR 2**(상태 직렬화와 함께). `finish`/`assemble` 노드도 없다 — runner가 여전히 `assemble()`을 부르고 종료는 `_finish` 4곳이 `outcome`을 채우는 것으로 표현된다; PR 3이 이를 `answer → assemble` 꼬리로 모은다. 스텝 상한은 예산에서 유도: `_STEPS_PER_ITERATION(2)·n + _TAIL_STEPS(1) + 1`(LangGraph 1.2.x는 N스텝에 limit ≥ N+1, 실측). PR 3의 `answer`·`assemble`은 꼬리 스텝이라 `_TAIL_STEPS`를 올린다. 배포는 `langgraph==1.2.11` 정확 고정(상한이 여유 없이 잡혀 있어서). LangSmith 자동 트레이싱은 `tracing_context(enabled=False)`로 차단.
+- **PR 2 실행 결과(2026-08-24, `feature/evidence-turn-execution`)**: 그래프 채널은 **순수 JSON**(`snapshot`·`proposal{kind}`·`outcome{reason,detail}`)이고 살아 있는 `LoopState`·deps는 `context_schema=LoopRun`으로 주입된다(체크포인트 밖). Postgres saver가 super-step마다 저장한다(`thread_id=turn_id`, 풀은 autocommit).
+  - **스냅샷에는 마감(`assemble`)이 읽는 것만 싣는다.** DocModel·투영 캐시·이미지는 직렬화가 안 되고, 도구 결과 관찰 윈도우·소모 예산·후보 논문의 초록 본문은 되읽는 소비자가 없다. 상태를 **바꾼 노드만** 돌려준다(`act`와 종료 지점) — `decide`·`check_floor`가 만지는 것은 예산·이미지·노트뿐이고, 매 노드가 전체 투영을 다시 쓰면 같은 바이트가 blob과 writes에 두 번씩 쌓인다. 실측: 7도구 턴 체크포인트 16건·**59.7 kB**(초안대로 전부 실었을 때는 9도구 턴에 22건·493 kB였다).
+  - **완료된 thread는 다시 invoke해도 아예 돌지 않는다**(입력 쓰기조차 반영되지 않는다 — 1.2.x 실측). 그래서 `run_loop`는 invoke 전에 스레드를 비운다: 재배달된 잡이 "아무 일도 안 하고 성공"으로 끝나는 것을 막는 유일한 방법이다. 재개가 아니라 새 실행이므로 이 줄은 PR 4 이어가기가 먼저 걷어내야 한다.
+  - 그래프는 **`TurnCheckpoints`가 소유**하고 프로세스당 한 번 컴파일한다. 러너는 그 그래프를 받아 돌리기만 하고, 스냅샷 조회·삭제는 체크포인트 객체 책임이다 — 러너에 매달았더니 세션 삭제·취소·이벤트·폴링 5개 라우트가 LLM 러너에 묶여, 러너가 구성되지 않는 배포에서 세션 삭제가 500이 됐다.
+  - 취소·중단은 `deps.should_stop`이 `decide` 진입(super-step 경계)에서 사유를 돌려주는 것으로 표현한다 — `RunControl.request_drain()`은 예외(`GraphDrained`)로 빠져 꼬리와 한 길이 아니라 쓰지 않았다. `_finish`는 `FATAL_ERROR`·`CANCELLED`·`INTERRUPTED`를 근거 0건이어도 강등하지 않는다.
 
 ### 3.2 도구
 
@@ -299,22 +304,27 @@ GET  /api/evidence/turns/{id}          폴링 폴백 (SSE 끊겼을 때 복구 �
 
 - 턴은 **항상 백그라운드 실행**이다(LangGraph thread + Postgres 체크포인트). 실행자가 같은 프로세스의 태스크인지 SQS 워커인지는 배포 환경이 정하고 **API·이벤트 계약은 같다.** 동기 경로는 없어진다 — 수 초 걸리는 턴도 같은 길로 간다(수락 → 이벤트 → 완료).
 - SSE 이벤트 형식은 novelty와 같은 `progress` 프레이밍을 유지한다(FE 파서 공유).
+- **PR 2 실행 결과**: 실행자 둘(SQS 워커 `worker.py` · 프로세스 내 스레드풀 `executor.py`, SQS 미구성이면 후자)이 같은 `process_job`을 돈다. 실행 전 관문(소유권·존재·멱등)은 `_prepare_turn` 하나이고, 짧은 트랜잭션 틀은 `repository.in_transaction` 하나다 — 네 곳이 각자 베껴 쓰다 한 곳에서 롤백이 빠져 있었다. `GET /jobs/{jobId}`와 `job_id` 컬럼은 없어졌다 — 폴링·이벤트·취소가 전부 `turn_id`다. 수락은 202이고 첨부 해석(PDF 빌드 대기)은 수락 **앞**에 남아 있다(실행자로 옮기는 것은 별건). 실행자는 긴 트랜잭션을 들지 않는다 — 조회는 짧은 세션 하나, 이후 하트비트·트레이스·결과는 `TurnControl`이 호출마다 커밋한다. 이유: 트레이스 행이 flush만 되고 잡이 끝나야 커밋되면 다른 세션(이벤트 스트림)은 완료 때까지 아무것도 못 본다 — 인메모리 repo는 객체를 공유해 테스트에서 안 잡히는 종류라 실 Postgres 게이트 테스트(CI 서비스 컨테이너)로 고정했다. dispatch가 실패하면 턴을 `dispatch_failed`로 닫고 503(+쿼터 환불) — 안 그러면 커밋된 pending 행이 §5.4의 잠금이 된다.
 
 ### 5.2 취소
 
-`cancel` 요청은 체크포인트에 취소 플래그를 쓴다. 실행자는 **super-step 경계마다** 플래그를 보고 멈춘다(협조적 취소 — novelty BR-RA8과 같은 방식). 멈춘 시점의 체크포인트 상태로 `answer → assemble`을 돌려 부분 답을 만든다(§2.8). 취소 전에 끝난 도구의 결과는 들어간다.
+`cancel` 요청은 **턴 행**에 취소 플래그를 쓴다(초안은 "체크포인트에"였으나 실행 중인 스레드에 밖에서 쓰는 것은 체크포인트를 갈라놓는 바로 그 함정이라 novelty BR-RA8과 같은 행 플래그로 했다). 실행자는 **super-step 경계마다**(`decide` 진입) 하트비트를 찍으며 플래그를 읽고 멈춘다 — `heartbeat(owner_id, turn_id)` 한 문장(`UPDATE … RETURNING`)이고 owner 스코프다(INV-EV-1; 매 super-step 부르는 유일한 메서드가 격리를 못 지키면 안 된다) — 반복을 소모하지 않고 트레이스도 남기지 않는다. 진행 중인 `act`는 끝까지 돌고 그 결과도 부분 답에 들어간다(§2.8). 멈춘 시점의 상태로 `assemble`(PR 3부터 `answer → assemble`)을 돌려 부분 답을 만든다 — `stoppedReason=cancelled`, 근거 0건이면 `abstainReason=cancelled`(근거 부족과 구분). 이미 끝난 턴의 취소는 409. 실측: 취소 요청 후 28초에 부분 답(진행 중이던 추출이 끝난 뒤), 근거 8건·확인 2/16편.
 
 ### 5.3 진행
 
-LangGraph 스트림 이벤트 → SSE. 싣는 것은 단계명·논문 제목·건수뿐이고 인용문은 싣지 않는다(C-2). 수락 직후 첫 이벤트가 나가야 한다 — `evidence.stream.first_token_ms`는 현행대로 계측한다.
+원천은 **Postgres 트레이스 행**이다 — API가 Fargate 2태스크(스티키 없음)라 프로세스 안의 큐·LangGraph 스트림으로는 재접속이 살지 않는다. `GET /turns/{id}/events?after=<seq>`는 접속 즉시 `accepted` 프레임을 보내고(수락 직후 침묵 금지), 1초 간격으로 새 트레이스 행을 `tool` 프레임으로 흘리다 턴이 종단이면 `result` 프레임(TurnOut) 후 닫는다. eventId는 `{turn}:{seq}`로 결정적이라 재접속에 같은 줄이 두 번 나오지 않는다. 조용한 구간은 15초마다 `: ping`(CloudFront 원본 유휴 30초 아래), 한 연결의 상한은 10분(넘으면 클라이언트가 `after`로 다시 붙는다). 싣는 것은 단계명·논문 제목·건수뿐이고 인용문은 싣지 않는다(C-2). `evidence.stream.first_token_ms`는 **첫 진행(tool) 프레임**까지의 지연이다 — `accepted`로 재면 동기라 구조적으로 0이고, 그러면 절대 회귀하지 않아 아무것도 못 잡는다. 폴링마다 짧은 세션을 연다 — 요청 스코프 세션을 스트림 내내 쥐면 풀 연결이 스트림 수만큼 묶인다. FE는 스트림 → `after` 재접속 3회 → `GET /turns/{id}` 2초 폴링 순으로 내려가고, 세션을 다시 열면 pending 턴에 같은 구독을 다시 붙인다.
 
 ### 5.4 세션 잠금
 
-같은 세션에 턴이 겹치면 체크포인트가 갈라진다(Q5 조사 함정 2). 세션당 **진행 중 턴은 하나**로 제한한다 — 겹치면 409. FE는 진행 중엔 입력을 막는다(novelty와 같음).
+같은 세션에 턴이 겹치면 체크포인트가 갈라진다(Q5 조사 함정 2). 세션당 **진행 중 턴은 하나**로 제한한다 — 겹치면 409. 구현은 부분 유니크 인덱스(`evidence_turns(session_id) WHERE status='pending'`)라 두 API 태스크가 동시에 받아도 하나만 들어간다. 수락되지 않은 턴은 쿼터를 되돌린다. FE는 진행 중엔 입력을 막고 전송 자리에 취소 버튼을 둔다.
 
-### 5.5 재실행 안전
+### 5.5 재실행 안전 · 고아 마감
 
-취소·재개에서 도구가 다시 실행될 수 있다(함정 1). 검색·읽기는 부작용이 없다. **본문 승격 enqueue**만 부작용이 있으므로 paperId를 멱등 키로 쓴다(같은 논문 두 번 넣지 않음 — ingestion 큐가 이미 그렇게 동작하는지 PR 2에서 확인).
+취소·재개에서 도구가 다시 실행될 수 있다(함정 1). 검색·읽기는 부작용이 없다. **본문 승격 enqueue**만 부작용이 있으므로 paperId를 멱등 키로 쓴다(같은 논문 두 번 넣지 않음 — ingestion 큐 쪽 확인은 PR 4 재개와 함께).
+
+**실행자가 죽은 턴**(배포·크래시): 하트비트가 `turn_stale_seconds`(기본 600 — 가장 긴 단일 단계인 승격 폴링 20초보다 충분히 크게) 넘게 끊긴 pending 턴을 폴링·이벤트·다음 수락이 발견하면 마지막 체크포인트 스냅샷으로 `assemble(INTERRUPTED)` → 부분 답(`stoppedReason=partial_failure`, 근거 0건이면 기존 기권 규칙). 조건부 UPDATE라 두 태스크가 동시에 발견해도 한 번만 쓰인다. 스냅샷이 없으면(체크포인터 없는 sqlite 개발·첫 스텝 전 죽음) `internal_error`로 닫는다. 종료 신호(SIGTERM·lifespan)는 다음 경계에서 `INTERRUPTED`로 닫고 나간다 — 실측 SIGTERM 2초 내 종료, SIGKILL 고아 턴은 재기동 후 첫 폴링에서 근거 4건의 부분 답으로 마감.
+
+좁은 창 하나가 남는다: 재배달된 잡이 `run_loop` 진입에서 스레드를 비운 직후 죽으면 직전 스냅샷이 사라져 마감이 `internal_error`가 된다. 재개(PR 4)가 그 `delete_thread`를 걷어내면 함께 닫힌다.
 
 ---
 
@@ -360,7 +370,7 @@ LangGraph 스트림 이벤트 → SSE. 싣는 것은 단계명·논문 제목·�
 - **비용 권위는 U6 하나**(불변). 턴 예산 $0.50 유지, `answer`·재생성 비용 포함. 한도 도달 시 §2.9.
 - **실시간 조회**는 소스별 서킷 브레이커 + 타임아웃. 한 소스가 죽어도 나머지로 진행하고, 셋 다 죽으면 코퍼스만으로 답하되 확인 범위 한 줄에 "실시간 조회 불가"를 싣는다.
 - **트레이스**: 도구 호출 1:1 기록(현행) + `question_kind` + `stance` + 답변 검사 결과. 인용문·사용자 원문은 로그에 남기지 않는다(SEC-9).
-- **체크포인트 보존**: 턴 완료 후 N일 뒤 정리(이어가기에 필요한 기간만). 수치는 PR 2에서 정한다.
+- **체크포인트 보존**: 종단 턴의 스레드는 **7일**(`DOCSURI_EVIDENCE_CHECKPOINT_RETENTION_DAYS`) 뒤 정리 — 스케줄러 없이 턴 완료마다 상각해서 지우고, 세션 삭제·초기화는 그 세션 턴들의 스레드를 바로 지운다. 지운 턴에는 `checkpoints_pruned_at` 도장을 찍는다. 도장이 없으면 "오래된 종단 턴" 질의가 매번 같은 앞쪽 N건을 돌려줘 영원히 재삭제하고 그 뒤 턴은 영영 안 지워진다 — 로그의 `pruned: N`은 계속 정상으로 보인다.
 
 ---
 
@@ -402,7 +412,9 @@ LangGraph 스트림 이벤트 → SSE. 싣는 것은 단계명·논문 제목·�
 | PR | 범위 | 완료 조건 |
 |---|---|---|
 | docs | 이 문서 | 머지 |
-| **PR 1 옮기기** | §3.1 그래프로 이전. `answer` 없음, 바닥은 현행 규칙, 진입 경로 현행 유지 | 기존 루프 테스트 전부 통과 + 녹화 픽스처 출력 동일 |
-| **PR 2 완성** | §2~§8 전부 | §6.2 1층 CI 통과 + 골든셋 초기분으로 2층 1회 + 로컬 실스택 눈확인 |
+| **PR 1 옮기기** | §3.1 그래프로 이전. `answer` 없음, 바닥은 현행 규칙, 진입 경로 현행 유지 | 기존 루프 테스트 전부 통과 + 차등 검사 출력 동일 — **완료 2026-08-23(#30)** |
+| **PR 2 실행** | §5 전부 — 단일 진입 경로·취소·세션 잠금·Postgres 체크포인트·고아 마감, FE 전환(취소 버튼·구독·재부착) | 실스택 눈확인(취소·409·SIGKILL·SIGTERM) — **완료 2026-08-24** |
+| **PR 3 판단** | §4 `answer` 노드·검사 5종·계약 `segments`·§8 화면(산문+근거표·종합 배지·문구) | §6.2 1층 CI + 골든셋 초기분으로 2층 1회 |
+| **PR 4 탐색** | §3.2 `live_lookup`·`stance`·`year` · §3.3 바닥 2조건 · §3.4 기억·이어가기(체크포인트 재개) · §6 골든셋 50 | 1층 CI에 반대 측 탐색·recall@k |
 
-PR 2가 크지만 나누지 않는다 — 판단·취소·경로·화면이 같은 계약(§4.4)을 공유해서 따로 머지하면 중간 상태가 동작하지 않는다.
+처음엔 "PR 2가 크지만 나누지 않는다 — 같은 계약을 공유한다"고 적었으나 틀린 근거였다. §5(엔드포인트)·§4(답변 페이로드)·§3(도구)는 서로 다른 계약이라 각각 단독으로 동작하고, 한 PR로 묶으면 리뷰도 bisect도 되지 않는다. 2026-08-23에 셋으로 나눴다.

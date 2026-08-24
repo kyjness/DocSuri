@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { abstainReasonLabel, parseAgentContent } from '@/lib/agentChat/evidenceResult';
+import {
+  abstainReasonLabel,
+  examinedRangeMessage,
+  parseAgentContent,
+} from '@/lib/agentChat/evidenceResult';
 
 describe('parseAgentContent', () => {
   it('parses a successful EvidenceResult JSON payload', () => {
@@ -75,5 +79,14 @@ describe('parseAgentContent', () => {
   it('does not choke on JSON-looking text that is not an EvidenceResult', () => {
     const parsed = parseAgentContent('{"foo": "bar"}');
     expect(parsed.kind).toBe('text');
+  });
+
+  it('labels a cancelled turn as cancelled, not as missing evidence (v3 §2.8)', () => {
+    expect(abstainReasonLabel('cancelled')).toBe(
+      '취소했어요. 확인한 논문에서는 아직 근거를 찾기 전이었어요.',
+    );
+    expect(
+      examinedRangeMessage({ paperCount: 2, examined: 2, candidates: 16, stoppedReason: 'cancelled' }),
+    ).toBe('취소됨 · 후보 16편 중 2편 확인');
   });
 });
