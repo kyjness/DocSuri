@@ -72,27 +72,24 @@ function forwardedHeaders(req: NextRequest): Record<string, string> | undefined 
   return recaptchaToken ? { 'X-Recaptcha-Token': recaptchaToken } : undefined;
 }
 
-function isNoveltyEventStream(method: TransportMethod, path: string[]): boolean {
+// 두 에이전트의 진행 이벤트는 같은 모양이다 — `GET /api/{module}/{collection}/{id}/events`.
+// 술어를 따로 두면 게이트웨이 게이트 같은 규칙이 한쪽에만 붙는다(실제로 그랬다).
+function isEventStreamPath(
+  method: TransportMethod,
+  path: string[],
+  module: 'novelty' | 'evidence',
+  collection: 'jobs' | 'turns',
+): boolean {
   return (
     method === 'GET' &&
     path.length === 5 &&
     path[0] === 'api' &&
-    path[1] === 'novelty' &&
-    path[2] === 'jobs' &&
+    path[1] === module &&
+    path[2] === collection &&
     path[4] === 'events'
   );
 }
 
-// US-EV2/NFR-P6 — 동기 evidence 턴의 SSE 표면(POST + Accept: text/event-stream).
-// v2에서 표면이 /api/evidence/turns 하나로 합쳐졌다 — 첫 턴과 후속 턴이 같은
-// 엔드포인트이고, 세션은 본문의 sessionId 유무로 갈린다.
-// 게이트웨이 미구성(mock) 시에는 일반 proxy로 흘려 JSON 폴백이 그대로 동작한다.
-function isAgentTurnStream(req: NextRequest, method: TransportMethod, path: string[]): boolean {
-  if (method !== 'POST') return false;
-  if (!req.headers.get('accept')?.includes('text/event-stream')) return false;
-  const upstream = `/${path.join('/')}`;
-  return upstream === '/api/evidence/turns';
-}
 
 function isPdfBody(req: NextRequest): boolean {
   return (
@@ -103,7 +100,7 @@ function isPdfBody(req: NextRequest): boolean {
 async function proxyEventStream(
   req: NextRequest,
   upstreamPath: string,
-  options?: { method?: 'GET' | 'POST'; body?: string; timeoutMs?: number },
+  options?: { timeoutMs?: number },
 ): Promise<NextResponse> {
   const baseUrl = process.env.DOCSURI_GATEWAY_URL;
   if (!baseUrl) {
@@ -122,9 +119,7 @@ async function proxyEventStream(
     });
   }
 
-  const method = options?.method ?? 'GET';
   const headers = new Headers({ accept: 'text/event-stream' });
-  if (options?.body !== undefined) headers.set('content-type', 'application/json');
   const cookie = req.headers.get('cookie');
   if (cookie) headers.set('cookie', cookie);
 
@@ -133,9 +128,8 @@ async function proxyEventStream(
   const timer = setTimeout(() => controller.abort(), options?.timeoutMs ?? SSE_PROXY_TIMEOUT_MS);
   try {
     const res = await fetch(`${baseUrl}${upstreamPath}`, {
-      method,
+      method: 'GET',
       headers,
-      body: options?.body,
       cache: 'no-store',
       signal: controller.signal,
     });
@@ -167,18 +161,15 @@ async function proxy(req: NextRequest, path: string[]): Promise<NextResponse> {
   const method = req.method as TransportMethod;
   const upstreamPath = `/${path.join('/')}${req.nextUrl.search}`;
 
-  if (isNoveltyEventStream(method, path)) {
+  // 진행 이벤트 스트림(novelty·evidence). 프록시 타이머는 헤더까지만이라(아래
+  // proxyEventStream) 10분짜리 스트림도 이 홉에서 끊기지 않는다 — 유휴 구간은 서버가
+  // 15s마다 핑을 보낸다. 게이트웨이 미구성(mock)에서는 일반 proxy로 흘려 FE가 JSON
+  // 스냅샷으로 폴백한다.
+  if (isEventStreamPath(method, path, 'novelty', 'jobs')) {
     return proxyEventStream(req, upstreamPath);
   }
-
-  // 동기 evidence 턴 SSE(US-EV2) — novelty와 같은 스트리밍 홉으로 흘린다. 게이트웨이
-  // 미구성(mock) 시엔 일반 proxy로 폴스루해 FE가 JSON 응답으로 폴백한다(fail-soft).
-  if (isAgentTurnStream(req, method, path) && process.env.DOCSURI_GATEWAY_URL) {
-    return proxyEventStream(req, upstreamPath, {
-      method: 'POST',
-      body: await req.text(),
-      timeoutMs: EVIDENCE_GATEWAY_TIMEOUT_MS,
-    });
+  if (isEventStreamPath(method, path, 'evidence', 'turns') && process.env.DOCSURI_GATEWAY_URL) {
+    return proxyEventStream(req, upstreamPath, { timeoutMs: EVIDENCE_GATEWAY_TIMEOUT_MS });
   }
 
   let body: unknown;

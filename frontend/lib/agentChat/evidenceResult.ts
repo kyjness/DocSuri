@@ -61,6 +61,8 @@ const ABSTAIN_REASON_LABEL: Record<string, string> = {
   insufficient_evidence: '근거가 충분하지 않아 답변을 보류했습니다.',
   llm_unavailable: '일시적으로 분석을 수행할 수 없습니다.',
   cost_degraded: '일시적으로 서비스 이용량이 제한되어 있습니다.',
+  // v3 §2.8 — 취소는 근거 부족이 아니다. 찾기 전에 멈췄다는 사실만 말한다.
+  cancelled: '취소했어요. 확인한 논문에서는 아직 근거를 찾기 전이었어요.',
 };
 
 export function abstainReasonLabel(reason: string): string {
@@ -153,6 +155,9 @@ export function examinedRangeMessage(coverage: EvidenceCoverage): string | null 
 
   if (stoppedReason === 'budget_exhausted') {
     return `관련 논문 ${candidates}편 중 ${examined}편까지 확인했습니다. 이어서 확인할까요?`;
+  }
+  if (stoppedReason === 'cancelled') {
+    return `취소됨 · 후보 ${candidates}편 중 ${examined}편 확인`;
   }
   return `관련 논문 ${candidates}편 중 ${examined}편을 확인했습니다. 일부 논문은 본문을 가져오지 못했습니다.`;
 }

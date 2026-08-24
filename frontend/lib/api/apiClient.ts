@@ -72,8 +72,10 @@ import type {
   AgentSessionSnapshot,
   AgentSessionSummary,
   AgentTimelineEvent,
+  AgentTurnAccepted,
+  AgentTurnFinished,
 } from '@/lib/agentChat/types';
-import { streamAgentTurn, timelineDetail } from '@/lib/agentChat/sse';
+import { mapProgressEvents, readTurnEvents, timelineDetail } from '@/lib/agentChat/sse';
 
 export interface ApiClientOptions {
   timeoutMs?: number;
@@ -89,10 +91,6 @@ export interface PageQuery {
 
 const DEFAULT_PAGE_LIMIT = 20;
 const AGENT_ID_SEP = ':';
-// evidence 턴은 OpenSearch 검색 + 다건 S3 DocModel 로드 + Bedrock 추출을 동기로 거쳐
-// 8초 기본 타임아웃(withTimeout)을 항상 초과한다 — 백엔드는 계속 처리해 응답이 저장되지만
-// 클라이언트만 network 에러로 끊겨 사용자에게 실패로 보이는 문제(PR #338 후속 발견).
-const EVIDENCE_TURN_TIMEOUT_MS = 90_000;
 // 검색 콜드 패스(첫 질의: embed + k-NN 그래프 첫 로드 + rerank)는 정상 완료가 9~12초 —
 // 기본 10초에서 브라우저가 완료 직전에 끊어 BFF의 30초 검색 홉(SEARCH_GATEWAY_TIMEOUT_MS)을
 // 무의미하게 만든다. 두 레이어를 함께 올린다(QA 2026-07-10 F1). 워밍된 검색은 <1초라 P50
@@ -118,7 +116,6 @@ type BackendEvidenceTurnResult = {
   coverage?: Record<string, unknown>;
   answer?: string | null;
   abstainReason?: string | null;
-  jobId?: string | null;
   errorCode?: string | null;
 };
 type BackendEvidenceTurn = {
@@ -127,6 +124,11 @@ type BackendEvidenceTurn = {
   topic?: string;
   result: BackendEvidenceTurnResult;
   createdAt: string;
+};
+// GET /turns/{id}/events의 비스트림(JSON) 응답 — mock 경로. 실 BFF는 text/event-stream.
+type BackendEvidenceTurnEvents = {
+  events?: unknown[];
+  turn: BackendEvidenceTurn;
 };
 type BackendEvidenceSessionDetail = BackendEvidenceSession & {
   turns?: BackendEvidenceTurn[];
@@ -207,24 +209,58 @@ function contentFromTurnResult(result: BackendEvidenceTurnResult): string {
   return '분석이 진행 중입니다. 잠시 후 세션을 다시 열어 주세요.';
 }
 
+/** 턴의 답변 메시지 — 스냅샷과 이벤트 구독이 같은 id를 쓰므로 두 경로가 겹쳐도 한 번만 붙는다. */
+function agentMessageFromTurn(turn: BackendEvidenceTurn): AgentMessage {
+  return {
+    id: `${turn.turnId}-agent`,
+    role: 'agent',
+    content: contentFromTurnResult(turn.result),
+    createdAt: turn.createdAt,
+    status: 'sent',
+  };
+}
+
 function messagesFromTurns(turns: BackendEvidenceTurn[]): AgentMessage[] {
-  return turns.flatMap((turn): AgentMessage[] => [
-    {
+  return turns.flatMap((turn): AgentMessage[] => {
+    const user: AgentMessage = {
       id: `${turn.turnId}-user`,
       role: 'user',
       content: turn.topic ?? '',
       createdAt: turn.createdAt,
       status: 'sent',
-    },
-    {
-      id: `${turn.turnId}-agent`,
-      role: 'agent',
-      content: contentFromTurnResult(turn.result),
-      createdAt: turn.createdAt,
-      status: 'sent',
-    },
-  ]);
+    };
+    // 실행 중인 턴은 답변 자리를 만들지 않는다 — 답변은 이벤트 구독의 터미널에서 붙는다.
+    if (turn.result.state === 'pending') return [user];
+    return [user, agentMessageFromTurn(turn)];
+  });
 }
+
+function turnOutcome(turn: BackendEvidenceTurn): AgentJobState {
+  return turn.result.state === 'error' ? 'failed' : 'completed';
+}
+
+function isCancelledTurn(turn: BackendEvidenceTurn): boolean {
+  const result = turn.result;
+  return (
+    result.abstainReason === 'cancelled' ||
+    (result.coverage as { stoppedReason?: unknown } | undefined)?.stoppedReason === 'cancelled'
+  );
+}
+
+function finishedTurn(turn: BackendEvidenceTurn): AgentTurnFinished {
+  return {
+    turnId: turn.turnId,
+    message: agentMessageFromTurn(turn),
+    outcome: turnOutcome(turn),
+    cancelled: isCancelledTurn(turn),
+  };
+}
+
+const EVIDENCE_STREAM_RETRIES = 3;
+const EVIDENCE_RECONNECT_MS = 500;
+const EVIDENCE_POLL_MS = 2000;
+// 폴링 폴백 상한 — 서버의 stale 마감(기본 10분)보다 길어야 고아 턴도 여기서 닫힌다.
+const EVIDENCE_POLL_MAX_MS = 15 * 60_000;
 
 function mapNoveltyJob(job: BackendNoveltyJob): AgentSessionSummary {
   return {
@@ -353,6 +389,21 @@ function attachmentKind(value: unknown, contentType?: string, name?: string): Ag
   if (lowerType.includes('markdown') || lowerName.endsWith('.md')) return 'markdown';
   if (lowerType.includes('text') || lowerName.endsWith('.txt')) return 'text';
   return 'unknown';
+}
+
+function emitProgress(
+  events: unknown[] | undefined,
+  onTimelineEvents?: (events: AgentTimelineEvent[]) => void,
+): void {
+  if (!events?.length || !onTimelineEvents) return;
+  const mapped = mapProgressEvents(events);
+  if (mapped.length) onTimelineEvents(mapped);
+}
+
+// 서버(_derive_title)와 같은 규칙 — 첫 질문이 세션 제목이다.
+function titleFromTopic(topic: string): string {
+  const stripped = topic.trim();
+  return stripped.length <= 120 ? stripped : `${stripped.slice(0, 119)}…`;
 }
 
 function toEvidenceTurnBody(req: AgentSendMessageRequest, sessionId: string | null) {
@@ -715,10 +766,13 @@ export class ApiClient {
     });
     if (res.status === 200) {
       const body = res.body as BackendEvidenceSessionDetail;
+      const turns = body.turns ?? [];
+      const active = turns.find((turn) => turn.result.state === 'pending');
       return {
         session: mapEvidenceSession(body),
-        messages: messagesFromTurns(body.turns ?? []),
+        messages: messagesFromTurns(turns),
         events: [],
+        activeTurnId: active?.turnId ?? null,
       };
     }
     throw normalizeHttpError(res.status, serverMessage(res.body));
@@ -819,48 +873,29 @@ export class ApiClient {
     }
   }
 
+  /** novelty 전용 — evidence는 `acceptEvidenceTurn` + `followEvidenceTurn`이 수명주기를 소유한다. */
   async sendAgentMessage(
     sessionId: string,
     req: AgentSendMessageRequest,
-    onTimelineEvents?: (events: AgentTimelineEvent[]) => void,
   ): Promise<AgentSendMessageResult> {
     const target = parseAgentSessionId(sessionId, req.mode);
     const created = sessionId.startsWith(`agent-${req.mode}-`);
-    const sendReq =
-      target.mode === 'evidence' ? await this.withUploadedResearchAttachments(req) : req;
-    const path =
-      target.mode === 'evidence'
-        ? // v2: 첫 턴과 후속 턴이 같은 엔드포인트다. 세션은 본문의 sessionId로 갈린다.
-          '/api/evidence/turns'
-        : created
-          ? '/api/novelty/jobs'
-          : `/api/novelty/jobs/${encodeURIComponent(target.rawId)}/messages`;
-    const body =
-      target.mode === 'evidence'
-        ? toEvidenceTurnBody(sendReq, created ? null : target.rawId)
-        : toNoveltyBody(sendReq, created);
-    // US-EV2/NFR-P6 — 동기 evidence 턴은 SSE 스트리밍 우선(진행 단계 점진 렌더링).
-    // 실패하면 기존 JSON 경로로 폴백한다(fail-soft — 턴을 깨지 않는다).
-    const streamed =
-      target.mode === 'evidence' && this.agentTurnStreamingEnabled()
-        ? await this.trySendEvidenceTurnStream(path, body, onTimelineEvents)
-        : null;
-    const res =
-      streamed ??
-      (await this.request({
-        method: 'POST',
-        path,
-        body,
-        idempotent: false,
-        timeoutMs: target.mode === 'evidence' ? EVIDENCE_TURN_TIMEOUT_MS : undefined,
-      }));
+    const path = created
+      ? '/api/novelty/jobs'
+      : `/api/novelty/jobs/${encodeURIComponent(target.rawId)}/messages`;
+    const res = await this.request({
+      method: 'POST',
+      path,
+      body: toNoveltyBody(req, created),
+      idempotent: false,
+    });
     if (res.status !== 200 && res.status !== 201) {
       throw normalizeHttpError(res.status, serverMessage(res.body));
     }
     // US-NV2(#252) — 원고 잡은 생성 시 디스패치가 보류된다. 읽어둔 본문(contentText)을
     // 업로드해 objectKey를 바인딩해야 분석이 시작된다.
-    if (created && target.mode === 'novelty') {
-      const manuscript = sendReq.attachments?.[0];
+    if (created) {
+      const manuscript = req.attachments?.[0];
       const jobId = (res.body as { jobId: string }).jobId;
       if (hasPdfSourceFile(manuscript)) {
         await this.uploadNoveltyPdfManuscript(jobId, manuscript);
@@ -876,15 +911,9 @@ export class ApiClient {
         }
       }
     }
-    const nextId =
-      target.mode === 'evidence'
-        ? encodeAgentSessionId(
-            'evidence',
-            (res.body as { sessionId?: string }).sessionId ?? target.rawId,
-          )
-        : created
-          ? encodeAgentSessionId('novelty', (res.body as { jobId: string }).jobId)
-          : sessionId;
+    const nextId = created
+      ? encodeAgentSessionId('novelty', (res.body as { jobId: string }).jobId)
+      : sessionId;
     const snapshot = await this.loadAgentSession(nextId);
     return {
       session: snapshot.session,
@@ -894,57 +923,131 @@ export class ApiClient {
     };
   }
 
-  /** SSE 스트리밍은 실 BFF 홉에서만 시도한다 — mock/테스트 transport는 JSON 경로 그대로. */
-  private agentTurnStreamingEnabled(): boolean {
-    return Boolean((this.transport as { streamsAgentTurns?: boolean }).streamsAgentTurns);
+  /** evidence 턴 수락(v3 §5.1) — 202. 같은 세션에 진행 중 턴이 있으면 409가 그대로 올라온다. */
+  async acceptEvidenceTurn(
+    sessionId: string,
+    req: AgentSendMessageRequest,
+  ): Promise<AgentTurnAccepted> {
+    const target = parseAgentSessionId(sessionId, 'evidence');
+    const created = sessionId.startsWith('agent-evidence-');
+    const sendReq = await this.withUploadedResearchAttachments(req);
+    const res = await this.request({
+      method: 'POST',
+      path: '/api/evidence/turns',
+      body: toEvidenceTurnBody(sendReq, created ? null : target.rawId),
+      idempotent: false,
+    });
+    if (res.status !== 202 && res.status !== 200) {
+      throw normalizeHttpError(res.status, serverMessage(res.body));
+    }
+    const turn = res.body as BackendEvidenceTurn;
+    return {
+      session: {
+        id: encodeAgentSessionId('evidence', turn.sessionId),
+        // 새 세션만 첫 질문에서 제목을 만든다. 기존 세션의 제목은 리듀서가 지킨다(여기 값은
+        // 자리표시일 뿐이다).
+        title: created ? titleFromTopic(req.content) : (turn.topic ?? req.content),
+        mode: 'evidence',
+        state: 'running',
+        updatedAt: turn.createdAt,
+      },
+      turnId: turn.turnId,
+    };
   }
 
   /**
-   * 동기 evidence 턴 SSE 시도(US-EV2). 반환 규약:
-   * - terminal → JSON 경로와 동일한 응답 본문(검증 후 최종 결과만).
-   * - json → 서버가 JSON으로 응답(비동기 pending 등) — 재전송 없이 그대로 사용.
-   * - failed + jobId → 백엔드는 턴을 계속 완결하므로(PR #338) 재전송 대신 잡 폴링 복구.
-   * - failed + sessionId(동기 턴 — jobId 없음) → 재전송 대신 세션 스냅샷 복구.
-   * - failed + started(좌표 없음) → 재전송하면 이중 실행이므로 오류로 알리고 멈춘다.
-   * - null → JSON 경로 폴백(스트림이 시작조차 못 한 경우만 — 이중 실행 없음).
+   * 수락된 턴을 종단까지 따라간다(v3 §5.3) — 스트림(진행 이벤트) → 끊기면 `after=seq`로
+   * 재접속 → 그래도 안 되면 GET /turns/{id} 폴링. 어느 길이든 답변은 터미널 TurnOut에서만.
    */
-  private async trySendEvidenceTurnStream(
-    path: string,
-    body: unknown,
+  async followEvidenceTurn(
+    turnId: string,
     onTimelineEvents?: (events: AgentTimelineEvent[]) => void,
-  ): Promise<{ status: number; body: unknown } | null> {
-    try {
-      const outcome = await streamAgentTurn({ path, body, onEvents: onTimelineEvents });
-      if (outcome.kind === 'terminal') return { status: 200, body: outcome.payload };
-      if (outcome.kind === 'json') return { status: outcome.status, body: outcome.body };
-      if (outcome.jobId) {
-        // 스트림이 끊겨도 백엔드는 턴을 완결한다 — 잡 폴링(TurnOut)이 sessionId까지
-        // 담고 있으므로 재전송 없이 그 응답으로 복구한다.
-        return await this.request({
-          method: 'GET',
-          path: `/api/evidence/jobs/${encodeURIComponent(outcome.jobId)}`,
-          idempotent: true,
-        });
+    signal?: AbortSignal,
+  ): Promise<AgentTurnFinished> {
+    const streamed = await this.followEvidenceTurnEvents(turnId, onTimelineEvents, signal);
+    if (streamed) return finishedTurn(streamed);
+    return finishedTurn(await this.pollEvidenceTurn(turnId, signal));
+  }
+
+  async cancelEvidenceTurn(turnId: string): Promise<void> {
+    const res = await this.request({
+      method: 'POST',
+      path: `/api/evidence/turns/${encodeURIComponent(turnId)}/cancel`,
+      idempotent: false,
+    });
+    // 409 = 이미 끝났다 — 취소 버튼이 결과와 경쟁한 것뿐이라 오류가 아니다.
+    if (res.status === 200 || res.status === 409) return;
+    throw normalizeHttpError(res.status, serverMessage(res.body));
+  }
+
+  private async followEvidenceTurnEvents(
+    turnId: string,
+    onTimelineEvents?: (events: AgentTimelineEvent[]) => void,
+    signal?: AbortSignal,
+  ): Promise<BackendEvidenceTurn | null> {
+    const eventsPath = (after: number) =>
+      `/api/evidence/turns/${encodeURIComponent(turnId)}/events${after ? `?after=${after}` : ''}`;
+    if (!this.agentTurnStreamingEnabled()) {
+      // mock/테스트 transport — JSON 스냅샷 {events, turn}.
+      const res = await this.request({ method: 'GET', path: eventsPath(0), idempotent: true });
+      if (res.status !== 200) return null;
+      const body = res.body as BackendEvidenceTurnEvents;
+      emitProgress(body.events, onTimelineEvents);
+      return body.turn.result.state === 'pending' ? null : body.turn;
+    }
+    let after = 0;
+    for (let attempt = 0; attempt < EVIDENCE_STREAM_RETRIES; attempt += 1) {
+      // 즉시 재접속은 끊긴 원인(프록시 재시작 등)이 그대로라 3회를 한꺼번에 태운다.
+      if (attempt > 0) await delay(EVIDENCE_RECONNECT_MS * attempt);
+      const outcome = await readTurnEvents({
+        path: eventsPath(after),
+        onEvents: onTimelineEvents,
+        signal,
+      });
+      if (signal?.aborted) return null;
+      if (outcome.kind === 'terminal') return outcome.payload as BackendEvidenceTurn;
+      if (outcome.kind === 'json') {
+        if (outcome.status === 404) throw normalizeHttpError(404, serverMessage(outcome.body));
+        const body = outcome.body as Partial<BackendEvidenceTurnEvents> | null;
+        if (body?.turn && body.turn.result.state !== 'pending') {
+          emitProgress(body.events, onTimelineEvents);
+          return body.turn;
+        }
+        return null;
       }
-      if (outcome.sessionId) {
-        // 동기 턴에는 jobId가 없다 — 서버의 'accepted' 신호가 준 sessionId로 복구한다.
-        // 세션 스냅샷을 다시 읽으면 완결된(또는 진행 중인) 턴이 그대로 보인다.
-        return { status: 200, body: { sessionId: outcome.sessionId } };
-      }
-      if (outcome.started) {
-        // 서버가 턴을 돌리기 시작한 뒤 좌표 없이 끊겼다(accepted 도착 전 밀리초 창).
-        // 여기서 JSON 폴백으로 넘어가면 같은 턴이 두 번 실행된다 — 재전송 대신
-        // 사용자에게 재시도를 맡긴다(수동 재시도는 사용자의 결정이다).
+      after = Math.max(after, outcome.lastSeq);
+    }
+    return null;
+  }
+
+  private async pollEvidenceTurn(
+    turnId: string,
+    signal?: AbortSignal,
+  ): Promise<BackendEvidenceTurn> {
+    const deadline = Date.now() + EVIDENCE_POLL_MAX_MS;
+    for (;;) {
+      if (signal?.aborted) throw new UserFacingError('unknown', '구독이 중단되었습니다.');
+      const res = await this.request({
+        method: 'GET',
+        path: `/api/evidence/turns/${encodeURIComponent(turnId)}`,
+        idempotent: true,
+      });
+      if (res.status !== 200) throw normalizeHttpError(res.status, serverMessage(res.body));
+      const turn = res.body as BackendEvidenceTurn;
+      if (turn.result.state !== 'pending') return turn;
+      if (Date.now() >= deadline) {
         throw new UserFacingError(
           'server',
-          '연결이 끊겼습니다. 분석은 계속 진행되니 잠시 후 세션을 다시 열어 주세요.',
+          '답변이 아직 준비되지 않았습니다. 잠시 후 세션을 다시 열어 주세요.',
         );
       }
-      return null;
-    } catch (error) {
-      if (error instanceof UserFacingError) throw error;
-      return null;
+      await delay(EVIDENCE_POLL_MS);
     }
+  }
+
+  /** 이벤트 스트림은 실 BFF 홉에서만 — mock/테스트 transport는 JSON 스냅샷 경로. */
+  private agentTurnStreamingEnabled(): boolean {
+    return Boolean((this.transport as { streamsAgentTurns?: boolean }).streamsAgentTurns);
   }
 
   async deleteAgentSession(id: string): Promise<void> {

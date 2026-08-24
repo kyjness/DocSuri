@@ -8,11 +8,17 @@ import {
   shouldPollSession,
 } from '@/components/agent/AgentChatScreen';
 import type { AgentMessage } from '@/lib/agentChat/types';
-import { resetMockNotionConnection } from '@/lib/api/mockTransport';
+import {
+  resetMockEvidenceTurns,
+  resetMockNotionConnection,
+  setMockEvidenceTurnHoldReads,
+} from '@/lib/api/mockTransport';
 
 describe('AgentChatScreen', () => {
   beforeEach(() => {
     resetMockNotionConnection();
+    // 훅을 남겨두면 다음 테스트가 "실행 중" 구간을 물려받아 무관한 곳에서 흔들린다.
+    resetMockEvidenceTurns();
   });
 
   it('marks previous running timeline steps complete when a terminal event arrives', () => {
@@ -267,4 +273,30 @@ describe('AgentChatScreen', () => {
     expect(await screen.findByText('저장된 세션이 없습니다.')).toBeInTheDocument();
     expect(screen.getByTestId('agent-session-reset')).toBeDisabled();
   });
+
+  it('accepts an evidence turn, offers cancel while it runs, then renders the partial answer', async () => {
+    const user = userEvent.setup();
+    setMockEvidenceTurnHoldReads(1); // 첫 읽기는 실행 중 — 취소 버튼이 보이는 구간
+    render(<AgentChatScreen />);
+    {
+
+      await user.click(screen.getByTestId('agent-mode-evidence'));
+      await user.type(screen.getByTestId('agent-composer-input'), 'LLM 평가 근거');
+      await user.click(screen.getByTestId('agent-composer-submit'));
+
+      // 수락 직후: 입력은 닫히고 전송 자리에 취소 버튼이 선다(v3 §2.8).
+      const cancel = await screen.findByTestId('agent-composer-cancel');
+      expect(screen.getByTestId('agent-composer-input')).toBeDisabled();
+      await user.click(cancel);
+      expect(screen.getByTestId('agent-composer-cancel')).toHaveTextContent('취소 중…');
+
+      // 종단: 답변이 붙고 입력이 다시 열린다. 타임라인 마지막 줄은 '취소됨'.
+      expect(
+        await screen.findByText(/서로 확인되는 근거를 우선 제시했습니다/, {}, { timeout: 6000 }),
+      ).toBeInTheDocument();
+      expect(screen.getByTestId('agent-composer-submit')).toBeInTheDocument();
+      expect(screen.getByTestId('agent-composer-input')).not.toBeDisabled();
+      expect(screen.getByText('취소됨')).toBeInTheDocument();
+    }
+  }, 10_000);
 });
