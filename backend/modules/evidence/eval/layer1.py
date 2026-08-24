@@ -28,12 +28,14 @@ from docsuri_shared._generated.dtos.evidence_schema import (
 
 from ..domain.gate import id_key
 from ..domain.models import iter_refs
-from ..ports.tools import TOOL_CORPUS_SEARCH, TOOL_EXTERNAL_SEARCH
+from ..ports.tools import TOOL_CORPUS_SEARCH, TOOL_LIVE_LOOKUP
 from .golden_set import GoldenCase
 
 __all__ = ["Layer1Report", "score_turn", "summarise"]
 
-_SEARCH_TOOLS = frozenset({TOOL_CORPUS_SEARCH, TOOL_EXTERNAL_SEARCH})
+# 도구 이름은 **상수로** 받는다. 리터럴로 적어 두면 개명이 여기까지 안 와도 아무 데서도
+# 안 걸리고, `searches`가 0이 되어 "범위 밖 질문은 검색 0회" 검사가 항상 통과한다.
+_SEARCH_TOOLS = frozenset({TOOL_CORPUS_SEARCH, TOOL_LIVE_LOOKUP})
 
 
 @dataclass(slots=True)

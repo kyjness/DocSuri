@@ -9,9 +9,9 @@ from typing import Any
 
 from backend.modules.evidence.adapters.tools import (
     CorpusSearchTool,
-    ExternalSearchTool,
     ExtractEvidenceTool,
     FetchPaperTool,
+    LiveLookupTool,
     ReadPaperTool,
 )
 from backend.modules.evidence.domain.models import (
@@ -53,7 +53,7 @@ class FakeSearch:
         return self.hits
 
 
-class FakeExternal(FakeSearch):
+class FakeLive(FakeSearch):
     def search(self, query: str):  # type: ignore[override]
         return super().search(query)
 
@@ -132,9 +132,9 @@ def test_search_failure_tells_the_agent_what_to_do_next():
     assert "반복하지 말고" in (result.error or "")
 
 
-def test_external_search_marks_origin_so_promotion_takes_the_right_path():
+def test_live_lookup_marks_origin_so_promotion_takes_the_right_path():
     state = LoopState(topic="q")
-    ExternalSearchTool(FakeExternal(hits=(_candidate("arxiv:2401.1v2"),)), state).invoke(
+    LiveLookupTool(FakeLive(hits=(_candidate("arxiv:2401.1v2"),)), state).invoke(
         {"query": "q"}, CTX
     )
 
@@ -158,24 +158,26 @@ def test_fetch_paper_reads_docmodel_for_corpus_papers():
 
 def test_fetch_paper_promotes_external_papers():
     state = LoopState(topic="q")
-    state.discovered["x1"] = PaperHandle("x1", "external:x1", PaperOrigin.EXTERNAL)
+    state.discovered["arxiv:2401.10001v1"] = PaperHandle(
+        "arxiv:2401.10001v1", "external:arxiv:2401.10001v1", PaperOrigin.EXTERNAL
+    )
     promotion = FakePromotion(
         PromotionResult(outcome=PromotionOutcome.PROMOTED, doc_model=doc_model())
     )
     tool = FetchPaperTool(doc_models=FakeDocModels(), promotion=promotion, state=state)
 
-    result = tool.invoke({"paper_id": "x1"}, CTX)
+    result = tool.invoke({"paper_id": "arxiv:2401.10001v1"}, CTX)
 
     assert result.ok
-    assert promotion.calls == ["x1"]
-    assert state.papers["x1"].scope == "fulltext"
+    assert promotion.calls == ["arxiv:2401.10001v1"]
+    assert state.papers["arxiv:2401.10001v1"].scope == "fulltext"
 
 
 def test_promotion_failure_is_a_normal_result_not_an_error():
     """실패가 예외면 루프가 깨진다 — 초록 범위로 계속하는 것이 설계다(BLM §4)."""
     state = LoopState(topic="q")
-    state.discovered["x1"] = PaperHandle(
-        "x1", "external:x1", PaperOrigin.EXTERNAL, abstract_text="a"
+    state.discovered["arxiv:2401.10001v1"] = PaperHandle(
+        "arxiv:2401.10001v1", "external:arxiv:2401.10001v1", PaperOrigin.EXTERNAL, abstract_text="a"
     )
     tool = FetchPaperTool(
         doc_models=FakeDocModels(),
@@ -183,10 +185,10 @@ def test_promotion_failure_is_a_normal_result_not_an_error():
         state=state,
     )
 
-    result = tool.invoke({"paper_id": "x1"}, CTX)
+    result = tool.invoke({"paper_id": "arxiv:2401.10001v1"}, CTX)
 
     assert result.ok
-    assert state.papers["x1"].scope == "abstract"
+    assert state.papers["arxiv:2401.10001v1"].scope == "abstract"
     assert "초록 범위" in result.content["note"]
 
 
@@ -385,3 +387,37 @@ def test_the_tool_advertises_the_year_arguments() -> None:
 
     assert "year_from" in props
     assert "year_to" in props
+
+
+# --- 승격은 arXiv 논문만 가능하다 -----------------------------------------------
+
+
+def test_a_non_arxiv_paper_never_reaches_the_promotion_queue():
+    """`live_lookup`이 실어 오는 `doi:` 논문은 U1이 빌드할 수 없다. 막지 않으면 못 만드는
+    잡이 큐에 들어가고 20초 폴링을 태운 뒤 timed_out으로 끝난다 — 결과는 "초록 범위로
+    계속"으로 같지만 매 호출마다 큐 메시지와 20초가 나간다."""
+    state = LoopState(topic="t")
+    state.discovered["doi:10.1/x"] = PaperHandle(
+        "doi:10.1/x", "external:doi:10.1/x", PaperOrigin.EXTERNAL, abstract_text="a"
+    )
+    promotion = FakePromotion(PromotionResult(outcome=PromotionOutcome.PROMOTED))
+    tool = FetchPaperTool(doc_models=FakeDocModels(), promotion=promotion, state=state)
+
+    result = tool.invoke({"paper_id": "doi:10.1/x"}, CTX)
+
+    assert result.ok
+    assert result.content["status"] == "abstract_only"
+    assert promotion.calls == [], "빌드할 수 없는 논문이 승격 큐로 갔다"
+
+
+def test_an_arxiv_paper_still_promotes():
+    state = LoopState(topic="t")
+    state.discovered["arxiv:2401.10001v1"] = PaperHandle(
+        "arxiv:2401.10001v1", "external:arxiv:2401.10001v1", PaperOrigin.EXTERNAL
+    )
+    promotion = FakePromotion(PromotionResult(outcome=PromotionOutcome.TIMED_OUT))
+    tool = FetchPaperTool(doc_models=FakeDocModels(), promotion=promotion, state=state)
+
+    tool.invoke({"paper_id": "arxiv:2401.10001v1"}, CTX)
+
+    assert promotion.calls == ["arxiv:2401.10001v1"]

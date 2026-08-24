@@ -304,6 +304,12 @@ class ComputeStack(Stack):
             # grants s3:GetObject on doc-model/*). evidence_enabled = bool(docmodel_bucket); this
             # is the sole gate that wires the real orchestrator into research/jobs.
             "DOCSURI_DOCMODEL_BUCKET": f"docsuri-papers-fulltext-{self.account}",
+            # U11 실시간 조회(설계 v3 §3.2) — arXiv·Semantic Scholar·OpenAlex. **기본은 off**:
+            # 켜면 턴마다 코퍼스 밖으로 나가는 호출이 생기므로 켜는 것은 결정이다. 앞선
+            # `external_search`(arXiv 하나)는 이 자리에도 `.env.example`에도 플래그가 없어
+            # 배포에서 한 번도 돈 적이 없다 — 코드에만 있고 아무도 그 사실을 몰랐다.
+            # 자격증명(S2 키·OpenAlex mailto·연락처)은 ingestion이 쓰는 이름 그대로다.
+            "DOCSURI_EVIDENCE_LIVE_LOOKUP_ENABLED": "false",
             "DOCSURI_NOVELTY_ARTIFACT_BUCKET": f"docsuri-papers-fulltext-{self.account}",
             "DOCSURI_NOVELTY_ARTIFACT_PREFIX": "novelty/",
             # doc-model rich view (본문): on a read miss the API enqueues a BUILD_DOC_MODEL job to

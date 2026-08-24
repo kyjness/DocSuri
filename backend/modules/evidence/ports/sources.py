@@ -13,7 +13,7 @@ from typing import Any, Protocol
 __all__ = [
     "CorpusSearchPort",
     "DocModelReadPort",
-    "ExternalPaperSearchPort",
+    "LivePaperLookupPort",
     "PaperCandidate",
     "PaperPromotionPort",
     "PromotionResult",
@@ -77,9 +77,13 @@ class CorpusSearchPort(Protocol):
         ...
 
 
-class ExternalPaperSearchPort(Protocol):
+class LivePaperLookupPort(Protocol):
     def search(self, query: str) -> tuple[PaperCandidate, ...]:
-        """코퍼스 밖 논문 검색 — 제목·초록만 확보한다. 본문은 승격이 담당한다."""
+        """코퍼스 밖 논문 실시간 조회 — 제목·초록만 확보한다. 본문은 승격이 담당한다.
+
+        구현이 여러 소스를 합성하더라도 **부분 저하는 예외가 아니다** — 살아 있는 소스의
+        결과를 돌려준다. 셋 다 죽었을 때만 `SearchUnavailable`이다(§7).
+        """
         ...
 
 

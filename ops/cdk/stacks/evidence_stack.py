@@ -86,6 +86,11 @@ class EvidenceStack(Stack):
                 'DOCSURI_EVIDENCE_ASYNC_ENABLED': 'true',
                 'DOCSURI_EVIDENCE_JOB_QUEUE_URL': self.queue.queue_url,
                 'DOCSURI_DOCMODEL_BUCKET': docmodel_bucket,
+                # U11 실시간 조회(설계 v3 §3.2) — arXiv·Semantic Scholar·OpenAlex. **기본은
+                # off다**: 켜면 턴마다 코퍼스 밖으로 나가는 호출이 생기므로 켜는 것은 결정이다.
+                # 앞선 `external_search`(arXiv 하나)는 이 자리에도 `.env.example`에도 플래그가
+                # 없어 배포에서 한 번도 돈 적이 없다 — 코드에만 있고 아무도 그 사실을 몰랐다.
+                'DOCSURI_EVIDENCE_LIVE_LOOKUP_ENABLED': 'false',
                 # U2 discovery 재사용 검색 경로 활성화에 필수 — 없으면 hosts=[None]으로
                 # OpenSearch 클라이언트가 만들어져 검색이 전부 실패한다(PR #338 리뷰 Blocking #6).
                 'DOCSURI_OPENSEARCH_ENDPOINT': f'https://{opensearch_domain.domain_endpoint}',

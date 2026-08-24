@@ -14,8 +14,8 @@ __all__ = [
     "KNOWN_LOOP_TOOLS",
     "TOOL_CORPUS_SEARCH",
     "TOOL_EXTRACT_EVIDENCE",
-    "TOOL_EXTERNAL_SEARCH",
     "TOOL_FETCH_PAPER",
+    "TOOL_LIVE_LOOKUP",
     "TOOL_READ_PAPER",
     "TOOL_VIEW_FIGURE",
     "ImageAttachment",
@@ -27,7 +27,7 @@ __all__ = [
 ]
 
 TOOL_CORPUS_SEARCH = "corpus_search"
-TOOL_EXTERNAL_SEARCH = "external_search"
+TOOL_LIVE_LOOKUP = "live_lookup"
 TOOL_FETCH_PAPER = "fetch_paper"
 TOOL_READ_PAPER = "read_paper"
 TOOL_VIEW_FIGURE = "view_figure"
@@ -37,7 +37,7 @@ TOOL_EXTRACT_EVIDENCE = "extract_evidence"
 KNOWN_LOOP_TOOLS: frozenset[str] = frozenset(
     {
         TOOL_CORPUS_SEARCH,
-        TOOL_EXTERNAL_SEARCH,
+        TOOL_LIVE_LOOKUP,
         TOOL_FETCH_PAPER,
         TOOL_READ_PAPER,
         TOOL_VIEW_FIGURE,

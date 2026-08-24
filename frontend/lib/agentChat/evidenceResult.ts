@@ -45,6 +45,8 @@ export interface EvidenceCoverage {
   examined?: number | null;
   candidates?: number | null;
   stoppedReason?: 'sufficient' | 'budget_exhausted' | 'partial_failure' | 'cancelled' | null;
+  /** 실시간 조회가 온전히 돌지 못했다(v3 §7) — 소스 이름은 오지 않는다(SEC-9). */
+  liveLookupDegraded?: boolean | null;
 }
 
 /**
@@ -196,16 +198,36 @@ export function canJumpToSource(ref: EvidenceSourceRef): boolean {
  * 탐색이 완결됐으면(sufficient) 아무것도 표시하지 않는다.
  */
 export function examinedRangeMessage(coverage: EvidenceCoverage): string | null {
-  const { examined, candidates, stoppedReason } = coverage;
-  if (!stoppedReason || stoppedReason === 'sufficient') return null;
-  if (typeof examined !== 'number' || typeof candidates !== 'number') return null;
-  if (candidates <= examined) return null;
+  const { examined, candidates, stoppedReason, liveLookupDegraded } = coverage;
+
+  // 실시간 조회가 죽은 것은 **탐색이 잘렸는지와 무관하게** 밝혀야 한다(v3 §7). 후보를
+  // 전부 확인하고 끝난 턴도 코퍼스 밖을 못 본 것이고, 그것을 안 밝히면 "그런 논문이
+  // 세상에 없다"로 읽힌다 — 사용자가 할 일이 정반대다(다시 물어보기 vs 주제 넓히기).
+  const live = liveLookupDegraded
+    ? '코퍼스 밖 실시간 조회가 일시적으로 되지 않아 코퍼스 안에서만 찾았습니다.'
+    : null;
+
+  const truncated =
+    stoppedReason &&
+    stoppedReason !== 'sufficient' &&
+    typeof examined === 'number' &&
+    typeof candidates === 'number' &&
+    candidates > examined;
+
+  if (!truncated) return live;
 
   if (stoppedReason === 'budget_exhausted') {
-    return `관련 논문 ${candidates}편 중 ${examined}편까지 확인했습니다. 이어서 확인할까요?`;
+    return join(`관련 논문 ${candidates}편 중 ${examined}편까지 확인했습니다. 이어서 확인할까요?`, live);
   }
   if (stoppedReason === 'cancelled') {
-    return `취소됨 · 후보 ${candidates}편 중 ${examined}편 확인`;
+    return join(`취소됨 · 후보 ${candidates}편 중 ${examined}편 확인`, live);
   }
-  return `관련 논문 ${candidates}편 중 ${examined}편을 확인했습니다. 일부 논문은 본문을 가져오지 못했습니다.`;
+  return join(
+    `관련 논문 ${candidates}편 중 ${examined}편을 확인했습니다. 일부 논문은 본문을 가져오지 못했습니다.`,
+    live,
+  );
+}
+
+function join(message: string, live: string | null): string {
+  return live ? `${message} ${live}` : message;
 }

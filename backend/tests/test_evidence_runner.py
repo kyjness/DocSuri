@@ -108,7 +108,7 @@ def test_full_wiring_exposes_all_six_tools():
             llm=llm,
             extractor=Extractor(),
             corpus_search=Search(),
-            external_search=Search(),
+            live_lookup=Search(),
             doc_models=DocModels(),
             assets=object(),
         )
@@ -117,7 +117,7 @@ def test_full_wiring_exposes_all_six_tools():
     runner.run(CTX, _request())
 
     assert llm.seen_tools[0] == {
-        "corpus_search", "external_search", "fetch_paper",
+        "corpus_search", "live_lookup", "fetch_paper",
         "read_paper", "view_figure", "extract_evidence",
     }
 
@@ -231,7 +231,7 @@ def test_explicit_scope_never_exposes_search_tools():
             llm=llm,
             extractor=Extractor(),
             corpus_search=Search(),
-            external_search=Search(),
+            live_lookup=Search(),
             doc_models=DocModels(),
         )
     )
@@ -239,7 +239,7 @@ def test_explicit_scope_never_exposes_search_tools():
     runner.run(CTX, _request(scope="explicit", paperIds=["2401.00001"]))
 
     assert "corpus_search" not in llm.seen_tools[0]
-    assert "external_search" not in llm.seen_tools[0]
+    assert "live_lookup" not in llm.seen_tools[0]
     # 명시 논문의 본문 확보·추출 경로는 열려 있다.
     assert {"fetch_paper", "read_paper", "extract_evidence"} <= llm.seen_tools[0]
 

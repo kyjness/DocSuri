@@ -28,9 +28,9 @@ from langgraph.graph.state import CompiledStateGraph
 
 from .adapters.tools import (
     CorpusSearchTool,
-    ExternalSearchTool,
     ExtractEvidenceTool,
     FetchPaperTool,
+    LiveLookupTool,
     ReadPaperTool,
     ViewFigureTool,
 )
@@ -67,7 +67,7 @@ class RunnerDeps:
     # 이어붙이기로 떨어진다 — 다른 선택 의존성과 같은 규칙이다.
     answer: Any | None = None
     corpus_search: Any | None = None
-    external_search: Any | None = None
+    live_lookup: Any | None = None
     doc_models: Any | None = None
     promotion: Any | None = None
     assets: Any | None = None
@@ -148,8 +148,8 @@ class EvidenceTurnRunner:
 
         if searchable and deps.corpus_search is not None:
             registry.register(CorpusSearchTool(deps.corpus_search, state))
-        if searchable and deps.external_search is not None:
-            registry.register(ExternalSearchTool(deps.external_search, state))
+        if searchable and deps.live_lookup is not None:
+            registry.register(LiveLookupTool(deps.live_lookup, state))
         if deps.doc_models is not None:
             registry.register(
                 FetchPaperTool(

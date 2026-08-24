@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import re
 from typing import Any
 
 from backend.modules.paper_assets import AssetStoreUnavailable, parse_record_ref
@@ -24,16 +25,16 @@ from ..ports.llm import EvidenceExtractionPort, LlmUnavailable
 from ..ports.sources import (
     CorpusSearchPort,
     DocModelReadPort,
-    ExternalPaperSearchPort,
+    LivePaperLookupPort,
     PaperPromotionPort,
     SearchUnavailable,
     YearBound,
 )
 from ..ports.tools import (
     TOOL_CORPUS_SEARCH,
-    TOOL_EXTERNAL_SEARCH,
     TOOL_EXTRACT_EVIDENCE,
     TOOL_FETCH_PAPER,
+    TOOL_LIVE_LOOKUP,
     TOOL_READ_PAPER,
     TOOL_VIEW_FIGURE,
     ImageAttachment,
@@ -41,12 +42,13 @@ from ..ports.tools import (
     ToolResult,
     ToolSpec,
 )
+from .live_sources import LiveLookupResult
 
 __all__ = [
     "CorpusSearchTool",
-    "ExternalSearchTool",
     "ExtractEvidenceTool",
     "FetchPaperTool",
+    "LiveLookupTool",
     "ReadPaperTool",
     "ViewFigureTool",
 ]
@@ -141,9 +143,9 @@ class CorpusSearchTool:
             return _fail(
                 "corpus_search: unavailable",
                 "코퍼스 검색을 쓸 수 없다 — 같은 검색을 반복하지 말고 "
-                "external_search로 진행하거나 확보한 논문에서 근거를 추출하라",
+                "live_lookup으로 진행하거나 확보한 논문에서 근거를 추출하라",
             )
-        result = _register(self._state, hits[:_MAX_HITS], PaperOrigin.CORPUS, "corpus_search")
+        result = _register(self._state, hits[:_MAX_HITS], PaperOrigin.CORPUS, TOOL_CORPUS_SEARCH)
         if years is not None and not hits:
             # 0건이 "그런 논문이 없다"인지 "연도로 걸러졌다"인지 모델이 알아야 다음 수가
             # 달라진다. 안 알리면 같은 질의를 연도만 붙인 채 반복한다.
@@ -154,13 +156,18 @@ class CorpusSearchTool:
         return result
 
 
-class ExternalSearchTool:
+class LiveLookupTool:
+    """코퍼스 밖 실시간 조회 — arXiv·Semantic Scholar·OpenAlex 셋(설계 §3.2)."""
+
     spec = ToolSpec(
-        name=TOOL_EXTERNAL_SEARCH,
+        name=TOOL_LIVE_LOOKUP,
         description=(
-            "코퍼스 밖 논문을 검색한다(제목·초록만). 여기서 얻은 논문은 아직 본문 근거가 "
-            "아니다 — 초록만으로 인용할 수 있고, 본문 근거가 필요하면 fetch_paper로 "
-            "본문을 가져와야 한다. 검색어 외의 내용(사용자 원문·근거 전문)은 보내지 않는다."
+            "코퍼스 밖 논문을 arXiv·Semantic Scholar·OpenAlex에서 실시간으로 찾는다"
+            "(제목·초록만). 코퍼스 검색으로 후보를 못 찾았거나 최신 논문이 필요할 때 쓴다. "
+            "여기서 얻은 논문은 아직 본문 근거가 아니다 — 초록만으로 인용할 수 있고, 본문 "
+            "근거가 필요하면 fetch_paper로 가져와야 한다. arXiv에 없는 논문(학회·저널 전용)은 "
+            "본문을 확보할 수 없어 초록 범위로만 인용된다. "
+            "검색어 외의 내용(사용자 원문·근거 전문)은 보내지 않는다."
         ),
         parameters={
             "type": "object",
@@ -169,23 +176,41 @@ class ExternalSearchTool:
         },
     )
 
-    def __init__(self, port: ExternalPaperSearchPort, state: LoopState) -> None:
+    def __init__(self, port: LivePaperLookupPort, state: LoopState) -> None:
         self._port = port
         self._state = state
 
     def invoke(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         query = str(args.get("query") or "").strip()
         if not query:
-            return _fail("external_search: empty query", "query는 필수다 — 검색어를 넣어라")
+            return _fail("live_lookup: empty query", "query는 필수다 — 검색어를 넣어라")
         try:
-            hits = self._port.search(query)
+            outcome = self._lookup(query)
         except SearchUnavailable as exc:
-            log.warning("external search unavailable: %s", exc)
+            log.warning("live lookup unavailable: %s", exc)
             return _fail(
-                "external_search: unavailable",
-                "외부 검색을 쓸 수 없다 — 코퍼스 검색과 확보한 논문으로 진행하라",
+                "live_lookup: unavailable",
+                "실시간 조회를 쓸 수 없다 — 코퍼스 검색과 확보한 논문으로 진행하라",
             )
-        return _register(self._state, hits[:_MAX_HITS], PaperOrigin.EXTERNAL, "external_search")
+        result = _register(
+            self._state, outcome.candidates[:_MAX_HITS], PaperOrigin.EXTERNAL, TOOL_LIVE_LOOKUP
+        )
+        if outcome.degraded_sources:
+            # 어느 소스가 빠졌는지 알려야 모델이 "이게 전부"라고 믿지 않는다(novelty 실측).
+            # 마감도 같은 사실을 확인 범위 줄에 싣는다(§7) — 그쪽은 상태에서 읽는다.
+            self._state.live_lookup_degraded.update(outcome.degraded_sources)
+            result.content["degradedSources"] = list(outcome.degraded_sources)
+        return result
+
+    def _lookup(self, query: str):
+        """포트가 저하 정보를 실어 주면 그것을 쓰고, 아니면 후보만 받는다.
+
+        `search()`가 포트 계약이고 `lookup()`은 세 소스 어댑터의 확장이다 — 대역이나 단일
+        소스 구현을 그대로 꽂을 수 있어야 하므로 여기서 갈린다."""
+        lookup = getattr(self._port, "lookup", None)
+        if lookup is not None:
+            return lookup(query)
+        return LiveLookupResult(tuple(self._port.search(query)))
 
 
 def _register(
@@ -255,7 +280,7 @@ class FetchPaperTool:
             return _fail(
                 "fetch_paper: unknown paper",
                 f"'{paper_id}'는 아직 검색으로 찾지 못한 논문이다 — "
-                "corpus_search·external_search 결과의 paperId를 그대로 넣어라",
+                "corpus_search·live_lookup 결과의 paperId를 그대로 넣어라",
             )
         if handle.doc_model is not None:
             self._state.examine(handle)
@@ -279,6 +304,24 @@ class FetchPaperTool:
             handle.invalidate_projections()
             self._state.examine(handle)
             return _fetched(handle)
+
+        if not _promotable(paper_id):
+            # arXiv id가 없는 논문(학회·저널 전용)은 **빌드할 수 없다.** 막지 않으면 승격
+            # 큐에 못 만드는 잡이 들어가고 20초 폴링을 태운 뒤 `timed_out`으로 끝난다 —
+            # 결과는 "초록 범위로 계속"으로 같지만 매 호출마다 큐 메시지와 20초가 나간다.
+            self._state.examine(handle)
+            return ToolResult(
+                ok=True,
+                content={
+                    "paperId": paper_id,
+                    "status": "abstract_only",
+                    "note": (
+                        "이 논문은 arXiv에 없어 본문을 확보할 수 없다 — 초록 범위로 인용하고 "
+                        "sourceScope=\"abstract\"로 표시하라. 다시 부르지 마라."
+                    ),
+                },
+                result_summary="fetch_paper: not promotable",
+            )
 
         if self._promotion is None:
             self._state.examine(handle)
@@ -304,6 +347,18 @@ class FetchPaperTool:
         handle.invalidate_projections()
         self._state.examine(handle)
         return _fetched(handle)
+
+
+# 본문 승격은 arXiv 논문만 가능하다 — U1의 BUILD_DOC_MODEL 잡이 arxivRef를 나른다.
+# `live_lookup`이 arXiv에 없는 논문을 `doi:` 네임스페이스로 실어 오므로 그 경계가 필요하다.
+_PROMOTABLE_ID = re.compile(
+    r"^(?:arxiv:)?(?:\d{4}\.\d{4,5}|[a-z-]{2,}(?:\.[A-Z]{2})?/\d{7})(?:v\d+)?$",
+    re.IGNORECASE,
+)
+
+
+def _promotable(paper_id: str) -> bool:
+    return bool(_PROMOTABLE_ID.match(paper_id.strip()))
 
 
 def _fetched(handle: PaperHandle) -> ToolResult:

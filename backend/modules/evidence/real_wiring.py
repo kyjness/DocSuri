@@ -100,7 +100,7 @@ def build_evidence_runner(
     vector_store = OpenSearchVectorStoreAdapter(os_client, d_settings.opensearch_index)
     lexical_index = OpenSearchLexicalIndexAdapter(os_client, d_settings.opensearch_index)
 
-    from .adapters.sources import ArxivExternalSearch, CorpusSearch, DocModelReader
+    from .adapters.sources import CorpusSearch, DocModelReader
 
     corpus_search = CorpusSearch(
         embedding=embedding,
@@ -155,10 +155,10 @@ def build_evidence_runner(
     )
 
     # --- 선택 도구: 없으면 등록되지 않고 도구 목록이 자연 축소된다 ---
-    external_search = None
+    live_lookup = None
     promotion = None
-    if _external_enabled():
-        external_search = ArxivExternalSearch(_build_arxiv_client())
+    if _live_lookup_enabled():
+        live_lookup = _build_live_lookup()
         promotion = _build_promotion(doc_models)
 
     assets = _build_asset_reader(session_factory)
@@ -169,7 +169,7 @@ def build_evidence_runner(
             extractor=extractor,
             answer=answer,
             corpus_search=corpus_search,
-            external_search=external_search,
+            live_lookup=live_lookup,
             doc_models=doc_models,
             promotion=promotion,
             assets=assets,
@@ -188,22 +188,35 @@ def build_evidence_runner(
 # 보이지도 않으므로 에이전트가 그 경로를 시도하지 않는다.
 
 
-def _external_enabled() -> bool:
+def _live_lookup_enabled() -> bool:
     from docsuri_shared.env import env_flag
 
-    return env_flag('DOCSURI_EVIDENCE_EXTERNAL_SEARCH_ENABLED')
+    return env_flag('DOCSURI_EVIDENCE_LIVE_LOOKUP_ENABLED')
 
 
-def _build_arxiv_client() -> object:
-    """evidence 자체의 arXiv 검색 클라이언트.
+def _build_live_lookup() -> object:
+    """실시간 조회 셋 — arXiv · Semantic Scholar · OpenAlex(설계 §3.2).
 
-    초안은 u1 `ArxivAdapter` 재사용을 적었지만 둘 다 성립하지 않았다: 그 어댑터에는
-    search()가 없고(수확·전문 취득용), `docsuri_ingestion`은 backend 의존성이 아니라
-    import 자체가 마운트를 죽인다. "질의 → 제목·초록"은 표준 라이브러리로 닫힌다.
+    초안은 u1·ingestion 어댑터 재사용을 적었지만 둘 다 성립하지 않았다: u1 `ArxivAdapter`에는
+    search()가 없고(수확·전문 취득용), `docsuri_ingestion`은 backend 의존성이 아니라 import
+    자체가 마운트를 죽인다. 그쪽 S2·OpenAlex 소스도 날짜 창 수확용이라 질의 검색이 없다.
+
+    **브레이커는 소스별로 새로 만든다.** 위 Bedrock 셋이 나눠 쓰는 브레이커를 재사용하면
+    arXiv 장애가 `decide`를 죽인다 — 다른 엔드포인트이므로 회로도 달라야 한다.
+
+    자격증명 env는 **ingestion이 쓰는 이름 그대로**다. 그 이름들은 소비자가 아니라 자격증명
+    자체를 가리키고, 한 배포에서 같은 키를 두 이름으로 두면 한쪽만 채워지는 날이 온다.
     """
-    from .adapters.sources import ArxivApiClient
+    import httpx
 
-    return ArxivApiClient()
+    from .adapters.live_sources import LiveLookup
+
+    return LiveLookup(
+        httpx.Client(timeout=env_float('DOCSURI_EVIDENCE_LIVE_LOOKUP_TIMEOUT_MS', 15000) / 1000),
+        s2_api_key=os.environ.get('DOCSURI_SEMANTIC_SCHOLAR_API_KEY'),
+        mailto=os.environ.get('DOCSURI_OPENALEX_MAILTO'),
+        contact=os.environ.get('DOCSURI_CONTACT_EMAIL'),
+    )
 
 
 def _build_promotion(doc_models: object) -> object | None:
