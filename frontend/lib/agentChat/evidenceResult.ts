@@ -1,3 +1,8 @@
+import type {
+  AbstainReason,
+  EvidenceAnswer as GeneratedAnswer,
+} from '@/types/generated/evidence';
+
 import { isNoveltyResultPayload } from './noveltyResult';
 import type { NoveltyResultPayload } from './noveltyResult';
 
@@ -43,34 +48,26 @@ export interface EvidenceCoverage {
 }
 
 /**
- * 판단 산문의 문장 하나(v3 §4.2). 산문을 한 덩어리가 아니라 문장 단위로 받는 이유는
- * 화면이 두 종류를 **구분해서** 그려야 하기 때문이다 — cited는 기계가 확인한 문장,
- * synthesis는 모델이 근거들을 종합해 쓴 문장이라 원문에 그대로 있지 않다.
- * `refs`는 근거표 행 번호(1-기반)다.
+ * 판단 계약(v3 §4)은 **스키마에서 그대로 가져온다**. 손으로 다시 적으면 스키마가 움직여도
+ * 여기가 안 움직이고, CI는 그것을 못 본다 — `AnswerSegment`가 두 벌 있으면 화면이 낡은
+ * 쪽을 믿는다. 세 타입 다 필수 필드뿐이라 그대로 쓸 수 있다.
+ *
+ * 아래 `EvidenceSourceRef`·`EvidenceCoverage`는 아직 손으로 적혀 있다. 생성분은
+ * `anchor?: string`인데 서버는 `null`을 실어 보내고(pydantic 기본 직렬화), 그 차이를
+ * 지금 지우면 null 검사가 타입에서 사라진다. 스키마가 nullable을 인정하기 전까지는
+ * 여기가 더 정확하다 — 옮기려면 스키마부터 고친다.
  */
-export interface EvidenceAnswerSegment {
-  text: string;
-  refs: number[];
-  kind: 'cited' | 'synthesis';
-}
-
-/** §4.3 기계 검사 결과 — 표시용이 아니라 지표·디버깅용이다. */
-export interface EvidenceAnswerChecks {
-  demoted: number;
-  regenerated: boolean;
-  fallback: boolean;
-}
-
-export interface EvidenceAnswer {
-  segments: EvidenceAnswerSegment[];
-  checks: EvidenceAnswerChecks;
-}
+export type {
+  AnswerChecks as EvidenceAnswerChecks,
+  AnswerSegment as EvidenceAnswerSegment,
+  EvidenceAnswer,
+} from '@/types/generated/evidence';
 
 export interface EvidenceResultPayload {
   state: 'ok';
   claims: EvidenceClaim[];
   coverage: EvidenceCoverage;
-  answer?: EvidenceAnswer | null;
+  answer?: GeneratedAnswer | null;
 }
 
 export type ParsedAgentContent =
@@ -88,7 +85,7 @@ export type ParsedAgentContent =
  * 간다 — 후보가 없으면 넓히기, 후보는 있는데 근거가 없으면 다른 표현, 취소는 이어가기.
  * "제한" "degraded" 같은 내부 용어는 쓰지 않는다(v2 Q10 승계).
  */
-const ABSTAIN_REASON_LABEL: Record<string, string> = {
+const ABSTAIN_REASON_LABEL: Record<AbstainReason, string> = {
   out_of_corpus:
     '이 주제를 다룬 논문을 찾지 못했어요. 주제를 넓히거나 다른 용어로 물어봐 주세요.',
   insufficient_evidence:
@@ -100,12 +97,24 @@ const ABSTAIN_REASON_LABEL: Record<string, string> = {
   // `assembler`가 치명 오류에서 여전히 낸다. 항목을 지웠더니 진짜 LLM 실패가
   // 일반 폴백 문구로 떨어졌다. 사유를 지우기 전에 생산자를 세는 것이 먼저다.
   llm_unavailable: '지금은 분석을 끝내지 못했어요. 잠시 뒤 같은 질문을 다시 물어봐 주세요.',
+  // 아래 넷은 근거형성이 낸 기권이 아니라 턴 실패가 fail-closed로 수렴한 것이다
+  // (BR-EV-12). 원인은 서버 로그에 있고 사용자에게는 지어내지 않는다.
+  internal_error: '답변을 만들지 못했어요. 잠시 뒤 다시 물어봐 주세요.',
+  dispatch_failed: '답변을 만들지 못했어요. 잠시 뒤 다시 물어봐 주세요.',
+  session_unavailable: '이 대화를 불러오지 못했어요. 새로고침한 뒤 다시 물어봐 주세요.',
+  unknown: '답변을 만들지 못했어요. 잠시 뒤 다시 물어봐 주세요.',
 };
 
 export function abstainReasonLabel(reason: string): string {
-  // 알려지지 않은 사유(internal_error·dispatch_failed 등)는 원인을 지어내지 않고
-  // 다시 해보라고만 말한다 — 백엔드가 실제 코드를 보존하도록 고친 것과 짝이다.
-  return ABSTAIN_REASON_LABEL[reason] ?? '답변을 만들지 못했어요. 잠시 뒤 다시 물어봐 주세요.';
+  // 맵의 키가 `AbstainReason`이라 사유가 늘면 **여기가 컴파일 에러로 막힌다.** 종전에는
+  // 그냥 string이라, 백엔드가 내는 사유를 화면에서 지워도 아무 데서도 안 걸리고 일반
+  // 문구로 조용히 떨어졌다(llm_unavailable이 실제로 그랬다).
+  //
+  // 런타임 폴백은 남긴다 — 저장된 옛 턴이 어휘 밖 코드를 들고 있을 수 있다.
+  return (
+    ABSTAIN_REASON_LABEL[reason as AbstainReason] ??
+    '답변을 만들지 못했어요. 잠시 뒤 다시 물어봐 주세요.'
+  );
 }
 
 function isEvidenceResultPayload(value: unknown): value is EvidenceResultPayload {

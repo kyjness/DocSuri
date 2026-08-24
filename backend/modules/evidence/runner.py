@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from docsuri_shared._generated.dtos.evidence_schema import (
+    AbstainReason,
     EvidenceAbstainResult,
     EvidenceRequest,
 )
@@ -53,7 +54,7 @@ _RESERVED_ID_PREFIXES = re.compile(r"^(?:userdoc|upload|attachment):", re.IGNORE
 
 __all__ = ["EvidenceTurnRunner", "RunnerDeps"]
 
-ABSTAIN_COST_DEGRADED = "cost_degraded"
+ABSTAIN_COST_DEGRADED = AbstainReason.cost_degraded
 
 
 @dataclass(slots=True)

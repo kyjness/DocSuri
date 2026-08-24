@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 from docsuri_shared._generated.dtos.evidence_schema import (
+    AbstainReason,
     AnswerChecks,
     AnswerSegment,
     AnswerSegmentKind,
@@ -35,10 +36,12 @@ __all__ = [
 ]
 
 # 비기술 사유만(SEC-9, INV-EV-5). 내부 상태·예외 상세는 절대 싣지 않는다.
-ABSTAIN_OUT_OF_CORPUS = "out_of_corpus"
-ABSTAIN_INSUFFICIENT = "insufficient_evidence"
-ABSTAIN_LLM_FAILURE = "llm_unavailable"
-ABSTAIN_CANCELLED = "cancelled"
+# **어휘의 정본은 스키마의 `AbstainReason`이다** — 여기서 문자열을 새로 적으면 화면
+# 라벨 맵과 조용히 갈린다(2026-08-24에 실제로 갈렸다).
+ABSTAIN_OUT_OF_CORPUS = AbstainReason.out_of_corpus
+ABSTAIN_INSUFFICIENT = AbstainReason.insufficient_evidence
+ABSTAIN_LLM_FAILURE = AbstainReason.llm_unavailable
+ABSTAIN_CANCELLED = AbstainReason.cancelled
 
 _STOPPED_BY_REASON = {
     TerminationReason.SUFFICIENT: StoppedReason.sufficient,

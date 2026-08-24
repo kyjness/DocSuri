@@ -220,6 +220,22 @@ class EvidenceResult(BaseModel):
     )
 
 
+class AbstainReason(StrEnum):
+    """
+    비기술 기권 사유(내부 위반 상세·점수 비노출 — SEC-9). 앞 다섯은 근거형성이 낸 기권, 뒤 넷은 턴 실패가 fail-closed로 수렴한 것(BR-EV-12). **닫힌 어휘다** — 그냥 string이던 동안 백엔드 생산자와 화면 라벨 맵이 조용히 갈렸다(2026-08-24: llm_unavailable 라벨을 지웠는데 생산자가 남아 있어 진짜 LLM 실패가 일반 문구로 떨어졌다). 여기 없는 코드는 unknown으로 수렴하고 원래 값은 로그에 남는다. Trace: FR-5, SEC-9.
+    """
+
+    out_of_corpus = 'out_of_corpus'
+    insufficient_evidence = 'insufficient_evidence'
+    cost_degraded = 'cost_degraded'
+    cancelled = 'cancelled'
+    llm_unavailable = 'llm_unavailable'
+    internal_error = 'internal_error'
+    dispatch_failed = 'dispatch_failed'
+    session_unavailable = 'session_unavailable'
+    unknown = 'unknown'
+
+
 class EvidenceAbstainResult(BaseModel):
     """
     근거 부족·범위 밖 기권(state=abstain). 날조 대신 기권(FR-5). abstainReason = 비기술 사유만(내부 위반 상세 비노출 — SEC-9). Trace: FR-5, SEC-9, C-2.
@@ -229,10 +245,7 @@ class EvidenceAbstainResult(BaseModel):
         extra='forbid',
     )
     state: Literal['abstain'] = Field(..., description='abstain 고정. Trace: FR-5.')
-    abstainReason: str = Field(
-        ...,
-        description='비기술 기권 사유(내부 위반 상세·점수 비노출 — SEC-9). 예: out_of_corpus, insufficient_evidence, cancelled(근거를 찾기 전에 사용자가 취소).',
-    )
+    abstainReason: AbstainReason
 
 
 class EvidenceRequest(BaseModel):

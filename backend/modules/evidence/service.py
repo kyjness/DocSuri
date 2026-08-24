@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from docsuri_shared._generated.dtos.evidence_schema import (
+    AbstainReason,
     EvidenceAbstainResult,
     EvidenceRequest,
     EvidenceResult,
@@ -324,7 +325,15 @@ class EvidenceFormationService:
         # (2026-08-24 실측). `error_code`는 이미 SEC-9를 지나 API로 나가는 비기술 코드이므로
         # 그대로 나른다. worker.py의 같은 자리도 범용 코드를 쓴다.
         logger.warning('evidence port: turn failed (%s)', result.error_code)
-        return EvidenceAbstainResult(state='abstain', abstainReason=result.error_code)
+        # `abstainReason`은 닫힌 어휘다(스키마 `AbstainReason`). 저장된 턴에서 되살린
+        # 코드는 그 어휘 밖일 수 있으므로 unknown으로 수렴시킨다 — 원래 값은 위 로그에
+        # 남는다. 사유를 **지어내지** 않는다는 원칙은 그대로다: 모른다고 말하는 것과
+        # 'LLM 사용 불가'라고 단정하는 것은 다르다.
+        try:
+            reason = AbstainReason(result.error_code)
+        except ValueError:
+            reason = AbstainReason.unknown
+        return EvidenceAbstainResult(state='abstain', abstainReason=reason)
 
 
 # ---------------------------------------------------------------------------
