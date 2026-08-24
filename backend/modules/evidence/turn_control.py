@@ -34,6 +34,7 @@ def trace_row(record: ToolCallRecord) -> dict[str, Any]:
         "outcome": record.outcome.value,
         "resultSummary": record.result_summary,
         "costUsd": record.cost_usd,
+        "stance": record.stance,
     }
 
 

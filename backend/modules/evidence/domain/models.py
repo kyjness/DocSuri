@@ -206,7 +206,12 @@ class LoopBudget:
 
 @dataclass(frozen=True, slots=True)
 class ToolCallRecord:
-    """결정 트레이스 1건(FR-46, BR-EV-16) — 진행 활동 피드의 유일한 원천."""
+    """결정 트레이스 1건(FR-46, BR-EV-16) — 진행 활동 피드의 유일한 원천.
+
+    `stance`는 모델이 그 호출에 붙인 탐색 방향 선언이다(§3.2·§7). **일급 필드여야 한다** —
+    `args_summary`는 렌더 형식(길이 절단·구분자)이라 되파싱하면 바닥 검사가 화면 문자열에
+    묶인다. 선언이 없거나 어휘 밖이면 None이다.
+    """
 
     seq: int
     tool: str
@@ -214,6 +219,7 @@ class ToolCallRecord:
     outcome: ToolCallOutcome
     result_summary: str = ""
     cost_usd: float | None = None
+    stance: str | None = None
     at: datetime = field(default_factory=utc_now)
 
 
@@ -324,6 +330,7 @@ class LoopState:
                     "outcome": r.outcome.value,
                     "result_summary": r.result_summary,
                     "cost_usd": r.cost_usd,
+                    "stance": r.stance,
                     "at": r.at.isoformat(),
                 }
                 for r in self.trace
@@ -359,6 +366,7 @@ class LoopState:
                 outcome=ToolCallOutcome(r["outcome"]),
                 result_summary=r.get("result_summary", ""),
                 cost_usd=r.get("cost_usd"),
+                stance=r.get("stance"),
                 at=datetime.fromisoformat(r["at"]),
             )
             for r in data.get("trace", [])

@@ -123,6 +123,18 @@ class EvidenceRepository(Protocol):
 
 # --- 직렬화 ------------------------------------------------------------------
 
+# 트레이스가 **화면으로 나가는** 키(§5.3). 저장 행은 이보다 넓다 — `stance`는 §7 트레이스로
+# 남기지만 진행 표시에 실을 것이 아니고(§5.3: 단계명·논문 제목·건수만), `ownerId`는 내부
+# 식별자다. 두 스토어가 각자 투영하면 인메모리에서만 통과하는 모양이 생긴다 — 이 저장소가
+# 이름 붙인 "두 스토어가 조용히 갈린다"가 정확히 그것이라, 투영을 한 곳에 둔다.
+_TRACE_WIRE_KEYS = ("seq", "tool", "argsSummary", "outcome", "resultSummary", "costUsd", "at")
+
+
+def trace_wire_row(row: dict) -> dict:
+    return {key: row.get(key) for key in _TRACE_WIRE_KEYS}
+
+
+
 def _serialize(result: TurnResult) -> tuple[dict | None, str]:
     """(result JSON, status)."""
     if isinstance(result, TurnSuccessResult):
@@ -308,7 +320,7 @@ class InMemoryEvidenceRepository:
     def list_trace_after(self, owner_id: str, turn_id: str, after_seq: int) -> list[dict]:
         with self._lock:
             rows = [r for r in self._trace.get(turn_id, []) if r.get("ownerId") == owner_id]
-        return [r for r in rows if int(r.get("seq", 0)) > after_seq]
+        return [trace_wire_row(r) for r in rows if int(r.get("seq", 0)) > after_seq]
 
     def expired_turn_ids(self, older_than: datetime, limit: int = 200) -> list[str]:
         with self._lock:
@@ -399,6 +411,8 @@ class EvidenceTraceTable(Base):
     outcome: Mapped[str] = mapped_column(String(32), nullable=False)
     result_summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
     cost_usd: Mapped[float | None] = mapped_column(Double, nullable=True)
+    # 탐색 방향 선언(§3.2). stance를 안 받는 도구와 이 컬럼 이전의 행은 NULL이다.
+    stance: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -599,6 +613,7 @@ class SqlEvidenceRepository:
                 outcome=str(row.get("outcome", "")),
                 result_summary=str(row.get("resultSummary", "")),
                 cost_usd=row.get("costUsd"),
+                stance=row.get("stance"),
                 created_at=_utc_now(),
             )
         )
@@ -616,15 +631,17 @@ class SqlEvidenceRepository:
             .all()
         )
         return [
-            {
-                "seq": row.seq,
-                "tool": row.tool,
-                "argsSummary": row.args_summary,
-                "outcome": row.outcome,
-                "resultSummary": row.result_summary,
-                "costUsd": row.cost_usd,
-                "at": row.created_at.isoformat() if row.created_at else None,
-            }
+            trace_wire_row(
+                {
+                    "seq": row.seq,
+                    "tool": row.tool,
+                    "argsSummary": row.args_summary,
+                    "outcome": row.outcome,
+                    "resultSummary": row.result_summary,
+                    "costUsd": row.cost_usd,
+                    "at": row.created_at.isoformat() if row.created_at else None,
+                }
+            )
             for row in rows
         ]
 

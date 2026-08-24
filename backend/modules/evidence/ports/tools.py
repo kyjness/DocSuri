@@ -12,6 +12,9 @@ from typing import Any, Protocol
 
 __all__ = [
     "KNOWN_LOOP_TOOLS",
+    "STANCES",
+    "STANCE_COUNTER",
+    "STANCE_TOOLS",
     "TOOL_CORPUS_SEARCH",
     "TOOL_EXTRACT_EVIDENCE",
     "TOOL_FETCH_PAPER",
@@ -33,6 +36,14 @@ TOOL_READ_PAPER = "read_paper"
 TOOL_VIEW_FIGURE = "view_figure"
 TOOL_EXTRACT_EVIDENCE = "extract_evidence"
 
+# 탐색 방향 선언(설계 v3 §3.2). 모델이 "반대 근거를 찾는 중"이라고 **선언**하게 해서
+# 시스템이 셀 수 있게 한다 — 프롬프트 당부("반대 근거도 찾아라")로 두지 않는 이유는
+# novelty에서 당부가 지켜지지 않는 것을 실측했기 때문이다.
+STANCE_SUPPORT = "support"
+STANCE_COUNTER = "counter"
+STANCE_NEUTRAL = "neutral"
+STANCES: tuple[str, ...] = (STANCE_SUPPORT, STANCE_COUNTER, STANCE_NEUTRAL)
+
 # v1 도구 어휘(FD 게이트 Q1=A). 신규 도구는 이 어휘를 명시 확장해야만 합류한다.
 KNOWN_LOOP_TOOLS: frozenset[str] = frozenset(
     {
@@ -43,6 +54,13 @@ KNOWN_LOOP_TOOLS: frozenset[str] = frozenset(
         TOOL_VIEW_FIGURE,
         TOOL_EXTRACT_EVIDENCE,
     }
+)
+
+
+# `stance`를 인자로 받는 도구 — 바닥 검사(§3.3)가 세는 대상이다. 다른 도구에 붙은 선언은
+# 세지 않는다: `read_paper`에 stance=counter를 달아도 반대 측을 **찾은** 것은 아니다.
+STANCE_TOOLS: frozenset[str] = frozenset(
+    {TOOL_CORPUS_SEARCH, TOOL_LIVE_LOOKUP, TOOL_EXTRACT_EVIDENCE}
 )
 
 

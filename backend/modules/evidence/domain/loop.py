@@ -63,7 +63,14 @@ from ..ports.llm import (
     ToolCallProposal,
     ToolResultView,
 )
-from ..ports.tools import ToolContext, ToolRegistry, ToolResult
+from ..ports.tools import (
+    STANCE_COUNTER,
+    STANCE_TOOLS,
+    STANCES,
+    ToolContext,
+    ToolRegistry,
+    ToolResult,
+)
 from . import budget as budget_rules
 from .answer_checks import AnswerRejected, check_answer
 from .assembler import comparison_order, fallback_answer
@@ -88,6 +95,16 @@ _RECENT_WINDOW = 6
 _NO_EVIDENCE_NOTE = (
     "아직 검증을 통과한 근거가 0건이다. extract_evidence로 확보한 논문에서 근거를 "
     "추출하거나, 다른 논문을 찾아라. 근거 없이는 종료할 수 없다."
+)
+
+# 바닥 2(§3.3) — 주장·비교형은 반대 측을 한 번은 찾아야 끝낼 수 있다. 사유를 관찰에 실어
+# 다음 판단이 달라지게 한다(`_NO_EVIDENCE_NOTE`와 같은 방식) — 거부만 하면 모델은 같은
+# 종료 제안을 반복하고 그 반복이 반복 예산을 태운다.
+_NO_COUNTER_NOTE = (
+    "이 질문은 {kind}형이라 반대 측을 확인해야 끝낼 수 있다. 아직 stance=\"counter\"로 "
+    "표시한 검색·추출이 한 번도 없다. 이 주장에 반하거나 조건을 제한하는 근거를 "
+    "corpus_search·live_lookup·extract_evidence 중 하나에 stance=\"counter\"를 붙여 "
+    "찾아라. 찾아본 뒤 없으면 그때 종료해도 된다 — 없다는 것도 결과다."
 )
 
 _TOOL_CAP_NOTE = (
@@ -253,11 +270,15 @@ def compile_loop_graph(checkpointer: BaseCheckpointSaver | None) -> CompiledStat
         # 근거 수와 무관하고, 뒤에 예산으로 끝나면 다시 선언할 기회가 없다.
         if proposal.get("question_kind"):
             state.question_kind = proposal["question_kind"]
-        if state.accumulator.items:
-            return end(run, TerminationReason.SUFFICIENT, proposal.get("note"))
         # 종료 제안 거부 — 사유를 관찰에 실어 다음 판단이 달라지게 한다(노트는 마감이 안 읽는다).
-        _note(state, _NO_EVIDENCE_NOTE)
-        return {"proposal": None, "outcome": None}
+        if not state.accumulator.items:
+            _note(state, _NO_EVIDENCE_NOTE)
+            return {"proposal": None, "outcome": None}
+        missing = _missing_counter_probe(state)
+        if missing is not None:
+            _note(state, missing)
+            return {"proposal": None, "outcome": None}
+        return end(run, TerminationReason.SUFFICIENT, proposal.get("note"))
 
     def act(gs: _GraphState, runtime: Runtime[LoopRun]) -> dict:
         run = runtime.context
@@ -445,6 +466,7 @@ def _act(state: LoopState, deps: LoopDeps, proposal: ToolCallProposal) -> LoopOu
     """도구 1회 실행. 종료해야 하면 LoopOutcome, 계속하면 None."""
     tool = deps.registry.get(proposal.tool_name)
     args_summary = _summarize_args(proposal.args)
+    stance = _declared_stance(proposal.tool_name, proposal.args)
 
     if proposal.decision_note:
         # 한 턴에 도구 호출이 여럿 온 경우 첫 개만 실행되고 나머지는 버려진다. 버려졌다는
@@ -456,14 +478,14 @@ def _act(state: LoopState, deps: LoopDeps, proposal: ToolCallProposal) -> LoopOu
     if tool is None:
         # 어휘 밖 도구를 고른 것은 모델의 오류다 — 예산을 태우지 않고 되돌린다.
         _record(state, deps, proposal.tool_name, args_summary, ToolCallOutcome.ERROR,
-                "unknown tool")
+                "unknown tool", stance=stance)
         _note(state, f"'{proposal.tool_name}'은(는) 없는 도구다. 제공된 도구 중에서 골라라.")
         return None
 
     denial = budget_rules.check_and_consume_tool_call(deps.budget, proposal.tool_name)
     if denial is not None:
         _record(state, deps, proposal.tool_name, args_summary, ToolCallOutcome.BUDGET_DENIED,
-                denial.detail)
+                denial.detail, stance=stance)
         if denial.reason is BudgetDenialReason.TOOL_CAP_EXHAUSTED:
             # **도구 하나가 상한을 다 쓴 것은 턴의 예산 소진이 아니다.** 다른 도구도, 반복도,
             # 비용도 남아 있다. 여기서 끝내면 이미 확보한 논문을 손에 쥔 채 "근거 부족"으로
@@ -489,7 +511,7 @@ def _act(state: LoopState, deps: LoopDeps, proposal: ToolCallProposal) -> LoopOu
     if result.ok and not result.content:
         outcome = ToolCallOutcome.EMPTY
     _record(state, deps, proposal.tool_name, args_summary, outcome,
-            result.result_summary or (result.error or ""), result.cost_usd)
+            result.result_summary or (result.error or ""), result.cost_usd, stance=stance)
     _push_result(state, proposal.tool_name, args_summary, result)
     return None
 
@@ -583,6 +605,7 @@ def _record(
     outcome: ToolCallOutcome,
     result_summary: str,
     cost_usd: float | None = None,
+    stance: str | None = None,
 ) -> None:
     record = ToolCallRecord(
         seq=len(state.trace) + 1,
@@ -591,6 +614,7 @@ def _record(
         outcome=outcome,
         result_summary=result_summary[:500],
         cost_usd=cost_usd,
+        stance=stance,
     )
     state.trace.append(record)
     if deps.on_trace is None:
@@ -604,6 +628,57 @@ def _record(
 def _note(state: LoopState, text: str) -> None:
     if text not in state.notes:
         state.notes.append(text)
+
+
+# 반대 측 조건이 붙는 질문 유형(§3.3). `fact`("X는 몇 년에 나왔어")는 면제되고, 선언 기회가
+# 없던 턴(`unknown`)도 면제한다 — 선언하지 못한 것을 근거로 종료를 막으면 예산 소진·취소로
+# 끝난 턴이 영원히 못 끝난다.
+_COUNTER_REQUIRED_KINDS = frozenset({"claim", "comparison"})
+
+
+# 반대 측 탐색으로 인정되는 결과 — **도구가 실제로 돌았는가**가 기준이다.
+#
+# 0건(EMPTY)과 도구 실패(ERROR)를 센다: 바닥이 요구하는 것은 "찾아봤는가"이지 "찾았는가"가
+# 아니고(없다는 것도 결과다), 찾았을 때만 인정하면 반대 근거가 실재하지 않는 질문은 영원히
+# 못 끝난다. 검색 인덱스가 죽은 턴도 마찬가지로 못 끝나게 된다.
+#
+# 반대로 BUDGET_DENIED와 없는 도구 호출은 **세지 않는다.** 그 둘은 도구가 돌지 않은 것이라
+# 선언만 붙이면 검사를 지나는 공짜 통로가 된다 — 상한을 다 쓴 도구에 stance=counter를 붙여
+# 부르는 것으로 바닥이 열린다.
+_PROBE_COUNTED = frozenset({ToolCallOutcome.OK, ToolCallOutcome.EMPTY, ToolCallOutcome.ERROR})
+
+
+def counter_probes(trace: list[ToolCallRecord]) -> int:
+    """`stance="counter"`로 실제 돈 검색·추출 횟수 — 바닥 2와 1층 채점이 같은 것을 센다."""
+    return sum(
+        1
+        for r in trace
+        if r.stance == STANCE_COUNTER
+        and r.tool in STANCE_TOOLS
+        and r.outcome in _PROBE_COUNTED
+    )
+
+
+def _missing_counter_probe(state: LoopState) -> str | None:
+    """바닥 2 미달이면 그 사유, 아니면 None."""
+    kind = state.question_kind or QUESTION_KIND_UNKNOWN
+    if kind not in _COUNTER_REQUIRED_KINDS:
+        return None
+    if counter_probes(state.trace):
+        return None
+    return _NO_COUNTER_NOTE.format(kind="주장" if kind == "claim" else "비교")
+
+
+def _declared_stance(tool_name: str, args: dict) -> str | None:
+    """그 호출의 탐색 방향 선언(§3.2) — **`stance`를 받는 도구에서만** 읽는다.
+
+    `read_paper`에 `stance="counter"`를 달아도 반대 측을 *찾은* 것은 아니다. 어휘 밖 값도
+    버린다 — 세는 쪽이 어휘를 넓히면 선언이 검사를 통과시키는 자유 문자열이 된다.
+    """
+    if tool_name not in STANCE_TOOLS:
+        return None
+    stance = str((args or {}).get("stance") or "").strip().lower()
+    return stance if stance in STANCES else None
 
 
 def _summarize_args(args: dict) -> str:

@@ -31,6 +31,7 @@ from ..ports.sources import (
     YearBound,
 )
 from ..ports.tools import (
+    STANCES,
     TOOL_CORPUS_SEARCH,
     TOOL_EXTRACT_EVIDENCE,
     TOOL_FETCH_PAPER,
@@ -59,6 +60,19 @@ _ABSTRACT_PREVIEW = 400
 _MAX_HITS = 10
 _MAX_BLOCKS = 60
 _ASSET_LIST_LIMIT = 60
+
+
+# 탐색 방향 선언(§3.2). **세 도구가 같은 조각을 쓴다** — 어휘가 갈리면 바닥 검사가
+# 한쪽만 세고, 그 사실은 "모델이 반대 근거를 안 찾았다"로 보인다.
+_STANCE_ARG: dict[str, Any] = {
+    "type": "string",
+    "enum": list(STANCES),
+    "description": (
+        "이번 호출이 무엇을 찾는지. support=주장을 뒷받침하는 근거 · "
+        "counter=주장에 반하거나 조건을 제한하는 근거 · neutral=사실 확인. "
+        "주장·비교형 질문은 counter로 표시한 검색이나 추출이 최소 한 번 있어야 종료할 수 있다."
+    ),
+}
 
 
 def _year_bound(args: dict[str, Any]) -> YearBound | None:
@@ -121,6 +135,7 @@ class CorpusSearchTool:
                 "mode": {"type": "string", "enum": ["semantic", "phrase"]},
                 "year_from": {"type": "integer", "minimum": 1900, "maximum": 2100},
                 "year_to": {"type": "integer", "minimum": 1900, "maximum": 2100},
+                "stance": _STANCE_ARG,
             },
             "required": ["query"],
         },
@@ -171,7 +186,10 @@ class LiveLookupTool:
         ),
         parameters={
             "type": "object",
-            "properties": {"query": {"type": "string", "maxLength": 400}},
+            "properties": {
+                "query": {"type": "string", "maxLength": 400},
+                "stance": _STANCE_ARG,
+            },
             "required": ["query"],
         },
     )
@@ -576,6 +594,7 @@ class ExtractEvidenceTool:
                     "maxItems": 10,
                 },
                 "focus": {"type": "string", "maxLength": 300},
+                "stance": _STANCE_ARG,
             },
             "required": ["paper_ids"],
         },

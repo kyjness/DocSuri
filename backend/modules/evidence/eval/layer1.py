@@ -10,6 +10,7 @@
 | `synthesis_ratio` | 종합 문장 비율(§4.3 A5의 실측 근거) | ✗ |
 | `demoted` / `regenerated` / `fallback` | 검사가 실제로 무는가 | ✗ |
 | `searches` | 범위 밖 질문이 검색을 0회로 끊었는가(§2.4) | ✗ |
+| `counter_probes` | 주장·비교형이 반대 측을 찾아봤는가(§3.3 바닥 2) | ✗ |
 | `recall_at_k` | 정답 논문을 top-k에 올렸는가 | ○ |
 
 **검색 평가와 답변 평가를 분리한다**(§6.2 각주) — 못 찾은 건지 찾고도 틀린 건지가 갈려야
@@ -27,6 +28,7 @@ from docsuri_shared._generated.dtos.evidence_schema import (
 )
 
 from ..domain.gate import id_key
+from ..domain.loop import counter_probes
 from ..domain.models import iter_refs
 from ..ports.tools import TOOL_CORPUS_SEARCH, TOOL_LIVE_LOOKUP
 from .golden_set import GoldenCase
@@ -36,6 +38,10 @@ __all__ = ["Layer1Report", "score_turn", "summarise"]
 # 도구 이름은 **상수로** 받는다. 리터럴로 적어 두면 개명이 여기까지 안 와도 아무 데서도
 # 안 걸리고, `searches`가 0이 되어 "범위 밖 질문은 검색 0회" 검사가 항상 통과한다.
 _SEARCH_TOOLS = frozenset({TOOL_CORPUS_SEARCH, TOOL_LIVE_LOOKUP})
+
+# 반대 측 조건이 붙는 유형 — 루프의 `_COUNTER_REQUIRED_KINDS`와 같은 집합이어야 한다.
+# 여기가 넓으면 루프가 통과시킨 턴을 채점이 위반으로 찍고, 좁으면 지표가 조용히 눈감는다.
+_COUNTER_REQUIRED_KINDS = frozenset({"claim", "comparison"})
 
 
 @dataclass(slots=True)
@@ -54,6 +60,8 @@ class Layer1Report:
     regenerated: bool = False
     fallback: bool = False
     searches: int = 0
+    # `stance="counter"`로 표시된 검색·추출 횟수(§3.3 바닥 2). 주장·비교형에서 0이면 위반이다.
+    counter_probes: int = 0
     question_kind: str | None = None
     recall_at_k: float | None = None
     violations: list[str] = field(default_factory=list)
@@ -77,8 +85,11 @@ def score_turn(
         abstained=getattr(result, "state", "") == "abstain",
         claims=0,
         searches=sum(1 for record in trace if record.tool in _SEARCH_TOOLS),
+        counter_probes=counter_probes(trace),
+        question_kind=case.expected_kind,
     )
     _check_scope(case, report)
+    _check_counter_probe(case, report)
 
     if report.abstained:
         # 기권 자체는 위반이 아니다(§2.3). 범위 밖 검사는 위에서 이미 봤다.
@@ -106,6 +117,24 @@ def _check_scope(case: GoldenCase, report: Layer1Report) -> None:
         )
     if not report.abstained:
         report.violations.append("범위 밖 질문에 근거 답변을 냈다")
+
+
+def _check_counter_probe(case: GoldenCase, report: Layer1Report) -> None:
+    """§3.3 바닥 2 — 주장·비교형은 반대 측을 한 번은 찾아봐야 한다.
+
+    **모델이 stance를 잘못 붙일 수 있으므로 여기서 센다**(§3.2). 루프의 바닥 검사는 정상
+    종료를 막을 뿐이고, 예산 소진·취소로 끝난 턴은 그 검사를 지나지 않는다 — 그런 턴이
+    반대 측을 한 번도 안 본 채 답을 내는 것이 지표에 보여야 한다.
+
+    기권한 턴은 면제한다: 답을 안 냈으므로 한쪽으로 치우친 판단이 나갈 일이 없다.
+    """
+    if case.expected_kind not in _COUNTER_REQUIRED_KINDS or report.abstained:
+        return
+    if report.counter_probes == 0:
+        report.violations.append(
+            f"{case.expected_kind}형 질문인데 stance=counter 탐색이 0회다"
+            "(§3.3 바닥 2: 반대 측을 찾아본 뒤에 끝내야 한다)"
+        )
 
 
 def _check_gate(report: Layer1Report, rejections: dict[str, int]) -> None:
@@ -197,6 +226,15 @@ def summarise(reports: list[Layer1Report]) -> dict[str, object]:
         "fallback_rate": mean([1.0 if r.fallback else 0.0 for r in reports]),
         "regenerated_rate": mean([1.0 if r.regenerated else 0.0 for r in reports]),
         "demoted_total": sum(r.demoted for r in reports),
+        # 반대 측 탐색 — **주장·비교형에서만** 잰다. 사실형·범위 밖을 분모에 넣으면 면제된
+        # 문항이 비율을 눌러 "반대 측을 잘 찾는다"가 문항 구성만 반영하게 된다.
+        "counter_probe_rate": mean(
+            [
+                1.0 if r.counter_probes else 0.0
+                for r in reports
+                if r.question_kind in _COUNTER_REQUIRED_KINDS and not r.abstained
+            ]
+        ),
         # 검색 평가는 분리해서 낸다.
         "recall_at_k": mean([r.recall_at_k for r in reports if r.recall_at_k is not None]),
     }
