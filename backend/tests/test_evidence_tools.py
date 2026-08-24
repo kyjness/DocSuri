@@ -43,9 +43,11 @@ class FakeSearch:
         self.hits = hits
         self.error = error
         self.calls: list[tuple[str, bool]] = []
+        self.years: list[Any] = []
 
-    def search(self, query: str, *, phrase: bool = False):
+    def search(self, query: str, *, phrase: bool = False, years=None):
         self.calls.append((query, phrase))
+        self.years.append(years)
         if self.error:
             raise self.error
         return self.hits
@@ -304,3 +306,82 @@ def test_extraction_llm_failure_is_reported_as_a_tool_failure():
 
     assert not result.ok
     assert "근거 추출 모델" in (result.error or "")
+
+
+# --- 연도 제약(§2.5) — 인자이지 프롬프트 당부가 아니다 -------------------------------
+
+
+def _corpus(hits=()):
+    port = FakeSearch(hits=hits)
+    return port, CorpusSearchTool(port, LoopState(topic="t"))
+
+
+def test_year_arguments_reach_the_port_as_a_bound() -> None:
+    port, tool = _corpus(hits=(PaperCandidate("2401.1", "2401.1", "t"),))
+
+    tool.invoke({"query": "x", "year_from": 2023, "year_to": 2025}, CTX)
+
+    assert (port.years[0].start, port.years[0].end) == (2023, 2025)
+
+
+def test_a_year_given_as_a_string_is_accepted() -> None:
+    """모델은 "2023"을 문자열로 주는 일이 흔하다 — 거부하면 연도 제약이 조용히 사라진다."""
+    port, tool = _corpus(hits=(PaperCandidate("2401.1", "2401.1", "t"),))
+
+    tool.invoke({"query": "x", "year_from": "2023"}, CTX)
+
+    assert port.years[0].start == 2023
+    assert port.years[0].end is None
+
+
+def test_no_year_argument_passes_no_bound_at_all() -> None:
+    port, tool = _corpus(hits=(PaperCandidate("2401.1", "2401.1", "t"),))
+
+    tool.invoke({"query": "x"}, CTX)
+
+    assert port.years == [None]
+
+
+def test_an_unreadable_year_is_dropped_rather_than_failing_the_search() -> None:
+    port, tool = _corpus(hits=(PaperCandidate("2401.1", "2401.1", "t"),))
+
+    result = tool.invoke({"query": "x", "year_from": "최근"}, CTX)
+
+    assert result.ok
+    assert port.years == [None]
+
+
+def test_an_inverted_range_is_passed_through_unfixed() -> None:
+    """조용히 바로잡으면 모델은 자기가 뒤집었다는 것을 영영 모른다 — 0건이 그것을 알려준다."""
+    port, tool = _corpus()
+
+    tool.invoke({"query": "x", "year_from": 2025, "year_to": 2020}, CTX)
+
+    assert (port.years[0].start, port.years[0].end) == (2025, 2020)
+
+
+def test_zero_hits_under_a_year_bound_says_the_bound_is_why() -> None:
+    """"그런 논문이 없다"와 "연도로 걸러졌다"가 같은 0건으로 보이면 모델은 연도만 붙인 채
+    같은 질의를 반복한다."""
+    _port, tool = _corpus()
+
+    result = tool.invoke({"query": "x", "year_from": 2023}, CTX)
+
+    assert result.ok
+    assert "2023년 이후" in result.content["note"]
+
+
+def test_zero_hits_without_a_year_bound_keeps_the_plain_note() -> None:
+    _port, tool = _corpus()
+
+    result = tool.invoke({"query": "x"}, CTX)
+
+    assert "연도" not in result.content["note"]
+
+
+def test_the_tool_advertises_the_year_arguments() -> None:
+    """스펙에 없으면 모델이 부를 수 없다 — 배선만 하고 노출을 빠뜨리면 조용히 미사용이다."""
+    props = CorpusSearchTool.spec.parameters["properties"]
+
+    assert "year_from" in props
+    assert "year_to" in props

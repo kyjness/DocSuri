@@ -27,6 +27,7 @@ from ..ports.sources import (
     ExternalPaperSearchPort,
     PaperPromotionPort,
     SearchUnavailable,
+    YearBound,
 )
 from ..ports.tools import (
     TOOL_CORPUS_SEARCH,
@@ -58,6 +59,33 @@ _MAX_BLOCKS = 60
 _ASSET_LIST_LIMIT = 60
 
 
+def _year_bound(args: dict[str, Any]) -> YearBound | None:
+    """`year_from`·`year_to` → `YearBound`. 둘 다 없거나 못 읽으면 None(무제한)이다.
+
+    모델이 "2023"을 문자열로 주는 것은 흔하므로 받아준다. 거꾸로 뒤집힌 범위
+    (from > to)는 **바로잡지 않고 그대로 내려보낸다** — 조용히 고치면 모델은 자기가
+    뒤집어 준 줄 모르고, 0건이라는 사실만이 그것을 알려줄 수 있다.
+    """
+    bounds: dict[str, int] = {}
+    for key, field in (("year_from", "start"), ("year_to", "end")):
+        raw = args.get(key)
+        if raw is None or raw == "":
+            continue
+        try:
+            bounds[field] = int(raw)
+        except (TypeError, ValueError):
+            log.warning("corpus_search: unreadable %s=%r — ignored", key, raw)
+    return YearBound(**bounds) if bounds else None
+
+
+def _year_label(years: YearBound) -> str:
+    if years.start is not None and years.end is not None:
+        return f"{years.start}~{years.end}"
+    if years.start is not None:
+        return f"{years.start}년 이후"
+    return f"{years.end}년 이전"
+
+
 def _fail(summary: str, message: str) -> ToolResult:
     return ToolResult(ok=False, error=message, result_summary=summary)
 
@@ -80,13 +108,17 @@ class CorpusSearchTool:
             "mode를 생략하라. mode=\"phrase\"는 사용자가 특정 문장을 그대로 찾아달라고 "
             "했을 때만 쓴다: 그 문구가 원문에 글자 그대로 있는 논문만 찾으므로 일반 "
             "질문에는 거의 0건이 나온다. 결과는 제목·초록까지이며, 본문 근거가 "
-            "필요하면 fetch_paper로 본문을 확보해야 한다."
+            "필요하면 fetch_paper로 본문을 확보해야 한다. "
+            "사용자가 연도를 제한했으면(\"2023년 이후\", \"최근 연구\") year_from·year_to를 "
+            "써라 — 검색 자체가 그 범위로 좁혀진다."
         ),
         parameters={
             "type": "object",
             "properties": {
                 "query": {"type": "string", "maxLength": 400},
                 "mode": {"type": "string", "enum": ["semantic", "phrase"]},
+                "year_from": {"type": "integer", "minimum": 1900, "maximum": 2100},
+                "year_to": {"type": "integer", "minimum": 1900, "maximum": 2100},
             },
             "required": ["query"],
         },
@@ -101,8 +133,9 @@ class CorpusSearchTool:
         if not query:
             return _fail("corpus_search: empty query", "query는 필수다 — 검색어를 넣어라")
         phrase = str(args.get("mode") or "") == "phrase"
+        years = _year_bound(args)
         try:
-            hits = self._port.search(query, phrase=phrase)
+            hits = self._port.search(query, phrase=phrase, years=years)
         except SearchUnavailable as exc:
             log.warning("corpus search unavailable: %s", exc)
             return _fail(
@@ -110,7 +143,15 @@ class CorpusSearchTool:
                 "코퍼스 검색을 쓸 수 없다 — 같은 검색을 반복하지 말고 "
                 "external_search로 진행하거나 확보한 논문에서 근거를 추출하라",
             )
-        return _register(self._state, hits[:_MAX_HITS], PaperOrigin.CORPUS, "corpus_search")
+        result = _register(self._state, hits[:_MAX_HITS], PaperOrigin.CORPUS, "corpus_search")
+        if years is not None and not hits:
+            # 0건이 "그런 논문이 없다"인지 "연도로 걸러졌다"인지 모델이 알아야 다음 수가
+            # 달라진다. 안 알리면 같은 질의를 연도만 붙인 채 반복한다.
+            result.content["note"] = (
+                f"연도 제약({_year_label(years)})에 맞는 논문이 없다 — 범위를 넓히거나 "
+                "제약 없이 다시 검색하라."
+            )
+        return result
 
 
 class ExternalSearchTool:

@@ -48,12 +48,12 @@ class _FakeVectorStore:
     def __init__(self, scored):
         self._scored = scored
 
-    def knn_search(self, vector, top_k, abstract_only=False):  # noqa: ARG002
+    def knn_search(self, vector, top_k, abstract_only=False, years=None):  # noqa: ARG002
         return self._scored
 
 
 class _EmptyLexicalIndex:
-    def bm25_search(self, terms, top_k, fields):  # noqa: ARG002
+    def bm25_search(self, terms, top_k, fields, years=None):  # noqa: ARG002
         return []
 
 

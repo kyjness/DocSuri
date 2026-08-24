@@ -18,6 +18,7 @@ __all__ = [
     "PaperPromotionPort",
     "PromotionResult",
     "SearchUnavailable",
+    "YearBound",
 ]
 
 
@@ -51,8 +52,27 @@ class PromotionResult:
     detail: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class YearBound:
+    """발표 연도 제약(양끝 포함, `None`이면 무제한) — §2.5 "2023년 이후만"의 인자 형태.
+
+    프롬프트 당부가 아니라 인자인 이유는 그것이 지켜지는지 **기계로 판정되기 때문**이고,
+    후처리가 아니라 **질의로 내려가는** 이유는 상위 k에 해당 연도가 없을 때 후처리가
+    "그런 논문이 없다"와 구분되지 않는 0건을 내기 때문이다.
+    """
+
+    start: int | None = None
+    end: int | None = None
+
+    @property
+    def bounded(self) -> bool:
+        return self.start is not None or self.end is not None
+
+
 class CorpusSearchPort(Protocol):
-    def search(self, query: str, *, phrase: bool = False) -> tuple[PaperCandidate, ...]:
+    def search(
+        self, query: str, *, phrase: bool = False, years: YearBound | None = None
+    ) -> tuple[PaperCandidate, ...]:
         """내부 코퍼스 하이브리드 검색. `phrase=True`면 정확 문구 검색."""
         ...
 

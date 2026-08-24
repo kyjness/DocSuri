@@ -19,7 +19,7 @@ from summarization.adapters._paper_ref import bare_paper_id
 
 from backend.modules.paper_assets import parse_record_ref
 
-from ..ports.sources import PaperCandidate, SearchUnavailable
+from ..ports.sources import PaperCandidate, SearchUnavailable, YearBound
 
 __all__ = [
     "ArxivApiClient",
@@ -43,16 +43,30 @@ class EmbeddingPort(Protocol):
 @runtime_checkable
 class VectorStorePort(Protocol):
     def knn_search(
-        self, vector: list[float], top_k: int, abstract_only: bool = False
+        self,
+        vector: list[float],
+        top_k: int,
+        abstract_only: bool = False,
+        years: Any | None = None,
     ) -> list[Any]: ...
 
 
 @runtime_checkable
 class LexicalIndexPort(Protocol):
-    def bm25_search(self, terms: list[str], top_k: int, fields: tuple[str, ...] = ...) -> list: ...
+    def bm25_search(
+        self,
+        terms: list[str],
+        top_k: int,
+        fields: tuple[str, ...] = ...,
+        years: Any | None = None,
+    ) -> list: ...
 
     def phrase_search(
-        self, phrase: str, top_k: int, paper_ids: list[str] | None = None
+        self,
+        phrase: str,
+        top_k: int,
+        paper_ids: list[str] | None = None,
+        years: Any | None = None,
     ) -> list: ...
 
 
@@ -70,11 +84,13 @@ class CorpusSearch:
         self._vector_store = vector_store
         self._lexical_index = lexical_index
 
-    def search(self, query: str, *, phrase: bool = False) -> tuple[PaperCandidate, ...]:
+    def search(
+        self, query: str, *, phrase: bool = False, years: YearBound | None = None
+    ) -> tuple[PaperCandidate, ...]:
         from discovery.ports.search_ports import IndexUnavailable
 
         try:
-            records = self._phrase(query) if phrase else self._hybrid(query)
+            records = self._phrase(query, years) if phrase else self._hybrid(query, years)
         except IndexUnavailable as exc:
             raise SearchUnavailable("corpus index unavailable") from exc
 
@@ -87,7 +103,7 @@ class CorpusSearch:
                 break
         return tuple(seen.values())
 
-    def _hybrid(self, query: str) -> list[Any]:
+    def _hybrid(self, query: str, years: YearBound | None) -> list[Any]:
         from discovery.domain.models import (
             DegradationSignal,
             QueryPlan,
@@ -109,6 +125,7 @@ class CorpusSearch:
             mode=mode,
             embedding_vector=tuple(vector) if vector else None,
             scope=SearchScope.FULL,
+            years=_year_range(years),
         )
 
         retriever = HybridRetriever(self._vector_store, self._lexical_index)
@@ -117,8 +134,10 @@ class CorpusSearch:
         )
         return [c.record for c in candidate_set.candidates[:_TOP_K]]
 
-    def _phrase(self, phrase: str) -> list[Any]:
-        hits = self._lexical_index.phrase_search(phrase, top_k=_PHRASE_TOP_K)
+    def _phrase(self, phrase: str, years: YearBound | None) -> list[Any]:
+        hits = self._lexical_index.phrase_search(
+            phrase, top_k=_PHRASE_TOP_K, years=_year_range(years)
+        )
         return [record for record, _score in hits]
 
 
@@ -265,6 +284,16 @@ class ArxivApiClient:
                 }
             )
         return out
+
+
+def _year_range(years: YearBound | None) -> Any | None:
+    """포트의 `YearBound` → U2 `YearRange`. 경계 번역은 어댑터 몫이다 — evidence 도메인이
+    discovery 타입을 들면 두 모듈이 한 몸이 된다(`PaperCandidate`와 같은 이유)."""
+    if years is None or not years.bounded:
+        return None
+    from discovery.domain.models import YearRange
+
+    return YearRange(start=years.start, end=years.end)
 
 
 def _attr(obj: Any, *names: str) -> Any:

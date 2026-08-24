@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 
 from docsuri_shared._generated.dtos.evidence_schema import EvidenceRequest
 
@@ -38,8 +39,10 @@ class Extractor:
 class Search:
     def __init__(self, hits=()) -> None:
         self.hits = hits
+        self.years: list[Any] = []
 
-    def search(self, query, *, phrase=False):
+    def search(self, query, *, phrase=False, years=None):
+        self.years.append(years)
         return self.hits
 
 

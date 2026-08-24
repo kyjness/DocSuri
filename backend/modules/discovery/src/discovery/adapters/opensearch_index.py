@@ -24,6 +24,7 @@ from typing import Any
 from docsuri_shared.vector_spec import IndexRecord
 from pydantic import ValidationError
 
+from ..domain.models import YearRange
 from ..ports.search_ports import IndexUnavailable, ScoredRecord
 from .resilience import CircuitBreaker
 
@@ -248,6 +249,31 @@ def _paper_level_body(query: dict, top_k: int) -> dict:
     return {"size": top_k, "query": query, "collapse": {"field": "paperId"}}
 
 
+def _year_filter(years: YearRange | None) -> dict[str, Any] | None:
+    """``YearRange`` → an OpenSearch ``range`` clause over ``year``, or None when unbounded."""
+    if years is None or not years.bounded:
+        return None
+    bounds: dict[str, int] = {}
+    if years.start is not None:
+        bounds["gte"] = years.start
+    if years.end is not None:
+        bounds["lte"] = years.end
+    return {"range": {"year": bounds}}
+
+
+def _filtered(query: dict, years: YearRange | None) -> dict:
+    """Wrap ``query`` so the year bound is a FILTER clause — it must not touch scoring.
+
+    A ``bool`` with the original query under ``must`` keeps BM25/phrase scores exactly as they
+    were; a ``filter`` clause is not scored. Wrapping only when there is a bound keeps the
+    unbounded body byte-identical to what it was before year filtering existed.
+    """
+    clause = _year_filter(years)
+    if clause is None:
+        return query
+    return {"bool": {"must": [query], "filter": [clause]}}
+
+
 class OpenSearchVectorStoreAdapter:
     """k-NN (ANN) reader over the shared OpenSearch index (cosine; FR-2).
 
@@ -262,7 +288,11 @@ class OpenSearchVectorStoreAdapter:
         self._breaker = breaker
 
     def knn_search(
-        self, vector: Sequence[float], top_k: int, abstract_only: bool = False
+        self,
+        vector: Sequence[float],
+        top_k: int,
+        abstract_only: bool = False,
+        years: YearRange | None = None,
     ) -> list[ScoredRecord]:
         # Collapse runs AFTER the ANN has chosen its k neighbours and does not refill the slots
         # it frees, so breadth has to be bought in ``k`` — see _KNN_COLLAPSE_OVERSAMPLE for the
@@ -273,11 +303,23 @@ class OpenSearchVectorStoreAdapter:
             "vector": list(vector),
             "k": top_k if abstract_only else top_k * _KNN_COLLAPSE_OVERSAMPLE,
         }
+        # The ANN's own ``filter`` (efficient k-NN filtering) is where both restrictions belong:
+        # applied there, the k neighbours are chosen FROM the matching subset. As a post-filter
+        # they would instead cut an already-chosen k, so a narrow year window would return a
+        # handful of papers out of the requested top_k and read as "few such papers exist".
+        knn_filters: list[dict[str, Any]] = []
         if abstract_only:
-            # Efficient k-NN filtering: restrict the ANN search to abstract chunks (lite scope).
-            # One abstract per paper, so breadth is guaranteed by construction and no over-fetch
-            # is needed — the collapse is then a no-op that costs nothing.
-            knn["filter"] = {"term": {"section": "abstract"}}
+            # Restrict the ANN search to abstract chunks (lite scope). One abstract per paper, so
+            # breadth is guaranteed by construction and no over-fetch is needed — the collapse is
+            # then a no-op that costs nothing.
+            knn_filters.append({"term": {"section": "abstract"}})
+        year_clause = _year_filter(years)
+        if year_clause is not None:
+            knn_filters.append(year_clause)
+        if knn_filters:
+            knn["filter"] = (
+                knn_filters[0] if len(knn_filters) == 1 else {"bool": {"filter": knn_filters}}
+            )
         hits = _search_hits(
             self._client,
             self._index,
@@ -356,9 +398,13 @@ class OpenSearchLexicalIndexAdapter:
         terms: Sequence[str],
         top_k: int,
         fields: Sequence[str] = ("title", "abstract", "lexicalTerms"),
+        years: YearRange | None = None,
     ) -> list[ScoredRecord]:
         body = _paper_level_body(
-            {"multi_match": {"query": " ".join(terms), "fields": list(fields)}}, top_k
+            _filtered(
+                {"multi_match": {"query": " ".join(terms), "fields": list(fields)}}, years
+            ),
+            top_k,
         )
         hits = _search_hits(
             self._client,
@@ -374,6 +420,7 @@ class OpenSearchLexicalIndexAdapter:
         phrase: str,
         top_k: int,
         paper_ids: Sequence[str] | None = None,
+        years: YearRange | None = None,
     ) -> list[ScoredRecord]:
         """정확 문구 매칭 — 초록(``abstract``)과 청크 원문(``lexicalTerms``)에서 연속된
         어구가 그대로 있는 청크만 반환한다(``multi_match``의 OR 매칭과 달리 순서·인접성을
@@ -392,8 +439,14 @@ class OpenSearchLexicalIndexAdapter:
                 "minimum_should_match": 1,
             }
         }
+        filters: list[dict[str, Any]] = []
         if paper_ids:
-            query["bool"]["filter"] = [{"terms": {"paperId": list(paper_ids)}}]
+            filters.append({"terms": {"paperId": list(paper_ids)}})
+        year_clause = _year_filter(years)
+        if year_clause is not None:
+            filters.append(year_clause)
+        if filters:
+            query["bool"]["filter"] = filters
         body = _paper_level_body(query, top_k)
         hits = _search_hits(
             self._client,
