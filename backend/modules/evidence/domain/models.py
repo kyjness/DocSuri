@@ -392,3 +392,8 @@ class AgentRunContext:
     request_id: str = ""
     prior_topics: tuple[str, ...] = ()
     prior_paper_ids: tuple[str, ...] = ()
+    # 직전 턴의 id — 이어가기 씨앗(§3.4)을 그 턴의 체크포인트에서 읽는다. 없으면(세션 첫 턴,
+    # 포트 경로) 이식할 것이 없다.
+    prior_turn_id: str | None = None
+    # 밀려난 이전 턴들의 요약 한 단락(§3.5 토큰 예산). 세션에 저장되고 매 턴 재요약하지 않는다.
+    prior_summary: str = ""

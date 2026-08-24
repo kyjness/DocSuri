@@ -91,6 +91,8 @@ class EvidenceRepository(Protocol):
     # INV-EV-1: owner 불일치·미존재는 KeyError → controller가 404(SEC-9)
     def get_session(self, owner_id: str, session_id: str) -> EvidenceSession: ...
     def list_sessions(self, owner_id: str, limit: int = 50) -> list[EvidenceSession]: ...
+    # 밀려난 턴 요약을 세션에 붙인다(§3.4). 없으면 만들고 있으면 이어 붙인다.
+    def append_session_summary(self, owner_id: str, session_id: str, text: str) -> None: ...
     def soft_delete_session(self, owner_id: str, session_id: str) -> None: ...
     def soft_delete_all_sessions(self, owner_id: str) -> None: ...
     def add_turn(self, turn: EvidenceTurn) -> EvidenceTurn: ...
@@ -218,6 +220,13 @@ class InMemoryEvidenceRepository:
             if found is None or found.owner_id != owner_id or found.status is SessionStatus.DELETED:
                 raise KeyError(session_id)
             return found
+
+    def append_session_summary(self, owner_id: str, session_id: str, text: str) -> None:
+        with self._lock:
+            found = self._sessions.get(session_id)
+            if found is None or found.owner_id != owner_id:
+                raise KeyError(session_id)
+            found.summary = _joined_summary(found.summary, text)
 
     def list_sessions(self, owner_id: str, limit: int = 50) -> list[EvidenceSession]:
         with self._lock:
@@ -364,6 +373,8 @@ class EvidenceSessionTable(Base):
     session_id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True)
     owner_id: Mapped[str] = mapped_column(Uuid(as_uuid=False), nullable=False, index=True)
     title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 토큰 예산에서 밀려난 이전 턴들의 요약(설계 §3.4). 한 번 만들어 덧붙인다.
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
     created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[Any] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -427,6 +438,7 @@ class SqlEvidenceRepository:
                 session_id=ev_session.session_id,
                 owner_id=ev_session.owner_id,
                 title=ev_session.title,
+                summary=ev_session.summary or None,
                 status=ev_session.status.value,
                 created_at=ev_session.created_at,
                 updated_at=ev_session.updated_at,
@@ -453,6 +465,12 @@ class SqlEvidenceRepository:
             .all()
         )
         return [_session_from_row(row) for row in rows]
+
+    def append_session_summary(self, owner_id: str, session_id: str, text: str) -> None:
+        self.get_session(owner_id, session_id)  # owner 격리(INV-EV-1)
+        row = self._s.get(EvidenceSessionTable, session_id)
+        row.summary = _joined_summary(row.summary or "", text)
+        self._s.flush()
 
     def soft_delete_session(self, owner_id: str, session_id: str) -> None:
         self.get_session(owner_id, session_id)
@@ -691,11 +709,23 @@ class SqlEvidenceRepository:
         self._s.close()
 
 
+# 세션 요약 상한(문자). 넘으면 **앞을 버린다** — 오래된 턴일수록 후속 질문이 덜 가리키고,
+# 뒤를 버리면 방금 밀려난 턴이 사라져 요약이 있으나 마나 해진다.
+_MAX_SESSION_SUMMARY_CHARS = 4000
+
+
+def _joined_summary(existing: str, text: str) -> str:
+    """요약을 이어 붙인다 — **다시 만들지 않는다**(§3.4: 매 턴 재요약하지 않는다)."""
+    joined = f"{existing.strip()}\n{text.strip()}".strip() if existing.strip() else text.strip()
+    return joined[-_MAX_SESSION_SUMMARY_CHARS:]
+
+
 def _session_from_row(row: EvidenceSessionTable) -> EvidenceSession:
     return EvidenceSession(
         session_id=str(row.session_id),
         owner_id=str(row.owner_id),
         title=row.title,
+        summary=row.summary or "",
         status=SessionStatus(row.status),
         created_at=_ensure_utc(row.created_at),
         updated_at=_ensure_utc(row.updated_at),

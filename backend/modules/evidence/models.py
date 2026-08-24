@@ -92,6 +92,9 @@ class EvidenceSession:
     session_id: str = field(default_factory=_new_id)
     owner_id: str = ''
     title: str | None = None
+    # 토큰 예산에서 밀려난 이전 턴들의 요약 한 단락(설계 §3.4). **매 턴 재요약하지 않는다** —
+    # 밀려나는 턴이 생길 때 한 번 만들어 여기 두고, 이후 턴이 밀릴 때마다 덧붙인다.
+    summary: str = ''
     turns: list[EvidenceTurn] = field(default_factory=list)
     status: SessionStatus = SessionStatus.ACTIVE
     created_at: datetime = field(default_factory=_utc_now)

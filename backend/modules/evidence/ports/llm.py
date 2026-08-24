@@ -87,6 +87,9 @@ class LoopObservation:
     # 이전 턴 맥락(FR-36 멀티턴) — 후속 질문 해석은 규칙이 아니라 이 관찰 위의 판단이다.
     prior_topics: tuple[str, ...] = ()
     prior_paper_ids: tuple[str, ...] = ()
+    # 토큰 예산에서 밀려난 앞쪽 턴들의 요약 한 단락(§3.4). 최근 턴은 `prior_topics`에
+    # 그대로 실리고 이쪽은 그 앞을 접은 것이다.
+    prior_summary: str = ""
     notes: tuple[str, ...] = ()
     # 아직 확인하지 않은 후보 — **모델에게 보여야 부를 수 있다**. 검색 도구가 없는
     # explicit scope에서는 이 목록이 유일한 id 출처라, 빠지면 모델이 id를 지어낸다.

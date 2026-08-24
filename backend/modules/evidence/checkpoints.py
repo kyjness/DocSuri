@@ -51,6 +51,19 @@ class TurnCheckpoints:
         state = LoopState.from_snapshot(snapshot)
         return to_turn_result(state, TerminationReason.INTERRUPTED, query_used=topic)
 
+    def seeds_from(self, turn_id: str) -> LoopState | None:
+        """이전 턴의 마지막 스냅샷을 상태로 되살린다 — 이어가기의 씨앗(설계 §3.4).
+
+        `finalize`와 같은 두 걸음(스냅샷 → `from_snapshot`)이지만 쓰임이 반대다: 저쪽은
+        죽은 턴을 **마감**하고 이쪽은 새 턴을 **시작**한다. 스레드는 `thread_id=turn_id`라
+        서로 다르므로, `run_loop`이 자기 스레드를 비우는 것과 부딪히지 않는다.
+
+        복원된 핸들에는 `doc_model`이 없다(직렬화되지 않는다) — 본문이 다시 필요하면
+        `fetch_paper`를 부르면 되고, 이식이 옮기는 것은 "무엇을 찾았고 무엇을 봤는가"다.
+        """
+        snapshot = load_snapshot(self._graph, turn_id)
+        return LoopState.from_snapshot(snapshot) if snapshot is not None else None
+
     def delete(self, turn_ids: Iterable[str]) -> int:
         saver = self._graph.checkpointer
         if saver is None:

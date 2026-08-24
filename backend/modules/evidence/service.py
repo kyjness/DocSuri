@@ -348,8 +348,19 @@ def _derive_title(topic: str) -> str:
     return stripped[:_TITLE_MAX_LEN - 1] + '…'
 
 
-# 멀티턴 맥락으로 되짚는 이전 턴 수 — 검색 맥락이지 대화 전체 기억이 아니다.
-_PRIOR_TURNS = 3
+# 이전 대화를 싣는 **토큰 예산**(설계 §3.4). 종전의 `_PRIOR_TURNS = 3`은 근거 없이 옮겨온
+# 수치라 폐기했다 — 짧은 턴 셋과 긴 턴 셋이 같은 3이었고, 실제로 드는 비용은 열 배 갈렸다.
+#
+# 문자로 잰다. 정확한 토큰 수는 모델별 토크나이저를 타야 하는데, 여기서 재는 것은 상한이지
+# 과금이 아니다 — 실제 과금은 Bedrock 사용량이 권위이고 예산 대장이 따로 본다. 한국어·영어가
+# 섞인 프롬프트에서 4자/토큰이 보수적인 어림이고, 빗나가도 상한이 조금 헐거워질 뿐이다.
+_PRIOR_TOKEN_BUDGET = 8_000
+_CHARS_PER_TOKEN = 4
+_PRIOR_CHAR_BUDGET = _PRIOR_TOKEN_BUDGET * _CHARS_PER_TOKEN
+
+# 예산 안에서 되짚어 볼 최대 턴 수 — 예산이 남아도 여기서 끊는다. 긴 세션에서 recent_turns가
+# 수백 행을 역직렬화하는 것을 막는 상한이고, 예산이 그보다 먼저 차는 것이 정상이다.
+_PRIOR_TURN_CEILING = 20
 
 
 def build_run_context(
@@ -372,15 +383,31 @@ def build_run_context(
         # +1로 읽고 현재 턴을 걸러낸다 — 동기 경로는 add_turn 전에 조립하지만
         # 워커 경로는 pending 턴이 이미 저장된 뒤라, 거르지 않으면 현재 질문이
         # "이전 턴 질문"으로 자기 자신에게 다시 보인다.
-        prior = [
+        recent = [
             t
-            for t in repo.recent_turns(owner_id, session_id, _PRIOR_TURNS + 1)
+            for t in repo.recent_turns(owner_id, session_id, _PRIOR_TURN_CEILING + 1)
             if t.turn_id != turn_id
-        ][-_PRIOR_TURNS:]
+        ]
+        summary = repo.get_session(owner_id, session_id).summary
     except KeyError:
-        prior = []
+        recent, summary = [], ""
+
+    kept, evicted = _within_token_budget(recent)
+    if evicted:
+        # 예산 밖으로 밀린 턴은 **한 번** 요약해 세션에 붙인다(§3.4). 매 턴 재요약하면 같은
+        # 턴이 세션 길이에 비례해 반복 요약되고, 그 비용이 조용히 턴 예산을 먹는다.
+        text = _summarize_evicted(evicted)
+        if text:
+            try:
+                repo.append_session_summary(owner_id, session_id, text)
+                summary = _join(summary, text)
+            except KeyError:
+                pass
+
+    # 인용 논문 id는 **세션 전체**에서 모은다(§3.4) — 좁히기("그중에서")가 가리키는 집합은
+    # 토큰 예산과 무관하고, 밀려난 턴의 논문이라고 사용자가 잊은 것이 아니다.
     paper_ids: dict[str, None] = {}
-    for t in prior:
+    for t in recent:
         for pid in _cited_paper_ids(t.result):
             paper_ids.setdefault(pid, None)
     return LoopRunContext(
@@ -388,9 +415,61 @@ def build_run_context(
         session_id=session_id,
         turn_id=turn_id,
         request_id=request_id,
-        prior_topics=tuple(t.topic for t in prior if t.topic),
+        prior_topics=tuple(t.topic for t in kept if t.topic),
         prior_paper_ids=tuple(paper_ids),
+        # 이어가기 씨앗은 **직전 턴**의 체크포인트에서 읽는다(§3.4). 더 거슬러 올라가지
+        # 않는다 — "이어서 더 찾아줘"가 가리키는 것은 방금 멈춘 그 탐색이다.
+        prior_turn_id=recent[-1].turn_id if recent else None,
+        prior_summary=summary,
     )
+
+
+def _within_token_budget(turns: list) -> tuple[list, list]:
+    """(예산 안에 남는 턴, 밀려난 턴) — 최근 것부터 채운다.
+
+    최근 턴을 **그대로** 싣고 넘치는 앞쪽을 요약으로 접는다(§3.4). 반대로 하면 방금 한
+    질문이 요약으로 뭉개져 후속 질문 해석이 가장 필요한 자리에서 정보가 가장 적어진다.
+    """
+    kept: list = []
+    spent = 0
+    for turn in reversed(turns):
+        cost = len(turn.topic or "")
+        if kept and spent + cost > _PRIOR_CHAR_BUDGET:
+            break
+        kept.append(turn)
+        spent += cost
+    kept.reverse()
+    return kept, turns[: len(turns) - len(kept)]
+
+
+def _summarize_evicted(turns: list) -> str:
+    """밀려난 턴을 한 단락으로 접는다 — **모델을 부르지 않는다.**
+
+    질문 목록이 곧 요약이다. 여기서 LLM을 부르면 턴 실행 전에 한 번 더 왕복하고, 그 비용이
+    턴 예산에 잡히지 않은 채 나간다. 나중에 이 자리가 부족하다고 판정되면 그때 모델을
+    붙이면 되고, 그 판정은 실측으로 한다.
+    """
+    topics = [_short(t.topic) for t in turns if (t.topic or "").strip()]
+    if not topics:
+        return ""
+    return "이전에 물어본 것: " + " / ".join(topics)
+
+
+# 요약에 싣는 질문 하나의 길이 상한. 접는 단계에서 줄이지 않으면 긴 질문 하나가 요약 전체를
+# 차지하고, 세션 요약 상한이 그 앞을 잘라 "이전에 물어본 것" 라벨까지 날아간다 — 남는 것은
+# 맥락이라 읽히지 않는 원문 조각이다.
+_MAX_SUMMARY_TOPIC_CHARS = 120
+
+
+def _short(topic: str) -> str:
+    text = topic.strip()
+    if len(text) <= _MAX_SUMMARY_TOPIC_CHARS:
+        return text
+    return text[: _MAX_SUMMARY_TOPIC_CHARS - 1] + "…"
+
+
+def _join(existing: str, text: str) -> str:
+    return f"{existing.strip()}\n{text}".strip() if existing.strip() else text
 
 
 def _cited_paper_ids(result: TurnResult | None) -> tuple[str, ...]:

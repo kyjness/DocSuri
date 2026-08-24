@@ -77,9 +77,19 @@ class RunnerDeps:
 
 
 class EvidenceTurnRunner:
-    def __init__(self, deps: RunnerDeps, *, graph: CompiledStateGraph | None = None) -> None:
+    def __init__(
+        self,
+        deps: RunnerDeps,
+        *,
+        graph: CompiledStateGraph | None = None,
+        checkpoints: Any | None = None,
+    ) -> None:
         self._deps = deps
-        # 그래프를 안 주면 체크포인트 없이 돈다(테스트·U12 포트 경로).
+        # 체크포인트 객체가 그래프를 소유한다 — 주면 그것을 쓰고, 이어가기 씨앗도 거기서 읽는다.
+        # 그래프만 주는 경로(테스트)는 체크포인트 없이 돌고 이어가기가 자연히 꺼진다.
+        self._checkpoints = checkpoints
+        if graph is None and checkpoints is not None:
+            graph = checkpoints.graph
         self._graph = graph if graph is not None else compile_loop_graph(None)
 
     # -- 비용 -----------------------------------------------------------------
@@ -116,6 +126,7 @@ class EvidenceTurnRunner:
         _seed_attachments(state, attachments)
         scope = _effective_scope(request)
         _seed_explicit(state, request, scope)
+        _seed_continuation(state, self._checkpoints, ctx, scope)
 
         budget = (self._deps.budget_factory or _default_budget)()
         registry = self._build_registry(state, scope=scope)
@@ -179,6 +190,40 @@ def _seed_attachments(state: LoopState, attachments: tuple[Any, ...]) -> None:
                 abstract_text=getattr(doc, "text", "") or "",
             )
         )
+
+
+def _seed_continuation(
+    state: LoopState, checkpoints: Any | None, ctx: AgentRunContext, scope: str
+) -> None:
+    """직전 턴이 찾아 둔 것을 새 턴의 씨앗으로 옮긴다(설계 §3.4 이어가기).
+
+    **판정은 모델이, 이식은 기계다.** 설계 초안은 모델이 `continuation: true`를 선언하면
+    옮긴다고 적었으나 그럴 자리가 없다 — 이식은 루프가 돌기 **전**에 일어나므로 모델은
+    아직 아무것도 못 봤다. 그래서 씨앗은 무조건 심고 관찰의 "확인 대기 논문"에 실어,
+    모델이 쓸지 말지를 고르게 한다. explicit scope에서 이미 그 자리가 그렇게 동작한다.
+
+    옮기는 것은 **아직 안 읽은 후보와 이미 확인한 논문**이다. 검색부터 다시 하면 "이어서 더
+    찾아줘"가 직전 턴을 그대로 반복하고, 예산은 같은 검색에 두 번 나간다.
+
+    이미 있는 id는 덮지 않는다 — 첨부·명시 논문이 먼저 심어졌고 그쪽이 더 구체적이다
+    (본문·소유권이 확인된 핸들). 확인분(`papers`)은 확인분으로, 후보는 후보로 간다:
+    한 칸에 몰면 확인 범위 수치(examined/candidates)가 이전 턴 것을 물려받아 부풀려진다.
+    """
+    if checkpoints is None or scope == "explicit" or not ctx.prior_turn_id:
+        return
+    try:
+        prior = checkpoints.seeds_from(ctx.prior_turn_id)
+    except Exception:  # noqa: BLE001 — 씨앗을 못 읽는 것이 새 턴을 깨뜨리면 안 된다
+        log.warning("evidence: continuation seeds unavailable", exc_info=True)
+        return
+    if prior is None:
+        return
+    for handle in prior.papers.values():
+        if state.handle(handle.paper_id) is None:
+            state.examine(handle)
+    for handle in prior.discovered.values():
+        if state.handle(handle.paper_id) is None:
+            state.discovered[handle.paper_id] = handle
 
 
 def _effective_scope(request: EvidenceRequest) -> str:

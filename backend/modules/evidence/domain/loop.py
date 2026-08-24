@@ -541,6 +541,7 @@ def _observe(state: LoopState, deps: LoopDeps) -> LoopObservation:
         cost_left_usd=max(0.0, deps.budget.token_cost_limit_usd - consumed.cost_usd),
         prior_topics=deps.ctx.prior_topics,
         prior_paper_ids=deps.ctx.prior_paper_ids,
+        prior_summary=deps.ctx.prior_summary,
         notes=tuple(state.notes),
     )
 

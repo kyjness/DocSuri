@@ -97,13 +97,24 @@ def build_extraction_messages(
 
 def _render_observation(observation: Any) -> str:
     parts = [f"질문: {observation.topic}"]
+    # 앞쪽(밀려난) 턴 → 최근 턴 순. 배선만 하고 렌더를 빠뜨리면 모델은 이 정보가 있는
+    # 줄도 모른다 — `prior_paper_ids`가 실제로 그랬다.
+    if getattr(observation, "prior_summary", ""):
+        parts.append("이전 대화 요약: " + observation.prior_summary)
     if observation.prior_topics:
-        parts.append("이전 턴 질문: " + " / ".join(observation.prior_topics[-3:]))
+        parts.append("이전 턴 질문: " + " / ".join(observation.prior_topics))
     if observation.prior_paper_ids:
         # "그중에서" 류 후속 질문의 좁히기 재료 — 배선만 하고 렌더를 빠뜨리면
         # 모델은 이 정보가 있는 줄도 모른다.
+        #
+        # 좁히기는 **새 검색이 아니다**(§3.4). 이 목록을 fetch/read/extract로 다시 읽으면
+        # 되고, 연도로 좁힌다면 corpus_search의 year_from/year_to를 쓴다. 그 말을 여기서
+        # 해 두지 않으면 모델은 "2023년 이후만"에 대고 처음부터 다시 검색한다.
         parts.append(
-            "이전 턴에서 인용한 논문: " + ", ".join(observation.prior_paper_ids[:10])
+            "이전 턴에서 인용한 논문: "
+            + ", ".join(observation.prior_paper_ids[:10])
+            + "\n(\"그중에서\" 류 좁히기는 새로 검색하지 말고 이 논문들을 다시 읽어라. "
+            "연도로 좁히는 것이면 corpus_search의 year_from·year_to를 써라.)"
         )
     parts.append(
         f"확보 근거 {observation.evidence_count}건 "
