@@ -25,7 +25,11 @@ from backend.modules.evidence.domain.models import (
     ToolCallRecord,
 )
 from backend.modules.evidence.eval import GOLDEN_CASES, QuestionType, score_turn
-from backend.modules.evidence.eval.golden_set import labelled_cases, pending_review
+from backend.modules.evidence.eval.golden_set import (
+    GoldenCase,
+    labelled_cases,
+    pending_review,
+)
 from backend.modules.evidence.eval.layer1 import summarise
 from backend.modules.evidence.models import to_turn_result
 from backend.modules.evidence.ports.llm import AnswerSentence, ToolCallProposal
@@ -123,15 +127,40 @@ def test_every_labelled_case_states_why_those_papers():
         assert case.expected_direction.strip(), f"{case.name}: 기대 판단 방향이 비어 있다"
 
 
-def test_every_label_has_passed_human_review():
+def test_unreviewed_labels_never_reach_the_scoring_path():
     """검수되지 않은 라벨로 잰 점수는 '내가 정한 정답으로 내가 채점한 값'이다.
 
-    2026-08-24 검수 완료. 문항을 새로 넣으면 `reviewed=False`로 들어와 이 테스트가
-    빨개진다 — 그게 의도다. 검수 없이 지표를 읽는 것을 막는 유일한 자리다.
+    종전에는 "미검수가 하나라도 있으면 빨개진다"로 막았는데, 그것은 문항을 늘릴 때마다 CI를
+    빨갛게 만들 뿐 **미검수 라벨로 점수를 재는 것 자체는 막지 못했다** — 빨간 채로 점수는
+    그대로 나왔다. 지금은 채점 경로가 미검수를 안 받는다.
+
+    **검수 대기 목록이 비어 있어도 이 불변식은 살아 있어야 한다.** 실제 데이터에 미검수가
+    있는지로 검사하면, 전부 검수된 날 이 테스트가 아무것도 안 보면서 초록으로 남는다 —
+    그러면 다음에 문항이 들어올 때 규칙이 깨진 것을 아무도 모른다. 그래서 합성 사례로 본다.
     """
-    assert pending_review() == (), (
-        "검수되지 않은 라벨: " + ", ".join(c.name for c in pending_review())
+    unreviewed = GoldenCase(
+        name="synthetic",
+        question="q",
+        type=QuestionType.CLAIM,
+        expected_kind="claim",
+        expected_papers=("2106.09685",),
+        expected_direction="d",
+        note="n",
     )
+
+    assert unreviewed.reviewed is False, "새 문항의 기본값이 검수됨이면 게이트가 무의미하다"
+    assert not _scored(unreviewed)
+    assert _scored(replace(unreviewed, reviewed=True))
+
+
+def _scored(case: GoldenCase) -> bool:
+    """`labelled_cases()`가 이 문항을 채점 표본에 넣는가 — 그 함수와 같은 규칙을 본다."""
+    return bool(case.expected_papers and case.reviewed)
+
+
+def test_the_scoring_sample_holds_only_reviewed_labels():
+    assert all(c.reviewed for c in labelled_cases())
+    assert {c.name for c in pending_review()}.isdisjoint({c.name for c in labelled_cases()})
 
 
 # --- 1층 채점 -----------------------------------------------------------------
