@@ -1,0 +1,549 @@
+{
+  "summary": {
+    "cases": 3,
+    "violations": [],
+    "abstain_rate": 0.0,
+    "citation_reality": 1.0,
+    "synthesis_ratio": 0.09722222222222221,
+    "fallback_rate": 0.0,
+    "regenerated_rate": 0.0,
+    "demoted_total": 0,
+    "counter_probe_rate": 1.0,
+    "recall_at_k": 0.5555555555555555,
+    "throttled_or_llm_down": [
+      "self_consistency_follow_up",
+      "post_training_quantization_accuracy",
+      "rag_evaluation_without_references",
+      "moe_scales_without_proportional_compute",
+      "dpo_vs_rlhf_reward_model",
+      "compute_optimal_model_size",
+      "smoothquant_vs_qat",
+      "longformer_handles_long_documents",
+      "linformer_linear_attention",
+      "prompt_injection_defenses_hold",
+      "self_rag_improves_over_plain_rag",
+      "context_window_extension_by_interpolation",
+      "distillation_needs_a_teacher"
+    ],
+    "contaminated": {
+      "rag_reduces_hallucination": [
+        "evidence: dropped parallel calls: corpus_search",
+        "evidence: dropped parallel calls: fetch_paper, fetch_paper",
+        "evidence: dropped parallel calls: fetch_paper, fetch_paper",
+        "evidence: dropped parallel calls: fetch_paper, extract_evidence",
+        "evidence: dropped parallel calls: fetch_paper, corpus_search",
+        "evidence: dropped parallel calls: corpus_search",
+        "evidence: dropped parallel calls: fetch_paper"
+      ],
+      "lora_vs_full_finetuning": [
+        "evidence: dropped parallel calls: corpus_search",
+        "evidence: dropped parallel calls: fetch_paper, corpus_search",
+        "evidence: dropped parallel calls: corpus_search",
+        "evidence: dropped parallel calls: corpus_search",
+        "evidence: dropped parallel calls: corpus_search",
+        "evidence: dropped parallel calls: fetch_paper",
+        "evidence: dropped parallel calls: corpus_search",
+        "evidence: dropped parallel calls: corpus_search"
+      ],
+      "cot_prompting_definition": [
+        "evidence: dropped parallel calls: fetch_paper",
+        "evidence: dropped parallel calls: fetch_paper",
+        "evidence: dropped parallel calls: fetch_paper"
+      ],
+      "self_consistency_follow_up": [
+        "evidence: dropped parallel calls: live_lookup",
+        "evidence: dropped parallel calls: live_lookup",
+        "evidence: dropped parallel calls: live_lookup",
+        "evidence: dropped parallel calls: live_lookup",
+        "evidence: dropped parallel calls: live_lookup",
+        "evidence: dropped parallel calls: live_lookup",
+        "evidence decide: llm unavailable — An error occurred (ThrottlingException) when calling the InvokeModel operation (reached max retries: 1): Too many requests, please wait before trying again."
+      ],
+      "post_training_quantization_accuracy": [
+        "evidence: dropped parallel calls: corpus_search",
+        "evidence: dropped parallel calls: fetch_paper, fetch_paper, fetch_paper",
+        "evidence: dropped parallel calls: fetch_paper, fetch_paper",
+        "evidence: dropped parallel calls: fetch_paper, fetch_paper, fetch_paper",
+        "evidence decide: llm unavailable — An error occurred (ThrottlingException) when calling the InvokeModel operation (reached max retries: 1): Too many requests, please wait before trying again."
+      ],
+      "rag_evaluation_without_references": [
+        "evidence: dropped parallel calls: corpus_search",
+        "evidence: dropped parallel calls: fetch_paper",
+        "evidence: dropped parallel calls: extract_evidence",
+        "evidence decide: llm unavailable — An error occurred (ThrottlingException) when calling the InvokeModel operation (reached max retries: 1): Too many requests, please wait before trying again."
+      ],
+      "moe_scales_without_proportional_compute": [
+        "evidence: dropped parallel calls: corpus_search",
+        "evidence: dropped parallel calls: fetch_paper, fetch_paper",
+        "evidence: dropped parallel calls: fetch_paper, extract_evidence",
+        "evidence decide: llm unavailable — An error occurred (ThrottlingException) when calling the InvokeModel operation (reached max retries: 1): Too many requests, please wait before trying again."
+      ],
+      "dpo_vs_rlhf_reward_model": [
+        "evidence: dropped parallel calls: corpus_search",
+        "evidence: dropped parallel calls: fetch_paper",
+        "evidence: dropped parallel calls: extract_evidence",
+        "evidence decide: llm unavailable — An error occurred (ThrottlingException) when calling the InvokeModel operation (reached max retries: 1): Too many requests, please wait before trying again."
+      ],
+      "compute_optimal_model_size": [
+        "evidence: dropped parallel calls: corpus_search",
+        "evidence: dropped parallel calls: fetch_paper",
+        "evidence: dropped parallel calls: extract_evidence",
+        "evidence decide: llm unavailable — An error occurred (ThrottlingException) when calling the InvokeModel operation (reached max retries: 1): Too many requests, please wait before trying again."
+      ],
+      "smoothquant_vs_qat": [
+        "evidence: dropped parallel calls: corpus_search",
+        "evidence: dropped parallel calls: fetch_paper, fetch_paper, fetch_paper",
+        "evidence: dropped parallel calls: fetch_paper, fetch_paper, fetch_paper",
+        "evidence decide: llm unavailable — An error occurred (ThrottlingException) when calling the InvokeModel operation (reached max retries: 1): Too many requests, please wait before trying again."
+      ],
+      "longformer_handles_long_documents": [
+        "evidence: dropped parallel calls: corpus_search",
+        "evidence: dropped parallel calls: fetch_paper, fetch_paper",
+        "evidence: dropped parallel calls: fetch_paper, extract_evidence",
+        "evidence decide: llm unavailable — An error occurred (ThrottlingException) when calling the InvokeModel operation (reached max retries: 1): Too many requests, please wait before trying again."
+      ],
+      "linformer_linear_attention": [
+        "evidence: dropped parallel calls: corpus_search",
+        "evidence: dropped parallel calls: fetch_paper, fetch_paper, fetch_paper",
+        "evidence: dropped parallel calls: fetch_paper, fetch_paper, extract_evidence",
+        "evidence decide: llm unavailable — An error occurred (ThrottlingException) when calling the InvokeModel operation (reached max retries: 1): Too many requests, please wait before trying again."
+      ],
+      "prompt_injection_defenses_hold": [
+        "evidence: dropped parallel calls: corpus_search",
+        "evidence: dropped parallel calls: fetch_paper, fetch_paper, fetch_paper",
+        "evidence: dropped parallel calls: fetch_paper, fetch_paper, fetch_paper",
+        "evidence decide: llm unavailable — An error occurred (ThrottlingException) when calling the InvokeModel operation (reached max retries: 1): Too many requests, please wait before trying again."
+      ],
+      "self_rag_improves_over_plain_rag": [
+        "evidence: dropped parallel calls: corpus_search",
+        "evidence: dropped parallel calls: fetch_paper, fetch_paper",
+        "evidence: dropped parallel calls: fetch_paper, extract_evidence",
+        "evidence decide: llm unavailable — An error occurred (ThrottlingException) when calling the InvokeModel operation (reached max retries: 1): Too many requests, please wait before trying again."
+      ],
+      "context_window_extension_by_interpolation": [
+        "evidence: dropped parallel calls: corpus_search",
+        "evidence: dropped parallel calls: fetch_paper, fetch_paper, fetch_paper",
+        "evidence: dropped parallel calls: fetch_paper, fetch_paper",
+        "evidence decide: llm unavailable — An error occurred (ThrottlingException) when calling the InvokeModel operation (reached max retries: 1): Too many requests, please wait before trying again."
+      ],
+      "distillation_needs_a_teacher": [
+        "evidence: dropped parallel calls: corpus_search",
+        "evidence: dropped parallel calls: fetch_paper",
+        "evidence: dropped parallel calls: corpus_search",
+        "evidence decide: llm unavailable — An error occurred (ThrottlingException) when calling the InvokeModel operation (reached max retries: 1): Too many requests, please wait before trying again."
+      ]
+    }
+  },
+  "cases": [
+    {
+      "case": "rag_reduces_hallucination",
+      "state": "ok",
+      "layer1": {
+        "case": "rag_reduces_hallucination",
+        "abstained": false,
+        "claims": 16,
+        "citation_reality": 1.0,
+        "gate_rejection": 0.0,
+        "synthesis_ratio": 0.125,
+        "demoted": 0,
+        "regenerated": false,
+        "fallback": false,
+        "searches": 1,
+        "counter_probes": 1,
+        "question_kind": "claim",
+        "recall_at_k": 0.3333333333333333,
+        "violations": []
+      },
+      "trace": [
+        "1 corpus_search ok query=RAG retrieval-augmented generation reduces hallucinati -> corpus_search: 10 hits",
+        "2 fetch_paper ok paper_id=2401.01313v3 -> fetch_paper: 47 blocks",
+        "3 fetch_paper ok paper_id=2311.05232 -> fetch_paper: 135 blocks",
+        "4 fetch_paper ok paper_id=2309.01431v2 -> fetch_paper: 65 blocks",
+        "5 extract_evidence ok paper_ids=['2401.01313v3', '2311.05232', '2309.01431v2'], fo -> extract_evidence: +6 (rejected 6)",
+        "6 fetch_paper ok paper_id=2402.07630v3 -> fetch_paper: 132 blocks",
+        "7 extract_evidence ok paper_ids=['2402.07630v3'], focus=RAG reduces hallucination  -> extract_evidence: +2 (rejected 5)",
+        "8 extract_evidence ok paper_ids=['2401.01313v3', '2311.05232', '2309.01431v2', '24 -> extract_evidence: +8 (rejected 3)",
+        "9 answer ok attempt=1 -> 문장 8건, 강등 0건"
+      ],
+      "contamination": [
+        "evidence: dropped parallel calls: corpus_search",
+        "evidence: dropped parallel calls: fetch_paper, fetch_paper",
+        "evidence: dropped parallel calls: fetch_paper, fetch_paper",
+        "evidence: dropped parallel calls: fetch_paper, extract_evidence",
+        "evidence: dropped parallel calls: fetch_paper, corpus_search",
+        "evidence: dropped parallel calls: corpus_search",
+        "evidence: dropped parallel calls: fetch_paper"
+      ],
+      "answer": [
+        "RAG는 외부 지식을 주입해 LLM이 내부 학습 데이터에만 의존하지 않도록 하여 더 정확하고 신뢰할 수 있는 응답을 생성하게 한다는 점에서 환각 완화에 실제로 효과가 있다.",
+        "노이즈가 없는 조건에서 ChatGPT는 96.33%, ChatGLM2-6B는 91.33% 정확도를 보였다.",
+        "다만 검색된 문서의 노이즈 비율이 80%를 초과하면 정확도가 유의미하게 떨어져, ChatGPT는 76.00%, ChatGLM2-6B는 57.33%까지 하락했다.",
+        "인터넷 상에는 잡음 정보와 가짜 뉴스가 상당량 존재하며, LLM은 컨텍스트에 포함된 잘못된 정보에 오도되거나 외부 정보를 넘어서는 내용을 생성하는 환각을 여전히 일으킬 수 있다.",
+        "외부 문서에 관련 정보가 아예 없을 때 LLM은 답변 거부에 자주 실패해 오답을 내고, 복수 문서에서 정보를 통합해야 하는 복잡한 질문에도 정확도가 낮아진다.",
+        "2022 노벨문학상 질문에 2021 노벨문학상 관련 노이즈 문서가 섞이면 LLM이 혼동해 오답을 내는 사례처럼, 유사한 정보가 포함된 노이즈가 있을 때도 환각이 발생한다.",
+        "그래프 데이터 도메인에서도 RAG 기반 G-Retriever가 실제 그래프에서 직접 정보를 검색함으로써 환각을 줄이는 효과가 실험적으로 확인됐다.",
+        "정리하면 RAG는 검색 품질이 충분히 높을 때는 환각을 실질적으로 줄이지만, 노이즈가 많은 검색 결과나 관련 문서 부재 상황에서는 그 효과가 크게 제한되거나 오히려 오답을 유발할 수 있다."
+      ],
+      "judge": {
+        "direction": {
+          "verdict": "pass",
+          "why": "조건부 긍정으로 판단하면서 검색 품질이 좋을 때는 효과가 있고, 노이즈·관련 문서 부재 시 오히려 악화된다는 조건을 명시해 기대 방향과 일치한다."
+        },
+        "conditions": {
+          "verdict": "pass",
+          "why": "검색 품질 양호/노이즈 과다/관련 문서 부재 등 조건을 구체적 수치와 함께 구분하여 적절히 분기했다."
+        },
+        "split_point": {
+          "verdict": "pass",
+          "why": "갈림 지점을 '노이즈 비율 80% 초과'와 '관련 문서 부재'로 명확히 지정했으며, 이는 실제로 RAG 효과가 반전되는 지점과 부합한다."
+        }
+      }
+    },
+    {
+      "case": "lora_vs_full_finetuning",
+      "state": "ok",
+      "layer1": {
+        "case": "lora_vs_full_finetuning",
+        "abstained": false,
+        "claims": 12,
+        "citation_reality": 1.0,
+        "gate_rejection": 0.0,
+        "synthesis_ratio": 0.16666666666666666,
+        "demoted": 0,
+        "regenerated": false,
+        "fallback": false,
+        "searches": 2,
+        "counter_probes": 3,
+        "question_kind": "comparison",
+        "recall_at_k": 0.3333333333333333,
+        "violations": []
+      },
+      "trace": [
+        "1 corpus_search ok query=LoRA vs full fine-tuning performance comparison, stanc -> corpus_search: 10 hits",
+        "2 fetch_paper ok paper_id=2106.09685 -> fetch_paper: 127 blocks",
+        "3 extract_evidence ok paper_ids=['2106.09685'], focus=LoRA vs full fine-tuning per -> extract_evidence: +7 (rejected 0)",
+        "4 fetch_paper ok paper_id=2306.05087v2 -> fetch_paper: 70 blocks",
+        "5 extract_evidence ok paper_ids=['2306.05087v2'], focus=LoRA vs full fine-tuning p -> extract_evidence: +0 (rejected 0)",
+        "6 corpus_search ok query=LoRA limitations compared to full fine-tuning, stance= -> corpus_search: 10 hits",
+        "7 fetch_paper ok paper_id=2309.12307v3 -> fetch_paper: 79 blocks",
+        "8 extract_evidence ok paper_ids=['2309.12307v3'], focus=LoRA vs full fine-tuning p -> extract_evidence: +5 (rejected 1)",
+        "9 answer ok attempt=1 -> 문장 6건, 강등 0건"
+      ],
+      "contamination": [
+        "evidence: dropped parallel calls: corpus_search",
+        "evidence: dropped parallel calls: fetch_paper, corpus_search",
+        "evidence: dropped parallel calls: corpus_search",
+        "evidence: dropped parallel calls: corpus_search",
+        "evidence: dropped parallel calls: corpus_search",
+        "evidence: dropped parallel calls: fetch_paper",
+        "evidence: dropped parallel calls: corpus_search",
+        "evidence: dropped parallel calls: corpus_search"
+      ],
+      "answer": [
+        "RoBERTa, DeBERTa, GPT-2, GPT-3 같은 표준 NLP 태스크에서는 LoRA가 전체 파인튜닝과 동등하거나 더 나은 품질을 보인다.",
+        "훈련 가능한 파라미터 수는 GPT-3 175B 기준으로 전체 파인튜닝 대비 최대 10,000배 줄고, GPU 메모리는 3배 줄며, 훈련 속도는 25% 빠르고, 추론 지연은 추가되지 않는다.",
+        "반면 장문 컨텍스트 확장 태스크에서는 일반 LoRA가 전체 파인튜닝보다 perplexity가 높고, rank를 256까지 올려도 이 격차가 해소되지 않는다.",
+        "갈리는 지점은 적응 태스크가 사전학습 분포 안에 있는 표준 파인튜닝이냐, 모델 구조 자체를 변형하는 장문 컨텍스트 확장이냐다.",
+        "장문 컨텍스트 설정에서도 embedding과 normalization 레이어까지 함께 학습시키면 perplexity가 전체 파인튜닝(8.08)에 근접한 8.12까지 회복된다.",
+        "또한 LoRA rank r을 사전학습 가중치 행렬의 랭크로 높이면 이론적으로 전체 파인튜닝의 표현력을 대략 회복할 수 있으나, 이는 파라미터 효율이라는 LoRA의 장점을 포기하는 것과 같다."
+      ],
+      "judge": {
+        "direction": {
+          "verdict": "pass",
+          "why": "조건부 판단을 유지하며 표준 NLP 태스크에서는 동등/우위, 장문 컨텍스트 확장에서는 열위라는 두 방향을 모두 제시했고, 어느 한쪽으로 단정하지 않았다."
+        },
+        "conditions": {
+          "verdict": "pass",
+          "why": "태스크 유형(표준 파인튜닝 vs. 장문 컨텍스트 확장)과 배포·비용 축을 구분해 조건을 적절히 나눴으며, 억지로 분할하거나 무시한 축이 없다."
+        },
+        "split_point": {
+          "verdict": "pass",
+          "why": "갈림 지점을 '사전학습 분포 내 표준 태스크냐 vs. 모델 구조를 변형하는 장문 컨텍스트 확장이냐'로 명시해 근거 있는 분기점을 정확히 짚었다."
+        }
+      }
+    },
+    {
+      "case": "cot_prompting_definition",
+      "state": "ok",
+      "layer1": {
+        "case": "cot_prompting_definition",
+        "abstained": false,
+        "claims": 13,
+        "citation_reality": 1.0,
+        "gate_rejection": 0.0,
+        "synthesis_ratio": 0.0,
+        "demoted": 0,
+        "regenerated": false,
+        "fallback": false,
+        "searches": 2,
+        "counter_probes": 0,
+        "question_kind": "fact",
+        "recall_at_k": 1.0,
+        "violations": []
+      },
+      "trace": [
+        "1 corpus_search ok query=Chain-of-Thought prompting, stance=neutral -> corpus_search: 10 hits",
+        "2 fetch_paper ok paper_id=2201.11903 -> fetch_paper: 133 blocks",
+        "3 extract_evidence ok paper_ids=['2201.11903'], focus=Chain-of-Thought 프롬프팅의 정의, 방 -> extract_evidence: +4 (rejected 5)",
+        "4 corpus_search ok query=Chain-of-Thought prompting intermediate reasoning step -> corpus_search: 10 hits",
+        "5 fetch_paper ok paper_id=2502.03671v2 -> fetch_paper: 73 blocks",
+        "6 extract_evidence ok paper_ids=['2502.03671v2'], focus=Chain-of-Thought 프롬프팅의 정의, -> extract_evidence: +9 (rejected 0)",
+        "7 answer ok attempt=1 -> 문장 8건, 강등 0건"
+      ],
+      "contamination": [
+        "evidence: dropped parallel calls: fetch_paper",
+        "evidence: dropped parallel calls: fetch_paper",
+        "evidence: dropped parallel calls: fetch_paper"
+      ],
+      "answer": [
+        "Chain-of-Thought(CoT) 프롬프팅은 복잡한 추론 문제를 풀 때 최종 답을 바로 내놓는 대신, 문제를 일련의 중간 단계로 분해해 모델이 순서대로 추론하도록 유도하는 프롬프팅 기법이다.",
+        "구체적으로는 few-shot 프롬프팅의 각 예시에 중간 자연어 추론 단계(chain of thought)를 덧붙여, 모델이 그 패턴을 따라 단계적으로 답에 도달하게 한다.",
+        "이 기법은 파인튜닝이나 대규모 학습 데이터셋 없이 몇 개의 시연 예시만으로 대형 언어 모델의 추론 능력을 이끌어낼 수 있다.",
+        "성능 향상의 원인은 단순히 중간 토큰이 늘어나 계산량이 증가해서가 아니라, 자연어로 중간 단계를 표현하는 순차적 추론 자체에 있다.",
+        "특정 언어 스타일이나 작성자에 의존하지 않으며, 다양한 방식으로 작성된 CoT 프롬프트 모두 표준 프롬프팅을 크게 앞선다.",
+        "추론 구조는 단일 선형 단계별 방식으로, 하나의 체인에서 직접 답을 도출하며 논리·수학 문제에 특히 적합하다.",
+        "수학 문제 해결, 논리적 추론, 상식 추론 영역에서 표준 프롬프팅 대비 성능 향상이 확인된다.",
+        "다만 효과는 프롬프트 설계와 모델 크기에 따라 달라지며, 모델이 잘못된 중간 단계를 생성하는 경우도 있다."
+      ],
+      "judge": {
+        "direction": {
+          "verdict": "pass",
+          "why": "중간 추론 단계를 생성해 복잡한 추론 성능을 올리는 프롬프팅 방법이라는 기대 방향과 일치하며, 사실형 질문에 맞게 단정적으로 서술했다."
+        },
+        "conditions": {
+          "verdict": "pass",
+          "why": "사실형 질문이므로 조건 분기가 필요 없고, 에이전트도 억지로 나누지 않고 CoT의 정의·메커니즘·효과를 순차적으로 기술했다."
+        },
+        "split_point": {
+          "verdict": "pass",
+          "why": "해당 없음 — 사실형 질문이므로 갈림 지점 평가 불필요."
+        }
+      }
+    },
+    {
+      "case": "self_consistency_follow_up",
+      "state": "abstain",
+      "reason": "llm_unavailable",
+      "trace": [
+        "1 fetch_paper ok paper_id=2201.11903 -> fetch_paper: 133 blocks",
+        "2 read_paper ok paper_id=2201.11903, keyword=decoding strategy -> read_paper: 0 blocks"
+      ],
+      "contamination": [
+        "evidence: dropped parallel calls: live_lookup",
+        "evidence: dropped parallel calls: live_lookup",
+        "evidence: dropped parallel calls: live_lookup",
+        "evidence: dropped parallel calls: live_lookup",
+        "evidence: dropped parallel calls: live_lookup",
+        "evidence: dropped parallel calls: live_lookup",
+        "evidence decide: llm unavailable — An error occurred (ThrottlingException) when calling the InvokeModel operation (reached max retries: 1): Too many requests, please wait before trying again."
+      ],
+      "judge": null
+    },
+    {
+      "case": "post_training_quantization_accuracy",
+      "state": "abstain",
+      "reason": "llm_unavailable",
+      "trace": [
+        "1 corpus_search ok query=8-bit post-training quantization accuracy, stance=supp -> corpus_search: 10 hits",
+        "2 fetch_paper ok paper_id=2211.10438 -> fetch_paper: 74 blocks",
+        "3 fetch_paper ok paper_id=2208.07339 -> fetch_paper: 102 blocks",
+        "4 fetch_paper ok paper_id=2101.09671v3 -> fetch_paper: 318 blocks"
+      ],
+      "contamination": [
+        "evidence: dropped parallel calls: corpus_search",
+        "evidence: dropped parallel calls: fetch_paper, fetch_paper, fetch_paper",
+        "evidence: dropped parallel calls: fetch_paper, fetch_paper",
+        "evidence: dropped parallel calls: fetch_paper, fetch_paper, fetch_paper",
+        "evidence decide: llm unavailable — An error occurred (ThrottlingException) when calling the InvokeModel operation (reached max retries: 1): Too many requests, please wait before trying again."
+      ],
+      "judge": null
+    },
+    {
+      "case": "rag_evaluation_without_references",
+      "state": "abstain",
+      "reason": "llm_unavailable",
+      "trace": [
+        "1 corpus_search ok query=RAG pipeline evaluation without ground truth reference -> corpus_search: 10 hits",
+        "2 fetch_paper ok paper_id=2309.15217 -> fetch_paper: 47 blocks",
+        "3 fetch_paper error paper_id=2311.09476 -> fetch_paper: unknown paper"
+      ],
+      "contamination": [
+        "evidence: dropped parallel calls: corpus_search",
+        "evidence: dropped parallel calls: fetch_paper",
+        "evidence: dropped parallel calls: extract_evidence",
+        "evidence decide: llm unavailable — An error occurred (ThrottlingException) when calling the InvokeModel operation (reached max retries: 1): Too many requests, please wait before trying again."
+      ],
+      "judge": null
+    },
+    {
+      "case": "moe_scales_without_proportional_compute",
+      "state": "abstain",
+      "reason": "llm_unavailable",
+      "trace": [
+        "1 corpus_search ok query=Mixture-of-Experts increase parameters without increas -> corpus_search: 10 hits",
+        "2 fetch_paper ok paper_id=1701.06538 -> fetch_paper: 128 blocks",
+        "3 fetch_paper ok paper_id=2407.06204v3 -> fetch_paper: 141 blocks"
+      ],
+      "contamination": [
+        "evidence: dropped parallel calls: corpus_search",
+        "evidence: dropped parallel calls: fetch_paper, fetch_paper",
+        "evidence: dropped parallel calls: fetch_paper, extract_evidence",
+        "evidence decide: llm unavailable — An error occurred (ThrottlingException) when calling the InvokeModel operation (reached max retries: 1): Too many requests, please wait before trying again."
+      ],
+      "judge": null
+    },
+    {
+      "case": "dpo_vs_rlhf_reward_model",
+      "state": "abstain",
+      "reason": "llm_unavailable",
+      "trace": [
+        "1 corpus_search ok query=DPO Direct Preference Optimization vs RLHF reward mode -> corpus_search: 10 hits",
+        "2 fetch_paper ok paper_id=2305.18290 -> fetch_paper: 171 blocks",
+        "3 fetch_paper ok paper_id=2504.12501v11 -> fetch_paper: 784 blocks"
+      ],
+      "contamination": [
+        "evidence: dropped parallel calls: corpus_search",
+        "evidence: dropped parallel calls: fetch_paper",
+        "evidence: dropped parallel calls: extract_evidence",
+        "evidence decide: llm unavailable — An error occurred (ThrottlingException) when calling the InvokeModel operation (reached max retries: 1): Too many requests, please wait before trying again."
+      ],
+      "judge": null
+    },
+    {
+      "case": "compute_optimal_model_size",
+      "state": "abstain",
+      "reason": "llm_unavailable",
+      "trace": [
+        "1 corpus_search ok query=optimal model size vs data size given compute budget s -> corpus_search: 10 hits",
+        "2 fetch_paper ok paper_id=2203.15556 -> fetch_paper: 131 blocks",
+        "3 fetch_paper ok paper_id=2001.08361 -> fetch_paper: 240 blocks"
+      ],
+      "contamination": [
+        "evidence: dropped parallel calls: corpus_search",
+        "evidence: dropped parallel calls: fetch_paper",
+        "evidence: dropped parallel calls: extract_evidence",
+        "evidence decide: llm unavailable — An error occurred (ThrottlingException) when calling the InvokeModel operation (reached max retries: 1): Too many requests, please wait before trying again."
+      ],
+      "judge": null
+    },
+    {
+      "case": "smoothquant_vs_qat",
+      "state": "abstain",
+      "reason": "llm_unavailable",
+      "trace": [
+        "1 corpus_search ok query=8-bit quantization-aware training vs post-training qua -> corpus_search: 10 hits",
+        "2 fetch_paper ok paper_id=2305.17888v1 -> fetch_paper: 64 blocks",
+        "3 fetch_paper ok paper_id=2208.07339 -> fetch_paper: 102 blocks"
+      ],
+      "contamination": [
+        "evidence: dropped parallel calls: corpus_search",
+        "evidence: dropped parallel calls: fetch_paper, fetch_paper, fetch_paper",
+        "evidence: dropped parallel calls: fetch_paper, fetch_paper, fetch_paper",
+        "evidence decide: llm unavailable — An error occurred (ThrottlingException) when calling the InvokeModel operation (reached max retries: 1): Too many requests, please wait before trying again."
+      ],
+      "judge": null
+    },
+    {
+      "case": "longformer_handles_long_documents",
+      "state": "abstain",
+      "reason": "llm_unavailable",
+      "trace": [
+        "1 corpus_search ok query=long document attention mechanism efficient transforme -> corpus_search: 10 hits",
+        "2 fetch_paper ok paper_id=2004.05150v2 -> fetch_paper: 94 blocks",
+        "3 fetch_paper ok paper_id=2503.17407v2 -> fetch_paper: 255 blocks"
+      ],
+      "contamination": [
+        "evidence: dropped parallel calls: corpus_search",
+        "evidence: dropped parallel calls: fetch_paper, fetch_paper",
+        "evidence: dropped parallel calls: fetch_paper, extract_evidence",
+        "evidence decide: llm unavailable — An error occurred (ThrottlingException) when calling the InvokeModel operation (reached max retries: 1): Too many requests, please wait before trying again."
+      ],
+      "judge": null
+    },
+    {
+      "case": "linformer_linear_attention",
+      "state": "abstain",
+      "reason": "llm_unavailable",
+      "trace": [
+        "1 corpus_search ok query=linear complexity attention mechanism transformer, sta -> corpus_search: 10 hits",
+        "2 fetch_paper ok paper_id=2006.16236v3 -> fetch_paper: 124 blocks",
+        "3 fetch_paper ok paper_id=2009.06732 -> fetch_paper: 197 blocks"
+      ],
+      "contamination": [
+        "evidence: dropped parallel calls: corpus_search",
+        "evidence: dropped parallel calls: fetch_paper, fetch_paper, fetch_paper",
+        "evidence: dropped parallel calls: fetch_paper, fetch_paper, extract_evidence",
+        "evidence decide: llm unavailable — An error occurred (ThrottlingException) when calling the InvokeModel operation (reached max retries: 1): Too many requests, please wait before trying again."
+      ],
+      "judge": null
+    },
+    {
+      "case": "prompt_injection_defenses_hold",
+      "state": "abstain",
+      "reason": "llm_unavailable",
+      "trace": [
+        "1 corpus_search ok query=prompt injection defense effectiveness, stance=support -> corpus_search: 10 hits",
+        "2 fetch_paper ok paper_id=2402.06363v2 -> fetch_paper: 187 blocks",
+        "3 fetch_paper ok paper_id=2505.14534v1 -> fetch_paper: 247 blocks"
+      ],
+      "contamination": [
+        "evidence: dropped parallel calls: corpus_search",
+        "evidence: dropped parallel calls: fetch_paper, fetch_paper, fetch_paper",
+        "evidence: dropped parallel calls: fetch_paper, fetch_paper, fetch_paper",
+        "evidence decide: llm unavailable — An error occurred (ThrottlingException) when calling the InvokeModel operation (reached max retries: 1): Too many requests, please wait before trying again."
+      ],
+      "judge": null
+    },
+    {
+      "case": "self_rag_improves_over_plain_rag",
+      "state": "abstain",
+      "reason": "llm_unavailable",
+      "trace": [
+        "1 corpus_search ok query=RAG self-critique retrieval augmented generation impro -> corpus_search: 10 hits",
+        "2 fetch_paper ok paper_id=2310.11511 -> fetch_paper: 93 blocks",
+        "3 fetch_paper ok paper_id=2401.15884v3 -> fetch_paper: 69 blocks"
+      ],
+      "contamination": [
+        "evidence: dropped parallel calls: corpus_search",
+        "evidence: dropped parallel calls: fetch_paper, fetch_paper",
+        "evidence: dropped parallel calls: fetch_paper, extract_evidence",
+        "evidence decide: llm unavailable — An error occurred (ThrottlingException) when calling the InvokeModel operation (reached max retries: 1): Too many requests, please wait before trying again."
+      ],
+      "judge": null
+    },
+    {
+      "case": "context_window_extension_by_interpolation",
+      "state": "abstain",
+      "reason": "llm_unavailable",
+      "trace": [
+        "1 corpus_search ok query=extending context length beyond training length, stanc -> corpus_search: 10 hits",
+        "2 fetch_paper ok paper_id=2503.17407v2 -> fetch_paper: 255 blocks",
+        "3 fetch_paper ok paper_id=2309.17453 -> fetch_paper: 87 blocks"
+      ],
+      "contamination": [
+        "evidence: dropped parallel calls: corpus_search",
+        "evidence: dropped parallel calls: fetch_paper, fetch_paper, fetch_paper",
+        "evidence: dropped parallel calls: fetch_paper, fetch_paper",
+        "evidence decide: llm unavailable — An error occurred (ThrottlingException) when calling the InvokeModel operation (reached max retries: 1): Too many requests, please wait before trying again."
+      ],
+      "judge": null
+    },
+    {
+      "case": "distillation_needs_a_teacher",
+      "state": "abstain",
+      "reason": "llm_unavailable",
+      "trace": [
+        "1 corpus_search ok query=knowledge distillation small model performance retenti -> corpus_search: 10 hits",
+        "2 fetch_paper ok paper_id=2006.05525 -> fetch_paper: 138 blocks",
+        "3 fetch_paper ok paper_id=2502.12143v3 -> fetch_paper: 87 blocks"
+      ],
+      "contamination": [
+        "evidence: dropped parallel calls: corpus_search",
+        "evidence: dropped parallel calls: fetch_paper",
+        "evidence: dropped parallel calls: corpus_search",
+        "evidence decide: llm unavailable — An error occurred (ThrottlingException) when calling the InvokeModel operation (reached max retries: 1): Too many requests, please wait before trying again."
+      ],
+      "judge": null
+    }
+  ]
+}
