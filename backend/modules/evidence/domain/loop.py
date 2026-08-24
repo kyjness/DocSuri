@@ -59,6 +59,7 @@ from ..ports.llm import (
 )
 from ..ports.tools import ToolContext, ToolRegistry, ToolResult
 from . import budget as budget_rules
+from .budget import BudgetDenialReason
 from .models import (
     AgentRunContext,
     LoopBudget,
@@ -79,6 +80,11 @@ _RECENT_WINDOW = 6
 _NO_EVIDENCE_NOTE = (
     "아직 검증을 통과한 근거가 0건이다. extract_evidence로 확보한 논문에서 근거를 "
     "추출하거나, 다른 논문을 찾아라. 근거 없이는 종료할 수 없다."
+)
+
+_TOOL_CAP_NOTE = (
+    "'{tool}'은(는) 이번 턴의 호출 상한을 다 썼다({detail}). 다시 부를 수 없으니 "
+    "이미 확보한 논문에서 extract_evidence로 근거를 뽑거나 남은 도구를 써라."
 )
 
 
@@ -296,6 +302,15 @@ def _act(state: LoopState, deps: LoopDeps, proposal: ToolCallProposal) -> LoopOu
     if denial is not None:
         _record(state, deps, proposal.tool_name, args_summary, ToolCallOutcome.BUDGET_DENIED,
                 denial.detail)
+        if denial.reason is BudgetDenialReason.TOOL_CAP_EXHAUSTED:
+            # **도구 하나가 상한을 다 쓴 것은 턴의 예산 소진이 아니다.** 다른 도구도, 반복도,
+            # 비용도 남아 있다. 여기서 끝내면 이미 확보한 논문을 손에 쥔 채 "근거 부족"으로
+            # 기권한다 — 2026-08-24 실측: fetch_paper 3/3에 막혀 논문 3편·256블록을 가지고도
+            # extract_evidence를 한 번도 못 부르고 abstain으로 끝났다. 예외도 ERROR 로그도
+            # 없어 정상적인 보수적 동작처럼 보인다. 사유를 관찰에 실어 다음 판단이 남은
+            # 도구를 고르게 한다(`_NO_EVIDENCE_NOTE`와 같은 방식).
+            _note(state, _TOOL_CAP_NOTE.format(tool=proposal.tool_name, detail=denial.detail))
+            return None
         return _finish(state, TerminationReason.BUDGET_EXHAUSTED, denial.detail, deps)
 
     ctx = ToolContext(

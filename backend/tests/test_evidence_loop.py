@@ -221,11 +221,63 @@ def test_per_tool_cap_stops_one_tool_from_eating_the_budget():
 
     outcome = run_loop(_state_with_evidence(), _deps(llm, _registry(tool), budget))
 
-    assert outcome.reason is TerminationReason.BUDGET_EXHAUSTED
+    # 상한을 넘겨 부르지 못한다. 끝난 이유는 이 도구의 상한이 아니라 **반복 상한**이다 —
+    # 모델이 같은 도구만 계속 고집했기 때문이고, 그래야 다른 도구를 고를 여지가 남는다.
     assert len(tool.calls) == 2
+    assert outcome.reason is TerminationReason.BUDGET_EXHAUSTED
+    assert budget.consumed.iterations == budget.max_iterations
 
 
-def test_budget_denied_is_traced_before_terminating():
+def test_tool_cap_denial_leaves_the_other_tools_usable():
+    """도구 하나가 상한을 다 쓴 것은 턴의 예산 소진이 아니다.
+
+    2026-08-24 실측 회귀: `fetch_paper` 3/3에 막힌 턴이 논문 3편을 확보한 채
+    `extract_evidence`를 한 번도 못 부르고 근거 0건으로 기권했다. 예외도 ERROR 로그도
+    없어 정상적인 보수적 동작처럼 보인다 — 그래서 카운터가 아니라 이 테스트로 잡는다.
+    """
+    capped = FakeTool(TOOL_CORPUS_SEARCH)
+    other = FakeTool(TOOL_EXTRACT_EVIDENCE)
+    llm = ScriptedLlm(
+        script=[
+            ToolCallProposal(TOOL_CORPUS_SEARCH, {"query": "q"}),
+            ToolCallProposal(TOOL_CORPUS_SEARCH, {"query": "q2"}),  # 거부된다
+            ToolCallProposal(TOOL_EXTRACT_EVIDENCE, {"focus": "f"}),
+        ]
+    )
+    budget = _budget(max_tool_calls={TOOL_CORPUS_SEARCH: 1, TOOL_EXTRACT_EVIDENCE: 8})
+
+    outcome = run_loop(_state_with_evidence(), _deps(llm, _registry(capped, other), budget))
+
+    assert len(capped.calls) == 1
+    assert len(other.calls) == 1, "상한에 막힌 뒤에도 남은 도구는 불릴 수 있어야 한다"
+    assert outcome.reason is TerminationReason.SUFFICIENT
+
+
+def test_tool_cap_denial_tells_the_model_which_tool_is_gone():
+    """거부 사실이 관찰에 실려야 모델이 다른 수를 고른다 — 안 실으면 같은 도구를 반복한다."""
+    capped = FakeTool(TOOL_CORPUS_SEARCH)
+    llm = ScriptedLlm(script=[ToolCallProposal(TOOL_CORPUS_SEARCH, {"query": "q"})] * 3)
+    budget = _budget(max_tool_calls={TOOL_CORPUS_SEARCH: 1})
+
+    run_loop(_state_with_evidence(), _deps(llm, _registry(capped), budget))
+
+    notes = [note for obs in llm.observations for note in obs.notes]
+    assert any(TOOL_CORPUS_SEARCH in note and "상한" in note for note in notes)
+
+
+def test_global_tool_budget_still_ends_the_turn():
+    """전역 소진은 여전히 종료다 — 상한 하나만 예외로 만든 것이지 예산을 무르지 않았다."""
+    tool = FakeTool(TOOL_CORPUS_SEARCH)
+    llm = ScriptedLlm(script=[ToolCallProposal(TOOL_CORPUS_SEARCH, {"query": "q"})] * 10)
+    budget = _budget(max_tool_calls_total=2, max_tool_calls={TOOL_CORPUS_SEARCH: 9})
+
+    outcome = run_loop(_state_with_evidence(), _deps(llm, _registry(tool), budget))
+
+    assert outcome.reason is TerminationReason.BUDGET_EXHAUSTED
+    assert budget.consumed.iterations < budget.max_iterations, "반복이 아니라 도구 총량이 끊었다"
+
+
+def test_budget_denied_is_traced():
     tool = FakeTool(TOOL_CORPUS_SEARCH)
     llm = ScriptedLlm(script=[ToolCallProposal(TOOL_CORPUS_SEARCH, {"query": "q"})] * 5)
     budget = _budget(max_tool_calls={TOOL_CORPUS_SEARCH: 1})
