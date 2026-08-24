@@ -15,6 +15,7 @@ from docsuri_shared._generated.dtos.evidence_schema import (
 
 from .checkpoints import TurnCheckpoints
 from .domain.models import AgentRunContext as LoopRunContext
+from .domain.models import iter_refs
 from .models import (
     AttachmentInput,
     EvidenceSession,
@@ -389,7 +390,7 @@ def _cited_paper_ids(result: TurnResult | None) -> tuple[str, ...]:
         return ()
     seen: dict[str, None] = {}
     for item in result.outcome.claims:
-        for ref in (*item.supporting, *item.conflicting):
+        for ref in iter_refs(item):
             seen.setdefault(ref.paperId, None)
     return tuple(seen)
 

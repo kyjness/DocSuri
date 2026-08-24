@@ -32,7 +32,9 @@ invoke해도 아예 돌지 않는다**(입력 쓰기조차 반영되지 않는�
 
 취소·중단은 `deps.should_stop`이 `decide` 진입(super-step 경계)에서 사유를 돌려주는 것으로
 표현한다 — 진행 중인 `act`는 끝까지 돌고 그 결과도 부분 답에 들어간다(§2.8). 종료는 `_finish`
-호출 지점에서 `outcome`을 채우는 것으로 표현한다 — PR 3이 이를 `answer → assemble` 꼬리로 모은다.
+호출 지점에서 `outcome`을 채우는 것으로 표현하고, 근거가 있으면 **모든 종료 경로가** `answer`
+노드를 지나 판단을 쓴다(§4.2). 마감(`assemble`)은 여전히 runner가 부른다 — 순수 함수라
+super-step을 하나 더 쓸 이유가 없고, 고아 마감은 이미 스냅샷에서 같은 함수를 부른다.
 """
 
 from __future__ import annotations
@@ -49,6 +51,10 @@ from langgraph.runtime import Runtime
 from langsmith import tracing_context
 
 from ..ports.llm import (
+    QUESTION_KIND_UNKNOWN,
+    AnswerEvidenceView,
+    AnswerRequest,
+    EvidenceAnswerPort,
     EvidenceLlmPort,
     LlmUnavailable,
     LoopObservation,
@@ -59,6 +65,8 @@ from ..ports.llm import (
 )
 from ..ports.tools import ToolContext, ToolRegistry, ToolResult
 from . import budget as budget_rules
+from .answer_checks import AnswerRejected, check_answer
+from .assembler import comparison_order, fallback_answer
 from .budget import BudgetDenialReason
 from .models import (
     AgentRunContext,
@@ -100,6 +108,9 @@ class LoopDeps:
     # 협조적 취소·중단 — super-step 경계(decide 진입)마다 묻는다. 사유를 돌려주면 반복을
     # 소모하지 않고 그 자리에서 끝낸다(novelty BR-RA8과 같은 방식).
     should_stop: Callable[[], TerminationReason | None] | None = None
+    # 판단 층(§4.2). 구성되지 않으면 `answer` 노드가 통째로 건너뛰고 마감이 결정론
+    # 이어붙이기로 떨어진다 — 판단은 얹는 층이지 근거형성의 전제가 아니다.
+    answer: EvidenceAnswerPort | None = None
 
 
 @dataclass(slots=True)
@@ -171,8 +182,10 @@ class _GraphState(TypedDict, total=False):
 # 반복 하나가 쓰는 최대 스텝 — `decide` + (`act` | `check_floor`). 거부된 종료 제안은
 # `decide`로 되돌아가 **새 반복**이 되므로 한 반복이 3스텝이 될 수 없다.
 _STEPS_PER_ITERATION = 2
-# 반복 상한을 다 쓴 뒤 마지막 `decide`가 예산 검사에서 거부되는 1스텝.
-_TAIL_STEPS = 1
+# 반복 상한을 다 쓴 뒤 마지막 `decide`가 예산 검사에서 거부되는 1스텝 + 꼬리의 `answer`
+# 1스텝. `answer`는 반복당이 아니라 종료 경로마다 **한 번** 도는 노드다(재생성은 그 안에서
+# 일어나므로 스텝을 더 쓰지 않는다).
+_TAIL_STEPS = 2
 
 
 def _recursion_limit(budget: LoopBudget) -> int:
@@ -181,7 +194,7 @@ def _recursion_limit(budget: LoopBudget) -> int:
     최대 스텝 = 반복당 2 × n + 꼬리 1. LangGraph는 N스텝을 돌리려면 `recursion_limit ≥ N+1`을
     요구한다(1.2.x 실측) → 2n+2. `GraphRecursionError`는 잡지 않는다 — 잡아서 예산 소진으로
     바꾸면 현행에 없던 종료 경로가 생기고, 노드를 더하면서 이 상수를 안 고친 실수를 가린다.
-    PR 2의 `answer`·`assemble`은 반복당이 아니라 **꼬리** 스텝이다 — `_TAIL_STEPS`를 올린다.
+    `answer`는 반복당이 아니라 **꼬리** 스텝이라 `_TAIL_STEPS`에 든다(PR 3에서 1 → 2).
     """
     return _STEPS_PER_ITERATION * budget.max_iterations + _TAIL_STEPS + 1
 
@@ -192,6 +205,17 @@ def compile_loop_graph(checkpointer: BaseCheckpointSaver | None) -> CompiledStat
     def end(run: LoopRun, reason: TerminationReason, detail: str | None) -> dict:
         outcome = _finish(run.state, reason, detail, run.deps)
         return {"outcome": _dump_outcome(outcome), "snapshot": run.state.to_snapshot()}
+
+    def answer(gs: _GraphState, runtime: Runtime[LoopRun]) -> dict:
+        """판단 층(§4.2) — 종료가 확정된 뒤 **게이트를 통과한 근거만** 보고 산문을 쓴다.
+
+        루프 안에 두는 이유는 셋이다: 비용이 턴 예산에 계상돼야 하고, super-step 경계라
+        체크포인트에 남아야 하며, 실패가 근거형성을 깨서는 안 된다. 어느 실패든 판단만
+        비우고 마감으로 보낸다 — 판단이 없으면 마감이 결정론 이어붙이기로 떨어진다.
+        """
+        run = runtime.context
+        _write_answer(run.state, run.deps, (gs.get("outcome") or {}).get("reason"))
+        return {"snapshot": run.state.to_snapshot()}
 
     def decide(gs: _GraphState, runtime: Runtime[LoopRun]) -> dict:
         run = runtime.context
@@ -224,8 +248,13 @@ def compile_loop_graph(checkpointer: BaseCheckpointSaver | None) -> CompiledStat
     def check_floor(gs: _GraphState, runtime: Runtime[LoopRun]) -> dict:
         run = runtime.context
         state = run.state
+        proposal = gs.get("proposal") or {}
+        # 모델이 선언한 질문 유형은 **거부되는 종료 제안에서도** 기록한다 — 선언 자체는
+        # 근거 수와 무관하고, 뒤에 예산으로 끝나면 다시 선언할 기회가 없다.
+        if proposal.get("question_kind"):
+            state.question_kind = proposal["question_kind"]
         if state.accumulator.items:
-            return end(run, TerminationReason.SUFFICIENT, (gs.get("proposal") or {}).get("note"))
+            return end(run, TerminationReason.SUFFICIENT, proposal.get("note"))
         # 종료 제안 거부 — 사유를 관찰에 실어 다음 판단이 달라지게 한다(노트는 마감이 안 읽는다).
         _note(state, _NO_EVIDENCE_NOTE)
         return {"proposal": None, "outcome": None}
@@ -242,25 +271,37 @@ def compile_loop_graph(checkpointer: BaseCheckpointSaver | None) -> CompiledStat
     graph.add_node("decide", decide)
     graph.add_node("check_floor", check_floor)
     graph.add_node("act", act)
+    graph.add_node("answer", answer)
     graph.add_edge(START, "decide")
     graph.add_conditional_edges("decide", _route_after_decide)
-    graph.add_conditional_edges("check_floor", _route_back_or_end)
-    graph.add_conditional_edges("act", _route_back_or_end)
+    graph.add_conditional_edges("check_floor", _route_to_answer_or_back)
+    graph.add_conditional_edges("act", _route_to_answer_or_back)
+    graph.add_edge("answer", END)
     return graph.compile(checkpointer=checkpointer)
 
 
 # 라우터 반환형은 Literal이어야 한다 — 그래야 컴파일된 그래프가 자기 간선을 안다
 # (`get_graph()`·렌더·트레이스). 맨 str이면 조건부 간선이 전부 빠진 두 노드 그래프로 보인다.
-def _route_after_decide(gs: _GraphState) -> Literal["check_floor", "act", "__end__"]:
+def _route_after_decide(gs: _GraphState) -> Literal["answer", "check_floor", "act", "__end__"]:
     if gs.get("outcome") is not None:
-        return END
+        return _answer_or_end(gs)
     if (gs.get("proposal") or {}).get("kind") == _PROPOSAL_END:
         return "check_floor"
     return "act"
 
 
-def _route_back_or_end(gs: _GraphState) -> Literal["decide", "__end__"]:
-    return END if gs.get("outcome") is not None else "decide"
+def _route_to_answer_or_back(gs: _GraphState) -> Literal["answer", "decide", "__end__"]:
+    return "decide" if gs.get("outcome") is None else _answer_or_end(gs)
+
+
+def _answer_or_end(gs: _GraphState) -> Literal["answer", "__end__"]:
+    """근거가 있으면 **모든 종료 경로가** 판단을 지난다(§3.1 그래프의 꼬리).
+
+    예산 소진·취소·치명 오류도 마찬가지다 — 그때까지 검증된 근거로 부분 답을 만드는 것이
+    §2.3·§2.8의 약속이고, 판단 없이 근거만 나열하면 그 약속이 반만 지켜진다. 근거 0건이면
+    쓸 것이 없으므로 바로 끝낸다(기권 경로).
+    """
+    return "answer" if (gs.get("snapshot") or {}).get("items") else END
 
 
 # 채널에는 JSON만 싣는다 — 제안은 종류 태그를 붙인 dict로, 결과는 사유·상세만.
@@ -271,6 +312,123 @@ _PROPOSAL_END = "end"
 def _dump_proposal(proposal: ToolCallProposal | TerminationProposal) -> dict[str, Any]:
     kind = _PROPOSAL_END if isinstance(proposal, TerminationProposal) else _PROPOSAL_TOOL
     return {"kind": kind, **asdict(proposal)}
+
+
+# 판단 시도 상한 — 최초 1회 + 재생성 1회(§4.3 시작값). 늘리면 거부가 반복될 때 비용이
+# 그만큼 늘고, 그 비용도 턴 예산에 계상된다.
+_ANSWER_MAX_ATTEMPTS = 2
+
+
+def _write_answer(state: LoopState, deps: LoopDeps, reason: str | None = None) -> None:
+    """§4.2·§4.3 — 판단을 쓰고 검사하고, 안 되면 폴백까지. 예외를 밖으로 내지 않는다.
+
+    `reason`은 이 턴이 **왜** 끝났는지다. LLM이 죽어서 끝난 턴에 판단 LLM을 다시 부르는
+    것은 낭비를 넘어 해롭다 — 판단 어댑터는 자기 `SourceBreaker`를 따로 들고 있어 닫힌
+    회로에서 시작하므로, 스로틀로 죽은 턴이 쿼터가 문제인 바로 그 순간에 호출을 두 번 더
+    쓴다. 어느 쪽이든 결과는 폴백이므로 곧바로 폴백으로 간다.
+    """
+    if deps.answer is None or not state.accumulator.items:
+        return
+    ordered = comparison_order(state.accumulator.items)
+    reject: str | None = None
+
+    if reason == TerminationReason.FATAL_ERROR.value:
+        log.info("evidence answer: 치명 오류로 끝난 턴이라 판단 호출을 건너뛴다")
+    else:
+        reject = _attempt_answer(state, deps, ordered)
+        if state.answer is not None:
+            return
+
+    # 재생성도 거부됐거나 판단 LLM을 못 썼다 — 답은 나가되 판단 없이(§4.3, C-2 fail-closed).
+    state.answer = fallback_answer(ordered, regenerated=reject is not None)
+
+
+def _attempt_answer(state: LoopState, deps: LoopDeps, ordered: list) -> str | None:
+    """판단 LLM을 최대 `_ANSWER_MAX_ATTEMPTS`회 부른다. 성공하면 `state.answer`를 채운다.
+
+    반환값은 마지막 거부 사유(없으면 None) — 폴백이 "재생성까지 하고 실패한 것"인지
+    "애초에 못 부른 것"인지를 호출자가 구분한다.
+    """
+    views = _answer_views(ordered)
+    reject: str | None = None
+
+    for attempt in range(_ANSWER_MAX_ATTEMPTS):
+        # `attempt`를 기본인자로 묶는다 — 클로저가 루프 변수를 늦게 읽지 않게.
+        def trace(
+            outcome: ToolCallOutcome,
+            summary: str,
+            cost: float | None = None,
+            *,
+            n: int = attempt + 1,
+        ) -> None:
+            _record(state, deps, "answer", f"attempt={n}", outcome, summary, cost)
+
+        # 비용을 계상만 하고 확인하지 않으면, 예산이 터져 끝난 턴이 이 턴에서 가장 큰
+        # 프롬프트를 한두 번 더 내보낸다. 재생성 쪽이 특히 그렇다.
+        if budget_rules.is_cost_exhausted(deps.budget):
+            trace(ToolCallOutcome.BUDGET_DENIED, "비용 상한 소진 — 판단 호출을 건너뛴다")
+            break
+        request = AnswerRequest(
+            topic=state.topic,
+            question_kind=state.question_kind or QUESTION_KIND_UNKNOWN,
+            evidence=views,
+            reject_reason=reject,
+        )
+        try:
+            draft = deps.answer.write(request)
+        except Exception as exc:  # noqa: BLE001 — 판단 실패가 근거형성을 깨지 않는다
+            log.warning("evidence answer failed", exc_info=True)
+            trace(ToolCallOutcome.ERROR, str(exc)[:200])
+            break
+        budget_rules.record_cost(deps.budget, draft.cost_estimate_usd)
+        checked = check_answer(draft.sentences, ordered, regenerated=attempt > 0)
+        if not isinstance(checked, AnswerRejected):
+            state.answer = checked.answer
+            demoted = checked.answer.checks.demoted
+            if checked.demotion_reasons:
+                # **왜** 강등됐는지는 화면 계약에 안 들어간다 — 여기서 안 남기면 문장이
+                # 인용 표시를 잃은 이유가 어디에도 안 남는다.
+                log.info("evidence answer: 강등 %d건 — %s", demoted, checked.demotion_reasons)
+            trace(
+                ToolCallOutcome.OK,
+                f"문장 {len(checked.answer.segments)}건, 강등 {demoted}건",
+                draft.cost_estimate_usd,
+            )
+            return reject
+        reject = f"{checked.code}: {checked.detail}"
+        trace(ToolCallOutcome.ERROR, f"거부 — {reject}", draft.cost_estimate_usd)
+
+    return reject
+
+
+def _answer_views(ordered: list) -> tuple[AnswerEvidenceView, ...]:
+    """근거 → 판단 층 입력. 번호는 표시 순서의 1-기반이다(근거표 행 번호와 같은 출처)."""
+    by_paper: dict[str, list[int]] = {}
+    for number, item in enumerate(ordered, start=1):
+        for ref in item.supporting:
+            by_paper.setdefault(ref.paperId, []).append(number)
+    views = []
+    for number, item in enumerate(ordered, start=1):
+        # 게이트가 `NO_SUPPORTING`을 이미 떨어뜨렸으므로 지지 출처는 반드시 있다.
+        # `if primary else ""`로 감싸면 그 전제가 깨졌을 때 논문 없는 행이 조용히 나간다.
+        primary = item.supporting[0]
+        # 상충은 "이 명제와 충돌하는 근거의 번호"다 — 상충 출처의 논문이 지지 쪽에 올린
+        # 명제를 찾아 그 번호를 준다. 모델이 §2.2대로 조건을 나누려면 어느 근거끼리
+        # 갈리는지를 번호로 알아야 한다.
+        conflicts = sorted(
+            {n for ref in item.conflicting for n in by_paper.get(ref.paperId, []) if n != number}
+        )
+        views.append(
+            AnswerEvidenceView(
+                number=number,
+                statement=item.statement,
+                paper_id=primary.paperId,
+                quote=primary.quote or "",
+                locator=primary.anchor or "",
+                conflicts_with=tuple(conflicts),
+            )
+        )
+    return tuple(views)
 
 
 def _load_proposal(data: dict[str, Any]) -> ToolCallProposal:

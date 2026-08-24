@@ -62,6 +62,9 @@ class RunnerDeps:
 
     llm: Any
     extractor: Any
+    # 판단 층(§4.2). None이면 `answer` 노드가 아무 것도 안 하고 마감이 결정론
+    # 이어붙이기로 떨어진다 — 다른 선택 의존성과 같은 규칙이다.
+    answer: Any | None = None
     corpus_search: Any | None = None
     external_search: Any | None = None
     doc_models: Any | None = None
@@ -124,6 +127,7 @@ class EvidenceTurnRunner:
                 ctx=ctx,
                 on_trace=on_trace,
                 should_stop=should_stop,
+                answer=self._deps.answer,
             ),
             graph=self._graph,
         )

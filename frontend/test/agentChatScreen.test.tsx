@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import {
   AgentChatScreen,
@@ -160,7 +160,7 @@ describe('AgentChatScreen', () => {
     expect(screen.getByText(/Research .* 완료/)).toBeInTheDocument();
     await user.click(screen.getByText('LLM 평가 근거 정리'));
 
-    expect(await screen.findByText(/벤치마크 신뢰도/)).toBeInTheDocument();
+    expect(await screen.findByText(/벤치마크를 재사용하면/)).toBeInTheDocument();
     expect(
       screen
         .getAllByTestId('agent-message')
@@ -168,22 +168,60 @@ describe('AgentChatScreen', () => {
     ).toBe(true);
   });
 
-  it('renders an evidence result message as a card with citation anchors', async () => {
+  it('renders an evidence result as prose judgement above the evidence table', async () => {
     const user = userEvent.setup();
     render(<AgentChatScreen />);
 
     await user.click(screen.getByTestId('agent-menu'));
     await user.click(await screen.findByText('LLM 평가 근거 정리'));
 
-    // 비교표: statement + 출처(paperId · 인용 앵커 · quote). raw JSON은 노출되지 않는다(#339).
-    expect(
-      await screen.findByText('벤치마크 재사용은 데이터 누수 위험을 높인다.'),
-    ).toBeInTheDocument();
+    // 판단 산문이 먼저 오고(§2.1), 그 아래 근거표가 붙는다.
+    const answer = await screen.findByTestId('evidence-answer');
+    expect(answer).toHaveTextContent(/벤치마크를 재사용하면 점수가 부풀려져요/);
+    expect(within(answer).getByTestId('evidence-answer-ref')).toHaveTextContent('[1]');
+
+    // 근거표: statement + 출처(paperId · 인용 앵커 · quote). raw JSON은 노출되지 않는다(#339).
+    expect(screen.getByTestId('evidence-table')).toBeInTheDocument();
+    expect(screen.getByText(/벤치마크 재사용은 데이터 누수 위험을 높인다./)).toBeInTheDocument();
     expect(screen.getByText('2401.01234')).toBeInTheDocument();
     expect(screen.getByText('§ 4.2절')).toBeInTheDocument();
     expect(screen.getByText(/benchmark reuse inflates scores/)).toBeInTheDocument();
     expect(screen.getByText(/참고 논문 3편/)).toBeInTheDocument();
     expect(screen.queryByText(/"claims"/)).not.toBeInTheDocument();
+  });
+
+  it('marks a synthesis sentence apart from a machine-checked one', async () => {
+    const user = userEvent.setup();
+    render(<AgentChatScreen />);
+
+    await user.click(screen.getByTestId('agent-menu'));
+    await user.click(await screen.findByText('LLM 평가 근거 정리'));
+
+    const answer = await screen.findByTestId('evidence-answer');
+    const kinds = within(answer)
+      .getAllByText(/벤치마크를 재사용하면|갈리는 지점은/)
+      .map((node) => node.closest('[data-segment-kind]')?.getAttribute('data-segment-kind'));
+    expect(kinds).toEqual(['cited', 'synthesis']);
+    // 숨기지도, 같은 급으로 보이게 하지도 않는다(§2.1) — 배지가 그 구분이다.
+    expect(within(answer).getByTitle(/원문에 그대로 있진 않아요/)).toHaveTextContent('종합');
+  });
+
+  it('links a citation number to its evidence table row', async () => {
+    const user = userEvent.setup();
+    render(<AgentChatScreen />);
+
+    await user.click(screen.getByTestId('agent-menu'));
+    await user.click(await screen.findByText('LLM 평가 근거 정리'));
+
+    const link = within(await screen.findByTestId('evidence-answer')).getByTestId(
+      'evidence-answer-ref',
+    );
+    const target = link.getAttribute('href')?.slice(1) ?? '';
+    // 번호가 실제 행에 닿아야 한다 — 표시 순서와 번호가 갈리면 다른 근거를 가리킨다.
+    expect(screen.getAllByTestId('evidence-row')[0]).toHaveAttribute('id', target);
+    // 행 id는 메시지 단위다 — 한 세션에 evidence 턴이 둘이면 `[1]`이 둘 다 있으므로,
+    // 메시지 id가 안 들어가면 뒤 답변의 링크가 앞 메시지의 표로 뛴다.
+    expect(target).toMatch(/^evidence-turn-msg-demo-1-agent-row-1$/);
   });
 
   it('shows rejected attachments and blocks send until they are removed', async () => {

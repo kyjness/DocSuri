@@ -42,11 +42,35 @@ export interface EvidenceCoverage {
   stoppedReason?: 'sufficient' | 'budget_exhausted' | 'partial_failure' | 'cancelled' | null;
 }
 
+/**
+ * 판단 산문의 문장 하나(v3 §4.2). 산문을 한 덩어리가 아니라 문장 단위로 받는 이유는
+ * 화면이 두 종류를 **구분해서** 그려야 하기 때문이다 — cited는 기계가 확인한 문장,
+ * synthesis는 모델이 근거들을 종합해 쓴 문장이라 원문에 그대로 있지 않다.
+ * `refs`는 근거표 행 번호(1-기반)다.
+ */
+export interface EvidenceAnswerSegment {
+  text: string;
+  refs: number[];
+  kind: 'cited' | 'synthesis';
+}
+
+/** §4.3 기계 검사 결과 — 표시용이 아니라 지표·디버깅용이다. */
+export interface EvidenceAnswerChecks {
+  demoted: number;
+  regenerated: boolean;
+  fallback: boolean;
+}
+
+export interface EvidenceAnswer {
+  segments: EvidenceAnswerSegment[];
+  checks: EvidenceAnswerChecks;
+}
+
 export interface EvidenceResultPayload {
   state: 'ok';
   claims: EvidenceClaim[];
   coverage: EvidenceCoverage;
-  answer?: string | null;
+  answer?: EvidenceAnswer | null;
 }
 
 export type ParsedAgentContent =
@@ -56,11 +80,20 @@ export type ParsedAgentContent =
   | { kind: 'error' }
   | { kind: 'text'; text: string };
 
+/**
+ * 기권 문구(v3 §2.3·§2.4·§2.9) — **대화가 끊기지 않는다.**
+ *
+ * 종전 4종은 "보류했습니다" "수행할 수 없습니다" 같은 시스템 통보라 다음 수를 알려주지
+ * 않았다. 사유마다 사용자가 할 수 있는 일이 다르므로, 무엇을 해보라고 말하는 데까지
+ * 간다 — 후보가 없으면 넓히기, 후보는 있는데 근거가 없으면 다른 표현, 취소는 이어가기.
+ * "제한" "degraded" 같은 내부 용어는 쓰지 않는다(v2 Q10 승계).
+ */
 const ABSTAIN_REASON_LABEL: Record<string, string> = {
-  out_of_corpus: '관련 논문을 찾지 못했습니다.',
-  insufficient_evidence: '근거가 충분하지 않아 답변을 보류했습니다.',
-  llm_unavailable: '일시적으로 분석을 수행할 수 없습니다.',
-  cost_degraded: '일시적으로 서비스 이용량이 제한되어 있습니다.',
+  out_of_corpus:
+    '이 주제를 다룬 논문을 찾지 못했어요. 주제를 넓히거나 다른 용어로 물어봐 주세요.',
+  insufficient_evidence:
+    '이 질문에 대한 근거를 확인한 논문에서 찾지 못했어요. 질문을 다른 표현으로 바꾸거나, 범위를 넓혀 다시 물어봐 주세요.',
+  cost_degraded: '오늘 이용량에 도달했어요. 내일 00:00에 다시 열려요. 이전 답변은 계속 볼 수 있어요.',
   // v3 §2.8 — 취소는 근거 부족이 아니다. 찾기 전에 멈췄다는 사실만 말한다.
   cancelled: '취소했어요. 확인한 논문에서는 아직 근거를 찾기 전이었어요.',
   // 백엔드가 사유를 **지어내는** 것을 막았지, 이 사유를 없앤 것이 아니다 —
@@ -70,7 +103,9 @@ const ABSTAIN_REASON_LABEL: Record<string, string> = {
 };
 
 export function abstainReasonLabel(reason: string): string {
-  return ABSTAIN_REASON_LABEL[reason] ?? '답변을 생성하지 못했습니다.';
+  // 알려지지 않은 사유(internal_error·dispatch_failed 등)는 원인을 지어내지 않고
+  // 다시 해보라고만 말한다 — 백엔드가 실제 코드를 보존하도록 고친 것과 짝이다.
+  return ABSTAIN_REASON_LABEL[reason] ?? '답변을 만들지 못했어요. 잠시 뒤 다시 물어봐 주세요.';
 }
 
 function isEvidenceResultPayload(value: unknown): value is EvidenceResultPayload {

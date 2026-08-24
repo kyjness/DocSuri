@@ -63,12 +63,17 @@ def build_evidence_runner(
     cost_guard: Any | None = None,
     session_factory: Any | None = None,
     graph: Any | None = None,
+    with_answer: bool = True,
 ) -> EvidenceTurnRunner:
     """실 어댑터 조립 — DOCSURI_DOCMODEL_BUCKET + OpenSearch 설정 필요.
 
     cost_guard(U6 단일 권위)를 주면 턴 실행의 비용 게이트에
     연결된다(NFR-C1). graph(=TurnCheckpoints.graph)를 주면 super-step마다 루프 스냅샷이
     저장된다(v3 §5). 안 주면 체크포인트 없이 돈다.
+
+    `with_answer=False`는 판단 층(§4.2)을 붙이지 않는다 — novelty의 중첩 근거형성처럼
+    `answer`를 **읽지 않는** 호출자용이다. 붙이면 턴마다 가장 큰 프롬프트를 한두 번 더
+    보내고 그 비용은 바깥 잡의 상한에 잡히지 않는다.
     """
     # --- Discovery 어댑터 (U2 재사용) ---
     from discovery.adapters.opensearch_index import (
@@ -118,7 +123,9 @@ def build_evidence_runner(
     import boto3
     from botocore.config import Config
 
-    from .adapters.llm_bedrock import BedrockDecider, BedrockExtractor
+    from backend.modules.novelty.adapters.external.base import SourceBreaker
+
+    from .adapters.llm_bedrock import BedrockAnswerWriter, BedrockDecider, BedrockExtractor
 
     rates = {
         "input_usd_per_mtok": settings.input_usd_per_mtok,
@@ -134,8 +141,18 @@ def build_evidence_runner(
         region_name=settings.region_name,
         config=Config(connect_timeout=5, read_timeout=90, retries={"max_attempts": 1}),
     )
-    decider = BedrockDecider(model=settings.model_id, client=client, **rates)
-    extractor = BedrockExtractor(model=settings.model_id, client=client, **rates)
+    # 셋이 같은 엔드포인트를 친다 — 회로차단기도 하나를 나눈다. 따로 들면 decide가 스로틀로
+    # 죽은 직후 answer가 닫힌 회로에서 시작해 같은 엔드포인트를 두 번 더 친다.
+    breaker = SourceBreaker()
+    decider = BedrockDecider(model=settings.model_id, client=client, breaker=breaker, **rates)
+    extractor = BedrockExtractor(
+        model=settings.model_id, client=client, breaker=breaker, **rates
+    )
+    answer = (
+        BedrockAnswerWriter(model=settings.model_id, client=client, breaker=breaker, **rates)
+        if with_answer
+        else None
+    )
 
     # --- 선택 도구: 없으면 등록되지 않고 도구 목록이 자연 축소된다 ---
     external_search = None
@@ -150,6 +167,7 @@ def build_evidence_runner(
         RunnerDeps(
             llm=decider,
             extractor=extractor,
+            answer=answer,
             corpus_search=corpus_search,
             external_search=external_search,
             doc_models=doc_models,

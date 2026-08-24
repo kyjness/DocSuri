@@ -33,7 +33,11 @@ import {
   examinedRangeMessage,
   sourceScopeBadge,
 } from '@/lib/agentChat/evidenceResult';
-import type { EvidenceCoverage } from '@/lib/agentChat/evidenceResult';
+import type {
+  EvidenceAnswer,
+  EvidenceClaim,
+  EvidenceCoverage,
+} from '@/lib/agentChat/evidenceResult';
 import {
   SIMILAR_WORK_COLUMNS,
   confidenceLabel,
@@ -505,8 +509,8 @@ function AgentModePicker({
         data-testid="agent-mode-evidence"
       >
         <strong>Research</strong>
-        <span>질문을 던지면 여러 논문을 대조해 근거 카드로 정리해요</span>
-        <span className={styles.modeHint}>핵심 주장 · 근거 논문 원문 · 서로 다른 논문 간 상충 여부까지</span>
+        <span>질문을 던지면 논문 근거로 판단해 답해요</span>
+        <span className={styles.modeHint}>판단 · 근거표 · 논문 간 상충까지</span>
       </button>
       <button
         type="button"
@@ -683,7 +687,7 @@ function AgentMessageContent({
   // 구조화 결과(근거 카드/보류/오류)는 스트리밍하지 않고 즉시 렌더링한다 — JSON을 한 글자씩
   // 노출하면 완성 전까지 깨져 보인다. 일반 텍스트 답변만 타자기 효과로 스트리밍한다.
   if (parsed.kind === 'evidence') {
-    return <EvidenceResultView result={parsed.result} />;
+    return <EvidenceResultView result={parsed.result} scope={message.id} />;
   }
   if (parsed.kind === 'novelty') {
     return <NoveltyResultView result={parsed.result} />;
@@ -723,48 +727,112 @@ function useStreamingText(content: string, enabled: boolean): string {
   return visible;
 }
 
-function EvidenceResultView({ result }: { result: EvidenceResultPayload }) {
+/**
+ * 판단 산문 + 근거표(v3 §2.1·§8).
+ *
+ * 종전에는 "핵심 주장" 카드를 나열했다 — 화면이 근거 카드 생성기를 광고하고 있었고,
+ * 판단이 어디에도 없었다(§9 ★1·11). 이제 산문 판단이 먼저 오고 그 아래 근거표가 붙는다.
+ * `[n]`은 표의 행 번호이고, 눌러 그 행으로 이동한다.
+ */
+function EvidenceResultView({ result, scope }: { result: EvidenceResultPayload; scope: string }) {
+  // 문장 0건짜리 answer는 없는 것과 같다 — 판정을 한 번만 하고 그 결과를 쓴다.
+  const answer = result.answer?.segments.length ? result.answer : null;
   if (result.claims.length === 0) {
-    // answer만 있는 응답(대화체 요약)은 그 문장을 그대로 보여준다 — 근거 카드가
-    // 없다고 기권 문구로 덮으면 실제 답변이 사라진다.
-    if (result.answer) {
-      return <p className={styles.evidenceIntro}>{result.answer}</p>;
+    // 근거가 없어도 판단 문장이 있으면 그것을 보여준다 — 기권 문구로 덮으면 답이 사라진다.
+    if (answer) {
+      return <AnswerProse answer={answer} scope={scope} />;
     }
     return <p className={styles.abstainNotice}>제시할 수 있는 근거를 찾지 못했습니다.</p>;
   }
   return (
     <div className={styles.evidenceClaims}>
-      <p className={styles.evidenceIntro}>
-        {result.answer ?? (
-          <>
-            아래 카드는 실제 논문 원문에서 확인된 내용만 정리한 근거입니다. 논문마다 다른 이야기를
-            하는 부분은 카드 안에 <strong>상충하는 근거</strong>로 따로 표시됩니다.
-          </>
-        )}
-      </p>
-      {result.claims.map((claim, idx) => (
-        <article key={idx} className={styles.evidenceClaim}>
-          <span className={styles.evidenceLabel}>핵심 주장</span>
-          <p className={styles.evidenceStatement}>{claim.statement}</p>
-          <span className={styles.evidenceLabel}>근거 논문 (원문 인용)</span>
-          <EvidenceRefList refs={claim.supporting} />
-          {claim.conflicting.length > 0 ? (
-            <div className={styles.evidenceConflict}>
-              <strong>상충하는 근거</strong>
-              <span className={styles.evidenceConflictHint}>
-                다른 논문은 이렇게 다르게 이야기하고 있어요
-              </span>
-              <EvidenceRefList refs={claim.conflicting} />
-            </div>
-          ) : null}
-        </article>
-      ))}
+      {answer ? <AnswerProse answer={answer} scope={scope} /> : null}
+      <EvidenceTable claims={result.claims} scope={scope} />
       <p className={styles.evidenceCoverage}>
         <span className={styles.evidenceLabel}>검색 범위</span>
         {' '}참고 논문 {result.coverage.paperCount}편
         {result.coverage.queryUsed ? ` · 검색어: ${result.coverage.queryUsed}` : ''}
       </p>
       <ExaminedRange coverage={result.coverage} />
+    </div>
+  );
+}
+
+const SYNTHESIS_HINT = '여러 근거를 종합한 문장이에요 — 원문에 그대로 있진 않아요';
+
+function AnswerProse({ answer, scope }: { answer: EvidenceAnswer; scope: string }) {
+  return (
+    <p className={styles.evidenceAnswer} data-testid="evidence-answer">
+      {answer.segments.map((segment, idx) => (
+        <span
+          key={idx}
+          className={
+            segment.kind === 'synthesis' ? styles.answerSynthesis : styles.answerCited
+          }
+          data-segment-kind={segment.kind}
+        >
+          {segment.text}
+          {segment.refs.map((ref) => (
+            <a
+              key={ref}
+              className={styles.answerRef}
+              href={`#${evidenceRowId(scope, ref)}`}
+              data-testid="evidence-answer-ref"
+            >
+              [{ref}]
+            </a>
+          ))}
+          {/* 기계가 확인하지 못한 문장은 숨기지도, 같은 급으로 보이게 하지도 않는다(§2.1). */}
+          {segment.kind === 'synthesis' ? (
+            <span className={styles.answerSynthesisBadge} title={SYNTHESIS_HINT}>
+              종합
+            </span>
+          ) : null}{' '}
+        </span>
+      ))}
+    </p>
+  );
+}
+
+// 행 id는 **메시지 단위**다. 한 세션에 evidence 턴이 둘이면 `[n]`이 둘 다 같은 번호를
+// 쓰므로, 메시지로 좁히지 않으면 뒤 답변의 `[1]`이 앞 메시지의 표로 뛰고 DOM id도 겹친다.
+function evidenceRowId(scope: string, row: number): string {
+  return `evidence-${scope}-row-${row}`;
+}
+
+/**
+ * 근거표 — 명제 / 지지 / 상충(§2.1). 상충 있는 행이 위쪽인 것은 백엔드 조립이 정한
+ * 순서를 그대로 따르는 것이다(BR-EV-5). `[n]` 번호도 그 순서에서 나오므로 여기서
+ * 다시 정렬하면 산문의 번호가 다른 행을 가리킨다.
+ */
+function EvidenceTable({ claims, scope }: { claims: EvidenceClaim[]; scope: string }) {
+  return (
+    <div className={styles.evidenceTableWrap}>
+      <table className={styles.evidenceTable} data-testid="evidence-table">
+        <thead>
+          <tr>
+            <th scope="col">명제</th>
+            <th scope="col">지지</th>
+            <th scope="col">상충</th>
+          </tr>
+        </thead>
+        <tbody>
+          {claims.map((claim, idx) => (
+            <tr key={idx} id={evidenceRowId(scope, idx + 1)} data-testid="evidence-row">
+              <th scope="row" className={styles.evidenceStatement}>
+                <span className={styles.evidenceRowNumber}>[{idx + 1}]</span>
+                {claim.statement}
+              </th>
+              <td>
+                <EvidenceRefList refs={claim.supporting} />
+              </td>
+              <td className={claim.conflicting.length > 0 ? styles.evidenceConflict : undefined}>
+                <EvidenceRefList refs={claim.conflicting} />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

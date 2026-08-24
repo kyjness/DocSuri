@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 from docsuri_shared.bedrock import (
@@ -43,6 +44,10 @@ from backend.modules.novelty.adapters.external.base import SourceBreaker, Source
 from backend.modules.novelty.adapters.llm_prompt import estimate_cost
 
 from ..ports.llm import (
+    QUESTION_KINDS,
+    AnswerDraft,
+    AnswerRequest,
+    AnswerSentence,
     LlmDecision,
     LlmUnavailable,
     LoopObservation,
@@ -50,9 +55,9 @@ from ..ports.llm import (
     ToolCallProposal,
 )
 from ..ports.tools import ToolSpec
-from .prompts import build_decide_messages, build_extraction_messages
+from .prompts import build_answer_messages, build_decide_messages, build_extraction_messages
 
-__all__ = ["BedrockDecider", "BedrockExtractor", "IMAGE_BOUNDARY_BANNER"]
+__all__ = ["BedrockAnswerWriter", "BedrockDecider", "BedrockExtractor", "IMAGE_BOUNDARY_BANNER"]
 
 log = logging.getLogger("docsuri.evidence.llm")
 
@@ -62,9 +67,24 @@ log = logging.getLogger("docsuri.evidence.llm")
 # 래퍼만 씌운다.
 FINISH_TOOL = "finish"
 FINISH_DESCRIPTION = "충분한 근거를 모았다고 판단해 조사를 마친다."
+# `question_kind`를 **종료 도구에 둔다**. 설계 §3.3은 "첫 decide에서 선언"이라고 적었지만
+# 이 값을 읽는 곳은 둘 다 종료 이후다 — 판단 프롬프트(§4.2)와 바닥 검사(§3.3, PR 4). 매 도구
+# 호출마다 같은 인자를 반복시키면 프롬프트만 커지고 값이 턴 안에서 흔들린다. 범위 밖 종료
+# (검색 0회)도 첫 턴에 `finish`를 부르는 것으로 표현되므로 선언 시점은 여전히 첫 판단이다.
 FINISH_PARAMETERS: dict[str, Any] = {
     "type": "object",
-    "properties": {"note": {"type": "string", "maxLength": 500}},
+    "properties": {
+        "note": {"type": "string", "maxLength": 500},
+        "question_kind": {
+            "type": "string",
+            "enum": list(QUESTION_KINDS),
+            "description": (
+                "이 질문의 종류. claim=어떤 주장이 맞나 · comparison=A와 B 중 어느 쪽인가 · "
+                "fact=값·연도 등 사실 확인 · out_of_scope=논문으로 답할 질문이 아님."
+            ),
+        },
+    },
+    "required": ["question_kind"],
 }
 
 # 그림 앞에 세우는 신뢰 경계 선언(BR-EV-17). 프로바이더별로 갈리면 한쪽 모델만 그림 안의
@@ -88,8 +108,12 @@ def decision_from_tool_calls(
         return LlmDecision(proposal=TerminationProposal(note=None), cost_estimate_usd=cost)
     name, args = calls[0]
     if name == FINISH_TOOL:
+        kind = str(args.get("question_kind") or "")
         return LlmDecision(
-            proposal=TerminationProposal(note=str(args.get("note") or "") or None),
+            proposal=TerminationProposal(
+                note=str(args.get("note") or "") or None,
+                question_kind=kind if kind in QUESTION_KINDS else None,
+            ),
             cost_estimate_usd=cost,
         )
     return LlmDecision(
@@ -118,18 +142,94 @@ def usage_cost(
     )
 
 
-def parse_json_object(text: str) -> dict[str, Any]:
-    """본문에서 첫 JSON 객체를 잘라낸다. JSON 강제 모드가 없어
-    모델이 코드펜스를 두를 수 있으므로, 양쪽이 같은 파서를 써야 한쪽만 고쳐지지 않는다."""
+def _first_json(text: str, open_ch: str, close_ch: str) -> Any:
+    """본문에서 첫 JSON 값을 잘라낸다. JSON 강제 모드가 없어 모델이 코드펜스를 두르거나
+    앞뒤에 산문을 붙일 수 있다.
+
+    객체용·배열용을 따로 쓰면 한쪽만 고쳐진다 — 이 함수가 그 하나다.
+    """
     text = (text or "").strip()
-    start, end = text.find("{"), text.rfind("}")
+    start, end = text.find(open_ch), text.rfind(close_ch)
     if start == -1 or end == -1:
-        return {}
+        return None
     try:
-        parsed = json.loads(text[start : end + 1])
+        return json.loads(text[start : end + 1])
     except json.JSONDecodeError:
-        return {}
+        return None
+
+
+def parse_json_object(text: str) -> dict[str, Any]:
+    """본문에서 첫 JSON 객체를 잘라낸다."""
+    parsed = _first_json(text, "{", "}")
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _sentence_rows(text: str) -> list | None:
+    """`{"sentences": [...]}`와 **맨 배열** 둘 다 받는다.
+
+    프롬프트가 전자를 못 박지만 모델은 후자로도 답한다(2026-08-24 실측 — 그때 파서가
+    맨 배열을 못 읽어 문장 0건 → A4 거부 → 재생성 → 폴백으로 **판단이 전부 사라졌다**).
+    모양 관용은 파싱이지 판정이 아니다 — 무엇이 유효한 판단인지는 §4.3 검사기가 정한다.
+    """
+    wrapped = parse_json_object(text).get("sentences")
+    if isinstance(wrapped, list):
+        return wrapped
+    parsed = _first_json(text, "[", "]")
+    return parsed if isinstance(parsed, list) else None
+
+
+def parse_json_sentences(text: str) -> tuple[AnswerSentence, ...]:
+    """판단 응답 → 검증 전 문장. 모양이 어긋난 항목은 **버리지 않고 종합 문장으로 남긴다**.
+
+    걸러내면 §4.3 검사가 볼 것이 줄어들어 판정이 어댑터로 새어나온다(추출 쪽과 같은 원칙).
+    `refs`가 정수 목록이 아니면 빈 튜플로 두고, 검사기가 A4·A5로 판정하게 한다.
+    """
+    raw = _sentence_rows(text)
+    if raw is None:
+        return ()
+    sentences = []
+    for row in raw:
+        if not isinstance(row, dict) or not str(row.get("text", "")).strip():
+            continue
+        body = str(row["text"]).strip()
+        # 본문에 박힌 `[1]`은 refs로 흡수한다. 프롬프트가 "text에 넣지 마라"고 하지만 모델은
+        # 넣는다 — 두면 게이트 숫자 정규식이 1을 수치로 뽑아 강등하고, 쌓이면 A4가 터진다.
+        inline = [int(n) for m in _INLINE_REF.finditer(body) for n in m.group(1).split(",")]
+        body = _INLINE_REF.sub("", body).strip()
+        numbers = _coerce_refs(row.get("refs")) + tuple(inline)
+        sentences.append(AnswerSentence(text=body, refs=tuple(dict.fromkeys(numbers))))
+    return tuple(sentences)
+
+
+_INLINE_REF = re.compile(r"\s*\[\s*(\d+(?:\s*,\s*\d+)*)\s*\]")
+
+
+def _coerce_refs(refs: Any) -> tuple[int, ...]:
+    """`refs`의 각 항목을 정수로. `"1"`·`1.0`은 1이고 `true`·`"a"`는 버린다.
+
+    종전에는 `isinstance(n, int)`만 통과시켰다 — 문자열 refs를 내는 응답이면 인용이
+    **전부** 조용히 사라져 A4 거부 → 재생성 → 폴백으로 갔고, 로그로는 "모델이 아무 것도
+    인용하지 않았다"와 구분되지 않았다. 맨 배열 수리와 같은 모양의 구멍이다. bool은
+    int의 하위형이라 따로 막는다.
+    """
+    if not isinstance(refs, list):
+        return ()
+    kept: list[int] = []
+    dropped: list[Any] = []
+    for n in refs:
+        if isinstance(n, bool):
+            dropped.append(n)
+        elif isinstance(n, int):
+            kept.append(n)
+        elif isinstance(n, float) and n.is_integer():
+            kept.append(int(n))
+        elif isinstance(n, str) and n.strip().lstrip("-").isdigit():
+            kept.append(int(n.strip()))
+        else:
+            dropped.append(n)
+    if dropped:
+        log.warning("evidence answer: refs %r를 정수로 읽지 못해 버렸다", dropped)
+    return tuple(kept)
 
 
 def parse_json_items(text: str) -> list[dict[str, Any]]:
@@ -216,6 +316,22 @@ class BedrockDecider(_BedrockBase):
             )
         )
         return decision_from_tool_calls(tool_calls(response), self._usage_cost(response))
+
+
+class BedrockAnswerWriter(_BedrockBase):
+    """판단 층(§4.2) — 게이트를 통과한 근거만 보고 문장 목록을 쓴다.
+
+    `decide`·`extract`와 한 클래스로 묶지 않는 이유는 검증 경계가 다르기 때문이다: 이
+    출력은 §4.3 검사를 지나야 화면에 가고, 거부되면 재생성·폴백 경로로 간다.
+    """
+
+    def write(self, request: AnswerRequest) -> AnswerDraft:
+        system, messages = _split_system(build_answer_messages(request))
+        response = self._invoke(self._body(system, messages))
+        return AnswerDraft(
+            sentences=parse_json_sentences("\n".join(text_blocks(response))),
+            cost_estimate_usd=self._usage_cost(response),
+        )
 
 
 class BedrockExtractor(_BedrockBase):

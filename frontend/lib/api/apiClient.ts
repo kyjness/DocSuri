@@ -76,6 +76,7 @@ import type {
   AgentTurnFinished,
 } from '@/lib/agentChat/types';
 import { mapProgressEvents, readTurnEvents, timelineDetail } from '@/lib/agentChat/sse';
+import type { EvidenceAnswer } from '@/lib/agentChat/evidenceResult';
 
 export interface ApiClientOptions {
   timeoutMs?: number;
@@ -114,7 +115,7 @@ type BackendEvidenceTurnResult = {
   state: 'ok' | 'abstain' | 'pending' | 'error';
   claims?: unknown[];
   coverage?: Record<string, unknown>;
-  answer?: string | null;
+  answer?: EvidenceAnswer | null;
   abstainReason?: string | null;
   errorCode?: string | null;
 };

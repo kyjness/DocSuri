@@ -13,7 +13,12 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from docsuri_shared._generated.dtos.evidence_schema import EvidenceItem, SourceScope
+from docsuri_shared._generated.dtos.evidence_schema import (
+    EvidenceAnswer,
+    EvidenceItem,
+    SourceRef,
+    SourceScope,
+)
 
 from .gate import GateOutcome, PaperEvidenceSource
 from .projection import iter_blocks, normalize, paper_projection
@@ -30,6 +35,7 @@ __all__ = [
     "TerminationReason",
     "ToolCallOutcome",
     "ToolCallRecord",
+    "iter_refs",
     "utc_now",
 ]
 
@@ -211,6 +217,16 @@ class ToolCallRecord:
     at: datetime = field(default_factory=utc_now)
 
 
+def iter_refs(item: EvidenceItem) -> tuple[SourceRef, ...]:
+    """근거 한 건의 출처 전부 — 지지 + 상충. 순서는 지지가 먼저다.
+
+    이 순회가 세 가지 철자로 여섯 곳에 흩어져 있었다(`list(a) + list(b)`,
+    `(*a, *b)`, 두 번 도는 for). 한쪽만 상충을 빠뜨려도 조용히 덜 세는 모양이라
+    이름을 하나 둔다.
+    """
+    return (*item.supporting, *item.conflicting)
+
+
 @dataclass(slots=True)
 class EvidenceAccumulator:
     """게이트 통과분만 쌓인다(INV-EV-6). 루프의 종료 판단 입력이다."""
@@ -227,7 +243,7 @@ class EvidenceAccumulator:
     def cited_paper_ids(self) -> tuple[str, ...]:
         seen: dict[str, None] = {}
         for item in self.items:
-            for ref in (*item.supporting, *item.conflicting):
+            for ref in iter_refs(item):
                 seen.setdefault(ref.paperId, None)
         return tuple(seen)
 
@@ -251,6 +267,12 @@ class LoopState:
     candidates_seen: set[str] = field(default_factory=set)
     termination_reason: TerminationReason | None = None
     notes: list[str] = field(default_factory=list)
+    # 모델이 종료 시점에 선언한 질문 유형(§3.3). 판단 프롬프트가 읽고, PR 4의 바닥 규칙이
+    # 이 값으로 반대측 탐색 조건을 면제한다.
+    question_kind: str | None = None
+    # `answer` 노드가 만든 판단(§4). **마감이 읽으므로 스냅샷에 싣는다** — 고아 턴은
+    # 체크포인트에서 복원해 마감하는데, 여기 없으면 판단만 사라진 부분 답이 나간다.
+    answer: EvidenceAnswer | None = None
 
     @property
     def examined(self) -> int:
@@ -307,6 +329,8 @@ class LoopState:
                 self.termination_reason.value if self.termination_reason else None
             ),
             "notes": list(self.notes),
+            "question_kind": self.question_kind,
+            "answer": self.answer.model_dump(mode="json") if self.answer else None,
         }
 
     @classmethod
@@ -338,6 +362,9 @@ class LoopState:
         reason = data.get("termination_reason")
         state.termination_reason = TerminationReason(reason) if reason else None
         state.notes = list(data.get("notes", []))
+        state.question_kind = data.get("question_kind")
+        answer = data.get("answer")
+        state.answer = EvidenceAnswer.model_validate(answer) if answer else None
         return state
 
 

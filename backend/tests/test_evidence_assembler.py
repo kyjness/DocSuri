@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 from docsuri_shared._generated.dtos.evidence_schema import (
+    AnswerChecks,
+    AnswerSegment,
+    AnswerSegmentKind,
+    EvidenceAnswer,
     EvidenceItem,
     SourceRef,
     SourceScope,
@@ -114,14 +118,32 @@ def test_assembly_is_deterministic():
     assert first.model_dump() == second.model_dump()
 
 
-def test_answer_narrative_is_built_from_claims_only():
-    """C-2의 금지는 새 사실이지 요약 표현이 아니다 — v1 동작을 승계한다."""
+def test_answer_falls_back_to_the_deterministic_narrative_without_a_judgement():
+    """판단 노드가 안 돈 경로 — 답은 나가되 판단 없이(§4.3 폴백)."""
     state = _state(items=[_item("p1"), _item("p9", conflicting=True)])
 
     result = assemble(state, TerminationReason.SUFFICIENT)
 
-    assert "p1에서 확인됨" in result.answer
-    assert "다른 결과를 보고합니다" in result.answer
+    text = " ".join(segment.text for segment in result.answer.segments)
+    assert "p1에서 확인됨" in text
+    assert "다른 결과를 보고합니다" in text
+    assert result.answer.checks.fallback is True
+    assert all(s.kind is AnswerSegmentKind.synthesis for s in result.answer.segments), (
+        "검사를 지나지 않은 문장에 '기계가 확인함' 표시를 줄 수 없다"
+    )
+
+
+def test_a_judgement_from_the_answer_node_wins_over_the_fallback():
+    state = _state(items=[_item("p1")])
+    state.answer = EvidenceAnswer(
+        segments=[AnswerSegment(text="판단", refs=[1], kind=AnswerSegmentKind.cited)],
+        checks=AnswerChecks(demoted=0, regenerated=False, fallback=False),
+    )
+
+    result = assemble(state, TerminationReason.SUFFICIENT)
+
+    assert result.answer.checks.fallback is False
+    assert result.answer.segments[0].text == "판단"
 
 
 def test_answer_is_absent_when_there_is_nothing_to_summarise():

@@ -13,6 +13,13 @@ from typing import Any, Protocol
 from .tools import ImageAttachment, ToolSpec
 
 __all__ = [
+    "QUESTION_KINDS",
+    "QUESTION_KIND_UNKNOWN",
+    "AnswerDraft",
+    "AnswerEvidenceView",
+    "AnswerRequest",
+    "AnswerSentence",
+    "EvidenceAnswerPort",
     "EvidenceExtractionPort",
     "EvidenceLlmPort",
     "LlmDecision",
@@ -93,11 +100,19 @@ class ToolCallProposal:
     decision_note: str | None = None
 
 
+# 질문 유형(설계 v3 §3.3) — 별도 분류기를 두지 않고 모델이 선언한다.
+QUESTION_KINDS = ("claim", "comparison", "fact", "out_of_scope")
+QUESTION_KIND_UNKNOWN = "unknown"
+
+
 @dataclass(frozen=True, slots=True)
 class TerminationProposal:
     """'충분하다' 제안 — 누적 근거가 없으면 수용되지 않는다(INV-EV-2)."""
 
     note: str | None = None
+    # 종료 시점에 선언되는 질문 유형. 예산 소진·취소로 끝난 턴에는 선언 기회가 없어
+    # None이 온다 — 판단 프롬프트는 그때 `unknown`으로 읽는다.
+    question_kind: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,3 +139,61 @@ class EvidenceExtractionPort(Protocol):
     def extract(
         self, *, topic: str, focus: str, papers: tuple[Any, ...]
     ) -> list[dict[str, Any]]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class AnswerEvidenceView:
+    """판단 층에 넘기는 근거 한 건(설계 v3 §4.2).
+
+    `number`는 `assemble`이 화면에 낼 표시 순서의 1-기반 번호다 — 근거표 행 번호와
+    같은 출처이므로 여기서 따로 매기지 않는다.
+    """
+
+    number: int
+    statement: str
+    paper_id: str
+    quote: str
+    locator: str = ""
+    # 이 근거와 상충하는 다른 근거 번호 — §2.2 "갈릴 때 조건을 나눠 말한다"의 재료다.
+    conflicts_with: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class AnswerRequest:
+    """`answer` 노드 입력. **게이트를 통과한 근거만** 실린다(§4.2)."""
+
+    topic: str
+    question_kind: str
+    evidence: tuple[AnswerEvidenceView, ...]
+    # 재생성일 때만 채워진다 — 무엇이 거부됐는지 알려야 다음 시도가 달라진다(§4.3).
+    reject_reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AnswerSentence:
+    """모델이 낸 **검증 전** 문장.
+
+    `kind`(cited/synthesis)는 여기 없다 — 모델이 선언하는 값이 아니라 `refs`에서
+    도메인이 유도한다. 모델에게 "이건 확인된 문장이다"라고 스스로 말하게 두면 그 선언을
+    또 검사해야 하고, 판정 지점이 둘이 된다(게이트가 추출 결과를 다루는 방식과 같다).
+    """
+
+    text: str
+    refs: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class AnswerDraft:
+    sentences: tuple[AnswerSentence, ...]
+    cost_estimate_usd: float | None = None
+
+
+class EvidenceAnswerPort(Protocol):
+    """판단 LLM — `decide`·`extract`와 분리한다.
+
+    셋의 임무가 다르다: decide는 "다음에 무엇을 할까", extract는 "이 논문에서 무엇을
+    인용할까", answer는 "모인 근거로 무엇이라 판단할까". 프롬프트도 검증 경계도 다르고,
+    answer 결과는 반드시 §4.3 검사를 지나야 화면에 간다.
+    """
+
+    def write(self, request: AnswerRequest) -> AnswerDraft: ...
