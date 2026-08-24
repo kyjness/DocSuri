@@ -415,6 +415,53 @@ async def get_feed(
     )
 
 
+@router.get("/jobs/{job_id}/events")
+async def get_events(
+    job_id: str,
+    after: int = 0,
+    principal: Principal = PRINCIPAL_DEP,
+    store: NoveltyStorePort = STORE_DEP,
+) -> Response:
+    """활동 피드의 SSE 스냅샷 — FE가 1초마다 `after=<seq>`로 읽는 표면(N-001 #257).
+
+    `/feed`와 같은 자료(트레이스 투영)를 progress 프레임으로 싣는다. FE는 이 경로만
+    치는데 백엔드에 라우트가 없어 타임라인이 비어 있었다. 스트리밍이 아니라 스냅샷이다 —
+    응답은 즉시 끝나고, 커서(eventId=seq)는 FE가 다음 읽기에 넘긴다.
+    """
+    job = store.get_job(principal.user_id, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    records = store.list_trace(
+        principal.user_id, job_id, after_seq=max(after, 0), limit=200
+    )
+    # evidence와 같은 wire shape·프레이밍을 같은 헬퍼로 만든다 — 손으로 두 벌 만들면 FE 파서
+    # 하나가 읽는 계약이 두 곳에서 갈린다.
+    from backend.modules.evidence.streaming import encode_sse, progress_event
+
+    state = "completed" if job.state in TERMINAL_STATES else "running"
+    frames = [
+        encode_sse(
+            "progress",
+            {
+                **progress_event(
+                    item.tool,
+                    {"tool": item.tool, "query": item.query_summary, "seq": item.seq},
+                    event_id=str(item.seq),
+                ),
+                "state": state,
+                "message": item.text,
+                "createdAt": item.occurred_at.isoformat(),
+            },
+        )
+        for item in project_feed(records)
+    ]
+    return Response(
+        content="".join(frames),
+        media_type="text/event-stream",
+        headers={"cache-control": "no-store"},
+    )
+
+
 @router.get("/jobs/{job_id}/result", response_model=JobResultResponse)
 async def get_result(
     job_id: str,
