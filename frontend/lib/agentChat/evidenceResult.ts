@@ -63,6 +63,10 @@ const ABSTAIN_REASON_LABEL: Record<string, string> = {
   cost_degraded: '일시적으로 서비스 이용량이 제한되어 있습니다.',
   // v3 §2.8 — 취소는 근거 부족이 아니다. 찾기 전에 멈췄다는 사실만 말한다.
   cancelled: '취소했어요. 확인한 논문에서는 아직 근거를 찾기 전이었어요.',
+  // 백엔드가 사유를 **지어내는** 것을 막았지, 이 사유를 없앤 것이 아니다 —
+  // `assembler`가 치명 오류에서 여전히 낸다. 항목을 지웠더니 진짜 LLM 실패가
+  // 일반 폴백 문구로 떨어졌다. 사유를 지우기 전에 생산자를 세는 것이 먼저다.
+  llm_unavailable: '지금은 분석을 끝내지 못했어요. 잠시 뒤 같은 질문을 다시 물어봐 주세요.',
 };
 
 export function abstainReasonLabel(reason: string): string {

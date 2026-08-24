@@ -209,6 +209,10 @@ def compile_loop_graph(checkpointer: BaseCheckpointSaver | None) -> CompiledStat
         try:
             decision = deps.llm.decide(observation, deps.registry.specs())
         except LlmUnavailable as exc:
+            # 사유는 `outcome.detail`에만 실리고 마감이 그것을 버린다 — 로그가 없으면
+            # 화면에 "분석 불가"가 뜨는데 서버에는 아무 것도 안 남는다(2026-08-24 실측:
+            # 골든셋 실행이 조용히 기권했고 DEBUG를 켜도 한 줄이 없었다).
+            log.warning("evidence decide: llm unavailable — %s", exc)
             return end(run, TerminationReason.FATAL_ERROR, f"llm_unavailable: {exc}")
 
         budget_rules.record_cost(deps.budget, decision.cost_estimate_usd)

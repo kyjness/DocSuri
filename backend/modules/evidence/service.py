@@ -317,8 +317,13 @@ class EvidenceFormationService:
             return result.outcome
         if isinstance(result, TurnAbstainResult):
             return result.outcome
-        # TurnErrorResult → 기권으로 수렴(BR-EV-12 fail-closed)
-        return EvidenceAbstainResult(state='abstain', abstainReason='llm_unavailable')
+        # TurnErrorResult → 기권으로 수렴(BR-EV-12 fail-closed). 다만 **사유는 지어내지
+        # 않는다** — 종전에는 어떤 실패든 'llm_unavailable'로 못박고 로그도 안 남겨서, 호출자
+        # (U12)의 산출물에 "LLM 사용 불가"라고 적히는데 워커 로그에는 아무 것도 없었다
+        # (2026-08-24 실측). `error_code`는 이미 SEC-9를 지나 API로 나가는 비기술 코드이므로
+        # 그대로 나른다. worker.py의 같은 자리도 범용 코드를 쓴다.
+        logger.warning('evidence port: turn failed (%s)', result.error_code)
+        return EvidenceAbstainResult(state='abstain', abstainReason=result.error_code)
 
 
 # ---------------------------------------------------------------------------

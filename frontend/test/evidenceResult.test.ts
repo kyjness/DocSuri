@@ -63,6 +63,15 @@ describe('parseAgentContent', () => {
     expect(abstainReasonLabel('some_new_reason')).toBe('답변을 생성하지 못했습니다.');
   });
 
+  it('keeps a label for llm_unavailable — the assembler still emits it', () => {
+    // 백엔드가 이 사유를 **지어내는** 것을 막았을 뿐 생산자가 사라진 게 아니다
+    // (`assembler`가 치명 오류에서 낸다). 항목을 지우면 진짜 LLM 실패가 일반
+    // 폴백 문구로 떨어져 사유가 화면에서 사라진다.
+    const label = abstainReasonLabel('llm_unavailable');
+    expect(label).not.toBe(abstainReasonLabel('some_code_nobody_emits'));
+    expect(label).toContain('분석을 끝내지 못했어요');
+  });
+
   it('parses an error response', () => {
     const parsed = parseAgentContent('[error] evidence_unavailable');
     expect(parsed.kind).toBe('error');

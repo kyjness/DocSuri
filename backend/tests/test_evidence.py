@@ -881,3 +881,33 @@ def test_executor_crash_leaves_a_terminal_turn_not_a_phantom_pending() -> None:
     turns = repo.list_turns('o1', resp.session_id)
     assert isinstance(turns[0].result, TurnErrorResult)
     assert turns[0].result.error_code == 'internal_error'
+
+
+def test_formation_port_reports_the_real_error_code_not_a_made_up_reason(caplog) -> None:
+    """U12가 쓰는 포트가 실패 사유를 지어내면 안 된다.
+
+    종전에는 어떤 `TurnErrorResult`든 `llm_unavailable`로 못박고 로그도 남기지 않아,
+    novelty 산출물에는 "LLM 사용 불가"라고 적히는데 워커 로그에는 아무 것도 없었다
+    (2026-08-24 실측). 원인이 지워지면 조용한 열화가 된다.
+    """
+    import asyncio
+    import logging
+
+    from docsuri_shared._generated.dtos.evidence_schema import EvidenceRequest
+
+    from backend.modules.evidence.models import TurnErrorResult
+    from backend.modules.evidence.service import EvidenceFormationService
+
+    class _FailingRunner(_StubRunner):
+        def run(self, ctx, request, *, attachments=(), on_trace=None, should_stop=None):
+            return TurnErrorResult(error_code='internal_error')
+
+    service = EvidenceFormationService(runner=_FailingRunner())
+    ctx = type('Ctx', (), {'owner_id': 'o1', 'request_id': 'r1'})()
+
+    with caplog.at_level(logging.WARNING):
+        result = asyncio.run(service.form_evidence(EvidenceRequest(topic='q'), ctx))
+
+    assert result.state == 'abstain'
+    assert result.abstainReason == 'internal_error'
+    assert any('internal_error' in record.getMessage() for record in caplog.records)
