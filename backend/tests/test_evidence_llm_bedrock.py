@@ -18,10 +18,14 @@ import pytest
 
 from backend.modules.evidence.adapters.llm_bedrock import (
     IMAGE_BOUNDARY_BANNER,
+    BedrockAnswerWriter,
     BedrockDecider,
     BedrockExtractor,
+    parse_json_sentences,
 )
 from backend.modules.evidence.ports.llm import (
+    AnswerEvidenceView,
+    AnswerRequest,
     LlmUnavailable,
     TerminationProposal,
     ToolCallProposal,
@@ -214,3 +218,118 @@ def test_extraction_tolerates_a_code_fenced_object():
     extractor = _extractor(_text_response(fenced))
 
     assert len(extractor.extract(topic="q", focus="", papers=())) == 1
+
+
+# --- 판단 어댑터(§4.2) ---------------------------------------------------------
+
+
+def _answer_writer(response) -> BedrockAnswerWriter:
+    return BedrockAnswerWriter(model="anthropic.x", client=FakeBedrock(response), **_RATES)
+
+
+def _answer_request() -> AnswerRequest:
+    return AnswerRequest(
+        topic="q",
+        question_kind="comparison",
+        evidence=(
+            AnswerEvidenceView(number=1, statement="s", paper_id="p1", quote="quote text"),
+        ),
+    )
+
+
+def test_answer_parses_sentences_with_their_refs():
+    writer = _answer_writer(
+        _text_response('{"sentences": [{"text": "A", "refs": [1]}, {"text": "B", "refs": []}]}')
+    )
+
+    draft = writer.write(_answer_request())
+
+    assert [s.text for s in draft.sentences] == ["A", "B"]
+    assert draft.sentences[0].refs == (1,)
+
+
+def test_answer_keeps_a_malformed_ref_list_as_a_synthesis_sentence():
+    """걸러내면 §4.3 검사가 볼 것이 줄어 판정이 어댑터로 샌다 — 추출 쪽과 같은 원칙."""
+    writer = _answer_writer(
+        _text_response('{"sentences": [{"text": "A", "refs": "nope"}, {"text": "B"}]}')
+    )
+
+    draft = writer.write(_answer_request())
+
+    assert [s.refs for s in draft.sentences] == [(), ()]
+
+
+def test_answer_drops_empty_sentences_but_not_the_rest():
+    writer = _answer_writer(
+        _text_response('{"sentences": [{"text": "   ", "refs": [1]}, {"text": "B", "refs": [1]}]}')
+    )
+
+    draft = writer.write(_answer_request())
+
+    assert [s.text for s in draft.sentences] == ["B"]
+
+
+def test_a_non_json_answer_yields_no_sentences_rather_than_crashing():
+    """문장이 0건이면 검사기가 A4로 거부하고 재생성·폴백으로 간다 — 여기서 판정하지 않는다."""
+    draft = _answer_writer(_text_response("판단을 못 하겠습니다")).write(_answer_request())
+
+    assert draft.sentences == ()
+
+
+def test_finish_tool_declares_the_question_kind():
+    decider, _ = _decider(_tool_response("finish", {"note": "done", "question_kind": "fact"}))
+
+    decision = decider.decide(observation(), ())
+
+    assert decision.proposal.question_kind == "fact"
+
+
+def test_an_unknown_question_kind_is_not_carried_through():
+    """어휘 밖 값은 지어낸 것이다 — None으로 두고 판단 프롬프트가 unknown으로 읽는다."""
+    decider, _ = _decider(_tool_response("finish", {"question_kind": "vibes"}))
+
+    decision = decider.decide(observation(), ())
+
+    assert decision.proposal.question_kind is None
+
+
+def test_answer_accepts_a_bare_json_array():
+    """모델은 래퍼 없이 배열로도 답한다 — 못 읽으면 판단이 통째로 사라진다(2026-08-24 실측).
+
+    그때 문장 0건 → 검사기 A4 거부 → 재생성 → 폴백으로 흘러, 골든셋 6문항 전부
+    `fallback_rate=1.0`이 나왔다. 예외도 로그도 없이 "판단 없는 답"만 나갔다.
+    """
+    writer = _answer_writer(
+        _text_response('앞에 붙은 산문\n```json\n[{"text": "A", "refs": [1]}]\n```')
+    )
+
+    draft = writer.write(_answer_request())
+
+    assert [(s.text, s.refs) for s in draft.sentences] == [("A", (1,))]
+
+
+def test_answer_still_prefers_the_documented_wrapper():
+    writer = _answer_writer(_text_response('{"sentences": [{"text": "B", "refs": [1]}]}'))
+
+    assert [s.text for s in writer.write(_answer_request()).sentences] == ["B"]
+
+
+def test_answer_coerces_int_like_refs_and_drops_only_the_unreadable():
+    """`"1"`·`1.0`은 1이다. 정수만 통과시키면 문자열 refs 응답의 인용이 **전부** 사라져
+    A4 → 재생성 → 폴백으로 판단이 없어진다 — 맨 배열과 같은 모양의 구멍이다."""
+    sentences = parse_json_sentences(
+        '{"sentences":[{"text":"a","refs":["1",2]},{"text":"b","refs":[1.0]},'
+        '{"text":"c","refs":[true,"x",1.5]}]}'
+    )
+
+    assert [s.refs for s in sentences] == [(1, 2), (1,), ()]
+
+
+def test_answer_absorbs_an_inline_marker_into_refs_and_strips_it_from_text():
+    """본문의 `[1, 2]`는 refs로 옮기고 text에서는 지운다 — refs가 권위다."""
+    (sentence,) = parse_json_sentences(
+        '{"sentences":[{"text":"데이터가 적을 때는 LoRA가 낫다 [1, 2]","refs":[2]}]}'
+    )
+
+    assert sentence.text == "데이터가 적을 때는 LoRA가 낫다"
+    assert sentence.refs == (2, 1)

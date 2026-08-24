@@ -93,7 +93,15 @@ Strands는 "취소해도 부분 결과"가 안 되고(세션 저장이 대화 �
 - 같은 세션에 요청이 겹치면 체크포인트가 갈라진다 — 세션별 잠금을 우리가 건다.
 - 재개 시 입력을 다시 주면 처음부터 돈다 — `None`으로 호출해야 끊긴 데서 잇는다.
 
-**바뀌지 않는 것**: 날조 게이트·도구 6개·조립·프롬프트·저장·Bedrock 어댑터. 노드는 평범한 함수이므로 LLM 연결을 LangChain으로 바꾸지 않는다. 바뀌는 것은 `domain/loop.py` 두 벌뿐이다.
+**바뀌지 않는 것**: 날조 게이트·도구 6개·조립·프롬프트·저장·Bedrock 어댑터. 노드는 평범한 함수이므로
+LLM 연결은 손대지 않아도 된다 — 바뀌는 것은 `domain/loop.py` 두 벌뿐이다.
+
+*(2026-08-24 정정: 종전 문장은 "LLM 연결을 LangChain으로 바꾸지 않는다"였다. 그것은 이 Q의
+선택지가 아니었고 답한 적도 없는데 결정처럼 읽혔다. 이 Q가 정한 것은 **LangGraph를 쓴다**
+하나뿐이며, LangChain 도입 여부는 **미결**이다 — 판단하려면 별도 Q를 세운다. 판단에 필요한
+사실: `langchain-core`는 langgraph의 전이 의존성으로 **이미 들어와 있고**, LangChain이 대체할
+모델 바인딩은 `docsuri_shared.bedrock` 한 벌을 evidence·novelty·summarization·discovery
+**네 모듈이 공유**한다. evidence만 바꾸면 Bedrock 경로가 두 갈래가 된다.)*
 
 출처: [LangGraph durable execution](https://docs.langchain.com/oss/python/langgraph/durable-execution) · [FastAPI + LangGraph disconnect](https://ranjankumar.in/fastapi-langgraph-client-disconnect-durability) · [Strands interrupts](https://strandsagents.com/docs/user-guide/concepts/interrupts/) · [Strands session management](https://strandsagents.com/docs/user-guide/concepts/agents/session-management/) · [Pydantic AI + DBOS](https://pydantic.dev/docs/ai/integrations/durable_execution/dbos/)
 

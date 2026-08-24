@@ -12,7 +12,12 @@
 from __future__ import annotations
 
 from docsuri_shared._generated.dtos.evidence_schema import (
+    AbstainReason,
+    AnswerChecks,
+    AnswerSegment,
+    AnswerSegmentKind,
     EvidenceAbstainResult,
+    EvidenceAnswer,
     EvidenceCoverage,
     EvidenceResult,
     StoppedReason,
@@ -26,13 +31,17 @@ __all__ = [
     "ABSTAIN_LLM_FAILURE",
     "ABSTAIN_OUT_OF_CORPUS",
     "assemble",
+    "comparison_order",
+    "fallback_answer",
 ]
 
 # 비기술 사유만(SEC-9, INV-EV-5). 내부 상태·예외 상세는 절대 싣지 않는다.
-ABSTAIN_OUT_OF_CORPUS = "out_of_corpus"
-ABSTAIN_INSUFFICIENT = "insufficient_evidence"
-ABSTAIN_LLM_FAILURE = "llm_unavailable"
-ABSTAIN_CANCELLED = "cancelled"
+# **어휘의 정본은 스키마의 `AbstainReason`이다** — 여기서 문자열을 새로 적으면 화면
+# 라벨 맵과 조용히 갈린다(2026-08-24에 실제로 갈렸다).
+ABSTAIN_OUT_OF_CORPUS = AbstainReason.out_of_corpus
+ABSTAIN_INSUFFICIENT = AbstainReason.insufficient_evidence
+ABSTAIN_LLM_FAILURE = AbstainReason.llm_unavailable
+ABSTAIN_CANCELLED = AbstainReason.cancelled
 
 _STOPPED_BY_REASON = {
     TerminationReason.SUFFICIENT: StoppedReason.sufficient,
@@ -69,17 +78,23 @@ def assemble(
         candidates=state.candidates,
         stoppedReason=_STOPPED_BY_REASON.get(reason, StoppedReason.partial_failure),
     )
-    ordered = _comparison_order(items)
+    ordered = comparison_order(items)
+    # `answer` 노드가 만든 판단이 있으면 그것이 답이다. 없으면(노드가 안 도는 경로 —
+    # 판단 포트 미구성, 검사 전면 거부) 결정론 이어붙이기로 떨어진다: 답은 나가되
+    # 판단 없이. 검사를 못 통과한 판단은 화면에 가지 않는다(§4.3, C-2 fail-closed).
     return EvidenceResult(
         state="ok",
         claims=ordered,
         coverage=coverage,
-        answer=_narrative(ordered),
+        answer=state.answer or fallback_answer(ordered),
     )
 
 
-def _comparison_order(items: list) -> list:
+def comparison_order(items: list) -> list:
     """논문 간 비교형 — 상충이 있는 명제를 먼저 둔다(쟁점 오버레이의 데이터 기반).
+
+    **판단 층도 이 순서를 쓴다.** `[n]`은 이 순서의 1-기반 번호이고 근거표 행 번호와 같은
+    출처다 — 두 곳이 다른 순서를 쓰면 번호가 다른 행을 가리킨다(§4.2).
 
     단순 나열 금지(BR-EV-5)의 최소 구현이다. 정렬은 안정적이어야 하므로 원래
     순서를 보조 키로 유지한다.
@@ -94,14 +109,31 @@ def _comparison_order(items: list) -> list:
 _MAX_NAMED_PAPERS = 3
 
 
-def _narrative(items: list) -> str | None:
-    """claims만으로 조립하는 대화체 요약(v1 승계).
+def fallback_answer(
+    items: list, *, regenerated: bool = False
+) -> EvidenceAnswer | None:
+    """판단 없는 답 — claims만으로 조립하는 결정론 이어붙이기(v1 `_narrative` 승계).
 
-    C-2의 금지는 **새 사실**이지 요약 표현이 아니다 — 이미 게이트를 통과한
-    statement와 paperId만 문장으로 잇는다. LLM을 타지 않으므로 결정론이다.
+    문장은 전부 `synthesis`다. 근거에서 뽑은 문장이지만 **판단 층 검사를 지나지 않았으므로**
+    "기계가 확인함" 표시를 줄 수 없다 — 표시의 뜻이 §4.3 검사 통과라서, 여기에 cited를
+    붙이면 화면에서 두 종류가 구분되지 않는다.
+
+    C-2의 금지는 **새 사실**이지 요약 표현이 아니다 — 이미 게이트를 통과한 statement와
+    paperId만 문장으로 잇는다. LLM을 타지 않으므로 결정론이다.
     """
-    if not items:
+    sentences = _narrative_sentences(items)
+    if not sentences:
         return None
+    return EvidenceAnswer(
+        segments=[
+            AnswerSegment(text=text, refs=[], kind=AnswerSegmentKind.synthesis)
+            for text in sentences
+        ],
+        checks=AnswerChecks(demoted=0, regenerated=regenerated, fallback=True),
+    )
+
+
+def _narrative_sentences(items: list) -> list[str]:
     sentences: list[str] = []
     for item in items:
         sentence = item.statement.rstrip(".。 ")
@@ -112,7 +144,7 @@ def _narrative(items: list) -> str | None:
         if conflicting:
             sentence += f". 다만 {_listing(conflicting)}는 다른 결과를 보고합니다"
         sentences.append(sentence + ".")
-    return " ".join(sentences)
+    return sentences
 
 
 def _distinct(refs) -> list[str]:

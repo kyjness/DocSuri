@@ -6,11 +6,8 @@ from types import SimpleNamespace
 
 from docsuri_shared._generated.dtos.evidence_schema import EvidenceRequest
 
-from backend.modules.evidence.domain.models import AgentRunContext
 from backend.modules.evidence.models import TurnAbstainResult, TurnSuccessResult
 from backend.modules.evidence.ports.llm import (
-    LlmDecision,
-    TerminationProposal,
     ToolCallProposal,
 )
 from backend.modules.evidence.ports.sources import PaperCandidate
@@ -19,26 +16,15 @@ from backend.modules.evidence.runner import (
     EvidenceTurnRunner,
     RunnerDeps,
 )
+from backend.modules.evidence.testing import ScriptedLlm, run_context
 from backend.tests.evidence_fakes import (
     TABLE_ROW,
     doc_model,
 )
 
-CTX = AgentRunContext(owner_id="o1", session_id="s1", turn_id="t1")
+CTX = run_context()
 
 
-
-
-class ScriptedLlm:
-    def __init__(self, script) -> None:
-        self.script = list(script)
-        self.seen_tools: list[frozenset[str]] = []
-
-    def decide(self, observation, tools):
-        self.seen_tools.append(frozenset(spec.name for spec in tools))
-        if not self.script:
-            return LlmDecision(proposal=TerminationProposal())
-        return LlmDecision(proposal=self.script.pop(0))
 
 
 class Extractor:

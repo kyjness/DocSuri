@@ -416,7 +416,9 @@ def _build_evidence_port() -> Any | None:
         evidence_settings = EvidenceSettings.from_env()
         if not evidence_settings.evidence_enabled:
             return None
-        runner = build_evidence_runner(evidence_settings)
+        # 판단 층은 붙이지 않는다 — 이 포트의 소비자(`_to_result`)는 answer를 읽지 않고,
+        # 그 비용은 이 잡의 상한에 잡히지 않는다.
+        runner = build_evidence_runner(evidence_settings, with_answer=False)
         return EvidenceFormationService(runner=runner)
     except EnvConfigError:
         raise  # 위와 같다

@@ -42,8 +42,11 @@ from .projection import normalize
 __all__ = [
     "MIN_QUOTE_CHARS",
     "GateOutcome",
+    "NumberPool",
     "PaperEvidenceSource",
     "RejectReason",
+    "id_key",
+    "numbers_in",
     "run_gate",
 ]
 
@@ -107,7 +110,8 @@ class GateOutcome:
         return sum(self.rejections.values())
 
 
-def _numbers(text: str) -> set[str]:
+def numbers_in(text: str) -> set[str]:
+    """§4.3 A2(판단 문장의 숫자 검사)도 이 함수를 쓴다 — 판정 지점이 둘이 되면 어긋난다."""
     return set(_NUMBER.findall(text))
 
 
@@ -143,7 +147,7 @@ def _normalize_number(token: str) -> set[str]:
 
 
 @dataclass(slots=True)
-class _NumberPool:
+class NumberPool:
     """statement 숫자의 대조 대상 — 등가 표기 집합 + 같은 스케일의 원값 목록.
 
     반올림 허용(95.3은 95.34에 근거)은 **같은 스케일에서만** 적용한다. ×100/÷100
@@ -162,7 +166,7 @@ class _NumberPool:
             if value is not None:
                 self.values.append(value)
 
-    def merge(self, other: _NumberPool) -> None:
+    def merge(self, other: NumberPool) -> None:
         self.forms |= other.forms
         self.values.extend(other.values)
 
@@ -190,14 +194,15 @@ def _resolve_source(
     direct = sources.get(paper_id)
     if direct is not None:
         return direct
-    wanted = _id_key(paper_id)
+    wanted = id_key(paper_id)
     for key, source in sources.items():
-        if _id_key(key) == wanted:
+        if id_key(key) == wanted:
             return source
     return None
 
 
-def _id_key(paper_id: str) -> str:
+def id_key(paper_id: str) -> str:
+    """논문 id 대조 키 — 버전 접미사·`arxiv:` 접두사를 뗀다. §4.3 A3도 이 키를 쓴다."""
     value = paper_id.strip().lower().removeprefix("arxiv:")
     head, sep, tail = value.rpartition("v")
     return head if sep and head and tail.isdigit() else value
@@ -301,8 +306,8 @@ def _validate_ref(
 def _grounded_pool(
     refs: list[tuple[SourceRef, str]],
     sources: dict[str, PaperEvidenceSource],
-    text_pools: dict[str, _NumberPool],
-) -> _NumberPool:
+    text_pools: dict[str, NumberPool],
+) -> NumberPool:
     """statement가 쓸 수 있는 숫자의 대조 풀.
 
     인용문의 숫자 + **그림 해석 출처가 있으면 그 논문 텍스트 전체의 숫자**.
@@ -313,16 +318,16 @@ def _grounded_pool(
     전문 숫자 풀은 `run_gate` 호출당 논문마다 1회만 만든다(`text_pools` 캐시) —
     항목마다 전문 정규식·정규화를 다시 돌리지 않는다.
     """
-    pool = _NumberPool()
+    pool = NumberPool()
     for ref, quote in refs:
-        pool.add_tokens(_numbers(quote))
+        pool.add_tokens(numbers_in(quote))
         if ref.sourceScope == SourceScope.figure:
             source = sources.get(ref.paperId)
             if source is not None:
                 cached = text_pools.get(ref.paperId)
                 if cached is None:
-                    cached = _NumberPool()
-                    cached.add_tokens(_numbers(source.text))
+                    cached = NumberPool()
+                    cached.add_tokens(numbers_in(source.text))
                     text_pools[ref.paperId] = cached
                 pool.merge(cached)
     return pool
@@ -335,7 +340,7 @@ def run_gate(
     """LLM이 제안한 근거 항목 → 검증을 통과한 `EvidenceItem`만."""
     rejections: Counter[str] = Counter()
     items: list[EvidenceItem] = []
-    text_pools: dict[str, _NumberPool] = {}
+    text_pools: dict[str, NumberPool] = {}
 
     for raw in raw_items or []:
         if not isinstance(raw, dict):
@@ -365,7 +370,7 @@ def run_gate(
             rejections[RejectReason.NO_SUPPORTING] += 1
             continue
 
-        statement_numbers = _numbers(statement)
+        statement_numbers = numbers_in(statement)
         if statement_numbers:
             pool = _grounded_pool(supporting, sources, text_pools)
             if not all(pool.grounds(token) for token in statement_numbers):

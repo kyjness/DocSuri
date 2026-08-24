@@ -98,7 +98,9 @@ class EvidenceSettings:
             max_tool_calls_total=_env_int('DOCSURI_EVIDENCE_MAX_TOOL_CALLS', 30),
             cap_corpus_search=_env_int('DOCSURI_EVIDENCE_CAP_CORPUS_SEARCH', 5),
             cap_external_search=_env_int('DOCSURI_EVIDENCE_CAP_EXTERNAL_SEARCH', 3),
-            cap_fetch_paper=_env_int('DOCSURI_EVIDENCE_CAP_FETCH_PAPER', 3),
+            # 3 → 8 (2026-08-24 실측). 답할 수 있는 질문에서 모델이 실제로 부른 횟수는
+            # **6회**였고, 3에 막힌 턴은 논문 3편을 확보한 채 근거 0건으로 기권했다.
+            cap_fetch_paper=_env_int('DOCSURI_EVIDENCE_CAP_FETCH_PAPER', 8),
             cap_read_paper=_env_int('DOCSURI_EVIDENCE_CAP_READ_PAPER', 8),
             cap_view_figure=_env_int('DOCSURI_EVIDENCE_CAP_VIEW_FIGURE', 6),
             cap_extract_evidence=_env_int('DOCSURI_EVIDENCE_CAP_EXTRACT_EVIDENCE', 8),

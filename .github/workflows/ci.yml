@@ -317,6 +317,8 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: TypeScript check
         run: pnpm exec tsc --noEmit
+      # 기계 생성분(gen-types.mjs의 MACHINE_GENERATED)만 여기서 잡힌다. 나머지 스키마는
+      # types/generated/*.ts가 손으로 큐레이션된 것이라 .schema-raw/ 덤프를 사람이 본다.
       - name: Type drift guard (generated types match shared/ schemas)
         run: pnpm run gen:types && git diff --exit-code types/
       - name: Lint

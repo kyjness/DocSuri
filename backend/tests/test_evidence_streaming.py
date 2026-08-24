@@ -41,26 +41,23 @@ def _principal(user_id: str | None = None) -> Principal:
 def _success_result() -> TurnSuccessResult:
     from docsuri_shared._generated.dtos.evidence_schema import (
         EvidenceCoverage,
-        EvidenceItem,
         EvidenceResult,
-        SourceRef,
     )
+
+    from backend.modules.evidence.testing import evidence_item
 
     return TurnSuccessResult(
         outcome=EvidenceResult(
             state='ok',
             claims=[
-                EvidenceItem(
-                    statement=CLAIM_STATEMENT,
-                    supporting=[
-                        SourceRef(
-                            paperId='2401.01234',
-                            recordRef='rec-1',
-                            anchor='s4.p2',
-                            quote=CLAIM_QUOTE,
-                        )
-                    ],
-                    conflicting=[],
+                evidence_item(
+                    CLAIM_STATEMENT,
+                    paper_id='2401.01234',
+                    record_ref='rec-1',
+                    anchor='s4.p2',
+                    quote=CLAIM_QUOTE,
+                    anchor_type=None,
+                    source_scope=None,
                 )
             ],
             coverage=EvidenceCoverage(paperCount=1, queryUsed='benchmark reuse'),

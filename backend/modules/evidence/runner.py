@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from docsuri_shared._generated.dtos.evidence_schema import (
+    AbstainReason,
     EvidenceAbstainResult,
     EvidenceRequest,
 )
@@ -36,7 +37,6 @@ from .adapters.tools import (
 from .domain.loop import LoopDeps, compile_loop_graph, run_loop
 from .domain.models import (
     AgentRunContext,
-    BudgetConsumed,
     LoopBudget,
     LoopState,
     PaperHandle,
@@ -54,7 +54,7 @@ _RESERVED_ID_PREFIXES = re.compile(r"^(?:userdoc|upload|attachment):", re.IGNORE
 
 __all__ = ["EvidenceTurnRunner", "RunnerDeps"]
 
-ABSTAIN_COST_DEGRADED = "cost_degraded"
+ABSTAIN_COST_DEGRADED = AbstainReason.cost_degraded
 
 
 @dataclass(slots=True)
@@ -63,6 +63,9 @@ class RunnerDeps:
 
     llm: Any
     extractor: Any
+    # 판단 층(§4.2). None이면 `answer` 노드가 아무 것도 안 하고 마감이 결정론
+    # 이어붙이기로 떨어진다 — 다른 선택 의존성과 같은 규칙이다.
+    answer: Any | None = None
     corpus_search: Any | None = None
     external_search: Any | None = None
     doc_models: Any | None = None
@@ -114,9 +117,7 @@ class EvidenceTurnRunner:
         scope = _effective_scope(request)
         _seed_explicit(state, request, scope)
 
-        budget = (
-            self._deps.budget_factory() if self._deps.budget_factory else _default_budget()
-        )
+        budget = (self._deps.budget_factory or _default_budget)()
         registry = self._build_registry(state, scope=scope)
         outcome = run_loop(
             state,
@@ -127,6 +128,7 @@ class EvidenceTurnRunner:
                 ctx=ctx,
                 on_trace=on_trace,
                 should_stop=should_stop,
+                answer=self._deps.answer,
             ),
             graph=self._graph,
         )
@@ -212,27 +214,12 @@ def _seed_explicit(state: LoopState, request: EvidenceRequest, scope: str) -> No
 
 
 def _default_budget() -> LoopBudget:
-    """NFR 시작값(nfr-requirements §3). 실측 후 조정하며 변경은 문서 갱신을 동반한다."""
-    from .ports.tools import (
-        TOOL_CORPUS_SEARCH,
-        TOOL_EXTERNAL_SEARCH,
-        TOOL_EXTRACT_EVIDENCE,
-        TOOL_FETCH_PAPER,
-        TOOL_READ_PAPER,
-        TOOL_VIEW_FIGURE,
-    )
+    """`budget_factory`가 안 주어졌을 때의 예산 — **정의는 `EvidenceSettings`에만 있다**.
 
-    return LoopBudget(
-        max_iterations=12,
-        max_tool_calls_total=30,
-        max_tool_calls={
-            TOOL_CORPUS_SEARCH: 5,
-            TOOL_EXTERNAL_SEARCH: 3,
-            TOOL_FETCH_PAPER: 3,
-            TOOL_READ_PAPER: 8,
-            TOOL_VIEW_FIGURE: 6,
-            TOOL_EXTRACT_EVIDENCE: 8,
-        },
-        token_cost_limit_usd=0.50,
-        consumed=BudgetConsumed(),
-    )
+    종전에는 이 함수가 settings의 아홉 수치를 통째로 복제하고 "함께 바꾼다"는 주석으로
+    맞춰뒀다. `cap_fetch_paper`를 3→8로 올릴 때 두 곳을 다 고쳐야 한다는 사실이 주석에만
+    있었던 것인데, 주석은 기구가 아니다. 이제 env 오버라이드도 이쪽으로 따라온다.
+    """
+    from .settings import EvidenceSettings
+
+    return EvidenceSettings.from_env().build_loop_budget()

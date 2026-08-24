@@ -144,6 +144,31 @@ def _dump(outcome: Any) -> dict:
     return dump(mode="json", exclude_none=True) if dump else dict(outcome)
 
 
+def _upgrade_answer(payload: dict) -> dict:
+    """`answer`가 문자열인 옛 행을 새 계약으로 감싼다 — 읽기 전용, DB는 손대지 않는다.
+
+    v3 §4 이전의 `answer`는 근거를 결정론으로 이어붙인 문자열이었고 배포 DB에 그 행이
+    남아 있다(2026-08-24: 5건). 새 계약은 객체이고 `extra=forbid`라 그대로 읽으면
+    `model_validate`가 던지고, 그 세션 조회 전체가 500이 된다. 옛 문자열은 실제로
+    "판단 없는 답"이었으므로 폴백 모양(문장 전부 synthesis · fallback=true)이 사실과 맞다.
+    """
+    answer = payload.get("answer")
+    if not isinstance(answer, str):
+        return payload
+    from docsuri_shared._generated.dtos.evidence_schema import AnswerSegmentKind
+
+    segments = [
+        {"text": line.strip(), "refs": [], "kind": AnswerSegmentKind.synthesis.value}
+        for line in answer.splitlines()
+        if line.strip()
+    ]
+    upgraded = {
+        "segments": segments,
+        "checks": {"demoted": 0, "regenerated": False, "fallback": True},
+    }
+    return {**payload, "answer": upgraded if segments else None}
+
+
 def _restore(status: str, payload: dict | None, started_at: datetime | None = None) -> TurnResult:
     from docsuri_shared._generated.dtos.evidence_schema import (
         EvidenceAbstainResult,
@@ -151,7 +176,7 @@ def _restore(status: str, payload: dict | None, started_at: datetime | None = No
     )
 
     if status == "ok" and payload:
-        return TurnSuccessResult(outcome=EvidenceResult.model_validate(payload))
+        return TurnSuccessResult(outcome=EvidenceResult.model_validate(_upgrade_answer(payload)))
     if status == "abstain" and payload:
         return TurnAbstainResult(outcome=EvidenceAbstainResult.model_validate(payload))
     if status == "error":

@@ -25,19 +25,26 @@ const baseSessions: AgentSessionSnapshot[] = [
         status: 'sent',
       },
       {
-        id: 'msg-demo-2',
-        role: 'agent',
-        content:
-          '내부 코퍼스 기준으로 벤치마크 신뢰도, 데이터 누수, 평가 재현성 쟁점을 우선 비교했습니다.',
-        createdAt: '2026-07-01T00:10:00Z',
-        status: 'sent',
-      },
-      {
         id: 'msg-demo-2b',
         role: 'agent',
-        // U11 evidence orchestrator 결과(JSON) — 화면 테스트가 근거 카드+인용 앵커 렌더링을 검증한다(#339).
+        // U11 evidence 결과(JSON) — 화면 테스트가 판단 산문 + 근거표 렌더를 검증한다(v3 §2.1·§8).
         content: JSON.stringify({
           state: 'ok',
+          answer: {
+            segments: [
+              {
+                text: '벤치마크를 재사용하면 점수가 부풀려져요',
+                refs: [1],
+                kind: 'cited',
+              },
+              {
+                text: '갈리는 지점은 재사용 사이에 데이터가 얼마나 갱신됐느냐예요',
+                refs: [],
+                kind: 'synthesis',
+              },
+            ],
+            checks: { demoted: 0, regenerated: false, fallback: false },
+          },
           claims: [
             {
               statement: '벤치마크 재사용은 데이터 누수 위험을 높인다.',

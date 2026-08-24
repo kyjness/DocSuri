@@ -40,8 +40,19 @@ class BudgetDenial:
 
 
 def begin_iteration(budget: LoopBudget) -> BudgetDenial | None:
-    """한 회차(observe→decide→act) 시작 — 반복 한도 검사 후 소비."""
+    """한 회차(observe→decide→act) 시작 — 비용·반복 한도 검사 후 소비.
+
+    비용을 **여기서도** 본다. 도구 캡 거부가 턴을 끝내지 않고 루프로 돌아오게 되면서,
+    캡에 막힌 도구를 계속 제안하는 모델은 유료 decide 호출을 반복 상한까지 쓸 수 있게
+    됐다 — `check_and_consume_tool_call`은 캡 검사가 비용 검사보다 앞이라 비용 초과를 못
+    보고, decide 자체에는 비용 검사가 없었다.
+    """
     consumed = budget.consumed
+    if is_cost_exhausted(budget):
+        return BudgetDenial(
+            BudgetDenialReason.COST_EXHAUSTED,
+            f"cost ${consumed.cost_usd:.2f}/${budget.token_cost_limit_usd:.2f}",
+        )
     if consumed.iterations >= budget.max_iterations:
         return BudgetDenial(
             BudgetDenialReason.ITERATIONS_EXHAUSTED,

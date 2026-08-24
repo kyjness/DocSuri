@@ -6,6 +6,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from docsuri_shared._generated.dtos.evidence_schema import (
+    EvidenceAnswer,
     EvidenceCoverage,
     EvidenceItem,
 )
@@ -149,7 +150,7 @@ class TurnResultOut(BaseModel):
     state: Literal['ok', 'abstain', 'pending', 'error']
     claims: list[EvidenceItem] | None = None
     coverage: EvidenceCoverage | None = None
-    answer: str | None = None
+    answer: EvidenceAnswer | None = None
     abstain_reason: str | None = Field(None, alias='abstainReason')
     started_at: datetime | None = Field(None, alias='startedAt')
     error_code: str | None = Field(None, alias='errorCode')

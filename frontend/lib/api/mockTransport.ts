@@ -628,11 +628,14 @@ function evidenceSession(session: AgentSessionSummary) {
   };
 }
 
-/**
- * 저장된 메시지 열 → v2 TurnOut 열. 사용자 메시지가 턴을 열고, 뒤따르는 agent
- * 메시지가 그 턴의 결과가 된다. JSON이면 EvidenceResult로, `[abstain]`이면 기권으로,
- * 평문이면 answer로 접는다(실 서버의 answer 필드에 대응).
- */
+/** 평문 한 덩어리 → 판단 없는 answer. 실 서버의 `fallback_answer`와 같은 모양이다. */
+function mockFallbackAnswer(text: string) {
+  return {
+    segments: [{ text, refs: [] as number[], kind: 'synthesis' as const }],
+    checks: { demoted: 0, regenerated: false, fallback: true },
+  };
+}
+
 // 한 번 읽을 때마다 "아직 실행 중" 구간을 소비한다(setMockEvidenceTurnHoldReads).
 function mockTurnOut(pending: MockEvidenceTurn) {
   if (pending.reads++ < mockEvidenceTurnHoldReads) {
@@ -667,6 +670,12 @@ function progressWire(event: AgentTimelineEvent) {
   };
 }
 
+/**
+ * 저장된 메시지 열 → v2 TurnOut 열. 사용자 메시지가 턴을 열고, 뒤따르는 agent
+ * 메시지가 그 턴의 결과가 된다. JSON이면 EvidenceResult로, `[abstain]`이면 기권으로,
+ * 평문이면 판단 없는 answer(§4.3 폴백)로 접는다 — 실 서버가 판단 층을 못 태웠을 때
+ * 내보내는 것과 같은 모양이다(문장 전부 synthesis · fallback=true).
+ */
 function turnsFromMessages(sessionId: string, messages: AgentMessage[]) {
   const turns: Array<{
     sessionId: string;
@@ -700,7 +709,10 @@ function turnsFromMessages(sessionId: string, messages: AgentMessage[]) {
     try {
       const parsed = JSON.parse(content) as Record<string, unknown>;
       if (parsed && parsed.state === 'ok') {
-        current.result = pendingAnswer && !parsed.answer ? { ...parsed, answer: pendingAnswer } : parsed;
+        current.result =
+          pendingAnswer && !parsed.answer
+            ? { ...parsed, answer: mockFallbackAnswer(pendingAnswer) }
+            : parsed;
         pendingAnswer = null;
         continue;
       }
@@ -710,7 +722,12 @@ function turnsFromMessages(sessionId: string, messages: AgentMessage[]) {
     // 평문 agent 메시지: 결과가 아직 없으면 answer-only ok로, JSON이 뒤따르면 병합된다.
     pendingAnswer = content;
     if ((current.result as { state?: string }).state === 'pending') {
-      current.result = { state: 'ok', claims: [], coverage: { paperCount: 0 }, answer: content };
+      current.result = {
+        state: 'ok',
+        claims: [],
+        coverage: { paperCount: 0 },
+        answer: mockFallbackAnswer(content),
+      };
     }
   }
   return turns;

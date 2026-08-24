@@ -134,9 +134,73 @@ class EvidenceCoverage(BaseModel):
     )
 
 
+class AnswerSegmentKind(StrEnum):
+    """
+    cited = refs의 근거로 기계가 확인한 문장 · synthesis = 모델이 근거들을 종합해 쓴 문장(기계가 확인할 수 없다). Trace: v3 §2.1, §4.3.
+    """
+
+    cited = 'cited'
+    synthesis = 'synthesis'
+
+
+class AnswerSegment(BaseModel):
+    """
+    판단 산문의 문장 하나(v3 §4.2). 산문을 한 덩어리가 아니라 문장 단위로 내보내는 이유는 §4.3 기계 검사와 §8 렌더가 같은 단위를 봐야 하기 때문이다. kind=cited는 refs의 근거로 기계가 확인한 문장이고, kind=synthesis는 모델이 근거들을 종합해 쓴 문장이라 기계가 확인할 수 없다 — 화면에서 구분한다(숨기지도, 같은 급으로 보이게 하지도 않는다). Trace: v3 §2.1, §4.2, §4.3, §8.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    text: str = Field(
+        ...,
+        description='문장 본문. 인용 번호는 refs가 권위이므로 text에 중복해 넣지 않는다.',
+    )
+    refs: list[int] = Field(
+        ...,
+        description='이 문장이 근거로 삼은 claims의 1-기반 번호. kind=synthesis면 반드시 빈 배열이다(§4.3 A1·A2 강등이 refs를 비우고 kind를 synthesis로 바꾼다). 번호가 실재하는지는 §4.3 A1이 판정한다 — 스키마는 범위를 이중으로 강제하지 않는다(판정 지점이 둘이 되면 어긋난다).',
+    )
+    kind: AnswerSegmentKind
+
+
+class AnswerChecks(BaseModel):
+    """
+    §4.3 기계 검사의 결과 요약 — 화면 표시가 아니라 지표·디버깅용이다. Trace: v3 §4.3, §6.3.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    demoted: int = Field(
+        ...,
+        description="A1·A2로 종합 강등된 문장 수. 강등은 거부가 아니다 — 문장은 남되 '기계가 확인함' 표시를 잃는다.",
+        ge=0,
+    )
+    regenerated: bool = Field(
+        ..., description='거부되어 재생성을 거쳤는가(시작값 1회).'
+    )
+    fallback: bool = Field(
+        ...,
+        description='재생성도 거부되어 결정론 이어붙이기로 떨어졌는가. true면 판단 없이 근거만 있는 답이다 — 검사를 못 통과한 판단은 화면에 가지 않는다(C-2 fail-closed).',
+    )
+
+
+class EvidenceAnswer(BaseModel):
+    """
+    판단 층의 산출(v3 §4.4). 종전에는 claims를 결정론으로 이어붙인 문자열이라 조건이 갈리는 질문에 '어느 쪽인지'를 말하지 못했다. Trace: v3 §4.2, §4.4.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    segments: list[AnswerSegment] = Field(
+        ..., description='문장 단위 산문. 표시 순서가 곧 배열 순서다.'
+    )
+    checks: AnswerChecks
+
+
 class EvidenceResult(BaseModel):
     """
-    근거형성 성공 산출(state=ok). claims = 추출된 근거 명제 목록(Q2=A 논문 비교형 + 쟁점 오버레이의 데이터 기반). coverage = 사용 논문·쿼리 요약. answer = claims를 대화체로 풀어 쓴 요약(전적으로 claims/quote에서만 구성 — 새 사실 도입 금지, C-2 동일 적용). Trace: Q2, FR-5, D5.
+    근거형성 성공 산출(state=ok). claims = 추출된 근거 명제 목록(Q2=A 논문 비교형 + 쟁점 오버레이의 데이터 기반). coverage = 사용 논문·쿼리 요약. answer = 게이트를 통과한 근거만 보고 쓴 판단 산문 + 기계 검사 결과(v3 §4) — 근거에 없는 논문·수치는 검사가 막는다(C-2 동일 적용). Trace: Q2, FR-5, D5, v3 §4.
     """
 
     model_config = ConfigDict(
@@ -150,10 +214,26 @@ class EvidenceResult(BaseModel):
     coverage: EvidenceCoverage = Field(
         ..., description='사용 논문 수·쿼리 요약. Trace: SEC-9.'
     )
-    answer: str | None = Field(
+    answer: EvidenceAnswer | None = Field(
         None,
-        description="claims를 대화체 한국어 문단으로 풀어 쓴 요약. 오직 claims[].statement/supporting/conflicting에서만 조립되며 새 사실을 도입하지 않는다(C-2 동일 적용 — 생성 산문 금지 원칙은 '새 사실 금지'이지 '요약 표현 금지'가 아니다). 하위호환을 위해 선택 필드.",
+        description='판단 산문(문장 단위) + 기계 검사 결과. 근거 번호는 claims의 1-기반 순서를 가리키며 근거표 행 번호와 같은 출처다. 근거가 0건이면 null. 하위호환을 위해 선택 필드.',
     )
+
+
+class AbstainReason(StrEnum):
+    """
+    비기술 기권 사유(내부 위반 상세·점수 비노출 — SEC-9). 앞 다섯은 근거형성이 낸 기권, 뒤 넷은 턴 실패가 fail-closed로 수렴한 것(BR-EV-12). **닫힌 어휘다** — 그냥 string이던 동안 백엔드 생산자와 화면 라벨 맵이 조용히 갈렸다(2026-08-24: llm_unavailable 라벨을 지웠는데 생산자가 남아 있어 진짜 LLM 실패가 일반 문구로 떨어졌다). 여기 없는 코드는 unknown으로 수렴하고 원래 값은 로그에 남는다. Trace: FR-5, SEC-9.
+    """
+
+    out_of_corpus = 'out_of_corpus'
+    insufficient_evidence = 'insufficient_evidence'
+    cost_degraded = 'cost_degraded'
+    cancelled = 'cancelled'
+    llm_unavailable = 'llm_unavailable'
+    internal_error = 'internal_error'
+    dispatch_failed = 'dispatch_failed'
+    session_unavailable = 'session_unavailable'
+    unknown = 'unknown'
 
 
 class EvidenceAbstainResult(BaseModel):
@@ -165,10 +245,7 @@ class EvidenceAbstainResult(BaseModel):
         extra='forbid',
     )
     state: Literal['abstain'] = Field(..., description='abstain 고정. Trace: FR-5.')
-    abstainReason: str = Field(
-        ...,
-        description='비기술 기권 사유(내부 위반 상세·점수 비노출 — SEC-9). 예: out_of_corpus, insufficient_evidence, cancelled(근거를 찾기 전에 사용자가 취소).',
-    )
+    abstainReason: AbstainReason
 
 
 class EvidenceRequest(BaseModel):
