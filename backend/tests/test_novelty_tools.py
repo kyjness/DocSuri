@@ -377,6 +377,7 @@ class _FakeS3:
 
     def get_object(self, Bucket, Key):  # noqa: N803 — boto3 시그니처
         self.calls += 1
+        self.last_bucket = Bucket
         if self._error is not None:
             raise self._error
         response = {"Body": self._body}
@@ -475,3 +476,29 @@ def test_view_figure_never_serves_table_crops() -> None:
     fetched = tool.invoke({"record_ref": "2401.00001", "asset_id": "tbl-0"}, _CTX)
     assert not fetched.ok
     assert fetched.result_summary == "view_figure: unknown asset"
+
+
+def test_reader_uses_its_own_bucket_not_the_one_baked_into_the_row() -> None:
+    """`object_ref`에는 **수집한 배포의 버킷 이름**이 박힌다(`s3://{bucket}/{key}`).
+
+    코퍼스를 다른 배포로 옮기면 그 이름이 따라와 없는 버킷을 가리키는데, **자산 API는 200에
+    목록을 정상으로 돌려주고** 이미지만 403이 된다 — 화면에서만 그림이 빠지고 로그에는
+    아무것도 안 남는다(2026-08-25 배포에서 실측, 그때는 SQL로 손수 고쳤다).
+
+    버킷은 논문의 신원이 아니라 **배포 설정**이다. 아는 값이 있으면 그것을 쓴다.
+    """
+    s3 = _FakeS3(_FakeBody(b"x" * 10), content_length=10)
+    reader = _reader(s3, bucket="deploy-bucket")
+
+    assert reader.fetch_bytes(_REF, max_bytes=100) == ("image/webp", b"x" * 10)
+    assert s3.last_bucket == "deploy-bucket", "행에 박힌 버킷을 그대로 썼다"
+
+
+def test_reader_falls_back_to_the_row_when_no_bucket_is_configured(monkeypatch) -> None:
+    """설정이 없으면 종전대로 행의 값을 따른다 — 조용히 못 읽게 만들지 않는다."""
+    monkeypatch.delenv("DOCSURI_DOCMODEL_BUCKET", raising=False)
+    s3 = _FakeS3(_FakeBody(b"x" * 10), content_length=10)
+    reader = _reader(s3)
+
+    assert reader.fetch_bytes(_REF, max_bytes=100) is not None
+    assert s3.last_bucket == "bucket"  # _REF 안의 이름

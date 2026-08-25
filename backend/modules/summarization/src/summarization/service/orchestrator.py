@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import replace
+from time import perf_counter
 
 from docsuri_shared.docmodel_contract import DOCMODEL_PARSER_VERSION
 from docsuri_shared.dtos import DocModel
@@ -321,13 +322,17 @@ class SummarizationOrchestrationService:
         # ``summarize(refined, request, glossary)`` contract) chosen by the length route.
         for attempt in (1, 2):
             try:
+                t_gen = perf_counter()
                 draft = summarizer.summarize(refined, request, glossary)
+                self._emit_stage_ms("generate", t_gen, request)
             except LlmUnavailable:
                 if attempt == 2:
                     self._emit("u7.llm.unavailable", 1.0, request)
                     return self._abstain(key, "generation_unavailable", allow_enqueue)
                 continue
+            t_gate = perf_counter()
             verdict = self._grounding.validate(GroundingInput(draft=draft, refined=refined))
+            self._emit_stage_ms("gate", t_gate, request)
             self._emit("u7.grounding", 1.0, request, verdict=verdict.outcome)
             if verdict.ok:
                 # Option D: assemble with only the verified anchors — unverifiable ones
@@ -477,6 +482,30 @@ class SummarizationOrchestrationService:
         return refs
 
     # --- helpers -------------------------------------------------------------
+    def _emit_stage_ms(self, stage: str, started: float, request) -> None:
+        """단계별 지연. **없어서 61초가 어디로 갔는지 몰랐다**(2026-08-25 배포본 실측 — 본문
+        전체 요약 1건). U2는 같은 계측을 이미 갖고 있고(`discovery.search.stage_ms`), 거기서
+        콜드 패스의 초 단위가 어느 단계에 있는지를 그것으로 갈랐다.
+
+        U7의 후보는 셋이다 — 원문 확보(S3 doc-model 로드) · 생성(map-reduce, 청크 수만큼
+        Bedrock 왕복) · 게이트(앵커 대조). 셋을 나누지 않으면 "요약이 느리다"에서 더 못 간다.
+        """
+        ms = (perf_counter() - started) * 1000.0
+        self._emit_ms(f"u7.stage_ms.{stage}", ms, request)
+        # **로그로도 낸다.** 메트릭은 U6 허브로 가는데 데모 배포에는 수신처가 없어(단일 박스,
+        # CloudWatch 없음) 값이 어디에도 안 남는다 — 계측을 붙여 놓고 못 읽는 상태가 된다.
+        # 런북의 점검도 `docker compose logs`를 본다.
+        logger.info(
+            "u7 stage: paper=%s v=%s task=%s stage=%s ms=%.0f",
+            request.paper_id, request.version, request.task, stage, ms,
+        )
+
+    def _emit_ms(self, name: str, value: float, request) -> None:
+        try:
+            self._emit(name, value, request)
+        except Exception:  # noqa: BLE001 — 계측은 advisory, 요약을 죽이지 않는다
+            logger.debug("u7 stage metric failed: %s", name, exc_info=True)
+
     def _emit(self, name: str, value: float, request, *, verdict: str | None = None) -> None:
         """Non-blocking telemetry → U6 ObservabilityHub. MUST NOT raise (off response path)."""
         try:

@@ -104,11 +104,24 @@ export function SummaryView({ summary, onAnchor }: SummaryViewProps) {
 
       <section className={styles.field}>
         <h4 className={styles.label}>재현성</h4>
+        {/* 빈 칸은 "논문에 없다"가 아니라 **모델이 답을 안 했다**이다. 프롬프트는 없으면
+            '논문에 언급 없음'이라고 쓰라고 시키므로, 그래도 비어 있으면 그건 확인이 안 된
+            것이다 — 라벨만 덩그러니 두면 둘이 같아 보인다. */}
         <p className={styles.body}>
-          <span className={styles.repLabel}>코드</span> {renderInlineRich(summary.reproducibility.code)}
+          <span className={styles.repLabel}>코드</span>{' '}
+          {summary.reproducibility.code.trim() ? (
+            renderInlineRich(summary.reproducibility.code)
+          ) : (
+            <span className={styles.repUnknown}>확인하지 못했어요</span>
+          )}
         </p>
         <p className={styles.body}>
-          <span className={styles.repLabel}>데이터</span> {renderInlineRich(summary.reproducibility.data)}
+          <span className={styles.repLabel}>데이터</span>{' '}
+          {summary.reproducibility.data.trim() ? (
+            renderInlineRich(summary.reproducibility.data)
+          ) : (
+            <span className={styles.repUnknown}>확인하지 못했어요</span>
+          )}
         </p>
         <AnchorChips field="reproducibility" anchors={anchors} onAnchor={onAnchor} />
       </section>

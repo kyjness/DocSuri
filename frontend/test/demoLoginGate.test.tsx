@@ -10,9 +10,10 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 const replace = vi.fn();
+const refresh = vi.fn().mockResolvedValue(undefined);
 vi.mock('next/navigation', () => ({ useRouter: () => ({ replace, push: vi.fn() }) }));
 vi.mock('@/components/session/SessionContext', () => ({
-  useSession: () => ({ status: 'anonymous' }),
+  useSession: () => ({ status: 'anonymous', refresh }),
 }));
 
 async function renderHero() {
@@ -22,6 +23,7 @@ async function renderHero() {
 
 beforeEach(() => {
   replace.mockReset();
+  refresh.mockClear();
 });
 
 afterEach(() => {
@@ -55,8 +57,14 @@ describe('Demo login gate', () => {
     // **경로가 계약이다.** 계정 라우터는 `/auth`에 붙어 있어 `/api/auth`로 부르면 라우터에
     // 없는 경로가 되고 미들웨어가 401을 낸다 — 배포본에서 실제로 그랬다.
     expect(fetchMock).toHaveBeenCalledWith('/bff/auth/demo', { method: 'POST' });
-    // `replace`여야 한다 — `push`면 뒤로 가기로 랜딩에 돌아와 계정을 또 만든다.
+    // **세션 갱신이 이동보다 먼저다.** 쿠키는 응답에 실려 오지만 컨텍스트는 아직
+    // anonymous라, 그대로 이동하면 `/search` 가드가 로그인 화면으로 되돌린다 — 사용자에게는
+    // "버튼을 눌렀는데 로그인 페이지로 간다"로 보인다(2026-08-25 화면에서 발견).
     await waitFor(() => expect(replace).toHaveBeenCalledWith('/search'));
+    expect(refresh).toHaveBeenCalled();
+    expect(refresh.mock.invocationCallOrder[0]).toBeLessThan(
+      replace.mock.invocationCallOrder[0],
+    );
   });
 
   it('surfaces a failure instead of silently doing nothing', async () => {

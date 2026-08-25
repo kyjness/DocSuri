@@ -168,7 +168,9 @@ class BedrockToolCallingLlm:
                     termination_parameters(),
                 ),
             ],
-            "tool_choice": {"type": "any"},
+            # 병렬 호출을 끈다 — evidence와 같은 이유다(루프가 턴당 한 호출만 실행하므로
+            # 나머지는 생성 비용만 내고 버려진다).
+            "tool_choice": {"type": "any", "disable_parallel_tool_use": True},
         }
         return self._parse(self._invoke(body))
 

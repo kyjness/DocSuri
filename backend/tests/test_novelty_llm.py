@@ -95,7 +95,9 @@ def test_tool_call_parsed_with_cost_estimate() -> None:
     assert decision.cost_estimate_usd == pytest.approx(_IN_RATE + _OUT_RATE)
     # 요청 형태: 강제 도구 호출 + 종료 합성 도구 노출.
     body = capture[0]
-    assert body["tool_choice"] == {"type": "any"}
+    # 병렬도 함께 끈다 — `any`는 "최소 1개"만 강제하고 개수를 안 막는다. 루프가 턴당 한
+    # 호출만 실행하므로 나머지는 **생성 비용만 내고** 버려진다(출력 토큰은 이미 냈다).
+    assert body["tool_choice"] == {"type": "any", "disable_parallel_tool_use": True}
     assert {tool["name"] for tool in body["tools"]} == {"corpus_search", "propose_termination"}
 
 
@@ -129,7 +131,9 @@ def test_non_object_arguments_do_not_crash_the_turn() -> None:
 
 
 def test_extra_parallel_calls_are_noted_not_silently_dropped() -> None:
-    """tool_choice는 최소 1개를 강제할 뿐 1개로 제한하지 않는다. 루프는 턴당 하나만
+    """방어선은 둘이다 — 요청에서 병렬을 끄지만, 그것이 없는 프로바이더에서도 버려진
+    사실은 기록에 남아야 한다. tool_choice는 최소 1개를 강제할 뿐 1개로 제한하지 않는다.
+    루프는 턴당 하나만
     실행하므로 나머지는 버려지는데, 기록이 없으면 모델이 요청한 작업이 사라진 사실이
     전사(transcript)에 남지 않는다."""
     llm = _llm(

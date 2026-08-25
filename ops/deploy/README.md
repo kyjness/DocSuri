@@ -174,16 +174,13 @@ docker compose ... exec -T postgres pg_restore -U docsuri -d docsuri_deploy \
 docker compose -f compose.prod.yml --env-file .env.prod start backend
 ```
 
-**복원 뒤 반드시 자산 참조의 버킷을 고친다.** `paper_asset.object_ref`에 로컬 버킷 이름이
-`s3://docsuri/...`로 **박혀 있다** — 그대로 두면 프리사인 URL이 없는 버킷을 가리켜 그림이
-403이 된다. 그런데 **자산 API는 정상으로 15건을 돌려주므로** 화면에서만 그림이 안 뜨고
-로그에는 아무것도 안 남는다(2026-08-25 실측).
+**자산 참조의 버킷은 이제 SQL로 안 고쳐도 된다.** `paper_asset.object_ref`에는 수집한 배포의
+버킷 이름이 `s3://{bucket}/{key}`로 박히지만, 리더가 **자기 배포의 버킷**(`DOCSURI_DOCMODEL_BUCKET`)을
+먼저 쓴다 — 버킷은 논문의 신원이 아니라 배포 설정이기 때문이다.
 
-```sql
-update paper_asset
-   set object_ref = replace(object_ref, 's3://docsuri/', 's3://<s3_bucket>/')
- where object_ref like 's3://docsuri/%';
-```
+2026-08-25 첫 배포에서는 그 수리가 없어 손으로 고쳤다. 증상이 조용해서 적어 둔다: 프리사인
+URL이 없는 버킷을 가리키는데 **자산 API는 200에 목록을 정상으로 돌려주고** 이미지만 403이었다
+— 화면에서만 그림이 빠지고 로그에는 아무것도 안 남는다.
 
 ### 4.3. OpenSearch 색인 → 스냅샷
 
