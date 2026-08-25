@@ -6,7 +6,7 @@
  * 여기서 고정하는 것은 그 목록이 지켜야 할 세 가지다 — 번호는 안 흔들린다, 접힌 근거도
  * 링크 대상으로 남는다, 갈 곳 없는 출처는 링크를 만들지 않는다.
  */
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { useState } from 'react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
@@ -276,5 +276,43 @@ describe('answer prose roles', () => {
       .getAllByText(/먼저 온 근거|나중 온 결론/)
       .map((node) => node.textContent);
     expect(texts).toEqual(['먼저 온 근거', '나중 온 결론']);
+  });
+});
+
+describe('a citation number pointing into a folded group', () => {
+  it('opens the group that actually holds the anchor, not merely the first match', () => {
+    // 같은 번호가 여러 그룹에 나온다(두 논문이 함께 지지). DOM id는 `anchor`인 행에만 있으므로
+    // 그냥 첫 그룹을 펴면 **엉뚱한 쪽이 열리고 점프 대상은 접힌 채** 남는다 — 감춰진 요소로는
+    // 스크롤되지 않으니 클릭이 아무 일도 안 한다. 상태를 위로 올린 이유가 그것이었다.
+    const claims = [
+      { statement: 'A만', supporting: [ref({ paperId: 'p-a', quote: 'a' })], conflicting: [] },
+      ...Array.from({ length: 5 }, (_, i) => ({
+        statement: `B가 먼저 ${i}`,
+        supporting: [ref({ paperId: 'p-b', quote: `b${i}` }), ref({ paperId: 'p-a', quote: 'a' })],
+        conflicting: [],
+      })),
+    ];
+    render(
+      <EvidenceResultView
+        scope="msg-jump"
+        result={{
+          state: 'ok',
+          claims,
+          coverage: { paperCount: 2 },
+          answer: {
+            segments: [{ text: '여섯 번째가 핵심이다', refs: [6], kind: 'cited' }],
+            checks: { demoted: 0, regenerated: false, fallback: false },
+          },
+        }}
+      />,
+    );
+
+    const target = () => document.getElementById('evidence-msg-jump-row-6');
+    expect(target()).toBeTruthy();
+    expect(target()).toHaveAttribute('hidden');
+
+    fireEvent.click(screen.getByTestId('evidence-answer-ref'));
+
+    expect(target()).not.toHaveAttribute('hidden');
   });
 });

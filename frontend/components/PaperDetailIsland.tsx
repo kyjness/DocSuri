@@ -88,7 +88,9 @@ export function PaperDetailIsland({ paperId, version, arxivUrl }: PaperDetailIsl
 
   // 본문 / 본문 번역 are in-app routes (Link). A summary source anchor navigates to the 본문
   // route scrolled to the matching block (label carried via the query).
-  const bodyHref = docModelHref(paperId);
+  // 두 링크가 **같은 판**을 가리켜야 한다 — 하나만 `version` prop을 쓰면 호출자가 다른 값을
+  // 줄 때 본문과 본문 번역이 서로 다른 리비전으로 간다(테스트가 이미 그런 조합을 준다).
+  const bodyHref = docModelHref(paperId, null, version);
   const translateHref = `/paper/${encodeURIComponent(paperId)}/translate?version=${version}`;
   const openBody = (anchor?: AnchorVM | null) => {
     // Desktop: the body is already on the page — scroll the inline viewer to the anchor.
@@ -99,7 +101,7 @@ export function PaperDetailIsland({ paperId, version, arxivUrl }: PaperDetailIsl
     // Phone: open the full-screen doc-model route scrolled to the matching block. anchorId is the
     // doc-model id the backend resolved to; anchorLabel rides along because the viewer still needs
     // it to locate an anchor that carries no id (and to keep older links working).
-    router.push(docModelHref(paperId, anchor));
+    router.push(docModelHref(paperId, anchor, version));
   };
 
   return (

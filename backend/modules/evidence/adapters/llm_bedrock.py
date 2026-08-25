@@ -393,7 +393,11 @@ class BedrockExtractor(_BedrockBase):
         self, *, topic: str, focus: str, papers: tuple[Any, ...]
     ) -> ExtractionDraft:
         if not papers:
-            return self._extract_one(topic=topic, focus=focus, papers=())
+            # 빈 입력도 브레이커·`LlmUnavailable` 계약 안이다 — 밖으로 빼면 botocore 오류가
+            # 날것으로 새어 도구의 `except LlmUnavailable`이 못 잡고 턴이 하드 실패한다.
+            return self._breaker_call(
+                lambda: self._extract_one(topic=topic, focus=focus, papers=())
+            )
         return self._breaker_call(lambda: self._fan_out(topic=topic, focus=focus, papers=papers))
 
     def _fan_out(
@@ -401,11 +405,14 @@ class BedrockExtractor(_BedrockBase):
     ) -> ExtractionDraft:
         # **각 호출이 자기 논문을 들고 결과를 낸다.** 실패 목록만 받아 나중에 짝을 되짚으면
         # 순서에 기대게 되고, 어느 논문이 빠졌는지가 배열 인덱스에 숨는다.
+        errors: list[Exception] = []
+
         def one(paper: Any) -> tuple[Any, ExtractionDraft | None]:
             try:
                 return paper, self._extract_one(topic=topic, focus=focus, papers=(paper,))
-            except Exception:  # noqa: BLE001 — 부분 실패는 정상 결과다(아래에서 판정)
+            except Exception as exc:  # noqa: BLE001 — 부분 실패는 정상 결과다(아래에서 판정)
                 log.warning("evidence extraction failed for one paper", exc_info=True)
+                errors.append(exc)
                 return paper, None
 
         outcomes, _ = fan_out(
@@ -415,7 +422,12 @@ class BedrockExtractor(_BedrockBase):
         if not drafts:
             # 전부 죽었을 때만 실패다 — 한 편이 죽었다고 나머지 논문의 근거를 버리지 않는다
             # (실시간 조회의 부분 저하와 같은 판정). 브레이커가 이 예외를 실패 1회로 센다.
-            raise LlmUnavailable("extraction failed for every paper")
+            #
+            # **원래 예외를 살려서 올린다.** 일반 문구로 감싸면 브레이커의 `rate_limited`가
+            # 스로틀을 못 알아보고 백오프를 건너뛴다 — 그 백오프는 2026-08-25 스로틀 사고
+            # 때문에 생긴 것이고, 재시도가 팬아웃 전체를 다시 던지므로 없으면 그 사고를
+            # 정확히 재현한다(논문 N편 × 2회가 연달아 나간다).
+            raise errors[0]
         costs = [d.cost_estimate_usd for d in drafts if d.cost_estimate_usd is not None]
         return ExtractionDraft(
             items=[item for draft in drafts for item in draft.items],

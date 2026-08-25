@@ -789,7 +789,12 @@ export function EvidenceResultView({
           answer={answer}
           scope={scope}
           onRefJump={(n) => {
-            const owner = grouped.papers.find((g) => g.rows.some((row) => row.number === n));
+            // **이동 대상이 있는 그룹**을 펴야 한다. 같은 번호가 여러 그룹에 나올 수 있고
+            // (두 논문이 함께 지지) DOM id는 `anchor`인 행에만 있다 — 그냥 첫 그룹을 펴면
+            // 엉뚱한 쪽이 열리고 점프 대상은 접힌 채로 남아 아무 일도 안 한다.
+            const owner = grouped.papers.find((g) =>
+              g.rows.some((row) => row.number === n && row.anchor),
+            );
             if (owner) {
               setExpandedPapers((open) => new Set(open).add(owner.paperId));
             }

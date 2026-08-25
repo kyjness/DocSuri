@@ -31,8 +31,13 @@ export interface DocModelAnchor {
 }
 
 /** `/paper/{id}/doc-model?version=…[&anchorId=…][&anchorLabel=…][&anchorSpan=…]` */
-export function docModelHref(paperId: string, anchor?: DocModelAnchor | null): string {
-  const params = new URLSearchParams({ version: String(arxivVersion(paperId)) });
+export function docModelHref(
+  paperId: string,
+  anchor?: DocModelAnchor | null,
+  /** 호출자가 판을 알면 그것을 쓴다. 모르면 id에서 유도한다(라우트도 같은 규칙이다). */
+  version?: number,
+): string {
+  const params = new URLSearchParams({ version: String(version ?? arxivVersion(paperId)) });
   if (anchor?.blockId) params.set('anchorId', anchor.blockId);
   if (anchor?.label) {
     params.set('anchorLabel', anchor.label);

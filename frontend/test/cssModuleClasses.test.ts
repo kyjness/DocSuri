@@ -116,10 +116,13 @@ describe('classes rendered with the hidden attribute', () => {
     const body = readFileSync(file, 'utf8');
     const css = readCss(sheet);
     for (const [, name] of body.matchAll(HIDDEN_PROP)) {
-      const rule = new RegExp(`^[ \\t]*\\.${name}\\s*\\{[^}]*\\bdisplay\\s*:`, 'm');
-      if (!rule.test(css)) continue;
-      // display를 세웠으면 `[hidden]` 가드가 반드시 있어야 한다.
-      expect(css).toMatch(new RegExp(`\\.${name}\\[hidden\\]`));
+      // **`display`를 세웠는지 따지지 않는다.** `composes:`로 물려받으면 자기 블록에 그
+      // 선언이 없어 검사가 그냥 넘어간다 — 실제로 `.evidenceRow`를 `composes: evidenceRef`로
+      // 정리하면서 이 검사가 조용히 무력해졌다(가드를 지워도 초록이었다). 가드는 공짜이므로
+      // `hidden`으로 접는 클래스면 **무조건** 요구한다.
+      expect(css, `\`${name}\` needs a [hidden] guard`).toMatch(
+        new RegExp(`\\.${name}\\[hidden\\]`),
+      );
     }
   });
 });

@@ -195,11 +195,6 @@ export function sourceScopeBadge(
   return null;
 }
 
-/** 앵커가 없는 출처는 이동 링크를 렌더하지 않는다 — 깨진 링크를 만들지 않는다. */
-export function canJumpToSource(ref: EvidenceSourceRef): boolean {
-  return Boolean(ref.anchor);
-}
-
 /**
  * 확인 범위 문장(FR-37 v2). 내부 용어를 쓰지 않고 수치로 말한다.
  * 탐색이 완결됐으면(sufficient) 아무것도 표시하지 않는다.

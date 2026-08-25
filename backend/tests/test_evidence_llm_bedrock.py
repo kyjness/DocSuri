@@ -34,6 +34,7 @@ from backend.modules.evidence.ports.llm import (
     ToolResultView,
 )
 from backend.modules.evidence.ports.tools import ImageAttachment, ToolSpec
+from backend.modules.novelty.adapters.external.base import SourceBreaker
 from backend.tests.evidence_fakes import doc_model, observation, paper_handle
 
 
@@ -510,3 +511,23 @@ def test_answer_normalises_the_declared_role_without_judging_the_vocabulary():
     )
 
     assert [s.role for s in sentences] == ["conclusion", "divergence", "summary", None]
+
+
+def test_a_fully_failed_fan_out_keeps_the_original_error_so_backoff_can_see_it():
+    """일반 문구로 감싸면 브레이커의 `rate_limited`가 스로틀을 못 알아본다.
+
+    그 백오프는 2026-08-25 스로틀 사고 때문에 생겼고, 브레이커 재시도가 **팬아웃 전체**를
+    다시 던지므로 백오프가 안 걸리면 논문 N편 × 2회가 연달아 나가 그 사고를 재현한다.
+    """
+    waits: list[float] = []
+    breaker = SourceBreaker(retry_backoff_seconds=2.0, sleep=waits.append, jitter=lambda: 0.0)
+    papers = tuple(paper_handle(doc_model(), paper_id=pid) for pid in ("p1", "p2"))
+    throttle = RuntimeError("ThrottlingException: Too many requests")
+    extractor = BedrockExtractor(
+        model="anthropic.x", client=FakeBedrock(error=throttle), breaker=breaker, **_RATES
+    )
+
+    with pytest.raises(LlmUnavailable):
+        extractor.extract(topic="q", focus="", papers=papers)
+
+    assert waits, "스로틀이면 재시도 전에 기다려야 한다"

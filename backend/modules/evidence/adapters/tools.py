@@ -756,7 +756,10 @@ class ExtractEvidenceTool:
             # **안 읽은 논문을 알린다.** 로그로만 남기면 결과가 `ok=True`에 `accepted: N`이라
             # 모델은 그 논문을 건너뛴 줄 모르고 재시도도 안 한다 — 근거가 조용히 적어진다.
             content["failedPapers"] = list(draft.failed)
-            content["hint"] = (
+            # **덮어쓰지 않는다.** 게이트 탈락과 부분 실패는 함께 난다(한 편은 스로틀, 다른
+            # 편은 인용이 안 맞는 식) — 덮으면 모델이 인용 수리 지시를 못 보고 같은 실패를
+            # 반복한다. 키를 나눈다.
+            content["retryHint"] = (
                 "일부 논문에서 추출이 실패했다 — 그 논문만 다시 extract_evidence로 시도하라."
             )
         return ToolResult(

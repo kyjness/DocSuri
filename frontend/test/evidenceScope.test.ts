@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 
 import {
   anchorTypeLabel,
-  canJumpToSource,
   examinedRangeMessage,
   sourceScopeBadge,
 } from '@/lib/agentChat/evidenceResult';
@@ -37,13 +36,6 @@ describe('근거 범위 배지', () => {
     expect(sourceScopeBadge(ref({ sourceScope: 'abstract' }))?.hint).toContain('본문을 가져오지');
     expect(sourceScopeBadge(ref({ sourceScope: 'figure' }))?.label).toBe('그림 해석');
     expect(sourceScopeBadge(ref({ sourceScope: 'figure' }))?.hint).toContain('인용문이 아니라');
-  });
-});
-
-describe('출처 이동 가능 여부', () => {
-  it('앵커가 없으면 이동 링크를 렌더하지 않는다 — 깨진 링크를 만들지 않는다', () => {
-    expect(canJumpToSource(ref({ anchor: null, sourceScope: 'abstract' }))).toBe(false);
-    expect(canJumpToSource(ref())).toBe(true);
   });
 });
 
