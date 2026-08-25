@@ -801,6 +801,23 @@ def test_the_judgement_cost_is_charged_to_the_turn_budget():
     assert budget.consumed.cost_usd >= 0.07
 
 
+def test_a_tool_cost_is_charged_to_the_turn_budget():
+    """추출이 이 경로를 탄다 — **턴에서 가장 큰 LLM 소비자**다.
+
+    배선(`_act` → `record_cost`)은 있었지만 추출 어댑터가 비용을 안 돌려줘 값이 0으로 흘렀고,
+    배포본 트레이스에서 추출 행의 비용이 전부 $0.0000이었다. 상한 $0.50이 사실상 안 걸린다.
+    """
+    tool = FakeTool(
+        TOOL_EXTRACT_EVIDENCE, result=ToolResult(ok=True, content={"accepted": 1}, cost_usd=0.31)
+    )
+    budget = loop_budget()
+    llm = ScriptedLlm(script=[ToolCallProposal(TOOL_EXTRACT_EVIDENCE, {"focus": "f"})])
+
+    run_loop(_state_with_evidence(), _deps(llm, _registry(tool), budget))
+
+    assert budget.consumed.cost_usd >= 0.31
+
+
 def test_the_judgement_attempts_are_traced():
     """거부 사유·강등 건수는 트레이스에 남고 §6 지표가 된다."""
     answer = ScriptedAnswer(script=[_rejected_sentences(), _ok_sentences()])

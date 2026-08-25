@@ -282,6 +282,32 @@ def test_extract_evidence_accumulates_only_gate_survivors():
     assert len(state.accumulator.items) == 1
 
 
+def test_extract_evidence_reports_its_cost_so_the_turn_budget_can_see_it():
+    """**턴에서 가장 큰 LLM 소비자다.**
+
+    종전에는 항목만 돌려줘 비용이 장부 밖에 있었다 — 배포본 트레이스에서 추출 행의 비용이
+    전부 $0.0000이었고, 예산 상한 $0.50이 사실상 안 걸렸다. 논문 여러 편의 본문을 통째로
+    싣는 호출이라 실제 비용은 나머지를 합친 것보다 크다.
+    """
+    state = _state_with_full_text()
+    port = NoItems(items=[_raw_item()], cost_usd=0.42)
+
+    result = ExtractEvidenceTool(port, state).invoke({"paper_ids": ["p1"]}, CTX)
+
+    assert result.cost_usd == 0.42
+
+
+def test_extract_evidence_leaves_the_cost_unknown_rather_than_zero_when_it_cannot_be_measured():
+    """0으로 떨어뜨리면 "쟀는데 공짜"와 "못 쟀다"가 같아진다 — 장부가 조용히 낙관적이 된다."""
+    state = _state_with_full_text()
+
+    result = ExtractEvidenceTool(NoItems(items=[_raw_item()]), state).invoke(
+        {"paper_ids": ["p1"]}, CTX
+    )
+
+    assert result.cost_usd is None
+
+
 def test_extract_evidence_returns_reason_distribution_not_details():
     """INV-EV-5 — 어떤 인용이 왜 떨어졌는지는 내부에 둔다. 분포와 수리 지시만 준다."""
     state = _state_with_full_text()

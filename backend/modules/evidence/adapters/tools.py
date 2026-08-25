@@ -722,7 +722,7 @@ class ExtractEvidenceTool:
             )
 
         try:
-            raw_items = self._port.extract(
+            draft = self._port.extract(
                 topic=self._state.topic,
                 focus=str(args.get("focus") or ""),
                 papers=tuple(handles),
@@ -734,7 +734,7 @@ class ExtractEvidenceTool:
                 "근거 추출 모델을 쓸 수 없다 — 잠시 후 다시 시도하거나 종료하라",
             )
 
-        outcome = run_gate(raw_items, {h.paper_id: h.as_source() for h in handles})
+        outcome = run_gate(draft.items, {h.paper_id: h.as_source() for h in handles})
         accepted = self._state.accumulator.absorb(outcome)
 
         content: dict[str, Any] = {
@@ -756,4 +756,8 @@ class ExtractEvidenceTool:
             ok=True,
             content=content,
             result_summary=_extract_summary(accepted, outcome.rejected_count),
+            # 턴에서 가장 큰 LLM 소비자다 — 안 실으면 예산이 그만큼 과소계상되고 상한이
+            # 사실상 안 걸린다. `loop._record`가 트레이스에 남기고 `record_cost`가 장부에
+            # 넣는 배선은 이미 있었다(값만 안 흘렀다).
+            cost_usd=draft.cost_estimate_usd,
         )

@@ -193,14 +193,15 @@ def test_extractor_returns_raw_items_for_the_gate_to_judge():
     payload = '{"items": [{"statement": "s", "supporting": [], "conflicting": []}]}'
     extractor = _extractor(_text_response(payload))
 
-    assert len(extractor.extract(topic="q", focus="", papers=(paper_handle(doc_model()),))) == 1
+    draft = extractor.extract(topic="q", focus="", papers=(paper_handle(doc_model()),))
+    assert len(draft.items) == 1
 
 
 @pytest.mark.parametrize("payload", ["", "not json", '{"items": "nope"}', "{}"])
 def test_unparseable_extraction_yields_no_items_instead_of_raising(payload):
     extractor = _extractor(_text_response(payload))
 
-    assert extractor.extract(topic="q", focus="", papers=()) == []
+    assert extractor.extract(topic="q", focus="", papers=()).items == []
 
 
 def test_extraction_reads_every_text_block():
@@ -213,7 +214,7 @@ def test_extraction_reads_every_text_block():
         "usage": {},
     }
 
-    assert len(_extractor(response).extract(topic="q", focus="", papers=())) == 1
+    assert len(_extractor(response).extract(topic="q", focus="", papers=()).items) == 1
 
 
 def test_extraction_tolerates_a_code_fenced_object():
@@ -221,7 +222,7 @@ def test_extraction_tolerates_a_code_fenced_object():
     fenced = '```json\n{"items": [{"statement": "s"}]}\n```'
     extractor = _extractor(_text_response(fenced))
 
-    assert len(extractor.extract(topic="q", focus="", papers=())) == 1
+    assert len(extractor.extract(topic="q", focus="", papers=()).items) == 1
 
 
 # --- 판단 어댑터(§4.2) ---------------------------------------------------------

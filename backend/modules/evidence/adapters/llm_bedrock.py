@@ -48,6 +48,7 @@ from ..ports.llm import (
     AnswerDraft,
     AnswerRequest,
     AnswerSentence,
+    ExtractionDraft,
     LlmDecision,
     LlmUnavailable,
     LoopObservation,
@@ -358,7 +359,7 @@ class BedrockExtractor(_BedrockBase):
 
     def extract(
         self, *, topic: str, focus: str, papers: tuple[Any, ...]
-    ) -> list[dict[str, Any]]:
+    ) -> ExtractionDraft:
         system, messages = _split_system(
             build_extraction_messages(topic=topic, focus=focus, papers=papers)
         )
@@ -366,7 +367,10 @@ class BedrockExtractor(_BedrockBase):
         # Join every text block: a preface block before the JSON block would otherwise make the
         # first block parse to [] with no error, and an extraction turn that yields nothing is
         # indistinguishable from papers that carried no evidence.
-        return parse_json_items("\n".join(text_blocks(response)))
+        return ExtractionDraft(
+            items=parse_json_items("\n".join(text_blocks(response))),
+            cost_estimate_usd=self._usage_cost(response),
+        )
 
 
 def _attach_images(

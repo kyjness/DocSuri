@@ -9,6 +9,7 @@ from ..ports.llm import (
     AnswerDraft,
     AnswerRequest,
     AnswerSentence,
+    ExtractionDraft,
     LlmDecision,
     TerminationProposal,
 )
@@ -112,9 +113,12 @@ class NoItems:
     items: list[Any] = field(default_factory=list)
     error: Exception | None = None
     calls: list[dict[str, Any]] = field(default_factory=list)
+    # 호출당 비용. 기본이 None인 것은 "못 쟀다"이고 0.0과 다르다 — 0으로 두면 예산 계상을
+    # 검사하는 테스트가 "쟀는데 공짜"와 구분을 못 한다.
+    cost_usd: float | None = None
 
-    def extract(self, *, topic: str, focus: str, papers: tuple[Any, ...]) -> list[Any]:
+    def extract(self, *, topic: str, focus: str, papers: tuple[Any, ...]) -> ExtractionDraft:
         self.calls.append({"topic": topic, "focus": focus, "papers": papers})
         if self.error:
             raise self.error
-        return self.items
+        return ExtractionDraft(items=self.items, cost_estimate_usd=self.cost_usd)
