@@ -205,9 +205,9 @@ describe('answer prose roles', () => {
       .getAllByText(/LoRA가 낫다|1만 배|분포 안이냐다/)
       .map((node) => node.closest('[data-segment-role]')?.getAttribute('data-segment-role'));
     expect(roles).toEqual(['conclusion', 'evidence', 'divergence']);
-    // 라벨은 결론·갈림 지점에만 — 근거 서술까지 달면 신호가 소음이 된다.
+    // 라벨은 **갈림 지점에만** 붙는다. 결론은 크고 굵게 맨 위에 오는 것으로 충분하고,
+    // "결론"을 적으면 매 답변에 고정으로 붙는 절 머리표가 된다(§2.1이 금지한 구획 라벨).
     expect(screen.getAllByTestId('evidence-answer-role').map((n) => n.textContent)).toEqual([
-      '결론',
       '갈리는 지점',
     ]);
   });
