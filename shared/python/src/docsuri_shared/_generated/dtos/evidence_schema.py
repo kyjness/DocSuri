@@ -57,6 +57,10 @@ class SourceRef(BaseModel):
         ...,
         description='IndexRecord 식별자(실재성 검증 핸들). 사용자 업로드: "upload:{ownerId}:{jobId}:{attachmentId}". 내부 벡터·청크 정보 미포함. Trace: FR-5, vector-spec §2.',
     )
+    title: str | None = Field(
+        None,
+        description='출처 논문의 제목(선택). 화면이 출처를 **사람이 알아볼 수 있는 이름**으로 보여주기 위한 것 — 이것이 없으면 근거 목록에 `arxiv:2106.09685v2` 같은 식별자만 남고, 사용자는 눌러 보기 전까지 무슨 논문인지 모른다. 루프가 확보한 PaperHandle.title이 원천이고, 제목을 확보하지 못한 논문(초록만 받았고 제목이 빈 경우)에서는 생략한다. 인용의 실재를 검증하는 핸들은 여전히 paperId·recordRef다 — 제목은 표시용이라 판정에 쓰지 않는다. Trace: FR-5, §2.1, §8.',
+    )
     anchor: str | None = Field(
         None,
         description='DocModel Section/Block 결정적 id(선택). 요약 AnchorTarget 계약과 동일 방식. Trace: summarization.schema.json.',

@@ -95,6 +95,11 @@ class PaperEvidenceSource:
     scope: str
     text: str
     blocks: dict[str, tuple[str, str]] = field(default_factory=dict)
+    # 표시용 제목 — 게이트는 이 값으로 아무것도 판정하지 않고 통과한 출처에 실어만 준다.
+    # 판정 핸들은 paper_id·record_ref다. 제목이 여기 있는 이유는 출처를 만드는 자리가
+    # 여기 하나이기 때문이다: 조립 단계에서 다시 붙이면 핸들 맵을 한 벌 더 들고 다녀야 하고,
+    # 그 맵이 비면 제목만 조용히 사라진다(그 실패는 화면에서 id로 보인다).
+    title: str = ""
 
     def block(self, anchor: str) -> tuple[str, str] | None:
         return self.blocks.get(anchor)
@@ -295,6 +300,7 @@ def _validate_ref(
     ref = SourceRef(
         paperId=source.paper_id,
         recordRef=source.record_ref,
+        title=source.title or None,
         anchor=anchor,
         quote=quote or None,
         anchorType=AnchorType(anchor_type) if anchor_type else None,

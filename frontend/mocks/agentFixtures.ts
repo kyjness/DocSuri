@@ -52,11 +52,35 @@ const baseSessions: AgentSessionSnapshot[] = [
                 {
                   paperId: '2401.01234',
                   recordRef: 'rec-2401-01234-07',
+                  title: 'Benchmark Contamination in Large Language Model Evaluation',
                   anchor: '4.2절',
                   quote: 'benchmark reuse inflates scores across successive releases',
                 },
               ],
               conflicting: [],
+            },
+            // 상충이 있는 명제 — 근거 목록이 존재하는 이유이고, 코퍼스 안팎 출처가 한
+            // 명제에 섞이는 모양이다(코퍼스 논문은 상세로, 코퍼스 밖은 arxiv.org로 간다).
+            {
+              statement: '오염을 제거한 재평가에서도 순위는 대체로 유지된다.',
+              supporting: [
+                {
+                  paperId: '2403.05555',
+                  recordRef: 'rec-2403-05555-01',
+                  title: 'Decontaminated Re-evaluation of Open LLM Leaderboards',
+                  anchor: '5.1절',
+                  quote: 'rank correlation remains above 0.9 after decontamination',
+                },
+              ],
+              conflicting: [
+                {
+                  paperId: 'arxiv:2405.09876v1',
+                  recordRef: 'external:arxiv:2405.09876v1',
+                  title: 'Rank Instability Under Contamination Removal',
+                  quote: 'removing contaminated items reorders the top five systems',
+                  sourceScope: 'abstract',
+                },
+              ],
             },
           ],
           coverage: { paperCount: 3, queryUsed: 'LLM 평가 데이터 누수' },

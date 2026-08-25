@@ -26,6 +26,8 @@ export type EvidenceSourceScope = 'fulltext' | 'abstract' | 'figure';
 export interface EvidenceSourceRef {
   paperId: string;
   recordRef: string;
+  /** 출처 논문의 제목. 없으면 화면이 paperId를 그대로 쓴다(그때만 식별자가 보인다). */
+  title?: string | null;
   anchor?: string | null;
   quote?: string | null;
   anchorType?: EvidenceAnchorType | null;
@@ -235,3 +237,41 @@ function truncationSentence(
   return `관련 논문 ${candidates}편 중 ${examined}편을 확인했습니다. 일부 논문은 본문을 가져오지 못했습니다.`;
 }
 
+
+/**
+ * 출처 논문으로 가는 링크. **없으면 null이고, 그때는 링크를 그리지 않는다** — 깨진 링크는
+ * 링크가 없는 것보다 나쁘다.
+ *
+ * `paperId`의 네임스페이스가 곧 목적지다(계약은 evidence.schema.json SourceRef):
+ * - 접두어 없음 = 코퍼스 논문(IndexRecord.arxivId) → 우리 논문 상세로 간다. 본문·요약·번역이
+ *   거기 있으므로 arxiv.org로 내보내는 것보다 사용자가 할 수 있는 일이 많다.
+ * - `arxiv:` = 코퍼스 밖에서 실시간 조회로 찾은 논문 → arxiv.org. 상세 페이지가 없다.
+ * - `doi:` = arXiv에 없어 DOI로 실려온 논문 → doi.org.
+ * - `userdoc:` = 사용자가 올린 문서 → **링크 없음.** 실재 arXiv id가 없으므로 URL을
+ *   조립하면 그것이 날조다(스키마가 "arxiv.org URL 조립 금지"라고 못 박는다).
+ */
+export function sourceHref(ref: EvidenceSourceRef): string | null {
+  const id = ref.paperId?.trim();
+  if (!id) return null;
+  if (id.startsWith('userdoc:')) return null;
+  if (id.startsWith('arxiv:')) {
+    return `https://arxiv.org/abs/${encodeURIComponent(id.slice('arxiv:'.length))}`;
+  }
+  if (id.startsWith('doi:')) {
+    return `https://doi.org/${id.slice('doi:'.length)}`;
+  }
+  // 네임스페이스가 없으면 코퍼스 논문이다. 콜론이 들어간 미지의 접두어는 우리 라우트로
+  // 보내면 반드시 404이므로 링크를 만들지 않는다 — 어휘가 늘면 여기 한 줄을 더한다.
+  if (id.includes(':')) return null;
+  return `/paper/${encodeURIComponent(id)}`;
+}
+
+/** 코퍼스 밖으로 나가는 링크인가 — 새 탭·외부 표시를 붙일지의 근거. */
+export function isExternalSource(ref: EvidenceSourceRef): boolean {
+  return sourceHref(ref)?.startsWith('http') ?? false;
+}
+
+/** 출처의 표시 이름 — 제목이 있으면 제목, 없으면 식별자. */
+export function sourceLabel(ref: EvidenceSourceRef): string {
+  return ref.title?.trim() || ref.paperId;
+}

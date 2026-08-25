@@ -332,28 +332,29 @@
   white-space: nowrap;
 }
 
-.evidenceTableWrap {
-  composes: dataTableWrap;
+/* 근거 목록 — 명제 하나가 블록 하나다. 표가 아니므로 폰에서 가로 스크롤이 없다. */
+.evidenceList {
+  display: grid;
+  gap: 8px;
 }
 
-.evidenceTable {
-  composes: dataTable;
-  width: 100%;
-  font-size: 12px;
-}
-
-.evidenceTable th,
-.evidenceTable td {
+.evidenceClaim {
   border: 1px solid var(--color-border);
+  border-radius: var(--agent-radius);
+  padding: 10px;
+  background: var(--color-bg);
 }
 
-.evidenceTable thead th {
-  background: var(--color-accent-soft-bg);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  color: var(--color-text-muted);
-  text-transform: uppercase;
+/* 상충이 있는 명제 — 이 사실 자체가 신호라 블록 전체를 물들인다(열을 쓰지 않는다). */
+.evidenceClaim[data-contested='true'] {
+  border-color: var(--color-warn-text);
+  background: var(--color-warn-bg);
+}
+
+/* 판단 산문의 `[n]`으로 도착한 명제가 어디인지 보이게 한다. */
+.evidenceClaim:target {
+  outline: 2px solid var(--color-accent-text);
+  outline-offset: 2px;
 }
 
 .evidenceRowNumber {
@@ -362,24 +363,23 @@
   font-weight: 700;
 }
 
-/* 앵커 이동으로 도착한 행이 어디인지 보이게 한다. */
-.evidenceTable tbody tr:target {
-  outline: 2px solid var(--color-accent-text);
-  outline-offset: -2px;
-}
-
-.evidenceLabel {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  color: var(--color-text-muted);
-  text-transform: uppercase;
-}
-
 .evidenceStatement {
-  margin: 0 0 4px;
+  margin: 0 0 6px;
   font-weight: 700;
   line-height: 1.5;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+.evidenceContested {
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid var(--color-warn-text);
+  color: var(--color-warn-text);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 .evidenceRefs {
@@ -395,23 +395,46 @@
   gap: 2px;
 }
 
-.evidenceSourceLabel,
-.evidenceQuoteLabel {
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--color-text-muted);
+/* 지지 ✓ / 상충 ✗ — 열 두 개가 하던 일을 글리프 하나가 한다. */
+.evidenceStanceMark {
+  font-weight: 700;
+  flex: none;
 }
 
-.evidencePaperId {
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--color-accent);
+.evidenceRefs[data-stance='support'] .evidenceStanceMark {
+  color: var(--color-accent-text);
+}
+
+.evidenceRefs[data-stance='conflict'] .evidenceStanceMark {
+  color: var(--color-warn-text);
+}
+
+/* 출처는 제목이 이름이다 — 링크가 없는 출처(사용자 업로드)는 같은 자리에 글자로만 온다. */
+.evidencePaperTitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-accent-text);
+  word-break: keep-all;
+  overflow-wrap: anywhere;
 }
 
 .evidenceSource {
   display: flex;
   align-items: baseline;
   gap: 6px;
+  flex-wrap: wrap;
+}
+
+.evidenceMore {
+  justify-self: start;
+  padding: 6px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--agent-radius);
+  background: var(--color-bg);
+  color: var(--color-text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
 }
 
 .evidenceAnchor {
@@ -609,18 +632,15 @@
   font-size: 12px;
 }
 
-.evidenceRef blockquote {
-  margin: 0;
+.evidenceQuote {
+  margin: 0 0 0 18px;
   padding: 4px 8px;
   border-left: 2px solid var(--color-border);
   color: var(--color-text-muted);
   font-size: 13px;
   font-style: italic;
-}
-
-/* 상충이 있는 셀만 표시한다 — 상충 행이 위쪽인 것은 백엔드 조립이 정한 순서다. */
-.evidenceConflict {
-  background: var(--color-warn-bg);
+  word-break: keep-all;
+  overflow-wrap: anywhere;
 }
 
 .evidenceCoverage {

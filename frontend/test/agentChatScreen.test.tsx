@@ -172,7 +172,7 @@ describe('AgentChatScreen', () => {
     ).toBe(true);
   });
 
-  it('renders an evidence result as prose judgement above the evidence table', async () => {
+  it('renders an evidence result as prose judgement above the evidence list', async () => {
     const user = userEvent.setup();
     render(<AgentChatScreen />);
 
@@ -184,14 +184,32 @@ describe('AgentChatScreen', () => {
     expect(answer).toHaveTextContent(/벤치마크를 재사용하면 점수가 부풀려져요/);
     expect(within(answer).getByTestId('evidence-answer-ref')).toHaveTextContent('[1]');
 
-    // 근거표: statement + 출처(paperId · 인용 앵커 · quote). raw JSON은 노출되지 않는다(#339).
-    expect(screen.getByTestId('evidence-table')).toBeInTheDocument();
+    // 근거 목록: statement + 출처(제목 링크 · 인용 앵커 · quote). raw JSON은 노출되지 않는다(#339).
+    expect(screen.getByTestId('evidence-list')).toBeInTheDocument();
     expect(screen.getByText(/벤치마크 재사용은 데이터 누수 위험을 높인다./)).toBeInTheDocument();
-    expect(screen.getByText('2401.01234')).toBeInTheDocument();
     expect(screen.getByText('§ 4.2절')).toBeInTheDocument();
     expect(screen.getByText(/benchmark reuse inflates scores/)).toBeInTheDocument();
-    expect(screen.getByText(/참고 논문 3편/)).toBeInTheDocument();
     expect(screen.queryByText(/"claims"/)).not.toBeInTheDocument();
+
+    // 출처는 **제목이 이름이고 링크다.** 종전에는 `2401.01234`가 텍스트로만 찍혔다 —
+    // 무슨 논문인지 알 수도, 눌러 갈 수도 없었다.
+    const corpus = screen.getByRole('link', { name: /Benchmark Contamination/ });
+    expect(corpus).toHaveAttribute('href', '/paper/2401.01234');
+    expect(corpus).not.toHaveAttribute('target');
+    expect(screen.queryByText('2401.01234')).not.toBeInTheDocument();
+
+    // 코퍼스 밖 논문은 상세 페이지가 없다 — arxiv.org로, 새 탭으로 간다.
+    const external = screen.getByRole('link', { name: /Rank Instability/ });
+    expect(external).toHaveAttribute('href', 'https://arxiv.org/abs/2405.09876v1');
+    expect(external).toHaveAttribute('target', '_blank');
+
+    // 상충은 열이 아니라 배지다.
+    expect(screen.getByTestId('evidence-contested')).toBeInTheDocument();
+
+    // 이 수는 검색 범위가 아니라 근거로 쓴 논문 수다 — 종전 라벨("검색 범위 · 참고 논문
+    // N편 · 검색어: <사용자 질문>")은 둘 다 거짓말이었다.
+    expect(screen.getByText('근거로 쓴 논문 3편')).toBeInTheDocument();
+    expect(screen.queryByText(/검색 범위/)).not.toBeInTheDocument();
   });
 
   it('marks a synthesis sentence apart from a machine-checked one', async () => {
@@ -210,7 +228,7 @@ describe('AgentChatScreen', () => {
     expect(within(answer).getByTitle(/원문에 그대로 있진 않아요/)).toHaveTextContent('종합');
   });
 
-  it('links a citation number to its evidence table row', async () => {
+  it('links a citation number to its evidence list entry', async () => {
     const user = userEvent.setup();
     render(<AgentChatScreen />);
 

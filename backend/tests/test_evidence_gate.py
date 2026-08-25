@@ -31,10 +31,11 @@ from backend.tests.evidence_fakes import (
 
 PAPER = "2107.06xxx"
 RECORD = "rec-1"
+TITLE = "Highly accurate protein structure prediction with AlphaFold"
 
 
 
-def _source(scope: str = "fulltext") -> PaperEvidenceSource:
+def _source(scope: str = "fulltext", *, title: str = TITLE) -> PaperEvidenceSource:
     doc = doc_model()
     blocks = {bid: (kind, text) for bid, kind, text in iter_blocks(doc)}
     return PaperEvidenceSource(
@@ -43,6 +44,7 @@ def _source(scope: str = "fulltext") -> PaperEvidenceSource:
         scope=scope,
         text=paper_projection(doc),
         blocks=blocks,
+        title=title,
     )
 
 
@@ -451,3 +453,28 @@ def test_paper_id_notation_drift_is_absorbed_but_unknown_papers_are_not():
     ghost = _item(anchor="s4.tbl1", quote=TABLE_ROW)
     ghost["supporting"][0]["paperId"] = "9999.99999"
     assert run_gate([ghost], {PAPER: _source()}).rejections[RejectReason.UNKNOWN_PAPER] == 1
+
+
+# --- 표시용 제목 -------------------------------------------------------------
+
+
+def test_passing_ref_carries_the_paper_title_so_the_screen_can_name_the_source() -> None:
+    """제목이 없으면 근거 목록에 `arxiv:2106.09685v2` 같은 식별자만 남는다.
+
+    출처를 만드는 자리는 게이트 하나다 — 조립 단계에서 다시 붙이면 핸들 맵을 한 벌 더 들고
+    다녀야 하고, 그 맵이 비면 **제목만** 조용히 사라진다(화면에서는 id로 보인다).
+    """
+    outcome = run_gate([_item(anchor="s4.tbl1", quote=TABLE_ROW)], {PAPER: _source()})
+
+    assert outcome.items
+    assert outcome.items[0].supporting[0].title == TITLE
+
+
+def test_a_paper_without_a_title_carries_none_rather_than_an_empty_string() -> None:
+    """빈 문자열을 실으면 화면이 "제목이 있다"로 읽고 빈 링크를 그린다."""
+    outcome = run_gate(
+        [_item(anchor="s4.tbl1", quote=TABLE_ROW)], {PAPER: _source(title="")}
+    )
+
+    assert outcome.items
+    assert outcome.items[0].supporting[0].title is None
