@@ -19,6 +19,7 @@ import pytest
 
 from backend.modules.evidence.adapters.llm_bedrock import (
     IMAGE_BOUNDARY_BANNER,
+    MAX_EXTRACT_CONCURRENCY,
     BedrockAnswerWriter,
     BedrockDecider,
     BedrockExtractor,
@@ -253,6 +254,65 @@ class _PerPaperBedrock:
                  "usage": {"input_tokens": 100, "output_tokens": 50}}
             ).encode("utf-8")
         }
+
+
+def test_the_whole_fan_out_counts_as_one_breaker_failure():
+    """**한 장애는 한 번 세어야 한다.**
+
+    호출마다 회로를 세면 논문 3편 동시 실패가 실패 3회가 되어 임계값(3)을 즉시 채운다.
+    브레이커는 decide·answer와 공유하므로(`real_wiring`) 그 한 번의 스로틀이 60초 동안 턴의
+    판단까지 죽인다 — 이 저장소가 이미 데인 모양이다.
+    """
+    from backend.modules.novelty.adapters.external.base import SourceBreaker
+
+    breaker = SourceBreaker(failure_threshold=3, retry_backoff_seconds=0)
+    papers = tuple(paper_handle(doc_model(), paper_id=pid) for pid in ("p1", "p2", "p3"))
+    extractor = BedrockExtractor(
+        model="anthropic.x",
+        client=FakeBedrock(error=RuntimeError("throttled")),
+        breaker=breaker,
+        **_RATES,
+    )
+
+    with pytest.raises(LlmUnavailable):
+        extractor.extract(topic="q", focus="", papers=papers)
+
+    # **관측 가능한 것으로 본다**: 회로가 열렸으면 다음 시도는 엔드포인트를 아예 안 친다.
+    # 예외 문구로 보면 팬아웃이 자기 예외로 감싸서 두 경우가 같아 보인다(실제로 그랬다).
+    client = extractor._client  # noqa: SLF001 — 대역이 센 호출 수가 유일한 관측점이다
+    before = len(client.calls)
+    with pytest.raises(LlmUnavailable):
+        extractor.extract(topic="q", focus="", papers=papers)
+
+    # 실패를 3회로 셌다면 임계값을 이미 채워 회로가 열리고, 여기서 호출이 0이 된다.
+    assert len(client.calls) > before
+
+
+def test_a_partially_failed_extraction_names_the_papers_it_could_not_read():
+    """로그로만 남기면 도구 결과가 `ok=True`라 모델은 그 논문을 건너뛴 줄 모른다."""
+
+    class _OneFails(_PerPaperBedrock):
+        def invoke_model(self, **kw):
+            body = json.loads(kw["body"].decode("utf-8"))
+            if "[PAPER p2]" in body["messages"][0]["content"][0]["text"]:
+                raise RuntimeError("throttled")
+            return super().invoke_model(**kw)
+
+    papers = tuple(paper_handle(doc_model(), paper_id=pid) for pid in ("p1", "p2", "p3"))
+    extractor = BedrockExtractor(
+        model="anthropic.x", client=_OneFails(["p1", "p2", "p3"]), **_RATES
+    )
+
+    draft = extractor.extract(topic="q", focus="", papers=papers)
+
+    assert draft.failed == ("p2",)
+    assert [item["statement"] for item in draft.items] == ["p1", "p3"]
+
+
+def test_extraction_concurrency_has_a_ceiling():
+    """논문은 최대 10편이다. 같은 모델 엔드포인트에 10요청이 한꺼번에 나가면 스로틀을 부른다 —
+    이 저장소는 **직렬 호출로도** 거기 물린 이력이 있다."""
+    assert MAX_EXTRACT_CONCURRENCY < 10
 
 
 def test_extraction_splits_papers_into_one_call_each():

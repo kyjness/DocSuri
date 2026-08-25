@@ -192,7 +192,7 @@ describe('AgentChatScreen', () => {
     // 인용 위치는 이제 **눌러서 그 블록으로 간다**(종전에는 죽은 텍스트였다).
     expect(screen.getByRole('link', { name: '§ 4.2절' })).toHaveAttribute(
       'href',
-      '/paper/2401.01234/doc-model?version=1&anchorId=4.2%EC%A0%88',
+      '/paper/2401.01234/doc-model?version=1&anchorId=4.2%EC%A0%88&anchorLabel=4.2%EC%A0%88',
     );
     expect(screen.queryByText(/"claims"/)).not.toBeInTheDocument();
 

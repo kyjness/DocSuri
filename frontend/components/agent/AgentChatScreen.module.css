@@ -394,16 +394,12 @@
 }
 
 .evidencePaperCount {
-  margin-left: auto;
-  color: var(--color-text-muted);
+  composes: timelineMeta;
   font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
 }
 
 .evidenceRow {
-  display: grid;
-  gap: 2px;
+  composes: evidenceRef;
 }
 
 /* **`display`를 세운 순간 `hidden` 속성이 죽는다.** UA 시트의 `[hidden] { display: none }`은
@@ -421,10 +417,7 @@
 }
 
 .evidenceRowHead {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  flex-wrap: wrap;
+  composes: evidenceSource;
 }
 
 /* 원문은 인용처럼, 명제는 본문처럼 — 무엇을 읽고 있는지가 모양으로 구분된다. */
@@ -434,11 +427,6 @@
   line-height: 1.6;
   word-break: keep-all;
   overflow-wrap: anywhere;
-}
-
-.evidenceRowText[data-line-kind='quote'] {
-  color: var(--color-text-muted);
-  font-style: italic;
 }
 
 /* 쟁점 — 논문이 엇갈리는 자리라 목록 맨 위에 따로 선다. */
@@ -452,11 +440,10 @@
 }
 
 .evidenceGroupHeading {
+  composes: fieldLabel;
   margin: 0;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
   color: var(--color-warn-text);
+  text-transform: none;
 }
 
 .evidenceRowNumber {
@@ -492,11 +479,13 @@
   flex: none;
 }
 
-.evidenceRefs[data-stance='support'] .evidenceStanceMark {
+/* **색은 마크 자신의 `data-stance`가 정한다.** 조상 선택자(`.evidenceRefs[data-stance]`)에
+   걸어 두면 그 조상이 없는 자리에서 조용히 색을 잃는다 — 논문 그룹의 ✓가 실제로 그랬다. */
+.evidenceStanceMark[data-stance='support'] {
   color: var(--color-accent-text);
 }
 
-.evidenceRefs[data-stance='conflict'] .evidenceStanceMark {
+.evidenceStanceMark[data-stance='conflict'] {
   color: var(--color-warn-text);
 }
 

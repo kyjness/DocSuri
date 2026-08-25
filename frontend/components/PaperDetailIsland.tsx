@@ -9,6 +9,7 @@ import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import type { AnchorVM } from '@/types/generated';
+import { docModelHref } from '@/lib/docModelHref';
 import { usePaperMeta } from '@/lib/usePaperMeta';
 import { renderInlineMath } from '@/lib/renderMath';
 import { SummaryModal, type DetailView } from './SummaryModal';
@@ -87,7 +88,7 @@ export function PaperDetailIsland({ paperId, version, arxivUrl }: PaperDetailIsl
 
   // 본문 / 본문 번역 are in-app routes (Link). A summary source anchor navigates to the 본문
   // route scrolled to the matching block (label carried via the query).
-  const bodyHref = `/paper/${encodeURIComponent(paperId)}/doc-model?version=${version}`;
+  const bodyHref = docModelHref(paperId);
   const translateHref = `/paper/${encodeURIComponent(paperId)}/translate?version=${version}`;
   const openBody = (anchor?: AnchorVM | null) => {
     // Desktop: the body is already on the page — scroll the inline viewer to the anchor.
@@ -98,13 +99,7 @@ export function PaperDetailIsland({ paperId, version, arxivUrl }: PaperDetailIsl
     // Phone: open the full-screen doc-model route scrolled to the matching block. anchorId is the
     // doc-model id the backend resolved to; anchorLabel rides along because the viewer still needs
     // it to locate an anchor that carries no id (and to keep older links working).
-    const sp = new URLSearchParams({ version: String(version) });
-    if (anchor?.blockId) sp.set('anchorId', anchor.blockId);
-    if (anchor?.label) {
-      sp.set('anchorLabel', anchor.label);
-      if (anchor.span) sp.set('anchorSpan', anchor.span);
-    }
-    router.push(`/paper/${encodeURIComponent(paperId)}/doc-model?${sp.toString()}`);
+    router.push(docModelHref(paperId, anchor));
   };
 
   return (

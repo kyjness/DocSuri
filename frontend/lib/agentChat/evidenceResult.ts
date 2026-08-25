@@ -4,7 +4,7 @@ import type {
   PaperIdNamespace,
 } from '@/types/generated/evidence';
 
-import { arxivVersion } from '@/lib/arxivVersion';
+import { docModelHref, isAbstractAnchor } from '@/lib/docModelHref';
 
 import { isNoveltyResultPayload } from './noveltyResult';
 import type { NoveltyResultPayload } from './noveltyResult';
@@ -296,7 +296,20 @@ export function sourceLabel(ref: EvidenceSourceRef): string {
 /** 논문 하나에 묶인 근거 줄. `number`는 **근거 번호**이지 논문 번호가 아니다. */
 export interface EvidenceRow {
   number: number;
-  stance: 'support' | 'conflict';
+  /**
+   * 이 줄만의 키. **번호로는 부족하다** — 게이트가 `supporting`을 논문으로 중복 제거하지
+   * 않으므로 한 명제가 같은 논문의 두 블록을 인용하면 같은 번호의 행이 둘 생긴다(배포본
+   * 실측: 근거 19건 중 10건). 번호를 React key로 쓰면 충돌한다.
+   */
+  key: string;
+  /**
+   * 이 줄이 `[n]`의 이동 대상인가 — 그 번호를 **통틀어 처음** 들고 나온 행에만 true다.
+   * 같은 번호가 한 논문 안에서도, 논문을 건너서도 여러 번 나올 수 있는데 DOM id는 하나여야
+   * 한다(중복 id는 유효하지 않은 HTML이고 점프가 첫 번째로만 간다).
+   */
+  anchor: boolean;
+  /** 이 줄이 속한 명제. 번호를 인덱스로 되돌려 원본을 다시 찾지 않게 함께 싣는다. */
+  statement: string;
   ref: EvidenceSourceRef;
 }
 
@@ -328,18 +341,30 @@ export interface GroupedEvidence {
 export function groupClaimsByPaper(claims: EvidenceClaim[]): GroupedEvidence {
   const contested: GroupedEvidence['contested'] = [];
   const byPaper = new Map<string, EvidencePaperGroup>();
+  // 번호마다 이동 대상은 하나다. 여기서 세어 두면 화면이 다시 셀 필요가 없고, 유일성이
+  // 순수 함수 안에 있어 검사가 된다.
+  const anchored = new Set<number>();
 
   claims.forEach((claim, index) => {
     const number = index + 1;
     if (claim.conflicting.length > 0) {
       contested.push({ number, claim });
+      anchored.add(number);
       return;
     }
-    for (const ref of claim.supporting) {
+    claim.supporting.forEach((ref, refIndex) => {
       const group = byPaper.get(ref.paperId) ?? { paperId: ref.paperId, ref, rows: [] };
-      group.rows.push({ number, stance: 'support', ref });
+      const anchor = !anchored.has(number);
+      anchored.add(number);
+      group.rows.push({
+        number,
+        key: `${number}-${refIndex}`,
+        anchor,
+        statement: claim.statement,
+        ref,
+      });
       byPaper.set(ref.paperId, group);
-    }
+    });
   });
 
   return { contested, papers: [...byPaper.values()] };
@@ -379,16 +404,15 @@ export function evidenceLine(
  */
 export function anchorHref(ref: EvidenceSourceRef): string | null {
   const base = sourceHref(ref);
-  if (!base || base.startsWith('http') || !ref.anchor) return base;
-  if (ref.anchor.startsWith(`${ABSTRACT_SECTION}.`) || ref.anchor === ABSTRACT_SECTION) {
-    return base;
-  }
-  const params = new URLSearchParams({
-    version: String(arxivVersion(ref.paperId)),
-    anchorId: ref.anchor,
-  });
-  return `${base}/doc-model?${params.toString()}`;
+  // 코퍼스 밖(namespace 있음)은 우리 doc-model이 없다. 만든 URL을 `startsWith('http')`로
+  // 되파싱하면 입력에 이미 있는 사실을 되찾는 것이고, https 아닌 절대 URL이 하나 늘면
+  // 조용히 doc-model 링크를 만들어 404를 낸다.
+  if (!base || ref.namespace || !ref.anchor) return base;
+  // 초록 앵커는 본문 뷰어가 그 섹션을 목록에서 빼서 스크롤이 조용히 안 된다 — 초록이
+  // 보이는 상세로 보낸다.
+  if (isAbstractAnchor(ref.anchor)) return base;
+  // **`anchorLabel`을 함께 싣는다.** 블록 id가 그 문서에 없으면 뷰어가 라벨로 떨어지는데,
+  // 안 실으면 폴백이 죽어 스크롤이 조용히 안 된다. 근거의 앵커는 `표 3`·`4.2절` 같은
+  // 라벨꼴이 흔해서 그 폴백이 가장 필요한 쪽이다.
+  return docModelHref(ref.paperId, { blockId: ref.anchor, label: ref.anchor });
 }
-
-/** 본문 뷰어가 목록에서 빼는 섹션 — 초록은 별도 화면이다. */
-const ABSTRACT_SECTION = 's0';

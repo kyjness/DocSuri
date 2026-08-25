@@ -217,6 +217,9 @@ class ExtractionDraft:
 
     items: list[dict[str, Any]]
     cost_estimate_usd: float | None = None
+    # 추출이 **못 읽은** 논문. 팬아웃에서 일부가 죽어도 나머지는 살리는데, 그 사실을 안
+    # 실으면 도구 결과가 `ok=True`라 모델은 그 논문을 안 읽은 줄 모르고 재시도도 안 한다.
+    failed: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

@@ -60,6 +60,38 @@ describe('groupClaimsByPaper', () => {
     expect(grouped.papers.flatMap((g) => g.rows.map((r) => r.number))).toEqual([2]);
   });
 
+  it('gives every row a unique key when a claim cites the same paper twice', () => {
+    // **매 턴 일어난다.** 게이트는 supporting을 논문으로 중복 제거하지 않으므로(gate.py),
+    // 한 명제가 같은 논문의 두 블록을 인용하면 같은 그룹에 같은 번호의 행이 둘 생긴다.
+    // 배포본 실측: 근거 19건 중 10건 · 25건 중 6건 · 10건 중 3건이 이 모양이었다.
+    const grouped = groupClaimsByPaper([
+      claim('a', [
+        ref({ paperId: 'p1', anchor: 's1.p1' }),
+        ref({ paperId: 'p1', anchor: 's4.tbl1' }),
+      ]),
+    ]);
+
+    const rows = grouped.papers[0].rows;
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.key)).toEqual([...new Set(rows.map((r) => r.key))]);
+  });
+
+  it('marks exactly one row per number as the anchor target', () => {
+    // `[n]`의 DOM id는 한 곳에만 있어야 한다 — 중복 id는 유효하지 않은 HTML이고 점프가
+    // 첫 번째로만 간다. 같은 번호가 **논문을 건너서도** 나온다(두 논문이 함께 지지).
+    const grouped = groupClaimsByPaper([
+      claim('a', [
+        ref({ paperId: 'p1', anchor: 's1.p1' }),
+        ref({ paperId: 'p1', anchor: 's4.tbl1' }),
+        ref({ paperId: 'p2', anchor: 's2.p1' }),
+      ]),
+      claim('b', [ref({ paperId: 'p1' })]),
+    ]);
+
+    const anchors = grouped.papers.flatMap((g) => g.rows.filter((r) => r.anchor));
+    expect(anchors.map((r) => r.number).sort()).toEqual([1, 2]);
+  });
+
   it('has no contested section when nothing conflicts', () => {
     const grouped = groupClaimsByPaper([claim('a', [ref({ paperId: 'p1' })])]);
 
@@ -94,9 +126,12 @@ describe('evidenceLine', () => {
 });
 
 describe('anchorHref', () => {
-  it('opens the body viewer scrolled to the cited block', () => {
+  it('opens the body viewer scrolled to the cited block, label included', () => {
+    // **`anchorLabel`이 함께 가야 한다.** 블록 id가 그 문서에 없으면 뷰어가 라벨로
+    // 떨어지는데(`resolveAnchorId`), 안 실으면 폴백이 죽어 스크롤이 조용히 안 된다.
+    // 근거의 앵커는 `표 3`·`4.2절` 같은 라벨꼴이 흔해 그 폴백이 가장 필요한 쪽이다.
     expect(anchorHref(ref({ paperId: '2106.09685v2', anchor: 's4.p3' }))).toBe(
-      '/paper/2106.09685v2/doc-model?version=2&anchorId=s4.p3',
+      '/paper/2106.09685v2/doc-model?version=2&anchorId=s4.p3&anchorLabel=s4.p3',
     );
   });
 

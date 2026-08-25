@@ -39,9 +39,12 @@ function walk(dir: string, out: string[] = []): string[] {
 }
 
 /** 주석 속 산문이 클래스를 언급하면(`.screen fills the frame …`) 정의로 잡힌다. */
+function readCss(cssPath: string): string {
+  return readFileSync(cssPath, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+}
+
 function definedClasses(cssPath: string): Set<string> {
-  const css = readFileSync(cssPath, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
-  return new Set([...css.matchAll(DEFINITION)].map((m) => m[1]));
+  return new Set([...readCss(cssPath).matchAll(DEFINITION)].map((m) => m[1]));
 }
 
 /** `@/`는 tsconfig paths 별칭(프로젝트 루트)이다. */
@@ -68,9 +71,11 @@ function bindings(): Array<{ name: string; file: string; alias: string; sheet: s
   return found;
 }
 
-describe('CSS module classes exist for every consumer that reads them', () => {
-  const all = bindings();
+// 모듈 스코프에 한 번 — `describe` 둘이 나눠 쓴다(안 그러면 `app`·`components`·`lib`
+// 전체 walk가 두 번 돈다).
+const all = bindings();
 
+describe('CSS module classes exist for every consumer that reads them', () => {
   it('finds the consumer/stylesheet bindings to check', () => {
     // 하나도 못 찾으면 아래 검사가 **공집합을 통과**한다 — 초록이 무의미해진다.
     expect(all.length).toBeGreaterThan(20);
@@ -107,9 +112,9 @@ describe('classes rendered with the hidden attribute', () => {
   // 아니라 접근성 표시라 무관하다. 앞이 공백이거나 `{`인 것만 본다.
   const HIDDEN_PROP = /className=\{styles\.(\w+)\}[^>]*?[\s{]hidden=/gs;
 
-  it.each(bindings())('$name', ({ file, sheet }) => {
+  it.each(all)('$name', ({ file, sheet }) => {
     const body = readFileSync(file, 'utf8');
-    const css = readFileSync(sheet, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const css = readCss(sheet);
     for (const [, name] of body.matchAll(HIDDEN_PROP)) {
       const rule = new RegExp(`^[ \\t]*\\.${name}\\s*\\{[^}]*\\bdisplay\\s*:`, 'm');
       if (!rule.test(css)) continue;

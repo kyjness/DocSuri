@@ -20,6 +20,7 @@ import type {
   DocSection,
   DocTableBlock,
 } from '@/types/generated';
+import { ABSTRACT_SECTION_ID } from '@/lib/docModelHref';
 import { useDocModel } from '@/lib/useDocModel';
 import { useAssets } from '@/lib/useAssets';
 import { createPortal } from 'react-dom';
@@ -208,7 +209,9 @@ export function DocModelBody({
   // The abstract is its own surface (초록 / 초록 번역), so it is hidden from the full-text body and
   // TOC to avoid duplication. U1 emits the abstract as a dedicated section with id "s0" (real
   // content sections start at "s1"), so dropping "s0" removes only the abstract.
-  const sections = docModel.sections.filter((s) => s.id !== 's0');
+  // 상수를 링크 조립 쪽과 나눈다 — 근거 목록이 "초록 앵커는 본문으로 보내지 않는다"를
+  // 판정할 때 같은 값을 읽어야 한다. 갈리면 그쪽이 조용히 안 되는 링크를 만든다.
+  const sections = docModel.sections.filter((s) => s.id !== ABSTRACT_SECTION_ID);
   // Resolve the anchor to ONE doc-model id up front, so scroll and highlight point at the same
   // node. resolveAnchorId prefers the server-supplied blockId (when it still exists here) and
   // otherwise falls back to label matching — the highlight then keys off that single id.

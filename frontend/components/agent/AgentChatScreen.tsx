@@ -34,7 +34,6 @@ import {
   type EvidenceResultPayload,
   type EvidenceSourceRef,
   anchorTypeLabel,
-  canJumpToSource,
   examinedRangeMessage,
   sourceScopeBadge,
 } from '@/lib/agentChat/evidenceResult';
@@ -44,6 +43,7 @@ import type {
   EvidenceCoverage,
   EvidencePaperGroup,
   EvidenceRow,
+  GroupedEvidence,
 } from '@/lib/agentChat/evidenceResult';
 import type { AnswerSegmentRole } from '@/types/generated/evidence';
 import {
@@ -765,12 +765,14 @@ export function EvidenceResultView({
   result: EvidenceResultPayload;
   scope: string;
 }) {
-  // 접기 상태는 **여기서** 산다. 판단 산문의 `[9]`가 접힌 근거를 가리키면 점프가 아무 일도
-  // 하지 않으므로(감춰진 요소로는 스크롤되지 않는다), 그 번호를 누를 때 목록이 함께 펴져야
-  // 한다. 상태를 목록 안에 두면 산문이 그것을 건드릴 수 없다.
-  // 접기 상태는 **논문별**이다. 상태를 그룹 안에 두면 판단 산문이 못 건드리는데, 산문의
-  // `[9]`가 접힌 줄을 가리키면 그 논문 그룹이 함께 펴져야 한다.
+  // 접기 상태는 **논문별이고 여기서 산다.** 감춰진 요소로는 스크롤되지 않으므로 판단 산문의
+  // `[9]`가 접힌 줄을 가리키면 그 논문 그룹이 함께 펴져야 하는데, 상태를 그룹 안에 두면
+  // 산문이 그것을 건드릴 수 없다.
   const [expandedPapers, setExpandedPapers] = useState<ReadonlySet<string>>(() => new Set());
+  // D-4 — 그룹핑은 **한 번만** 돈다. 클릭 경로와 렌더 경로가 각자 계산하면 결과가 두 벌이라
+  // 갈릴 수 있다: 점프가 찾은 paperId와 화면이 그린 DOM이 같은 그룹핑에서 나온다는 보장이
+  // 타입에 없다.
+  const grouped = useMemo(() => groupClaimsByPaper(result.claims), [result.claims]);
   // 문장 0건짜리 answer는 없는 것과 같다 — 판정을 한 번만 하고 그 결과를 쓴다.
   const answer = result.answer?.segments.length ? result.answer : null;
   if (result.claims.length === 0) {
@@ -787,10 +789,7 @@ export function EvidenceResultView({
           answer={answer}
           scope={scope}
           onRefJump={(n) => {
-            // 그 번호가 어느 논문 그룹에 있는지는 그룹핑이 안다 — 화면이 다시 세지 않는다.
-            const owner = groupClaimsByPaper(result.claims).papers.find((g) =>
-              g.rows.some((row) => row.number === n),
-            );
+            const owner = grouped.papers.find((g) => g.rows.some((row) => row.number === n));
             if (owner) {
               setExpandedPapers((open) => new Set(open).add(owner.paperId));
             }
@@ -798,7 +797,7 @@ export function EvidenceResultView({
         />
       ) : null}
       <EvidenceClaimList
-        claims={result.claims}
+        grouped={grouped}
         scope={scope}
         expandedPapers={expandedPapers}
         onExpandPaper={(paperId) => setExpandedPapers((open) => new Set(open).add(paperId))}
@@ -928,17 +927,17 @@ export const EVIDENCE_VISIBLE_PER_PAPER = 3;
  * DOM에도 남는다 — 산문의 `[9]`가 가리킬 대상이 없으면 링크가 죽는다.
  */
 export function EvidenceClaimList({
-  claims,
+  grouped,
   scope,
   expandedPapers,
   onExpandPaper,
 }: {
-  claims: EvidenceClaim[];
+  grouped: GroupedEvidence;
   scope: string;
   expandedPapers?: ReadonlySet<string>;
   onExpandPaper?: (paperId: string) => void;
 }) {
-  const { contested, papers } = groupClaimsByPaper(claims);
+  const { contested, papers } = grouped;
   return (
     <div className={styles.evidenceList} data-testid="evidence-list">
       {contested.length > 0 ? (
@@ -960,7 +959,6 @@ export function EvidenceClaimList({
         <EvidencePaperBlock
           key={group.paperId}
           group={group}
-          claims={claims}
           scope={scope}
           expanded={expandedPapers?.has(group.paperId) ?? false}
           onExpand={() => onExpandPaper?.(group.paperId)}
@@ -972,13 +970,11 @@ export function EvidenceClaimList({
 
 function EvidencePaperBlock({
   group,
-  claims,
   scope,
   expanded,
   onExpand,
 }: {
   group: EvidencePaperGroup;
-  claims: EvidenceClaim[];
   scope: string;
   expanded: boolean;
   onExpand: () => void;
@@ -992,16 +988,15 @@ function EvidencePaperBlock({
       </p>
       {group.rows.map((row, idx) => (
         <article
-          key={row.number}
-          id={evidenceRowId(scope, row.number)}
+          key={row.key}
+          // 이동 대상은 그 번호를 처음 들고 나온 행 하나뿐이다 — 중복 id는 유효하지 않은
+          // HTML이고 점프가 첫 번째로만 간다. 누가 처음인지는 그룹핑이 정한다.
+          {...(row.anchor ? { id: evidenceRowId(scope, row.number) } : {})}
           className={styles.evidenceRow}
           data-testid="evidence-row"
           hidden={collapsed && idx >= EVIDENCE_VISIBLE_PER_PAPER}
         >
-          <EvidenceRowLine
-            row={row}
-            statement={claims[row.number - 1]?.statement ?? ''}
-          />
+          <EvidenceRowLine row={row} />
         </article>
       ))}
       {collapsed ? (
@@ -1018,48 +1013,52 @@ function EvidencePaperBlock({
   );
 }
 
-function EvidenceRowLine({ row, statement }: { row: EvidenceRow; statement: string }) {
-  const line = evidenceLine(row.ref, statement);
-  const { mark, label } = STANCE[row.stance];
-  const chip = anchorTypeLabel(row.ref);
-  const href = anchorHref(row.ref);
+function EvidenceRowLine({ row }: { row: EvidenceRow }) {
+  const line = evidenceLine(row.ref, row.statement);
   return (
     <>
       <span className={styles.evidenceRowHead}>
         <span className={styles.evidenceRowNumber}>[{row.number}]</span>
-        <span className={styles.evidenceStanceMark} aria-label={label}>
-          {mark}
-        </span>
-        <AnchorChip refKey={row.ref} href={href} label={chip} />
+        {/* 논문 그룹은 정의상 전부 지지다 — 상충 근거는 위의 쟁점으로 빠진다. */}
+        <StanceMark stance="support" />
+        <AnchorChip refKey={row.ref} />
       </span>
-      <p className={styles.evidenceRowText} data-line-kind={line.kind}>
-        {line.kind === 'quote' ? `\u201C${line.text}\u201D` : line.text}
-      </p>
+      {line.kind === 'quote' ? (
+        <EvidenceQuote text={line.text} />
+      ) : (
+        <p className={styles.evidenceRowText}>{line.text}</p>
+      )}
     </>
   );
 }
 
-/** 인용 위치 — 이제 **누르면 그 블록으로 간다**(종전에는 죽은 텍스트였다). */
-function AnchorChip({
-  refKey: ref,
-  href,
-  label,
-}: {
-  refKey: EvidenceSourceRef;
-  href: string | null;
-  label: string | null;
-}) {
+/** 지지 ✓ / 상충 ✗. **색은 자기 `data-stance`가 정한다** — 조상 선택자에 걸면 그 조상이
+ *  없는 자리(논문 그룹)에서 조용히 색을 잃는다(실제로 그랬다). */
+function StanceMark({ stance }: { stance: Stance }) {
+  const { mark, label } = STANCE[stance];
+  return (
+    <span className={styles.evidenceStanceMark} data-stance={stance} aria-label={label}>
+      {mark}
+    </span>
+  );
+}
+
+/** 출처 원문 — 쟁점과 논문 그룹이 **같은 마크업·같은 스타일**로 낸다. */
+function EvidenceQuote({ text }: { text: string }) {
+  return <blockquote className={styles.evidenceQuote}>{`\u201C${text}\u201D`}</blockquote>;
+}
+
+/**
+ * 인용 위치 — 이제 **누르면 그 블록으로 간다**(종전에는 죽은 텍스트였다).
+ *
+ * 목적지도 라벨도 `ref`에서 순수 유도다. 호출자가 미리 계산해 넘기면 다른 ref의 값을 넘겨도
+ * 타입이 통과해서, 칩 글자와 링크가 다른 논문을 가리킬 수 있다.
+ */
+function AnchorChip({ refKey: ref }: { refKey: EvidenceSourceRef }) {
   const badge = sourceScopeBadge(ref);
-  const text = label ?? (ref.anchor ? `\u00A7 ${ref.anchor}` : null);
   return (
     <>
-      {text && href ? (
-        <a className={styles.evidenceAnchor} href={href} data-testid="evidence-anchor-link">
-          {text}
-        </a>
-      ) : text ? (
-        <span className={styles.evidenceAnchor}>{text}</span>
-      ) : null}
+      <AnchorText refKey={ref} />
       {badge ? (
         <span
           className={styles.evidenceScopeBadge}
@@ -1070,6 +1069,22 @@ function AnchorChip({
         </span>
       ) : null}
     </>
+  );
+}
+
+/** 갈 곳이 있으면 링크, 없으면 글자. 가리킬 자리가 없으면 칩도 없다. */
+function AnchorText({ refKey: ref }: { refKey: EvidenceSourceRef }) {
+  if (!ref.anchor) return null;
+  // **종류와 앵커 값을 둘 다 낸다**(`표 · 표 3`). 종류만 남기면 어느 표인지가 사라진다 —
+  // 칩을 다시 쓰면서 실제로 그랬다.
+  const type = anchorTypeLabel(ref);
+  const text = type ? `${type} \u00B7 ${ref.anchor}` : `\u00A7 ${ref.anchor}`;
+  const href = anchorHref(ref);
+  if (!href) return <span className={styles.evidenceAnchor}>{text}</span>;
+  return (
+    <a className={styles.evidenceAnchor} href={href} data-testid="evidence-anchor-link">
+      {text}
+    </a>
   );
 }
 
@@ -1088,19 +1103,16 @@ type Stance = keyof typeof STANCE;
  */
 function EvidenceRefList({ refs, stance }: { refs: EvidenceSourceRef[]; stance: Stance }) {
   if (refs.length === 0) return null;
-  const { mark, label } = STANCE[stance];
   return (
     <ul className={styles.evidenceRefs} data-stance={stance}>
       {refs.map((ref, idx) => (
         <li key={idx} className={styles.evidenceRef}>
           <span className={styles.evidenceSource}>
-            <span className={styles.evidenceStanceMark} aria-label={label}>
-              {mark}
-            </span>
+            <StanceMark stance={stance} />
             <SourceLink refKey={ref} />
-            <AnchorChip refKey={ref} href={anchorHref(ref)} label={anchorTypeLabel(ref)} />
+            <AnchorChip refKey={ref} />
           </span>
-          {ref.quote ? <blockquote className={styles.evidenceQuote}>{ref.quote}</blockquote> : null}
+          {ref.quote ? <EvidenceQuote text={ref.quote} /> : null}
         </li>
       ))}
     </ul>

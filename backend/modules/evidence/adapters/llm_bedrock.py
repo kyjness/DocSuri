@@ -28,7 +28,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable
 from typing import Any
 
 from docsuri_shared.bedrock import (
@@ -57,6 +57,7 @@ from ..ports.llm import (
     ToolCallProposal,
 )
 from ..ports.tools import ToolSpec
+from .fanout import fan_out
 from .prompts import build_answer_messages, build_decide_messages, build_extraction_messages
 
 __all__ = ["BedrockAnswerWriter", "BedrockDecider", "BedrockExtractor", "IMAGE_BOUNDARY_BANNER"]
@@ -299,8 +300,17 @@ class _BedrockBase:
 
     def _invoke(self, body: dict[str, Any]) -> dict[str, Any]:
         """전송은 공유 봉투가, 실패 계약(재시도 1회 + 브레이커 → `LlmUnavailable`)은 여기가."""
+        return self._breaker_call(lambda: self._invoke_raw(body))
+
+    def _invoke_raw(self, body: dict[str, Any]) -> dict[str, Any]:
+        """브레이커 **밖**의 전송. 팬아웃처럼 여러 호출이 한 시도인 자리가 쓴다 —
+        호출마다 회로를 세면 한 장애가 팬아웃 폭만큼 세어져 임계값을 즉시 채운다."""
+        return invoke_model(self._client, self._model, body)
+
+    def _breaker_call(self, fn: Callable[[], Any]) -> Any:
+        """회로차단기 permit 하나 — **무엇을 한 시도로 볼지는 호출자가 정한다.**"""
         try:
-            return self._breaker.call(lambda: invoke_model(self._client, self._model, body))
+            return self._breaker.call(fn)
         except SourceUnavailable as exc:
             raise LlmUnavailable(str(exc)[:300]) from exc
 
@@ -355,6 +365,13 @@ class BedrockAnswerWriter(_BedrockBase):
         )
 
 
+# 추출 동시 호출 상한. 실측 구간이 논문 3~4편이라 그 구간에서 손실이 0이고, 그 위로는
+# **같은 모델 엔드포인트에 몰리는 요청 수**가 문제가 된다 — 이 저장소는 직렬 호출로도 스로틀에
+# 물린 이력이 있다(novelty external/base 독스트링). botocore 연결 풀(아래 `real_wiring`의
+# `max_pool_connections`)도 이 값과 함께 봐야 한다: 따로 놀면 팬아웃 폭이 조용히 풀에 잘린다.
+MAX_EXTRACT_CONCURRENCY = 4
+
+
 class BedrockExtractor(_BedrockBase):
     """`extract_evidence` 뒤의 추출 — 검증 전 원시 항목을 돌려준다.
 
@@ -364,41 +381,51 @@ class BedrockExtractor(_BedrockBase):
     편의 시간**으로 떨어진다. 근거는 하나도 안 잃는다 — 논문마다 자기 본문만 보면 되고,
     추출은 논문 간 대조를 하지 않는다(그건 게이트 뒤 조립과 판단 층의 몫이다).
 
-    대가는 시스템 프롬프트가 논문 수만큼 반복되는 것이다. 그 비용은 이제 장부에 잡힌다.
+    **회로차단기는 팬아웃 전체에 한 번만 건다.** 호출마다 걸면 논문 3편 동시 실패가 실패
+    3회로 세어져 임계값(3)을 즉시 채운다 — 브레이커는 decide·answer와 공유하므로 그 한 번의
+    장애가 60초 동안 턴의 판단까지 죽인다. HALF-OPEN에서는 반대로 무너진다: 프로브가 하나라
+    3편 중 1편만 통과하고 나머지는 즉시 거절돼 **회복 창에서 근거가 늘 1편치만 나온다.**
+    permit 하나 안에서 던지면 한 장애가 한 번 세어지고, 회로가 반쯤 열렸을 때는 팬아웃이
+    통째로 거절된다.
     """
 
     def extract(
         self, *, topic: str, focus: str, papers: tuple[Any, ...]
     ) -> ExtractionDraft:
-        if len(papers) <= 1:
-            # 나눌 것이 없으면 스레드풀을 만들지 않는다.
-            return self._extract_one(topic=topic, focus=focus, papers=papers)
+        if not papers:
+            return self._extract_one(topic=topic, focus=focus, papers=())
+        return self._breaker_call(lambda: self._fan_out(topic=topic, focus=focus, papers=papers))
 
-        with ThreadPoolExecutor(max_workers=len(papers)) as pool:
-            futures = [
-                pool.submit(self._extract_one, topic=topic, focus=focus, papers=(paper,))
-                for paper in papers
-            ]
-            # **제출 순서로 모은다**(완료 순서가 아니라). 항목 순서가 흔들리면 게이트를 지난
-            # 뒤의 근거 번호가 흔들리고, 그 번호는 판단 산문이 가리키는 값이다(BR-EV-5).
-            drafts, failures = [], []
-            for future in futures:
-                try:
-                    drafts.append(future.result())
-                except LlmUnavailable as exc:
-                    failures.append(exc)
+    def _fan_out(
+        self, *, topic: str, focus: str, papers: tuple[Any, ...]
+    ) -> ExtractionDraft:
+        # **각 호출이 자기 논문을 들고 결과를 낸다.** 실패 목록만 받아 나중에 짝을 되짚으면
+        # 순서에 기대게 되고, 어느 논문이 빠졌는지가 배열 인덱스에 숨는다.
+        def one(paper: Any) -> tuple[Any, ExtractionDraft | None]:
+            try:
+                return paper, self._extract_one(topic=topic, focus=focus, papers=(paper,))
+            except Exception:  # noqa: BLE001 — 부분 실패는 정상 결과다(아래에서 판정)
+                log.warning("evidence extraction failed for one paper", exc_info=True)
+                return paper, None
 
+        outcomes, _ = fan_out(
+            [(lambda p=paper: one(p)) for paper in papers], max_workers=MAX_EXTRACT_CONCURRENCY
+        )
+        drafts = [draft for _, draft in outcomes if draft is not None]
         if not drafts:
             # 전부 죽었을 때만 실패다 — 한 편이 죽었다고 나머지 논문의 근거를 버리지 않는다
-            # (실시간 조회의 부분 저하와 같은 판정).
-            raise failures[0]
-        if failures:
-            log.warning("evidence extraction partially failed (%d/%d)", len(failures), len(papers))
+            # (실시간 조회의 부분 저하와 같은 판정). 브레이커가 이 예외를 실패 1회로 센다.
+            raise LlmUnavailable("extraction failed for every paper")
         costs = [d.cost_estimate_usd for d in drafts if d.cost_estimate_usd is not None]
         return ExtractionDraft(
             items=[item for draft in drafts for item in draft.items],
             # 하나도 못 쟀으면 None이다 — 0으로 두면 "쟀는데 공짜"와 구분이 안 된다.
             cost_estimate_usd=sum(costs) if costs else None,
+            # **어느 논문이 빠졌는지 도구가 알아야 한다.** 로그로만 남기면 도구 결과가
+            # `ok=True`라 모델은 그 논문을 안 읽은 줄 모르고 재시도도 안 한다.
+            failed=tuple(
+                str(getattr(paper, "paper_id", "")) for paper, draft in outcomes if draft is None
+            ),
         )
 
     def _extract_one(
@@ -407,7 +434,7 @@ class BedrockExtractor(_BedrockBase):
         system, messages = _split_system(
             build_extraction_messages(topic=topic, focus=focus, papers=papers)
         )
-        response = self._invoke(self._body(system, messages))
+        response = self._invoke_raw(self._body(system, messages))
         # Join every text block: a preface block before the JSON block would otherwise make the
         # first block parse to [] with no error, and an extraction turn that yields nothing is
         # indistinguishable from papers that carried no evidence.

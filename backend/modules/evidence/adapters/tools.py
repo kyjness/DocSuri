@@ -752,6 +752,13 @@ class ExtractEvidenceTool:
             )
         if unknown:
             content["unknownPapers"] = unknown
+        if draft.failed:
+            # **안 읽은 논문을 알린다.** 로그로만 남기면 결과가 `ok=True`에 `accepted: N`이라
+            # 모델은 그 논문을 건너뛴 줄 모르고 재시도도 안 한다 — 근거가 조용히 적어진다.
+            content["failedPapers"] = list(draft.failed)
+            content["hint"] = (
+                "일부 논문에서 추출이 실패했다 — 그 논문만 다시 extract_evidence로 시도하라."
+            )
         return ToolResult(
             ok=True,
             content=content,

@@ -16,7 +16,7 @@ import {
   EvidenceClaimList,
   EvidenceResultView,
 } from '@/components/agent/AgentChatScreen';
-import { sourceHref, sourceLabel } from '@/lib/agentChat/evidenceResult';
+import { groupClaimsByPaper, sourceHref, sourceLabel } from '@/lib/agentChat/evidenceResult';
 import type { EvidenceSourceRef } from '@/lib/agentChat/evidenceResult';
 
 function ref(over: Partial<EvidenceSourceRef> = {}): EvidenceSourceRef {
@@ -75,7 +75,7 @@ describe('folding inside a paper block', () => {
     const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
     return (
       <EvidenceClaimList
-        claims={claims}
+        grouped={groupClaimsByPaper(claims)}
         scope="msg-1"
         expandedPapers={open}
         onExpandPaper={(id) => setOpen((prev) => new Set(prev).add(id))}
@@ -103,20 +103,23 @@ describe('folding inside a paper block', () => {
   });
 
   it('does not offer "더 보기" when a paper already fits', () => {
-    render(<EvidenceClaimList claims={claims.slice(0, 3)} scope="msg-2" />);
+    render(<EvidenceClaimList
+        grouped={groupClaimsByPaper(claims.slice(0, 3))} scope="msg-2" />);
 
     expect(screen.queryByTestId('evidence-show-more')).not.toBeInTheDocument();
   });
 
   it('names the paper once instead of once per evidence line', () => {
-    render(<EvidenceClaimList claims={claims} scope="msg-4" />);
+    render(<EvidenceClaimList
+        grouped={groupClaimsByPaper(claims)} scope="msg-4" />);
 
     // 종전에는 근거마다 제목이 붙어 논문 2편짜리 턴에서 같은 이름이 일곱 번 찍혔다.
     expect(screen.getAllByRole('link', { name: /논문 하나/ })).toHaveLength(1);
   });
 
   it('writes the quote on the line, not the Korean statement the prose already said', () => {
-    render(<EvidenceClaimList claims={claims.slice(0, 1)} scope="msg-5" />);
+    render(<EvidenceClaimList
+        grouped={groupClaimsByPaper(claims.slice(0, 1))} scope="msg-5" />);
 
     expect(screen.getByText(/원문 1/)).toBeInTheDocument();
     expect(screen.queryByText('근거 명제 1')).not.toBeInTheDocument();
@@ -127,7 +130,7 @@ describe('folding inside a paper block', () => {
     render(
       <EvidenceClaimList
         scope="msg-6"
-        claims={[
+        grouped={groupClaimsByPaper([
           {
             statement: '정확도가 12%p 오른다',
             supporting: [
@@ -135,12 +138,47 @@ describe('folding inside a paper block', () => {
             ],
             conflicting: [],
           },
-        ]}
+        ])}
       />,
     );
 
     expect(screen.getByText('정확도가 12%p 오른다')).toBeInTheDocument();
     expect(screen.queryByText(/PPL \| 8\.08/)).not.toBeInTheDocument();
+  });
+});
+
+describe('the row head', () => {
+  function renderRow(over: Partial<EvidenceSourceRef>) {
+    render(
+      <EvidenceClaimList
+        scope="msg-head"
+        grouped={groupClaimsByPaper([
+          { statement: '명제', supporting: [ref(over)], conflicting: [] },
+        ])}
+      />,
+    );
+  }
+
+  it('carries the stance on the mark itself, not on an ancestor', () => {
+    // 조상 선택자에 색을 걸면 그 조상이 없는 자리에서 조용히 색을 잃는다 — 논문 그룹의 ✓가
+    // 실제로 그랬다(쟁점 블록에서만 색이 나왔다). CSS 모듈은 목이라 계산된 색을 못 보므로,
+    // **색을 고르는 근거가 마크에 실려 있는지**를 본다.
+    renderRow({ anchor: 's1.p1', quote: '원문' });
+
+    expect(screen.getByLabelText('지지')).toHaveAttribute('data-stance', 'support');
+  });
+
+  it('shows the anchor value next to its type, not the type alone', () => {
+    // 종전 칩은 `표 · 표 3`이었다. 칩을 다시 쓰면서 `표`만 남아 **어느 표인지가 사라졌다.**
+    renderRow({ anchor: '표 3', anchorType: 'table', quote: 'PPL | 8.08' });
+
+    expect(screen.getByText('표 · 표 3')).toBeInTheDocument();
+  });
+
+  it('falls back to § when the block has no type', () => {
+    renderRow({ anchor: '4.2절', quote: '원문' });
+
+    expect(screen.getByText('§ 4.2절')).toBeInTheDocument();
   });
 });
 
@@ -155,7 +193,8 @@ describe('a contested claim', () => {
   ];
 
   it('is lifted into 쟁점 so the disagreement stays in one place', () => {
-    render(<EvidenceClaimList claims={claims} scope="msg-7" />);
+    render(<EvidenceClaimList
+        grouped={groupClaimsByPaper(claims)} scope="msg-7" />);
 
     const contested = screen.getByTestId('evidence-contested');
     expect(within(contested).getByText('갈리는 명제')).toBeInTheDocument();
@@ -164,7 +203,8 @@ describe('a contested claim', () => {
   });
 
   it('appears exactly once — a duplicated DOM id breaks the citation jump', () => {
-    render(<EvidenceClaimList claims={claims} scope="msg-8" />);
+    render(<EvidenceClaimList
+        grouped={groupClaimsByPaper(claims)} scope="msg-8" />);
 
     const ids = screen.getAllByTestId('evidence-row').map((r) => r.id);
     expect(ids).toEqual([...new Set(ids)]);
