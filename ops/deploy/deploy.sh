@@ -25,11 +25,16 @@ SSH=(ssh -i "$KEY" -o StrictHostKeyChecking=accept-new "ec2-user@$HOST")
 
 echo "==> 소스 전송"
 # `--delete`는 쓰지 않는다: 박스의 `.env.prod`와 볼륨 데이터를 지울 수 있다.
-# 제외 목록은 **박스에서 쓸 일이 없는 것**이다 — 로컬 코퍼스(24 GB)가 딸려 가면 디스크가 찬다.
+# 제외 목록은 **박스에서 쓸 일이 없는 것**이다 — 로컬 코퍼스가 딸려 가면 디스크가 찬다.
+# `ops/deploy/terraform`은 크기가 아니라 **시크릿** 때문에 뺀다: `terraform.tfstate`에 앱
+# IAM 사용자의 시크릿 키가 평문으로 들어 있고, 박스는 그것을 쓸 일이 없다(앱은 `.env.prod`의
+# 같은 키를 쓴다). 박스가 털리면 tfstate는 **인프라 전체를 다시 만들 수 있는 권한**까지
+# 노출하므로, 앱이 가진 것보다 훨씬 넓다.
 rsync -az --info=stats1 \
   --exclude '.git' --exclude 'node_modules' --exclude '.next' \
   --exclude '__pycache__' --exclude '.venv' --exclude 'reports' \
   --exclude 'aidlc-docs' --exclude '.cache' \
+  --exclude 'ops/deploy/terraform' \
   -e "ssh -i $KEY -o StrictHostKeyChecking=accept-new" \
   "$REPO/" "ec2-user@$HOST:$REMOTE/"
 
