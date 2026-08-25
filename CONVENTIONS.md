@@ -9,9 +9,11 @@ lifecycle; AIDLC is deliberately silent on git, so the git workflow is documente
 
 ## Branches (git-flow)
 
-- **`main`** — production/release line. The docsuri.org deployment is retired (redeploy
-  deferred); promote `develop`
-  into `main` when cutting a release/portfolio snapshot.
+- **`main`** — production/release line. **`main`은 지금 배포된 것을 가리킨다** —
+  `https://docsuri.shop`(데모 배포, 로드맵 ⑪)이 도는 코드다. 배포할 때 `develop`을 `main`으로
+  승격하고, 박스의 `/opt/docsuri/DEPLOYED_REV`가 같은 해시를 가리키는지 확인한다.
+  둘이 갈리면 **되돌릴 지점이 없다는 뜻**이다 — 배포는 git이 아니라 워킹트리를 나르므로
+  (`ops/deploy/deploy.sh`), `main`이 사실인지는 그 파일로만 확인된다.
 - **`develop`** — integration target and default branch. **Direct commits and direct
   pushes to `develop` are allowed** (solo maintenance; a self-approved PR adds ceremony,
   not review — CI runs on `develop` pushes anyway).

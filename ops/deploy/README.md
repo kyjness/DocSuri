@@ -264,9 +264,9 @@ docker compose -f compose.prod.yml --env-file .env.prod logs backend \
 그때의 트리**다. 그래서 `develop → main` 승격은 배포의 선행 조건이 아니고, 반대로 승격했다고
 배포본이 바뀌지도 않는다 — 둘은 무관하다.
 
-`CONVENTIONS.md`는 `main`을 "릴리스 라인"으로 두고 "릴리스를 끊을 때 승격한다"고 적는다.
-현재 원격에 `main`은 **없다**(develop이 기본 브랜치다). 데모 배포를 릴리스로 볼지는 결정
-사항이며, 이 문서는 그 결정을 대신하지 않는다.
+**`main`은 지금 배포된 것을 가리킨다**(2026-08-25 신설). 배포할 때 `develop`을 `main`으로
+승격하고 `DEPLOYED_REV`가 같은 해시인지 확인한다 — 둘이 갈리면 **되돌릴 지점이 없다는
+뜻**이다. `main`이 사실인지는 git이 아니라 그 파일로만 확인된다.
 
 대신 **무엇이 떠 있는지는 반드시 남긴다.** `deploy.sh`가 커밋 해시와 시각을
 `/opt/docsuri/DEPLOYED_REV`에 적는다. `.git`이 박스로 안 가므로 이것이 없으면 박스만 보고는
