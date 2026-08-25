@@ -245,3 +245,15 @@ def test_override_that_sanitizes_empty_does_not_drop_seed_mapping() -> None:
     block = _glossary_block(g)
     assert "attention→어텐션" in block  # seed mapping preserved
     assert "사용자 선호 매핑" not in block  # no valid user pair emitted
+
+
+def test_reproducibility_is_told_what_to_write_when_the_paper_says_nothing() -> None:
+    # 재현성은 **없다는 것도 정보**다. "근거가 없으면 비워라"는 일반 규칙만 있으면 모델이 빈
+    # 문자열을 내고, 화면에서 "논문에 공개 언급이 없다"와 "모델이 답을 안 했다"가 같은 모양이
+    # 된다(2026-08-25 결함). 그래서 이 두 칸만 예외를 두고 적으라고 시킨다.
+    # 화면 쪽 대응은 frontend/test/summaryViewReproducibility.test.tsx 가 본다.
+    refined = RefinedSource(body="We release code at github.com/x/y.")
+    req = SummaryRequest(paper_id="p", version=1, task=Task.SUMMARY, persona=Persona.EXPERT)
+    system, _user = build_summary_prompt(refined, req, _GLOSSARY)
+    assert "reproducibility.code·data는 비우지 마라" in system
+    assert "논문에 언급 없음" in system
