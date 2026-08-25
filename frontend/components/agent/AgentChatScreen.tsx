@@ -77,7 +77,7 @@ const SSE_FETCH_TIMEOUT_MS = 5000;
 const RESEARCH_MODE_ENABLED =
   !process.env.NEXT_PUBLIC_DOCSURI_REAL_API ||
   process.env.NEXT_PUBLIC_DOCSURI_EVIDENCE_AGENT_ENABLED === '1';
-// 한시 배포에서는 Novelty를 내보내지 않는다(로드맵 ⑪ — ⑩-2 재정의를 하지 않기로 했고,
+// 데모 배포에서는 Novelty를 내보내지 않는다(로드맵 ⑪ — ⑩-2 재정의를 하지 않기로 했고,
 // 지금 노출된 것은 그 재정의 이전의 v2다). RESEARCH와 **같은 모양**으로 건다: 목 전송
 // (로컬·테스트)에서는 그대로 보이고, 실 API를 붙인 배포에서만 명시적으로 켜야 보인다.
 // 반대로 걸면(기본 노출) 배포에서 env 하나를 빠뜨리는 것이 곧 노출이 되는데, 그 실패는
