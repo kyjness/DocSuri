@@ -30,7 +30,10 @@ export function HeroLanding() {
     try {
       // BFF가 게이트웨이의 Set-Cookie를 브라우저로 중계한다 — 세션 토큰이 클라이언트 JS에
       // 들어오지 않는다(SEC-3/12). 그래서 응답 본문에서 꺼낼 것이 없고, 성공이면 바로 넘긴다.
-      const res = await fetch('/bff/api/auth/demo', { method: 'POST' });
+      // 경로는 `/bff/auth/demo`다 — 계정 라우터가 `/auth`에 붙어 있다(`/api/auth`가 아니다).
+      // 처음에 `/bff/api/auth/demo`로 적었더니 배포본에서 401이 났다: 그 경로는 라우터에 없어
+      // 미들웨어 단계에서 끊긴다. 다른 인증 호출(`/auth/signup`·`/auth/login`)도 전부 `/auth`다.
+      const res = await fetch('/bff/auth/demo', { method: 'POST' });
       if (!res.ok) throw new Error(String(res.status));
       // `replace`다 — 뒤로 가기로 랜딩에 돌아와 다시 계정을 만드는 것을 막는다.
       router.replace('/search');

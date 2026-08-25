@@ -52,7 +52,9 @@ describe('Demo login gate', () => {
     await renderHero();
     await userEvent.click(screen.getByTestId('hero-cta-demo'));
 
-    expect(fetchMock).toHaveBeenCalledWith('/bff/api/auth/demo', { method: 'POST' });
+    // **경로가 계약이다.** 계정 라우터는 `/auth`에 붙어 있어 `/api/auth`로 부르면 라우터에
+    // 없는 경로가 되고 미들웨어가 401을 낸다 — 배포본에서 실제로 그랬다.
+    expect(fetchMock).toHaveBeenCalledWith('/bff/auth/demo', { method: 'POST' });
     // `replace`여야 한다 — `push`면 뒤로 가기로 랜딩에 돌아와 계정을 또 만든다.
     await waitFor(() => expect(replace).toHaveBeenCalledWith('/search'));
   });
