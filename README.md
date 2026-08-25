@@ -85,12 +85,21 @@ cd backend                       && uv run ruff check . && uv run pytest
 cd backend/modules/discovery     && uv run ruff check . && uv run pytest
 cd backend/modules/summarization && uv run ruff check . && uv run pytest
 cd ingestion                     && uv run ruff check . && uv run pytest
-cd frontend                      && pnpm exec tsc --noEmit && pnpm run lint && pnpm exec vitest run
 uv run --project backend ruff check backend/modules tests   # evidence 린트는 여기
+
+cd frontend && pnpm exec tsc --noEmit && pnpm run lint && pnpm exec vitest run \
+            && pnpm run gen:types && git diff --exit-code types/ \
+            && pnpm exec next build
 ```
+
+두 가지가 조용히 어긋난다.
 
 **`backend`에서 `ruff check .`는 `modules/`를 안 본다**(`extend-exclude`). 모듈은 자기 lane에서
 따로 린트된다 — 셸에서 한 번 돌리고 "전부 통과"로 읽으면 안 된다.
+
+**프론트는 `next build`까지 돌려야 한다.** `tsc`도 `vitest`도 **CSS 모듈을 컴파일하지 않는다** —
+vitest는 클래스명을 아이덴티티로 목한다. 그래서 CSS 모듈의 오류(없는 클래스 참조, `composes`
+순서)는 셋 다 초록인 채 빌드에서만 터진다. 실제로 그렇게 CI를 깼다(2026-08-26).
 
 ---
 
