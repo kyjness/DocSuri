@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from docsuri_shared.bedrock import (
@@ -355,9 +356,52 @@ class BedrockAnswerWriter(_BedrockBase):
 
 
 class BedrockExtractor(_BedrockBase):
-    """`extract_evidence` 뒤의 추출 — 검증 전 원시 항목을 돌려준다."""
+    """`extract_evidence` 뒤의 추출 — 검증 전 원시 항목을 돌려준다.
+
+    **논문이 여럿이면 논문별로 나눠 동시에 던진다.** 추출은 턴 시간의 3분의 2 이상을 먹고
+    (배포본 실측: 68초 중 46초 · 108초 중 86초), 그중 여러 편을 한 프롬프트에 묶은 호출이
+    가장 느리다(3편 35.8초 · 4편 33.5초 — 1편은 22초). 나눠 던지면 그 호출이 **가장 느린 한
+    편의 시간**으로 떨어진다. 근거는 하나도 안 잃는다 — 논문마다 자기 본문만 보면 되고,
+    추출은 논문 간 대조를 하지 않는다(그건 게이트 뒤 조립과 판단 층의 몫이다).
+
+    대가는 시스템 프롬프트가 논문 수만큼 반복되는 것이다. 그 비용은 이제 장부에 잡힌다.
+    """
 
     def extract(
+        self, *, topic: str, focus: str, papers: tuple[Any, ...]
+    ) -> ExtractionDraft:
+        if len(papers) <= 1:
+            # 나눌 것이 없으면 스레드풀을 만들지 않는다.
+            return self._extract_one(topic=topic, focus=focus, papers=papers)
+
+        with ThreadPoolExecutor(max_workers=len(papers)) as pool:
+            futures = [
+                pool.submit(self._extract_one, topic=topic, focus=focus, papers=(paper,))
+                for paper in papers
+            ]
+            # **제출 순서로 모은다**(완료 순서가 아니라). 항목 순서가 흔들리면 게이트를 지난
+            # 뒤의 근거 번호가 흔들리고, 그 번호는 판단 산문이 가리키는 값이다(BR-EV-5).
+            drafts, failures = [], []
+            for future in futures:
+                try:
+                    drafts.append(future.result())
+                except LlmUnavailable as exc:
+                    failures.append(exc)
+
+        if not drafts:
+            # 전부 죽었을 때만 실패다 — 한 편이 죽었다고 나머지 논문의 근거를 버리지 않는다
+            # (실시간 조회의 부분 저하와 같은 판정).
+            raise failures[0]
+        if failures:
+            log.warning("evidence extraction partially failed (%d/%d)", len(failures), len(papers))
+        costs = [d.cost_estimate_usd for d in drafts if d.cost_estimate_usd is not None]
+        return ExtractionDraft(
+            items=[item for draft in drafts for item in draft.items],
+            # 하나도 못 쟀으면 None이다 — 0으로 두면 "쟀는데 공짜"와 구분이 안 된다.
+            cost_estimate_usd=sum(costs) if costs else None,
+        )
+
+    def _extract_one(
         self, *, topic: str, focus: str, papers: tuple[Any, ...]
     ) -> ExtractionDraft:
         system, messages = _split_system(

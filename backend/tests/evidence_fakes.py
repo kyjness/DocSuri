@@ -64,10 +64,14 @@ def principal() -> Principal:
     return Principal(user_id=str(uuid4()), role=UserRole.USER)
 
 
-def paper_handle(doc_model=None, abstract: str = "") -> PaperHandle:
-    """확보한 논문 1편 — 프로바이더 중립이라 어댑터 테스트가 공유한다."""
+def paper_handle(doc_model=None, abstract: str = "", *, paper_id: str = "p1") -> PaperHandle:
+    """확보한 논문 1편 — 프로바이더 중립이라 어댑터 테스트가 공유한다.
+
+    `paper_id`를 열어 둔 것은 **여러 편을 서로 구분해야 하는** 검사 때문이다(추출 병렬화가
+    논문마다 한 호출을 내는지, 결과를 제출 순서로 모으는지).
+    """
     return PaperHandle(
-        paper_id="p1",
+        paper_id=paper_id,
         record_ref="r1",
         origin=PaperOrigin.CORPUS,
         title="AlphaFold2",

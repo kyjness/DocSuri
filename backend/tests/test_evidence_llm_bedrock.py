@@ -13,6 +13,7 @@ Anthropic use-case 양식이 이 계정에 아직 제출되지 않아 **실호�
 from __future__ import annotations
 
 import json
+import threading
 
 import pytest
 
@@ -223,6 +224,98 @@ def test_extraction_tolerates_a_code_fenced_object():
     extractor = _extractor(_text_response(fenced))
 
     assert len(extractor.extract(topic="q", focus="", papers=()).items) == 1
+
+
+# --- 추출 병렬화 --------------------------------------------------------------
+
+
+class _PerPaperBedrock:
+    """논문 id를 프롬프트에서 읽어 그 논문의 항목만 돌려주는 대역.
+
+    호출을 **동시에** 받으므로 기록에 락을 건다 — 안 걸면 이 테스트가 드물게 흔들리고,
+    그 흔들림은 검사 대상(순서)과 구분되지 않는다.
+    """
+
+    def __init__(self, order: list[str]) -> None:
+        self._order = order
+        self.prompts: list[str] = []
+        self._lock = threading.Lock()
+
+    def invoke_model(self, *, modelId, body, accept, contentType):  # noqa: N803 — boto3 어휘
+        prompt = json.loads(body.decode("utf-8"))["messages"][0]["content"][0]["text"]
+        with self._lock:
+            self.prompts.append(prompt)
+        pid = next(p for p in self._order if f"[PAPER {p}]" in prompt)
+        payload = {"items": [{"statement": pid, "supporting": [], "conflicting": []}]}
+        return {
+            "body": json.dumps(
+                {"content": [{"type": "text", "text": json.dumps(payload)}],
+                 "usage": {"input_tokens": 100, "output_tokens": 50}}
+            ).encode("utf-8")
+        }
+
+
+def test_extraction_splits_papers_into_one_call_each():
+    """추출은 턴 시간의 3분의 2 이상을 먹고, 여러 편을 한 프롬프트에 묶은 호출이 가장 느리다
+    (배포본 실측: 3편 35.8초 · 4편 33.5초 — 1편은 22초). 나눠 던지면 가장 느린 한 편으로 준다.
+
+    추출은 논문 간 대조를 하지 않으므로(그건 조립·판단의 몫이다) 나눠도 근거를 안 잃는다.
+    """
+    papers = tuple(paper_handle(doc_model(), paper_id=pid) for pid in ("p1", "p2", "p3"))
+    client = _PerPaperBedrock(["p1", "p2", "p3"])
+    extractor = BedrockExtractor(model="anthropic.x", client=client, **_RATES)
+
+    draft = extractor.extract(topic="q", focus="", papers=papers)
+
+    assert len(client.prompts) == 3, "논문 수만큼 나가야 한다"
+    # **제출 순서로 모은다.** 완료 순서로 모으면 근거 번호가 실행마다 흔들리고, 그 번호는
+    # 판단 산문이 가리키는 값이다(BR-EV-5).
+    assert [item["statement"] for item in draft.items] == ["p1", "p2", "p3"]
+    # 비용은 호출별로 합산된다 — 나누면 시스템 프롬프트가 논문 수만큼 반복된다.
+    # 입력 100 · 출력 50 토큰 × 3회 (단가는 _RATES).
+    one = 100 / 1e6 * 3.0 + 50 / 1e6 * 15.0
+    assert draft.cost_estimate_usd == pytest.approx(3 * one)
+
+
+def test_extraction_does_not_split_a_single_paper():
+    """나눌 것이 없으면 스레드풀을 만들지 않는다."""
+    client = FakeBedrock(_text_response('{"items": [{"statement": "s"}]}'))
+    extractor = BedrockExtractor(model="anthropic.x", client=client, **_RATES)
+
+    extractor.extract(topic="q", focus="", papers=(paper_handle(doc_model()),))
+
+    assert len(client.calls) == 1
+
+
+def test_one_paper_failing_does_not_discard_the_others():
+    """부분 실패를 전면 실패로 삼으면 논문 한 편의 스로틀이 턴 전체의 근거를 날린다."""
+
+    class _OneFails(_PerPaperBedrock):
+        def invoke_model(self, **kw):
+            body = json.loads(kw["body"].decode("utf-8"))
+            if "[PAPER p2]" in body["messages"][0]["content"][0]["text"]:
+                raise RuntimeError("throttled")
+            return super().invoke_model(**kw)
+
+    papers = tuple(paper_handle(doc_model(), paper_id=pid) for pid in ("p1", "p2"))
+    extractor = BedrockExtractor(
+        model="anthropic.x", client=_OneFails(["p1", "p2"]), **_RATES
+    )
+
+    draft = extractor.extract(topic="q", focus="", papers=papers)
+
+    assert [item["statement"] for item in draft.items] == ["p1"]
+
+
+def test_every_paper_failing_is_still_a_failure():
+    """전부 죽었으면 조용히 빈 결과를 내지 않는다 — 근거 0건과 구분되지 않는다."""
+    papers = tuple(paper_handle(doc_model(), paper_id=pid) for pid in ("p1", "p2"))
+    extractor = BedrockExtractor(
+        model="anthropic.x", client=FakeBedrock(error=RuntimeError("down")), **_RATES
+    )
+
+    with pytest.raises(LlmUnavailable):
+        extractor.extract(topic="q", focus="", papers=papers)
 
 
 # --- 판단 어댑터(§4.2) ---------------------------------------------------------
