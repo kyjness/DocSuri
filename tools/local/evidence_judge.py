@@ -192,8 +192,12 @@ def main() -> int:
     parser.add_argument(
         "--spacing",
         type=float,
-        default=20.0,
-        help="문항 사이 대기(초). Bedrock 쿼터가 빡빡해 붙여 돌리면 스로틀이 결과를 오염시킨다.",
+        default=75.0,
+        help=(
+            "문항 사이 대기(초). Bedrock 쿼터가 빡빡해 붙여 돌리면 스로틀이 결과를 오염시킨다. "
+            "기본값은 소스 차단기 쿨다운(60초)보다 크다 — 작으면 차단기가 열린 턴 다음 문항이 "
+            "열린 회로로 걸어 들어가고, 그 문항도 즉시 실패해 창이 영영 안 닫힌다."
+        ),
     )
     args = parser.parse_args()
 
