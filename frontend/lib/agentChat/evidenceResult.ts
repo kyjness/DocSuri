@@ -1,6 +1,7 @@
 import type {
   AbstainReason,
   EvidenceAnswer as GeneratedAnswer,
+  PaperIdNamespace,
 } from '@/types/generated/evidence';
 
 import { isNoveltyResultPayload } from './noveltyResult';
@@ -26,6 +27,10 @@ export type EvidenceSourceScope = 'fulltext' | 'abstract' | 'figure';
 export interface EvidenceSourceRef {
   paperId: string;
   recordRef: string;
+  /** 코퍼스 밖 논문의 출처 네임스페이스. **없으면 코퍼스 논문이다**(백엔드가 판정해 싣는다). */
+  namespace?: PaperIdNamespace | null;
+  /** 출처 논문의 제목. 없으면 화면이 paperId를 그대로 쓴다(그때만 식별자가 보인다). */
+  title?: string | null;
   anchor?: string | null;
   quote?: string | null;
   anchorType?: EvidenceAnchorType | null;
@@ -235,3 +240,52 @@ function truncationSentence(
   return `관련 논문 ${candidates}편 중 ${examined}편을 확인했습니다. 일부 논문은 본문을 가져오지 못했습니다.`;
 }
 
+
+/**
+ * 출처 논문으로 가는 링크. **없으면 null이고, 그때는 링크를 그리지 않는다** — 깨진 링크는
+ * 링크가 없는 것보다 나쁘다.
+ *
+ * 목적지는 백엔드가 실어 보낸 `namespace`가 정한다(계약은 evidence.schema.json). 종전에는
+ * 여기서 `paperId`의 접두어를 직접 잘랐는데, 그러면 어휘가 두 벌이 되어 접두어가 하나 늘 때
+ * 이쪽만 안 고쳐지고 화면이 조용히 링크를 잃는다. 이제 어휘가 늘면 아래 switch가 컴파일에서
+ * 막힌다 — 지금은 화면 정책이 어휘를 **읽기만** 한다.
+ *
+ * - 없음 = 코퍼스 논문 → 우리 논문 상세. 본문·요약·번역이 거기 있으므로 arxiv.org로
+ *   내보내는 것보다 사용자가 할 수 있는 일이 많다(그래서 이 판단은 프론트에 남는다).
+ * - `arxiv` = 실시간 조회로 찾은 논문 → arxiv.org. 우리 상세 페이지가 없다.
+ * - `doi` = arXiv에 없어 DOI로 실려온 논문 → doi.org.
+ * - `userdoc` = 사용자가 올린 문서 → **링크 없음.** 실재 arXiv id가 없으므로 URL을 조립하면
+ *   그것이 날조다(스키마가 "arxiv.org URL 조립 금지"라고 못 박는다).
+ */
+export function sourceHref(ref: EvidenceSourceRef): string | null {
+  const id = ref.paperId?.trim();
+  if (!id) return null;
+  switch (ref.namespace ?? null) {
+    case 'arxiv':
+      return `https://arxiv.org/abs/${encodeURIComponent(stripNamespace(id))}`;
+    case 'doi':
+      return `https://doi.org/${stripNamespace(id)}`;
+    case 'userdoc':
+      return null;
+    case null:
+      // **저장된 옛 턴에는 `namespace`가 없다**(이 필드 이전에 만들어진 행). 그때 접두어가
+      // 붙은 id를 코퍼스로 읽으면 `/paper/arxiv%3A…`로 보내 반드시 404다 — 없는 값을
+      // "코퍼스"로 단정하지 않고, 접두어가 보이면 링크를 만들지 않는다.
+      return id.includes(':') ? null : `/paper/${encodeURIComponent(id)}`;
+    default:
+      // 어휘가 늘었는데 목적지를 안 정한 경우 — 컴파일에서 막히지만, 저장된 옛 턴이 어휘 밖
+      // 값을 들고 있을 수 있으므로 런타임은 링크 없음으로 떨어진다(404로 보내지 않는다).
+      return null;
+  }
+}
+
+/** `{namespace}:{id}` → `{id}`. 네임스페이스는 이미 별도 필드로 왔다. */
+function stripNamespace(paperId: string): string {
+  const colon = paperId.indexOf(':');
+  return colon < 0 ? paperId : paperId.slice(colon + 1);
+}
+
+/** 출처의 표시 이름 — 제목이 있으면 제목, 없으면 식별자. */
+export function sourceLabel(ref: EvidenceSourceRef): string {
+  return ref.title?.trim() || ref.paperId;
+}

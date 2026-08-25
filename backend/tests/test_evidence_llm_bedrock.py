@@ -337,3 +337,22 @@ def test_answer_absorbs_an_inline_marker_into_refs_and_strips_it_from_text():
 
     assert sentence.text == "데이터가 적을 때는 LoRA가 낫다"
     assert sentence.refs == (2, 1)
+
+
+def test_answer_normalises_the_declared_role_without_judging_the_vocabulary():
+    """역할은 **모델이 선언한다**(refs에서 유도할 수 없다).
+
+    어댑터는 **모양만** 다듬는다 — 대소문자·공백을 정규화하고 빈 값을 None으로 만든다.
+    어휘 밖(`summary`)을 여기서 버리지 않는 이유는 refs·추출과 같다: 무엇이 유효한지는
+    도메인이 정한다. 판정을 양쪽에서 하면 어휘 밖 값의 행동이 두 곳에 나뉜다.
+    최종 세그먼트에서 `summary`가 evidence로 읽히는 것은 `test_evidence_answer_checks`가 본다.
+    """
+    sentences = parse_json_sentences(
+        '{"sentences":['
+        '{"text":"a","refs":[1],"role":"conclusion"},'
+        '{"text":"b","refs":[1],"role":"  DIVERGENCE "},'
+        '{"text":"c","refs":[1],"role":"summary"},'
+        '{"text":"d","refs":[1]}]}'
+    )
+
+    assert [s.role for s in sentences] == ["conclusion", "divergence", "summary", None]

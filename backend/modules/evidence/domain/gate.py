@@ -25,6 +25,7 @@ figure       선택      **필수**    (인용문이 아니라 해석 — 숫자
 
 from __future__ import annotations
 
+import logging
 import re
 from collections import Counter
 from dataclasses import dataclass, field
@@ -33,11 +34,14 @@ from typing import Any
 from docsuri_shared._generated.dtos.evidence_schema import (
     AnchorType,
     EvidenceItem,
+    PaperIdNamespace,
     SourceRef,
     SourceScope,
 )
 
 from .projection import normalize
+
+log = logging.getLogger("docsuri.evidence.gate")
 
 __all__ = [
     "MIN_QUOTE_CHARS",
@@ -47,6 +51,7 @@ __all__ = [
     "RejectReason",
     "id_key",
     "numbers_in",
+    "paper_id_namespace",
     "run_gate",
 ]
 
@@ -95,6 +100,11 @@ class PaperEvidenceSource:
     scope: str
     text: str
     blocks: dict[str, tuple[str, str]] = field(default_factory=dict)
+    # 표시용 제목 — 게이트는 이 값으로 아무것도 판정하지 않고 통과한 출처에 실어만 준다.
+    # 판정 핸들은 paper_id·record_ref다. 제목이 여기 있는 이유는 출처를 만드는 자리가
+    # 여기 하나이기 때문이다: 조립 단계에서 다시 붙이면 핸들 맵을 한 벌 더 들고 다녀야 하고,
+    # 그 맵이 비면 제목만 조용히 사라진다(그 실패는 화면에서 id로 보인다).
+    title: str = ""
 
     def block(self, anchor: str) -> tuple[str, str] | None:
         return self.blocks.get(anchor)
@@ -108,6 +118,28 @@ class GateOutcome:
     @property
     def rejected_count(self) -> int:
         return sum(self.rejections.values())
+
+
+def paper_id_namespace(paper_id: str) -> PaperIdNamespace | None:
+    """`{namespace}:{id}`의 앞부분. 접두어가 없으면 **코퍼스 논문**이라 None이다.
+
+    어휘를 아는 쪽이 판정해서 실어 보낸다. 소비자(화면)가 접두어를 직접 자르면 어휘가 두
+    벌이 되고, 접두어가 하나 늘 때 한쪽만 고쳐져 화면이 조용히 링크를 잃는다 — 값이 실려
+    오면 소비자의 분기가 컴파일에서 막힌다.
+
+    어휘 밖 접두어는 None으로 떨어지지만 그것은 **정상 경로가 아니다** — 소비자가 코퍼스
+    논문으로 오인할 수 있으므로 경고를 남긴다. 생산자를 어휘에 맞추거나 어휘를 넓혀야 한다
+    (`attachment:`가 실제로 그랬다: 첨부 문서에 doc-model id가 없으면 러너가 그 접두어를
+    만드는데 어휘에 없어서, 정상 첨부 인용마다 경고가 한 줄씩 쌓였다).
+    """
+    prefix, sep, _ = paper_id.partition(":")
+    if not sep:
+        return None
+    try:
+        return PaperIdNamespace(prefix)
+    except ValueError:
+        log.warning("evidence: unknown paperId namespace %r", prefix)
+        return None
 
 
 def numbers_in(text: str) -> set[str]:
@@ -295,6 +327,8 @@ def _validate_ref(
     ref = SourceRef(
         paperId=source.paper_id,
         recordRef=source.record_ref,
+        namespace=paper_id_namespace(source.paper_id),
+        title=source.title or None,
         anchor=anchor,
         quote=quote or None,
         anchorType=AnchorType(anchor_type) if anchor_type else None,

@@ -44,6 +44,7 @@ export function mapProgressEvent(raw: unknown): AgentTimelineEvent | null {
       : undefined;
   // evidence 이벤트는 트레이스 seq를 싣는다 — 재접속 병합 때 삽입순이 아니라 이 값으로 정렬한다.
   const seq = payload && typeof payload.seq === 'number' ? payload.seq : undefined;
+  const timestamp = stringValue(payload?.at) ?? stringValue(record.createdAt);
   return {
     id,
     stage: stringValue(record.stage) ?? stage,
@@ -52,6 +53,9 @@ export function mapProgressEvent(raw: unknown): AgentTimelineEvent | null {
     detail: timelineDetail(payload),
     state: mapTimelineState(stage),
     ...(seq !== undefined ? { sequence: seq } : {}),
+    // 단계별 소요 시간의 재료. evidence는 트레이스 행의 `at`, 그 밖(accepted·novelty)은
+    // 프레임의 createdAt이다 — 둘 다 없으면 화면이 시간을 안 그린다.
+    ...(timestamp !== undefined ? { at: timestamp } : {}),
   };
 }
 
@@ -85,6 +89,11 @@ export function parseNoveltySseEvents(text: string): AgentTimelineEvent[] {
 }
 
 // N-001(#257) — SSE 경로도 REST polling과 동일 payload→detail 매핑을 쓴다.
+//
+// evidence 트레이스 행은 novelty와 키가 다르다(argsSummary/resultSummary/outcome). 종전에는
+// 여기서 novelty 키만 읽어 evidence 단계의 detail이 **항상 undefined**였고, 그래서 화면에는
+// 라벨만 남아 "도구 실행"이 여덟 줄 쌓였다 — 진행 상황이 안 적힌 게 아니라 실려 오는데
+// 안 읽고 있었다.
 export function timelineDetail(payload?: Record<string, unknown>): string | undefined {
   if (!payload) return undefined;
   const count = countFromPayload(payload);
@@ -94,6 +103,16 @@ export function timelineDetail(payload?: Record<string, unknown>): string | unde
     labeled('요약', payload.outputSummary),
     // 0건도 '발견한 출처 수'다(US-NV7 #257) — falsy 체크로 삼키지 않는다.
     count !== undefined ? `결과 ${count}건` : undefined,
+    // evidence — 결과 요약은 백엔드가 이미 사용자 어휘로 쓴다(`result_summary`는 화면
+    // 전용이고 모델은 못 본다). 여기서 되파싱하지 않는다.
+    //
+    // **`argsSummary`는 싣지 않는다.** 그쪽은 `paper_ids=['arxiv:2106.09685v2', …],
+    // stance=counter` 같은 모델 컨텍스트·운영 트레이스용 key=value 덤프이고, 도메인이
+    // "되파싱하면 바닥 검사가 화면 문자열에 묶인다"고 규정한 값이다. 화면에 실으면 그
+    // 절단 규칙(80자/300자)이 사용자 계약이 되어, 트레이스 포맷을 바꾸는 것이 UI 변경이
+    // 된다. 사용자가 알아야 하는 것(무엇을 검색했나)은 검색 도구가 `resultSummary`에
+    // 자기 `query`로 싣는다 — 되파싱이 아니라 생산자가 아는 값이다.
+    stringValue(payload.resultSummary),
     safeReason(payload),
   ];
   return parts.filter(Boolean).join(' · ') || undefined;

@@ -120,7 +120,11 @@ describe('AgentChatScreen', () => {
       screen.getByText('유사 연구 대비 실패 유형을 더 세밀하게 분해한다.'),
     ).toBeInTheDocument();
     expect(screen.queryByText(/"artifacts"/)).not.toBeInTheDocument();
-    expect(screen.getByTestId('agent-timeline')).toBeInTheDocument();
+    // 진행 과정은 **접힌 채로** 온다 — 답을 보러 온 화면이 진행 로그로 덮이지 않는다.
+    // jsdom은 닫힌 details의 자식도 DOM에 두므로 글자 유무로는 이것을 구분할 수 없다.
+    const timeline = screen.getByTestId('agent-timeline');
+    expect(timeline.tagName).toBe('DETAILS');
+    expect((timeline as HTMLDetailsElement).open).toBe(false);
     expect(screen.getAllByTestId('agent-timeline-event').length).toBeGreaterThan(0);
     expect(screen.getByText(/소스: corpus/)).toBeInTheDocument();
     expect(screen.getAllByText('완료').length).toBeGreaterThan(0);
@@ -157,7 +161,7 @@ describe('AgentChatScreen', () => {
 
     await user.click(screen.getByTestId('agent-menu'));
     expect(await screen.findByText('LLM 평가 근거 정리')).toBeInTheDocument();
-    expect(screen.getByText(/Research .* 완료/)).toBeInTheDocument();
+    expect(screen.getByText(/Evidence .* 완료/)).toBeInTheDocument();
     await user.click(screen.getByText('LLM 평가 근거 정리'));
 
     expect(await screen.findByText(/벤치마크를 재사용하면/)).toBeInTheDocument();
@@ -168,7 +172,7 @@ describe('AgentChatScreen', () => {
     ).toBe(true);
   });
 
-  it('renders an evidence result as prose judgement above the evidence table', async () => {
+  it('renders an evidence result as prose judgement above the evidence list', async () => {
     const user = userEvent.setup();
     render(<AgentChatScreen />);
 
@@ -178,16 +182,34 @@ describe('AgentChatScreen', () => {
     // 판단 산문이 먼저 오고(§2.1), 그 아래 근거표가 붙는다.
     const answer = await screen.findByTestId('evidence-answer');
     expect(answer).toHaveTextContent(/벤치마크를 재사용하면 점수가 부풀려져요/);
-    expect(within(answer).getByTestId('evidence-answer-ref')).toHaveTextContent('[1]');
+    expect(within(answer).getAllByTestId('evidence-answer-ref')[0]).toHaveTextContent('[1]');
 
-    // 근거표: statement + 출처(paperId · 인용 앵커 · quote). raw JSON은 노출되지 않는다(#339).
-    expect(screen.getByTestId('evidence-table')).toBeInTheDocument();
+    // 근거 목록: statement + 출처(제목 링크 · 인용 앵커 · quote). raw JSON은 노출되지 않는다(#339).
+    expect(screen.getByTestId('evidence-list')).toBeInTheDocument();
     expect(screen.getByText(/벤치마크 재사용은 데이터 누수 위험을 높인다./)).toBeInTheDocument();
-    expect(screen.getByText('2401.01234')).toBeInTheDocument();
     expect(screen.getByText('§ 4.2절')).toBeInTheDocument();
     expect(screen.getByText(/benchmark reuse inflates scores/)).toBeInTheDocument();
-    expect(screen.getByText(/참고 논문 3편/)).toBeInTheDocument();
     expect(screen.queryByText(/"claims"/)).not.toBeInTheDocument();
+
+    // 출처는 **제목이 이름이고 링크다.** 종전에는 `2401.01234`가 텍스트로만 찍혔다 —
+    // 무슨 논문인지 알 수도, 눌러 갈 수도 없었다.
+    const corpus = screen.getByRole('link', { name: /Benchmark Contamination/ });
+    expect(corpus).toHaveAttribute('href', '/paper/2401.01234');
+    expect(corpus).not.toHaveAttribute('target');
+    expect(screen.queryByText('2401.01234')).not.toBeInTheDocument();
+
+    // 코퍼스 밖 논문은 상세 페이지가 없다 — arxiv.org로, 새 탭으로 간다.
+    const external = screen.getByRole('link', { name: /Rank Instability/ });
+    expect(external).toHaveAttribute('href', 'https://arxiv.org/abs/2405.09876v1');
+    expect(external).toHaveAttribute('target', '_blank');
+
+    // 상충은 열이 아니라 배지다.
+    expect(screen.getByTestId('evidence-contested')).toBeInTheDocument();
+
+    // 이 수는 검색 범위가 아니라 근거로 쓴 논문 수다 — 종전 라벨("검색 범위 · 참고 논문
+    // N편 · 검색어: <사용자 질문>")은 둘 다 거짓말이었다.
+    expect(screen.getByText('근거로 쓴 논문 3편')).toBeInTheDocument();
+    expect(screen.queryByText(/검색 범위/)).not.toBeInTheDocument();
   });
 
   it('marks a synthesis sentence apart from a machine-checked one', async () => {
@@ -206,16 +228,16 @@ describe('AgentChatScreen', () => {
     expect(within(answer).getByTitle(/원문에 그대로 있진 않아요/)).toHaveTextContent('종합');
   });
 
-  it('links a citation number to its evidence table row', async () => {
+  it('links a citation number to its evidence list entry', async () => {
     const user = userEvent.setup();
     render(<AgentChatScreen />);
 
     await user.click(screen.getByTestId('agent-menu'));
     await user.click(await screen.findByText('LLM 평가 근거 정리'));
 
-    const link = within(await screen.findByTestId('evidence-answer')).getByTestId(
+    const link = within(await screen.findByTestId('evidence-answer')).getAllByTestId(
       'evidence-answer-ref',
-    );
+    )[0];
     const target = link.getAttribute('href')?.slice(1) ?? '';
     // 번호가 실제 행에 닿아야 한다 — 표시 순서와 번호가 갈리면 다른 근거를 가리킨다.
     expect(screen.getAllByTestId('evidence-row')[0]).toHaveAttribute('id', target);
@@ -328,7 +350,8 @@ describe('AgentChatScreen', () => {
       await user.click(cancel);
       expect(screen.getByTestId('agent-composer-cancel')).toHaveTextContent('취소 중…');
 
-      // 종단: 답변이 붙고 입력이 다시 열린다. 타임라인 마지막 줄은 '취소됨'.
+      // 종단: 답변이 붙고 입력이 다시 열린다. 접힌 진행 줄이 '취소됨'을 말한다 — 취소는
+      // 도구 호출이 아니라 단계로 세지 않지만, 사용자가 펼치지 않고도 봐야 하는 사실이다.
       expect(
         await screen.findByText(/서로 확인되는 근거를 우선 제시했습니다/, {}, { timeout: 6000 }),
       ).toBeInTheDocument();

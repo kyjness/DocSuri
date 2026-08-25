@@ -21,6 +21,9 @@ INTRO = "Protein structure prediction has progressed rapidly in recent years."
 LATEX = "L = -\\sum_i y_i \\log p_i"
 
 
+PAPER_TITLE = "Highly accurate protein structure prediction with AlphaFold"
+
+
 def doc_model() -> SimpleNamespace:
     """구조 동형 DocModel 스탠드인 — 문단·표·그림·수식 각 1블록.
 
@@ -51,7 +54,10 @@ def doc_model() -> SimpleNamespace:
     section = SimpleNamespace(
         id="s1", title="Introduction", blocks=[paragraph, table, figure, formula], sections=[]
     )
-    return SimpleNamespace(sections=[section])
+    # `meta`가 빠져 있던 동안 본문에서 제목을 가져오는 경로가 **검사에 안 걸렸다** — 대역이
+    # 실물보다 좁으면 그 필드를 읽는 코드는 항상 빈 값을 보고, 테스트는 초록으로 지나간다.
+    meta = SimpleNamespace(paperId="2107.06xxx", version=1, title=PAPER_TITLE, abstract=None)
+    return SimpleNamespace(meta=meta, sections=[section])
 
 
 def principal() -> Principal:

@@ -447,10 +447,12 @@ async def get_events(
                     item.tool,
                     {"tool": item.tool, "query": item.query_summary, "seq": item.seq},
                     event_id=str(item.seq),
+                    # novelty 라벨은 `project_feed`가 이미 정했다(`_TOOL_PHRASES`) —
+                    # evidence 라벨 맵을 지나갔다가 버리지 않는다.
+                    message=item.text,
+                    created_at=item.occurred_at,
                 ),
                 "state": state,
-                "message": item.text,
-                "createdAt": item.occurred_at.isoformat(),
             },
         )
         for item in project_feed(records)

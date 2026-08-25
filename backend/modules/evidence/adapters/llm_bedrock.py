@@ -197,8 +197,22 @@ def parse_json_sentences(text: str) -> tuple[AnswerSentence, ...]:
         inline = [int(n) for m in _INLINE_REF.finditer(body) for n in m.group(1).split(",")]
         body = _INLINE_REF.sub("", body).strip()
         numbers = _coerce_refs(row.get("refs")) + tuple(inline)
-        sentences.append(AnswerSentence(text=body, refs=tuple(dict.fromkeys(numbers))))
+        sentences.append(
+            AnswerSentence(
+                text=body, refs=tuple(dict.fromkeys(numbers)), role=_coerce_role(row.get("role"))
+            )
+        )
     return tuple(sentences)
+
+
+def _coerce_role(value: Any) -> str | None:
+    """모양만 다듬는다 — **무엇이 유효한지는 도메인이 정한다.**
+
+    종전에는 여기서 어휘 멤버십까지 봤다. 그러면 판정 지점이 둘이 되어(도메인의 `_role_of`가
+    다시 본다) 어휘 밖 값의 행동이 두 곳에 나뉜다 — 이 모듈들이 refs·추출에서 명시적으로
+    피하는 형태다. 모양 관용은 파싱이지 판정이 아니다.
+    """
+    return str(value or "").strip().lower() or None
 
 
 _INLINE_REF = re.compile(r"\s*\[\s*(\d+(?:\s*,\s*\d+)*)\s*\]")

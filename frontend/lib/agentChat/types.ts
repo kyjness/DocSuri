@@ -32,6 +32,13 @@ export interface AgentTimelineEvent {
   state: AgentTimelineState;
   sequence?: number;
   source?: string;
+  /**
+   * 이 단계가 **기록된** 시각(ISO). evidence 트레이스 행의 `at`이고, 화면은 앞 단계와의
+   * 차이로 소요 시간을 만든다 — 그래서 t0(질문 접수)가 없으면 첫 단계는 시간을 안 보여준다
+   * (재접속은 accepted 프레임을 다시 받지 않는다). 없는 값을 0으로 그리면 "즉시 끝났다"는
+   * 거짓말이 되고, 그 거짓말은 가장 오래 걸리는 첫 단계에 정확히 붙는다.
+   */
+  at?: string;
 }
 
 /**

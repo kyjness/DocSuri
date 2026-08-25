@@ -36,11 +36,19 @@ const baseSessions: AgentSessionSnapshot[] = [
                 text: '벤치마크를 재사용하면 점수가 부풀려져요',
                 refs: [1],
                 kind: 'cited',
+                role: 'conclusion',
+              },
+              {
+                text: '오염을 걷어내고 다시 재면 순위는 대체로 유지돼요',
+                refs: [2],
+                kind: 'cited',
+                role: 'evidence',
               },
               {
                 text: '갈리는 지점은 재사용 사이에 데이터가 얼마나 갱신됐느냐예요',
                 refs: [],
                 kind: 'synthesis',
+                role: 'divergence',
               },
             ],
             checks: { demoted: 0, regenerated: false, fallback: false },
@@ -52,11 +60,38 @@ const baseSessions: AgentSessionSnapshot[] = [
                 {
                   paperId: '2401.01234',
                   recordRef: 'rec-2401-01234-07',
+                  title: 'Benchmark Contamination in Large Language Model Evaluation',
                   anchor: '4.2절',
                   quote: 'benchmark reuse inflates scores across successive releases',
                 },
               ],
               conflicting: [],
+            },
+            // 상충이 있는 명제 — 근거 목록이 존재하는 이유이고, 코퍼스 안팎 출처가 한
+            // 명제에 섞이는 모양이다(코퍼스 논문은 상세로, 코퍼스 밖은 arxiv.org로 간다).
+            {
+              statement: '오염을 제거한 재평가에서도 순위는 대체로 유지된다.',
+              supporting: [
+                {
+                  paperId: '2403.05555',
+                  recordRef: 'rec-2403-05555-01',
+                  title: 'Decontaminated Re-evaluation of Open LLM Leaderboards',
+                  anchor: '5.1절',
+                  quote: 'rank correlation remains above 0.9 after decontamination',
+                },
+              ],
+              conflicting: [
+                {
+                  paperId: 'arxiv:2405.09876v1',
+                  recordRef: 'external:arxiv:2405.09876v1',
+                  // 코퍼스 밖 출처는 백엔드가 네임스페이스를 판정해 싣는다 — 화면은
+                  // 접두어를 자르지 않는다.
+                  namespace: 'arxiv',
+                  title: 'Rank Instability Under Contamination Removal',
+                  quote: 'removing contaminated items reorders the top five systems',
+                  sourceScope: 'abstract',
+                },
+              ],
             },
           ],
           coverage: { paperCount: 3, queryUsed: 'LLM 평가 데이터 누수' },
@@ -73,6 +108,7 @@ const baseSessions: AgentSessionSnapshot[] = [
         detail: 'U2 full 검색 결과에서 후보 논문을 정렬했습니다.',
         state: 'completed',
         sequence: 1,
+        at: '2026-07-01T00:01:03.100Z',
       },
       {
         id: 'demo-ev-2',
@@ -81,6 +117,7 @@ const baseSessions: AgentSessionSnapshot[] = [
         detail: '서로 다른 논문에서 반복되는 주장과 충돌 지점을 분리했습니다.',
         state: 'completed',
         sequence: 2,
+        at: '2026-07-01T00:01:24.600Z',
       },
     ],
   },
@@ -117,6 +154,7 @@ const baseSessions: AgentSessionSnapshot[] = [
         detail: '내부 코퍼스에서 RAG 평가 자동화 관련 논문을 찾았습니다.',
         state: 'completed',
         sequence: 1,
+        at: '2026-07-01T00:04:05.400Z',
       },
       {
         id: 'demo-nv-2',
@@ -125,6 +163,7 @@ const baseSessions: AgentSessionSnapshot[] = [
         detail: 'GitHub mock 응답은 성공, dataset mock 응답은 저하 상태입니다.',
         state: 'degraded',
         sequence: 2,
+        at: '2026-07-01T00:04:18.900Z',
       },
     ],
   },
@@ -251,7 +290,7 @@ function ensureSession(id: string, mode: AgentMode, now: string): AgentSessionSn
     mockLoadAgentSession(id) ?? {
       session: {
         id,
-        title: mode === 'evidence' ? '새 Research 세션' : '새 Novelty 세션',
+        title: mode === 'evidence' ? '새 Evidence 세션' : '새 Novelty 세션',
         mode,
         state: 'idle',
         updatedAt: now,
@@ -318,7 +357,7 @@ function responseFor(mode: AgentMode, degraded: boolean, attachmentCount: number
 function titleFrom(content: string, mode: AgentMode): string {
   const cleaned = content.trim().replace(/\s+/g, ' ').slice(0, 24);
   if (cleaned) return cleaned;
-  return mode === 'evidence' ? '새 Research 세션' : '새 Novelty 세션';
+  return mode === 'evidence' ? '새 Evidence 세션' : '새 Novelty 세션';
 }
 
 function clone<T>(value: T): T {

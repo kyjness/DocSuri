@@ -109,6 +109,49 @@ def _fail(summary: str, message: str) -> ToolResult:
     return ToolResult(ok=False, error=message, result_summary=summary)
 
 
+# `result_summary`는 **화면 전용**이다 — 포트 docstring이 "트레이스·활동 피드용"이라고
+# 규정하고, 모델은 이 값을 못 본다(모델이 읽는 것은 `content`와 `error`다). 그래서 도구
+# 이름 접두어를 떼고 사용자 어휘로 쓴다: 진행 표시의 라벨이 이미 도구 이름이라 접두어는
+# 같은 말을 두 번 하는 것이고, `corpus_search: 12 hits`는 사용자가 읽을 문장이 아니다.
+_PROMOTION_FAILURE = {
+    PromotionOutcome.LICENSE_BLOCKED: "라이선스로 본문을 받을 수 없음",
+    PromotionOutcome.PARSE_FAILED: "본문 해석 실패",
+    PromotionOutcome.TIMED_OUT: "본문 확보 시간 초과",
+}
+
+
+def _extract_summary(accepted: int, rejected: int) -> str:
+    """채택 건수가 앞이다 — 탈락은 0이면 말하지 않는다(0을 말하면 매 줄에 붙는다)."""
+    return f"근거 {accepted}건 채택" + (f" · {rejected}건 탈락" if rejected else "")
+
+
+# 화면 한 줄에 들어갈 검색어 길이. 인자 요약(`_summarize_args`)의 상한과 **다른 값이어야**
+# 한다 — 그쪽은 모델이 읽는 트레이스 형식이고 이쪽은 사용자가 읽는 문장이다. 두 상한을 하나로
+# 묶으면 트레이스 포맷을 바꾸는 것이 UI 변경이 된다.
+_QUERY_LABEL_CHARS = 60
+
+
+def _shorten(query: str) -> str:
+    return query if len(query) <= _QUERY_LABEL_CHARS else query[:_QUERY_LABEL_CHARS] + "…"
+
+
+def _adopt_title(handle: PaperHandle) -> None:
+    """본문을 확보했으면 거기서 제목을 가져온다 — **검색을 안 거친 논문이 있다.**
+
+    제목은 지금까지 검색 결과에서만 왔다(`_register`). 그런데 explicit·mixed scope에서
+    사용자가 직접 지정한 논문은 검색을 안 거치고 후보로 올라오므로 제목이 빈 채였고, 근거
+    목록에 `2106.09685` 같은 식별자가 그대로 찍혔다 — 사용자가 **이름을 대서 고른** 논문이
+    정작 이름 없이 보이는 모양이다.
+
+    이미 제목이 있으면 덮지 않는다: 검색 결과의 제목이 먼저 온 값이고, 둘이 다르면 사용자가
+    검색 화면에서 본 이름을 유지하는 편이 덜 놀랍다.
+    """
+    if handle.title:
+        return
+    meta = getattr(handle.doc_model, "meta", None)
+    handle.title = str(getattr(meta, "title", "") or "")
+
+
 def _candidate_view(candidate: Any) -> dict[str, Any]:
     """모델에 보이는 후보 1건 — 내부 점수·청크 id는 싣지 않는다(INV-EV-5)."""
     return {
@@ -151,7 +194,7 @@ class CorpusSearchTool:
     def invoke(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         query = str(args.get("query") or "").strip()
         if not query:
-            return _fail("corpus_search: empty query", "query는 필수다 — 검색어를 넣어라")
+            return _fail("검색어 없음", "query는 필수다 — 검색어를 넣어라")
         phrase = str(args.get("mode") or "") == "phrase"
         years = _year_bound(args)
         try:
@@ -159,7 +202,7 @@ class CorpusSearchTool:
         except SearchUnavailable as exc:
             log.warning("corpus search unavailable: %s", exc)
             return _fail(
-                "corpus_search: unavailable",
+                "코퍼스 검색을 쓸 수 없음",
                 "코퍼스 검색을 쓸 수 없다 — 같은 검색을 반복하지 말고 "
                 "live_lookup으로 진행하거나 확보한 논문에서 근거를 추출하라",
             )
@@ -168,6 +211,7 @@ class CorpusSearchTool:
             hits[:_MAX_HITS],
             PaperOrigin.CORPUS,
             TOOL_CORPUS_SEARCH,
+            query=query,
             # 0건이 "그런 논문이 없다"인지 "연도로 걸러졌다"인지 모델이 알아야 다음 수가
             # 달라진다. 안 알리면 같은 질의를 연도만 붙인 채 반복한다.
             empty_note=(
@@ -209,7 +253,7 @@ class LiveLookupTool:
     def invoke(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         query = str(args.get("query") or "").strip()
         if not query:
-            return _fail("live_lookup: empty query", "query는 필수다 — 검색어를 넣어라")
+            return _fail("검색어 없음", "query는 필수다 — 검색어를 넣어라")
         try:
             outcome = self._port.lookup(query)
         except SearchUnavailable as exc:
@@ -220,11 +264,15 @@ class LiveLookupTool:
             # 설명도 "셋 다 죽은 턴도 true"라고 적혀 있다.
             self._state.live_lookup_degraded = True
             return _fail(
-                "live_lookup: unavailable",
+                "실시간 조회를 쓸 수 없음",
                 "실시간 조회를 쓸 수 없다 — 코퍼스 검색과 확보한 논문으로 진행하라",
             )
         result = _register(
-            self._state, outcome.candidates[:_MAX_HITS], PaperOrigin.EXTERNAL, TOOL_LIVE_LOOKUP
+            self._state,
+            outcome.candidates[:_MAX_HITS],
+            PaperOrigin.EXTERNAL,
+            TOOL_LIVE_LOOKUP,
+            query=query,
         )
         if outcome.degraded_sources:
             # 어느 소스가 빠졌는지 알려야 모델이 "이게 전부"라고 믿지 않는다(novelty 실측).
@@ -240,6 +288,7 @@ def _register(
     origin: PaperOrigin,
     tool: str,
     *,
+    query: str,
     empty_note: str | None = None,
 ) -> ToolResult:
     """검색 결과를 상태에 심고 모델이 볼 결과를 만든다.
@@ -269,12 +318,12 @@ def _register(
                     "mode를 빼고 의미 검색으로 다시 하라."
                 ),
             },
-            result_summary=f"{tool}: 0 hits",
+            result_summary=f'"{_shorten(query)}" — 결과 없음',
         )
     return ToolResult(
         ok=True,
         content={"hits": [_candidate_view(c) for c in hits]},
-        result_summary=f"{tool}: {len(hits)} hits",
+        result_summary=f'"{_shorten(query)}" — 논문 {len(hits)}편 찾음',
     )
 
 
@@ -311,7 +360,7 @@ class FetchPaperTool:
         handle = self._state.handle(paper_id)
         if handle is None:
             return _fail(
-                "fetch_paper: unknown paper",
+                "모르는 논문",
                 f"'{paper_id}'는 아직 검색으로 찾지 못한 논문이다 — "
                 "corpus_search·live_lookup 결과의 paperId를 그대로 넣어라",
             )
@@ -320,7 +369,7 @@ class FetchPaperTool:
             return ToolResult(
                 ok=True,
                 content={"paperId": paper_id, "status": "already_fetched"},
-                result_summary="fetch_paper: already fetched",
+                result_summary="이미 확보한 논문",
             )
 
         if handle.origin is PaperOrigin.CORPUS:
@@ -331,10 +380,11 @@ class FetchPaperTool:
                     ok=True,
                     content={"paperId": paper_id, "status": "abstract_only",
                              "note": "본문을 읽을 수 없어 초록 범위 인용만 가능하다"},
-                    result_summary="fetch_paper: abstract only",
+                    result_summary="초록만 확보 — 본문 없음",
                 )
             handle.doc_model = doc_model
             handle.invalidate_projections()
+            _adopt_title(handle)
             self._state.examine(handle)
             return _fetched(handle)
 
@@ -353,13 +403,13 @@ class FetchPaperTool:
                         "sourceScope=\"abstract\"로 표시하라. 다시 부르지 마라."
                     ),
                 },
-                result_summary="fetch_paper: not promotable",
+                result_summary="본문을 확보할 수 없는 논문",
             )
 
         if self._promotion is None:
             self._state.examine(handle)
             return _fail(
-                "fetch_paper: promotion unavailable",
+                "코퍼스 밖 본문 확보 꺼짐",
                 "코퍼스 밖 논문의 본문 확보 기능이 꺼져 있다 — 초록 범위로 인용하라",
             )
 
@@ -374,10 +424,11 @@ class FetchPaperTool:
                     "status": str(result.outcome),
                     "note": "본문을 가져오지 못했다 — 이 논문은 초록 범위로만 인용할 수 있다",
                 },
-                result_summary=f"fetch_paper: {result.outcome}",
+                result_summary=_PROMOTION_FAILURE.get(result.outcome, "본문 확보 실패"),
             )
         handle.doc_model = result.doc_model
         handle.invalidate_projections()
+        _adopt_title(handle)
         self._state.examine(handle)
         return _fetched(handle)
 
@@ -433,7 +484,7 @@ def _fetched(handle: PaperHandle) -> ToolResult:
             "blockCount": len(blocks),
             "blockKinds": kinds,
         },
-        result_summary=f"fetch_paper: {len(blocks)} blocks",
+        result_summary=f"본문 확보 — {len(blocks)}블록",
     )
 
 
@@ -462,10 +513,10 @@ class ReadPaperTool:
         paper_id = str(args.get("paper_id") or "").strip()
         handle = self._state.handle(paper_id)
         if handle is None:
-            return _fail("read_paper: unknown paper", f"'{paper_id}'를 찾지 못했다 — 먼저 검색하라")
+            return _fail("모르는 논문", f"'{paper_id}'를 찾지 못했다 — 먼저 검색하라")
         if handle.doc_model is None:
             return _fail(
-                "read_paper: no full text",
+                "본문 없음",
                 f"'{paper_id}'는 본문이 없다 — fetch_paper로 확보하거나 초록 범위로 인용하라",
             )
         self._state.examine(handle)
@@ -486,7 +537,7 @@ class ReadPaperTool:
         if not shown:
             content["note"] = "조건에 맞는 블록이 없다 — keyword를 바꾸거나 생략하라"
         return ToolResult(
-            ok=True, content=content, result_summary=f"read_paper: {len(shown)} blocks"
+            ok=True, content=content, result_summary=f"{len(shown)}블록 읽음"
         )
 
 
@@ -521,7 +572,7 @@ class ViewFigureTool:
         parsed = parse_record_ref(record_ref) if record_ref else None
         if parsed is None:
             return _fail(
-                "view_figure: missing record_ref",
+                "논문 지정 없음",
                 "record_ref는 필수다 — 검색 결과의 recordRef 값을 그대로 넣어라",
             )
         paper_id, version = parsed
@@ -543,7 +594,7 @@ class ViewFigureTool:
                 )
         if manifest is None:
             return _fail(
-                "view_figure: no assets",
+                "저장된 그림·수식 없음",
                 f"{record_ref} 논문에는 저장된 그림·수식이 없다 — "
                 "다른 논문을 고르거나 텍스트 근거로 진행하라",
             )
@@ -567,7 +618,7 @@ class ViewFigureTool:
         return ToolResult(
             ok=True,
             content=content,
-            result_summary=f"view_figure: {len(manifest.assets)} assets",
+            result_summary=f"그림·표 {len(manifest.assets)}건",
         )
 
     def _image(
@@ -578,7 +629,7 @@ class ViewFigureTool:
             match = self._assets.get_asset(paper_id, None, asset_id)
         if match is None:
             return _fail(
-                "view_figure: unknown asset",
+                "없는 자산",
                 f"asset_id '{asset_id}'는 {record_ref} 논문에 없다 — "
                 "asset_id 없이 호출해 목록을 먼저 받아라",
             )
@@ -586,13 +637,13 @@ class ViewFigureTool:
             fetched = self._assets.fetch_bytes(match.object_ref, max_bytes=self._max_image_bytes)
         except AssetStoreUnavailable:
             return _fail(
-                "view_figure: asset store unavailable",
+                "자산 스토어 접근 불가",
                 "자산 스토어에 접근할 수 없다 — 이미지 조회를 반복하지 말고 "
                 "캡션·텍스트 근거로 진행하라",
             )
         if not fetched or not fetched[1]:
             return _fail(
-                "view_figure: asset unavailable",
+                "이미지를 쓸 수 없음",
                 f"asset_id '{asset_id}' 이미지를 쓸 수 없다 — 다른 자산을 고르거나 "
                 "텍스트 근거로 진행하라",
             )
@@ -612,7 +663,7 @@ class ViewFigureTool:
                     asset_id=match.asset_id,
                 ),
             ),
-            result_summary=f"view_figure: {match.type} {match.asset_id}",
+            result_summary=f"{match.type} 1건 확인",
         )
 
 
@@ -649,7 +700,7 @@ class ExtractEvidenceTool:
         requested = [str(pid).strip() for pid in args.get("paper_ids") or [] if str(pid).strip()]
         if not requested:
             return _fail(
-                "extract_evidence: no papers",
+                "논문 지정 없음",
                 "paper_ids는 필수다 — 확보한 논문의 paperId를 넣어라",
             )
         # 스키마 maxItems는 권고일 뿐 모델이 넘겨도 막히지 않는다 — 추출 프롬프트가
@@ -666,7 +717,7 @@ class ExtractEvidenceTool:
                 handles.append(self._state.examine(handle))
         if not handles:
             return _fail(
-                "extract_evidence: unknown papers",
+                "모르는 논문",
                 f"{', '.join(unknown)}를 찾지 못했다 — 검색 결과의 paperId를 그대로 넣어라",
             )
 
@@ -679,7 +730,7 @@ class ExtractEvidenceTool:
         except LlmUnavailable as exc:
             log.warning("evidence extraction unavailable: %s", exc)
             return _fail(
-                "extract_evidence: llm unavailable",
+                "추출 모델을 쓸 수 없음",
                 "근거 추출 모델을 쓸 수 없다 — 잠시 후 다시 시도하거나 종료하라",
             )
 
@@ -704,5 +755,5 @@ class ExtractEvidenceTool:
         return ToolResult(
             ok=True,
             content=content,
-            result_summary=f"extract_evidence: +{accepted} (rejected {outcome.rejected_count})",
+            result_summary=_extract_summary(accepted, outcome.rejected_count),
         )

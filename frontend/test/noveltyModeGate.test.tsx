@@ -2,7 +2,7 @@
  * 데모 배포에서 Novelty 모드를 안 내보낸다(로드맵 ⑪).
  *
  * ⑩-2 재정의를 하지 않기로 했으므로 지금 노출된 Novelty는 그 재정의 **이전**의 v2다.
- * 게이트를 Research와 같은 모양으로 건다 — 목 전송(로컬·테스트)에서는 그대로 보이고,
+ * 게이트를 Evidence와 같은 모양으로 건다 — 목 전송(로컬·테스트)에서는 그대로 보이고,
  * 실 API를 붙인 배포에서만 명시적으로 켜야 보인다. 반대로 걸면 배포에서 env 하나를
  * 빠뜨리는 것이 곧 노출이 되는데, 그 실패는 배포본을 열어보기 전까지 아무 데도 안 보인다.
  */
@@ -39,7 +39,7 @@ describe('Novelty mode gate', () => {
     await renderChat();
 
     expect(screen.queryByTestId('agent-mode-novelty')).not.toBeInTheDocument();
-    // Research는 남는다 — 숨기는 것은 Novelty 하나이지 모드 선택 화면 전체가 아니다.
+    // Evidence는 남는다 — 숨기는 것은 Novelty 하나이지 모드 선택 화면 전체가 아니다.
     expect(screen.getByTestId('agent-mode-evidence')).toBeInTheDocument();
   });
 

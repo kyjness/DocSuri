@@ -122,6 +122,10 @@ def fallback_answer(
 
     C-2의 금지는 **새 사실**이지 요약 표현이 아니다 — 이미 게이트를 통과한 statement와
     paperId만 문장으로 잇는다. LLM을 타지 않으므로 결정론이다.
+
+    `role`도 비운다(→ 화면은 evidence로 읽는다). 여기에는 결론도 갈림 지점도 **없다** —
+    판단을 안 한 답이기 때문이다. 첫 문장을 결론으로 이름 붙이면 판단이 있는 답과 화면에서
+    구분되지 않는다.
     """
     sentences = _narrative_sentences(items)
     if not sentences:
