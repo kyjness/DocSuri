@@ -24,6 +24,11 @@ _PUBLIC_PREFIXES = (
     "/readyz",
     "/auth/signup",
     "/auth/login",
+    # 가입 없이 둘러보기 — **세션이 없는 상태로 부르는 것이 목적**이다. 여기 없으면 미들웨어가
+    # 401을 내서 "로그인해야 로그인할 수 있는" 상태가 된다(2026-08-25 배포본에서 걸렸다).
+    # 엔드포인트 자체는 `DOCSURI_DEMO_LOGIN_ENABLED`가 꺼지면 404이므로, 공개 목록에 있다고
+    # 항상 열리는 것은 아니다.
+    "/auth/demo",
     "/auth/verify-email",
     # PENDING-account recovery (resend mail) — public like signup/verify
     "/auth/resend-verification",
