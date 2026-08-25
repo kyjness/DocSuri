@@ -41,6 +41,11 @@ ENV NEXT_PUBLIC_ORCID_LOGIN_ENABLED=$NEXT_PUBLIC_ORCID_LOGIN_ENABLED
 # 곧 off다**(`LoginForm.tsx`가 빈 값을 undefined로 접어 스크립트를 안 부른다). 백엔드도
 # `RECAPTCHA_SECRET_KEY`가 없으면 검증을 건너뛰므로 둘이 함께 꺼지고 함께 켜진다.
 # 여기 없던 동안에는 **어떤 이미지에서도 켤 수 없었다** — 값을 넣을 자리가 없었다.
+# 가입 없이 둘러보기. **기본은 빈 값(off)** — 가입 장벽을 없애는 공개 표면이라 실서비스
+# 이미지에 켜진 채 나가면 안 된다. 백엔드에도 같은 이름의 스위치가 따로 있고 꺼져 있으면
+# 404다: 버튼만 숨기고 엔드포인트가 열려 있으면 숨긴 것이 아니다.
+ARG NEXT_PUBLIC_DOCSURI_DEMO_LOGIN_ENABLED=
+ENV NEXT_PUBLIC_DOCSURI_DEMO_LOGIN_ENABLED=$NEXT_PUBLIC_DOCSURI_DEMO_LOGIN_ENABLED
 ARG NEXT_PUBLIC_RECAPTCHA_SITE_KEY=
 ENV NEXT_PUBLIC_RECAPTCHA_SITE_KEY=$NEXT_PUBLIC_RECAPTCHA_SITE_KEY
 RUN pnpm build
