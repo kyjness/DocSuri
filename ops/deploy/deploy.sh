@@ -49,7 +49,9 @@ echo "==> 마이그레이션 확인"
 "${SSH[@]}" "cd $REMOTE/ops/deploy && docker compose -f compose.prod.yml --env-file .env.prod exec -T backend python -m backend.migrations --check"
 
 echo "==> 상태"
-"${SSH[@]}" "cd $REMOTE/ops/deploy && docker compose -f compose.prod.yml ps"
+# `--env-file`은 `ps`에도 필요하다 — compose가 파일 전체를 보간하므로 필수 변수가 비면
+# 상태 조회조차 실패한다(실배포에서 걸렸다).
+"${SSH[@]}" "cd $REMOTE/ops/deploy && docker compose -f compose.prod.yml --env-file .env.prod ps"
 
 cat <<'DONE'
 

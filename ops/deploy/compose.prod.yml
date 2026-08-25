@@ -35,8 +35,12 @@ services:
 
   frontend:
     build:
-      context: ..
-      dockerfile: frontend/Dockerfile
+      # **두 이미지의 컨텍스트가 다르다.** 프론트는 `frontend/`를 루트로 보고
+      # (`COPY package.json ./`), 백엔드는 저장소 루트를 본다(`COPY shared/python ...`).
+      # CD 워크플로도 프론트를 `docker build -f frontend/Dockerfile ... frontend/`로 짓는다 —
+      # 여기만 다르게 두면 배포 이미지와 CD 이미지가 갈린다.
+      context: ../../frontend
+      dockerfile: Dockerfile
       args:
         # `NEXT_PUBLIC_*`는 **빌드 시점에 박힌다.** 런타임 environment로 주면 아무 일도
         # 일어나지 않고 화면만 조용히 다르게 뜬다 — Novelty 게이트가 정확히 그 자리다.
@@ -49,7 +53,9 @@ services:
 
   backend:
     build:
-      context: ..
+      # 저장소 루트. compose 파일이 `ops/deploy/`에 있으므로 `..`는 `ops/`이고,
+      # 그러면 `shared/python`을 못 찾는다(실배포에서 걸렸다).
+      context: ../..
       dockerfile: backend/Dockerfile
     restart: unless-stopped
     env_file: .env.prod
@@ -96,6 +102,10 @@ services:
       # 줄어 오히려 느려진다. 편수 천장 약 3,500편의 근거가 그 실측(편당 1.73 MB)이다.
       OPENSEARCH_JAVA_OPTS: "-Xms1g -Xmx1g"
       bootstrap.memory_lock: "true"
+      # 스냅샷 복원 경로. 색인은 로컬에서 만들어 스냅샷으로 옮기므로(§12.4 — 파싱 스택을
+      # 박스에 안 올린다) 이 저장소가 **색인이 박스에 들어오는 유일한 통로**다. 백업을
+      # 뜰 때도 같은 자리를 쓴다.
+      path.repo: /snapshots
     ulimits:
       memlock:
         soft: -1
@@ -105,6 +115,9 @@ services:
         hard: 65536
     volumes:
       - osdata:/usr/share/opensearch/data
+      # 저장소 트리 **밖**이다 — rsync가 나르는 대상이 아니고, 5 GB짜리 스냅샷이 소스와
+      # 함께 오가면 배포마다 그것을 다시 밀게 된다.
+      - ../../os-snapshot:/snapshots
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
       interval: 10s
