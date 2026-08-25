@@ -392,24 +392,43 @@ def build_run_context(
     except KeyError:
         recent, summary = [], ""
 
-    kept, evicted = _within_token_budget(recent)
-    if evicted:
-        # 예산 밖으로 밀린 턴은 **한 번** 요약해 세션에 붙인다(§3.4). 매 턴 재요약하면 같은
-        # 턴이 세션 길이에 비례해 반복 요약되고, 그 비용이 조용히 턴 예산을 먹는다.
-        text = _summarize_evicted(evicted)
-        if text:
-            try:
-                repo.append_session_summary(owner_id, session_id, text)
-                summary = _join(summary, text)
-            except KeyError:
-                pass
-
     # 인용 논문 id는 **세션 전체**에서 모은다(§3.4) — 좁히기("그중에서")가 가리키는 집합은
     # 토큰 예산과 무관하고, 밀려난 턴의 논문이라고 사용자가 잊은 것이 아니다.
     paper_ids: dict[str, None] = {}
     for t in recent:
-        for pid in _cited_paper_ids(t.result):
+        for pid in cited_paper_ids(t.result):
             paper_ids.setdefault(pid, None)
+
+    kept, over_budget = _within_token_budget(recent)
+
+    # 접을 대상은 둘이다.
+    #   1. 예산을 넘겨 관찰에서 빠진 턴(창 **안**) — 드물다. 질문 하나가 비정상으로 길 때만.
+    #   2. 천장 밖으로 밀려 **애초에 안 읽힌** 턴 — 긴 세션의 정상 경로다.
+    # 종전에는 1번만 봤는데, 그쪽은 현실적인 턴에서 거의 안 물고(턴당 ~144자 · 예산 32,000자)
+    # 정작 맥락에서 사라지는 것은 2번이었다. **옛 턴을 보존하려는 기능이 정작 잃는 턴을
+    # 구조적으로 못 보고 있었다.**
+    folding: list[tuple[str, str]] = [
+        (t.turn_id, t.topic or "") for t in over_budget if t.summarized_at is None
+    ]
+    try:
+        folding += repo.unsummarized_before(owner_id, session_id, _PRIOR_TURN_CEILING + 1)
+    except KeyError:
+        pass
+
+    # **아직 안 접힌 것만** 접는다. 도장이 없던 동안 같은 턴이 매 턴 다시 접혔고(실측 1→2→3회),
+    # 세션 요약 상한이 앞을 자르므로 사본이 쌓이면 정작 보존하려던 옛 내용이 밀려 나갔다.
+    # §7의 `checkpoints_pruned_at`이 같은 이유로 쓰는 패턴이다.
+    if folding:
+        text = _summarize_evicted([topic for _tid, topic in folding])
+        if text:
+            try:
+                # 붙인 **결과를 받는다** — 여기서 다시 이어 붙이면 상한이 한쪽에만 걸려
+                # 모델이 읽는 값과 DB 값이 갈린다(실제로 갈렸다).
+                summary = repo.append_session_summary(owner_id, session_id, text)
+                repo.mark_summarized(owner_id, [tid for tid, _topic in folding])
+            except KeyError:
+                pass
+
     return LoopRunContext(
         owner_id=owner_id,
         session_id=session_id,
@@ -429,11 +448,16 @@ def _within_token_budget(turns: list) -> tuple[list, list]:
 
     최근 턴을 **그대로** 싣고 넘치는 앞쪽을 요약으로 접는다(§3.4). 반대로 하면 방금 한
     질문이 요약으로 뭉개져 후속 질문 해석이 가장 필요한 자리에서 정보가 가장 적어진다.
+
+    **턴 하나가 관찰에서 차지하는 것 전부를 잰다** — 질문 + 그 턴이 인용한 논문 id(§2.5:
+    "질문·답변 요약·인용 논문, 턴당 약 400토큰"). 질문 문자열만 재면 턴당 15~25토큰이라
+    21턴이 500토큰밖에 안 되고, 8천 토큰 예산은 **영원히 안 물어** 요약 경로 전체가 죽는다
+    (실측: 퇴출이 일어나려면 최근 20개 질문 평균이 1,600자를 넘어야 했다).
     """
     kept: list = []
     spent = 0
     for turn in reversed(turns):
-        cost = len(turn.topic or "")
+        cost = _prior_turn_cost(turn)
         if kept and spent + cost > _PRIOR_CHAR_BUDGET:
             break
         kept.append(turn)
@@ -442,17 +466,26 @@ def _within_token_budget(turns: list) -> tuple[list, list]:
     return kept, turns[: len(turns) - len(kept)]
 
 
-def _summarize_evicted(turns: list) -> str:
+def _prior_turn_cost(turn) -> int:
+    """관찰에 실릴 때 이 턴이 차지하는 문자 수 — 질문 + 인용 논문 id."""
+    ids = cited_paper_ids(turn.result)
+    return len(turn.topic or "") + sum(len(pid) + 2 for pid in ids)
+
+
+def _summarize_evicted(topics: list[str]) -> str:
     """밀려난 턴을 한 단락으로 접는다 — **모델을 부르지 않는다.**
 
     질문 목록이 곧 요약이다. 여기서 LLM을 부르면 턴 실행 전에 한 번 더 왕복하고, 그 비용이
     턴 예산에 잡히지 않은 채 나간다. 나중에 이 자리가 부족하다고 판정되면 그때 모델을
     붙이면 되고, 그 판정은 실측으로 한다.
     """
-    topics = [_short(t.topic) for t in turns if (t.topic or "").strip()]
-    if not topics:
+    shortened = [_short(t) for t in topics if (t or "").strip()]
+    if not shortened:
         return ""
-    return "이전에 물어본 것: " + " / ".join(topics)
+    # 머리표는 붙이지 않는다 — 라벨과 상한은 저장 쪽(`_joined_summary`)이 소유한다.
+    # 두 모듈이 같은 문자열을 각자 쓰면 한 글자만 달라져도 조용히 안 맞고,
+    # 그러면 접을 때마다 라벨이 다시 쌓인다(그 회귀를 방금 고쳤다).
+    return " / ".join(shortened)
 
 
 # 요약에 싣는 질문 하나의 길이 상한. 접는 단계에서 줄이지 않으면 긴 질문 하나가 요약 전체를
@@ -468,11 +501,8 @@ def _short(topic: str) -> str:
     return text[: _MAX_SUMMARY_TOPIC_CHARS - 1] + "…"
 
 
-def _join(existing: str, text: str) -> str:
-    return f"{existing.strip()}\n{text}".strip() if existing.strip() else text
 
-
-def _cited_paper_ids(result: TurnResult | None) -> tuple[str, ...]:
+def cited_paper_ids(result: TurnResult | None) -> tuple[str, ...]:
     """이전 턴이 실제로 인용한 논문 — "그중에서" 류 후속 질문의 좁히기 재료."""
     if not isinstance(result, TurnSuccessResult):
         return ()

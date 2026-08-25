@@ -35,10 +35,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
 from backend.modules.evidence.adapters.llm_bedrock import parse_json_object  # noqa: E402
-from backend.modules.evidence.domain.models import (  # noqa: E402
-    AgentRunContext,
-    iter_refs,
-)
+from backend.modules.evidence.domain.models import AgentRunContext  # noqa: E402
 from backend.modules.evidence.eval.golden_set import GoldenCase, labelled_cases  # noqa: E402
 from backend.modules.evidence.eval.layer1 import score_turn, summarise  # noqa: E402
 from backend.modules.evidence.real_wiring import build_evidence_runner  # noqa: E402
@@ -46,6 +43,7 @@ from backend.modules.evidence.checkpoints import (  # noqa: E402
     TurnCheckpoints,
     build_postgres_checkpointer,
 )
+from backend.modules.evidence.service import cited_paper_ids  # noqa: E402
 from backend.modules.evidence.settings import EvidenceSettings  # noqa: E402
 from backend.config import Settings  # noqa: E402
 from docsuri_shared.bedrock import ANTHROPIC_VERSION, invoke_model, text_blocks  # noqa: E402
@@ -127,7 +125,7 @@ def _run_case(runner, case: GoldenCase, cap: _Contamination) -> dict:
             ),
             EvidenceRequest(topic=case.prior_topic),
         )
-        prior_paper_ids = _cited(prior)
+        prior_paper_ids = cited_paper_ids(prior)
         log.info("  이전 턴 완료: 인용 논문 %d편", len(prior_paper_ids))
 
     ctx = AgentRunContext(
@@ -163,18 +161,6 @@ def _run_case(runner, case: GoldenCase, cap: _Contamination) -> dict:
         "outcome": outcome,
         "report": report,
     }
-
-
-def _cited(result) -> tuple[str, ...]:
-    """이전 턴이 실제로 인용한 논문 — 좁히기("그중에서")가 가리키는 집합이다."""
-    outcome = getattr(result, "outcome", None)
-    if outcome is None or getattr(outcome, "state", "") != "ok":
-        return ()
-    seen: dict[str, None] = {}
-    for item in outcome.claims:
-        for ref in iter_refs(item):
-            seen.setdefault(ref.paperId, None)
-    return tuple(seen)
 
 
 def _trace_rows(trace: list) -> list[str]:

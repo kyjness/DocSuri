@@ -102,6 +102,9 @@ def _render_observation(observation: Any) -> str:
     if getattr(observation, "prior_summary", ""):
         parts.append("이전 대화 요약: " + observation.prior_summary)
     if observation.prior_topics:
+        # **여기서 따로 자르지 않는다.** 상한은 이미 `build_run_context`가 정했고(천장 20턴 +
+        # 토큰 예산), 그 밖으로 밀린 턴은 요약으로 접혀 위에 실린다. 렌더가 한 번 더 자르면
+        # 그 사이 구간이 **어디에도 안 실린다** — 접히지도 않고 보이지도 않는다.
         parts.append("이전 턴 질문: " + " / ".join(observation.prior_topics))
     if observation.prior_paper_ids:
         # "그중에서" 류 후속 질문의 좁히기 재료 — 배선만 하고 렌더를 빠뜨리면

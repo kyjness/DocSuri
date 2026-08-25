@@ -32,13 +32,18 @@ from backend.modules.evidence.eval.golden_set import (
 )
 from backend.modules.evidence.eval.layer1 import summarise
 from backend.modules.evidence.models import to_turn_result
-from backend.modules.evidence.ports.llm import AnswerSentence, ToolCallProposal
+from backend.modules.evidence.ports.llm import (
+    COUNTER_REQUIRED_KINDS,
+    AnswerSentence,
+    ToolCallProposal,
+)
 from backend.modules.evidence.ports.tools import (
     STANCE_COUNTER,
     TOOL_CORPUS_SEARCH,
     ToolRegistry,
 )
 from backend.modules.evidence.testing import (
+    NoHits,
     ScriptedAnswer,
     ScriptedLlm,
     accumulator,
@@ -55,17 +60,6 @@ from backend.modules.evidence.testing import (
 # 요구하는 최소 모양이다. 그 한 번이 0건이어도 된다("찾아본 뒤 없으면 그때 끝내도 된다").
 
 
-class _NoHits:
-    """검색은 돌지만 결과가 없다. 바닥 2가 묻는 것은 찾았는가가 아니라 찾아봤는가다."""
-
-    def search(self, query, *, phrase=False, years=None):
-        return ()
-
-
-# 반대 측 조건이 붙는 유형(§3.3). 사실형·범위 밖은 면제라 대본도 달라야 한다.
-_COUNTER_REQUIRED = {"claim", "comparison"}
-
-
 def _run(case, *, papers: tuple[str, ...], answer=None) -> tuple[Any, LoopState]:
     state = LoopState(topic=case.question)
     if papers:
@@ -78,9 +72,9 @@ def _run(case, *, papers: tuple[str, ...], answer=None) -> tuple[Any, LoopState]
             )
         )
     registry = ToolRegistry()
-    registry.register(CorpusSearchTool(_NoHits(), state))
+    registry.register(CorpusSearchTool(NoHits(), state))
     script: list[Any] = []
-    if case.expected_kind in _COUNTER_REQUIRED:
+    if case.expected_kind in COUNTER_REQUIRED_KINDS:
         script.append(
             ToolCallProposal(
                 TOOL_CORPUS_SEARCH, {"query": case.question, "stance": STANCE_COUNTER}
@@ -355,3 +349,47 @@ def test_the_summary_measures_the_counter_rate_only_where_it_applies():
     summary = summarise(reports)
 
     assert summary["counter_probe_rate"] == 1.0
+
+
+def test_a_call_that_never_reached_its_port_is_not_a_counter_probe():
+    """`extract_evidence(paper_ids=[])`는 인자 검증에서 떨어져 포트에 닿지도 않는다 —
+    그것이 바닥을 열어 주면 선언만 붙이면 지나는 공짜 통로가 된다(실측 1회로 세어졌다)."""
+    failed = ToolCallRecord(
+        seq=1, tool="extract_evidence", args_summary="", outcome=ToolCallOutcome.ERROR,
+        stance=STANCE_COUNTER,
+    )
+
+    assert counter_probes([failed]) == 0
+
+
+def test_a_search_that_ran_and_found_nothing_is_a_counter_probe():
+    """묻는 것은 "찾아봤는가"이지 "찾았는가"가 아니다 — 없다는 것도 결과다."""
+    empty = ToolCallRecord(
+        seq=1, tool=TOOL_CORPUS_SEARCH, args_summary="", outcome=ToolCallOutcome.EMPTY,
+        stance=STANCE_COUNTER,
+    )
+
+    assert counter_probes([empty]) == 1
+
+
+def test_the_floor_yields_when_no_stance_tool_is_affordable():
+    """더 부를 예산이 없는데 바닥을 요구하면 종료 제안이 매번 거부되고, 근거를 충분히 모은
+    턴이 남은 반복을 LLM 호출로 태운 뒤 `budget_exhausted`로 끝난다 — 화면에는 "이어서
+    확인할까요?"가 뜬다. 깨끗이 끝냈어야 할 턴이다."""
+    state = LoopState(topic="주장형 질문")
+    state.question_kind = "claim"
+    state.accumulator = accumulator(
+        evidence_item("근거", paper_id="2106.09685", anchor="s1.p1", quote="q", anchor_type=None)
+    )
+    deps = LoopDeps(
+        llm=ScriptedLlm(question_kind="claim"),
+        registry=ToolRegistry(),
+        # stance를 받는 도구를 하나도 더 못 부른다.
+        budget=loop_budget(max_iterations=3, max_tool_calls_total=0, max_tool_calls={}),
+        ctx=run_context(),
+        answer=ScriptedAnswer(),
+    )
+
+    outcome = run_loop(state, deps)
+
+    assert outcome.reason is TerminationReason.SUFFICIENT

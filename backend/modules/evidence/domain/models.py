@@ -271,10 +271,14 @@ class LoopState:
     trace: list[ToolCallRecord] = field(default_factory=list)
     recent_results: list[Any] = field(default_factory=list)
     candidates_seen: set[str] = field(default_factory=set)
-    # 실시간 조회에서 죽은 소스(설계 §7). **마감이 읽으므로 스냅샷에 싣는다** — 확인 범위
-    # 줄에 "실시간 조회 불가"를 실을지가 여기서 갈린다. 부분 저하도 담는다: 셋 중 둘이
-    # 죽은 턴과 멀쩡한 턴이 같은 화면을 내면 "그 논문이 세상에 없다"로 읽힌다.
-    live_lookup_degraded: set[str] = field(default_factory=set)
+    # 실시간 조회가 온전히 못 돌았는가(설계 §7). **마감이 읽으므로 스냅샷에 싣는다** —
+    # 확인 범위 줄에 "실시간 조회 불가"를 실을지가 여기서 갈린다. 부분 저하도 true다:
+    # 셋 중 둘이 죽은 턴과 멀쩡한 턴이 같은 화면을 내면 "그 논문이 세상에 없다"로 읽힌다.
+    #
+    # **소스 이름은 담지 않는다.** 유일한 소비자(마감)가 SEC-9 때문에 그것을 쓸 수 없고,
+    # 모델이 보는 이름은 상태가 아니라 도구 결과에서 온다. 도메인이 못 쓰는 값을 들고 있으면
+    # 언젠가 누가 그것을 렌더한다.
+    live_lookup_degraded: bool = False
     termination_reason: TerminationReason | None = None
     notes: list[str] = field(default_factory=list)
     # 모델이 종료 시점에 선언한 질문 유형(§3.3). 판단 프롬프트가 읽고, PR 4의 바닥 규칙이
@@ -336,7 +340,7 @@ class LoopState:
                 for r in self.trace
             ],
             "candidates_seen": sorted(self.candidates_seen),
-            "live_lookup_degraded": sorted(self.live_lookup_degraded),
+            "live_lookup_degraded": self.live_lookup_degraded,
             "termination_reason": (
                 self.termination_reason.value if self.termination_reason else None
             ),
@@ -372,7 +376,7 @@ class LoopState:
             for r in data.get("trace", [])
         ]
         state.candidates_seen = set(data.get("candidates_seen", []))
-        state.live_lookup_degraded = set(data.get("live_lookup_degraded", []))
+        state.live_lookup_degraded = bool(data.get("live_lookup_degraded", False))
         reason = data.get("termination_reason")
         state.termination_reason = TerminationReason(reason) if reason else None
         state.notes = list(data.get("notes", []))

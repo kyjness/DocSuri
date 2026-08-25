@@ -85,6 +85,8 @@ class EvidenceTurn:
     cancel_requested: bool = False
     # 실행자가 살아 있다는 마지막 흔적 — 없으면 created_at이 기준이다(§5.5 고아 마감).
     heartbeat_at: datetime | None = None
+    # 이 턴이 세션 요약으로 접힌 시각(§3.4). 도장이 없으면 매 턴 다시 접힌다.
+    summarized_at: datetime | None = None
 
 
 @dataclass

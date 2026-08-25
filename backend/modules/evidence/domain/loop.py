@@ -51,6 +51,7 @@ from langgraph.runtime import Runtime
 from langsmith import tracing_context
 
 from ..ports.llm import (
+    COUNTER_REQUIRED_KINDS,
     QUESTION_KIND_UNKNOWN,
     AnswerEvidenceView,
     AnswerRequest,
@@ -64,12 +65,12 @@ from ..ports.llm import (
     ToolResultView,
 )
 from ..ports.tools import (
-    STANCE_COUNTER,
     STANCE_TOOLS,
     STANCES,
     ToolContext,
     ToolRegistry,
     ToolResult,
+    counter_probes,
 )
 from . import budget as budget_rules
 from .answer_checks import AnswerRejected, check_answer
@@ -274,7 +275,7 @@ def compile_loop_graph(checkpointer: BaseCheckpointSaver | None) -> CompiledStat
         if not state.accumulator.items:
             _note(state, _NO_EVIDENCE_NOTE)
             return {"proposal": None, "outcome": None}
-        missing = _missing_counter_probe(state)
+        missing = _missing_counter_probe(state, run.deps.budget)
         if missing is not None:
             _note(state, missing)
             return {"proposal": None, "outcome": None}
@@ -631,41 +632,19 @@ def _note(state: LoopState, text: str) -> None:
         state.notes.append(text)
 
 
-# 반대 측 조건이 붙는 질문 유형(§3.3). `fact`("X는 몇 년에 나왔어")는 면제되고, 선언 기회가
-# 없던 턴(`unknown`)도 면제한다 — 선언하지 못한 것을 근거로 종료를 막으면 예산 소진·취소로
-# 끝난 턴이 영원히 못 끝난다.
-_COUNTER_REQUIRED_KINDS = frozenset({"claim", "comparison"})
-
-
-# 반대 측 탐색으로 인정되는 결과 — **도구가 실제로 돌았는가**가 기준이다.
-#
-# 0건(EMPTY)과 도구 실패(ERROR)를 센다: 바닥이 요구하는 것은 "찾아봤는가"이지 "찾았는가"가
-# 아니고(없다는 것도 결과다), 찾았을 때만 인정하면 반대 근거가 실재하지 않는 질문은 영원히
-# 못 끝난다. 검색 인덱스가 죽은 턴도 마찬가지로 못 끝나게 된다.
-#
-# 반대로 BUDGET_DENIED와 없는 도구 호출은 **세지 않는다.** 그 둘은 도구가 돌지 않은 것이라
-# 선언만 붙이면 검사를 지나는 공짜 통로가 된다 — 상한을 다 쓴 도구에 stance=counter를 붙여
-# 부르는 것으로 바닥이 열린다.
-_PROBE_COUNTED = frozenset({ToolCallOutcome.OK, ToolCallOutcome.EMPTY, ToolCallOutcome.ERROR})
-
-
-def counter_probes(trace: list[ToolCallRecord]) -> int:
-    """`stance="counter"`로 실제 돈 검색·추출 횟수 — 바닥 2와 1층 채점이 같은 것을 센다."""
-    return sum(
-        1
-        for r in trace
-        if r.stance == STANCE_COUNTER
-        and r.tool in STANCE_TOOLS
-        and r.outcome in _PROBE_COUNTED
-    )
-
-
-def _missing_counter_probe(state: LoopState) -> str | None:
-    """바닥 2 미달이면 그 사유, 아니면 None."""
+def _missing_counter_probe(state: LoopState, budget: LoopBudget) -> str | None:
+    """바닥 2 미달이면 그 사유, 아니면 None(§3.3)."""
     kind = state.question_kind or QUESTION_KIND_UNKNOWN
-    if kind not in _COUNTER_REQUIRED_KINDS:
+    if kind not in COUNTER_REQUIRED_KINDS:
         return None
     if counter_probes(state.trace):
+        return None
+    if not any(budget_rules.can_call(budget, tool) for tool in STANCE_TOOLS):
+        # **더 부를 예산이 없으면 바닥을 요구할 수 없다.** 요구하면 종료 제안이 매번 거부되고
+        # 그래프가 decide로 되돌아, 근거를 충분히 모은 턴이 남은 반복(최대 12)을 LLM 호출로
+        # 태운 뒤 `budget_exhausted`로 끝난다 — 화면에는 "이어서 확인할까요?"가 뜬다.
+        # 깨끗이 끝냈어야 할 턴이다.
+        log.info("evidence floor: 반대 측 탐색을 더 부를 예산이 없어 종료를 받아들인다")
         return None
     return _NO_COUNTER_NOTE.format(kind="주장" if kind == "claim" else "비교")
 

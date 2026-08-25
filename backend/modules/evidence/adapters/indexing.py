@@ -22,7 +22,9 @@ import time
 from typing import Any
 from uuid import uuid4
 
-from backend.modules.paper_assets import parse_record_ref
+from summarization.adapters.summary_job_dedup import prune_inflight
+
+from .tools import versioned_arxiv
 
 __all__ = ["SqsPaperIndexQueue"]
 
@@ -54,55 +56,56 @@ class SqsPaperIndexQueue:
         self._ttl = dedup_ttl_seconds
         self._inflight: dict[str, float] = {}
 
-    def enqueue_index(self, paper_id: str) -> None:
-        ref = _arxiv_ref(paper_id)
-        if ref is None:
-            # arXiv 밖 논문 — 올려봐야 U1이 못 받는다. 조용히 건너뛰는 것이 맞다(오류가 아니다).
-            return
-
+    def enqueue_index(self, paper_ids: list[str]) -> None:
         now = time.monotonic()
-        self._prune(now)
-        # 중복 제거는 **잡이 나르는 신원**(버전 붙은 ref)으로 한다 — 철자가 갈라지면 같은
-        # 논문이 두 버킷을 쓰고 dedup이 없는 것과 같아진다(U7 어댑터와 같은 근거).
-        expiry = self._inflight.get(ref)
-        if expiry is not None and expiry > now:
+        self._inflight = prune_inflight(self._inflight, now)
+
+        entries: list[dict[str, str]] = []
+        for paper_id in paper_ids:
+            ref = versioned_arxiv(paper_id)
+            if ref is None:
+                # arXiv 밖 논문 — 올려봐야 U1이 못 받는다. 조용히 건너뛰는 것이 맞다.
+                continue
+            # 중복 제거는 **잡이 나르는 신원**(버전 붙은 ref)으로 한다 — 철자가 갈라지면
+            # 같은 논문이 두 버킷을 쓰고 dedup이 없는 것과 같아진다(U7 어댑터와 같은 근거).
+            expiry = self._inflight.get(ref)
+            if expiry is not None and expiry > now:
+                continue
+            entries.append(
+                {
+                    "Id": f"e{len(entries)}",
+                    "MessageBody": json.dumps(
+                        {
+                            "jobId": f"evidence-index-{ref}-{uuid4().hex[:8]}",
+                            "kind": "EVENT",
+                            "arxivRef": ref,
+                            "eventId": None,
+                            "correlationId": None,
+                        }
+                    ),
+                }
+            )
+        if not entries:
             return
 
-        body = json.dumps(
-            {
-                "jobId": f"evidence-index-{ref}-{uuid4().hex[:8]}",
-                "kind": "EVENT",
-                "arxivRef": ref,
-                "eventId": None,
-                "correlationId": None,
-            }
-        )
-        try:
-            self._sqs.send_message(QueueUrl=self._queue_url, MessageBody=body)
-        except Exception:  # noqa: BLE001 — 색인은 다음 질문을 위한 것이라 이 턴을 깨지 않는다
-            log.warning("evidence index enqueue failed for %s", ref, exc_info=True)
-            return
-        self._inflight[ref] = now + self._ttl
-        log.info("evidence: queued %s for background indexing", ref)
+        sent: list[str] = []
+        # SQS 배치 상한은 10건이다. 한 턴이 그보다 많이 올릴 일은 도구 상한상 드물지만,
+        # 넘겼을 때 조용히 잘리면 색인이 빠진 사실이 어디에도 안 남는다.
+        for chunk in (entries[i : i + 10] for i in range(0, len(entries), 10)):
+            try:
+                response = self._sqs.send_message_batch(QueueUrl=self._queue_url, Entries=chunk)
+            except Exception:  # noqa: BLE001 — 색인은 다음 질문을 위한 것이라 이 턴을 안 깬다
+                log.warning("evidence index enqueue failed (%d jobs)", len(chunk), exc_info=True)
+                continue
+            failed = {f["Id"] for f in (response or {}).get("Failed", []) or []}
+            if failed:
+                # **부분 실패를 성공으로 세지 않는다** — 실패한 것을 dedup 창에 넣으면 그
+                # 논문은 창이 만료될 때까지 영영 재시도되지 않는다.
+                log.warning("evidence index enqueue: %d of %d rejected", len(failed), len(chunk))
+            sent += [e["Id"] for e in chunk if e["Id"] not in failed]
 
-    def _prune(self, now: float) -> None:
-        for key, expiry in list(self._inflight.items()):
-            if expiry <= now:
-                del self._inflight[key]
-
-
-def _arxiv_ref(paper_id: str) -> str | None:
-    """`arxiv:2304.10557v3` → `2304.10557v3`. arXiv id가 아니면 None.
-
-    버전이 없으면 v1로 요청한다 — U1의 `arxivRef`는 버전이 필수이고, 실시간 조회는 버전을
-    박아 보내므로 대개 명시돼 있다.
-    """
-    from .tools import promotable
-
-    if not promotable(paper_id):
-        return None
-    parsed = parse_record_ref(paper_id)
-    if parsed is None:
-        return None
-    bare, version = parsed
-    return f"{bare}v{version or 1}"
+        by_id = {e["Id"]: json.loads(e["MessageBody"])["arxivRef"] for e in entries}
+        for entry_id in sent:
+            self._inflight[by_id[entry_id]] = now + self._ttl
+        if sent:
+            log.info("evidence: queued %d papers for background indexing", len(sent))

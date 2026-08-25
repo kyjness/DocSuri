@@ -13,6 +13,7 @@ from typing import Any, Protocol
 from .tools import ImageAttachment, ToolSpec
 
 __all__ = [
+    "COUNTER_REQUIRED_KINDS",
     "QUESTION_KINDS",
     "QUESTION_KIND_UNKNOWN",
     "AnswerDraft",
@@ -106,6 +107,15 @@ class ToolCallProposal:
 # 질문 유형(설계 v3 §3.3) — 별도 분류기를 두지 않고 모델이 선언한다.
 QUESTION_KINDS = ("claim", "comparison", "fact", "out_of_scope")
 QUESTION_KIND_UNKNOWN = "unknown"
+
+# 반대 측 탐색이 필요한 유형(§3.3 바닥 2). `fact`는 면제이고, 선언 기회가 없던 턴
+# (`unknown`)도 면제한다 — 선언 못 한 것을 이유로 종료를 막으면 예산 소진·취소로 끝난
+# 턴이 영영 못 끝난다.
+#
+# **한 곳에만 둔다.** 루프의 바닥 검사와 1층 채점이 이 집합을 나눠 쓰는데, 두 벌로 뒀더니
+# 불변식을 주석이 지키고 있었다 — 넓으면 루프가 통과시킨 턴을 채점이 위반으로 찍고,
+# 좁으면 지표가 조용히 눈감는다. 골든셋 하네스까지 세 벌이었다.
+COUNTER_REQUIRED_KINDS: frozenset[str] = frozenset({"claim", "comparison"})
 
 
 @dataclass(frozen=True, slots=True)

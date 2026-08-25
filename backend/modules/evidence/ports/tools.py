@@ -15,6 +15,7 @@ __all__ = [
     "STANCES",
     "STANCE_COUNTER",
     "STANCE_TOOLS",
+    "counter_probes",
     "TOOL_CORPUS_SEARCH",
     "TOOL_EXTRACT_EVIDENCE",
     "TOOL_FETCH_PAPER",
@@ -62,6 +63,34 @@ KNOWN_LOOP_TOOLS: frozenset[str] = frozenset(
 STANCE_TOOLS: frozenset[str] = frozenset(
     {TOOL_CORPUS_SEARCH, TOOL_LIVE_LOOKUP, TOOL_EXTRACT_EVIDENCE}
 )
+
+
+# 반대 측 탐색으로 인정되는 결과 — **일을 했는가**가 기준이다.
+#
+# 0건(EMPTY)은 센다: 바닥이 요구하는 것은 "찾아봤는가"이지 "찾았는가"가 아니다(없다는 것도
+# 결과다). 반대로 실패(ERROR)·예산 거부는 **세지 않는다** — 초안은 "인덱스가 죽은 턴이
+# 영원히 못 끝난다"는 이유로 ERROR를 셌는데, 그러면 `extract_evidence(paper_ids=[])`처럼
+# **포트에 닿기도 전에 인자 검증에서 떨어지는 호출**이 바닥을 열어 준다(실측). 선언만 붙이면
+# 지나는 공짜 통로다.
+#
+# 그래서 "영원히 못 끝난다"는 걱정은 세는 규칙이 아니라 **바닥 쪽 탈출구**로 막는다 —
+# stance를 받는 도구를 더 부를 예산이 없으면 바닥이 종료를 받아들인다(`domain.loop`).
+_PROBE_COUNTED = frozenset({"ok", "empty"})
+
+
+def counter_probes(trace: list[Any]) -> int:
+    """`stance="counter"`로 실제 돈 검색·추출 횟수 — 바닥 2와 1층 채점이 같은 것을 센다.
+
+    `ToolCallRecord`(도메인)와 `STANCE_TOOLS`(여기) 둘 다에 붙는 순수 술어라 이 자리에 둔다.
+    그래프 모듈에 두었더니 1층 채점이 픽스처를 매기려고 langgraph를 끌고 왔다.
+    """
+    return sum(
+        1
+        for r in trace
+        if r.stance == STANCE_COUNTER
+        and r.tool in STANCE_TOOLS
+        and str(getattr(r.outcome, "value", r.outcome)) in _PROBE_COUNTED
+    )
 
 
 @dataclass(frozen=True, slots=True)

@@ -11,8 +11,10 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 __all__ = [
+    "ContinuationSeedPort",
     "CorpusSearchPort",
     "DocModelReadPort",
+    "LiveLookupResult",
     "LivePaperLookupPort",
     "PaperCandidate",
     "PaperIndexQueuePort",
@@ -78,18 +80,49 @@ class CorpusSearchPort(Protocol):
         ...
 
 
+@dataclass(frozen=True, slots=True)
+class LiveLookupResult:
+    """조회 결과 + **어느 소스가 빠졌는지**.
+
+    저하가 **계약에 있어야 하는** 이유는 소비자가 둘이기 때문이다: 도구가 모델에게 알리고
+    (안 알리면 모델은 "이게 전부"라고 믿는다 — novelty 실측), 마감이 확인 범위 줄에
+    "실시간 조회 불가"를 싣는다(§7). 둘 다 **필수 출력**이다.
+
+    초안은 포트에 `search() -> tuple[PaperCandidate, ...]`만 두고 저하는 어댑터가 덧붙인
+    `lookup()`으로 날랐는데, 그러면 도구가 `getattr`로 그 메서드를 찾아야 하고 **선언된
+    프로토콜만 만족하는 구현은 저하를 조용히 버린다** — 화면은 "그런 논문이 없다"를 내고,
+    사용자는 "다시 물어보기" 대신 "주제 넓히기"를 한다(정반대 행동이다).
+    """
+
+    candidates: tuple[PaperCandidate, ...]
+    degraded_sources: tuple[str, ...] = ()
+
+
 class LivePaperLookupPort(Protocol):
-    def search(self, query: str) -> tuple[PaperCandidate, ...]:
+    def lookup(self, query: str) -> LiveLookupResult:
         """코퍼스 밖 논문 실시간 조회 — 제목·초록만 확보한다. 본문은 승격이 담당한다.
 
         구현이 여러 소스를 합성하더라도 **부분 저하는 예외가 아니다** — 살아 있는 소스의
-        결과를 돌려준다. 셋 다 죽었을 때만 `SearchUnavailable`이다(§7).
+        결과를 돌려주고 죽은 소스는 `degraded_sources`에 싣는다. 구성된 소스가 **전부**
+        죽었을 때만 `SearchUnavailable`이다(§7). 단일 소스 구현이면 저하는 빈 튜플이다.
+        """
+        ...
+
+
+class ContinuationSeedPort(Protocol):
+    def seeds_from(self, turn_id: str) -> tuple[Any, ...]:
+        """직전 턴이 찾아 둔 논문 핸들 — 이어가기의 씨앗(설계 §3.4). 없으면 빈 튜플.
+
+        **포트로 두는 이유**: 이것만 I/O다(다른 씨앗은 요청을 읽는다). PR 2가 정확히 이
+        이유로 스냅샷 접근을 러너에서 뺐다 — 러너에 매달았더니 5개 라우트가 LLM 러너에
+        묶여, 러너가 구성되지 않는 배포에서 세션 삭제가 500이 됐다. 포트가 없으면 대역도
+        타입 검사도 없고, 러너가 그 객체에 무엇을 물어봐도 되는지 적힌 곳이 없다.
         """
         ...
 
 
 class PaperIndexQueuePort(Protocol):
-    def enqueue_index(self, paper_id: str) -> None:
+    def enqueue_index(self, paper_ids: list[str]) -> None:
         """실시간 조회로 찾은 논문을 **백그라운드 색인**에 올린다(설계 §2.6 4단계).
 
         색인은 U1이 한다 — 여기서 하는 것은 요청뿐이고 결과를 기다리지 않는다(INV-EV-7과
@@ -98,6 +131,9 @@ class PaperIndexQueuePort(Protocol):
 
         이것이 "쓸수록 코퍼스가 그쪽으로 자란다"의 구현이다 — 없으면 같은 논문을 매 턴
         실시간으로 다시 조회하고, 코퍼스는 영원히 자라지 않는다.
+
+        **목록을 받는다.** 한 턴이 올릴 논문은 도구 상한만큼(최대 여덟 편) 되는데, 한 편씩
+        부르면 그 수만큼 왕복이 응답 반환 앞에 얹힌다.
         """
         ...
 

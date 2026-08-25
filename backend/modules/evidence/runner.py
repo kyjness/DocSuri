@@ -24,7 +24,6 @@ from docsuri_shared._generated.dtos.evidence_schema import (
     EvidenceAbstainResult,
     EvidenceRequest,
 )
-from langgraph.graph.state import CompiledStateGraph
 
 from .adapters.tools import (
     CorpusSearchTool,
@@ -79,20 +78,13 @@ class RunnerDeps:
 
 
 class EvidenceTurnRunner:
-    def __init__(
-        self,
-        deps: RunnerDeps,
-        *,
-        graph: CompiledStateGraph | None = None,
-        checkpoints: Any | None = None,
-    ) -> None:
+    def __init__(self, deps: RunnerDeps, *, checkpoints: Any | None = None) -> None:
         self._deps = deps
-        # 체크포인트 객체가 그래프를 소유한다 — 주면 그것을 쓰고, 이어가기 씨앗도 거기서 읽는다.
-        # 그래프만 주는 경로(테스트)는 체크포인트 없이 돌고 이어가기가 자연히 꺼진다.
+        # 체크포인트 객체가 그래프를 소유한다(§3.1) — 없으면 체크포인터 없이 컴파일하고
+        # 이어가기가 자연히 꺼진다. `graph=`를 따로 받던 인자는 지웠다: `checkpoints=`를
+        # 더한 뒤 호출자가 하나도 안 남았는데 세 갈래 `None` 조정만 남아 있었다.
         self._checkpoints = checkpoints
-        if graph is None and checkpoints is not None:
-            graph = checkpoints.graph
-        self._graph = graph if graph is not None else compile_loop_graph(None)
+        self._graph = checkpoints.graph if checkpoints is not None else compile_loop_graph(None)
 
     # -- 비용 -----------------------------------------------------------------
     def _cost_degraded(self) -> bool:
@@ -198,33 +190,32 @@ def _seed_attachments(state: LoopState, attachments: tuple[Any, ...]) -> None:
 def _seed_continuation(
     state: LoopState, checkpoints: Any | None, ctx: AgentRunContext, scope: str
 ) -> None:
-    """직전 턴이 찾아 둔 것을 새 턴의 씨앗으로 옮긴다(설계 §3.4 이어가기).
+    """직전 턴이 찾아 둔 논문을 새 턴의 **후보**로 옮긴다(설계 §3.4 이어가기).
 
     **판정은 모델이, 이식은 기계다.** 설계 초안은 모델이 `continuation: true`를 선언하면
-    옮긴다고 적었으나 그럴 자리가 없다 — 이식은 루프가 돌기 **전**에 일어나므로 모델은
-    아직 아무것도 못 봤다. 그래서 씨앗은 무조건 심고 관찰의 "확인 대기 논문"에 실어,
-    모델이 쓸지 말지를 고르게 한다. explicit scope에서 이미 그 자리가 그렇게 동작한다.
+    옮긴다고 적었으나 그럴 자리가 없다 — 이식은 루프가 돌기 **전**이라 모델은 아직 아무것도
+    못 봤다. 그래서 씨앗은 무조건 심고 관찰의 "확인 대기 논문"에 실어 모델이 쓸지 고르게
+    한다. explicit scope에서 이미 그 자리가 그렇게 동작한다.
 
-    옮기는 것은 **아직 안 읽은 후보와 이미 확인한 논문**이다. 검색부터 다시 하면 "이어서 더
-    찾아줘"가 직전 턴을 그대로 반복하고, 예산은 같은 검색에 두 번 나간다.
+    **`discovered`로 심는다 — `papers`가 아니다.** `examined`는 `len(self.papers)`이므로
+    확인분으로 심으면 **이번 턴이 열어보지도 않은 논문이 "확인함"으로 세어지고**, 화면의
+    "후보 N편 중 M편 확인"이 그 수를 그대로 쓴다. 설계 §3.4가 씨앗을 "관찰의 **확인 대기
+    논문**에 실어"라고 적은 것이 곧 이 버킷이다.
 
-    이미 있는 id는 덮지 않는다 — 첨부·명시 논문이 먼저 심어졌고 그쪽이 더 구체적이다
-    (본문·소유권이 확인된 핸들). 확인분(`papers`)은 확인분으로, 후보는 후보로 간다:
-    한 칸에 몰면 확인 범위 수치(examined/candidates)가 이전 턴 것을 물려받아 부풀려진다.
+    이식은 `prior_turn_id`만 있으면 도므로 새 주제 턴(§2.5의 "QLoRA는?")에도 심긴다 —
+    설계가 그 턴에서 이전 논문이 **후보로 남는다**고 적은 것과 같다.
+
+    이미 있는 id는 덮지 않는다: 첨부·명시 논문이 먼저 심어졌고 그쪽이 더 구체적이다
+    (본문·소유권이 확인된 핸들).
     """
     if checkpoints is None or scope == "explicit" or not ctx.prior_turn_id:
         return
     try:
-        prior = checkpoints.seeds_from(ctx.prior_turn_id)
+        seeds = checkpoints.seeds_from(ctx.prior_turn_id)
     except Exception:  # noqa: BLE001 — 씨앗을 못 읽는 것이 새 턴을 깨뜨리면 안 된다
         log.warning("evidence: continuation seeds unavailable", exc_info=True)
         return
-    if prior is None:
-        return
-    for handle in prior.papers.values():
-        if state.handle(handle.paper_id) is None:
-            state.examine(handle)
-    for handle in prior.discovered.values():
+    for handle in seeds:
         if state.handle(handle.paper_id) is None:
             state.discovered[handle.paper_id] = handle
 
@@ -237,22 +228,23 @@ def _queue_for_indexing(state: LoopState, queue: Any | None) -> None:
     색인은 안 된다(U1의 `BUILD_DOC_MODEL`은 "이미 색인된 논문"을 위한 잡이다).
 
     **확인한 것만 올린다.** 검색 히트를 전부 올리면 질의 한 번에 열 편이 큐로 가고, 그중
-    모델이 열어보지도 않은 논문이 대부분이다. 확인분은 `fetch_paper`·`read_paper`·추출이
-    실제로 건드린 논문이고 도구 상한이 그 수를 묶는다.
+    모델이 열어보지도 않은 논문이 대부분이다.
 
-    **턴이 끝난 뒤에 부른다.** 루프 안에서 부르면 사용자가 기다리는 시간에 SQS 왕복이 얹힌다.
+    **한 번에 보낸다.** 논문마다 부르면 확인 논문 수만큼 SQS 왕복이 응답 반환 앞에 얹히고,
+    실패하면 botocore 재시도가 메시지마다 돈다 — 이 턴의 답이 기다리지 않아도 되는 일이다.
 
-    실패는 전부 삼킨다 — 색인은 다음 질문을 위한 것이라 이 턴의 답에 아무 영향이 없다.
+    실패는 전부 삼킨다 — 색인은 **다음** 질문을 위한 것이라 이 턴의 답에 영향이 없다.
     """
     if queue is None:
         return
-    for handle in state.papers.values():
-        if handle.origin is not PaperOrigin.EXTERNAL:
-            continue  # 코퍼스 논문은 이미 색인돼 있고, 첨부는 사적 문서라 코퍼스에 안 넣는다
-        try:
-            queue.enqueue_index(handle.paper_id)
-        except Exception:  # noqa: BLE001 — 색인 요청 실패가 답을 깨뜨리면 안 된다
-            log.warning("evidence: index enqueue failed for %s", handle.paper_id, exc_info=True)
+    # 코퍼스 논문은 이미 색인돼 있고, 첨부는 사적 문서라 코퍼스에 넣지 않는다.
+    paper_ids = [h.paper_id for h in state.papers.values() if h.origin is PaperOrigin.EXTERNAL]
+    if not paper_ids:
+        return
+    try:
+        queue.enqueue_index(paper_ids)
+    except Exception:  # noqa: BLE001 — 색인 요청 실패가 답을 깨뜨리면 안 된다
+        log.warning("evidence: index enqueue failed (%d papers)", len(paper_ids), exc_info=True)
 
 
 def _effective_scope(request: EvidenceRequest) -> str:

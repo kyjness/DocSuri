@@ -62,14 +62,13 @@ def build_evidence_runner(
     *,
     cost_guard: Any | None = None,
     session_factory: Any | None = None,
-    graph: Any | None = None,
     checkpoints: Any | None = None,
     with_answer: bool = True,
 ) -> EvidenceTurnRunner:
     """실 어댑터 조립 — DOCSURI_DOCMODEL_BUCKET + OpenSearch 설정 필요.
 
     cost_guard(U6 단일 권위)를 주면 턴 실행의 비용 게이트에
-    연결된다(NFR-C1). checkpoints(또는 그 graph)를 주면 super-step마다 루프 스냅샷이
+    연결된다(NFR-C1). checkpoints를 주면 super-step마다 루프 스냅샷이
     저장된다(v3 §5). 안 주면 체크포인트 없이 돈다.
 
     `with_answer=False`는 판단 층(§4.2)을 붙이지 않는다 — novelty의 중첩 근거형성처럼
@@ -182,7 +181,6 @@ def build_evidence_runner(
             cost_guard=cost_guard,
             budget_factory=settings.build_loop_budget,
         ),
-        graph=graph,
         checkpoints=checkpoints,
     )
     return runner

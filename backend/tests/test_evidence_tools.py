@@ -5,14 +5,13 @@ v1의 같은 이름 파일(고정 파이프라인의 검색·DocModel 도구 테
 
 from __future__ import annotations
 
-from typing import Any
-
 from backend.modules.evidence.adapters.tools import (
     CorpusSearchTool,
     ExtractEvidenceTool,
     FetchPaperTool,
     LiveLookupTool,
     ReadPaperTool,
+    versioned_arxiv,
 )
 from backend.modules.evidence.domain.models import (
     LoopState,
@@ -22,11 +21,13 @@ from backend.modules.evidence.domain.models import (
 )
 from backend.modules.evidence.ports.llm import LlmUnavailable
 from backend.modules.evidence.ports.sources import (
+    LiveLookupResult,
     PaperCandidate,
     PromotionResult,
     SearchUnavailable,
 )
 from backend.modules.evidence.ports.tools import ToolContext
+from backend.modules.evidence.testing import NoItems, ScriptedSearch
 from backend.tests.evidence_fakes import (
     TABLE_ROW,
     doc_model,
@@ -38,24 +39,22 @@ CTX = ToolContext(owner_id="o1", session_id="s1", turn_id="t1")
 
 
 
-class FakeSearch:
-    def __init__(self, hits=(), error: Exception | None = None) -> None:
+class FakeLive:
+    """`LivePaperLookupPort` 대역 — 계약이 `lookup()` 하나라 저하를 **반드시** 말해야 한다.
+
+    종전에는 `search()`만 있는 대역이었고, 도구가 `getattr`로 갈리는 분기를 살려 두는 유일한
+    이유가 이 대역이었다. 계약을 넓히자 그 분기와 함께 사라졌다.
+    """
+
+    def __init__(self, hits=(), error: Exception | None = None, degraded=()) -> None:
         self.hits = hits
         self.error = error
-        self.calls: list[tuple[str, bool]] = []
-        self.years: list[Any] = []
+        self.degraded = tuple(degraded)
 
-    def search(self, query: str, *, phrase: bool = False, years=None):
-        self.calls.append((query, phrase))
-        self.years.append(years)
+    def lookup(self, query: str) -> LiveLookupResult:
         if self.error:
             raise self.error
-        return self.hits
-
-
-class FakeLive(FakeSearch):
-    def search(self, query: str):  # type: ignore[override]
-        return super().search(query)
+        return LiveLookupResult(tuple(self.hits), self.degraded)
 
 
 class FakeDocModels:
@@ -76,19 +75,6 @@ class FakePromotion:
         return self.result
 
 
-class FakeExtraction:
-    def __init__(self, items: list[dict[str, Any]] | None = None, error=None) -> None:
-        self.items = items or []
-        self.error = error
-        self.calls: list[dict] = []
-
-    def extract(self, *, topic: str, focus: str, papers):
-        self.calls.append({"topic": topic, "focus": focus, "papers": papers})
-        if self.error:
-            raise self.error
-        return self.items
-
-
 def _candidate(pid="2107.06xxx") -> PaperCandidate:
     return PaperCandidate(
         paper_id=pid,
@@ -104,7 +90,7 @@ def _candidate(pid="2107.06xxx") -> PaperCandidate:
 def test_corpus_search_registers_candidates_without_marking_them_examined():
     """검색은 '발견'이지 '확인'이 아니다 — 확인 범위 수치가 부풀지 않는다."""
     state = LoopState(topic="q")
-    tool = CorpusSearchTool(FakeSearch(hits=(_candidate(),)), state)
+    tool = CorpusSearchTool(ScriptedSearch(hits=(_candidate(),)), state)
 
     result = tool.invoke({"query": "protein"}, CTX)
 
@@ -116,15 +102,15 @@ def test_corpus_search_registers_candidates_without_marking_them_examined():
 def test_corpus_search_passes_phrase_mode_through():
     """정확 문구 검색이 별도 도구가 아니라 인자로 흡수됐다(v1 intent.py 대체)."""
     state = LoopState(topic="q")
-    port = FakeSearch(hits=())
+    port = ScriptedSearch(hits=())
     CorpusSearchTool(port, state).invoke({"query": "attention is all", "mode": "phrase"}, CTX)
 
-    assert port.calls == [("attention is all", True)]
+    assert port.queries == [("attention is all", True)]
 
 
 def test_search_failure_tells_the_agent_what_to_do_next():
     state = LoopState(topic="q")
-    tool = CorpusSearchTool(FakeSearch(error=SearchUnavailable("down")), state)
+    tool = CorpusSearchTool(ScriptedSearch(error=SearchUnavailable("down")), state)
 
     result = tool.invoke({"query": "q"}, CTX)
 
@@ -259,7 +245,7 @@ def _state_with_full_text() -> LoopState:
 
 def test_extract_evidence_accumulates_only_gate_survivors():
     state = _state_with_full_text()
-    port = FakeExtraction(items=[_raw_item(), _raw_item(quote="fabricated text not in the paper")])
+    port = NoItems(items=[_raw_item(), _raw_item(quote="fabricated text not in the paper")])
 
     result = ExtractEvidenceTool(port, state).invoke({"paper_ids": ["p1"]}, CTX)
 
@@ -271,7 +257,7 @@ def test_extract_evidence_accumulates_only_gate_survivors():
 def test_extract_evidence_returns_reason_distribution_not_details():
     """INV-EV-5 — 어떤 인용이 왜 떨어졌는지는 내부에 둔다. 분포와 수리 지시만 준다."""
     state = _state_with_full_text()
-    port = FakeExtraction(items=[_raw_item(anchor="s9.nope")])
+    port = NoItems(items=[_raw_item(anchor="s9.nope")])
 
     result = ExtractEvidenceTool(port, state).invoke({"paper_ids": ["p1"]}, CTX)
 
@@ -284,7 +270,7 @@ def test_extract_evidence_marks_papers_as_examined():
     state = _state_with_full_text()
     state.discovered["p2"] = PaperHandle("p2", "r2", PaperOrigin.CORPUS, abstract_text="a")
 
-    ExtractEvidenceTool(FakeExtraction(), state).invoke({"paper_ids": ["p1", "p2"]}, CTX)
+    ExtractEvidenceTool(NoItems(), state).invoke({"paper_ids": ["p1", "p2"]}, CTX)
 
     assert state.examined == 2
 
@@ -292,7 +278,7 @@ def test_extract_evidence_marks_papers_as_examined():
 def test_extract_evidence_reports_unknown_papers_without_failing():
     state = _state_with_full_text()
 
-    result = ExtractEvidenceTool(FakeExtraction(), state).invoke(
+    result = ExtractEvidenceTool(NoItems(), state).invoke(
         {"paper_ids": ["p1", "ghost"]}, CTX
     )
 
@@ -302,7 +288,7 @@ def test_extract_evidence_reports_unknown_papers_without_failing():
 
 def test_extraction_llm_failure_is_reported_as_a_tool_failure():
     state = _state_with_full_text()
-    port = FakeExtraction(error=LlmUnavailable("down"))
+    port = NoItems(error=LlmUnavailable("down"))
 
     result = ExtractEvidenceTool(port, state).invoke({"paper_ids": ["p1"]}, CTX)
 
@@ -314,7 +300,7 @@ def test_extraction_llm_failure_is_reported_as_a_tool_failure():
 
 
 def _corpus(hits=()):
-    port = FakeSearch(hits=hits)
+    port = ScriptedSearch(hits=hits)
     return port, CorpusSearchTool(port, LoopState(topic="t"))
 
 
@@ -421,3 +407,65 @@ def test_an_arxiv_paper_still_promotes():
     tool.invoke({"paper_id": "arxiv:2401.10001v1"}, CTX)
 
     assert promotion.calls == ["arxiv:2401.10001v1"]
+
+
+# --- 실시간 조회가 통째로 죽은 턴 -------------------------------------------------
+
+
+def test_a_total_lookup_failure_is_reported_to_the_screen():
+    """**완전 실패야말로 화면이 밝혀야 하는 경우다.**
+
+    부분 저하만 표시하고 전면 실패는 침묵하면 정확히 거꾸로다 — 조회가 통째로 죽은 턴이
+    "그런 논문이 없다"로 보이고, 사용자는 "다시 물어보기" 대신 "주제 넓히기"를 한다
+    (프론트 주석이 그 둘을 정반대 행동이라고 적어 뒀다). 계약 설명도 "셋 다 죽은 턴도
+    true"라고 약속한다.
+    """
+    state = LoopState(topic="t")
+    tool = LiveLookupTool(FakeLive(error=SearchUnavailable("all three down")), state)
+
+    result = tool.invoke({"query": "x"}, CTX)
+
+    assert result.ok is False
+    assert state.live_lookup_degraded is True, "조회가 통째로 죽었는데 화면이 침묵한다"
+
+
+def test_a_partial_degradation_is_reported_too():
+    state = LoopState(topic="t")
+    tool = LiveLookupTool(
+        FakeLive(hits=(_candidate("arxiv:2401.1v2"),), degraded=("arxiv",)), state
+    )
+
+    result = tool.invoke({"query": "x"}, CTX)
+
+    assert state.live_lookup_degraded is True
+    assert result.content["degradedSources"] == ["arxiv"]
+
+
+def test_a_healthy_lookup_leaves_the_flag_alone():
+    state = LoopState(topic="t")
+    tool = LiveLookupTool(FakeLive(hits=(_candidate("arxiv:2401.1v2"),)), state)
+
+    tool.invoke({"query": "x"}, CTX)
+
+    assert state.live_lookup_degraded is False
+
+
+def test_the_year_note_no_longer_clobbers_the_plain_guidance():
+    """노트를 쓰는 자리가 둘이면 하나가 다른 하나를 지운다 — 연도 제약이 걸린 검색에서
+    "phrase 모드였다면 mode를 빼라"가 통째로 사라지고 있었다."""
+    _port, tool = _corpus()
+
+    plain = tool.invoke({"query": "x"}, CTX)
+    with_year = tool.invoke({"query": "x", "year_from": 2023}, CTX)
+
+    assert "phrase" in plain.content["note"], "기본 안내가 사라졌다"
+    assert "연도 제약" in with_year.content["note"]
+    assert "phrase" not in with_year.content["note"], "연도 사유가 안 실렸다"
+
+
+def test_the_two_arxiv_judgements_see_the_same_string():
+    """`promotable`은 다듬고 재는데 분해는 원본을 봤다 — 공백이 낀 id가 통과한 뒤
+    `  2304.10557  v1`으로 조립돼 색인 잡의 `arxivRef`에 그대로 실렸다."""
+    assert versioned_arxiv("  2304.10557  ") == "2304.10557v1"
+    assert versioned_arxiv("arxiv:hep-th/9901001v2") == "hep-th/9901001v2"
+    assert versioned_arxiv("doi:10.1145/abc") is None

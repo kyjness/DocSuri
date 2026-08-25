@@ -242,9 +242,14 @@ _UNLABELLED: tuple[GoldenCase, ...] = (
 # 배포 색인(`docsuri-deploy-v1`, 논문 3,281편)에서 **초록을 직접 읽고** 골랐다. 우리 랭킹
 # 순위로 고르지 않았다 — 순위로 고르면 recall@k가 자동으로 1.0이 되어 아무것도 못 잰다.
 #
-# **전부 `reviewed=False`다.** 검수 전 recall@k와 심판 점수는 "내가 정한 정답으로 내가 채점한
-# 값"이라 품질 지표가 아니고, 그 사실이 코드에 보여야 한다. `pending_review()`가 그 상태를
-# 표현하고 `test_every_label_has_passed_human_review`가 그것을 막는다.
+# 검수 완료 2026-08-25 — `reviewed=True`이고 채점 표본(`labelled_cases()`)에 든다.
+#
+# 새 문항은 `reviewed=False`로 들어온다. 그동안 그 문항의 `expected_papers`는 채점에 쓰이지
+# 않는다(`labelled_cases()`가 거른다) — 검수 전 recall@k와 심판 점수는 "내가 정한 정답으로
+# 내가 채점한 값"이라 품질 지표가 아니기 때문이다. 그 불변식은
+# `test_unreviewed_labels_never_reach_the_scoring_path`가 **합성 사례로** 지킨다: 검수 대기가
+# 비어 있는 날에도 규칙이 살아 있어야 하고, 실제 데이터로 검사하면 그날 아무것도 안 보면서
+# 초록으로 남는다.
 
 _LABELLED_PR4: tuple[GoldenCase, ...] = (
     GoldenCase(
@@ -644,4 +649,6 @@ def pending_review() -> tuple[GoldenCase, ...]:
     비어 있어야 하는 값이 아니다. 여기 있는 동안 그 문항의 `expected_papers`는 채점에
     쓰이지 않고(`labelled_cases`가 거른다), 검수가 끝나 `reviewed=True`가 되면 표본에 든다.
     """
-    return tuple(case for case in _LABELLED + _LABELLED_PR4 if not case.reviewed)
+    # `GOLDEN_CASES`에서 유도한다 — 사설 튜플을 나열하면 새 묶음이 채점에도 안 들어가고
+    # 대기 목록에도 안 보이는 상태가 되고, 그 상태를 잡는 검사가 없다.
+    return tuple(c for c in GOLDEN_CASES if c.expected_papers and not c.reviewed)

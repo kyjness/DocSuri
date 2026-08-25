@@ -21,10 +21,11 @@
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from itertools import zip_longest
 from typing import Any
 from xml.etree import ElementTree
 
@@ -33,10 +34,12 @@ from backend.modules.novelty.adapters.external.base import (
     SourceUnavailable,
     check_response,
 )
+from backend.modules.paper_assets import parse_record_ref
 
-from ..ports.sources import PaperCandidate, SearchUnavailable
+from ..domain.projection import normalize
+from ..ports.sources import LiveLookupResult, PaperCandidate, SearchUnavailable
 
-__all__ = ["ARXIV_ENDPOINT", "LiveLookup", "LiveLookupResult", "OPENALEX_ENDPOINT", "S2_ENDPOINT"]
+__all__ = ["ARXIV_ENDPOINT", "LiveLookup", "OPENALEX_ENDPOINT", "S2_ENDPOINT"]
 
 log = logging.getLogger("docsuri.evidence.sources")
 
@@ -50,8 +53,6 @@ OPENALEX_ENDPOINT = "https://api.openalex.org/works"
 
 _ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
 _MAX_QUERY_CHARS = 400
-_ARXIV_ID_RE = re.compile(r"\d{4}\.\d{4,5}(v\d+)?|[a-z-]{2,}(\.[A-Z]{2})?/\d{7}(v\d+)?")
-_WS_RE = re.compile(r"\s+")
 
 # S2 무키 호출은 공용 풀이라 초당 제한이 빡빡하다. 한 도구 호출이 세 소스를 한 번씩만
 # 치므로 페이지는 돌지 않는다 — 소스당 상한만 둔다.
@@ -60,28 +61,17 @@ _PER_SOURCE = 8
 
 @dataclass(frozen=True, slots=True)
 class _LiveRecord:
-    """정규화 전 한 건. **dedup이 읽는 필드가 여기 다 있어야 한다** — `PaperCandidate`에는
-    doi·year가 없어서, 후보로 접고 나면 같은 논문을 다시 알아볼 수단이 사라진다."""
+    """정규화 전 한 건 — **dedup이 읽는 id가 여기 있어야 한다.** `PaperCandidate`에는 `doi`도
+    원본 `arxiv_id`도 없어서, 후보로 접고 나면 같은 논문을 다시 알아볼 수단이 사라진다.
 
-    source: str
+    담는 것은 그 둘뿐이다. 초안에는 `source`·`year`도 있었는데 `source`는 어디서도 안 읽혔고
+    `year`는 도달 불가한 제목 사다리만 읽었다 — 모델에 필드가 있으면 다음 소스를 붙이는
+    사람이 성실하게 채우고, 채운 값은 영영 안 쓰인다."""
+
     title: str
     abstract: str = ""
     arxiv_id: str | None = None
     doi: str | None = None
-    year: int | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class LiveLookupResult:
-    """조회 결과 + **어느 소스가 빠졌는지**.
-
-    저하를 결과값으로 나르는 이유는 두 소비자가 있기 때문이다: 도구가 모델에게 알리고
-    (안 알리면 모델은 "이게 전부"라고 믿는다 — novelty 실측), 마감이 확인 범위 줄에
-    "실시간 조회 불가"를 싣는다(§7).
-    """
-
-    candidates: tuple[PaperCandidate, ...]
-    degraded_sources: tuple[str, ...] = ()
 
 
 class LiveLookup:
@@ -111,10 +101,6 @@ class LiveLookup:
         self._s2_breaker = s2_breaker or SourceBreaker()
         self._openalex_breaker = openalex_breaker or SourceBreaker()
 
-    def search(self, query: str) -> tuple[PaperCandidate, ...]:
-        """포트 계약(`LivePaperLookupPort`) — 후보만 돌려준다."""
-        return self.lookup(query).candidates
-
     def _sources(self) -> tuple[tuple[str, SourceBreaker, Any], ...]:
         """실제로 칠 소스 — 순회 순서가 곧 승자 우선순위다(arXiv > S2 > OpenAlex).
 
@@ -134,20 +120,32 @@ class LiveLookup:
         return tuple(sources)
 
     def lookup(self, query: str) -> LiveLookupResult:
-        query = _WS_RE.sub(" ", query).strip()[:_MAX_QUERY_CHARS]
+        query = normalize(query)[:_MAX_QUERY_CHARS]
         if not query:
             return LiveLookupResult(())
 
         sources = self._sources()
-        records: list[_LiveRecord] = []
         degraded: list[str] = []
-        for source, breaker, fetch in sources:
-            try:
-                # 기본인자 바인딩 — 클로저가 루프 변수를 늦게 읽으면 셋 다 마지막 소스를 친다.
-                records.extend(breaker.call(lambda fetch=fetch: fetch(query)))
-            except SourceUnavailable as exc:
-                log.warning("live lookup source unavailable (%s): %s", source, exc)
-                degraded.append(source)
+
+        # **동시에 던지고 제출 순서대로 모은다.** 순차로 돌면 타임아웃 15초 × 브레이커의 기계
+        # 재시도 1회 × 소스 수 = 최악 90초가 사용자가 기다리는 경로에 얹힌다.
+        #
+        # 승자 우선순위(arXiv > S2 > OpenAlex)는 그대로다 — 그 규칙을 지키는 것은 호출 순서가
+        # 아니라 `_dedupe`가 `records` **리스트 순서**를 걷는 것이고, 아래 루프가 완료 순서가
+        # 아닌 제출 순서로 `extend`하므로 리스트가 순차 실행과 바이트째로 같다.
+        with ThreadPoolExecutor(max_workers=len(sources)) as pool:
+            futures = [
+                (name, pool.submit(_guarded, breaker, fetch, query))
+                for name, breaker, fetch in sources
+            ]
+            per_source: list[list[_LiveRecord]] = []
+            for name, future in futures:
+                rows = future.result()
+                if rows is None:
+                    degraded.append(name)
+                else:
+                    per_source.append(rows)
+            records = _interleave(per_source)
 
         if len(degraded) == len(sources):
             # **구성된 소스가 전부 죽었을 때만** 실패다(§7). "0건인데 한 소스가 죽었다"를
@@ -182,7 +180,6 @@ class LiveLookup:
                 continue
             out.append(
                 _LiveRecord(
-                    source="arxiv",
                     title=_clean(entry.findtext("atom:title", "", _ATOM_NS)),
                     abstract=_clean(entry.findtext("atom:summary", "", _ATOM_NS)),
                     arxiv_id=arxiv_id,
@@ -199,7 +196,7 @@ class LiveLookup:
             params={
                 "query": query,
                 "limit": self._per_source,
-                "fields": "title,abstract,year,externalIds",
+                "fields": "title,abstract,externalIds",
             },
             headers=headers,
         )
@@ -212,12 +209,10 @@ class LiveLookup:
             ids = item.get("externalIds") or {}
             out.append(
                 _LiveRecord(
-                    source="semantic_scholar",
                     title=title,
                     abstract=_clean(item.get("abstract")),
                     arxiv_id=_clean(ids.get("ArXiv")) or None,
                     doi=_clean(ids.get("DOI")).lower() or None,
-                    year=_as_year(item.get("year")),
                 )
             )
         return out
@@ -226,7 +221,7 @@ class LiveLookup:
         params = {
             "search": query,
             "per-page": self._per_source,
-            "select": "ids,doi,display_name,abstract_inverted_index,publication_year",
+            "select": "ids,doi,display_name,abstract_inverted_index",
         }
         if self._mailto:
             params["mailto"] = self._mailto  # polite pool — 더 높고 안정적인 한도
@@ -240,7 +235,6 @@ class LiveLookup:
             ids = item.get("ids") or {}
             out.append(
                 _LiveRecord(
-                    source="openalex",
                     title=title,
                     # OpenAlex는 초록을 **역색인**으로 준다(전문 재배포 제약). 복원하지 않으면
                     # 초록이 통째로 비고, 초록만 확보하는 이 도구에서 그것은 결과가 없는 것과
@@ -248,7 +242,6 @@ class LiveLookup:
                     abstract=_from_inverted_index(item.get("abstract_inverted_index")),
                     arxiv_id=_arxiv_id_from(ids.get("arxiv")),
                     doi=_bare_doi(item.get("doi")),
-                    year=_as_year(item.get("publication_year")),
                 )
             )
         return out
@@ -260,6 +253,34 @@ class LiveLookup:
         if self._contact:
             agent += f" (mailto:{self._contact})"
         return {"User-Agent": agent}
+
+
+def _interleave(per_source: list[list[_LiveRecord]]) -> list[_LiveRecord]:
+    """소스별 결과를 **번갈아** 담는다 — 앞 소스가 자리를 다 먹지 않게.
+
+    도구는 후보를 상위 `_MAX_HITS`(10)로 자르는데, 소스마다 8건씩 오므로 그냥 이어 붙이면
+    arXiv 8 + S2 2로 차고 **OpenAlex 결과는 모델에게 한 번도 안 보인다**. S2·OpenAlex를 더한
+    이유가 "arXiv에 없는 논문"인데 그 논문이 구조적으로 잘려 나가는 것이다.
+
+    승자 우선순위는 그대로다 — 같은 논문이 여러 소스에 있으면 `_dedupe`가 **먼저 오는 것**을
+    남기고, 번갈아 담아도 각 라운드에서 arXiv가 S2보다 앞이다.
+    """
+    out: list[_LiveRecord] = []
+    for row in zip_longest(*per_source):
+        out += [r for r in row if r is not None]
+    return out
+
+
+def _guarded(breaker: SourceBreaker, fetch: Any, query: str) -> list[_LiveRecord] | None:
+    """브레이커를 지나 한 소스를 친다 — 죽었으면 None. 예외는 **워커 안에서** 흡수한다.
+
+    `future.result()`로 새어 나가게 두면 한 소스의 장애가 다른 소스의 결과까지 버린다.
+    """
+    try:
+        return breaker.call(lambda: fetch(query))
+    except SourceUnavailable as exc:
+        log.warning("live lookup source unavailable: %s", exc)
+        return None
 
 
 # --- 정규화 · 중복 제거 ------------------------------------------------------------
@@ -283,13 +304,31 @@ def _dedupe(records: list[_LiveRecord]) -> tuple[PaperCandidate, ...]:
     return tuple(seen.values())
 
 
+# arXiv가 자기 논문에 붙이는 DataCite DOI. OpenAlex는 arXiv 사본을 이 DOI로만 실어 오는
+# 일이 잦아, 그냥 두면 같은 논문이 arXiv 사본과 따로 남는다.
+_ARXIV_DOI_PREFIX = "10.48550/arxiv."
+
+
 def _canonical_key(record: _LiveRecord) -> str:
-    if record.doi:
-        return f"doi:{record.doi}"
+    """**arXiv id 먼저**, 없으면 DOI.
+
+    처음에는 ingestion의 `canonical_key`를 따라 DOI를 앞에 뒀는데 **여기서는 틀렸다**:
+    arXiv 소스는 DOI를 아예 안 싣고 S2/OpenAlex는 출판된 논문에 대개 DOI를 싣는다. 그러면
+    같은 논문의 arXiv 사본은 `arxiv:` 키를, S2 사본은 `doi:` 키를 받아 **한 번도 안 접힌다**
+    (실측: 한 논문이 후보 세 건으로 남았다). 그 뒤는 조용히 나쁘다 — 모델은 한 논문을 세
+    출처로 보고, 승격이 두 번 돌고(각 20초 폴링), 색인 잡이 두 철자로 나가고, 같은 논문이
+    독립 근거로 두 번 인용될 수 있다.
+
+    ingestion이 DOI를 앞에 두는 것은 수확 경로에 arXiv 전용 레코드가 없기 때문이고, 여기는
+    그 전제가 다르다.
+    """
     if record.arxiv_id:
-        return f"arxiv:{_strip_version(record.arxiv_id.lower())}"
-    normalized = f"{_WS_RE.sub(' ', record.title).strip().lower()}|{record.year or ''}"
-    return "title:" + hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:24]
+        return f"arxiv:{_bare_arxiv(record.arxiv_id)}"
+    doi = (record.doi or "").lower()
+    if doi.startswith(_ARXIV_DOI_PREFIX):
+        # arXiv 사본이 DOI로만 실려 온 것 — id를 되찾아 arXiv 사본과 같은 키를 준다.
+        return f"arxiv:{_bare_arxiv(doi[len(_ARXIV_DOI_PREFIX):])}"
+    return f"doi:{doi}"
 
 
 def _as_candidate(record: _LiveRecord) -> PaperCandidate | None:
@@ -301,9 +340,13 @@ def _as_candidate(record: _LiveRecord) -> PaperCandidate | None:
     arXiv id가 없는 논문(학회·저널 전용)은 `doi:` 네임스페이스로 나른다. **arxiv.org id를
     지어내지 않는다**(무날조) — 그런 논문은 본문 승격 대상이 아니고 초록 범위로만 인용된다.
     """
+    from .tools import versioned_arxiv
+
     if record.arxiv_id:
-        bare = record.arxiv_id.strip()
-        versioned = bare if _has_version(bare) else f"{bare}v1"
+        versioned = versioned_arxiv(record.arxiv_id.strip())
+        if versioned is None:
+            # 문법에 안 맞는 id — 인용의 실재를 확인할 핸들이 없다.
+            return None
         paper_id = f"arxiv:{versioned}"
     elif record.doi:
         paper_id = f"doi:{record.doi}"
@@ -336,36 +379,45 @@ def _from_inverted_index(index: Any) -> str:
 
 
 def _arxiv_id_from(url: Any) -> str | None:
-    """OpenAlex는 arXiv를 URL로 준다(`https://arxiv.org/abs/2304.10557`)."""
-    match = _ARXIV_ID_RE.search(str(url or ""))
+    """OpenAlex는 arXiv를 URL로 준다(`https://arxiv.org/abs/2304.10557`).
+
+    문법은 `tools.ARXIV_ID_BODY` 하나를 쓴다. 두 벌로 뒀더니 **이미 갈려 있었다** —
+    이쪽만 대소문자를 안 받아 `HEP-TH/9901001`을 실은 레코드가 `arxiv_id=None`이 되고,
+    `doi:`로 실려 승격도 색인도 안 되면서 사용자에게는 "이 논문은 arXiv에 없다"는 확신에
+    찬 오답이 나갔다. 예외도 로그도 없다.
+    """
+    from .tools import ARXIV_ID_SEARCH
+
+    match = ARXIV_ID_SEARCH.search(str(url or ""))
     return match.group(0) if match else None
 
 
+_DOI_PREFIX = re.compile(r"^(?:https?://)?(?:dx\.)?doi\.org/")
+
+
 def _bare_doi(doi: Any) -> str | None:
-    """OpenAlex의 `doi`는 `https://doi.org/10.x/y` 형태다 — 접두어를 벗겨 S2의 값과 만나게 한다."""
+    """OpenAlex의 `doi`는 `https://doi.org/10.x/y` 형태다 — 접두어를 벗겨 S2의 값과 만나게 한다.
+
+    **맨 앞에서만 벗긴다.** 담기는 것이 URL이 아니라 식별자이므로, 문자열 어디에 있든
+    자르면 벗기려던 접두어가 아니라 DOI 본문을 자를 수 있다 — 그러면 중복 제거 키가 갈려
+    같은 논문이 두 건으로 남는다.
+    """
     text = str(doi or "").strip().lower()
     if not text:
         return None
-    return text.rsplit("doi.org/", 1)[-1] if "doi.org/" in text else text
+    return _DOI_PREFIX.sub("", text, count=1)
 
 
-def _has_version(arxiv_id: str) -> bool:
-    tail = arxiv_id.rsplit("/", 1)[-1]
-    base, marker, suffix = tail.rpartition("v")
-    return bool(base and marker and suffix.isdigit())
-
-
-def _strip_version(arxiv_id: str) -> str:
-    base, marker, suffix = arxiv_id.rpartition("v")
-    return base if base and marker and suffix.isdigit() else arxiv_id
-
-
-def _as_year(value: Any) -> int | None:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
+def _bare_arxiv(arxiv_id: str) -> str:
+    """버전을 뗀 id — 같은 논문의 v1과 v3이 한 건으로 접히게 한다."""
+    parsed = parse_record_ref(arxiv_id.lower())
+    return parsed[0] if parsed else arxiv_id.lower()
 
 
 def _clean(value: Any) -> str:
-    return _WS_RE.sub(" ", str(value or "")).strip()
+    """공백 정규화 — **게이트가 대조하는 그 함수**를 쓴다(`domain.projection.normalize`).
+
+    여기서 만드는 초록은 초록 범위 인용의 대조 **반대편**이다. 두 벌로 두면 갈리는 날
+    초록 인용이 전부 떨어지고, 그 실패는 "모델이 초록에 없는 말을 했다"로 보인다.
+    """
+    return normalize(str(value or ""))

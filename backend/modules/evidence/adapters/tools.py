@@ -43,7 +43,6 @@ from ..ports.tools import (
     ToolResult,
     ToolSpec,
 )
-from .live_sources import LiveLookupResult
 
 __all__ = [
     "CorpusSearchTool",
@@ -52,7 +51,10 @@ __all__ = [
     "LiveLookupTool",
     "ReadPaperTool",
     "ViewFigureTool",
+    "ARXIV_ID_BODY",
+    "ARXIV_ID_SEARCH",
     "promotable",
+    "versioned_arxiv",
 ]
 
 log = logging.getLogger("docsuri.evidence.tools")
@@ -161,15 +163,20 @@ class CorpusSearchTool:
                 "코퍼스 검색을 쓸 수 없다 — 같은 검색을 반복하지 말고 "
                 "live_lookup으로 진행하거나 확보한 논문에서 근거를 추출하라",
             )
-        result = _register(self._state, hits[:_MAX_HITS], PaperOrigin.CORPUS, TOOL_CORPUS_SEARCH)
-        if years is not None and not hits:
+        return _register(
+            self._state,
+            hits[:_MAX_HITS],
+            PaperOrigin.CORPUS,
+            TOOL_CORPUS_SEARCH,
             # 0건이 "그런 논문이 없다"인지 "연도로 걸러졌다"인지 모델이 알아야 다음 수가
             # 달라진다. 안 알리면 같은 질의를 연도만 붙인 채 반복한다.
-            result.content["note"] = (
+            empty_note=(
                 f"연도 제약({_year_label(years)})에 맞는 논문이 없다 — 범위를 넓히거나 "
                 "제약 없이 다시 검색하라."
             )
-        return result
+            if years is not None
+            else None,
+        )
 
 
 class LiveLookupTool:
@@ -204,9 +211,14 @@ class LiveLookupTool:
         if not query:
             return _fail("live_lookup: empty query", "query는 필수다 — 검색어를 넣어라")
         try:
-            outcome = self._lookup(query)
+            outcome = self._port.lookup(query)
         except SearchUnavailable as exc:
             log.warning("live lookup unavailable: %s", exc)
+            # **완전 실패야말로 화면이 밝혀야 하는 경우다.** 부분 저하만 표시하고 전면 실패는
+            # 침묵하면 정확히 거꾸로다 — 조회가 통째로 죽은 턴이 "그런 논문이 없다"로 보이고,
+            # 사용자는 "다시 물어보기" 대신 "주제 넓히기"를 한다. 계약(`liveLookupDegraded`)의
+            # 설명도 "셋 다 죽은 턴도 true"라고 적혀 있다.
+            self._state.live_lookup_degraded = True
             return _fail(
                 "live_lookup: unavailable",
                 "실시간 조회를 쓸 수 없다 — 코퍼스 검색과 확보한 논문으로 진행하라",
@@ -217,24 +229,25 @@ class LiveLookupTool:
         if outcome.degraded_sources:
             # 어느 소스가 빠졌는지 알려야 모델이 "이게 전부"라고 믿지 않는다(novelty 실측).
             # 마감도 같은 사실을 확인 범위 줄에 싣는다(§7) — 그쪽은 상태에서 읽는다.
-            self._state.live_lookup_degraded.update(outcome.degraded_sources)
+            self._state.live_lookup_degraded = True
             result.content["degradedSources"] = list(outcome.degraded_sources)
         return result
 
-    def _lookup(self, query: str):
-        """포트가 저하 정보를 실어 주면 그것을 쓰고, 아니면 후보만 받는다.
-
-        `search()`가 포트 계약이고 `lookup()`은 세 소스 어댑터의 확장이다 — 대역이나 단일
-        소스 구현을 그대로 꽂을 수 있어야 하므로 여기서 갈린다."""
-        lookup = getattr(self._port, "lookup", None)
-        if lookup is not None:
-            return lookup(query)
-        return LiveLookupResult(tuple(self._port.search(query)))
-
 
 def _register(
-    state: LoopState, hits: tuple[Any, ...], origin: PaperOrigin, tool: str
+    state: LoopState,
+    hits: tuple[Any, ...],
+    origin: PaperOrigin,
+    tool: str,
+    *,
+    empty_note: str | None = None,
 ) -> ToolResult:
+    """검색 결과를 상태에 심고 모델이 볼 결과를 만든다.
+
+    `empty_note`는 0건일 때 기본 안내를 **대신한다**. 호출자가 결과를 만든 뒤 `content`를
+    덮어쓰던 동안, 연도 제약이 걸린 검색에서는 "phrase 모드였다면 mode를 빼라"는 안내가
+    통째로 사라지고 있었다 — 노트를 쓰는 자리가 둘이면 하나가 다른 하나를 지운다.
+    """
     for candidate in hits:
         state.candidates_seen.add(candidate.paper_id)
         if state.handle(candidate.paper_id) is None:
@@ -250,7 +263,8 @@ def _register(
             ok=True,
             content={
                 "hits": [],
-                "note": (
+                "note": empty_note
+                or (
                     "결과가 없다 — 다른 검색어를 시도하라. phrase 모드였다면 "
                     "mode를 빼고 의미 검색으로 다시 하라."
                 ),
@@ -372,10 +386,34 @@ class FetchPaperTool:
 # 없는 논문을 `doi:` 네임스페이스로 실어 오므로 그 경계가 필요하다. **공개 이름인 이유**는
 # 백그라운드 색인(§2.6 4단계)도 같은 판정을 쓰기 때문이다 — 두 곳이 각자 정규식을 들면
 # 한쪽만 고쳐져 못 만드는 잡이 큐로 간다.
-_PROMOTABLE_ID = re.compile(
-    r"^(?:arxiv:)?(?:\d{4}\.\d{4,5}|[a-z-]{2,}(?:\.[A-Z]{2})?/\d{7})(?:v\d+)?$",
-    re.IGNORECASE,
-)
+# arXiv id 문법 **한 벌**. 두 벌로 뒀더니 이미 갈려 있었다(한쪽만 IGNORECASE) — 대문자
+# 구식 id가 한쪽에서만 인식돼 승격도 색인도 조용히 빠졌다. 조각을 공유하고 앵커만 다르게 쓴다.
+ARXIV_ID_BODY = r"(?:\d{4}\.\d{4,5}|[a-zA-Z-]{2,}(?:\.[A-Za-z]{2})?/\d{7})(?:v\d+)?"
+# 문자열 **안에서** 찾는다 — OpenAlex가 arXiv를 URL로 주므로 그쪽이 쓴다.
+ARXIV_ID_SEARCH = re.compile(ARXIV_ID_BODY)
+_PROMOTABLE_ID = re.compile(rf"^(?:arxiv:)?{ARXIV_ID_BODY}$", re.IGNORECASE)
+
+
+def versioned_arxiv(paper_id: str) -> str | None:
+    """`arxiv:2304.10557` → `2304.10557v1`. arXiv id가 아니면 None.
+
+    버전을 박는 이유는 초록 범위 인용의 사후 감사가 **그 버전을 다시 가져와 대조**하는
+    것이기 때문이다(FD 게이트 Q5=A). U1의 `arxivRef`도 버전이 필수다.
+
+    **한 곳에만 둔다.** 실시간 조회가 후보 id를 만들 때와 색인 큐가 잡을 만들 때가 같은
+    규칙인데, 두 벌로 두면 같은 논문이 두 철자로 나르고 중복 제거 창이 그 갈린 철자를
+    키로 쓴다.
+    """
+    # `promotable`이 다듬은 뒤 재는데 여기서 안 다듬으면 통과한 것과 분해하는 것이 갈린다 —
+    # 공백이 낀 id가 `  2304.10557  v1`로 큐에 실린다. 두 판정이 같은 문자열을 봐야 한다.
+    paper_id = paper_id.strip()
+    if not promotable(paper_id):
+        return None
+    parsed = parse_record_ref(paper_id)
+    if parsed is None:
+        return None
+    bare, version = parsed
+    return f"{bare}v{version or 1}"
 
 
 def promotable(paper_id: str) -> bool:

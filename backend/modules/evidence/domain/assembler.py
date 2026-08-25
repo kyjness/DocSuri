@@ -78,7 +78,7 @@ def assemble(
         candidates=state.candidates,
         stoppedReason=_STOPPED_BY_REASON.get(reason, StoppedReason.partial_failure),
         # 소스 이름은 싣지 않는다(SEC-9) — 사용자가 할 수 있는 일은 어느 쪽이 죽었든 같다.
-        liveLookupDegraded=bool(state.live_lookup_degraded) or None,
+        liveLookupDegraded=state.live_lookup_degraded or None,
     )
     ordered = comparison_order(items)
     # `answer` 노드가 만든 판단이 있으면 그것이 답이다. 없으면(노드가 안 도는 경로 —

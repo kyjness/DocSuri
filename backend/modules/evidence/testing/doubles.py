@@ -13,7 +13,7 @@ from ..ports.llm import (
     TerminationProposal,
 )
 
-__all__ = ["ScriptedAnswer", "ScriptedLlm"]
+__all__ = ["NoHits", "NoItems", "ScriptedAnswer", "ScriptedLlm", "ScriptedSearch"]
 
 
 @dataclass
@@ -73,3 +73,48 @@ class ScriptedAnswer:
             )
         sentences = self.script.pop(0) if len(self.script) > 1 else self.script[0]
         return AnswerDraft(sentences=sentences, cost_estimate_usd=self.cost)
+
+
+@dataclass
+class ScriptedSearch:
+    """`CorpusSearchPort` 대역 — 정한 후보를 돌려주고 받은 인자를 남긴다.
+
+    포트 대역이 테스트 파일마다 복사돼 있었다(추출 3벌·검색 3벌). PR 3이 정확히 그 이유로
+    이 패키지를 만들었는데 PR 4의 것들이 안 들어왔고, 대가는 그 diff가 증명했다 — `years=`
+    인자를 더하느라 네 대역을 따로 고쳤다.
+    """
+
+    hits: tuple[Any, ...] = ()
+    error: Exception | None = None
+    queries: list[tuple[str, bool]] = field(default_factory=list)
+    years: list[Any] = field(default_factory=list)
+
+    def search(self, query: str, *, phrase: bool = False, years: Any = None) -> tuple[Any, ...]:
+        self.queries.append((query, phrase))
+        self.years.append(years)
+        if self.error:
+            raise self.error
+        return tuple(self.hits)
+
+
+class NoHits(ScriptedSearch):
+    """검색은 돌지만 결과가 없다 — 바닥 2가 묻는 것은 찾았는가가 아니라 찾아봤는가다."""
+
+
+@dataclass
+class NoItems:
+    """`EvidenceExtractionPort` 대역 — 정한 **검증 전** 원시 항목을 돌려준다(기본은 없음).
+
+    게이트가 판정할 몫을 대역이 미리 걸러내면 판정 지점이 둘이 된다 — 그래서 원시 dict를
+    그대로 돌려주고, 무엇이 통과하는지는 실제 게이트가 정한다.
+    """
+
+    items: list[Any] = field(default_factory=list)
+    error: Exception | None = None
+    calls: list[dict[str, Any]] = field(default_factory=list)
+
+    def extract(self, *, topic: str, focus: str, papers: tuple[Any, ...]) -> list[Any]:
+        self.calls.append({"topic": topic, "focus": focus, "papers": papers})
+        if self.error:
+            raise self.error
+        return self.items

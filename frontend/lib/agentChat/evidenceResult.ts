@@ -212,22 +212,26 @@ export function examinedRangeMessage(coverage: EvidenceCoverage): string | null 
     stoppedReason !== 'sufficient' &&
     typeof examined === 'number' &&
     typeof candidates === 'number' &&
-    candidates > examined;
+    candidates > examined
+      ? truncationSentence(stoppedReason, examined, candidates)
+      : null;
 
-  if (!truncated) return live;
+  // 두 사실이 독립이라 각각 있을 수도, 함께 있을 수도, 둘 다 없을 수도 있다.
+  const parts = [truncated, live].filter(Boolean);
+  return parts.length ? parts.join(' ') : null;
+}
 
+function truncationSentence(
+  stoppedReason: NonNullable<EvidenceCoverage['stoppedReason']>,
+  examined: number,
+  candidates: number,
+): string {
   if (stoppedReason === 'budget_exhausted') {
-    return join(`관련 논문 ${candidates}편 중 ${examined}편까지 확인했습니다. 이어서 확인할까요?`, live);
+    return `관련 논문 ${candidates}편 중 ${examined}편까지 확인했습니다. 이어서 확인할까요?`;
   }
   if (stoppedReason === 'cancelled') {
-    return join(`취소됨 · 후보 ${candidates}편 중 ${examined}편 확인`, live);
+    return `취소됨 · 후보 ${candidates}편 중 ${examined}편 확인`;
   }
-  return join(
-    `관련 논문 ${candidates}편 중 ${examined}편을 확인했습니다. 일부 논문은 본문을 가져오지 못했습니다.`,
-    live,
-  );
+  return `관련 논문 ${candidates}편 중 ${examined}편을 확인했습니다. 일부 논문은 본문을 가져오지 못했습니다.`;
 }
 
-function join(message: string, live: string | null): string {
-  return live ? `${message} ${live}` : message;
-}
