@@ -213,7 +213,11 @@ def summarise(reports: list[Layer1Report]) -> dict[str, object]:
 
     return {
         "cases": len(reports),
-        "violations": [v for r in reports for v in r.violations],
+        # **어느 문항인지를 함께 싣는다.** 문항 이름 없이 사유만 모으면 같은 문장이 여러 줄
+        # 나오고(2026-08-25 실행: 같은 위반이 2건) 어느 턴을 열어봐야 하는지가 사라진다 —
+        # 위반을 세기만 하고 못 고치는 상태다. 이 저장소가 반복해서 데인 "카운터는 있는데
+        # 대상이 없다"의 같은 모양이다.
+        "violations": [f"[{r.case}] {v}" for r in reports for v in r.violations],
         "abstain_rate": mean([1.0 if r.abstained else 0.0 for r in reports]),
         # **`is not None`이어야 한다.** 진리값으로 거르면 0.0이 평균에서 빠지는데, 하필
         # 그 0.0이 최선의 경우다 — 종합 문장이 하나도 없는 턴, 인용이 하나도 실재하지 않는

@@ -30,7 +30,7 @@ from backend.modules.evidence.eval.golden_set import (
     labelled_cases,
     pending_review,
 )
-from backend.modules.evidence.eval.layer1 import summarise
+from backend.modules.evidence.eval.layer1 import Layer1Report, summarise
 from backend.modules.evidence.models import to_turn_result
 from backend.modules.evidence.ports.llm import (
     COUNTER_REQUIRED_KINDS,
@@ -393,3 +393,23 @@ def test_the_floor_yields_when_no_stance_tool_is_affordable():
     outcome = run_loop(state, deps)
 
     assert outcome.reason is TerminationReason.SUFFICIENT
+
+
+def test_a_summarised_violation_names_the_case_it_came_from():
+    """사유만 모으면 같은 문장이 여러 줄 나오고 어느 턴을 열어봐야 하는지가 사라진다 —
+    2026-08-25 실행에서 같은 위반 2건이 그렇게 나왔고, 세기만 하고 못 고치는 상태였다."""
+    reports = [
+        Layer1Report(
+            case="alpha", abstained=False, claims=1, violations=["반대 측 탐색이 0회다"]
+        ),
+        Layer1Report(
+            case="beta", abstained=False, claims=1, violations=["반대 측 탐색이 0회다"]
+        ),
+    ]
+
+    summary = summarise(reports)
+
+    assert summary["violations"] == [
+        "[alpha] 반대 측 탐색이 0회다",
+        "[beta] 반대 측 탐색이 0회다",
+    ]
