@@ -23,6 +23,16 @@ SSH=(ssh -i "$KEY" -o StrictHostKeyChecking=accept-new "ec2-user@$HOST")
   exit 1
 }
 
+# **무엇이 배포됐는지를 박스에 남긴다.** rsync는 워킹트리를 그대로 나르므로 `.git`이 안 가고,
+# 박스만 봐서는 어느 커밋인지 알 방법이 전혀 없다. 커밋 해시와 더티 여부를 파일 하나로
+# 남겨 두면 "지금 뜬 것이 무엇인가"에 답할 수 있다 — 배포가 롤백보다 먼저 필요한 정보다.
+REV="$(git -C "$REPO" rev-parse --short HEAD)"
+# **추적 중인 변경만 센다.** 미추적 파일(로컬 리포트·스크래치)까지 세면 매 배포가 dirty로
+# 찍혀 표시가 아무 뜻도 없어진다 — 진짜 재현 불가와 구분이 안 되는 것이 목적에 반한다.
+DIRTY="$(git -C "$REPO" status --porcelain --untracked-files=no | head -c 1)"
+[ -n "$DIRTY" ] && REV="$REV+dirty"
+echo "==> 배포 리비전: $REV"
+
 echo "==> 소스 전송"
 # `--delete`는 쓰지 않는다: 박스의 `.env.prod`와 볼륨 데이터를 지울 수 있다.
 # 제외 목록은 **박스에서 쓸 일이 없는 것**이다 — 로컬 코퍼스가 딸려 가면 디스크가 찬다.
@@ -37,6 +47,8 @@ rsync -az --info=stats1 \
   --exclude 'ops/deploy/terraform' \
   -e "ssh -i $KEY -o StrictHostKeyChecking=accept-new" \
   "$REPO/" "ec2-user@$HOST:$REMOTE/"
+
+"${SSH[@]}" "printf '%s\\n%s\\n' \"$REV\" \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" > $REMOTE/DEPLOYED_REV"
 
 echo "==> 빌드·기동"
 "${SSH[@]}" "cd $REMOTE/ops/deploy && docker compose -f compose.prod.yml --env-file .env.prod up -d --build"
