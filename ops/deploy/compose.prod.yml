@@ -1,0 +1,119 @@
+# 데모 배포(로드맵 ⑪) — 8 GB 박스 한 대. 로컬 `backend/docker-compose.yml`을 이관한 것이고,
+# 다른 점만 여기에 적는다.
+#
+# **로컬에 있고 여기 없는 것**
+# - `s3proxy` — 실 S3를 쓴다. 24 GB 자산을 박스 디스크에 얹으면 색인 몫을 먹는다.
+# - `grobid` — 파싱 스택을 안 올린다(질문지 Q7=B). 색인은 로컬에서 만들어 올린다.
+# - `elasticmq` — SQS 대역이 필요 없다. 배포에는 색인 큐도, 그것을 소비할 워커도 없다.
+#
+# **로컬에 없고 여기 있는 것**
+# - `caddy` — TLS 종단. Let's Encrypt 인증서를 자동으로 받고 갱신한다.
+# - `frontend`·`backend` — 로컬은 호스트에서 직접 띄우지만(`./dev.sh`) 여기서는 컨테이너다.
+#
+# **포트를 밖으로 내는 것은 caddy뿐이다.** 나머지는 전부 내부 네트워크로만 닿는다 —
+# OpenSearch가 보안 플러그인을 끈 채로 돌기 때문에, 9200이 한 번 새면 인증 없이 코퍼스가
+# 통째로 읽힌다. 방화벽(`terraform/lightsail.tf`)과 여기, 두 겹으로 막는다.
+
+name: docsuri
+
+services:
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data      # 인증서 — 이 볼륨이 날아가면 재발급 한도에 걸릴 수 있다
+      - caddy-config:/config
+    environment:
+      DOCSURI_DOMAIN: ${DOCSURI_DOMAIN:?set DOCSURI_DOMAIN}
+    depends_on:
+      - frontend
+      - backend
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: frontend/Dockerfile
+      args:
+        # `NEXT_PUBLIC_*`는 **빌드 시점에 박힌다.** 런타임 environment로 주면 아무 일도
+        # 일어나지 않고 화면만 조용히 다르게 뜬다 — Novelty 게이트가 정확히 그 자리다.
+        NEXT_PUBLIC_DOCSURI_REAL_API: "1"
+        NEXT_PUBLIC_DOCSURI_EVIDENCE_AGENT_ENABLED: "1"
+        NEXT_PUBLIC_DOCSURI_NOVELTY_ENABLED: ""
+    restart: unless-stopped
+    expose:
+      - "3000"
+
+  backend:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    env_file: .env.prod
+    expose:
+      - "8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      opensearch:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: docsuri
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: docsuri_deploy
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U docsuri -d docsuri_deploy"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - redisdata:/data
+
+  opensearch:
+    image: opensearchproject/opensearch:2.19.0
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      DISABLE_SECURITY_PLUGIN: "true"
+      # 힙을 1 GB로 둔다. 색인은 `on_disk` 모드라 k-NN 그래프가 **RAM에 상주하지 않고**
+      # (`graph_memory_usage: 0`) 실제 제약은 디스크·페이지캐시다 — 힙을 키우면 페이지캐시가
+      # 줄어 오히려 느려진다. 편수 천장 약 3,500편의 근거가 그 실측(편당 1.73 MB)이다.
+      OPENSEARCH_JAVA_OPTS: "-Xms1g -Xmx1g"
+      bootstrap.memory_lock: "true"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - osdata:/usr/share/opensearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+volumes:
+  pgdata:
+  osdata:
+  redisdata:
+  caddy-data:
+  caddy-config:

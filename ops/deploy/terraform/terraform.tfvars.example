@@ -1,0 +1,10 @@
+# cp terraform.tfvars.example terraform.tfvars 한 뒤 채운다. tfvars는 커밋하지 않는다.
+
+# 배포용 SSH 공개키 본문. 새로 만든다 — puppytalk 키를 재사용하지 않는다.
+#   ssh-keygen -t ed25519 -C docsuri-deploy -f ~/.ssh/docsuri_deploy
+ssh_public_key = "ssh-ed25519 AAAA... docsuri-deploy"
+
+# 집·사무실 IP가 고정이라면 좁힌다. 배포가 노트북에서 나가므로 기본은 전체 공개다.
+# ssh_allowed_cidrs = ["203.0.113.4/32"]
+
+# domain_name = "docsuri.shop"
