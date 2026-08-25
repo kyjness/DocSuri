@@ -252,7 +252,7 @@ export function agentReducer(state: AgentChatState, action: AgentChatAction): Ag
 export function createDraftSession(mode: AgentMode, createdAt = new Date().toISOString()) {
   return {
     id: `agent-${mode}-${Date.now()}`,
-    title: mode === 'evidence' ? 'Research' : 'Novelty',
+    title: mode === 'evidence' ? 'Evidence' : 'Novelty',
     mode,
     state: 'idle' as const,
     updatedAt: createdAt,

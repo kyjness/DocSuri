@@ -57,7 +57,7 @@ import type {
 import styles from './AgentChatScreen.module.css';
 
 const MODE_LABEL: Record<AgentMode, string> = {
-  evidence: 'Research',
+  evidence: 'Evidence',
   novelty: 'Novelty',
 };
 
@@ -74,11 +74,11 @@ const AGENT_REFRESH_MS = 1000;
 const AGENT_REPLY_WAIT_MS = 120_000;
 const STREAM_CHAR_MS = 8;
 const SSE_FETCH_TIMEOUT_MS = 5000;
-const RESEARCH_MODE_ENABLED =
+const EVIDENCE_MODE_ENABLED =
   !process.env.NEXT_PUBLIC_DOCSURI_REAL_API ||
   process.env.NEXT_PUBLIC_DOCSURI_EVIDENCE_AGENT_ENABLED === '1';
 // 데모 배포에서는 Novelty를 내보내지 않는다(로드맵 ⑪ — ⑩-2 재정의를 하지 않기로 했고,
-// 지금 노출된 것은 그 재정의 이전의 v2다). RESEARCH와 **같은 모양**으로 건다: 목 전송
+// 지금 노출된 것은 그 재정의 이전의 v2다). Evidence와 **같은 모양**으로 건다: 목 전송
 // (로컬·테스트)에서는 그대로 보이고, 실 API를 붙인 배포에서만 명시적으로 켜야 보인다.
 // 반대로 걸면(기본 노출) 배포에서 env 하나를 빠뜨리는 것이 곧 노출이 되는데, 그 실패는
 // 배포본을 열어보기 전까지 아무 데도 안 보인다.
@@ -384,7 +384,7 @@ export function AgentChatScreen() {
       {!state.mode ? (
         <AgentModePicker
           onSelect={startMode}
-          researchEnabled={RESEARCH_MODE_ENABLED}
+          evidenceEnabled={EVIDENCE_MODE_ENABLED}
           noveltyEnabled={NOVELTY_MODE_ENABLED}
         />
       ) : null}
@@ -505,11 +505,11 @@ function readAttachmentText(file: File): Promise<string> {
 
 function AgentModePicker({
   onSelect,
-  researchEnabled,
+  evidenceEnabled,
   noveltyEnabled,
 }: {
   onSelect: (mode: AgentMode) => void;
-  researchEnabled: boolean;
+  evidenceEnabled: boolean;
   noveltyEnabled: boolean;
 }) {
   return (
@@ -517,12 +517,12 @@ function AgentModePicker({
       <button
         type="button"
         onClick={() => onSelect('evidence')}
-        disabled={!researchEnabled}
-        aria-label={researchEnabled ? 'Research' : 'Research 준비 중'}
+        disabled={!evidenceEnabled}
+        aria-label={evidenceEnabled ? 'Evidence' : 'Evidence 준비 중'}
         data-mode="evidence"
         data-testid="agent-mode-evidence"
       >
-        <strong>Research</strong>
+        <strong>Evidence</strong>
         <span>질문을 던지면 논문 근거로 판단해 답해요</span>
         <span className={styles.modeHint}>판단 · 근거표 · 논문 간 상충까지</span>
       </button>
@@ -534,7 +534,7 @@ function AgentModePicker({
           data-testid="agent-mode-novelty"
         >
           <strong>Novelty</strong>
-          <span>Research로 근거부터 자동 확인한 뒤, 차별화 아이디어를 제안해요</span>
+          <span>Evidence로 근거부터 자동 확인한 뒤, 차별화 아이디어를 제안해요</span>
           <span className={styles.modeHint}>유사 연구 비교표 · 실험 아이디어 · 실험 계획까지</span>
         </button>
       ) : null}

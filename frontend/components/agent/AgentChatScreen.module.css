@@ -19,9 +19,9 @@
 
 .shell {
   --agent-radius: 8px;
-  --agent-chat-research-bg: linear-gradient(135deg, #e6eef1, #eef2f5);
+  --agent-chat-evidence-bg: linear-gradient(135deg, #e6eef1, #eef2f5);
   --agent-chat-novelty-bg: linear-gradient(135deg, #f3ebe5, #f4efea);
-  --agent-research-border: rgba(126, 180, 210, 0.34);
+  --agent-evidence-border: rgba(126, 180, 210, 0.34);
   --agent-novelty-border: rgba(212, 168, 132, 0.34);
   position: relative;
   flex: 1;
@@ -39,7 +39,7 @@
 }
 
 .shell[data-mode='evidence'] {
-  background: var(--agent-chat-research-bg);
+  background: var(--agent-chat-evidence-bg);
 }
 
 .shell[data-mode='novelty'] {
@@ -114,8 +114,8 @@
   --agent-picker-border: color-mix(in srgb, var(--color-border) 70%, white);
   --agent-card-shadow: 0 10px 24px rgba(15, 23, 42, 0.07);
   --agent-card-shadow-hover: 0 14px 28px rgba(15, 23, 42, 0.1);
-  --agent-research-bg: linear-gradient(135deg, #eef8fb, #f7fbff);
-  --agent-research-border: rgba(126, 180, 210, 0.34);
+  --agent-evidence-bg: linear-gradient(135deg, #eef8fb, #f7fbff);
+  --agent-evidence-border: rgba(126, 180, 210, 0.34);
   --agent-novelty-bg: linear-gradient(135deg, #fff5ee, #fffaf6);
   --agent-novelty-border: rgba(212, 168, 132, 0.34);
 
@@ -154,8 +154,8 @@
 }
 
 .modePicker button[data-mode='evidence'] {
-  border-color: var(--agent-research-border);
-  background: var(--agent-research-bg);
+  border-color: var(--agent-evidence-border);
+  background: var(--agent-evidence-bg);
 }
 
 .modePicker button[data-mode='novelty'] {
@@ -180,9 +180,9 @@
 
 @media (prefers-color-scheme: dark) {
   .shell {
-    --agent-chat-research-bg: linear-gradient(135deg, #10181c, #11161a);
+    --agent-chat-evidence-bg: linear-gradient(135deg, #10181c, #11161a);
     --agent-chat-novelty-bg: linear-gradient(135deg, #1b1715, #171414);
-    --agent-research-border: rgba(116, 197, 222, 0.28);
+    --agent-evidence-border: rgba(116, 197, 222, 0.28);
     --agent-novelty-border: rgba(224, 171, 123, 0.28);
   }
 
@@ -191,8 +191,8 @@
     --agent-picker-border: rgba(132, 149, 170, 0.18);
     --agent-card-shadow: 0 12px 26px rgba(0, 0, 0, 0.28);
     --agent-card-shadow-hover: 0 16px 32px rgba(0, 0, 0, 0.34);
-    --agent-research-bg: linear-gradient(135deg, #19323b, #142831);
-    --agent-research-border: rgba(116, 197, 222, 0.28);
+    --agent-evidence-bg: linear-gradient(135deg, #19323b, #142831);
+    --agent-evidence-border: rgba(116, 197, 222, 0.28);
     --agent-novelty-bg: linear-gradient(135deg, #3a2a22, #30231f);
     --agent-novelty-border: rgba(224, 171, 123, 0.28);
   }
@@ -209,16 +209,16 @@
   --agent-picker-border: color-mix(in srgb, var(--color-border) 70%, white);
   --agent-card-shadow: 0 10px 24px rgba(15, 23, 42, 0.07);
   --agent-card-shadow-hover: 0 14px 28px rgba(15, 23, 42, 0.1);
-  --agent-research-bg: linear-gradient(135deg, #eef8fb, #f7fbff);
-  --agent-research-border: rgba(126, 180, 210, 0.34);
+  --agent-evidence-bg: linear-gradient(135deg, #eef8fb, #f7fbff);
+  --agent-evidence-border: rgba(126, 180, 210, 0.34);
   --agent-novelty-bg: linear-gradient(135deg, #fff5ee, #fffaf6);
   --agent-novelty-border: rgba(212, 168, 132, 0.34);
 }
 
 :global(:root[data-theme='light']) .shell {
-  --agent-chat-research-bg: linear-gradient(135deg, #e6eef1, #eef2f5);
+  --agent-chat-evidence-bg: linear-gradient(135deg, #e6eef1, #eef2f5);
   --agent-chat-novelty-bg: linear-gradient(135deg, #f3ebe5, #f4efea);
-  --agent-research-border: rgba(126, 180, 210, 0.34);
+  --agent-evidence-border: rgba(126, 180, 210, 0.34);
   --agent-novelty-border: rgba(212, 168, 132, 0.34);
 }
 
@@ -227,16 +227,16 @@
   --agent-picker-border: rgba(132, 149, 170, 0.18);
   --agent-card-shadow: 0 12px 26px rgba(0, 0, 0, 0.28);
   --agent-card-shadow-hover: 0 16px 32px rgba(0, 0, 0, 0.34);
-  --agent-research-bg: linear-gradient(135deg, #19323b, #142831);
-  --agent-research-border: rgba(116, 197, 222, 0.28);
+  --agent-evidence-bg: linear-gradient(135deg, #19323b, #142831);
+  --agent-evidence-border: rgba(116, 197, 222, 0.28);
   --agent-novelty-bg: linear-gradient(135deg, #3a2a22, #30231f);
   --agent-novelty-border: rgba(224, 171, 123, 0.28);
 }
 
 :global(:root[data-theme='dark']) .shell {
-  --agent-chat-research-bg: linear-gradient(135deg, #10181c, #11161a);
+  --agent-chat-evidence-bg: linear-gradient(135deg, #10181c, #11161a);
   --agent-chat-novelty-bg: linear-gradient(135deg, #1b1715, #171414);
-  --agent-research-border: rgba(116, 197, 222, 0.28);
+  --agent-evidence-border: rgba(116, 197, 222, 0.28);
   --agent-novelty-border: rgba(224, 171, 123, 0.28);
 }
 
@@ -849,8 +849,8 @@
 }
 
 .sessionRow[data-mode='evidence'] {
-  border-color: var(--agent-research-border);
-  background: var(--agent-chat-research-bg);
+  border-color: var(--agent-evidence-border);
+  background: var(--agent-chat-evidence-bg);
 }
 
 .sessionRow[data-mode='novelty'] {

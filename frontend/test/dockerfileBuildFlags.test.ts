@@ -6,7 +6,7 @@
  * 전송이라 초록이며** 화면을 열기 전까지 아무 데도 안 보인다.
  *
  * 실제로 갈려 있었다(2026-08-25 발견): Dockerfile이 `..._RESEARCH_AGENT_ENABLED`를 세우는데
- * 읽는 쪽은 `..._EVIDENCE_AGENT_ENABLED`라, real API 이미지가 **Research 비활성**으로
+ * 읽는 쪽은 `..._EVIDENCE_AGENT_ENABLED`라, real API 이미지가 **Evidence 비활성**으로
  * 빌드되고 있었다 — 모드 선택 버튼이 disabled로 뜨는 상태다.
  */
 import { describe, expect, it } from 'vitest';

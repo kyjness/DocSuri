@@ -251,7 +251,7 @@ function ensureSession(id: string, mode: AgentMode, now: string): AgentSessionSn
     mockLoadAgentSession(id) ?? {
       session: {
         id,
-        title: mode === 'evidence' ? '새 Research 세션' : '새 Novelty 세션',
+        title: mode === 'evidence' ? '새 Evidence 세션' : '새 Novelty 세션',
         mode,
         state: 'idle',
         updatedAt: now,
@@ -318,7 +318,7 @@ function responseFor(mode: AgentMode, degraded: boolean, attachmentCount: number
 function titleFrom(content: string, mode: AgentMode): string {
   const cleaned = content.trim().replace(/\s+/g, ' ').slice(0, 24);
   if (cleaned) return cleaned;
-  return mode === 'evidence' ? '새 Research 세션' : '새 Novelty 세션';
+  return mode === 'evidence' ? '새 Evidence 세션' : '새 Novelty 세션';
 }
 
 function clone<T>(value: T): T {

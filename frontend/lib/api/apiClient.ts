@@ -412,7 +412,7 @@ function toEvidenceTurnBody(req: AgentSendMessageRequest, sessionId: string | nu
     process.env.NEXT_PUBLIC_DOCSURI_REAL_API &&
     process.env.NEXT_PUBLIC_DOCSURI_EVIDENCE_AGENT_ENABLED !== '1'
   ) {
-    throw new UserFacingError('unknown', 'Research는 아직 실배포에서 사용할 수 없습니다.');
+    throw new UserFacingError('unknown', 'Evidence는 아직 실배포에서 사용할 수 없습니다.');
   }
   // 서버 TurnCreateRequest는 extra=forbid — content가 아니라 topic이고, 후속 턴은
   // 경로가 아니라 본문의 sessionId로 세션을 잇는다(v2: 첫 턴과 같은 엔드포인트).
@@ -426,7 +426,7 @@ function toEvidenceTurnBody(req: AgentSendMessageRequest, sessionId: string | nu
 function toNoveltyBody(req: AgentSendMessageRequest, created: boolean) {
   if (!created) {
     // 후속 대화 = 스티어링(조사 중) 또는 온디맨드 요청(종단). 분류는 서버가 한다.
-    // novelty 대화 스키마는 content만 받는다(extra=forbid) — research와 달리
+    // novelty 대화 스키마는 content만 받는다(extra=forbid) — evidence와 달리
     // 첨부 키를 실으면 422다. 잡 내 첨부는 원고 업로드 전용 경로를 쓴다.
     return { content: req.content };
   }
@@ -821,7 +821,7 @@ export class ApiClient {
     };
   }
 
-  private async withUploadedResearchAttachments(
+  private async withUploadedEvidenceAttachments(
     req: AgentSendMessageRequest,
   ): Promise<AgentSendMessageRequest> {
     const attachments = req.attachments ?? [];
@@ -830,13 +830,13 @@ export class ApiClient {
       ...req,
       attachments: await Promise.all(
         attachments.map((attachment) =>
-          hasPdfSourceFile(attachment) ? this.uploadResearchPdfAttachment(attachment) : attachment,
+          hasPdfSourceFile(attachment) ? this.uploadEvidencePdfAttachment(attachment) : attachment,
         ),
       ),
     };
   }
 
-  private async uploadResearchPdfAttachment(
+  private async uploadEvidencePdfAttachment(
     attachment: AgentAttachment & { sourceFile: Blob },
   ): Promise<AgentAttachment> {
     assertPdfUploadSize(attachment.sourceFile);
@@ -931,7 +931,7 @@ export class ApiClient {
   ): Promise<AgentTurnAccepted> {
     const target = parseAgentSessionId(sessionId, 'evidence');
     const created = sessionId.startsWith('agent-evidence-');
-    const sendReq = await this.withUploadedResearchAttachments(req);
+    const sendReq = await this.withUploadedEvidenceAttachments(req);
     const res = await this.request({
       method: 'POST',
       path: '/api/evidence/turns',

@@ -157,7 +157,7 @@ describe('AgentChatScreen', () => {
 
     await user.click(screen.getByTestId('agent-menu'));
     expect(await screen.findByText('LLM 평가 근거 정리')).toBeInTheDocument();
-    expect(screen.getByText(/Research .* 완료/)).toBeInTheDocument();
+    expect(screen.getByText(/Evidence .* 완료/)).toBeInTheDocument();
     await user.click(screen.getByText('LLM 평가 근거 정리'));
 
     expect(await screen.findByText(/벤치마크를 재사용하면/)).toBeInTheDocument();
