@@ -120,7 +120,11 @@ describe('AgentChatScreen', () => {
       screen.getByText('유사 연구 대비 실패 유형을 더 세밀하게 분해한다.'),
     ).toBeInTheDocument();
     expect(screen.queryByText(/"artifacts"/)).not.toBeInTheDocument();
-    expect(screen.getByTestId('agent-timeline')).toBeInTheDocument();
+    // 진행 과정은 **접힌 채로** 온다 — 답을 보러 온 화면이 진행 로그로 덮이지 않는다.
+    // jsdom은 닫힌 details의 자식도 DOM에 두므로 글자 유무로는 이것을 구분할 수 없다.
+    const timeline = screen.getByTestId('agent-timeline');
+    expect(timeline.tagName).toBe('DETAILS');
+    expect((timeline as HTMLDetailsElement).open).toBe(false);
     expect(screen.getAllByTestId('agent-timeline-event').length).toBeGreaterThan(0);
     expect(screen.getByText(/소스: corpus/)).toBeInTheDocument();
     expect(screen.getAllByText('완료').length).toBeGreaterThan(0);

@@ -140,13 +140,17 @@ def test_events_stream_replays_trace_then_validated_terminal(monkeypatch) -> Non
 
     assert [event for event, _ in frames[:-1]] == ['progress'] * (len(frames) - 1)
     stages = [data.get('stage') for event, data in frames if event == 'progress']
-    assert stages == ['accepted', 'tool', 'tool']
+    # **단계는 도구 이름이다.** 종전에는 전부 'tool'이라 화면에 "도구 실행"만 쌓였다 —
+    # 진행 표시가 진행을 안 알려주고 "뭔가 돌고 있다"만 알려줬다.
+    assert stages == ['accepted', 'corpus_search', 'extract_evidence']
+    labels = [data.get('message') for event, data in frames if event == 'progress']
+    assert labels == ['질문 접수', '논문 검색', '근거 추출']
     first = frames[0][1]
     assert first['eventId'] == f'{turn_id}:accepted'
     assert first['payload']['sessionId'] == accepted.json()['sessionId']
     assert first['payload']['turnId'] == turn_id
 
-    feed = [data for event, data in frames if event == 'progress' and data.get('stage') == 'tool']
+    feed = [data for event, data in frames if event == 'progress' and data['payload'].get('tool')]
     assert [item['payload']['tool'] for item in feed] == ['corpus_search', 'extract_evidence']
     assert [item['eventId'] for item in feed] == [f'{turn_id}:1', f'{turn_id}:2']
     assert [item['payload']['seq'] for item in feed] == [1, 2]
@@ -171,7 +175,10 @@ def test_events_stream_after_cursor_skips_what_the_client_already_has(monkeypatc
 
     frames = _parse_sse(client.get(f'/api/evidence/turns/{turn_id}/events?after=1').text)
 
-    assert [(e, d.get('stage')) for e, d in frames] == [('progress', 'tool'), ('result', None)]
+    assert [(e, d.get('stage')) for e, d in frames] == [
+        ('progress', 'extract_evidence'),
+        ('result', None),
+    ]
     assert frames[0][1]['eventId'] == f'{turn_id}:2'
 
 
@@ -230,7 +237,7 @@ def test_events_stream_does_not_lose_a_trace_row_committed_just_before_the_resul
 
     frames = _parse_sse(client.get(f'/api/evidence/turns/{turn_id}/events').text)
     tool_seqs = [
-        d['payload']['seq'] for e, d in frames if e == 'progress' and d.get('stage') == 'tool'
+        d['payload']['seq'] for e, d in frames if e == 'progress' and d['payload'].get('tool')
     ]
     assert tool_seqs == [1, 2]
     assert frames[-1][0] == 'result'

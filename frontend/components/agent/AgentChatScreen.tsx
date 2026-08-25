@@ -1200,6 +1200,18 @@ function NoveltySourceRefLinks({ refs }: { refs: NoveltySourceRef[] }) {
   );
 }
 
+/**
+ * 진행 과정 — **한 줄로 접힌다.** 눌러야 단계가 펼쳐진다.
+ *
+ * 종전에는 단계가 세로로 쭉 나열됐고 실행 중인 것은 스스로 열려 있었다. 주장형 질문은
+ * 도구 호출이 8~10회 붙으므로, 답이 오기 전에 화면이 진행 로그로 덮였다 — 사용자가 보러
+ * 온 것은 답이지 로그가 아니다. 접힌 줄은 그 대신 **지금 무엇을 하고 있는지 한 줄**과
+ * 누적 시간을 말한다.
+ *
+ * `accepted`는 목록에서 뺀다. "질문 접수"는 단계가 아니라 스트림이 붙었다는 신호이고
+ * (수락 직후 침묵을 막으려고 서버가 동기로 내보낸다), 여기서는 **첫 단계까지 걸린 시간의
+ * 기준점(t0)**으로만 쓴다.
+ */
 function AgentProgressTimeline({
   events,
   jobState,
@@ -1207,15 +1219,80 @@ function AgentProgressTimeline({
   events: AgentTimelineEvent[];
   jobState: AgentJobState;
 }) {
+  const [open, setOpen] = useState(false);
   if (events.length === 0) return null;
   const displayEvents = normalizeTimelineDisplay(events, jobState);
+  const steps = withStepDurations(displayEvents);
+  if (steps.length === 0) return null;
+  const running = steps.some((step) => step.state === 'running');
+  const total = totalElapsedMs(displayEvents);
   return (
-    <section className={styles.timeline} aria-label="탐구 프로세스" data-testid="agent-timeline">
-      {displayEvents.map((event) => (
-        <AgentTimelineItem key={event.id} event={event} />
-      ))}
-    </section>
+    <details
+      className={styles.timeline}
+      data-testid="agent-timeline"
+      open={open}
+      onToggle={(e) => setOpen(e.currentTarget.open)}
+    >
+      <summary aria-label="탐구 프로세스">
+        <span className={styles.timelineHeadline}>
+          {running ? steps[steps.length - 1].label : '진행 과정'}
+        </span>
+        <small className={styles.timelineMeta}>
+          {steps.length}단계
+          {total !== undefined ? ` · ${formatDuration(total)}` : ''}
+        </small>
+        {running ? <span className={styles.spinner} aria-hidden="true" /> : null}
+      </summary>
+      <div className={styles.timelineSteps}>
+        {steps.map((step) => (
+          <AgentTimelineItem key={step.id} event={step} durationMs={step.durationMs} />
+        ))}
+      </div>
+    </details>
   );
+}
+
+/** 이벤트 목록 → 실제 단계(접수 제외) + 앞 단계와의 간격. */
+export function withStepDurations(
+  events: AgentTimelineEvent[],
+): Array<AgentTimelineEvent & { durationMs?: number }> {
+  let previous = msOf(events.find((event) => event.stage === TIMELINE_ACCEPTED_STAGE));
+  const steps = [];
+  for (const event of events) {
+    if (event.stage === TIMELINE_ACCEPTED_STAGE) continue;
+    const at = msOf(event);
+    // 간격은 **앞 단계가 끝난 뒤부터** 이 단계가 기록될 때까지다 — 판단(decide) 왕복이
+    // 그 안에 들어간다. 기준점이 없으면(재접속) 시간을 그리지 않는다: 0으로 그리면
+    // 가장 오래 걸리는 첫 단계가 "즉시"로 보인다.
+    const durationMs =
+      at !== undefined && previous !== undefined && at >= previous ? at - previous : undefined;
+    if (at !== undefined) previous = at;
+    steps.push(durationMs !== undefined ? { ...event, durationMs } : { ...event });
+  }
+  return steps;
+}
+
+const TIMELINE_ACCEPTED_STAGE = 'accepted';
+
+function totalElapsedMs(events: AgentTimelineEvent[]): number | undefined {
+  const stamps = events.map(msOf).filter((ms): ms is number => ms !== undefined);
+  if (stamps.length < 2) return undefined;
+  return Math.max(...stamps) - Math.min(...stamps);
+}
+
+function msOf(event?: AgentTimelineEvent): number | undefined {
+  if (!event?.at) return undefined;
+  const ms = Date.parse(event.at);
+  return Number.isNaN(ms) ? undefined : ms;
+}
+
+/** 소요 시간 표기 — 1초 미만은 소수 한 자리, 1분 넘으면 분·초. */
+export function formatDuration(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(1)}초`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}분 ${Math.round(seconds - minutes * 60)}초`;
 }
 
 /**
@@ -1305,22 +1382,28 @@ function noveltySseUrl(sessionId: string, afterEventId: string | null): string |
 // SSE 파서는 evidence 동기 턴 스트리밍(US-EV2)과 공유하도록 lib로 이동 — 테스트 호환 재노출.
 export { parseNoveltySseEvents } from '@/lib/agentChat/sse';
 
-function AgentTimelineItem({ event }: { event: AgentTimelineEvent }) {
-  const [open, setOpen] = useState(event.state === 'running' || event.state === 'degraded');
+function AgentTimelineItem({
+  event,
+  durationMs,
+}: {
+  event: AgentTimelineEvent;
+  durationMs?: number;
+}) {
   return (
-    <details
+    <div
       className={styles.timelineEvent}
       data-state={event.state}
       data-testid="agent-timeline-event"
-      open={open}
-      onToggle={(e) => setOpen(e.currentTarget.open)}
     >
-      <summary>
-        <span>{event.label}</span>
+      <div className={styles.timelineEventHead}>
+        <span className={styles.timelineEventLabel}>{event.label}</span>
+        {durationMs !== undefined ? (
+          <small className={styles.timelineDuration}>{formatDuration(durationMs)}</small>
+        ) : null}
         <JobStateBadge state={event.state} />
-      </summary>
-      {event.detail ? <p>{event.detail}</p> : null}
-    </details>
+      </div>
+      {event.detail ? <p className={styles.timelineEventDetail}>{event.detail}</p> : null}
+    </div>
   );
 }
 

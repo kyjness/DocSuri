@@ -30,15 +30,34 @@ from typing import Any
 from docsuri_shared.observability import emit_metric
 from fastapi.concurrency import run_in_threadpool
 
+from .ports.tools import (
+    TOOL_CORPUS_SEARCH,
+    TOOL_EXTRACT_EVIDENCE,
+    TOOL_FETCH_PAPER,
+    TOOL_LIVE_LOOKUP,
+    TOOL_READ_PAPER,
+    TOOL_VIEW_FIGURE,
+)
+
 logger = logging.getLogger(__name__)
 
 # 이 스트림의 계측 표면 — 태그 값이 대시보드 키다.
 _SURFACE = 'evidence_turn_events'
 
 # 단계 → FE timeline 라벨(novelty progress처럼 message가 곧 라벨).
+#
+# **단계는 도구 이름이다.** 종전에는 트레이스 행 전부가 stage='tool'로 나가 화면에
+# "도구 실행"만 여덟 줄 쌓였다 — 진행 표시가 진행을 안 알려주고 "뭔가 돌고 있다"만
+# 알려줬다. 어휘의 정본은 `ports.tools`이고, 여기 없는 이름은 stage 문자열이 그대로
+# 라벨이 된다(도구가 늘어도 화면이 빈칸을 내지 않는다).
 STAGE_LABELS = {
     'accepted': '질문 접수',
-    'tool': '도구 실행',
+    TOOL_CORPUS_SEARCH: '논문 검색',
+    TOOL_LIVE_LOOKUP: '코퍼스 밖 조회',
+    TOOL_FETCH_PAPER: '본문 가져오기',
+    TOOL_READ_PAPER: '본문 읽기',
+    TOOL_VIEW_FIGURE: '그림 확인',
+    TOOL_EXTRACT_EVIDENCE: '근거 추출',
 }
 
 # CloudFront 원본 유휴 타임아웃(30s) 아래로 — 조용한 구간에도 연결이 살아 있어야 한다.
@@ -105,7 +124,7 @@ async def turn_events_stream(
                     emit_metric(observability, 'evidence.stream.first_token_ms',
                                 (time.monotonic() - started) * 1000.0, tags)
                 yield encode_sse('progress', progress_event(
-                    'tool', {**row, 'turnId': turn_id},
+                    str(row.get('tool') or 'tool'), {**row, 'turnId': turn_id},
                     event_id=f'{turn_id}:{seq}',
                 ))
                 last_frame = time.monotonic()

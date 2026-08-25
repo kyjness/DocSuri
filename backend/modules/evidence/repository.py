@@ -146,6 +146,18 @@ def trace_wire_row(row: dict) -> dict:
     return {key: row.get(key) for key in _TRACE_WIRE_KEYS}
 
 
+def _parse_at(value: Any) -> datetime | None:
+    """`trace_row`가 실은 ISO 문자열 → datetime. 못 읽으면 None(호출자가 지금으로 떨어진다)."""
+    if isinstance(value, datetime):
+        return value
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
 
 def _serialize(result: TurnResult) -> tuple[dict | None, str]:
     """(result JSON, status)."""
@@ -694,7 +706,10 @@ class SqlEvidenceRepository:
                 result_summary=str(row.get("resultSummary", "")),
                 cost_usd=row.get("costUsd"),
                 stance=row.get("stance"),
-                created_at=_utc_now(),
+                # 시각의 권위는 `trace_row`(루프가 기록한 순간)다 — 여기서 삽입 시각을 다시
+                # 찍으면 인메모리 스토어와 값이 갈리고, 그 차이는 화면의 단계별 소요 시간에만
+                # 나타난다. 옛 행에는 `at`이 없으므로 그때만 지금으로 떨어진다.
+                created_at=_parse_at(row.get("at")) or _utc_now(),
             )
         )
         self._s.flush()

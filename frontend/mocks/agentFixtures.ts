@@ -73,6 +73,7 @@ const baseSessions: AgentSessionSnapshot[] = [
         detail: 'U2 full 검색 결과에서 후보 논문을 정렬했습니다.',
         state: 'completed',
         sequence: 1,
+        at: '2026-07-01T00:01:03.100Z',
       },
       {
         id: 'demo-ev-2',
@@ -81,6 +82,7 @@ const baseSessions: AgentSessionSnapshot[] = [
         detail: '서로 다른 논문에서 반복되는 주장과 충돌 지점을 분리했습니다.',
         state: 'completed',
         sequence: 2,
+        at: '2026-07-01T00:01:24.600Z',
       },
     ],
   },
@@ -117,6 +119,7 @@ const baseSessions: AgentSessionSnapshot[] = [
         detail: '내부 코퍼스에서 RAG 평가 자동화 관련 논문을 찾았습니다.',
         state: 'completed',
         sequence: 1,
+        at: '2026-07-01T00:04:05.400Z',
       },
       {
         id: 'demo-nv-2',
@@ -125,6 +128,7 @@ const baseSessions: AgentSessionSnapshot[] = [
         detail: 'GitHub mock 응답은 성공, dataset mock 응답은 저하 상태입니다.',
         state: 'degraded',
         sequence: 2,
+        at: '2026-07-01T00:04:18.900Z',
       },
     ],
   },

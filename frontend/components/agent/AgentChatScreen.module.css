@@ -652,31 +652,78 @@
   color: var(--color-text-muted);
 }
 
+/* 진행 과정 — 접힌 상태가 기본이고 한 줄이다. 펼쳐야 단계가 보인다. */
 .timeline {
+  border: 1px solid var(--color-border);
+  background: var(--color-bg);
+  border-radius: var(--agent-radius);
+}
+
+.timeline > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 8px 10px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.timelineHeadline {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 단계 수·누적 시간은 오른쪽 끝에 붙는다 — 접힌 줄에서 가장 자주 읽는 값이다. */
+.timelineMeta {
+  margin-left: auto;
+  color: var(--color-text-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.timelineSteps {
   display: grid;
   gap: 6px;
+  padding: 0 10px 10px;
 }
 
 .timelineEvent {
   border: 1px solid var(--color-border);
-  background: var(--color-bg);
+  background: var(--color-surface);
   border-radius: var(--agent-radius);
   overflow: hidden;
 }
 
-.timelineEvent summary {
+.timelineEventHead {
   display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  min-height: 36px;
-  padding: 8px 10px;
-  cursor: pointer;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 6px 10px;
 }
 
-.timelineEvent p {
-  padding: 0 10px 10px;
-  color: var(--color-text-muted);
+.timelineEventLabel {
   font-size: 13px;
+  font-weight: 600;
+}
+
+/* 단계별 소요 시간 — 자릿수가 흔들리지 않도록 tabular. 배지 앞, 라벨 뒤가 자리다. */
+.timelineDuration {
+  margin-left: auto;
+  color: var(--color-text-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.timelineEventDetail {
+  padding: 0 10px 8px;
+  color: var(--color-text-muted);
+  font-size: 12px;
 }
 
 .timelineEvent[data-state='degraded'] {

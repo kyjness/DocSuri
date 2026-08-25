@@ -3,7 +3,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApiClient } from '@/lib/api/apiClient';
 import type { Transport, TransportRequest, TransportResponse } from '@/lib/api/transport';
-import { parseNoveltySseEvents, readTurnEvents } from '@/lib/agentChat/sse';
+import { mapProgressEvent, parseNoveltySseEvents, readTurnEvents } from '@/lib/agentChat/sse';
 import type { AgentTimelineEvent } from '@/lib/agentChat/types';
 
 const CLAIM_STATEMENT = '벤치마크 재사용은 데이터 누수 위험을 높인다.';
@@ -347,5 +347,48 @@ describe('shared SSE parser (novelty snapshot compatibility)', () => {
         state: 'running',
       },
     ]);
+  });
+});
+
+describe('progress frame → timeline event', () => {
+  it('reads the evidence trace keys, which the novelty-only mapping silently dropped', () => {
+    // 종전에는 novelty 키(source/query/count)만 읽어 evidence 단계의 detail이 **항상**
+    // undefined였다. 화면에는 라벨만 남았고, 그래서 "도구 실행"이 여덟 줄 쌓였다 —
+    // 진행 상황이 안 실려 온 게 아니라 실려 오는데 안 읽고 있었다.
+    const mapped = mapProgressEvent({
+      eventId: 't1:3',
+      state: 'running',
+      stage: 'extract_evidence',
+      message: '근거 추출',
+      createdAt: '2026-08-25T00:00:30.000Z',
+      payload: {
+        seq: 3,
+        tool: 'extract_evidence',
+        argsSummary: 'paper_ids=2106.09685, stance=counter',
+        outcome: 'ok',
+        resultSummary: '근거 4건 채택 · 2건 탈락',
+        at: '2026-08-25T00:00:24.500Z',
+      },
+    });
+
+    expect(mapped?.label).toBe('근거 추출');
+    expect(mapped?.detail).toContain('근거 4건 채택 · 2건 탈락');
+    expect(mapped?.detail).toContain('paper_ids=2106.09685, stance=counter');
+    // 소요 시간의 재료. 트레이스 행의 `at`이 프레임의 createdAt(=폴링 시각)을 이긴다 —
+    // 후자는 스트림이 그 행을 **집어 든** 시각이라 단계 간격을 폴링 주기로 반올림한다.
+    expect(mapped?.at).toBe('2026-08-25T00:00:24.500Z');
+  });
+
+  it('falls back to the frame timestamp when the payload carries no trace time', () => {
+    const mapped = mapProgressEvent({
+      eventId: 't1:accepted',
+      state: 'running',
+      stage: 'accepted',
+      message: '질문 접수',
+      createdAt: '2026-08-25T00:00:00.000Z',
+      payload: { seq: 0 },
+    });
+
+    expect(mapped?.at).toBe('2026-08-25T00:00:00.000Z');
   });
 });
