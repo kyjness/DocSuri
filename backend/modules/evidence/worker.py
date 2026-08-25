@@ -358,7 +358,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     checkpoints = TurnCheckpoints(checkpointer)
     runner = build_evidence_runner(
-        ev_settings, cost_guard=CostGuardCircuitBreaker(), graph=checkpoints.graph
+        ev_settings, cost_guard=CostGuardCircuitBreaker(), checkpoints=checkpoints
     )
 
     def repo_factory() -> EvidenceRepository:

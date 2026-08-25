@@ -86,6 +86,18 @@ class EvidenceStack(Stack):
                 'DOCSURI_EVIDENCE_ASYNC_ENABLED': 'true',
                 'DOCSURI_EVIDENCE_JOB_QUEUE_URL': self.queue.queue_url,
                 'DOCSURI_DOCMODEL_BUCKET': docmodel_bucket,
+                # U11 실시간 조회(설계 v3 §3.2) — arXiv·Semantic Scholar·OpenAlex. **기본은
+                # off다**: 켜면 턴마다 코퍼스 밖으로 나가는 호출이 생기므로 켜는 것은 결정이다.
+                # 앞선 `external_search`(arXiv 하나)는 이 자리에도 `.env.example`에도 플래그가
+                # 없어 배포에서 한 번도 돈 적이 없다 — 코드에만 있고 아무도 그 사실을 몰랐다.
+                'DOCSURI_EVIDENCE_LIVE_LOOKUP_ENABLED': 'false',
+                # 실시간 조회로 찾은 논문의 백그라운드 색인(§2.6 4단계) — U1 **본** 큐다.
+                # 승격이 쓰는 우선순위 큐가 아니다: 그쪽은 사용자가 기다리는 본문 확보용이라
+                # 색인 잡을 섞으면 기다리는 쪽이 밀린다. Ingestion이 큐를 소유하므로 이름으로
+                # 참조한다(저장소 패턴 — 크로스 스택 export를 만들지 않는다).
+                'DOCSURI_SQS_QUEUE_URL': (
+                    f'https://sqs.{self.region}.amazonaws.com/{account}/docsuri-ingestion-queue'
+                ),
                 # U2 discovery 재사용 검색 경로 활성화에 필수 — 없으면 hosts=[None]으로
                 # OpenSearch 클라이언트가 만들어져 검색이 전부 실패한다(PR #338 리뷰 Blocking #6).
                 'DOCSURI_OPENSEARCH_ENDPOINT': f'https://{opensearch_domain.domain_endpoint}',
@@ -132,6 +144,15 @@ class EvidenceStack(Stack):
 
         self.queue.grant_consume_messages(task_def.task_role)
         dlq.grant_send_messages(task_def.task_role)
+        # 백그라운드 색인 enqueue(§2.6 4단계) — Ingestion 소유 큐라 ARN을 이름으로 짓는다
+        # (크로스 스택 export를 만들지 않는 저장소 패턴). 이 권한이 없으면 색인 요청이
+        # AccessDenied로 조용히 삼켜지고(어댑터가 best-effort다) 코퍼스는 안 자란다.
+        task_def.add_to_task_role_policy(
+            iam.PolicyStatement(
+                actions=['sqs:SendMessage'],
+                resources=[f'arn:aws:sqs:{self.region}:{account}:docsuri-ingestion-queue'],
+            )
+        )
 
         # S3 DocModel 읽기 (U1 소유 버킷 — GetObject only)
         task_def.add_to_task_role_policy(

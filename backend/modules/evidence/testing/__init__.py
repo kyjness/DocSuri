@@ -10,12 +10,15 @@
 선례는 `discovery/testing/`이다.
 """
 
-from .doubles import ScriptedAnswer, ScriptedLlm
+from .doubles import NoHits, NoItems, ScriptedAnswer, ScriptedLlm, ScriptedSearch
 from .fixtures import accumulator, evidence_item, loop_budget, run_context
 
 __all__ = [
+    "NoHits",
+    "NoItems",
     "ScriptedAnswer",
     "ScriptedLlm",
+    "ScriptedSearch",
     "accumulator",
     "evidence_item",
     "loop_budget",

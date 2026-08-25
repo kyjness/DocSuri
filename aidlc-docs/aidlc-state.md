@@ -1059,7 +1059,7 @@ _Resiliency 옵트인은 `requirements.md` 확정 전에 필수 요구사항 명
 - 반영 완료: `requirements.md` 델타 개정 블록(2026-07-28) + FR-31/36/37/45/46/47 · §12 카브아웃 ·
   성공 기준 10 · 추적성 행, `operations/solo-roadmap.md` ⑥ 행 + "⑥ 게이트 추가 항목" 절 종결.
 - **유닛 FD 게이트 확정 (2026-07-28)** — `plans/evidence-agent-v2-functional-design-plan.md` Q1~Q12 전 문항 권장안.
-  도구 6종(`corpus_search`·`external_search`·`fetch_paper`·`read_paper`·`view_figure`·`extract_evidence`),
+  도구 6종(`corpus_search`·`live_lookup`·`fetch_paper`·`read_paper`·`view_figure`·`extract_evidence`),
   근거는 루프 안에서 게이트 통과분만 점진 축적, 승격은 명시 도구(예산 계상 단위), 저장은 owner-scoped 3테이블,
   활동 피드는 트레이스 단일 원천. **외부 초록 스냅샷 테이블은 두지 않는다** — 인용 식별자에 버전을 고정해
   (`arxiv:{id}v{n}`) 재취득으로 재현한다(arXiv 버전 영구 보존).

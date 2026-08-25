@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 
 from .models import LoopBudget
@@ -90,6 +90,18 @@ def check_and_consume_tool_call(budget: LoopBudget, tool_name: str) -> BudgetDen
     consumed.tool_calls_total += 1
     consumed.tool_calls[tool_name] = consumed.tool_calls.get(tool_name, 0) + 1
     return None
+
+
+def can_call(budget: LoopBudget, tool_name: str) -> bool:
+    """이 도구를 **한 번 더 부를 수 있는가** — 소비하지 않고 묻는다.
+
+    `check_and_consume_tool_call`과 같은 규칙을 봐야 하므로 그것을 재사용한다: 예산을
+    되돌리는 대신 카운터 사본으로 물어보면 규칙이 두 벌이 되고, 한쪽만 고쳐진다.
+
+    바닥 검사(§3.3)가 쓴다 — 반대 측 탐색을 더 부를 수 없으면 그 조건을 요구할 수 없다.
+    """
+    spent = replace(budget.consumed, tool_calls=dict(budget.consumed.tool_calls))
+    return check_and_consume_tool_call(replace(budget, consumed=spent), tool_name) is None
 
 
 def record_cost(budget: LoopBudget, cost_usd: float | None) -> None:

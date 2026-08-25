@@ -1,4 +1,6 @@
-"""출처 어댑터 — 코퍼스 검색·외부 검색·DocModel 읽기.
+"""출처 어댑터 — 코퍼스 검색과 DocModel 읽기.
+
+코퍼스 **밖** 실시간 조회는 `live_sources.py`에 있다(설계 §3.2, 세 소스).
 
 v1 `tools.py`의 검색·DocModel 로직을 이식하되 **포트 형태로** 바꿨다: v1은 도구가
 곧 어댑터였고(검색 방식과 도구 계약이 한 클래스에 섞여 있었다), v2는 도구가 얇은
@@ -19,11 +21,9 @@ from summarization.adapters._paper_ref import bare_paper_id
 
 from backend.modules.paper_assets import parse_record_ref
 
-from ..ports.sources import PaperCandidate, SearchUnavailable
+from ..ports.sources import PaperCandidate, SearchUnavailable, YearBound
 
 __all__ = [
-    "ArxivApiClient",
-    "ArxivExternalSearch",
     "CorpusSearch",
     "DocModelReader",
 ]
@@ -43,16 +43,30 @@ class EmbeddingPort(Protocol):
 @runtime_checkable
 class VectorStorePort(Protocol):
     def knn_search(
-        self, vector: list[float], top_k: int, abstract_only: bool = False
+        self,
+        vector: list[float],
+        top_k: int,
+        abstract_only: bool = False,
+        years: Any | None = None,
     ) -> list[Any]: ...
 
 
 @runtime_checkable
 class LexicalIndexPort(Protocol):
-    def bm25_search(self, terms: list[str], top_k: int, fields: tuple[str, ...] = ...) -> list: ...
+    def bm25_search(
+        self,
+        terms: list[str],
+        top_k: int,
+        fields: tuple[str, ...] = ...,
+        years: Any | None = None,
+    ) -> list: ...
 
     def phrase_search(
-        self, phrase: str, top_k: int, paper_ids: list[str] | None = None
+        self,
+        phrase: str,
+        top_k: int,
+        paper_ids: list[str] | None = None,
+        years: Any | None = None,
     ) -> list: ...
 
 
@@ -70,11 +84,13 @@ class CorpusSearch:
         self._vector_store = vector_store
         self._lexical_index = lexical_index
 
-    def search(self, query: str, *, phrase: bool = False) -> tuple[PaperCandidate, ...]:
+    def search(
+        self, query: str, *, phrase: bool = False, years: YearBound | None = None
+    ) -> tuple[PaperCandidate, ...]:
         from discovery.ports.search_ports import IndexUnavailable
 
         try:
-            records = self._phrase(query) if phrase else self._hybrid(query)
+            records = self._phrase(query, years) if phrase else self._hybrid(query, years)
         except IndexUnavailable as exc:
             raise SearchUnavailable("corpus index unavailable") from exc
 
@@ -87,7 +103,7 @@ class CorpusSearch:
                 break
         return tuple(seen.values())
 
-    def _hybrid(self, query: str) -> list[Any]:
+    def _hybrid(self, query: str, years: YearBound | None) -> list[Any]:
         from discovery.domain.models import (
             DegradationSignal,
             QueryPlan,
@@ -109,6 +125,7 @@ class CorpusSearch:
             mode=mode,
             embedding_vector=tuple(vector) if vector else None,
             scope=SearchScope.FULL,
+            years=_year_range(years),
         )
 
         retriever = HybridRetriever(self._vector_store, self._lexical_index)
@@ -117,8 +134,10 @@ class CorpusSearch:
         )
         return [c.record for c in candidate_set.candidates[:_TOP_K]]
 
-    def _phrase(self, phrase: str) -> list[Any]:
-        hits = self._lexical_index.phrase_search(phrase, top_k=_PHRASE_TOP_K)
+    def _phrase(self, phrase: str, years: YearBound | None) -> list[Any]:
+        hits = self._lexical_index.phrase_search(
+            phrase, top_k=_PHRASE_TOP_K, years=_year_range(years)
+        )
         return [record for record, _score in hits]
 
 
@@ -169,102 +188,14 @@ class DocModelReader:
 
 
 
-class ArxivExternalSearch:
-    """코퍼스 밖 arXiv 검색 — 제목·초록만 확보한다(본문은 승격이 담당).
+def _year_range(years: YearBound | None) -> Any | None:
+    """포트의 `YearBound` → U2 `YearRange`. 경계 번역은 어댑터 몫이다 — evidence 도메인이
+    discovery 타입을 들면 두 모듈이 한 몸이 된다(`PaperCandidate`와 같은 이유)."""
+    if years is None or not years.bounded:
+        return None
+    from discovery.domain.models import YearRange
 
-    **payload allowlist**(BR-EV-20): 나가는 것은 검색어뿐이다. 사용자 원문·근거
-    전문·세션 내용은 어댑터 경계에서 구조적으로 나갈 수 없다 — 여기서 쓰는 인자가
-    `query` 하나뿐이기 때문이다.
-
-    식별자에는 **버전을 박는다**(`arxiv:{id}v{n}`). 초록 범위 인용의 사후 감사는
-    그 버전을 다시 가져와 대조하는 것이므로(FD 게이트 Q5=A), 버전이 없으면
-    개정 후 재현이 불가능해진다.
-    """
-
-    def __init__(self, client: Any, *, max_results: int = 10) -> None:
-        self._client = client
-        self._max_results = max_results
-
-    def search(self, query: str) -> tuple[PaperCandidate, ...]:
-        try:
-            entries = self._client.search(query=query, max_results=self._max_results)
-        except Exception as exc:  # noqa: BLE001 — 외부 장애는 그 도구만 실패시킨다
-            raise SearchUnavailable("external paper search unavailable") from exc
-
-        out: list[PaperCandidate] = []
-        for entry in entries or []:
-            arxiv_id = str(_attr(entry, "arxiv_id", "arxivId", "id") or "").strip()
-            if not arxiv_id:
-                continue
-            versioned = arxiv_id if "v" in arxiv_id.rsplit("/", 1)[-1] else f"{arxiv_id}v1"
-            paper_id = f"arxiv:{versioned}"
-            out.append(
-                PaperCandidate(
-                    paper_id=paper_id,
-                    record_ref=f"external:{paper_id}",
-                    title=str(_attr(entry, "title") or ""),
-                    abstract=str(_attr(entry, "abstract", "summary") or ""),
-                )
-            )
-        return tuple(out)
-
-
-class ArxivApiClient:
-    """arXiv Atom API 클라이언트 — `ArxivExternalSearch`가 기대하는 `search()` 구현.
-
-    u1의 `ArxivAdapter`를 재사용하지 않는 이유: 그 어댑터는 수확·전문 취득용이라
-    검색 메서드가 없고, `docsuri_ingestion`은 backend 의존성도 아니다(별도 uv 프로젝트).
-    여기 필요한 것은 "질의 → 제목·초록 목록" 하나뿐이라 표준 라이브러리로 닫는다.
-
-    **허용 호스트는 상수다**(BR-EV-20 내부망 접근 방지) — 모델이 쓴 값은 query뿐이고
-    URL 조립에 관여할 수 없다.
-    """
-
-    _ENDPOINT = "https://export.arxiv.org/api/query"
-    _TIMEOUT_S = 20.0
-    _NS = {"atom": "http://www.w3.org/2005/Atom"}
-
-    def search(self, *, query: str, max_results: int = 10) -> list[dict[str, str]]:
-        import urllib.parse
-        import urllib.request
-        from xml.etree import ElementTree
-
-        params = urllib.parse.urlencode(
-            {
-                "search_query": f"all:{query}",
-                "start": 0,
-                "max_results": max(1, min(int(max_results), 25)),
-            }
-        )
-        request = urllib.request.Request(  # noqa: S310 — 고정 상수 엔드포인트
-            f"{self._ENDPOINT}?{params}",
-            headers={"User-Agent": "docsuri-evidence/1.0"},
-        )
-        with urllib.request.urlopen(request, timeout=self._TIMEOUT_S) as resp:  # noqa: S310
-            # 외부 XML은 신뢰 경계 밖이다 — 표준 파서는 외부 엔티티를 해석하지 않지만
-            # 크기 상한은 여기서 건다.
-            payload = resp.read(2_000_000)
-        root = ElementTree.fromstring(payload)
-
-        out: list[dict[str, str]] = []
-        for entry in root.findall("atom:entry", self._NS):
-            raw_id = (entry.findtext("atom:id", default="", namespaces=self._NS) or "").strip()
-            # 'http://arxiv.org/abs/2304.10557v1' → '2304.10557v1'
-            arxiv_id = raw_id.rsplit("/abs/", 1)[-1] if "/abs/" in raw_id else raw_id
-            if not arxiv_id:
-                continue
-            out.append(
-                {
-                    "arxiv_id": arxiv_id,
-                    "title": (
-                        entry.findtext("atom:title", default="", namespaces=self._NS) or ""
-                    ).strip(),
-                    "summary": (
-                        entry.findtext("atom:summary", default="", namespaces=self._NS) or ""
-                    ).strip(),
-                }
-            )
-        return out
+    return YearRange(start=years.start, end=years.end)
 
 
 def _attr(obj: Any, *names: str) -> Any:

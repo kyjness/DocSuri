@@ -237,16 +237,418 @@ _UNLABELLED: tuple[GoldenCase, ...] = (
     ),
 )
 
+# --- PR 4 확대분 — 라벨 문항(초록을 읽고 고름, 검수 대기) --------------------------
+#
+# 배포 색인(`docsuri-deploy-v1`, 논문 3,281편)에서 **초록을 직접 읽고** 골랐다. 우리 랭킹
+# 순위로 고르지 않았다 — 순위로 고르면 recall@k가 자동으로 1.0이 되어 아무것도 못 잰다.
+#
+# 검수 완료 2026-08-25 — `reviewed=True`이고 채점 표본(`labelled_cases()`)에 든다.
+#
+# 새 문항은 `reviewed=False`로 들어온다. 그동안 그 문항의 `expected_papers`는 채점에 쓰이지
+# 않는다(`labelled_cases()`가 거른다) — 검수 전 recall@k와 심판 점수는 "내가 정한 정답으로
+# 내가 채점한 값"이라 품질 지표가 아니기 때문이다. 그 불변식은
+# `test_unreviewed_labels_never_reach_the_scoring_path`가 **합성 사례로** 지킨다: 검수 대기가
+# 비어 있는 날에도 규칙이 살아 있어야 하고, 실제 데이터로 검사하면 그날 아무것도 안 보면서
+# 초록으로 남는다.
+
+_LABELLED_PR4: tuple[GoldenCase, ...] = (
+    GoldenCase(
+        name="moe_scales_without_proportional_compute",
+        question="Mixture-of-Experts가 파라미터를 늘리면서 연산량은 안 늘릴 수 있어?",
+        type=QuestionType.CLAIM,
+        expected_kind="claim",
+        expected_papers=("2101.03961", "2112.06905", "2106.05974"),
+        expected_direction=(
+            "조건부 긍정. 토큰당 활성 파라미터만 늘지 않는 것이고 총 메모리·통신 비용은 "
+            "늘어난다는 조건을 밝혀야 한다. '연산량이 안 는다'는 단정은 오답."
+        ),
+        note=(
+            "2101.03961(Switch)이 희소 활성화로 파라미터-연산 분리를 정면으로 주장하고, "
+            "2112.06905(GLaM)이 같은 축을 학습·추론 비용 수치로 받친다. 2106.05974는 비전에서 "
+            "같은 것을 재현해 주장이 한 도메인에 국한되지 않음을 보인다."
+        ),
+        reviewed=True,
+    ),
+    GoldenCase(
+        name="dpo_vs_rlhf_reward_model",
+        question="DPO가 보상 모델을 쓰는 RLHF보다 나아?",
+        type=QuestionType.COMPARISON,
+        expected_kind="comparison",
+        expected_papers=("2305.18290", "2306.17492"),
+        expected_direction=(
+            "조건부. 파이프라인 단순함·안정성에서는 DPO 쪽이고 품질은 과제·데이터에 따라 "
+            "갈린다. 코퍼스에 정면 대규모 비교가 얇으므로 '한쪽 근거만 있다'를 밝히는 답이 맞다."
+        ),
+        note=(
+            "2305.18290이 DPO 원안이고 보상 모델 없이 같은 목적을 푼다고 주장한다. "
+            "2306.17492(PRO)가 선호 랭킹 쪽에서 같은 축을 세워 비교 지점을 만든다."
+        ),
+        reviewed=True,
+    ),
+    GoldenCase(
+        name="compute_optimal_model_size",
+        question="같은 연산 예산이면 모델을 키우는 게 나아 데이터를 늘리는 게 나아?",
+        type=QuestionType.COMPARISON,
+        expected_kind="comparison",
+        expected_papers=("2203.15556", "2001.08361"),
+        expected_direction=(
+            "**문헌이 갈리는 대표 문항이다.** 2001.08361은 모델 크기 쪽에 무게를 뒀고 "
+            "2203.15556이 그것을 뒤집어 데이터를 같이 키워야 한다고 보고한다. 갈림 지점이 "
+            "'학습 토큰 수를 함께 스케일했는가'임을 말해야 한다."
+        ),
+        note=(
+            "두 논문이 같은 질문에 다른 답을 낸 실측 사례라, 조건 분기와 갈림 지점을 실제로 "
+            "쓰는지 보는 데 가장 좋은 문항이다."
+        ),
+        reviewed=True,
+    ),
+    GoldenCase(
+        name="smoothquant_vs_qat",
+        question="8비트로 줄일 때 학습을 다시 하는 것과 사후 양자화 중 뭘 써야 해?",
+        type=QuestionType.COMPARISON,
+        expected_kind="comparison",
+        expected_papers=("2211.10438", "2305.17888", "2306.00978"),
+        expected_direction=(
+            "조건부. 재학습 비용을 감당할 수 있으면 QAT가 유리하고, 못 하면 이상치를 다루는 "
+            "PTQ 기법으로 상당 부분 회수된다는 조건을 밝혀야 한다."
+        ),
+        note=(
+            "2211.10438(SmoothQuant)·2306.00978(AWQ)이 PTQ 쪽, 2305.17888(LLM-QAT)이 QAT 쪽 "
+            "축을 세운다. 셋이 함께 있어야 조건이 갈리는 지점이 생긴다."
+        ),
+        reviewed=True,
+    ),
+    GoldenCase(
+        name="longformer_handles_long_documents",
+        question="긴 문서를 통째로 넣으려면 어텐션을 어떻게 바꿔야 해?",
+        type=QuestionType.FACT,
+        expected_kind="fact",
+        expected_papers=("2004.05150", "1904.10509"),
+        expected_direction=(
+            "희소·국소 어텐션으로 이차 복잡도를 낮춘다. 사실형이므로 반대 측 탐색은 필요 없다."
+        ),
+        note=(
+            "2004.05150(Longformer)이 슬라이딩 윈도우+전역 어텐션을, 1904.10509(Sparse "
+            "Transformer)가 그 앞선 희소 패턴을 본문에 명시한다 — 둘 다 방법이 본문에 "
+            "글자 그대로 있어 사실형 문항으로 성립한다."
+        ),
+        reviewed=True,
+    ),
+    GoldenCase(
+        name="linformer_linear_attention",
+        question="어텐션 복잡도를 선형으로 낮춘 방법이 있어?",
+        type=QuestionType.FACT,
+        expected_kind="fact",
+        expected_papers=("2006.04768",),
+        expected_direction="저차원 사영으로 선형 복잡도를 만든다는 방법을 본문 인용으로 대야 한다.",
+        note="2006.04768(Linformer)이 선형 복잡도를 제목과 본문에서 정면으로 주장한다.",
+        reviewed=True,
+    ),
+    GoldenCase(
+        name="prompt_injection_defenses_hold",
+        question="프롬프트 인젝션 방어가 실제로 막아줘?",
+        type=QuestionType.CLAIM,
+        expected_kind="claim",
+        expected_papers=("2503.00061", "2306.05499", "2507.15219"),
+        expected_direction=(
+            "부정 쪽으로 기운 조건부. 방어가 제안되지만 적응형 공격에 뚫린다는 반대 근거가 "
+            "코퍼스에 있으므로, 그것을 못 찾고 '막아준다'고 하면 오답이다."
+        ),
+        note=(
+            "2503.00061이 '적응형 공격이 방어를 깬다'를 정면으로 보고한다 — **반대 측 탐색이 "
+            "있어야만 제대로 답할 수 있는 문항**이라 §3.3 바닥 2의 회귀로 쓴다."
+        ),
+        reviewed=True,
+    ),
+    GoldenCase(
+        name="self_rag_improves_over_plain_rag",
+        question="RAG에 자기 비판을 붙이면 나아져?",
+        type=QuestionType.CLAIM,
+        expected_kind="claim",
+        expected_papers=("2310.11511", "2305.06983"),
+        expected_direction=(
+            "긍정 쪽 조건부 — 검색 시점·필요성 판단을 모델이 하게 한 것이 이득의 출처다."
+        ),
+        note=(
+            "2310.11511(Self-RAG)이 자기 반성 토큰을, 2305.06983(FLARE)이 능동 검색 시점을 "
+            "다룬다. 둘이 같은 축의 서로 다른 손잡이다."
+        ),
+        reviewed=True,
+    ),
+    GoldenCase(
+        name="context_window_extension_by_interpolation",
+        question="학습한 길이보다 긴 문맥을 쓰려면 어떻게 해?",
+        type=QuestionType.FACT,
+        expected_kind="fact",
+        expected_papers=("2306.15595",),
+        expected_direction="위치 인코딩을 보간해 확장한다는 방법이 본문에 실재해야 한다.",
+        note="2306.15595(Position Interpolation)가 방법을 본문에 수식과 함께 명시한다.",
+        reviewed=True,
+    ),
+    GoldenCase(
+        name="distillation_needs_a_teacher",
+        question="지식 증류로 작은 모델을 만들면 성능을 얼마나 지켜?",
+        type=QuestionType.CLAIM,
+        expected_kind="claim",
+        expected_papers=("1908.09355", "2006.05525"),
+        expected_direction=(
+            "조건부. 과제·압축률에 따라 갈리며 수치를 인용할 때 그 조건(어느 과제, 몇 배 압축)을 "
+            "함께 말해야 한다."
+        ),
+        note=(
+            "1908.09355(Patient KD)가 BERT 압축의 구체 수치를, 2006.05525(서베이)가 조건이 "
+            "갈린다는 넓은 근거를 준다."
+        ),
+        reviewed=True,
+    ),
+)
+
+
+# --- PR 4 확대분 — 무라벨 문항(정답 라벨이 필요 없는 검사) ---------------------------
+#
+# 인용 실재율·게이트 탈락률·종합 문장 비율·범위 밖 검색 0회·반대 측 탐색은 질문만 있으면
+# 성립한다. 유형 균형을 맞추는 것도 이쪽 몫이다.
+
+_UNLABELLED_PR4: tuple[GoldenCase, ...] = (
+    # 주장형 — 반대 측 탐색(§3.3 바닥 2)이 실제로 도는지 보는 대상이다.
+    GoldenCase(
+        name="claim_rlhf_reduces_toxicity",
+        question="사람 피드백 학습이 유해 발화를 줄여?",
+        type=QuestionType.CLAIM,
+        expected_kind="claim",
+        note="주장형 무라벨 — 반대 측(보상 해킹·과최적화)을 찾아보는지 본다.",
+    ),
+    GoldenCase(
+        name="claim_synthetic_data_collapses_models",
+        question="합성 데이터로 계속 학습하면 모델이 망가져?",
+        type=QuestionType.CLAIM,
+        expected_kind="claim",
+        note="주장형 무라벨 — 강한 주장이라 조건 없이 단정하는지 본다.",
+    ),
+    GoldenCase(
+        name="claim_longer_context_beats_retrieval",
+        question="문맥 창이 길어지면 검색이 필요 없어져?",
+        type=QuestionType.CLAIM,
+        expected_kind="claim",
+        note="주장형 무라벨 — 양쪽 근거가 다 있는 주제라 한쪽만 대면 드러난다.",
+    ),
+    GoldenCase(
+        name="claim_speculative_decoding_is_lossless",
+        question="추측 디코딩이 품질을 안 떨어뜨리고 속도만 올려?",
+        type=QuestionType.CLAIM,
+        expected_kind="claim",
+        note="주장형 무라벨 — '무손실'이라는 단정에 조건을 다는지 본다.",
+    ),
+    GoldenCase(
+        name="claim_moe_hurts_inference_latency",
+        question="MoE가 추론 지연을 오히려 키워?",
+        type=QuestionType.CLAIM,
+        expected_kind="claim",
+        note="주장형 무라벨 — 통념과 반대 방향 질문이라 반대 측 탐색이 자연스럽게 필요하다.",
+    ),
+    GoldenCase(
+        name="claim_scaling_laws_still_hold",
+        question="스케일링 법칙이 지금도 유효해?",
+        type=QuestionType.CLAIM,
+        expected_kind="claim",
+        note="주장형 무라벨 — 시점이 갈리는 주제라 연도 제약을 쓰는지도 함께 보인다.",
+    ),
+    GoldenCase(
+        name="claim_clip_transfers_zero_shot",
+        question="대조 학습으로 만든 비전-언어 모델이 새 과제에 그냥 적용돼?",
+        type=QuestionType.CLAIM,
+        expected_kind="claim",
+        note="주장형 무라벨 — 분포 이동 조건을 다는지 본다.",
+    ),
+    GoldenCase(
+        name="claim_attention_is_necessary",
+        question="어텐션 없이도 긴 문맥을 다룰 수 있어?",
+        type=QuestionType.CLAIM,
+        expected_kind="claim",
+        note="주장형 무라벨 — 상태공간·합성곱 계열이 반대 측이 된다.",
+    ),
+    # 비교형 — 조건 분기와 갈림 지점을 실제로 쓰는지 본다.
+    GoldenCase(
+        name="compare_sparse_vs_dense_attention",
+        question="희소 어텐션과 밀집 어텐션 중 긴 문서엔 뭐가 나아?",
+        type=QuestionType.COMPARISON,
+        expected_kind="comparison",
+        note="비교형 무라벨 — 길이·품질 축이 서로 반대라 조건 분기가 나와야 한다.",
+    ),
+    GoldenCase(
+        name="compare_encoder_vs_decoder_for_retrieval",
+        question="검색용 임베딩엔 인코더 모델과 디코더 모델 중 뭐가 나아?",
+        type=QuestionType.COMPARISON,
+        expected_kind="comparison",
+        note="비교형 무라벨.",
+    ),
+    GoldenCase(
+        name="compare_finetuning_vs_prompting",
+        question="파인튜닝과 프롬프팅 중 어느 쪽이 나아?",
+        type=QuestionType.COMPARISON,
+        expected_kind="comparison",
+        note="비교형 무라벨 — 데이터 양이 갈림 지점이다.",
+    ),
+    GoldenCase(
+        name="compare_bm25_vs_dense_retrieval",
+        question="키워드 검색과 벡터 검색 중 뭐가 더 잘 찾아?",
+        type=QuestionType.COMPARISON,
+        expected_kind="comparison",
+        note="비교형 무라벨 — 도메인·질의 길이가 갈림 지점이다.",
+    ),
+    GoldenCase(
+        name="compare_greedy_vs_sampling_decoding",
+        question="탐욕 디코딩과 샘플링 중 뭘 써야 해?",
+        type=QuestionType.COMPARISON,
+        expected_kind="comparison",
+        note="비교형 무라벨 — 과제 성격이 갈림 지점이다.",
+    ),
+    # 사실형 — 수치·정의가 인용에 실재하는지(A2)를 본다. 반대 측 조건은 면제다.
+    GoldenCase(
+        name="fact_what_is_lora_rank",
+        question="LoRA에서 rank가 무엇을 정하는 값이야?",
+        type=QuestionType.FACT,
+        expected_kind="fact",
+        note="사실형 무라벨 — 정의가 본문에 실재해야 한다.",
+    ),
+    GoldenCase(
+        name="fact_what_is_rlhf_reward_model",
+        question="RLHF의 보상 모델은 무엇으로 학습해?",
+        type=QuestionType.FACT,
+        expected_kind="fact",
+        note="사실형 무라벨.",
+    ),
+    GoldenCase(
+        name="fact_what_is_beam_search",
+        question="빔 서치는 무엇을 하는 방법이야?",
+        type=QuestionType.FACT,
+        expected_kind="fact",
+        note="사실형 무라벨.",
+    ),
+    GoldenCase(
+        name="fact_what_is_perplexity",
+        question="퍼플렉시티는 무엇을 재는 값이야?",
+        type=QuestionType.FACT,
+        expected_kind="fact",
+        note="사실형 무라벨.",
+    ),
+    GoldenCase(
+        name="fact_what_is_kv_cache",
+        question="KV 캐시는 추론에서 무엇을 저장해?",
+        type=QuestionType.FACT,
+        expected_kind="fact",
+        note="사실형 무라벨.",
+    ),
+    GoldenCase(
+        name="fact_what_is_rope",
+        question="회전 위치 임베딩은 위치를 어떻게 넣어?",
+        type=QuestionType.FACT,
+        expected_kind="fact",
+        note="사실형 무라벨.",
+    ),
+    # 후속 — 이전 턴 집합으로 좁히는지 본다(§3.4).
+    GoldenCase(
+        name="follow_up_narrow_to_moe",
+        question="그중에서 전문가 라우팅을 쓴 쪽만 다시 정리해 줘",
+        type=QuestionType.FOLLOW_UP,
+        expected_kind="claim",
+        prior_topic="큰 모델을 싸게 돌리는 방법에는 뭐가 있어?",
+        note="좁히기 무라벨 — 새 검색 없이 이전 집합에서 줄이는지 본다.",
+    ),
+    GoldenCase(
+        name="follow_up_narrow_to_recent",
+        question="그중에서 2024년 이후 것만",
+        type=QuestionType.FOLLOW_UP,
+        expected_kind="claim",
+        prior_topic="추론 속도를 올리는 방법에는 뭐가 있어?",
+        note="좁히기 무라벨 — `year_from` 인자를 쓰는지 본다(PR 4에서 붙었다).",
+    ),
+    GoldenCase(
+        name="follow_up_ask_for_counter_evidence",
+        question="반대되는 근거는 없어?",
+        type=QuestionType.FOLLOW_UP,
+        expected_kind="claim",
+        prior_topic="RAG가 LLM의 환각을 실제로 줄여?",
+        note="후속 무라벨 — 사용자가 직접 반대 측을 요구한다. stance=counter가 안 붙으면 이상하다.",
+    ),
+    GoldenCase(
+        name="follow_up_continue_searching",
+        question="이어서 더 찾아줘",
+        type=QuestionType.FOLLOW_UP,
+        expected_kind="claim",
+        prior_topic="양자화가 정확도에 주는 영향은?",
+        note=(
+            "**이어가기 문항**(§3.4). 직전 턴이 남긴 후보를 씨앗으로 받아 검색부터 다시 하지 "
+            "않아야 한다 — PR 4 이전에는 이 질문이 처음부터 다시 검색했다."
+        ),
+    ),
+    # 코퍼스 밖 — 실시간 조회(§3.2)가 붙었으므로 기대가 '찾아온다'로 바뀐다.
+    GoldenCase(
+        name="out_of_corpus_recent_preprint",
+        question="최근에 나온 논문 중에 이 주제를 다룬 게 있어?",
+        type=QuestionType.OUT_OF_CORPUS,
+        expected_kind="claim",
+        note=(
+            "코퍼스 경계 문항 — live_lookup이 꺼져 있으면 §2.3의 '없음'으로, 켜져 있으면 "
+            "초록 범위 근거로 답한다. 어느 쪽이든 지어내면 오답이다."
+        ),
+    ),
+    GoldenCase(
+        name="out_of_corpus_non_arxiv_venue",
+        question="학회에만 실리고 arXiv에 없는 논문도 찾아줄 수 있어?",
+        type=QuestionType.OUT_OF_CORPUS,
+        expected_kind="claim",
+        note=(
+            "arXiv id가 없는 논문은 `doi:` 네임스페이스로 들어와 초록 범위로만 인용된다 — "
+            "본문을 확보한 것처럼 말하면 오답이다."
+        ),
+    ),
+    # 범위 밖 — 검색 0회로 끊는다(§2.4).
+    GoldenCase(
+        name="scope_ask_for_translation",
+        question="이 문장 영어로 번역해 줘",
+        type=QuestionType.OUT_OF_SCOPE,
+        expected_kind="out_of_scope",
+        note="§2.4 — 다른 기능(U7 번역)이 할 일이지 근거형성이 아니다.",
+    ),
+    GoldenCase(
+        name="scope_ask_about_the_weather",
+        question="내일 서울 날씨 어때?",
+        type=QuestionType.OUT_OF_SCOPE,
+        expected_kind="out_of_scope",
+        note="§2.4 — 논문으로 답할 질문이 아니다.",
+    ),
+)
+
+
 # 유형별 균형은 문항이 늘어도 유지한다 — 한 유형이 절반을 넘으면 그 유형의 회귀만 잡힌다.
 # 그 균형을 실제로 지키는 것은 `test_no_type_dominates_the_golden_set`이지 이 모듈이 아니다.
-GOLDEN_CASES: tuple[GoldenCase, ...] = _LABELLED + _UNLABELLED
+GOLDEN_CASES: tuple[GoldenCase, ...] = (
+    _LABELLED + _LABELLED_PR4 + _UNLABELLED + _UNLABELLED_PR4
+)
 
 
 def labelled_cases() -> tuple[GoldenCase, ...]:
-    """정답 논문이 붙은 문항 — recall@k와 2층 심판이 쓴다."""
-    return tuple(case for case in GOLDEN_CASES if case.expected_papers)
+    """**검수를 통과한** 정답 논문 문항 — recall@k와 2층 심판이 쓴다.
+
+    미검수 라벨을 여기서 걸러내는 것이 규칙의 구현이다. 종전에는 "미검수가 하나라도 있으면
+    테스트가 빨개진다"로 막았는데, 그것은 문항을 늘릴 때마다 CI를 빨갛게 만들 뿐 **미검수
+    라벨로 점수를 재는 것 자체는 막지 못했다** — 빨간 채로 점수는 그대로 나왔다.
+
+    지금은 미검수 문항이 채점 경로에 아예 들어오지 않는다. 그래서 recall@k와 심판 점수는
+    항상 "검수된 라벨로 잰 값"이고, 검수가 끝나면 표본이 자동으로 는다. 미검수 문항도
+    무라벨 검사(인용 실재율·게이트 탈락률·종합 비율·반대 측 탐색)에는 그대로 쓰인다 —
+    그쪽은 정답 라벨이 필요 없다.
+    """
+    return tuple(case for case in GOLDEN_CASES if case.expected_papers and case.reviewed)
 
 
 def pending_review() -> tuple[GoldenCase, ...]:
-    """아직 사용자 검수를 받지 않은 라벨 문항."""
-    return tuple(case for case in _LABELLED if not case.reviewed)
+    """아직 사용자 검수를 받지 않은 라벨 문항 — 검수 대기 목록이다.
+
+    비어 있어야 하는 값이 아니다. 여기 있는 동안 그 문항의 `expected_papers`는 채점에
+    쓰이지 않고(`labelled_cases`가 거른다), 검수가 끝나 `reviewed=True`가 되면 표본에 든다.
+    """
+    # `GOLDEN_CASES`에서 유도한다 — 사설 튜플을 나열하면 새 묶음이 채점에도 안 들어가고
+    # 대기 목록에도 안 보이는 상태가 되고, 그 상태를 잡는 검사가 없다.
+    return tuple(c for c in GOLDEN_CASES if c.expected_papers and not c.reviewed)

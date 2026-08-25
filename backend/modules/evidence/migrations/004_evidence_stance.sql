@@ -1,0 +1,14 @@
+-- U11 v3 PR 4 — 탐색 방향 선언을 트레이스에 남긴다(설계 evidence-agent-v3 §3.2·§7)
+--
+-- 모델이 검색·추출마다 stance(support|counter|neutral)를 선언하고, §3.3의 바닥 2조건이
+-- "반대 측을 찾아봤는가"를 그 선언으로 판정한다. 프롬프트 당부로 두지 않는 이유는
+-- novelty에서 당부가 지켜지지 않는 것을 실측했기 때문이고(루프 미사용 사례), 인자로 두면
+-- 지켜졌는지가 기계로 세어진다.
+--
+-- **`args_summary`를 되파싱하지 않는다.** 그 컬럼은 화면·관찰에 싣는 렌더 형식이라(길이
+-- 절단·구분자) 거기서 stance를 긁으면 바닥 검사가 표시 형식에 묶인다 — 요약 길이를 줄이는
+-- 무해한 변경 하나가 반대 측 탐색을 0회로 만들고, 그 결과는 "모델이 안 찾았다"로 보인다.
+--
+-- NULL을 허용한다: stance를 안 받는 도구(read_paper·fetch_paper·view_figure)의 호출과
+-- 이 마이그레이션 이전의 행이 그것이다. 세는 쪽은 'counter'만 세므로 NULL은 자연히 0이다.
+ALTER TABLE evidence_trace ADD COLUMN IF NOT EXISTS stance TEXT;

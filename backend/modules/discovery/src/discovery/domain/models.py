@@ -82,17 +82,38 @@ class DegradationSignal:
 
 
 @dataclass(frozen=True, slots=True)
+class YearRange:
+    """Publication-year bound on retrieval, inclusive on both ends; ``None`` means unbounded.
+
+    A FILTER, not a scoring signal — it constrains which papers can be retrieved at all, so it
+    is pushed into the store query rather than applied to the returned page. Applied afterwards
+    it would silently return nothing whenever the top-k happens to hold no in-range paper, which
+    is indistinguishable from "no such paper exists".
+    """
+
+    start: int | None = None
+    end: int | None = None
+
+    @property
+    def bounded(self) -> bool:
+        return self.start is not None or self.end is not None
+
+
+@dataclass(frozen=True, slots=True)
 class QueryPlan:
     """Expander output (BR-3 / Q1=A). embedding_vector is None in lexical-only mode.
 
     ``scope`` carries the caller's requested breadth (lite/full); the retriever uses it to gate
     k-NN and to pick the BM25 field set. It is independent of ``mode`` (degradation): a FULL
-    request still degrades to lexical-only when embedding is unavailable."""
+    request still degrades to lexical-only when embedding is unavailable.
+
+    ``years`` bounds publication year (U11 evidence ``corpus_search``); ``None`` = unbounded."""
 
     lexical_terms: tuple[str, ...]
     mode: RetrievalMode
     embedding_vector: tuple[float, ...] | None = None
     scope: SearchScope = SearchScope.LITE
+    years: YearRange | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -41,7 +41,10 @@ class HybridRetriever:
         best_knn_score: float | None = None
         if plan.mode is RetrievalMode.HYBRID and plan.embedding_vector is not None:
             knn_results = self._vector_store.knn_search(
-                plan.embedding_vector, RETRIEVAL_TOP_K, abstract_only=not full
+                plan.embedding_vector,
+                RETRIEVAL_TOP_K,
+                abstract_only=not full,
+                years=plan.years,
             )
             result_lists.append(knn_results)
             # Best RAW store score, captured before rank fusion discards it — the orchestrator's
@@ -49,7 +52,9 @@ class HybridRetriever:
             best_knn_score = max((score for _, score in knn_results), default=None)
         fields = _FULL_FIELDS if full else _LITE_FIELDS
         result_lists.append(
-            self._lexical_index.bm25_search(plan.lexical_terms, RETRIEVAL_TOP_K, fields=fields)
+            self._lexical_index.bm25_search(
+                plan.lexical_terms, RETRIEVAL_TOP_K, fields=fields, years=plan.years
+            )
         )
 
         fused = _reciprocal_rank_fusion(result_lists)

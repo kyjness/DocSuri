@@ -17,10 +17,14 @@ from collections.abc import Iterable
 from typing import Any
 
 from .domain.loop import compile_loop_graph, load_snapshot
-from .domain.models import LoopState, TerminationReason
+from .domain.models import LoopState, PaperHandle, PaperOrigin, TerminationReason
 from .models import TurnResult, to_turn_result
 
 log = logging.getLogger("docsuri.evidence.checkpoints")
+
+# 이어가기가 옮기는 논문 수 상한. 도구 상한(fetch 8 · read 8)보다 넉넉하되, 세션이
+# 길어져도 확인 범위 수치가 부풀지 않을 만큼 작게.
+_MAX_SEEDS = 40
 
 __all__ = ["TurnCheckpoints", "build_postgres_checkpointer"]
 
@@ -45,11 +49,41 @@ class TurnCheckpoints:
 
     def finalize(self, turn_id: str, topic: str) -> TurnResult | None:
         """실행자가 죽은 턴을 마지막 스냅샷으로 마감한다(§5.5). 스냅샷이 없으면 None."""
+        state = self._restore(turn_id)
+        if state is None:
+            return None
+        return to_turn_result(state, TerminationReason.INTERRUPTED, query_used=topic)
+
+    def _restore(self, turn_id: str) -> LoopState | None:
+        snapshot = load_snapshot(self._graph, turn_id)
+        return LoopState.from_snapshot(snapshot) if snapshot is not None else None
+
+    def seeds_from(self, turn_id: str) -> tuple[PaperHandle, ...]:
+        """`ContinuationSeedPort` — 직전 턴이 찾아 둔 논문 핸들만(설계 §3.4).
+
+        **상태 전체를 복원하지 않는다.** 이식이 옮기는 것은 "무엇을 찾았고 무엇을 봤는가"인데,
+        `LoopState.from_snapshot`은 근거마다 `model_validate`를 돌리고 트레이스 행마다 객체를
+        만든 뒤 전부 버린다 — 첫 턴 이후 **모든 턴**이 그 값을 낸다(씨앗은 이어가기 턴에만
+        쓰이지만 조회는 매 턴 돈다).
+
+        복원된 핸들에는 `doc_model`이 없다(직렬화되지 않는다) — 본문이 다시 필요하면
+        `fetch_paper`를 부르면 된다.
+        """
         snapshot = load_snapshot(self._graph, turn_id)
         if snapshot is None:
-            return None
-        state = LoopState.from_snapshot(snapshot)
-        return to_turn_result(state, TerminationReason.INTERRUPTED, query_used=topic)
+            return ()
+        rows = [*snapshot.get("papers", []), *snapshot.get("discovered", [])]
+        handles = [PaperHandle.from_snapshot(row) for row in rows]
+        # **첨부는 옮기지 않는다.** 첨부 핸들은 `abstract_text`에 사용자가 올린 문서 본문을
+        # 들고 스냅샷에 실린다 — 그대로 이식하면 다음 턴이 그 문서를 소유권·범위 재확인
+        # (`_attachment_inputs(owner_id, scope_id=turn_id, …)`) 없이 인용할 수 있고, 업로드를
+        # 지운 뒤에도 살아남는다. `_seed_explicit`가 `userdoc:`·`upload:` 접두어를 막는 것과
+        # 같은 우회다.
+        seeds = [h for h in handles if h.origin is not PaperOrigin.ATTACHMENT]
+        # **수를 묶는다.** 씨앗은 새 턴의 후보가 되고 그 후보가 다시 스냅샷에 실리므로,
+        # 안 묶으면 세션이 길어질수록 단조 증가한다(실측 5 → 10 → 15). 그 수가 화면의
+        # "관련 논문 N편 중 M편 확인"의 N이라, 한 번 검색한 턴이 "300편 중 4편"이 된다.
+        return tuple(seeds[:_MAX_SEEDS])
 
     def delete(self, turn_ids: Iterable[str]) -> int:
         saver = self._graph.checkpointer

@@ -91,6 +91,18 @@ class EvidenceRepository(Protocol):
     # INV-EV-1: owner 불일치·미존재는 KeyError → controller가 404(SEC-9)
     def get_session(self, owner_id: str, session_id: str) -> EvidenceSession: ...
     def list_sessions(self, owner_id: str, limit: int = 50) -> list[EvidenceSession]: ...
+    # 밀려난 턴 요약을 세션에 붙인다(§3.4). 없으면 만들고 있으면 이어 붙인다.
+    # 밀려난 턴 요약을 세션에 붙이고 **붙인 결과를 돌려준다** — 호출자가 같은 값을 다시
+    # 계산하면 상한이 한쪽에만 걸려 모델이 읽는 값과 DB 값이 갈린다(실제로 갈렸다).
+    def append_session_summary(self, owner_id: str, session_id: str, text: str) -> str: ...
+    # 요약으로 접은 턴에 도장을 찍는다(§3.4) — 없으면 같은 턴이 매 턴 다시 접힌다.
+    def mark_summarized(self, owner_id: str, turn_ids: list[str]) -> None: ...
+    # 최근 `keep`건 **밖**의, 아직 안 접힌 턴 (turn_id, topic) — 시간순.
+    # 결과 JSON을 역직렬화하지 않는다: 접는 데 필요한 것은 질문 문자열뿐이고, 이 질의는
+    # 관찰 창 밖(=오래된) 턴을 보므로 행이 많을 수 있다.
+    def unsummarized_before(
+        self, owner_id: str, session_id: str, keep: int
+    ) -> list[tuple[str, str]]: ...
     def soft_delete_session(self, owner_id: str, session_id: str) -> None: ...
     def soft_delete_all_sessions(self, owner_id: str) -> None: ...
     def add_turn(self, turn: EvidenceTurn) -> EvidenceTurn: ...
@@ -122,6 +134,18 @@ class EvidenceRepository(Protocol):
 
 
 # --- 직렬화 ------------------------------------------------------------------
+
+# 트레이스가 **화면으로 나가는** 키(§5.3). 저장 행은 이보다 넓다 — `stance`는 §7 트레이스로
+# 남기지만 진행 표시에 실을 것이 아니고(§5.3: 단계명·논문 제목·건수만), `ownerId`는 내부
+# 식별자다. 두 스토어가 각자 투영하면 인메모리에서만 통과하는 모양이 생긴다 — 이 저장소가
+# 이름 붙인 "두 스토어가 조용히 갈린다"가 정확히 그것이라, 투영을 한 곳에 둔다.
+_TRACE_WIRE_KEYS = ("seq", "tool", "argsSummary", "outcome", "resultSummary", "costUsd", "at")
+
+
+def trace_wire_row(row: dict) -> dict:
+    return {key: row.get(key) for key in _TRACE_WIRE_KEYS}
+
+
 
 def _serialize(result: TurnResult) -> tuple[dict | None, str]:
     """(result JSON, status)."""
@@ -206,6 +230,31 @@ class InMemoryEvidenceRepository:
             if found is None or found.owner_id != owner_id or found.status is SessionStatus.DELETED:
                 raise KeyError(session_id)
             return found
+
+    def append_session_summary(self, owner_id: str, session_id: str, text: str) -> str:
+        with self._lock:
+            # `get_session`을 지난다 — 삭제된 세션을 여기서만 받아주면 두 스토어가 갈리고,
+            # 테스트가 보는 것은 인메모리 쪽이라 그 갈림이 초록으로 남는다.
+            found = self.get_session(owner_id, session_id)
+            found.summary = _joined_summary(found.summary, text)
+            return found.summary
+
+    def unsummarized_before(
+        self, owner_id: str, session_id: str, keep: int
+    ) -> list[tuple[str, str]]:
+        with self._lock:
+            self.get_session(owner_id, session_id)
+            turns = list(self._turns.get(session_id, ()))
+        older = turns[: max(0, len(turns) - keep)]
+        return [(t.turn_id, t.topic or "") for t in older if t.summarized_at is None]
+
+    def mark_summarized(self, owner_id: str, turn_ids: list[str]) -> None:
+        with self._lock:
+            stamped = _utc_now()
+            for turns in self._turns.values():
+                for turn in turns:
+                    if turn.turn_id in turn_ids and turn.owner_id == owner_id:
+                        turn.summarized_at = stamped
 
     def list_sessions(self, owner_id: str, limit: int = 50) -> list[EvidenceSession]:
         with self._lock:
@@ -308,7 +357,7 @@ class InMemoryEvidenceRepository:
     def list_trace_after(self, owner_id: str, turn_id: str, after_seq: int) -> list[dict]:
         with self._lock:
             rows = [r for r in self._trace.get(turn_id, []) if r.get("ownerId") == owner_id]
-        return [r for r in rows if int(r.get("seq", 0)) > after_seq]
+        return [trace_wire_row(r) for r in rows if int(r.get("seq", 0)) > after_seq]
 
     def expired_turn_ids(self, older_than: datetime, limit: int = 200) -> list[str]:
         with self._lock:
@@ -352,6 +401,8 @@ class EvidenceSessionTable(Base):
     session_id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True)
     owner_id: Mapped[str] = mapped_column(Uuid(as_uuid=False), nullable=False, index=True)
     title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 토큰 예산에서 밀려난 이전 턴들의 요약(설계 §3.4). 한 번 만들어 덧붙인다.
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
     created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[Any] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -370,6 +421,8 @@ class EvidenceTurnTable(Base):
     created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), nullable=False)
     cancel_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     heartbeat_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 세션 요약으로 접힌 시각(§3.4) — 도장이 없으면 같은 턴이 매 턴 다시 접힌다.
+    summarized_at: Mapped[Any] = mapped_column(DateTime(timezone=True), nullable=True)
     checkpoints_pruned_at: Mapped[Any | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -399,6 +452,8 @@ class EvidenceTraceTable(Base):
     outcome: Mapped[str] = mapped_column(String(32), nullable=False)
     result_summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
     cost_usd: Mapped[float | None] = mapped_column(Double, nullable=True)
+    # 탐색 방향 선언(§3.2). stance를 안 받는 도구와 이 컬럼 이전의 행은 NULL이다.
+    stance: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -413,6 +468,7 @@ class SqlEvidenceRepository:
                 session_id=ev_session.session_id,
                 owner_id=ev_session.owner_id,
                 title=ev_session.title,
+                summary=ev_session.summary or None,
                 status=ev_session.status.value,
                 created_at=ev_session.created_at,
                 updated_at=ev_session.updated_at,
@@ -439,6 +495,44 @@ class SqlEvidenceRepository:
             .all()
         )
         return [_session_from_row(row) for row in rows]
+
+    def append_session_summary(self, owner_id: str, session_id: str, text: str) -> str:
+        self.get_session(owner_id, session_id)  # owner 격리(INV-EV-1)
+        row = self._s.get(EvidenceSessionTable, session_id)
+        row.summary = _joined_summary(row.summary or "", text)
+        self._s.flush()
+        return row.summary
+
+    def unsummarized_before(
+        self, owner_id: str, session_id: str, keep: int
+    ) -> list[tuple[str, str]]:
+        self.get_session(owner_id, session_id)  # owner 격리(INV-EV-1)
+        rows = (
+            self._s.query(EvidenceTurnTable.turn_id, EvidenceTurnTable.topic)
+            .filter(
+                EvidenceTurnTable.session_id == session_id,
+                EvidenceTurnTable.owner_id == owner_id,
+                EvidenceTurnTable.summarized_at.is_(None),
+            )
+            .order_by(EvidenceTurnTable.created_at.desc(), EvidenceTurnTable.turn_id.desc())
+            .offset(keep)
+            .all()
+        )
+        # offset이 최근 `keep`건을 건너뛴다 — 그 뒤는 오래된 순으로 뒤집어 돌려준다.
+        return [(str(r.turn_id), r.topic or "") for r in reversed(rows)]
+
+    def mark_summarized(self, owner_id: str, turn_ids: list[str]) -> None:
+        if not turn_ids:
+            return
+        (
+            self._s.query(EvidenceTurnTable)
+            .filter(
+                EvidenceTurnTable.owner_id == owner_id,
+                EvidenceTurnTable.turn_id.in_(turn_ids),
+            )
+            .update({EvidenceTurnTable.summarized_at: _utc_now()}, synchronize_session=False)
+        )
+        self._s.flush()
 
     def soft_delete_session(self, owner_id: str, session_id: str) -> None:
         self.get_session(owner_id, session_id)
@@ -599,6 +693,7 @@ class SqlEvidenceRepository:
                 outcome=str(row.get("outcome", "")),
                 result_summary=str(row.get("resultSummary", "")),
                 cost_usd=row.get("costUsd"),
+                stance=row.get("stance"),
                 created_at=_utc_now(),
             )
         )
@@ -616,15 +711,17 @@ class SqlEvidenceRepository:
             .all()
         )
         return [
-            {
-                "seq": row.seq,
-                "tool": row.tool,
-                "argsSummary": row.args_summary,
-                "outcome": row.outcome,
-                "resultSummary": row.result_summary,
-                "costUsd": row.cost_usd,
-                "at": row.created_at.isoformat() if row.created_at else None,
-            }
+            trace_wire_row(
+                {
+                    "seq": row.seq,
+                    "tool": row.tool,
+                    "argsSummary": row.args_summary,
+                    "outcome": row.outcome,
+                    "resultSummary": row.result_summary,
+                    "costUsd": row.cost_usd,
+                    "at": row.created_at.isoformat() if row.created_at else None,
+                }
+            )
             for row in rows
         ]
 
@@ -674,11 +771,45 @@ class SqlEvidenceRepository:
         self._s.close()
 
 
+# 세션 요약 상한(문자). 넘으면 **앞을 버린다** — 오래된 턴일수록 후속 질문이 덜 가리키고,
+# 뒤를 버리면 방금 밀려난 턴이 사라져 요약이 있으나 마나 해진다.
+_MAX_SESSION_SUMMARY_CHARS = 4000
+
+
+# 접힌 질문 목록의 머리표. 붙일 때마다 다시 쓰면 세션이 길어질수록 요약의 절반이 라벨이 된다
+# (30턴 실측: 188자 중 90자가 "이전에 물어본 것: " 아홉 벌이었다).
+_SUMMARY_LABEL = "이전에 물어본 것: "
+
+
+def _joined_summary(existing: str, text: str) -> str:
+    """요약을 이어 붙인다 — **다시 만들지 않는다**(§3.4: 매 턴 재요약하지 않는다).
+
+    **머리표와 상한을 이 함수가 소유한다.** 호출자는 맨 질문 목록만 준다 — 두 모듈이 같은
+    라벨 문자열을 각자 쓰면 한 글자만 달라져도 조용히 안 맞고, 그러면 접을 때마다 라벨이
+    다시 쌓인다(30턴에서 188자 중 90자가 라벨 아홉 벌이었다).
+
+    상한을 넘으면 **앞을 자른다** —
+    오래된 질문일수록 후속 질문이 덜 가리킨다. 자를 때 머리표가 함께 잘려 나가면 남는 것이
+    맥락 없는 조각이 되므로, 자른 뒤 머리표를 다시 세운다.
+    """
+    addition = text.strip()
+    if not addition:
+        return existing.strip()
+    if not existing.strip():
+        return (_SUMMARY_LABEL + addition)[-_MAX_SESSION_SUMMARY_CHARS:]
+    joined = f"{existing.strip()} / {addition}"
+    if len(joined) <= _MAX_SESSION_SUMMARY_CHARS:
+        return joined
+    trimmed = joined[-(_MAX_SESSION_SUMMARY_CHARS - len(_SUMMARY_LABEL)) :]
+    return _SUMMARY_LABEL + trimmed.lstrip(" /")
+
+
 def _session_from_row(row: EvidenceSessionTable) -> EvidenceSession:
     return EvidenceSession(
         session_id=str(row.session_id),
         owner_id=str(row.owner_id),
         title=row.title,
+        summary=row.summary or "",
         status=SessionStatus(row.status),
         created_at=_ensure_utc(row.created_at),
         updated_at=_ensure_utc(row.updated_at),
@@ -696,6 +827,7 @@ def _turn_from_row(row: EvidenceTurnTable) -> EvidenceTurn:
         created_at=_ensure_utc(row.created_at),
         cancel_requested=bool(row.cancel_requested),
         heartbeat_at=_ensure_utc(row.heartbeat_at) if row.heartbeat_at else None,
+        summarized_at=_ensure_utc(row.summarized_at) if row.summarized_at else None,
     )
 
 

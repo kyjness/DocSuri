@@ -54,7 +54,7 @@ class EvidenceSettings:
     max_iterations: int
     max_tool_calls_total: int
     cap_corpus_search: int
-    cap_external_search: int
+    cap_live_lookup: int
     cap_fetch_paper: int
     cap_read_paper: int
     cap_view_figure: int
@@ -97,7 +97,7 @@ class EvidenceSettings:
             max_iterations=_env_int('DOCSURI_EVIDENCE_MAX_ITERATIONS', 12),
             max_tool_calls_total=_env_int('DOCSURI_EVIDENCE_MAX_TOOL_CALLS', 30),
             cap_corpus_search=_env_int('DOCSURI_EVIDENCE_CAP_CORPUS_SEARCH', 5),
-            cap_external_search=_env_int('DOCSURI_EVIDENCE_CAP_EXTERNAL_SEARCH', 3),
+            cap_live_lookup=_env_int('DOCSURI_EVIDENCE_CAP_LIVE_LOOKUP', 3),
             # 3 → 8 (2026-08-24 실측). 답할 수 있는 질문에서 모델이 실제로 부른 횟수는
             # **6회**였고, 3에 막힌 턴은 논문 3편을 확보한 채 근거 0건으로 기권했다.
             cap_fetch_paper=_env_int('DOCSURI_EVIDENCE_CAP_FETCH_PAPER', 8),
@@ -116,9 +116,9 @@ class EvidenceSettings:
         from .domain.models import BudgetConsumed, LoopBudget
         from .ports.tools import (
             TOOL_CORPUS_SEARCH,
-            TOOL_EXTERNAL_SEARCH,
             TOOL_EXTRACT_EVIDENCE,
             TOOL_FETCH_PAPER,
+            TOOL_LIVE_LOOKUP,
             TOOL_READ_PAPER,
             TOOL_VIEW_FIGURE,
         )
@@ -128,7 +128,10 @@ class EvidenceSettings:
             max_tool_calls_total=self.max_tool_calls_total,
             max_tool_calls={
                 TOOL_CORPUS_SEARCH: self.cap_corpus_search,
-                TOOL_EXTERNAL_SEARCH: self.cap_external_search,
+                # 세 소스 **합산** 3회다(§3.2) — 소스마다 3이 아니다. 캡 키는 곧 도구
+                # 이름이라(`budget.max_tool_calls.get(tool_name)`) 어긋나면 캡이 조용히
+                # 무한대가 된다 — 예외도 로그도 없다.
+                TOOL_LIVE_LOOKUP: self.cap_live_lookup,
                 TOOL_FETCH_PAPER: self.cap_fetch_paper,
                 TOOL_READ_PAPER: self.cap_read_paper,
                 TOOL_VIEW_FIGURE: self.cap_view_figure,

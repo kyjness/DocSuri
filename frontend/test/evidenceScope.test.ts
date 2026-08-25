@@ -91,3 +91,50 @@ describe('확인 범위 문장 (FR-37 v2)', () => {
     expect(examinedRangeMessage({ paperCount: 2 })).toBeNull();
   });
 });
+
+describe('실시간 조회 불가 (v3 §7)', () => {
+  it('탐색이 완결됐어도 조회가 죽었으면 그 사실을 밝힌다', () => {
+    // 후보를 전부 확인하고 끝난 턴도 코퍼스 밖은 못 본 것이다. 안 밝히면 "그런 논문이
+    // 세상에 없다"로 읽히는데, 사용자가 할 일이 정반대다(다시 물어보기 vs 주제 넓히기).
+    const message = examinedRangeMessage({
+      paperCount: 3,
+      examined: 3,
+      candidates: 3,
+      stoppedReason: 'sufficient',
+      liveLookupDegraded: true,
+    });
+
+    expect(message).toContain('실시간 조회');
+  });
+
+  it('잘린 탐색이면 두 사실을 함께 낸다', () => {
+    const message = examinedRangeMessage({
+      paperCount: 2,
+      examined: 5,
+      candidates: 12,
+      stoppedReason: 'budget_exhausted',
+      liveLookupDegraded: true,
+    });
+
+    expect(message).toContain('12편 중 5편');
+    expect(message).toContain('실시간 조회');
+  });
+
+  it('조회가 멀쩡하면 아무 말도 덧붙이지 않는다', () => {
+    expect(
+      examinedRangeMessage({
+        paperCount: 3,
+        examined: 3,
+        candidates: 3,
+        stoppedReason: 'sufficient',
+        liveLookupDegraded: false,
+      }),
+    ).toBeNull();
+  });
+
+  it('내부 용어를 쓰지 않는다', () => {
+    const message = examinedRangeMessage({ paperCount: 1, liveLookupDegraded: true });
+
+    expect(message).not.toMatch(/degraded|arxiv|openalex|semantic/i);
+  });
+});

@@ -723,7 +723,7 @@ def _mount_evidence(app: FastAPI, settings: Settings, result: MountResult) -> No
             cost_guard=getattr(app.state, "cost_guard", None),
             # 앱쉘이 이미 가진 세션 팩토리 재사용 — 없으면 러너가 자체 생성한다.
             session_factory=evidence_session_factory,
-            graph=checkpoints.graph,
+            checkpoints=checkpoints,
         )
     else:
         log.info("app-shell: evidence real path not configured — running in repo-only mode")

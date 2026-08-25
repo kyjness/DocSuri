@@ -62,13 +62,13 @@ def build_evidence_runner(
     *,
     cost_guard: Any | None = None,
     session_factory: Any | None = None,
-    graph: Any | None = None,
+    checkpoints: Any | None = None,
     with_answer: bool = True,
 ) -> EvidenceTurnRunner:
     """실 어댑터 조립 — DOCSURI_DOCMODEL_BUCKET + OpenSearch 설정 필요.
 
     cost_guard(U6 단일 권위)를 주면 턴 실행의 비용 게이트에
-    연결된다(NFR-C1). graph(=TurnCheckpoints.graph)를 주면 super-step마다 루프 스냅샷이
+    연결된다(NFR-C1). checkpoints를 주면 super-step마다 루프 스냅샷이
     저장된다(v3 §5). 안 주면 체크포인트 없이 돈다.
 
     `with_answer=False`는 판단 층(§4.2)을 붙이지 않는다 — novelty의 중첩 근거형성처럼
@@ -100,7 +100,7 @@ def build_evidence_runner(
     vector_store = OpenSearchVectorStoreAdapter(os_client, d_settings.opensearch_index)
     lexical_index = OpenSearchLexicalIndexAdapter(os_client, d_settings.opensearch_index)
 
-    from .adapters.sources import ArxivExternalSearch, CorpusSearch, DocModelReader
+    from .adapters.sources import CorpusSearch, DocModelReader
 
     corpus_search = CorpusSearch(
         embedding=embedding,
@@ -155,11 +155,15 @@ def build_evidence_runner(
     )
 
     # --- 선택 도구: 없으면 등록되지 않고 도구 목록이 자연 축소된다 ---
-    external_search = None
+    live_lookup = None
     promotion = None
-    if _external_enabled():
-        external_search = ArxivExternalSearch(_build_arxiv_client())
+    index_queue = None
+    if _live_lookup_enabled():
+        live_lookup = _build_live_lookup()
         promotion = _build_promotion(doc_models)
+        # 실시간 조회로 찾은 논문을 코퍼스로 되먹인다(§2.6 4단계). 실시간 조회와 한 플래그에
+        # 묶는다 — 조회가 꺼져 있으면 코퍼스 밖 논문이 애초에 안 들어온다.
+        index_queue = _build_index_queue()
 
     assets = _build_asset_reader(session_factory)
 
@@ -169,14 +173,15 @@ def build_evidence_runner(
             extractor=extractor,
             answer=answer,
             corpus_search=corpus_search,
-            external_search=external_search,
+            live_lookup=live_lookup,
             doc_models=doc_models,
             promotion=promotion,
+            index_queue=index_queue,
             assets=assets,
             cost_guard=cost_guard,
             budget_factory=settings.build_loop_budget,
         ),
-        graph=graph,
+        checkpoints=checkpoints,
     )
     return runner
 
@@ -188,22 +193,49 @@ def build_evidence_runner(
 # 보이지도 않으므로 에이전트가 그 경로를 시도하지 않는다.
 
 
-def _external_enabled() -> bool:
+def _live_lookup_enabled() -> bool:
     from docsuri_shared.env import env_flag
 
-    return env_flag('DOCSURI_EVIDENCE_EXTERNAL_SEARCH_ENABLED')
+    return env_flag('DOCSURI_EVIDENCE_LIVE_LOOKUP_ENABLED')
 
 
-def _build_arxiv_client() -> object:
-    """evidence 자체의 arXiv 검색 클라이언트.
+def _build_live_lookup() -> object:
+    """실시간 조회 셋 — arXiv · Semantic Scholar · OpenAlex(설계 §3.2).
 
-    초안은 u1 `ArxivAdapter` 재사용을 적었지만 둘 다 성립하지 않았다: 그 어댑터에는
-    search()가 없고(수확·전문 취득용), `docsuri_ingestion`은 backend 의존성이 아니라
-    import 자체가 마운트를 죽인다. "질의 → 제목·초록"은 표준 라이브러리로 닫힌다.
+    초안은 u1·ingestion 어댑터 재사용을 적었지만 둘 다 성립하지 않았다: u1 `ArxivAdapter`에는
+    search()가 없고(수확·전문 취득용), `docsuri_ingestion`은 backend 의존성이 아니라 import
+    자체가 마운트를 죽인다. 그쪽 S2·OpenAlex 소스도 날짜 창 수확용이라 질의 검색이 없다.
+
+    **브레이커는 소스별로 새로 만든다.** 위 Bedrock 셋이 나눠 쓰는 브레이커를 재사용하면
+    arXiv 장애가 `decide`를 죽인다 — 다른 엔드포인트이므로 회로도 달라야 한다.
+
+    자격증명 env는 **ingestion이 쓰는 이름 그대로**다. 그 이름들은 소비자가 아니라 자격증명
+    자체를 가리키고, 한 배포에서 같은 키를 두 이름으로 두면 한쪽만 채워지는 날이 온다.
     """
-    from .adapters.sources import ArxivApiClient
+    import httpx
 
-    return ArxivApiClient()
+    from .adapters.live_sources import LiveLookup
+
+    return LiveLookup(
+        httpx.Client(timeout=env_float('DOCSURI_EVIDENCE_LIVE_LOOKUP_TIMEOUT_MS', 15000) / 1000),
+        s2_api_key=os.environ.get('DOCSURI_SEMANTIC_SCHOLAR_API_KEY'),
+        mailto=os.environ.get('DOCSURI_OPENALEX_MAILTO'),
+        contact=os.environ.get('DOCSURI_CONTACT_EMAIL'),
+    )
+
+
+def _build_index_queue() -> object | None:
+    """U1 **본 큐**에 색인 잡을 넣는 어댑터. 큐 URL이 없으면 None(기능이 자연히 꺼진다).
+
+    승격이 쓰는 우선순위 큐(`DOCSURI_DOCMODEL_BUILD_QUEUE_URL`)가 아니다 — 그쪽은 사용자가
+    기다리는 본문 확보용이고, 색인 잡을 섞으면 기다리는 쪽이 밀린다.
+    """
+    queue_url = os.environ.get('DOCSURI_SQS_QUEUE_URL')
+    if not queue_url:
+        return None
+    from .adapters.indexing import SqsPaperIndexQueue
+
+    return SqsPaperIndexQueue(queue_url=queue_url)
 
 
 def _build_promotion(doc_models: object) -> object | None:

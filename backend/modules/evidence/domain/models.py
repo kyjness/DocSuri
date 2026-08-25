@@ -206,7 +206,12 @@ class LoopBudget:
 
 @dataclass(frozen=True, slots=True)
 class ToolCallRecord:
-    """결정 트레이스 1건(FR-46, BR-EV-16) — 진행 활동 피드의 유일한 원천."""
+    """결정 트레이스 1건(FR-46, BR-EV-16) — 진행 활동 피드의 유일한 원천.
+
+    `stance`는 모델이 그 호출에 붙인 탐색 방향 선언이다(§3.2·§7). **일급 필드여야 한다** —
+    `args_summary`는 렌더 형식(길이 절단·구분자)이라 되파싱하면 바닥 검사가 화면 문자열에
+    묶인다. 선언이 없거나 어휘 밖이면 None이다.
+    """
 
     seq: int
     tool: str
@@ -214,6 +219,7 @@ class ToolCallRecord:
     outcome: ToolCallOutcome
     result_summary: str = ""
     cost_usd: float | None = None
+    stance: str | None = None
     at: datetime = field(default_factory=utc_now)
 
 
@@ -265,6 +271,14 @@ class LoopState:
     trace: list[ToolCallRecord] = field(default_factory=list)
     recent_results: list[Any] = field(default_factory=list)
     candidates_seen: set[str] = field(default_factory=set)
+    # 실시간 조회가 온전히 못 돌았는가(설계 §7). **마감이 읽으므로 스냅샷에 싣는다** —
+    # 확인 범위 줄에 "실시간 조회 불가"를 실을지가 여기서 갈린다. 부분 저하도 true다:
+    # 셋 중 둘이 죽은 턴과 멀쩡한 턴이 같은 화면을 내면 "그 논문이 세상에 없다"로 읽힌다.
+    #
+    # **소스 이름은 담지 않는다.** 유일한 소비자(마감)가 SEC-9 때문에 그것을 쓸 수 없고,
+    # 모델이 보는 이름은 상태가 아니라 도구 결과에서 온다. 도메인이 못 쓰는 값을 들고 있으면
+    # 언젠가 누가 그것을 렌더한다.
+    live_lookup_degraded: bool = False
     termination_reason: TerminationReason | None = None
     notes: list[str] = field(default_factory=list)
     # 모델이 종료 시점에 선언한 질문 유형(§3.3). 판단 프롬프트가 읽고, PR 4의 바닥 규칙이
@@ -320,11 +334,13 @@ class LoopState:
                     "outcome": r.outcome.value,
                     "result_summary": r.result_summary,
                     "cost_usd": r.cost_usd,
+                    "stance": r.stance,
                     "at": r.at.isoformat(),
                 }
                 for r in self.trace
             ],
             "candidates_seen": sorted(self.candidates_seen),
+            "live_lookup_degraded": self.live_lookup_degraded,
             "termination_reason": (
                 self.termination_reason.value if self.termination_reason else None
             ),
@@ -354,11 +370,13 @@ class LoopState:
                 outcome=ToolCallOutcome(r["outcome"]),
                 result_summary=r.get("result_summary", ""),
                 cost_usd=r.get("cost_usd"),
+                stance=r.get("stance"),
                 at=datetime.fromisoformat(r["at"]),
             )
             for r in data.get("trace", [])
         ]
         state.candidates_seen = set(data.get("candidates_seen", []))
+        state.live_lookup_degraded = bool(data.get("live_lookup_degraded", False))
         reason = data.get("termination_reason")
         state.termination_reason = TerminationReason(reason) if reason else None
         state.notes = list(data.get("notes", []))
@@ -378,3 +396,8 @@ class AgentRunContext:
     request_id: str = ""
     prior_topics: tuple[str, ...] = ()
     prior_paper_ids: tuple[str, ...] = ()
+    # 직전 턴의 id — 이어가기 씨앗(§3.4)을 그 턴의 체크포인트에서 읽는다. 없으면(세션 첫 턴,
+    # 포트 경로) 이식할 것이 없다.
+    prior_turn_id: str | None = None
+    # 밀려난 이전 턴들의 요약 한 단락(§3.5 토큰 예산). 세션에 저장되고 매 턴 재요약하지 않는다.
+    prior_summary: str = ""

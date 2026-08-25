@@ -112,6 +112,10 @@ export interface EvidenceCoverage {
    * 탐색 종료 사유(선택, v2). 비기술 사유만 — 내부 상태·예외 상세 비노출(SEC-9). sufficient이면 화면에 확인 범위를 표시하지 않는다. cancelled = 사용자가 취소해 그 시점까지 검증된 근거로 만든 부분 답(v3 §2.8). 터미널 상태는 ok|abstain 2종을 유지하며 이 필드는 상태가 아니라 부가 정보다. Trace: FR-37 v2, SEC-9.
    */
   stoppedReason?: "sufficient" | "budget_exhausted" | "partial_failure" | "cancelled";
+  /**
+   * 실시간 조회(arXiv·Semantic Scholar·OpenAlex)가 이번 턴에 온전히 돌지 못했는가(선택, v3 §7). true면 확인 범위 줄이 그 사실을 밝힌다 — 소스가 죽어서 못 찾은 것과 세상에 그런 논문이 없는 것은 사용자가 할 일이 다르다(다시 물어보기 vs 주제 넓히기). **어느 소스가 죽었는지는 싣지 않는다**(SEC-9 내부 상세 비노출). 셋 다 죽어 조회가 통째로 실패한 턴도 코퍼스 결과로 답하며 이 값이 true다. Trace: v3 §7, SEC-9.
+   */
+  liveLookupDegraded?: boolean;
 }
 /**
  * 판단 층의 산출(v3 §4.4). 종전에는 claims를 결정론으로 이어붙인 문자열이라 조건이 갈리는 질문에 '어느 쪽인지'를 말하지 못했다. Trace: v3 §4.2, §4.4.

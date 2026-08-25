@@ -24,13 +24,12 @@ from docsuri_shared._generated.dtos.evidence_schema import (
     EvidenceAbstainResult,
     EvidenceRequest,
 )
-from langgraph.graph.state import CompiledStateGraph
 
 from .adapters.tools import (
     CorpusSearchTool,
-    ExternalSearchTool,
     ExtractEvidenceTool,
     FetchPaperTool,
+    LiveLookupTool,
     ReadPaperTool,
     ViewFigureTool,
 )
@@ -67,9 +66,11 @@ class RunnerDeps:
     # 이어붙이기로 떨어진다 — 다른 선택 의존성과 같은 규칙이다.
     answer: Any | None = None
     corpus_search: Any | None = None
-    external_search: Any | None = None
+    live_lookup: Any | None = None
     doc_models: Any | None = None
     promotion: Any | None = None
+    # 백그라운드 색인 큐(§2.6 4단계). 없으면 코퍼스가 안 자랄 뿐 턴은 그대로 돈다.
+    index_queue: Any | None = None
     assets: Any | None = None
     cost_guard: Any | None = None
     budget_factory: Callable[[], LoopBudget] | None = None
@@ -77,10 +78,13 @@ class RunnerDeps:
 
 
 class EvidenceTurnRunner:
-    def __init__(self, deps: RunnerDeps, *, graph: CompiledStateGraph | None = None) -> None:
+    def __init__(self, deps: RunnerDeps, *, checkpoints: Any | None = None) -> None:
         self._deps = deps
-        # 그래프를 안 주면 체크포인트 없이 돈다(테스트·U12 포트 경로).
-        self._graph = graph if graph is not None else compile_loop_graph(None)
+        # 체크포인트 객체가 그래프를 소유한다(§3.1) — 없으면 체크포인터 없이 컴파일하고
+        # 이어가기가 자연히 꺼진다. `graph=`를 따로 받던 인자는 지웠다: `checkpoints=`를
+        # 더한 뒤 호출자가 하나도 안 남았는데 세 갈래 `None` 조정만 남아 있었다.
+        self._checkpoints = checkpoints
+        self._graph = checkpoints.graph if checkpoints is not None else compile_loop_graph(None)
 
     # -- 비용 -----------------------------------------------------------------
     def _cost_degraded(self) -> bool:
@@ -116,6 +120,7 @@ class EvidenceTurnRunner:
         _seed_attachments(state, attachments)
         scope = _effective_scope(request)
         _seed_explicit(state, request, scope)
+        _seed_continuation(state, self._checkpoints, ctx, scope)
 
         budget = (self._deps.budget_factory or _default_budget)()
         registry = self._build_registry(state, scope=scope)
@@ -132,6 +137,7 @@ class EvidenceTurnRunner:
             ),
             graph=self._graph,
         )
+        _queue_for_indexing(state, self._deps.index_queue)
         return to_turn_result(state, outcome.reason, query_used=request.topic)
 
     def _build_registry(self, state: LoopState, *, scope: str) -> ToolRegistry:
@@ -148,8 +154,8 @@ class EvidenceTurnRunner:
 
         if searchable and deps.corpus_search is not None:
             registry.register(CorpusSearchTool(deps.corpus_search, state))
-        if searchable and deps.external_search is not None:
-            registry.register(ExternalSearchTool(deps.external_search, state))
+        if searchable and deps.live_lookup is not None:
+            registry.register(LiveLookupTool(deps.live_lookup, state))
         if deps.doc_models is not None:
             registry.register(
                 FetchPaperTool(
@@ -179,6 +185,66 @@ def _seed_attachments(state: LoopState, attachments: tuple[Any, ...]) -> None:
                 abstract_text=getattr(doc, "text", "") or "",
             )
         )
+
+
+def _seed_continuation(
+    state: LoopState, checkpoints: Any | None, ctx: AgentRunContext, scope: str
+) -> None:
+    """직전 턴이 찾아 둔 논문을 새 턴의 **후보**로 옮긴다(설계 §3.4 이어가기).
+
+    **판정은 모델이, 이식은 기계다.** 설계 초안은 모델이 `continuation: true`를 선언하면
+    옮긴다고 적었으나 그럴 자리가 없다 — 이식은 루프가 돌기 **전**이라 모델은 아직 아무것도
+    못 봤다. 그래서 씨앗은 무조건 심고 관찰의 "확인 대기 논문"에 실어 모델이 쓸지 고르게
+    한다. explicit scope에서 이미 그 자리가 그렇게 동작한다.
+
+    **`discovered`로 심는다 — `papers`가 아니다.** `examined`는 `len(self.papers)`이므로
+    확인분으로 심으면 **이번 턴이 열어보지도 않은 논문이 "확인함"으로 세어지고**, 화면의
+    "후보 N편 중 M편 확인"이 그 수를 그대로 쓴다. 설계 §3.4가 씨앗을 "관찰의 **확인 대기
+    논문**에 실어"라고 적은 것이 곧 이 버킷이다.
+
+    이식은 `prior_turn_id`만 있으면 도므로 새 주제 턴(§2.5의 "QLoRA는?")에도 심긴다 —
+    설계가 그 턴에서 이전 논문이 **후보로 남는다**고 적은 것과 같다.
+
+    이미 있는 id는 덮지 않는다: 첨부·명시 논문이 먼저 심어졌고 그쪽이 더 구체적이다
+    (본문·소유권이 확인된 핸들).
+    """
+    if checkpoints is None or scope == "explicit" or not ctx.prior_turn_id:
+        return
+    try:
+        seeds = checkpoints.seeds_from(ctx.prior_turn_id)
+    except Exception:  # noqa: BLE001 — 씨앗을 못 읽는 것이 새 턴을 깨뜨리면 안 된다
+        log.warning("evidence: continuation seeds unavailable", exc_info=True)
+        return
+    for handle in seeds:
+        if state.handle(handle.paper_id) is None:
+            state.discovered[handle.paper_id] = handle
+
+
+def _queue_for_indexing(state: LoopState, queue: Any | None) -> None:
+    """실시간 조회로 찾아 **실제로 확인한** 논문을 백그라운드 색인에 올린다(설계 §2.6 4단계).
+
+    이것이 "쓸수록 코퍼스가 그쪽으로 자란다"의 구현이다. 없으면 같은 논문을 매 턴 실시간으로
+    다시 조회하고 코퍼스는 영원히 자라지 않는다 — 승격(`fetch_paper`)만으로는 본문만 생기고
+    색인은 안 된다(U1의 `BUILD_DOC_MODEL`은 "이미 색인된 논문"을 위한 잡이다).
+
+    **확인한 것만 올린다.** 검색 히트를 전부 올리면 질의 한 번에 열 편이 큐로 가고, 그중
+    모델이 열어보지도 않은 논문이 대부분이다.
+
+    **한 번에 보낸다.** 논문마다 부르면 확인 논문 수만큼 SQS 왕복이 응답 반환 앞에 얹히고,
+    실패하면 botocore 재시도가 메시지마다 돈다 — 이 턴의 답이 기다리지 않아도 되는 일이다.
+
+    실패는 전부 삼킨다 — 색인은 **다음** 질문을 위한 것이라 이 턴의 답에 영향이 없다.
+    """
+    if queue is None:
+        return
+    # 코퍼스 논문은 이미 색인돼 있고, 첨부는 사적 문서라 코퍼스에 넣지 않는다.
+    paper_ids = [h.paper_id for h in state.papers.values() if h.origin is PaperOrigin.EXTERNAL]
+    if not paper_ids:
+        return
+    try:
+        queue.enqueue_index(paper_ids)
+    except Exception:  # noqa: BLE001 — 색인 요청 실패가 답을 깨뜨리면 안 된다
+        log.warning("evidence: index enqueue failed (%d papers)", len(paper_ids), exc_info=True)
 
 
 def _effective_scope(request: EvidenceRequest) -> str:

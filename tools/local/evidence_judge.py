@@ -39,7 +39,13 @@ from backend.modules.evidence.domain.models import AgentRunContext  # noqa: E402
 from backend.modules.evidence.eval.golden_set import GoldenCase, labelled_cases  # noqa: E402
 from backend.modules.evidence.eval.layer1 import score_turn, summarise  # noqa: E402
 from backend.modules.evidence.real_wiring import build_evidence_runner  # noqa: E402
+from backend.modules.evidence.checkpoints import (  # noqa: E402
+    TurnCheckpoints,
+    build_postgres_checkpointer,
+)
+from backend.modules.evidence.service import cited_paper_ids  # noqa: E402
 from backend.modules.evidence.settings import EvidenceSettings  # noqa: E402
+from backend.config import Settings  # noqa: E402
 from docsuri_shared.bedrock import ANTHROPIC_VERSION, invoke_model, text_blocks  # noqa: E402
 
 log = logging.getLogger("evidence.judge")
@@ -105,11 +111,30 @@ def _run_case(runner, case: GoldenCase, cap: _Contamination) -> dict:
     from docsuri_shared._generated.dtos.evidence_schema import EvidenceRequest
 
     cap.msgs.clear()
+    session_id = f"judge:{case.name}"
+    prior_turn_id, prior_paper_ids = None, ()
+    if case.prior_topic:
+        # **이전 턴을 진짜로 돌린다.** 종전에는 `prior_topic` 문자열만 넘겼는데, 그러면
+        # 후속 문항이 "이전 턴에서 인용한 논문"도 이어가기 씨앗도 없이 도는 것이라
+        # 좁히기·이어가기가 구현돼도 여기서는 영영 실패한다 — 2026-08-24 2층 실행의 유일한
+        # 1 fail이 정확히 그 모양이었고, 그때는 원인을 루프 미구현으로만 적었다.
+        prior_turn_id = f"judge-{case.name}-prior"
+        prior = runner.run(
+            AgentRunContext(
+                owner_id="judge", session_id=session_id, turn_id=prior_turn_id
+            ),
+            EvidenceRequest(topic=case.prior_topic),
+        )
+        prior_paper_ids = cited_paper_ids(prior)
+        log.info("  이전 턴 완료: 인용 논문 %d편", len(prior_paper_ids))
+
     ctx = AgentRunContext(
         owner_id="judge",
-        session_id=f"judge:{case.name}",
+        session_id=session_id,
         turn_id=f"judge-{case.name}",
         prior_topics=(case.prior_topic,) if case.prior_topic else (),
+        prior_paper_ids=prior_paper_ids,
+        prior_turn_id=prior_turn_id,
     )
     trace: list = []
     result = runner.run(ctx, EvidenceRequest(topic=case.question), on_trace=trace.append)
@@ -177,7 +202,13 @@ def main() -> int:
         log.error("evidence가 구성되지 않았다 — .env를 source했는지 확인한다")
         return 2
 
-    runner = build_evidence_runner(settings)
+    # 이어가기 씨앗은 체크포인트에서 온다 — 체크포인터 없이 조립하면 후속 문항이
+    # PR 4 이전과 똑같이 돌고 그 사실이 결과에 안 보인다.
+    checkpointer, close_checkpointer = build_postgres_checkpointer(
+        Settings.from_env().database_url, setup=False
+    )
+    checkpoints = TurnCheckpoints(checkpointer)
+    runner = build_evidence_runner(settings, checkpoints=checkpoints)
     cases = [c for c in labelled_cases() if not args.case or c.name == args.case]
     if not cases:
         log.error("문항을 찾지 못했다: %s", args.case)
@@ -248,6 +279,7 @@ def main() -> int:
 
     # 판정하지 않는다 — 첫 실행의 값어치는 점수가 아니라 심판과 사람 판정의 어긋남이다.
     log.info("문항 %d건 · 1층 위반 %d건", len(rows), len(summary["violations"]))
+    close_checkpointer()
     return 0
 
 

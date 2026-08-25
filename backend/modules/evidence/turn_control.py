@@ -26,7 +26,11 @@ __all__ = ["TurnControl", "trace_row"]
 
 
 def trace_row(record: ToolCallRecord) -> dict[str, Any]:
-    """트레이스 저장·전송 형태 — sanitized 요약만(INV-EV-5). 실행자와 API가 같은 키를 본다."""
+    """트레이스 **저장** 형태 — sanitized 요약만(INV-EV-5).
+
+    화면으로 나가는 키는 이보다 좁다(`repository.trace_wire_row`) — `stance`는 §7 트레이스로
+    남기지만 진행 표시에 실을 것이 아니다(§5.3: 단계명·논문 제목·건수만).
+    """
     return {
         "seq": record.seq,
         "tool": record.tool,
@@ -34,6 +38,7 @@ def trace_row(record: ToolCallRecord) -> dict[str, Any]:
         "outcome": record.outcome.value,
         "resultSummary": record.result_summary,
         "costUsd": record.cost_usd,
+        "stance": record.stance,
     }
 
 

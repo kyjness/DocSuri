@@ -11,6 +11,7 @@ from discovery.adapters.opensearch_index import (
     OpenSearchPaperLookupAdapter,
     OpenSearchVectorStoreAdapter,
 )
+from discovery.domain.models import YearRange
 from discovery.ports.search_ports import IndexUnavailable
 from discovery.testing import fixtures
 
@@ -262,3 +263,98 @@ def test_search_does_not_retry_non_transient_failure() -> None:
     with pytest.raises(IndexUnavailable):
         adapter.bm25_search(["x"], 10)
     assert flaky.calls == 1  # terminal error → no retry
+
+
+# --- year bound: it has to be IN the query, not applied to the page it returns ---------------
+
+
+def test_bm25_year_bound_is_a_filter_clause_so_it_never_touches_scoring() -> None:
+    rec = fixtures.RECORDS[0]
+    fake = FakeSearchClient(hits=[_hit(rec, 2.5)])
+    adapter = OpenSearchLexicalIndexAdapter(fake, "docsuri-corpus-v1")
+
+    adapter.bm25_search(["x"], top_k=10, years=YearRange(start=2023, end=2025))
+
+    _, body = fake.last
+    bool_q = body["query"]["bool"]
+    assert bool_q["filter"] == [{"range": {"year": {"gte": 2023, "lte": 2025}}}]
+    # The original query survives untouched under `must` — a filter clause is not scored, so
+    # BM25 ordering within the matching subset is identical to the unbounded search.
+    assert bool_q["must"] == [
+        {"multi_match": {"query": "x", "fields": ["title", "abstract", "lexicalTerms"]}}
+    ]
+
+
+def test_an_unbounded_search_body_is_unchanged_by_the_year_feature() -> None:
+    """Wrapping unconditionally would alter every existing query's shape for nothing."""
+    rec = fixtures.RECORDS[0]
+    fake = FakeSearchClient(hits=[_hit(rec, 2.5)])
+    adapter = OpenSearchLexicalIndexAdapter(fake, "docsuri-corpus-v1")
+
+    adapter.bm25_search(["x"], top_k=10, years=YearRange())
+
+    _, body = fake.last
+    assert "bool" not in body["query"]
+    assert body["query"]["multi_match"]["query"] == "x"
+
+
+def test_one_sided_year_bounds_emit_only_that_side() -> None:
+    rec = fixtures.RECORDS[0]
+    fake = FakeSearchClient(hits=[_hit(rec, 2.5)])
+    adapter = OpenSearchLexicalIndexAdapter(fake, "docsuri-corpus-v1")
+
+    adapter.bm25_search(["x"], top_k=10, years=YearRange(start=2023))
+    _, body = fake.last
+    assert body["query"]["bool"]["filter"] == [{"range": {"year": {"gte": 2023}}}]
+
+    adapter.bm25_search(["x"], top_k=10, years=YearRange(end=2019))
+    _, body = fake.last
+    assert body["query"]["bool"]["filter"] == [{"range": {"year": {"lte": 2019}}}]
+
+
+def test_knn_year_bound_goes_into_the_ann_filter_not_a_post_filter() -> None:
+    """Efficient k-NN filtering picks the k neighbours FROM the matching subset. As a post-filter
+    the bound would instead cut an already-chosen k, so a narrow window returns a handful of
+    papers out of the requested top_k and reads as "few such papers exist"."""
+    rec = fixtures.RECORDS[0]
+    fake = FakeSearchClient(hits=[_hit(rec, 0.9)])
+    adapter = OpenSearchVectorStoreAdapter(fake, "docsuri-corpus-v1")
+
+    adapter.knn_search([0.0] * DIMENSIONS, top_k=10, years=YearRange(start=2023))
+
+    _, body = fake.last
+    assert body["query"]["knn"]["vector"]["filter"] == {"range": {"year": {"gte": 2023}}}
+
+
+def test_knn_combines_the_abstract_and_year_restrictions_instead_of_dropping_one() -> None:
+    """`abstract_only` already owned `knn["filter"]`. A second restriction assigned over it would
+    silently drop the lite-scope one — one paper's whole chunk set then floods the slice."""
+    rec = fixtures.RECORDS[0]
+    fake = FakeSearchClient(hits=[_hit(rec, 0.9)])
+    adapter = OpenSearchVectorStoreAdapter(fake, "docsuri-corpus-v1")
+
+    adapter.knn_search([0.0] * DIMENSIONS, top_k=10, abstract_only=True, years=YearRange(end=2020))
+
+    _, body = fake.last
+    assert body["query"]["knn"]["vector"]["filter"] == {
+        "bool": {
+            "filter": [
+                {"term": {"section": "abstract"}},
+                {"range": {"year": {"lte": 2020}}},
+            ]
+        }
+    }
+
+
+def test_phrase_search_keeps_both_the_paper_id_and_year_filters() -> None:
+    rec = fixtures.RECORDS[0]
+    fake = FakeSearchClient(hits=[_hit(rec, 2.5)])
+    adapter = OpenSearchLexicalIndexAdapter(fake, "docsuri-corpus-v1")
+
+    adapter.phrase_search("x", top_k=200, paper_ids=["2001.00001"], years=YearRange(start=2023))
+
+    _, body = fake.last
+    assert body["query"]["bool"]["filter"] == [
+        {"terms": {"paperId": ["2001.00001"]}},
+        {"range": {"year": {"gte": 2023}}},
+    ]

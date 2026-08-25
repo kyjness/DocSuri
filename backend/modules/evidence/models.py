@@ -85,6 +85,8 @@ class EvidenceTurn:
     cancel_requested: bool = False
     # 실행자가 살아 있다는 마지막 흔적 — 없으면 created_at이 기준이다(§5.5 고아 마감).
     heartbeat_at: datetime | None = None
+    # 이 턴이 세션 요약으로 접힌 시각(§3.4). 도장이 없으면 매 턴 다시 접힌다.
+    summarized_at: datetime | None = None
 
 
 @dataclass
@@ -92,6 +94,9 @@ class EvidenceSession:
     session_id: str = field(default_factory=_new_id)
     owner_id: str = ''
     title: str | None = None
+    # 토큰 예산에서 밀려난 이전 턴들의 요약 한 단락(설계 §3.4). **매 턴 재요약하지 않는다** —
+    # 밀려나는 턴이 생길 때 한 번 만들어 여기 두고, 이후 턴이 밀릴 때마다 덧붙인다.
+    summary: str = ''
     turns: list[EvidenceTurn] = field(default_factory=list)
     status: SessionStatus = SessionStatus.ACTIVE
     created_at: datetime = field(default_factory=_utc_now)

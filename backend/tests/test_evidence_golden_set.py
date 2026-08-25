@@ -11,21 +11,39 @@ CI에서 매 PR 돈다. 비용이 0이어야 하므로 실모델을 타지 않�
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 import pytest
 
-from backend.modules.evidence.domain.loop import LoopDeps, run_loop
+from backend.modules.evidence.adapters.tools import CorpusSearchTool
+from backend.modules.evidence.domain.loop import LoopDeps, counter_probes, run_loop
 from backend.modules.evidence.domain.models import (
     LoopState,
+    TerminationReason,
+    ToolCallOutcome,
+    ToolCallRecord,
 )
 from backend.modules.evidence.eval import GOLDEN_CASES, QuestionType, score_turn
-from backend.modules.evidence.eval.golden_set import labelled_cases, pending_review
+from backend.modules.evidence.eval.golden_set import (
+    GoldenCase,
+    labelled_cases,
+    pending_review,
+)
 from backend.modules.evidence.eval.layer1 import summarise
 from backend.modules.evidence.models import to_turn_result
-from backend.modules.evidence.ports.llm import AnswerSentence
-from backend.modules.evidence.ports.tools import ToolRegistry
+from backend.modules.evidence.ports.llm import (
+    COUNTER_REQUIRED_KINDS,
+    AnswerSentence,
+    ToolCallProposal,
+)
+from backend.modules.evidence.ports.tools import (
+    STANCE_COUNTER,
+    TOOL_CORPUS_SEARCH,
+    ToolRegistry,
+)
 from backend.modules.evidence.testing import (
+    NoHits,
     ScriptedAnswer,
     ScriptedLlm,
     accumulator,
@@ -38,7 +56,8 @@ from backend.modules.evidence.testing import (
 #
 # `decide`·`answer`는 대역(`evidence.testing`)이고 도구·게이트·루프·검사기는 **실제 코드**를
 # 그대로 지난다. 그래서 이 파일이 잡는 것은 답변 품질이 아니라 배선과 불변식이다.
-# `decide` 대역은 첫 턴에 곧바로 종료를 제안한다 — 탐색 자체는 다른 테스트가 본다.
+# `decide` 대역은 주장·비교형에서 반대 측 탐색 한 번 뒤에 종료를 제안한다 — §3.3 바닥 2가
+# 요구하는 최소 모양이다. 그 한 번이 0건이어도 된다("찾아본 뒤 없으면 그때 끝내도 된다").
 
 
 def _run(case, *, papers: tuple[str, ...], answer=None) -> tuple[Any, LoopState]:
@@ -52,9 +71,18 @@ def _run(case, *, papers: tuple[str, ...], answer=None) -> tuple[Any, LoopState]
                 for pid in papers
             )
         )
+    registry = ToolRegistry()
+    registry.register(CorpusSearchTool(NoHits(), state))
+    script: list[Any] = []
+    if case.expected_kind in COUNTER_REQUIRED_KINDS:
+        script.append(
+            ToolCallProposal(
+                TOOL_CORPUS_SEARCH, {"query": case.question, "stance": STANCE_COUNTER}
+            )
+        )
     deps = LoopDeps(
-        llm=ScriptedLlm(question_kind=case.expected_kind),
-        registry=ToolRegistry(),
+        llm=ScriptedLlm(script=script, question_kind=case.expected_kind),
+        registry=registry,
         budget=loop_budget(max_iterations=4, max_tool_calls_total=8, max_tool_calls={}),
         ctx=run_context(),
         answer=answer or ScriptedAnswer(),
@@ -93,15 +121,40 @@ def test_every_labelled_case_states_why_those_papers():
         assert case.expected_direction.strip(), f"{case.name}: 기대 판단 방향이 비어 있다"
 
 
-def test_every_label_has_passed_human_review():
+def test_unreviewed_labels_never_reach_the_scoring_path():
     """검수되지 않은 라벨로 잰 점수는 '내가 정한 정답으로 내가 채점한 값'이다.
 
-    2026-08-24 검수 완료. 문항을 새로 넣으면 `reviewed=False`로 들어와 이 테스트가
-    빨개진다 — 그게 의도다. 검수 없이 지표를 읽는 것을 막는 유일한 자리다.
+    종전에는 "미검수가 하나라도 있으면 빨개진다"로 막았는데, 그것은 문항을 늘릴 때마다 CI를
+    빨갛게 만들 뿐 **미검수 라벨로 점수를 재는 것 자체는 막지 못했다** — 빨간 채로 점수는
+    그대로 나왔다. 지금은 채점 경로가 미검수를 안 받는다.
+
+    **검수 대기 목록이 비어 있어도 이 불변식은 살아 있어야 한다.** 실제 데이터에 미검수가
+    있는지로 검사하면, 전부 검수된 날 이 테스트가 아무것도 안 보면서 초록으로 남는다 —
+    그러면 다음에 문항이 들어올 때 규칙이 깨진 것을 아무도 모른다. 그래서 합성 사례로 본다.
     """
-    assert pending_review() == (), (
-        "검수되지 않은 라벨: " + ", ".join(c.name for c in pending_review())
+    unreviewed = GoldenCase(
+        name="synthetic",
+        question="q",
+        type=QuestionType.CLAIM,
+        expected_kind="claim",
+        expected_papers=("2106.09685",),
+        expected_direction="d",
+        note="n",
     )
+
+    assert unreviewed.reviewed is False, "새 문항의 기본값이 검수됨이면 게이트가 무의미하다"
+    assert not _scored(unreviewed)
+    assert _scored(replace(unreviewed, reviewed=True))
+
+
+def _scored(case: GoldenCase) -> bool:
+    """`labelled_cases()`가 이 문항을 채점 표본에 넣는가 — 그 함수와 같은 규칙을 본다."""
+    return bool(case.expected_papers and case.reviewed)
+
+
+def test_the_scoring_sample_holds_only_reviewed_labels():
+    assert all(c.reviewed for c in labelled_cases())
+    assert {c.name for c in pending_review()}.isdisjoint({c.name for c in labelled_cases()})
 
 
 # --- 1층 채점 -----------------------------------------------------------------
@@ -184,3 +237,159 @@ def test_summary_keeps_search_and_answer_metrics_apart():
     assert summary["citation_reality"] == 1.0
     assert summary["recall_at_k"] is not None
     assert "violations" in summary and summary["violations"] == []
+
+
+# --- 바닥 2: 반대 측 탐색(§3.3) ------------------------------------------------
+#
+# 픽스처를 "반대 측을 한 번 찾아보는 턴"으로 고쳤으므로, 그 조건이 **실제로 무는지**를
+# 따로 본다. 안 그러면 픽스처만 통과시키고 검사는 아무것도 안 하는 상태로 초록이 된다.
+
+
+def _claim_case():
+    return next(c for c in GOLDEN_CASES if c.expected_kind == "claim")
+
+
+def test_a_claim_turn_that_never_probed_the_counter_side_is_a_violation():
+    case = _claim_case()
+    result, state = _run(case, papers=("2106.09685",))
+    # 선언을 지운다 = 반대 측을 한 번도 안 찾아본 턴.
+    state.trace = [replace(r, stance=None) for r in state.trace]
+
+    report = score_turn(case, result, trace=state.trace)
+
+    assert report.counter_probes == 0
+    assert any("counter" in v for v in report.violations)
+
+
+def test_a_fact_turn_is_exempt_from_the_counter_condition():
+    """사실형("X는 몇 년에 나왔어")에 반대 측을 요구하면 없는 대립을 찾게 만든다(§3.3)."""
+    case = next(c for c in GOLDEN_CASES if c.expected_kind == "fact")
+
+    result, state = _run(case, papers=("2201.11903",))
+    report = score_turn(case, result, trace=state.trace)
+
+    assert report.counter_probes == 0
+    assert report.violations == []
+
+
+def test_the_loop_refuses_to_finish_a_claim_turn_before_probing():
+    """루프가 종료 제안을 물린다 — 채점만 위반으로 찍고 답은 나가면 검사가 사후 통보다."""
+    case = _claim_case()
+    state = LoopState(topic=case.question)
+    state.accumulator = accumulator(
+        evidence_item("근거", paper_id="2106.09685", anchor="s1.p1", quote="q", anchor_type=None)
+    )
+    llm = ScriptedLlm(question_kind="claim")  # 대본이 비어 매 회차 종료를 제안한다
+    deps = LoopDeps(
+        llm=llm,
+        registry=ToolRegistry(),
+        budget=loop_budget(max_iterations=3, max_tool_calls_total=8, max_tool_calls={}),
+        ctx=run_context(),
+        answer=ScriptedAnswer(),
+    )
+
+    outcome = run_loop(state, deps)
+
+    assert outcome.reason is not TerminationReason.SUFFICIENT, "바닥 2 미달인데 정상 종료했다"
+    assert any("counter" in note for note in state.notes), "거부 사유가 관찰에 실리지 않았다"
+    # 사유를 안 실으면 모델은 같은 제안을 반복하고 그 반복이 예산을 태운다 — 노트가 그것을
+    # 막는 유일한 장치이므로 노트의 존재가 곧 이 규칙의 구현이다.
+    assert len(llm.observations) > 1
+
+
+def test_a_denied_or_unknown_call_does_not_count_as_a_probe():
+    """도구가 돌지 않은 호출에 선언만 붙이면 바닥이 열리는 공짜 통로가 된다."""
+    case = _claim_case()
+    state = LoopState(topic=case.question)
+    state.accumulator = accumulator(
+        evidence_item("근거", paper_id="2106.09685", anchor="s1.p1", quote="q", anchor_type=None)
+    )
+    deps = LoopDeps(
+        llm=ScriptedLlm(
+            script=[ToolCallProposal("no_such_tool", {"stance": STANCE_COUNTER})],
+            question_kind="claim",
+        ),
+        registry=ToolRegistry(),
+        budget=loop_budget(max_iterations=3, max_tool_calls_total=8, max_tool_calls={}),
+        ctx=run_context(),
+        answer=ScriptedAnswer(),
+    )
+
+    run_loop(state, deps)
+
+    assert counter_probes(state.trace) == 0
+
+
+def test_a_stance_on_a_tool_that_does_not_take_one_is_not_a_probe():
+    """`read_paper`에 counter를 달아도 반대 측을 **찾은** 것은 아니다."""
+    assert (
+        counter_probes(
+            [
+                ToolCallRecord(
+                    seq=1,
+                    tool="read_paper",
+                    args_summary="",
+                    outcome=ToolCallOutcome.OK,
+                    stance=STANCE_COUNTER,
+                )
+            ]
+        )
+        == 0
+    )
+
+
+def test_the_summary_measures_the_counter_rate_only_where_it_applies():
+    """사실형·범위 밖을 분모에 넣으면 면제된 문항이 비율을 눌러, 지표가 반대 측 탐색이
+    아니라 문항 구성을 반영하게 된다."""
+    reports = []
+    for case in labelled_cases():
+        result, state = _run(case, papers=case.expected_papers or ("2106.09685",))
+        reports.append(score_turn(case, result, trace=state.trace))
+
+    summary = summarise(reports)
+
+    assert summary["counter_probe_rate"] == 1.0
+
+
+def test_a_call_that_never_reached_its_port_is_not_a_counter_probe():
+    """`extract_evidence(paper_ids=[])`는 인자 검증에서 떨어져 포트에 닿지도 않는다 —
+    그것이 바닥을 열어 주면 선언만 붙이면 지나는 공짜 통로가 된다(실측 1회로 세어졌다)."""
+    failed = ToolCallRecord(
+        seq=1, tool="extract_evidence", args_summary="", outcome=ToolCallOutcome.ERROR,
+        stance=STANCE_COUNTER,
+    )
+
+    assert counter_probes([failed]) == 0
+
+
+def test_a_search_that_ran_and_found_nothing_is_a_counter_probe():
+    """묻는 것은 "찾아봤는가"이지 "찾았는가"가 아니다 — 없다는 것도 결과다."""
+    empty = ToolCallRecord(
+        seq=1, tool=TOOL_CORPUS_SEARCH, args_summary="", outcome=ToolCallOutcome.EMPTY,
+        stance=STANCE_COUNTER,
+    )
+
+    assert counter_probes([empty]) == 1
+
+
+def test_the_floor_yields_when_no_stance_tool_is_affordable():
+    """더 부를 예산이 없는데 바닥을 요구하면 종료 제안이 매번 거부되고, 근거를 충분히 모은
+    턴이 남은 반복을 LLM 호출로 태운 뒤 `budget_exhausted`로 끝난다 — 화면에는 "이어서
+    확인할까요?"가 뜬다. 깨끗이 끝냈어야 할 턴이다."""
+    state = LoopState(topic="주장형 질문")
+    state.question_kind = "claim"
+    state.accumulator = accumulator(
+        evidence_item("근거", paper_id="2106.09685", anchor="s1.p1", quote="q", anchor_type=None)
+    )
+    deps = LoopDeps(
+        llm=ScriptedLlm(question_kind="claim"),
+        registry=ToolRegistry(),
+        # stance를 받는 도구를 하나도 더 못 부른다.
+        budget=loop_budget(max_iterations=3, max_tool_calls_total=0, max_tool_calls={}),
+        ctx=run_context(),
+        answer=ScriptedAnswer(),
+    )
+
+    outcome = run_loop(state, deps)
+
+    assert outcome.reason is TerminationReason.SUFFICIENT

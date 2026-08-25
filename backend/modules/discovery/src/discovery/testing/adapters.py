@@ -9,6 +9,7 @@ from collections.abc import Sequence
 
 from docsuri_shared.vector_spec import IndexRecord
 
+from ..domain.models import YearRange
 from ..ports.search_ports import (
     EmbeddingUnavailable,
     IndexUnavailable,
@@ -39,6 +40,16 @@ def _one_per_paper(scored: list[ScoredRecord], top_k: int) -> list[ScoredRecord]
     return out
 
 
+def _in_years(record: IndexRecord, years: YearRange | None) -> bool:
+    """The mocks apply the year bound for real — a double that ignores a filter reports the
+    filter as working. ``record.year`` is the same field the OpenSearch ``range`` clause reads."""
+    if years is None:
+        return True
+    if years.start is not None and record.year < years.start:
+        return False
+    return not (years.end is not None and record.year > years.end)
+
+
 class MockEmbeddingAdapter:
     """Deterministic query embedding (cross-lingual bag-of-keywords; reader=search_query)."""
 
@@ -53,11 +64,17 @@ class MockVectorStoreAdapter:
         self._records = list(records)
 
     def knn_search(
-        self, vector: Sequence[float], top_k: int, abstract_only: bool = False
+        self,
+        vector: Sequence[float],
+        top_k: int,
+        abstract_only: bool = False,
+        years: YearRange | None = None,
     ) -> list[ScoredRecord]:
         scored: list[ScoredRecord] = []
         for record in self._records:
             if abstract_only and record.section != "abstract":
+                continue
+            if not _in_years(record, years):
                 continue
             score = sum(a * b for a, b in zip(vector, record.vector, strict=True))
             if score > 0:
@@ -80,11 +97,14 @@ class MockLexicalIndexAdapter:
         terms: Sequence[str],
         top_k: int,
         fields: Sequence[str] = ("title", "abstract", "lexicalTerms"),
+        years: YearRange | None = None,
     ) -> list[ScoredRecord]:
         wanted = {t.lower() for t in terms}
         selected = set(fields)
         scored: list[ScoredRecord] = []
         for record in self._records:
+            if not _in_years(record, years):
+                continue
             # Honor the requested field set so lite (title+abstract) realistically excludes
             # body-only matches, mirroring the real multi_match.
             parts = []
@@ -106,6 +126,7 @@ class MockLexicalIndexAdapter:
         phrase: str,
         top_k: int,
         paper_ids: Sequence[str] | None = None,
+        years: YearRange | None = None,
     ) -> list[ScoredRecord]:
         """정확 문구 포함 여부만 확인(대소문자 무시) — 실제 match_phrase의 순서·인접성
         요구를 부분 문자열 포함으로 근사한다."""
@@ -114,6 +135,8 @@ class MockLexicalIndexAdapter:
         scored: list[ScoredRecord] = []
         for record in self._records:
             if wanted_papers is not None and record.paperId not in wanted_papers:
+                continue
+            if not _in_years(record, years):
                 continue
             haystack = f"{record.abstract} {record.lexicalTerms}".lower()
             if needle in haystack:
@@ -155,7 +178,11 @@ class FailingEmbeddingAdapter:
 
 class FailingVectorStoreAdapter:
     def knn_search(
-        self, vector: Sequence[float], top_k: int, abstract_only: bool = False
+        self,
+        vector: Sequence[float],
+        top_k: int,
+        abstract_only: bool = False,
+        years: YearRange | None = None,
     ) -> list[ScoredRecord]:
         raise IndexUnavailable("mock index outage")
 
@@ -168,6 +195,7 @@ class FailingLexicalIndexAdapter:
         terms: Sequence[str],
         top_k: int,
         fields: Sequence[str] = ("title", "abstract", "lexicalTerms"),
+        years: YearRange | None = None,
     ) -> list[ScoredRecord]:
         raise IndexUnavailable("mock index outage")
 
@@ -176,6 +204,7 @@ class FailingLexicalIndexAdapter:
         phrase: str,
         top_k: int,
         paper_ids: Sequence[str] | None = None,
+        years: YearRange | None = None,
     ) -> list[ScoredRecord]:
         raise IndexUnavailable("mock index outage")
 

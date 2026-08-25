@@ -21,6 +21,8 @@ from typing import Protocol, runtime_checkable
 from docsuri_shared.events import SearchExecutedEvent
 from docsuri_shared.vector_spec import IndexRecord
 
+from ..domain.models import YearRange
+
 __all__ = [
     "EmbeddingUnavailable",
     "IndexUnavailable",
@@ -74,11 +76,17 @@ class VectorStoreAdapter(Protocol):
     """k-NN (ANN) reader over the shared OpenSearch index (FR-2; single reader)."""
 
     def knn_search(
-        self, vector: Sequence[float], top_k: int, abstract_only: bool = False
+        self,
+        vector: Sequence[float],
+        top_k: int,
+        abstract_only: bool = False,
+        years: YearRange | None = None,
     ) -> list[ScoredRecord]:
         """Return up to ``top_k`` DISTINCT PAPERS in similarity order — one record each, the
         paper's best-scoring chunk. ``abstract_only`` restricts the search to abstract chunks
-        (lite scope: 1 vector/paper). Raises ``IndexUnavailable``.
+        (lite scope: 1 vector/paper). ``years`` bounds publication year — see ``YearRange`` for
+        why it belongs in the query and not in the caller's post-filter. Raises
+        ``IndexUnavailable``.
 
         ``top_k`` counts papers, not chunks. Chunking is block-level, so a paper spans ~91 chunks
         and a chunk-counted slice collapses onto a fraction of that many papers — the retriever's
@@ -97,10 +105,11 @@ class LexicalIndexAdapter(Protocol):
         terms: Sequence[str],
         top_k: int,
         fields: Sequence[str] = ("title", "abstract", "lexicalTerms"),
+        years: YearRange | None = None,
     ) -> list[ScoredRecord]:
         """Return up to ``top_k`` DISTINCT PAPERS in BM25 order over ``fields`` — one record each,
         the paper's best-scoring chunk. Lite vs full scope: title+abstract vs +body.
-        Raises ``IndexUnavailable``.
+        ``years`` bounds publication year. Raises ``IndexUnavailable``.
 
         Papers, not chunks, for the same reason as ``knn_search`` — and more acutely here, since
         ``title``/``abstract`` are copied onto every chunk, so a lite-scope match scores a paper's
@@ -113,10 +122,11 @@ class LexicalIndexAdapter(Protocol):
         phrase: str,
         top_k: int,
         paper_ids: Sequence[str] | None = None,
+        years: YearRange | None = None,
     ) -> list[ScoredRecord]:
         """Exact-phrase matches over ``abstract`` and ``lexicalTerms``, ``top_k`` DISTINCT PAPERS.
-        ``paper_ids`` narrows to those papers (bare ids, no version suffix).
-        Raises ``IndexUnavailable``.
+        ``paper_ids`` narrows to those papers (bare ids, no version suffix); ``years`` bounds
+        publication year. Raises ``IndexUnavailable``.
 
         Declared here even though only U11's evidence path calls it: it was NOT in this protocol
         when the paper-level contract was introduced, so updating the contract did not reach it and
