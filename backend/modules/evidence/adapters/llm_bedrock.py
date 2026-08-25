@@ -312,7 +312,12 @@ class BedrockDecider(_BedrockBase):
                     *(tool_schema(s.name, s.description, s.parameters) for s in tools),
                     tool_schema(FINISH_TOOL, FINISH_DESCRIPTION, FINISH_PARAMETERS),
                 ],
-                tool_choice={"type": "any"},
+                # **병렬 호출을 끈다.** `any`는 "최소 1개"만 강제하고 개수를 안 막는다 —
+                # 모델이 3~4개를 함께 내면 루프는 첫 개만 쓰고 나머지를 버리는데, **버리는
+                # 것이 아니라 생성한 것이 비용**이다(출력 토큰은 이미 냈다). 2층 심판
+                # 16문항 **전부**에서 문항당 2~11회 났다(2026-08-25).
+                # 계획을 반으로 잘라 버리는 것이라 응답 시간에도 얹힌다.
+                tool_choice={"type": "any", "disable_parallel_tool_use": True},
             )
         )
         return decision_from_tool_calls(tool_calls(response), self._usage_cost(response))

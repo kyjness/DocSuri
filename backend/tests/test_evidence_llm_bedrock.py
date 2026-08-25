@@ -140,13 +140,17 @@ def test_tool_choice_forces_a_call():
     decider.decide(observation(), (ToolSpec("corpus_search", "d", {}),))
 
     body = client.calls[0]
-    assert body["tool_choice"] == {"type": "any"}
+    # **병렬도 함께 끈다.** `any`는 "최소 1개"만 강제하고 개수를 안 막는다 — 모델이 여러 개를
+    # 함께 내면 루프는 첫 개만 쓰고 나머지를 버리는데, 버리는 것이 아니라 **생성한 것이
+    # 비용**이다(출력 토큰은 이미 냈다). 실측: 같은 프롬프트에서 켜기 전 3·3·3개, 켠 뒤 1·1·1개.
+    assert body["tool_choice"] == {"type": "any", "disable_parallel_tool_use": True}
     assert {t["name"] for t in body["tools"]} == {"corpus_search", "finish"}
 
 
 def test_extra_parallel_calls_are_noted_not_silently_dropped():
-    """tool_choice는 최소 1개를 강제할 뿐 1개로 제한하지 않는다. 루프는 턴당 하나만
-    실행하므로 나머지는 버려지는데, 기록이 없으면 모델이 시킨 일이 그냥 사라진다."""
+    """방어선은 둘이다. 요청에서 병렬을 끄지만(`disable_parallel_tool_use`), 그것이 없는
+    프로바이더·모델에서도 **버려진 사실은 기록에 남아야** 한다 — 기록이 없으면 모델이 시킨
+    일이 그냥 사라진다. 이 검사는 그 두 번째 방어선을 본다."""
     decider, _ = _decider(
         {
             "content": [

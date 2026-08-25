@@ -125,7 +125,9 @@ def test_bedrock_tool_call_decision_and_cost() -> None:
     assert decision.proposal.args == {"query": "dp rag"}
     assert decision.cost_estimate_usd == pytest.approx(3.0 + 15.0)
     body = client.bodies[0]
-    assert body["tool_choice"] == {"type": "any"}
+    # 병렬도 함께 끈다 — `any`는 "최소 1개"만 강제하고 개수를 안 막는다. 루프가 턴당 한
+    # 호출만 실행하므로 나머지는 **생성 비용만 내고** 버려진다(출력 토큰은 이미 냈다).
+    assert body["tool_choice"] == {"type": "any", "disable_parallel_tool_use": True}
     names = {tool["name"] for tool in body["tools"]}
     assert names == {"corpus_search", "propose_termination"}
 
