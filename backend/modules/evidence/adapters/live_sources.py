@@ -309,6 +309,23 @@ def _dedupe(records: list[_LiveRecord]) -> tuple[PaperCandidate, ...]:
 _ARXIV_DOI_PREFIX = "10.48550/arxiv."
 
 
+def _arxiv_id_of(record: _LiveRecord) -> str | None:
+    """이 레코드가 가리키는 arXiv id — **DataCite DOI로만 실려 와도 되찾는다.**
+
+    한 곳에 둔다. 되찾기가 중복 제거 키에만 있고 후보 id에는 없던 동안, 같은 논문이
+    키로는 접히는데 **모델에게는 `doi:`로 보였다**(2026-08-25 배포본 실측:
+    `doi:10.48550/arxiv.2312.10997`). 그 뒤는 조용히 나쁘다 — `promotable()`이 `doi:`를
+    거부하므로 **본문 승격도 백그라운드 색인도 안 되고**, 화면에는 arXiv에 없는 논문처럼
+    보인다. 예외도 로그도 없다.
+    """
+    if record.arxiv_id:
+        return record.arxiv_id.strip()
+    doi = (record.doi or "").strip().lower()
+    if doi.startswith(_ARXIV_DOI_PREFIX):
+        return doi[len(_ARXIV_DOI_PREFIX) :]
+    return None
+
+
 def _canonical_key(record: _LiveRecord) -> str:
     """**arXiv id 먼저**, 없으면 DOI.
 
@@ -322,13 +339,10 @@ def _canonical_key(record: _LiveRecord) -> str:
     ingestion이 DOI를 앞에 두는 것은 수확 경로에 arXiv 전용 레코드가 없기 때문이고, 여기는
     그 전제가 다르다.
     """
-    if record.arxiv_id:
-        return f"arxiv:{_bare_arxiv(record.arxiv_id)}"
-    doi = (record.doi or "").lower()
-    if doi.startswith(_ARXIV_DOI_PREFIX):
-        # arXiv 사본이 DOI로만 실려 온 것 — id를 되찾아 arXiv 사본과 같은 키를 준다.
-        return f"arxiv:{_bare_arxiv(doi[len(_ARXIV_DOI_PREFIX):])}"
-    return f"doi:{doi}"
+    arxiv_id = _arxiv_id_of(record)
+    if arxiv_id:
+        return f"arxiv:{_bare_arxiv(arxiv_id)}"
+    return f"doi:{(record.doi or '').lower()}"
 
 
 def _as_candidate(record: _LiveRecord) -> PaperCandidate | None:
@@ -339,11 +353,14 @@ def _as_candidate(record: _LiveRecord) -> PaperCandidate | None:
 
     arXiv id가 없는 논문(학회·저널 전용)은 `doi:` 네임스페이스로 나른다. **arxiv.org id를
     지어내지 않는다**(무날조) — 그런 논문은 본문 승격 대상이 아니고 초록 범위로만 인용된다.
+    다만 arXiv 논문이 DataCite DOI로만 실려 온 것은 **날조가 아니라 되찾기**다
+    (`_arxiv_id_of`) — 그 DOI가 arXiv id를 그대로 품고 있다.
     """
     from .tools import versioned_arxiv
 
-    if record.arxiv_id:
-        versioned = versioned_arxiv(record.arxiv_id.strip())
+    arxiv_id = _arxiv_id_of(record)
+    if arxiv_id:
+        versioned = versioned_arxiv(arxiv_id)
         if versioned is None:
             # 문법에 안 맞는 id — 인용의 실재를 확인할 핸들이 없다.
             return None

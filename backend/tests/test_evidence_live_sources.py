@@ -445,6 +445,26 @@ def test_the_same_paper_folds_even_when_only_some_sources_carry_a_doi():
     assert [c.paper_id for c in out] == ["arxiv:2304.10557v2"]
 
 
+def test_a_datacite_doi_becomes_an_arxiv_paper_id_not_just_an_arxiv_key():
+    """되찾기가 **중복 제거 키에만** 있고 후보 id에는 없던 동안, 같은 논문이 키로는 접히는데
+    모델에게는 `doi:`로 보였다(배포본 실측). `promotable()`이 `doi:`를 거부하므로 본문 승격도
+    백그라운드 색인도 안 되고, 화면에는 arXiv에 없는 논문처럼 보인다 — 예외도 로그도 없다."""
+    client = _Client(
+        **{
+            OPENALEX_ENDPOINT: _openalex(
+                {"display_name": "RAG survey", "doi": "https://doi.org/10.48550/arXiv.2312.10997"}
+            )
+        }
+    )
+
+    candidate = _lookup(client).lookup("x").candidates[0]
+
+    assert candidate.paper_id == "arxiv:2312.10997v1", (
+        f"arXiv 논문이 doi: 로 실렸다 — {candidate.paper_id}"
+    )
+    assert candidate.record_ref == "external:arxiv:2312.10997v1"
+
+
 def test_an_arxiv_datacite_doi_is_recognised_as_that_arxiv_paper():
     """OpenAlex는 arXiv 사본을 `10.48550/arXiv.…` DOI로만 싣는 일이 잦다."""
     client = _Client(
