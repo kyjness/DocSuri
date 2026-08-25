@@ -126,3 +126,32 @@ describe('classes rendered with the hidden attribute', () => {
     }
   });
 });
+
+/**
+ * `composes:` 대상은 **쓰이는 자리보다 먼저** 정의돼야 한다 — css-loader가 소스 순서로
+ * 해석해서, 뒤에 있으면 `referenced class name … not found`로 빌드가 깨진다.
+ *
+ * **vitest도 tsc도 CSS 모듈을 컴파일하지 않는다.** 그래서 로컬에서 테스트·타입·린트가 전부
+ * 초록인 채 CI의 `next build`에서만 터졌다(2026-08-26, 중복 규칙을 `composes`로 정리하다가
+ * 셋이 한꺼번에). 빌드보다 훨씬 싼 검사로 같은 것을 여기서 막는다.
+ */
+describe('composes targets are declared before use', () => {
+  const COMPOSES_AT = /^[ \t]*composes:\s*([^;]+);/gm;
+
+  it.each([...new Set(all.map((b) => b.sheet))].map((sheet) => ({ sheet })))(
+    '$sheet',
+    ({ sheet }) => {
+      const css = readCss(sheet);
+      const late: string[] = [];
+      for (const match of css.matchAll(COMPOSES_AT)) {
+        // `composes: a b from "./x.css"` — 다른 파일에서 가져오는 것은 순서와 무관하다.
+        if (/\sfrom\s/.test(match[1])) continue;
+        for (const name of match[1].trim().split(/\s+/)) {
+          const declared = css.search(new RegExp(`^[ \\t]*\\.${name}(?=[\\s,{:.])`, 'm'));
+          if (declared < 0 || declared > match.index!) late.push(name);
+        }
+      }
+      expect([...new Set(late)]).toEqual([]);
+    },
+  );
+});
