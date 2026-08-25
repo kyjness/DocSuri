@@ -406,6 +406,20 @@
   gap: 2px;
 }
 
+/* **`display`를 세운 순간 `hidden` 속성이 죽는다.** UA 시트의 `[hidden] { display: none }`은
+   author 규칙에 무조건 진다(특이도 문제가 아니라 캐스케이드 원점 문제다). 접힌 근거를 DOM에
+   남기려고 `hidden`을 쓰는데, 그 요소에 display를 주면 전부 그대로 보인다 — 실제로 그랬다.
+   `.evidenceClaim`이 display를 안 세워서 종전 접기는 우연히 동작하고 있었다. */
+.evidenceRow[hidden] {
+  display: none;
+}
+
+.evidenceRow:target,
+.evidenceContested article:target {
+  outline: 2px solid var(--color-accent-text);
+  outline-offset: 2px;
+}
+
 .evidenceRowHead {
   display: flex;
   align-items: baseline;
@@ -445,25 +459,6 @@
   color: var(--color-warn-text);
 }
 
-.evidenceClaim {
-  border: 1px solid var(--color-border);
-  border-radius: var(--agent-radius);
-  padding: 10px;
-  background: var(--color-bg);
-}
-
-/* 상충이 있는 명제 — 이 사실 자체가 신호라 블록 전체를 물들인다(열을 쓰지 않는다). */
-.evidenceClaim[data-contested='true'] {
-  border-color: var(--color-warn-text);
-  background: var(--color-warn-bg);
-}
-
-/* 판단 산문의 `[n]`으로 도착한 명제가 어디인지 보이게 한다. */
-.evidenceClaim:target {
-  outline: 2px solid var(--color-accent-text);
-  outline-offset: 2px;
-}
-
 .evidenceRowNumber {
   margin-right: 4px;
   color: var(--color-accent-text);
@@ -476,17 +471,6 @@
   line-height: 1.5;
   word-break: keep-all;
   overflow-wrap: anywhere;
-}
-
-.evidenceContested {
-  margin-left: 6px;
-  padding: 0 6px;
-  border-radius: 999px;
-  border: 1px solid var(--color-warn-text);
-  color: var(--color-warn-text);
-  font-size: 11px;
-  font-weight: 700;
-  white-space: nowrap;
 }
 
 .evidenceRefs {

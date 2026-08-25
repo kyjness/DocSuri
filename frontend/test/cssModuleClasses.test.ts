@@ -91,3 +91,30 @@ describe('CSS module classes exist for every consumer that reads them', () => {
     expect(missing).toEqual([]);
   });
 });
+
+/**
+ * `hidden` 속성으로 접는 요소는 **`display`를 세우면 안 되거나, 세웠으면 가드를 함께 둬야
+ * 한다.** UA 시트의 `[hidden] { display: none }`은 author 규칙에 무조건 진다 — 특이도가
+ * 아니라 캐스케이드 원점 문제라 클래스 하나로 통째로 무력해진다.
+ *
+ * 실제로 그랬다(2026-08-26): 근거 줄을 논문 단위로 묶으며 `.evidenceRow`에 `display: grid`를
+ * 줬더니 접힌 근거가 전부 보였다. 종전 `.evidenceClaim`이 display를 안 세워서 접기가 **우연히**
+ * 동작하고 있었을 뿐이다. jsdom은 CSS 모듈을 아이덴티티로 목하므로 렌더 테스트가 계산된
+ * 스타일을 못 보고, 그래서 이 결함은 화면을 열어야만 보인다.
+ */
+describe('classes rendered with the hidden attribute', () => {
+  // `\b`를 쓰면 `aria-hidden=`도 잡힌다(`-`와 `h` 사이가 단어 경계다) — 그쪽은 접기가
+  // 아니라 접근성 표시라 무관하다. 앞이 공백이거나 `{`인 것만 본다.
+  const HIDDEN_PROP = /className=\{styles\.(\w+)\}[^>]*?[\s{]hidden=/gs;
+
+  it.each(bindings())('$name', ({ file, sheet }) => {
+    const body = readFileSync(file, 'utf8');
+    const css = readFileSync(sheet, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    for (const [, name] of body.matchAll(HIDDEN_PROP)) {
+      const rule = new RegExp(`^[ \\t]*\\.${name}\\s*\\{[^}]*\\bdisplay\\s*:`, 'm');
+      if (!rule.test(css)) continue;
+      // display를 세웠으면 `[hidden]` 가드가 반드시 있어야 한다.
+      expect(css).toMatch(new RegExp(`\\.${name}\\[hidden\\]`));
+    }
+  });
+});
