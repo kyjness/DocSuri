@@ -350,7 +350,8 @@ describe('AgentChatScreen', () => {
       await user.click(cancel);
       expect(screen.getByTestId('agent-composer-cancel')).toHaveTextContent('취소 중…');
 
-      // 종단: 답변이 붙고 입력이 다시 열린다. 타임라인 마지막 줄은 '취소됨'.
+      // 종단: 답변이 붙고 입력이 다시 열린다. 접힌 진행 줄이 '취소됨'을 말한다 — 취소는
+      // 도구 호출이 아니라 단계로 세지 않지만, 사용자가 펼치지 않고도 봐야 하는 사실이다.
       expect(
         await screen.findByText(/서로 확인되는 근거를 우선 제시했습니다/, {}, { timeout: 6000 }),
       ).toBeInTheDocument();

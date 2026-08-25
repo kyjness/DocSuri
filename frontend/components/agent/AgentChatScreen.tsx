@@ -1369,7 +1369,7 @@ function NoveltySourceRefLinks({ refs }: { refs: NoveltySourceRef[] }) {
  * (수락 직후 침묵을 막으려고 서버가 동기로 내보낸다), 여기서는 **첫 단계까지 걸린 시간의
  * 기준점(t0)**으로만 쓴다.
  */
-function AgentProgressTimeline({
+export function AgentProgressTimeline({
   events,
   jobState,
 }: {
@@ -1380,8 +1380,16 @@ function AgentProgressTimeline({
   if (events.length === 0) return null;
   const displayEvents = normalizeTimelineDisplay(events, jobState);
   const steps = withStepDurations(displayEvents);
-  if (steps.length === 0) return null;
-  const running = steps.some((step) => step.state === 'running');
+  // 취소 표식은 **세지 않고 접힌 줄이 말한다.** 도구 호출이 아니라 단계 수에 넣으면 3단계짜리
+  // 턴이 "4단계"가 되지만, 통째로 빼면 사용자가 취소했다는 사실이 화면에서 사라진다. 접힌
+  // 줄이 기본 상태이므로 거기 적으면 펼치지 않고도 보이고, 단계 목록은 실제로 돈 것만 남는다.
+  const marker = displayEvents.find((event) => event.stage === 'cancelled');
+  // **단계가 0개여도 숨기지 않는다.** 수락 직후에는 `accepted` 프레임 하나뿐인데, 그것은
+  // 목록에서 빠지므로 여기서 null을 내면 화면이 통째로 빈다 — 서버가 그 프레임을 폴링 전에
+  // 동기로 내보내는 이유("수락 직후 침묵 금지", streaming.py)를 정면으로 무효화한다. 첫
+  // decide 왕복은 수십 초가 걸릴 수 있고, 그동안 사용자에게는 아무 표시도 없게 된다.
+  const running =
+    !marker && (steps.length === 0 || steps.some((step) => step.state === 'running'));
   // 누적은 **단계 합에서 파생한다**. 따로 재면 간격 규칙을 손댈 때 둘이 조용히 어긋나
   // "3단계 · 24.5초"인데 단계 합은 21.5초인 상태가 된다 — 아무 검사도 그 불일치를 안 본다.
   const total = steps.reduce((sum, step) => sum + (step.durationMs ?? 0), 0) || undefined;
@@ -1394,7 +1402,7 @@ function AgentProgressTimeline({
     >
       <summary aria-label="탐구 프로세스">
         <span className={styles.timelineHeadline}>
-          {running ? steps[steps.length - 1].label : '진행 과정'}
+          {running ? (steps[steps.length - 1]?.label ?? ACCEPTED_LABEL) : (marker?.label ?? '진행 과정')}
         </span>
         <small className={styles.timelineMeta}>
           {steps.length}단계
@@ -1418,7 +1426,7 @@ export function withStepDurations(
   let previous = msOf(events.find((event) => event.stage === TIMELINE_ACCEPTED_STAGE));
   const steps = [];
   for (const event of events) {
-    if (event.stage === TIMELINE_ACCEPTED_STAGE) continue;
+    if (NON_STEP_STAGES.has(event.stage)) continue;
     const at = msOf(event);
     // 간격은 **앞 단계가 끝난 뒤부터** 이 단계가 기록될 때까지다 — 판단(decide) 왕복이
     // 그 안에 들어간다. 기준점이 없으면(재접속) 시간을 그리지 않는다: 0으로 그리면
@@ -1432,6 +1440,15 @@ export function withStepDurations(
 }
 
 const TIMELINE_ACCEPTED_STAGE = 'accepted';
+const ACCEPTED_LABEL = '질문 접수';
+/**
+ * 단계가 아닌 프레임 — 진행이 아니라 **상태 표식**이다.
+ *
+ * `accepted`는 스트림이 붙었다는 신호이고(첫 단계까지의 기준점으로만 쓴다), `cancelled`는
+ * 프론트가 만들어 끼우는 표식이다(`state.cancelledTimelineEvent`). 둘 다 도구 호출이 아니라
+ * 세면 "3단계"가 "4단계"가 되고, 시각이 없어 소요 시간도 못 붙는다.
+ */
+const NON_STEP_STAGES = new Set([TIMELINE_ACCEPTED_STAGE, 'cancelled']);
 
 function msOf(event?: AgentTimelineEvent): number | undefined {
   if (!event?.at) return undefined;

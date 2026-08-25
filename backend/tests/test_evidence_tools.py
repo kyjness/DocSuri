@@ -142,6 +142,34 @@ def test_fetch_paper_reads_docmodel_for_corpus_papers():
     assert result.content["blockKinds"]["table"] == 1
 
 
+def test_fetch_paper_adopts_the_title_so_a_named_paper_is_not_shown_as_an_id():
+    """explicit scope로 **사용자가 이름을 대서 고른** 논문이 정작 이름 없이 보였다.
+
+    제목은 지금까지 검색 결과에서만 왔다(`_register`). explicit·mixed scope의 논문은 검색을
+    안 거치고 후보로 올라오므로(`runner._seed_explicit`) 제목이 빈 채였고, 근거 목록에
+    `2106.09685` 같은 식별자가 그대로 찍혔다 — 제목 필드를 만든 이유를 정확히 배반한다.
+    """
+    doc = doc_model()
+    state = LoopState(topic="q")
+    state.discovered["p1"] = PaperHandle("p1", "r1", PaperOrigin.CORPUS)
+    tool = FetchPaperTool(doc_models=FakeDocModels(doc), promotion=None, state=state)
+
+    tool.invoke({"paper_id": "p1"}, CTX)
+
+    assert state.papers["p1"].title == doc.meta.title
+
+
+def test_fetch_paper_keeps_a_title_the_search_already_gave():
+    """검색 결과의 제목이 먼저 온 값이다 — 둘이 다르면 사용자가 화면에서 본 이름을 유지한다."""
+    state = LoopState(topic="q")
+    state.discovered["p1"] = PaperHandle("p1", "r1", PaperOrigin.CORPUS, title="검색이 준 이름")
+    tool = FetchPaperTool(doc_models=FakeDocModels(doc_model()), promotion=None, state=state)
+
+    tool.invoke({"paper_id": "p1"}, CTX)
+
+    assert state.papers["p1"].title == "검색이 준 이름"
+
+
 def test_fetch_paper_promotes_external_papers():
     state = LoopState(topic="q")
     state.discovered["arxiv:2401.10001v1"] = PaperHandle(

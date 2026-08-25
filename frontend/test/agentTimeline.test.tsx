@@ -13,7 +13,11 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
-import { formatDuration, withStepDurations } from '@/components/agent/AgentChatScreen';
+import {
+  AgentProgressTimeline,
+  formatDuration,
+  withStepDurations,
+} from '@/components/agent/AgentChatScreen';
 import type { AgentTimelineEvent } from '@/lib/agentChat/types';
 
 function event(over: Partial<AgentTimelineEvent> & { id: string }): AgentTimelineEvent {
@@ -65,5 +69,42 @@ describe('formatDuration', () => {
     expect(formatDuration(8)).toBe('8ms');
     expect(formatDuration(3_140)).toBe('3.1초');
     expect(formatDuration(91_400)).toBe('1분 31초');
+  });
+});
+
+describe('frames that are not steps', () => {
+  it('keeps the timeline visible when only the accepted frame has arrived', () => {
+    // 서버는 이 프레임을 폴링 **전에** 동기로 내보낸다 — "수락 직후 침묵 금지"(streaming.py).
+    // 목록에서 뺐다고 화면까지 비우면 그 보장을 정면으로 무효화한다: 첫 decide 왕복은 수십
+    // 초가 걸릴 수 있고, 그동안 사용자는 아무 표시도 못 본다.
+    //
+    // **렌더를 본다.** `withStepDurations`가 빈 배열을 내는 것은 맞는 동작이고, 결함은 그
+    // 빈 배열에서 컴포넌트가 null을 낸 쪽이었다 — 순수 함수만 검사하면 못 잡는다.
+    const accepted = event({
+      id: 'a',
+      stage: 'accepted',
+      label: '질문 접수',
+      state: 'running',
+      at: '2026-08-25T00:00:00.000Z',
+    });
+    expect(withStepDurations([accepted])).toEqual([]);
+
+    render(<AgentProgressTimeline events={[accepted]} jobState="running" />);
+
+    expect(screen.getByTestId('agent-timeline')).toBeInTheDocument();
+    expect(screen.getByText('질문 접수')).toBeInTheDocument();
+    expect(screen.getByText(/0단계/)).toBeInTheDocument();
+  });
+
+  it('does not count the cancel marker as a step', () => {
+    // 프론트가 만들어 끼우는 상태 표식이지 도구 호출이 아니다(state.cancelledTimelineEvent).
+    // 세면 3단계짜리 턴이 "4단계"가 되고, 시각이 없어 소요 시간도 못 붙는다.
+    const steps = withStepDurations([
+      event({ id: 'a', stage: 'accepted', at: '2026-08-25T00:00:00.000Z' }),
+      event({ id: '1', at: '2026-08-25T00:00:03.000Z' }),
+      { id: 't:cancelled', stage: 'cancelled', label: '취소됨', state: 'failed' },
+    ]);
+
+    expect(steps.map((s) => s.id)).toEqual(['1']);
   });
 });

@@ -7,9 +7,9 @@
  */
 export type EvidenceResult = EvidenceResult1 | EvidenceAbstainResult;
 /**
- * `SourceRef.paperId`의 네임스페이스(`{namespace}:{id}`). **생략이면 코퍼스 논문**이고 paperId는 IndexRecord.arxivId 그대로다 — 그래서 이 목록은 "코퍼스 밖" 어휘다. arxiv = 실시간 조회로 찾은 arXiv 논문(버전 포함) · doi = arXiv에 없어 DOI로 실려온 논문 · userdoc = 사용자가 올린 문서. **파생값을 굳이 싣는 이유**: 접두어를 만드는 곳(live_sources·user_docmodel)과 그것을 보고 링크 목적지를 정하는 곳(FE)이 각자 문자열을 적으면, 접두어가 하나 늘 때 한쪽만 고쳐지고 화면은 조용히 링크를 잃는다. 어휘를 아는 쪽이 판정해서 실어 보내면 소비자는 되파싱하지 않고, 어휘가 늘면 소비자의 분기가 컴파일에서 막힌다. Trace: FR-5, §8.
+ * `SourceRef.paperId`의 네임스페이스(`{namespace}:{id}`). **생략이면 코퍼스 논문**이고 paperId는 IndexRecord.arxivId 그대로다 — 그래서 이 목록은 "코퍼스 밖" 어휘다. arxiv = 실시간 조회로 찾은 arXiv 논문(버전 포함) · doi = arXiv에 없어 DOI로 실려온 논문 · userdoc = 사용자가 올린 문서 · attachment = 이번 턴에 첨부한 문서 중 doc-model id가 없는 것(`attachment:{파일명}` — 검색으로 도달할 수 없는 사적 영역이라 링크가 없다). **파생값을 굳이 싣는 이유**: 접두어를 만드는 곳(live_sources·user_docmodel)과 그것을 보고 링크 목적지를 정하는 곳(FE)이 각자 문자열을 적으면, 접두어가 하나 늘 때 한쪽만 고쳐지고 화면은 조용히 링크를 잃는다. 어휘를 아는 쪽이 판정해서 실어 보내면 소비자는 되파싱하지 않고, 어휘가 늘면 소비자의 분기가 컴파일에서 막힌다. Trace: FR-5, §8.
  */
-export type PaperIdNamespace = "arxiv" | "doi" | "userdoc";
+export type PaperIdNamespace = "arxiv" | "doi" | "userdoc" | "attachment";
 /**
  * cited = refs의 근거로 기계가 확인한 문장 · synthesis = 모델이 근거들을 종합해 쓴 문장(기계가 확인할 수 없다). Trace: v3 §2.1, §4.3.
  */

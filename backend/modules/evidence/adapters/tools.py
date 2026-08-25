@@ -135,6 +135,23 @@ def _shorten(query: str) -> str:
     return query if len(query) <= _QUERY_LABEL_CHARS else query[:_QUERY_LABEL_CHARS] + "…"
 
 
+def _adopt_title(handle: PaperHandle) -> None:
+    """본문을 확보했으면 거기서 제목을 가져온다 — **검색을 안 거친 논문이 있다.**
+
+    제목은 지금까지 검색 결과에서만 왔다(`_register`). 그런데 explicit·mixed scope에서
+    사용자가 직접 지정한 논문은 검색을 안 거치고 후보로 올라오므로 제목이 빈 채였고, 근거
+    목록에 `2106.09685` 같은 식별자가 그대로 찍혔다 — 사용자가 **이름을 대서 고른** 논문이
+    정작 이름 없이 보이는 모양이다.
+
+    이미 제목이 있으면 덮지 않는다: 검색 결과의 제목이 먼저 온 값이고, 둘이 다르면 사용자가
+    검색 화면에서 본 이름을 유지하는 편이 덜 놀랍다.
+    """
+    if handle.title:
+        return
+    meta = getattr(handle.doc_model, "meta", None)
+    handle.title = str(getattr(meta, "title", "") or "")
+
+
 def _candidate_view(candidate: Any) -> dict[str, Any]:
     """모델에 보이는 후보 1건 — 내부 점수·청크 id는 싣지 않는다(INV-EV-5)."""
     return {
@@ -367,6 +384,7 @@ class FetchPaperTool:
                 )
             handle.doc_model = doc_model
             handle.invalidate_projections()
+            _adopt_title(handle)
             self._state.examine(handle)
             return _fetched(handle)
 
@@ -410,6 +428,7 @@ class FetchPaperTool:
             )
         handle.doc_model = result.doc_model
         handle.invalidate_projections()
+        _adopt_title(handle)
         self._state.examine(handle)
         return _fetched(handle)
 
