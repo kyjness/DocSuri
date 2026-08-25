@@ -78,3 +78,16 @@ def test_demo_accounts_are_active_and_have_no_usable_password(make_app, demo_on,
     assert account.password_hash == SOCIAL_NO_PASSWORD_HASH
     # 실제로 메일이 나갈 수 없는 예약 TLD여야 한다(RFC 2606).
     assert account.email.endswith("@demo.invalid")
+
+
+def test_the_route_path_is_the_one_the_frontend_calls():
+    """경로가 두 언어에 나뉘어 있다 — 여기(`/auth/demo`)와 `HeroLanding.tsx`(`/bff/auth/demo`).
+
+    한쪽만 보면 못 잡는다. 프론트가 `/bff/api/auth/demo`로 부르던 동안 백엔드 테스트 4건은
+    전부 초록이었고, **배포본에서만 401**이었다 — 그 경로는 라우터에 없어 미들웨어가 끊는다.
+    라우터 접두어를 옮기면 이 검사가 먼저 빨개져 프론트도 같이 고쳐야 한다는 것을 알린다.
+    """
+    paths = {r.path for r in controller.router.routes if hasattr(r, "path")}
+
+    assert "/auth/demo" in paths, f"프론트가 부르는 경로가 사라졌다: {sorted(paths)[:5]}"
+    assert "/api/auth/demo" not in paths
