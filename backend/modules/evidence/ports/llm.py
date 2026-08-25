@@ -189,10 +189,16 @@ class AnswerSentence:
     `kind`(cited/synthesis)는 여기 없다 — 모델이 선언하는 값이 아니라 `refs`에서
     도메인이 유도한다. 모델에게 "이건 확인된 문장이다"라고 스스로 말하게 두면 그 선언을
     또 검사해야 하고, 판정 지점이 둘이 된다(게이트가 추출 결과를 다루는 방식과 같다).
+
+    `role`은 반대로 **모델이 선언한다** — 문장이 무엇을 하는가(결론·근거·갈림 지점)는
+    refs에서 유도할 수 없고, 그것을 아는 것은 그 문장을 쓴 쪽뿐이다. 검사도 하지 않는다:
+    §4.3 검사 5종은 role을 안 보고, 틀려도 문단 순서가 어색해질 뿐 근거의 강도를 날조하지
+    않는다(그래서 Q3=B로 배제한 `confidence`와 성질이 다르다).
     """
 
     text: str
     refs: tuple[int, ...] = ()
+    role: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

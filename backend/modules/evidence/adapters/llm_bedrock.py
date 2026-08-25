@@ -30,6 +30,7 @@ import logging
 import re
 from typing import Any
 
+from docsuri_shared._generated.dtos.evidence_schema import AnswerSegmentRole
 from docsuri_shared.bedrock import (
     ANTHROPIC_VERSION,
     dropped_call_note,
@@ -197,8 +198,25 @@ def parse_json_sentences(text: str) -> tuple[AnswerSentence, ...]:
         inline = [int(n) for m in _INLINE_REF.finditer(body) for n in m.group(1).split(",")]
         body = _INLINE_REF.sub("", body).strip()
         numbers = _coerce_refs(row.get("refs")) + tuple(inline)
-        sentences.append(AnswerSentence(text=body, refs=tuple(dict.fromkeys(numbers))))
+        sentences.append(
+            AnswerSentence(
+                text=body, refs=tuple(dict.fromkeys(numbers)), role=_coerce_role(row.get("role"))
+            )
+        )
     return tuple(sentences)
+
+
+def _coerce_role(value: Any) -> str | None:
+    """어휘 밖·미선언은 None이다 — 검사기가 evidence로 읽는다.
+
+    여기서 버리지 않고 None으로 두는 이유는 추출·refs와 같다: 무엇이 유효한지는 도메인이
+    정한다. 모양 관용은 파싱이지 판정이 아니다.
+    """
+    text = str(value or "").strip().lower()
+    return text if text in _ANSWER_ROLES else None
+
+
+_ANSWER_ROLES = frozenset(role.value for role in AnswerSegmentRole)
 
 
 _INLINE_REF = re.compile(r"\s*\[\s*(\d+(?:\s*,\s*\d+)*)\s*\]")

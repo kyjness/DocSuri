@@ -290,12 +290,40 @@
   gap: 10px;
 }
 
-/* 판단 산문(v3 §2.1) — 메시지 본문이다. 근거표보다 위에 오고 글자도 본문 크기다. */
+/* 판단 산문(v3 §2.1) — 메시지 본문이다. 근거 목록보다 위에 오고 글자도 본문 크기다. */
 .evidenceAnswer {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.answerSegment {
   margin: 0;
   line-height: 1.7;
   word-break: keep-all;
   overflow-wrap: anywhere;
+}
+
+/* 결론은 답 그 자체다 — 한 단계 크고 굵게. */
+.answerSegment[data-segment-role='conclusion'] {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+/* 갈리는 지점은 근거 서술과 성질이 다르다 — 세로선으로 떼어 놓는다. */
+.answerSegment[data-segment-role='divergence'] {
+  padding-left: 10px;
+  border-left: 3px solid var(--color-accent-text);
+}
+
+/* 역할 표시는 결론·갈림 지점에만 붙는다 — 근거 서술까지 달면 신호가 소음이 된다. */
+.answerRoleLabel {
+  display: block;
+  margin-bottom: 2px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--color-text-muted);
 }
 
 .answerCited {

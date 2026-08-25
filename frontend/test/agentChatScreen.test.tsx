@@ -182,7 +182,7 @@ describe('AgentChatScreen', () => {
     // 판단 산문이 먼저 오고(§2.1), 그 아래 근거표가 붙는다.
     const answer = await screen.findByTestId('evidence-answer');
     expect(answer).toHaveTextContent(/벤치마크를 재사용하면 점수가 부풀려져요/);
-    expect(within(answer).getByTestId('evidence-answer-ref')).toHaveTextContent('[1]');
+    expect(within(answer).getAllByTestId('evidence-answer-ref')[0]).toHaveTextContent('[1]');
 
     // 근거 목록: statement + 출처(제목 링크 · 인용 앵커 · quote). raw JSON은 노출되지 않는다(#339).
     expect(screen.getByTestId('evidence-list')).toBeInTheDocument();
@@ -235,9 +235,9 @@ describe('AgentChatScreen', () => {
     await user.click(screen.getByTestId('agent-menu'));
     await user.click(await screen.findByText('LLM 평가 근거 정리'));
 
-    const link = within(await screen.findByTestId('evidence-answer')).getByTestId(
+    const link = within(await screen.findByTestId('evidence-answer')).getAllByTestId(
       'evidence-answer-ref',
-    );
+    )[0];
     const target = link.getAttribute('href')?.slice(1) ?? '';
     // 번호가 실제 행에 닿아야 한다 — 표시 순서와 번호가 갈리면 다른 근거를 가리킨다.
     expect(screen.getAllByTestId('evidence-row')[0]).toHaveAttribute('id', target);

@@ -142,6 +142,16 @@ class EvidenceCoverage(BaseModel):
     )
 
 
+class AnswerSegmentRole(StrEnum):
+    """
+    문장이 판단 안에서 맡은 역할(선택, v3 §4.2). conclusion = 질문에 대한 답 그 자체 · evidence = 그 답을 받치는 서술 · divergence = 문헌이 갈리는 지점(§2.2가 "갈림 지점을 한 문장으로 밝혀라"고 정한 그 문장). **kind와 다른 축이다**: kind는 "기계가 확인했는가"이고 도메인이 refs에서 유도한다. role은 "문장이 무엇을 하는가"이고 모델이 선언한다. 역할은 판정에 쓰이지 않는다 — §4.3 검사 5종은 role을 보지 않고, 화면이 결론을 앞에 세우고 갈림 지점을 따로 떼어 보여주기 위한 것이다. 선언이 없거나 어휘 밖이면 evidence로 읽어 산문이 그대로 나간다. confidence(Q3=B로 배제)와 혼동하지 말 것 — 그쪽은 모델이 근거의 세기를 스스로 매기는 값이고, role은 세기가 아니라 문장의 자리다(틀려도 문단 순서가 어색해질 뿐 근거의 강도를 날조하지 않는다). Trace: v3 §2.2, §4.2, §8.
+    """
+
+    conclusion = 'conclusion'
+    evidence = 'evidence'
+    divergence = 'divergence'
+
+
 class AnswerSegmentKind(StrEnum):
     """
     cited = refs의 근거로 기계가 확인한 문장 · synthesis = 모델이 근거들을 종합해 쓴 문장(기계가 확인할 수 없다). Trace: v3 §2.1, §4.3.
@@ -168,6 +178,7 @@ class AnswerSegment(BaseModel):
         description='이 문장이 근거로 삼은 claims의 1-기반 번호. kind=synthesis면 반드시 빈 배열이다(§4.3 A1·A2 강등이 refs를 비우고 kind를 synthesis로 바꾼다). 번호가 실재하는지는 §4.3 A1이 판정한다 — 스키마는 범위를 이중으로 강제하지 않는다(판정 지점이 둘이 되면 어긋난다).',
     )
     kind: AnswerSegmentKind
+    role: AnswerSegmentRole | None = None
 
 
 class AnswerChecks(BaseModel):

@@ -14,6 +14,7 @@ import { describe, expect, it } from 'vitest';
 import {
   EVIDENCE_VISIBLE_CLAIMS,
   EvidenceClaimList,
+  EvidenceResultView,
 } from '@/components/agent/AgentChatScreen';
 import {
   isExternalSource,
@@ -115,7 +116,6 @@ describe('a citation number pointing into the folded part', () => {
   it('opens the fold — otherwise the jump silently does nothing', async () => {
     // 감춰진 요소로는 스크롤되지 않는다. 접기 상태를 목록 안에 두면 산문이 그것을 못 건드리고,
     // `[9]`를 눌러도 화면이 그대로 있는다 — 링크가 있는데 죽어 있는 가장 나쁜 모양이다.
-    const { EvidenceResultView } = await import('@/components/agent/AgentChatScreen');
     const claims = Array.from({ length: 9 }, (_, i) => ({
       statement: `근거 명제 ${i + 1}`,
       supporting: [ref({ title: `논문 ${i + 1}` })],
@@ -147,5 +147,72 @@ describe('a citation number pointing into the folded part', () => {
     expect(
       screen.getAllByTestId('evidence-row').filter((row) => row.hasAttribute('hidden')),
     ).toHaveLength(0);
+  });
+});
+
+describe('answer prose roles', () => {
+  const segment = (over: Record<string, unknown>) => ({
+    text: '문장',
+    refs: [] as number[],
+    kind: 'synthesis' as const,
+    ...over,
+  });
+
+  function renderAnswer(segments: ReturnType<typeof segment>[]) {
+    return render(
+      <EvidenceResultView
+        scope="msg-role"
+        result={{
+          state: 'ok',
+          claims: [{ statement: '명제', supporting: [ref({ title: '논문' })], conflicting: [] }],
+          coverage: { paperCount: 1 },
+          answer: { segments, checks: { demoted: 0, regenerated: false, fallback: false } },
+        }}
+      />,
+    );
+  }
+
+  it('sets the conclusion and the divergence apart from the supporting sentences', () => {
+    renderAnswer([
+      segment({ text: '데이터가 적을 때는 LoRA가 낫다', refs: [1], kind: 'cited', role: 'conclusion' }),
+      segment({ text: '파라미터를 1만 배 줄인다', refs: [1], kind: 'cited', role: 'evidence' }),
+      segment({ text: '갈리는 지점은 분포 안이냐다', role: 'divergence' }),
+    ]);
+
+    const roles = screen
+      .getAllByText(/LoRA가 낫다|1만 배|분포 안이냐다/)
+      .map((node) => node.closest('[data-segment-role]')?.getAttribute('data-segment-role'));
+    expect(roles).toEqual(['conclusion', 'evidence', 'divergence']);
+    // 라벨은 결론·갈림 지점에만 — 근거 서술까지 달면 신호가 소음이 된다.
+    expect(screen.getAllByTestId('evidence-answer-role').map((n) => n.textContent)).toEqual([
+      '결론',
+      '갈리는 지점',
+    ]);
+  });
+
+  it('keeps every sentence when the model declared no role — structure is lost, text is not', () => {
+    // 옛 턴·폴백 답변·어휘 밖 선언이 전부 이 경로다. 여기서 문장을 버리면 판단이 사라진다.
+    renderAnswer([
+      segment({ text: '역할 없는 문장 하나', refs: [1], kind: 'cited' }),
+      segment({ text: '역할 없는 문장 둘' }),
+    ]);
+
+    expect(screen.getByText('역할 없는 문장 하나')).toBeInTheDocument();
+    expect(screen.getByText('역할 없는 문장 둘')).toBeInTheDocument();
+    expect(screen.queryByTestId('evidence-answer-role')).not.toBeInTheDocument();
+  });
+
+  it('renders in array order — a role must not reorder the argument', () => {
+    // 프롬프트가 결론을 맨 앞에 두라고 하지만, 순서를 화면이 바꾸면 모델이 의도한 논지
+    // 전개가 어긋난다. 결론이 뒤에 오면 뒤에 그린다.
+    renderAnswer([
+      segment({ text: '먼저 온 근거', refs: [1], kind: 'cited', role: 'evidence' }),
+      segment({ text: '나중 온 결론', refs: [1], kind: 'cited', role: 'conclusion' }),
+    ]);
+
+    const texts = screen
+      .getAllByText(/먼저 온 근거|나중 온 결론/)
+      .map((node) => node.textContent);
+    expect(texts).toEqual(['먼저 온 근거', '나중 온 결론']);
   });
 });

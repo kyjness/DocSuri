@@ -337,3 +337,18 @@ def test_answer_absorbs_an_inline_marker_into_refs_and_strips_it_from_text():
 
     assert sentence.text == "데이터가 적을 때는 LoRA가 낫다"
     assert sentence.refs == (2, 1)
+
+
+def test_answer_keeps_a_declared_role_and_drops_one_outside_the_vocabulary():
+    """역할은 **모델이 선언한다**(refs에서 유도할 수 없다). 어휘 밖은 버리지 않고 None으로
+    두어 도메인이 evidence로 읽게 한다 — 모양 관용은 파싱이지 판정이 아니다(refs와 같은 원칙).
+    """
+    sentences = parse_json_sentences(
+        '{"sentences":['
+        '{"text":"a","refs":[1],"role":"conclusion"},'
+        '{"text":"b","refs":[1],"role":"DIVERGENCE"},'
+        '{"text":"c","refs":[1],"role":"summary"},'
+        '{"text":"d","refs":[1]}]}'
+    )
+
+    assert [s.role for s in sentences] == ["conclusion", "divergence", None, None]

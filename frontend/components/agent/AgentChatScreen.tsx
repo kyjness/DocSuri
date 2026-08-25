@@ -804,6 +804,18 @@ export function EvidenceResultView({
 
 const SYNTHESIS_HINT = '여러 근거를 종합한 문장이에요 — 원문에 그대로 있진 않아요';
 
+/**
+ * 판단 산문 — 문장마다 **역할**이 있고 화면이 그것을 쓴다(§4.2).
+ *
+ * 종전에는 문장 배열을 한 단락으로 그냥 이어붙였다. 결론도 갈림 지점도 근거 서술과 같은
+ * 줄에 섞여 흘러서, 판단이 있는데 "줄줄 나열"로 읽혔다.
+ *
+ * **표시 순서는 배열 순서다** — 역할로 다시 정렬하지 않는다. 프롬프트가 결론을 맨 앞에
+ * 두라고 하고, 순서를 여기서 바꾸면 모델이 의도한 논지 전개가 어긋난다.
+ *
+ * 역할이 없으면(옛 턴·폴백 답변·어휘 밖 선언) 전부 `evidence`로 읽혀 종전과 같은 평평한
+ * 산문이 나간다 — 구조를 못 얻을 뿐 문장이 사라지지 않는다.
+ */
 function AnswerProse({
   answer,
   scope,
@@ -814,38 +826,55 @@ function AnswerProse({
   onRefJump?: (refNumber: number) => void;
 }) {
   return (
-    <p className={styles.evidenceAnswer} data-testid="evidence-answer">
-      {answer.segments.map((segment, idx) => (
-        <span
-          key={idx}
-          className={
-            segment.kind === 'synthesis' ? styles.answerSynthesis : styles.answerCited
-          }
-          data-segment-kind={segment.kind}
-        >
-          {segment.text}
-          {segment.refs.map((ref) => (
-            <a
-              key={ref}
-              className={styles.answerRef}
-              href={`#${evidenceRowId(scope, ref)}`}
-              data-testid="evidence-answer-ref"
-              onClick={() => onRefJump?.(ref)}
+    <div className={styles.evidenceAnswer} data-testid="evidence-answer">
+      {answer.segments.map((segment, idx) => {
+        const role = segment.role ?? 'evidence';
+        return (
+          <p key={idx} className={styles.answerSegment} data-segment-role={role}>
+            {/* 역할 표시는 결론·갈림 지점에만 붙는다. 근거 서술은 대다수라, 거기까지 라벨을
+                달면 신호가 소음이 된다(범위 배지와 같은 이유). */}
+            {ANSWER_ROLE_LABEL[role] ? (
+              <span className={styles.answerRoleLabel} data-testid="evidence-answer-role">
+                {ANSWER_ROLE_LABEL[role]}
+              </span>
+            ) : null}
+            <span
+              className={
+                segment.kind === 'synthesis' ? styles.answerSynthesis : styles.answerCited
+              }
+              data-segment-kind={segment.kind}
             >
-              [{ref}]
-            </a>
-          ))}
-          {/* 기계가 확인하지 못한 문장은 숨기지도, 같은 급으로 보이게 하지도 않는다(§2.1). */}
-          {segment.kind === 'synthesis' ? (
-            <span className={styles.answerSynthesisBadge} title={SYNTHESIS_HINT}>
-              종합
+              {segment.text}
             </span>
-          ) : null}{' '}
-        </span>
-      ))}
-    </p>
+            {segment.refs.map((ref) => (
+              <a
+                key={ref}
+                className={styles.answerRef}
+                href={`#${evidenceRowId(scope, ref)}`}
+                data-testid="evidence-answer-ref"
+                onClick={() => onRefJump?.(ref)}
+              >
+                [{ref}]
+              </a>
+            ))}
+            {/* 기계가 확인하지 못한 문장은 숨기지도, 같은 급으로 보이게 하지도 않는다(§2.1). */}
+            {segment.kind === 'synthesis' ? (
+              <span className={styles.answerSynthesisBadge} title={SYNTHESIS_HINT}>
+                종합
+              </span>
+            ) : null}
+          </p>
+        );
+      })}
+    </div>
   );
 }
+
+const ANSWER_ROLE_LABEL: Record<string, string | null> = {
+  conclusion: '결론',
+  divergence: '갈리는 지점',
+  evidence: null,
+};
 
 // 행 id는 **메시지 단위**다. 한 세션에 evidence 턴이 둘이면 `[n]`이 둘 다 같은 번호를
 // 쓰므로, 메시지로 좁히지 않으면 뒤 답변의 `[1]`이 앞 메시지의 표로 뛰고 DOM id도 겹친다.

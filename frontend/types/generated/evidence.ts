@@ -11,6 +11,10 @@ export type EvidenceResult = EvidenceResult1 | EvidenceAbstainResult;
  */
 export type AnswerSegmentKind = "cited" | "synthesis";
 /**
+ * 문장이 판단 안에서 맡은 역할(선택, v3 §4.2). conclusion = 질문에 대한 답 그 자체 · evidence = 그 답을 받치는 서술 · divergence = 문헌이 갈리는 지점(§2.2가 "갈림 지점을 한 문장으로 밝혀라"고 정한 그 문장). **kind와 다른 축이다**: kind는 "기계가 확인했는가"이고 도메인이 refs에서 유도한다. role은 "문장이 무엇을 하는가"이고 모델이 선언한다. 역할은 판정에 쓰이지 않는다 — §4.3 검사 5종은 role을 보지 않고, 화면이 결론을 앞에 세우고 갈림 지점을 따로 떼어 보여주기 위한 것이다. 선언이 없거나 어휘 밖이면 evidence로 읽어 산문이 그대로 나간다. confidence(Q3=B로 배제)와 혼동하지 말 것 — 그쪽은 모델이 근거의 세기를 스스로 매기는 값이고, role은 세기가 아니라 문장의 자리다(틀려도 문단 순서가 어색해질 뿐 근거의 강도를 날조하지 않는다). Trace: v3 §2.2, §4.2, §8.
+ */
+export type AnswerSegmentRole = "conclusion" | "evidence" | "divergence";
+/**
  * 비기술 기권 사유(내부 위반 상세·점수 비노출 — SEC-9). 앞 다섯은 근거형성이 낸 기권, 뒤 넷은 턴 실패가 fail-closed로 수렴한 것(BR-EV-12). **닫힌 어휘다** — 그냥 string이던 동안 백엔드 생산자와 화면 라벨 맵이 조용히 갈렸다(2026-08-24: llm_unavailable 라벨을 지웠는데 생산자가 남아 있어 진짜 LLM 실패가 일반 문구로 떨어졌다). 여기 없는 코드는 unknown으로 수렴하고 원래 값은 로그에 남는다. Trace: FR-5, SEC-9.
  */
 export type AbstainReason =
@@ -144,6 +148,7 @@ export interface AnswerSegment {
    */
   refs: number[];
   kind: AnswerSegmentKind;
+  role?: AnswerSegmentRole;
 }
 /**
  * §4.3 기계 검사의 결과 요약 — 화면 표시가 아니라 지표·디버깅용이다. Trace: v3 §4.3, §6.3.
