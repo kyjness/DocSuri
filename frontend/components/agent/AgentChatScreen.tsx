@@ -25,6 +25,9 @@ import type {
 } from '@/lib/agentChat/types';
 import {
   abstainReasonLabel,
+  anchorHref,
+  evidenceLine,
+  groupClaimsByPaper,
   sourceHref,
   sourceLabel,
   parseAgentContent,
@@ -39,6 +42,8 @@ import type {
   EvidenceAnswer,
   EvidenceClaim,
   EvidenceCoverage,
+  EvidencePaperGroup,
+  EvidenceRow,
 } from '@/lib/agentChat/evidenceResult';
 import type { AnswerSegmentRole } from '@/types/generated/evidence';
 import {
@@ -763,7 +768,9 @@ export function EvidenceResultView({
   // 접기 상태는 **여기서** 산다. 판단 산문의 `[9]`가 접힌 근거를 가리키면 점프가 아무 일도
   // 하지 않으므로(감춰진 요소로는 스크롤되지 않는다), 그 번호를 누를 때 목록이 함께 펴져야
   // 한다. 상태를 목록 안에 두면 산문이 그것을 건드릴 수 없다.
-  const [expanded, setExpanded] = useState(false);
+  // 접기 상태는 **논문별**이다. 상태를 그룹 안에 두면 판단 산문이 못 건드리는데, 산문의
+  // `[9]`가 접힌 줄을 가리키면 그 논문 그룹이 함께 펴져야 한다.
+  const [expandedPapers, setExpandedPapers] = useState<ReadonlySet<string>>(() => new Set());
   // 문장 0건짜리 answer는 없는 것과 같다 — 판정을 한 번만 하고 그 결과를 쓴다.
   const answer = result.answer?.segments.length ? result.answer : null;
   if (result.claims.length === 0) {
@@ -780,15 +787,21 @@ export function EvidenceResultView({
           answer={answer}
           scope={scope}
           onRefJump={(n) => {
-            if (n > EVIDENCE_VISIBLE_CLAIMS) setExpanded(true);
+            // 그 번호가 어느 논문 그룹에 있는지는 그룹핑이 안다 — 화면이 다시 세지 않는다.
+            const owner = groupClaimsByPaper(result.claims).papers.find((g) =>
+              g.rows.some((row) => row.number === n),
+            );
+            if (owner) {
+              setExpandedPapers((open) => new Set(open).add(owner.paperId));
+            }
           }}
         />
       ) : null}
       <EvidenceClaimList
         claims={result.claims}
         scope={scope}
-        expanded={expanded}
-        onExpand={() => setExpanded(true)}
+        expandedPapers={expandedPapers}
+        onExpandPaper={(paperId) => setExpandedPapers((open) => new Set(open).add(paperId))}
       />
       {/* 이 수는 검색 범위가 아니라 **근거로 쓴 논문 수**다. 종전 라벨("검색 범위 · 참고
           논문 N편 · 검색어: <사용자 질문>")은 둘 다 거짓말이었다 — 검색은 코퍼스 전체를
@@ -883,96 +896,6 @@ function evidenceRowId(scope: string, row: number): string {
   return `evidence-${scope}-row-${row}`;
 }
 
-/** 처음에 펼쳐 두는 근거 수. 넘는 만큼은 접고 눌러서 편다. */
-export const EVIDENCE_VISIBLE_CLAIMS = 6;
-
-/**
- * 근거 목록 — 명제 하나가 블록 하나다(§2.1).
- *
- * 종전에는 3열 표(명제/지지/상충)였다. 표는 **논문이 여럿이고 서로 엇갈릴 때** 값을 하는데,
- * 실제로 가장 흔한 턴은 한두 편이라 같은 논문 id가 행마다 반복되면서 화면이 열 이름만 남은
- * 격자가 됐다. 폰에서는 가로 스크롤 안에 인용문까지 들어가 아예 못 읽었다. 상충은 열이
- * 아니라 **배지와 ✗ 표시**로 나타내면 한 열도 안 쓰고 오히려 눈에 띈다.
- *
- * 순서는 백엔드 조립이 정한 그대로다(BR-EV-5) — `[n]`이 그 순서의 1-기반 번호이고 판단
- * 산문이 같은 번호를 가리키므로, 여기서 다시 정렬하면 번호가 다른 근거를 가리킨다.
- * **접기도 순서를 바꾸지 않는다**: 뒤로 접힌 근거의 번호는 그대로이고, 산문에서 그 번호를
- * 누르면 펼쳐진다.
- */
-export function EvidenceClaimList({
-  claims,
-  scope,
-  expanded = false,
-  onExpand,
-}: {
-  claims: EvidenceClaim[];
-  scope: string;
-  expanded?: boolean;
-  onExpand?: () => void;
-}) {
-  const collapsed = !expanded && claims.length > EVIDENCE_VISIBLE_CLAIMS;
-  return (
-    <div className={styles.evidenceList} data-testid="evidence-list">
-      {claims.map((claim, idx) => (
-        <EvidenceClaimCard
-          key={idx}
-          claim={claim}
-          number={idx + 1}
-          scope={scope}
-          // 접힌 근거도 DOM에는 남긴다 — 산문의 `[9]`가 가리킬 대상이 없으면 링크가 죽는다.
-          hidden={collapsed && idx >= EVIDENCE_VISIBLE_CLAIMS}
-        />
-      ))}
-      {collapsed ? (
-        <button
-          type="button"
-          className={styles.evidenceMore}
-          onClick={onExpand}
-          data-testid="evidence-show-more"
-        >
-          근거 {claims.length - EVIDENCE_VISIBLE_CLAIMS}건 더 보기
-        </button>
-      ) : null}
-    </div>
-  );
-}
-
-function EvidenceClaimCard({
-  claim,
-  number,
-  scope,
-  hidden,
-}: {
-  claim: EvidenceClaim;
-  number: number;
-  scope: string;
-  hidden: boolean;
-}) {
-  const contested = claim.conflicting.length > 0;
-  return (
-    <article
-      id={evidenceRowId(scope, number)}
-      className={styles.evidenceClaim}
-      data-testid="evidence-row"
-      data-contested={contested}
-      hidden={hidden}
-    >
-      <p className={styles.evidenceStatement}>
-        <span className={styles.evidenceRowNumber}>[{number}]</span>
-        {claim.statement}
-        {/* 상충은 열이 아니라 배지다 — 이 명제에서 논문끼리 엇갈렸다는 사실 자체가 신호다. */}
-        {contested ? (
-          <span className={styles.evidenceContested} data-testid="evidence-contested">
-            상충
-          </span>
-        ) : null}
-      </p>
-      <EvidenceRefList refs={claim.supporting} stance="support" />
-      <EvidenceRefList refs={claim.conflicting} stance="conflict" />
-    </article>
-  );
-}
-
 function ExaminedRange({ coverage }: { coverage: EvidenceCoverage }) {
   // 확인 범위(FR-37 v2) — 탐색이 완결되지 않았을 때만 나온다.
   const message = examinedRangeMessage(coverage);
@@ -984,19 +907,155 @@ function ExaminedRange({ coverage }: { coverage: EvidenceCoverage }) {
   );
 }
 
-function SourceRefChips({ refKey: ref }: { refKey: EvidenceSourceRef }) {
-  const typeLabel = anchorTypeLabel(ref);
-  const badge = sourceScopeBadge(ref);
+/** 논문마다 처음에 펴 두는 근거 수. 넘는 만큼은 접고 눌러서 편다. */
+export const EVIDENCE_VISIBLE_PER_PAPER = 3;
+
+/**
+ * 근거 목록 — **논문 하나가 블록 하나다**(§2.1).
+ *
+ * 종전에는 근거 하나가 블록이었다. 논문이 한두 편인 흔한 턴에서 같은 제목이 근거마다 반복돼
+ * (실측: 논문 2편에 근거 10건 → 제목이 일곱 번) 화면이 이름으로 덮였고, 각 줄이 한국어 명제와
+ * 영어 인용문을 둘 다 들어 같은 사실이 세 번 나왔다(판단 산문 → 명제 → 인용문).
+ *
+ * **상충 근거는 위로 빼낸다.** 논문으로 묶으면 그 근거가 두 블록으로 갈라져 엇갈림을
+ * 한자리에서 못 본다 — 표가 있던 이유가 그것이다(BR-EV-5).
+ *
+ * 순서는 조립이 정한 그대로다. **접기도 순서를 바꾸지 않는다**: 접힌 줄의 번호는 그대로이고
+ * DOM에도 남는다 — 산문의 `[9]`가 가리킬 대상이 없으면 링크가 죽는다.
+ */
+export function EvidenceClaimList({
+  claims,
+  scope,
+  expandedPapers,
+  onExpandPaper,
+}: {
+  claims: EvidenceClaim[];
+  scope: string;
+  expandedPapers?: ReadonlySet<string>;
+  onExpandPaper?: (paperId: string) => void;
+}) {
+  const { contested, papers } = groupClaimsByPaper(claims);
+  return (
+    <div className={styles.evidenceList} data-testid="evidence-list">
+      {contested.length > 0 ? (
+        <section className={styles.evidenceContested} data-testid="evidence-contested">
+          <h4 className={styles.evidenceGroupHeading}>쟁점</h4>
+          {contested.map(({ number, claim }) => (
+            <article key={number} id={evidenceRowId(scope, number)} data-testid="evidence-row">
+              <p className={styles.evidenceStatement}>
+                <span className={styles.evidenceRowNumber}>[{number}]</span>
+                {claim.statement}
+              </p>
+              <EvidenceRefList refs={claim.supporting} stance="support" />
+              <EvidenceRefList refs={claim.conflicting} stance="conflict" />
+            </article>
+          ))}
+        </section>
+      ) : null}
+      {papers.map((group) => (
+        <EvidencePaperBlock
+          key={group.paperId}
+          group={group}
+          claims={claims}
+          scope={scope}
+          expanded={expandedPapers?.has(group.paperId) ?? false}
+          onExpand={() => onExpandPaper?.(group.paperId)}
+        />
+      ))}
+    </div>
+  );
+}
+
+function EvidencePaperBlock({
+  group,
+  claims,
+  scope,
+  expanded,
+  onExpand,
+}: {
+  group: EvidencePaperGroup;
+  claims: EvidenceClaim[];
+  scope: string;
+  expanded: boolean;
+  onExpand: () => void;
+}) {
+  const collapsed = !expanded && group.rows.length > EVIDENCE_VISIBLE_PER_PAPER;
+  return (
+    <section className={styles.evidencePaper}>
+      <p className={styles.evidencePaperHead}>
+        <SourceLink refKey={group.ref} />
+        <small className={styles.evidencePaperCount}>{group.rows.length}건</small>
+      </p>
+      {group.rows.map((row, idx) => (
+        <article
+          key={row.number}
+          id={evidenceRowId(scope, row.number)}
+          className={styles.evidenceRow}
+          data-testid="evidence-row"
+          hidden={collapsed && idx >= EVIDENCE_VISIBLE_PER_PAPER}
+        >
+          <EvidenceRowLine
+            row={row}
+            statement={claims[row.number - 1]?.statement ?? ''}
+          />
+        </article>
+      ))}
+      {collapsed ? (
+        <button
+          type="button"
+          className={styles.evidenceMore}
+          onClick={onExpand}
+          data-testid="evidence-show-more"
+        >
+          {group.rows.length - EVIDENCE_VISIBLE_PER_PAPER}건 더 보기
+        </button>
+      ) : null}
+    </section>
+  );
+}
+
+function EvidenceRowLine({ row, statement }: { row: EvidenceRow; statement: string }) {
+  const line = evidenceLine(row.ref, statement);
+  const { mark, label } = STANCE[row.stance];
+  const chip = anchorTypeLabel(row.ref);
+  const href = anchorHref(row.ref);
   return (
     <>
-      {/* 앵커 없는 출처(초록 범위)는 이동 대상이 없어 칩도 렌더하지 않는다. */}
-      {canJumpToSource(ref) ? (
-        <span className={styles.evidenceAnchor}>
-          {typeLabel ? `${typeLabel} · ` : '§ '}
-          {ref.anchor}
+      <span className={styles.evidenceRowHead}>
+        <span className={styles.evidenceRowNumber}>[{row.number}]</span>
+        <span className={styles.evidenceStanceMark} aria-label={label}>
+          {mark}
         </span>
+        <AnchorChip refKey={row.ref} href={href} label={chip} />
+      </span>
+      <p className={styles.evidenceRowText} data-line-kind={line.kind}>
+        {line.kind === 'quote' ? `\u201C${line.text}\u201D` : line.text}
+      </p>
+    </>
+  );
+}
+
+/** 인용 위치 — 이제 **누르면 그 블록으로 간다**(종전에는 죽은 텍스트였다). */
+function AnchorChip({
+  refKey: ref,
+  href,
+  label,
+}: {
+  refKey: EvidenceSourceRef;
+  href: string | null;
+  label: string | null;
+}) {
+  const badge = sourceScopeBadge(ref);
+  const text = label ?? (ref.anchor ? `\u00A7 ${ref.anchor}` : null);
+  return (
+    <>
+      {text && href ? (
+        <a className={styles.evidenceAnchor} href={href} data-testid="evidence-anchor-link">
+          {text}
+        </a>
+      ) : text ? (
+        <span className={styles.evidenceAnchor}>{text}</span>
       ) : null}
-      {/* 근거 범위 배지 — fulltext에는 붙이지 않는다(대다수라 소음이 된다). */}
       {badge ? (
         <span
           className={styles.evidenceScopeBadge}
@@ -1010,9 +1069,6 @@ function SourceRefChips({ refKey: ref }: { refKey: EvidenceSourceRef }) {
   );
 }
 
-/* 지지 ✓ / 상충 ✗ — 열 두 개가 하던 일을 글리프 하나가 한다. 표시와 읽어주는 이름이 한
-   자리에 있어야 한다: 두 맵으로 나뉘면 갈렸을 때 ✓에 "상충" 라벨이 붙어 **접근성 트리에서만**
-   틀리고, 눈으로는 안 보인다. */
 const STANCE = {
   support: { mark: '✓', label: '지지' },
   conflict: { mark: '✗', label: '상충' },
@@ -1020,6 +1076,12 @@ const STANCE = {
 
 type Stance = keyof typeof STANCE;
 
+/**
+ * 쟁점 블록의 출처 목록 — **여기서만** 논문 이름이 줄마다 나온다.
+ *
+ * 논문 그룹에서는 이름이 헤더에 한 번만 있으면 되지만, 쟁점은 정의상 논문이 엇갈리는
+ * 자리라 어느 쪽이 무엇을 말했는지가 줄에 있어야 한다.
+ */
 function EvidenceRefList({ refs, stance }: { refs: EvidenceSourceRef[]; stance: Stance }) {
   if (refs.length === 0) return null;
   const { mark, label } = STANCE[stance];
@@ -1032,9 +1094,7 @@ function EvidenceRefList({ refs, stance }: { refs: EvidenceSourceRef[]; stance: 
               {mark}
             </span>
             <SourceLink refKey={ref} />
-            {/* 인용 앵커(#339). recordRef는 내부 식별자라 노출하지 않는다.
-                앵커가 없는 출처(초록 범위)는 이동 대상이 없어 칩도 렌더하지 않는다. */}
-            <SourceRefChips refKey={ref} />
+            <AnchorChip refKey={ref} href={anchorHref(ref)} label={anchorTypeLabel(ref)} />
           </span>
           {ref.quote ? <blockquote className={styles.evidenceQuote}>{ref.quote}</blockquote> : null}
         </li>

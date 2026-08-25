@@ -184,11 +184,16 @@ describe('AgentChatScreen', () => {
     expect(answer).toHaveTextContent(/벤치마크를 재사용하면 점수가 부풀려져요/);
     expect(within(answer).getAllByTestId('evidence-answer-ref')[0]).toHaveTextContent('[1]');
 
-    // 근거 목록: statement + 출처(제목 링크 · 인용 앵커 · quote). raw JSON은 노출되지 않는다(#339).
+    // 근거 목록: 논문 헤더 + 줄마다 원문. raw JSON은 노출되지 않는다(#339).
     expect(screen.getByTestId('evidence-list')).toBeInTheDocument();
-    expect(screen.getByText(/벤치마크 재사용은 데이터 누수 위험을 높인다./)).toBeInTheDocument();
-    expect(screen.getByText('§ 4.2절')).toBeInTheDocument();
     expect(screen.getByText(/benchmark reuse inflates scores/)).toBeInTheDocument();
+    // 한국어 명제는 **줄에 안 쓴다** — 위 판단 산문이 이미 같은 말을 했다.
+    expect(screen.queryByText('벤치마크 재사용은 데이터 누수 위험을 높인다.')).not.toBeInTheDocument();
+    // 인용 위치는 이제 **눌러서 그 블록으로 간다**(종전에는 죽은 텍스트였다).
+    expect(screen.getByRole('link', { name: '§ 4.2절' })).toHaveAttribute(
+      'href',
+      '/paper/2401.01234/doc-model?version=1&anchorId=4.2%EC%A0%88',
+    );
     expect(screen.queryByText(/"claims"/)).not.toBeInTheDocument();
 
     // 출처는 **제목이 이름이고 링크다.** 종전에는 `2401.01234`가 텍스트로만 찍혔다 —
@@ -203,8 +208,10 @@ describe('AgentChatScreen', () => {
     expect(external).toHaveAttribute('href', 'https://arxiv.org/abs/2405.09876v1');
     expect(external).toHaveAttribute('target', '_blank');
 
-    // 상충은 열이 아니라 배지다.
-    expect(screen.getByTestId('evidence-contested')).toBeInTheDocument();
+    // 상충 근거는 **쟁점으로 빠져** 목록 위에 선다 — 논문으로 묶으면 두 블록으로 갈라져
+    // "이 둘이 여기서 엇갈린다"를 한자리에서 못 본다.
+    const contested = screen.getByTestId('evidence-contested');
+    expect(within(contested).getByRole('link', { name: /Rank Instability/ })).toBeInTheDocument();
 
     // 이 수는 검색 범위가 아니라 근거로 쓴 논문 수다 — 종전 라벨("검색 범위 · 참고 논문
     // N편 · 검색어: <사용자 질문>")은 둘 다 거짓말이었다.
@@ -239,8 +246,9 @@ describe('AgentChatScreen', () => {
       'evidence-answer-ref',
     )[0];
     const target = link.getAttribute('href')?.slice(1) ?? '';
-    // 번호가 실제 행에 닿아야 한다 — 표시 순서와 번호가 갈리면 다른 근거를 가리킨다.
-    expect(screen.getAllByTestId('evidence-row')[0]).toHaveAttribute('id', target);
+    // 번호가 실제 줄에 닿아야 한다 — 표시 순서와 번호가 갈리면 다른 근거를 가리킨다.
+    // **논문으로 묶어도 번호는 조립 순서 그대로**라, 화면 위치가 아니라 id로 찾는다.
+    expect(screen.getAllByTestId('evidence-row').map((r) => r.id)).toContain(target);
     // 행 id는 메시지 단위다 — 한 세션에 evidence 턴이 둘이면 `[1]`이 둘 다 있으므로,
     // 메시지 id가 안 들어가면 뒤 답변의 링크가 앞 메시지의 표로 뛴다.
     expect(target).toMatch(/^evidence-turn-msg-demo-1-agent-row-1$/);

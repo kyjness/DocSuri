@@ -67,6 +67,22 @@ const baseSessions: AgentSessionSnapshot[] = [
               ],
               conflicting: [],
             },
+            // 표 인용 — 원문이 셀 덤프라 줄에는 **명제**가 나와야 한다. 이 분기가 픽스처에
+            // 없으면 로컬에서 한 번도 안 돈다(실배포에서는 출처의 15%쯤이 이 모양이다).
+            {
+              statement: '오염 제거 후 GLUE 평균은 2.1점 떨어진다.',
+              supporting: [
+                {
+                  paperId: '2401.01234',
+                  recordRef: 'rec-2401-01234-07',
+                  title: 'Benchmark Contamination in Large Language Model Evaluation',
+                  anchor: '표 3',
+                  anchorType: 'table',
+                  quote: 'GLUE | 88.7 | 86.6 | -2.1',
+                },
+              ],
+              conflicting: [],
+            },
             // 상충이 있는 명제 — 근거 목록이 존재하는 이유이고, 코퍼스 안팎 출처가 한
             // 명제에 섞이는 모양이다(코퍼스 논문은 상세로, 코퍼스 밖은 arxiv.org로 간다).
             {

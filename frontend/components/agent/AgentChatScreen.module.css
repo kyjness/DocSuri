@@ -376,6 +376,75 @@
   gap: 8px;
 }
 
+/* 논문 하나가 블록 하나. 제목은 헤더에 한 번만 나온다 — 종전에는 근거마다 반복됐다. */
+.evidencePaper {
+  border: 1px solid var(--color-border);
+  border-radius: var(--agent-radius);
+  padding: 10px;
+  background: var(--color-bg);
+  display: grid;
+  gap: 6px;
+}
+
+.evidencePaperHead {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
+}
+
+.evidencePaperCount {
+  margin-left: auto;
+  color: var(--color-text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.evidenceRow {
+  display: grid;
+  gap: 2px;
+}
+
+.evidenceRowHead {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* 원문은 인용처럼, 명제는 본문처럼 — 무엇을 읽고 있는지가 모양으로 구분된다. */
+.evidenceRowText {
+  margin: 0 0 0 4px;
+  font-size: 13px;
+  line-height: 1.6;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+.evidenceRowText[data-line-kind='quote'] {
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+/* 쟁점 — 논문이 엇갈리는 자리라 목록 맨 위에 따로 선다. */
+.evidenceContested {
+  border: 1px solid var(--color-warn-text);
+  border-radius: var(--agent-radius);
+  padding: 10px;
+  background: var(--color-warn-bg);
+  display: grid;
+  gap: 8px;
+}
+
+.evidenceGroupHeading {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--color-warn-text);
+}
+
 .evidenceClaim {
   border: 1px solid var(--color-border);
   border-radius: var(--agent-radius);

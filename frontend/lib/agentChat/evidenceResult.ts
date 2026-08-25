@@ -4,6 +4,8 @@ import type {
   PaperIdNamespace,
 } from '@/types/generated/evidence';
 
+import { arxivVersion } from '@/lib/arxivVersion';
+
 import { isNoveltyResultPayload } from './noveltyResult';
 import type { NoveltyResultPayload } from './noveltyResult';
 
@@ -289,3 +291,104 @@ function stripNamespace(paperId: string): string {
 export function sourceLabel(ref: EvidenceSourceRef): string {
   return ref.title?.trim() || ref.paperId;
 }
+
+
+/** 논문 하나에 묶인 근거 줄. `number`는 **근거 번호**이지 논문 번호가 아니다. */
+export interface EvidenceRow {
+  number: number;
+  stance: 'support' | 'conflict';
+  ref: EvidenceSourceRef;
+}
+
+export interface EvidencePaperGroup {
+  paperId: string;
+  ref: EvidenceSourceRef;
+  rows: EvidenceRow[];
+}
+
+export interface GroupedEvidence {
+  /** 상충이 있는 근거 — 논문 그룹에서 **빠진다**(두 블록으로 갈라지지 않게). */
+  contested: Array<{ number: number; claim: EvidenceClaim }>;
+  papers: EvidencePaperGroup[];
+}
+
+/**
+ * 근거를 논문 단위로 묶는다.
+ *
+ * 종전에는 근거 하나가 블록 하나였다. 논문이 한두 편인 흔한 턴에서는 같은 제목이 근거마다
+ * 반복돼(실측: 논문 2편에 근거 10건 → 제목이 일곱 번) 화면이 이름으로 덮였다.
+ *
+ * **상충 근거는 빼내 위에 따로 둔다.** 논문으로 묶으면 "한 논문이 지지하고 다른 논문이
+ * 상충하는" 근거가 두 블록으로 갈라져, 엇갈림을 한자리에서 못 본다 — 표가 있던 이유가
+ * 그것이다(BR-EV-5). 빼내면 DOM id 중복도 안 생긴다.
+ *
+ * **순서는 조립이 정한 것을 따른다.** 논문 순서는 근거 순서에서 처음 등장한 순이고, 논문 안
+ * 줄은 근거 번호 순이다. 여기서 다시 정렬하면 판단 산문의 번호가 다른 것을 가리킨다.
+ */
+export function groupClaimsByPaper(claims: EvidenceClaim[]): GroupedEvidence {
+  const contested: GroupedEvidence['contested'] = [];
+  const byPaper = new Map<string, EvidencePaperGroup>();
+
+  claims.forEach((claim, index) => {
+    const number = index + 1;
+    if (claim.conflicting.length > 0) {
+      contested.push({ number, claim });
+      return;
+    }
+    for (const ref of claim.supporting) {
+      const group = byPaper.get(ref.paperId) ?? { paperId: ref.paperId, ref, rows: [] };
+      group.rows.push({ number, stance: 'support', ref });
+      byPaper.set(ref.paperId, group);
+    }
+  });
+
+  return { contested, papers: [...byPaper.values()] };
+}
+
+/**
+ * 근거 줄에 **무엇을** 쓰나 — 원문이냐 명제냐.
+ *
+ * 기본은 원문이다: 한국어 명제는 위의 판단 산문이 거의 그대로 말하므로, 둘 다 두면 같은
+ * 사실이 세 번 나온다(산문 → 명제 → 인용문).
+ *
+ * 단 **표·그림·식 인용은 명제로 간다.** 그쪽 원문은 `PPL | 8.08 | 11.44 | …` 같은 셀 덤프라
+ * (실측: LoRA 턴 출처 13개 중 2개) 명제 없이는 읽히지 않는다. 판정은 `anchorType` 하나로
+ * 기계가 한다 — 인용문 모양을 눈으로 보고 고르지 않는다.
+ *
+ * 인용문이 없는 출처(계약상 `sourceScope='figure'`는 quote 없이 가능)도 같은 길로 떨어진다.
+ */
+export function evidenceLine(
+  ref: EvidenceSourceRef,
+  statement: string,
+): { kind: 'quote' | 'statement'; text: string } {
+  const label = anchorTypeLabel(ref);
+  if (label || !ref.quote) return { kind: 'statement', text: statement };
+  return { kind: 'quote', text: ref.quote };
+}
+
+/**
+ * 인용 앵커로 가는 링크. 지금까지 앵커 칩은 **죽은 텍스트**였다.
+ *
+ * 라우팅은 이미 있다 — 논문 상세가 본문 뷰어를 열 때 쓰는 형태와 같다
+ * (`PaperDetailIsland.openBody`). 여기서 새로 만드는 것은 없다.
+ *
+ * 두 가지가 링크를 못 만든다:
+ * - **코퍼스 밖 논문**(namespace가 있는 것) — 우리 doc-model이 없다.
+ * - **초록 앵커(`s0.*`)** — 본문 뷰어가 `s0` 섹션을 목록에서 제외해서 그 id로는 스크롤이
+ *   조용히 안 된다. 초록이 보이는 논문 상세로 보낸다(실측 43개 중 7개가 여기 해당).
+ */
+export function anchorHref(ref: EvidenceSourceRef): string | null {
+  const base = sourceHref(ref);
+  if (!base || base.startsWith('http') || !ref.anchor) return base;
+  if (ref.anchor.startsWith(`${ABSTRACT_SECTION}.`) || ref.anchor === ABSTRACT_SECTION) {
+    return base;
+  }
+  const params = new URLSearchParams({
+    version: String(arxivVersion(ref.paperId)),
+    anchorId: ref.anchor,
+  });
+  return `${base}/doc-model?${params.toString()}`;
+}
+
+/** 본문 뷰어가 목록에서 빼는 섹션 — 초록은 별도 화면이다. */
+const ABSTRACT_SECTION = 's0';
