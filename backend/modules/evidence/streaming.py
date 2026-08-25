@@ -57,6 +57,10 @@ _SURFACE = 'evidence_turn_events'
 # 봐야 한다 — 지금은 한쪽만 고쳐도 각자 자기 모듈 테스트만 보므로 CI가 조용하다.
 STAGE_LABELS = {
     'accepted': '질문 접수',
+    # 판단 노드는 도구가 아니지만 트레이스 행을 남긴다(`loop._answer_node`) — 즉 화면에도
+    # 뜬다. 어휘에서 빠뜨리면 폴백이 stage 문자열을 그대로 내보내 한국어 단계 사이에
+    # 영어 `answer` 한 줄이 낀다(배포본에서 실제로 그랬다).
+    'answer': '판단 정리',
     TOOL_CORPUS_SEARCH: '논문 검색',
     TOOL_LIVE_LOOKUP: '코퍼스 밖 조회',
     TOOL_FETCH_PAPER: '본문 가져오기',

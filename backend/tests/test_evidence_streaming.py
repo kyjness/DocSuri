@@ -381,3 +381,26 @@ def test_trace_row_carries_a_datetime_not_a_string(monkeypatch) -> None:
     )
 
     assert trace_row(record)["at"] is record.at
+
+
+def test_every_trace_producer_has_a_korean_label() -> None:
+    """트레이스 행을 남기는 것은 도구만이 아니다 — 판단 노드도 남기고, 그것도 화면에 뜬다.
+
+    라벨 맵에서 빠진 이름은 폴백이 stage 문자열을 그대로 내보내므로, 한국어 단계 사이에
+    영어 한 줄이 낀다(배포본에서 `answer`가 실제로 그랬다). 도구 어휘는 `ports.tools`가
+    정본이고 그 밖의 생산자는 여기 목록이 전부다.
+    """
+    from backend.modules.evidence import ports
+    from backend.modules.evidence.streaming import STAGE_LABELS
+
+    tools = {
+        value
+        for name, value in vars(ports.tools).items()
+        if name.startswith("TOOL_") and isinstance(value, str)
+    }
+    producers = tools | {"answer"}
+
+    missing = sorted(name for name in producers if name not in STAGE_LABELS)
+    assert missing == []
+    # 라벨은 사용자 어휘여야 한다 — 영어 stage 이름을 그대로 둔 항목이 없다.
+    assert [k for k, v in STAGE_LABELS.items() if k == v] == []
