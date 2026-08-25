@@ -235,15 +235,14 @@ describe('DocModelViewer', () => {
     // browser shows its broken-image glyph with nothing explaining it. Firing the error must leave
     // a labelled placeholder in the slot instead.
     render(<DocModelViewer paperId="2401.00001" version={1} anchor={null} />);
-    const img = await waitFor(() => {
-      const el = screen.getAllByRole('img').find((e) => e.tagName === 'IMG');
-      expect(el).toBeTruthy();
-      return el as HTMLImageElement;
-    });
 
-    fireEvent.error(img);
-
+    // **매번 다시 찾아서 쏜다.** `waitFor`가 한 번 잡은 element를 들고 있다가 쏘면, 그 사이
+    // 재렌더가 노드를 교체했을 때 **떨어져 나간 노드**에 이벤트를 보내게 된다 — 화면의 img는
+    // 그대로 남고 검사만 실패한다. 로컬에서는 재렌더가 먼저 끝나 안 보이고 CI에서만 났다.
     await waitFor(() => {
+      const live = screen.getAllByRole('img').filter((e) => e.tagName === 'IMG');
+      expect(live.length).toBeGreaterThan(0);
+      live.forEach((e) => fireEvent.error(e));
       expect(screen.getAllByRole('img').some((e) => e.tagName === 'IMG')).toBe(false);
     });
     expect(screen.getByLabelText('그림을 표시할 수 없습니다')).toBeTruthy();

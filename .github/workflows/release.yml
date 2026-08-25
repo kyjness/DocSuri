@@ -5,8 +5,14 @@
 name: Release
 
 on:
-  push:
-    branches: [main]
+  # **자동 트리거를 껐다(2026-08-25).** 이 파이프라인은 팀 프로젝트 계정(028317349537)의
+  # ECR/ECS로 배포하는데 그 계정은 은퇴했다 — OIDC assume-role이 "token could not be
+  # validated"로 실패하고 성공할 방법이 없다. `main`을 만들자마자 세 잡이 빨갛게 떴다.
+  #
+  # 지금 배포는 CI를 안 탄다: `ops/deploy/deploy.sh`가 노트북에서 rsync로 나간다(로드맵 ⑪).
+  # 파일을 지우지 않는 이유는 `ops/cdk/`와 같다 — **실서비스 토폴로지 설계 기록**이다.
+  # 상시 빨간 체크는 진짜 실패를 무시하게 만드므로, 기록은 남기고 실행만 막는다.
+  workflow_dispatch:
 
 permissions:
   contents: write # create the tag + GitHub Release
