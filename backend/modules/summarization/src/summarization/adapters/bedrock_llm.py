@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from collections.abc import Sequence
 from typing import Any
@@ -229,9 +230,20 @@ class BedrockLlmGateway:
         return "".join(chunks), truncated
 
 
+# 모델이 값 **안에** 도구 호출 마크업을 써 넣는 일이 있다. 실측(2026-08-25 배포본):
+#   "reproducibility.code": "\n<parameter name=\"code\">코드 공개 여부가 논문 본문에…"
+# 그대로 두면 화면에 태그가 글자로 보이고, 앵커 대조·용어집 치환도 그 쓰레기를 함께 본다.
+# 여는 태그만 지운다 — 본문에 있을 수 있는 부등호(수식·코드 인용)까지 건드리면 원문을 훼손한다.
+_LEAKED_TOOL_MARKUP = re.compile(
+    r"</?(?:parameter|invoke|function_calls|antml:[a-z_]+)\b[^>]*>", re.IGNORECASE
+)
+
+
 def _as_str(value: Any) -> str:
     """Coerce a payload field to a string (``None`` → "")."""
-    return "" if value is None else str(value)
+    if value is None:
+        return ""
+    return _LEAKED_TOOL_MARKUP.sub("", str(value)).strip()
 
 
 def _as_list(value: Any) -> list:

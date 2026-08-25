@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from summarization.adapters.bedrock_llm import BedrockLlmGateway
+from summarization.adapters.bedrock_llm import BedrockLlmGateway, _as_str
 from summarization.domain.models import (
     AnchorTarget,
     Glossary,
@@ -180,3 +180,24 @@ def test_raw_latex_and_inner_quotes_round_trip_as_valid_json() -> None:
     assert result.translations["0"] == latex
     assert "\\mathcal{G}" in result.translations["0"]
     assert result.translations["1"] == quoted
+
+
+def test_leaked_tool_markup_is_stripped_from_field_values() -> None:
+    """모델이 값 **안에** 도구 호출 마크업을 써 넣는 일이 있다.
+
+    실측(2026-08-25 배포본): `reproducibility.code`가
+    `"\\n<parameter name=\\"code\\">코드 공개 여부가 논문 본문에…"`로 왔다. 그대로 두면 화면에
+    태그가 글자로 보이고, 앵커 대조·용어집 치환도 그 쓰레기를 함께 본다.
+    """
+    assert _as_str('\n<parameter name="code">코드 공개 없음') == "코드 공개 없음"
+    assert _as_str("<invoke name='x'>본문</invoke>") == "본문"
+
+
+def test_ordinary_angle_brackets_survive() -> None:
+    """본문의 부등호는 건드리지 않는다 — 수식·코드 인용에 정상적으로 나온다.
+
+    여는 태그 이름을 좁게 잡은 이유가 이것이다. `<[^>]*>`로 넓게 지우면 `$x < y$` 같은 원문이
+    잘려 나가고, 그 훼손은 앵커 대조가 실패하는 모양으로만 표가 난다.
+    """
+    assert _as_str("손실은 $x < y$ 이고 a > b 이다") == "손실은 $x < y$ 이고 a > b 이다"
+    assert _as_str("List<int> 타입") == "List<int> 타입"
