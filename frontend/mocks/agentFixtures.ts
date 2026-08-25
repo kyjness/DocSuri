@@ -84,6 +84,9 @@ const baseSessions: AgentSessionSnapshot[] = [
                 {
                   paperId: 'arxiv:2405.09876v1',
                   recordRef: 'external:arxiv:2405.09876v1',
+                  // 코퍼스 밖 출처는 백엔드가 네임스페이스를 판정해 싣는다 — 화면은
+                  // 접두어를 자르지 않는다.
+                  namespace: 'arxiv',
                   title: 'Rank Instability Under Contamination Removal',
                   quote: 'removing contaminated items reorders the top five systems',
                   sourceScope: 'abstract',

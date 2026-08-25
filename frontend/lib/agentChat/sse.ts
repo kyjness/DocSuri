@@ -105,8 +105,14 @@ export function timelineDetail(payload?: Record<string, unknown>): string | unde
     count !== undefined ? `결과 ${count}건` : undefined,
     // evidence — 결과 요약은 백엔드가 이미 사용자 어휘로 쓴다(`result_summary`는 화면
     // 전용이고 모델은 못 본다). 여기서 되파싱하지 않는다.
+    //
+    // **`argsSummary`는 싣지 않는다.** 그쪽은 `paper_ids=['arxiv:2106.09685v2', …],
+    // stance=counter` 같은 모델 컨텍스트·운영 트레이스용 key=value 덤프이고, 도메인이
+    // "되파싱하면 바닥 검사가 화면 문자열에 묶인다"고 규정한 값이다. 화면에 실으면 그
+    // 절단 규칙(80자/300자)이 사용자 계약이 되어, 트레이스 포맷을 바꾸는 것이 UI 변경이
+    // 된다. 사용자가 알아야 하는 것(무엇을 검색했나)은 검색 도구가 `resultSummary`에
+    // 자기 `query`로 싣는다 — 되파싱이 아니라 생산자가 아는 값이다.
     stringValue(payload.resultSummary),
-    stringValue(payload.argsSummary),
     safeReason(payload),
   ];
   return parts.filter(Boolean).join(' · ') || undefined;

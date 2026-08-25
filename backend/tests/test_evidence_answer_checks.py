@@ -293,3 +293,17 @@ def test_a_sentence_without_a_role_reads_as_evidence_rather_than_vanishing():
 
     assert isinstance(checked, CheckedAnswer)
     assert checked.answer.segments[0].role is AnswerSegmentRole.evidence
+
+
+def test_a_role_outside_the_vocabulary_reads_as_evidence_here_not_in_the_adapter():
+    """어휘 판정은 **도메인 하나**다 — 어댑터는 모양만 다듬어 넘긴다.
+
+    양쪽에서 판정하면 어휘 밖 값의 행동이 두 곳에 나뉘고, 한쪽만 고쳐졌을 때 어느 쪽이
+    맞는지 코드에 안 적혀 있다.
+    """
+    checked = check_answer(
+        [AnswerSentence(text="어휘 밖 역할", refs=(1,), role="summary")], [_claim("명제")]
+    )
+
+    assert isinstance(checked, CheckedAnswer)
+    assert checked.answer.segments[0].role is AnswerSegmentRole.evidence

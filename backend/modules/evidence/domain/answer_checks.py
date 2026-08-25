@@ -200,12 +200,13 @@ def check_answer(
     )
 
 
+# 역할 어휘의 **유일한 판정 지점**. 어댑터는 모양만 다듬고 여기로 넘긴다.
+_ROLES = {role.value: role for role in AnswerSegmentRole}
+
+
 def _role_of(sentence: AnswerSentence) -> AnswerSegmentRole:
     """선언이 없거나 어휘 밖이면 evidence — 산문은 그대로 나가고 구조만 평평해진다."""
-    try:
-        return AnswerSegmentRole(sentence.role)
-    except ValueError:
-        return AnswerSegmentRole.evidence
+    return _ROLES.get(sentence.role or "", AnswerSegmentRole.evidence)
 
 
 def _without_paper_ids(text: str) -> str:

@@ -373,7 +373,10 @@ describe('progress frame → timeline event', () => {
 
     expect(mapped?.label).toBe('근거 추출');
     expect(mapped?.detail).toContain('근거 4건 채택 · 2건 탈락');
-    expect(mapped?.detail).toContain('paper_ids=2106.09685, stance=counter');
+    // 인자 요약은 **화면에 안 나간다** — 모델 컨텍스트용 key=value 덤프이고, 실으면 그
+    // 절단 규칙이 사용자 계약이 되어 트레이스 포맷 변경이 UI 변경이 된다.
+    expect(mapped?.detail).not.toContain('paper_ids');
+    expect(mapped?.detail).not.toContain('stance=counter');
     // 소요 시간의 재료. 트레이스 행의 `at`이 프레임의 createdAt(=폴링 시각)을 이긴다 —
     // 후자는 스트림이 그 행을 **집어 든** 시각이라 단계 간격을 폴링 주기로 반올림한다.
     expect(mapped?.at).toBe('2026-08-25T00:00:24.500Z');

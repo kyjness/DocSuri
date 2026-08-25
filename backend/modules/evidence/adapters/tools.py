@@ -122,8 +122,17 @@ _PROMOTION_FAILURE = {
 
 def _extract_summary(accepted: int, rejected: int) -> str:
     """채택 건수가 앞이다 — 탈락은 0이면 말하지 않는다(0을 말하면 매 줄에 붙는다)."""
-    text = f"근거 {accepted}건 채택"
-    return f"{text} · {rejected}건 탈락" if rejected else text
+    return f"근거 {accepted}건 채택" + (f" · {rejected}건 탈락" if rejected else "")
+
+
+# 화면 한 줄에 들어갈 검색어 길이. 인자 요약(`_summarize_args`)의 상한과 **다른 값이어야**
+# 한다 — 그쪽은 모델이 읽는 트레이스 형식이고 이쪽은 사용자가 읽는 문장이다. 두 상한을 하나로
+# 묶으면 트레이스 포맷을 바꾸는 것이 UI 변경이 된다.
+_QUERY_LABEL_CHARS = 60
+
+
+def _shorten(query: str) -> str:
+    return query if len(query) <= _QUERY_LABEL_CHARS else query[:_QUERY_LABEL_CHARS] + "…"
 
 
 def _candidate_view(candidate: Any) -> dict[str, Any]:
@@ -185,6 +194,7 @@ class CorpusSearchTool:
             hits[:_MAX_HITS],
             PaperOrigin.CORPUS,
             TOOL_CORPUS_SEARCH,
+            query=query,
             # 0건이 "그런 논문이 없다"인지 "연도로 걸러졌다"인지 모델이 알아야 다음 수가
             # 달라진다. 안 알리면 같은 질의를 연도만 붙인 채 반복한다.
             empty_note=(
@@ -241,7 +251,11 @@ class LiveLookupTool:
                 "실시간 조회를 쓸 수 없다 — 코퍼스 검색과 확보한 논문으로 진행하라",
             )
         result = _register(
-            self._state, outcome.candidates[:_MAX_HITS], PaperOrigin.EXTERNAL, TOOL_LIVE_LOOKUP
+            self._state,
+            outcome.candidates[:_MAX_HITS],
+            PaperOrigin.EXTERNAL,
+            TOOL_LIVE_LOOKUP,
+            query=query,
         )
         if outcome.degraded_sources:
             # 어느 소스가 빠졌는지 알려야 모델이 "이게 전부"라고 믿지 않는다(novelty 실측).
@@ -257,6 +271,7 @@ def _register(
     origin: PaperOrigin,
     tool: str,
     *,
+    query: str,
     empty_note: str | None = None,
 ) -> ToolResult:
     """검색 결과를 상태에 심고 모델이 볼 결과를 만든다.
@@ -286,12 +301,12 @@ def _register(
                     "mode를 빼고 의미 검색으로 다시 하라."
                 ),
             },
-            result_summary="결과 없음",
+            result_summary=f'"{_shorten(query)}" — 결과 없음',
         )
     return ToolResult(
         ok=True,
         content={"hits": [_candidate_view(c) for c in hits]},
-        result_summary=f"논문 {len(hits)}편 찾음",
+        result_summary=f'"{_shorten(query)}" — 논문 {len(hits)}편 찾음',
     )
 
 
@@ -391,9 +406,7 @@ class FetchPaperTool:
                     "status": str(result.outcome),
                     "note": "본문을 가져오지 못했다 — 이 논문은 초록 범위로만 인용할 수 있다",
                 },
-                result_summary=_PROMOTION_FAILURE.get(
-                    result.outcome, "본문 확보 실패"
-                ),
+                result_summary=_PROMOTION_FAILURE.get(result.outcome, "본문 확보 실패"),
             )
         handle.doc_model = result.doc_model
         handle.invalidate_projections()

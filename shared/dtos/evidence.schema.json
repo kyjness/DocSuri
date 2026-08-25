@@ -21,12 +21,13 @@
       "properties"  : {
         "paperId"  : {
           "type"       : "string",
-          "description": "출처 문서 id. arXiv: 표시용 arXiv ID(버전 포함 가능, Source: IndexRecord.arxivId). 사용자 업로드: \"userdoc:{uuid}\" 네임스페이스 — 실재 arXiv id 없음, arxiv.org URL 조립 금지(무날조). Trace: FR-5, vector-spec §2."
+          "description": "출처 문서 id. 접두어 없음 = 코퍼스 논문(표시용 arXiv ID, 버전 포함 가능, Source: IndexRecord.arxivId). 접두어가 있으면 코퍼스 밖이고 그 어휘는 PaperIdNamespace다(`{namespace}:{id}`). 사용자 업로드는 \"userdoc:{uuid}\" — 실재 arXiv id 없음, arxiv.org URL 조립 금지(무날조). Trace: FR-5, vector-spec §2."
         },
         "recordRef": {
           "type"       : "string",
           "description": "IndexRecord 식별자(실재성 검증 핸들). 사용자 업로드: \"upload:{ownerId}:{jobId}:{attachmentId}\". 내부 벡터·청크 정보 미포함. Trace: FR-5, vector-spec §2."
         },
+        "namespace": { "$ref": "#/$defs/PaperIdNamespace" },
         "title"    : {
           "type"       : "string",
           "description": "출처 논문의 제목(선택). 화면이 출처를 **사람이 알아볼 수 있는 이름**으로 보여주기 위한 것 — 이것이 없으면 근거 목록에 `arxiv:2106.09685v2` 같은 식별자만 남고, 사용자는 눌러 보기 전까지 무슨 논문인지 모른다. 루프가 확보한 PaperHandle.title이 원천이고, 제목을 확보하지 못한 논문(초록만 받았고 제목이 빈 경우)에서는 생략한다. 인용의 실재를 검증하는 핸들은 여전히 paperId·recordRef다 — 제목은 표시용이라 판정에 쓰지 않는다. Trace: FR-5, §2.1, §8."
@@ -109,6 +110,12 @@
       },
       "required"    : ["paperCount"],
       "additionalProperties": false
+    },
+    "PaperIdNamespace": {
+      "type"       : "string",
+      "title"      : "PaperIdNamespace",
+      "enum"       : ["arxiv", "doi", "userdoc"],
+      "description": "`SourceRef.paperId`의 네임스페이스(`{namespace}:{id}`). **생략이면 코퍼스 논문**이고 paperId는 IndexRecord.arxivId 그대로다 — 그래서 이 목록은 \"코퍼스 밖\" 어휘다. arxiv = 실시간 조회로 찾은 arXiv 논문(버전 포함) · doi = arXiv에 없어 DOI로 실려온 논문 · userdoc = 사용자가 올린 문서. **파생값을 굳이 싣는 이유**: 접두어를 만드는 곳(live_sources·user_docmodel)과 그것을 보고 링크 목적지를 정하는 곳(FE)이 각자 문자열을 적으면, 접두어가 하나 늘 때 한쪽만 고쳐지고 화면은 조용히 링크를 잃는다. 어휘를 아는 쪽이 판정해서 실어 보내면 소비자는 되파싱하지 않고, 어휘가 늘면 소비자의 분기가 컴파일에서 막힌다. Trace: FR-5, §8."
     },
     "AnswerSegmentRole": {
       "type"       : "string",

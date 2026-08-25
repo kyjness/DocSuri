@@ -1,5 +1,6 @@
-/* 근거표·novelty 표가 공유하는 바탕. 둘이 따로 적혀 있던 동안 evidence 쪽이
-   `-webkit-overflow-scrolling`을 빠뜨렸고, 폰트 크기만 아무 근거 없이 갈렸다.
+/* novelty 표들의 바탕(evidence 근거표가 목록으로 바뀌며 이쪽 소비자는 사라졌다).
+   유사 연구 표와 실험 계획 표가 따로 적혀 있던 동안 한쪽이 `-webkit-overflow-scrolling`을
+   빠뜨렸고 폰트 크기만 아무 근거 없이 갈렸다.
    넓은 표는 자기 컨테이너 안에서만 가로로 흐른다 — 메시지 폭을 밀지 않는다. */
 .dataTableWrap {
   overflow-x: auto;
@@ -316,14 +317,23 @@
   border-left: 3px solid var(--color-accent-text);
 }
 
-/* 역할 표시는 결론·갈림 지점에만 붙는다 — 근거 서술까지 달면 신호가 소음이 된다. */
-.answerRoleLabel {
-  display: block;
-  margin-bottom: 2px;
+/* 작은 대문자 라벨 — evidence 판단 산문과 novelty 실험 계획이 함께 쓰는 프리미티브다.
+   종전 이름이 `.evidenceLabel`이었는데 근거표를 걷어내며 지웠고, novelty가 아직 쓰고 있어
+   두 라벨이 스타일을 잃었다(2026-08-25). 이름이 소유자를 잘못 말하면 그렇게 된다. */
+.fieldLabel {
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.02em;
   color: var(--color-text-muted);
+  text-transform: uppercase;
+}
+
+/* 역할 표시는 결론·갈림 지점에만 붙는다 — 근거 서술까지 달면 신호가 소음이 된다. */
+.answerRoleLabel {
+  composes: fieldLabel;
+  display: block;
+  margin-bottom: 2px;
+  text-transform: none;
 }
 
 .answerCited {
@@ -759,13 +769,10 @@
   font-weight: 600;
 }
 
-/* 단계별 소요 시간 — 자릿수가 흔들리지 않도록 tabular. 배지 앞, 라벨 뒤가 자리다. */
+/* 단계별 소요 시간 — 접힌 줄의 누적 시간과 **같은 종류의 값**이라 규칙도 하나다. 두 벌로
+   두면 한쪽만 손댔을 때 같은 화면에서 숫자 크기가 어긋나고, 그 어긋남은 펼쳐야만 보인다. */
 .timelineDuration {
-  margin-left: auto;
-  color: var(--color-text-muted);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
+  composes: timelineMeta;
 }
 
 .timelineEventDetail {

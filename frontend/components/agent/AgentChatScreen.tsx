@@ -25,7 +25,6 @@ import type {
 } from '@/lib/agentChat/types';
 import {
   abstainReasonLabel,
-  isExternalSource,
   sourceHref,
   sourceLabel,
   parseAgentContent,
@@ -41,6 +40,7 @@ import type {
   EvidenceClaim,
   EvidenceCoverage,
 } from '@/lib/agentChat/evidenceResult';
+import type { AnswerSegmentRole } from '@/types/generated/evidence';
 import {
   SIMILAR_WORK_COLUMNS,
   confidenceLabel,
@@ -829,13 +829,12 @@ function AnswerProse({
     <div className={styles.evidenceAnswer} data-testid="evidence-answer">
       {answer.segments.map((segment, idx) => {
         const role = segment.role ?? 'evidence';
+        const roleLabel = ANSWER_ROLE_LABEL[role];
         return (
           <p key={idx} className={styles.answerSegment} data-segment-role={role}>
-            {/* 역할 표시는 결론·갈림 지점에만 붙는다. 근거 서술은 대다수라, 거기까지 라벨을
-                달면 신호가 소음이 된다(범위 배지와 같은 이유). */}
-            {ANSWER_ROLE_LABEL[role] ? (
+            {roleLabel ? (
               <span className={styles.answerRoleLabel} data-testid="evidence-answer-role">
-                {ANSWER_ROLE_LABEL[role]}
+                {roleLabel}
               </span>
             ) : null}
             <span
@@ -870,10 +869,12 @@ function AnswerProse({
   );
 }
 
-const ANSWER_ROLE_LABEL: Record<string, string | null> = {
+/* 역할 표시는 결론·갈림 지점에만 붙는다 — 근거 서술은 대다수라 라벨을 달면 소음이 된다.
+   키를 생성 타입에 묶어야 스키마에 역할이 늘 때 **컴파일이 막는다**. `Record<string, …>`이면
+   타입 검사가 통과한 채로 그 문장만 표시를 잃고, 그 사실은 화면에서만 보인다. */
+const ANSWER_ROLE_LABEL: Partial<Record<AnswerSegmentRole, string>> = {
   conclusion: '결론',
   divergence: '갈리는 지점',
-  evidence: null,
 };
 
 // 행 id는 **메시지 단위**다. 한 세션에 evidence 턴이 둘이면 `[n]`이 둘 다 같은 번호를
@@ -909,8 +910,7 @@ export function EvidenceClaimList({
   expanded?: boolean;
   onExpand?: () => void;
 }) {
-  const hidden = claims.length - EVIDENCE_VISIBLE_CLAIMS;
-  const visible = expanded ? claims.length : Math.min(claims.length, EVIDENCE_VISIBLE_CLAIMS);
+  const collapsed = !expanded && claims.length > EVIDENCE_VISIBLE_CLAIMS;
   return (
     <div className={styles.evidenceList} data-testid="evidence-list">
       {claims.map((claim, idx) => (
@@ -920,17 +920,17 @@ export function EvidenceClaimList({
           number={idx + 1}
           scope={scope}
           // 접힌 근거도 DOM에는 남긴다 — 산문의 `[9]`가 가리킬 대상이 없으면 링크가 죽는다.
-          hidden={idx >= visible}
+          hidden={collapsed && idx >= EVIDENCE_VISIBLE_CLAIMS}
         />
       ))}
-      {hidden > 0 && !expanded ? (
+      {collapsed ? (
         <button
           type="button"
           className={styles.evidenceMore}
           onClick={onExpand}
           data-testid="evidence-show-more"
         >
-          근거 {hidden}건 더 보기
+          근거 {claims.length - EVIDENCE_VISIBLE_CLAIMS}건 더 보기
         </button>
       ) : null}
     </div>
@@ -1010,23 +1010,26 @@ function SourceRefChips({ refKey: ref }: { refKey: EvidenceSourceRef }) {
   );
 }
 
-const STANCE_MARK = { support: '✓', conflict: '✗' } as const;
+/* 지지 ✓ / 상충 ✗ — 열 두 개가 하던 일을 글리프 하나가 한다. 표시와 읽어주는 이름이 한
+   자리에 있어야 한다: 두 맵으로 나뉘면 갈렸을 때 ✓에 "상충" 라벨이 붙어 **접근성 트리에서만**
+   틀리고, 눈으로는 안 보인다. */
+const STANCE = {
+  support: { mark: '✓', label: '지지' },
+  conflict: { mark: '✗', label: '상충' },
+} as const;
 
-function EvidenceRefList({
-  refs,
-  stance,
-}: {
-  refs: EvidenceSourceRef[];
-  stance: 'support' | 'conflict';
-}) {
+type Stance = keyof typeof STANCE;
+
+function EvidenceRefList({ refs, stance }: { refs: EvidenceSourceRef[]; stance: Stance }) {
   if (refs.length === 0) return null;
+  const { mark, label } = STANCE[stance];
   return (
     <ul className={styles.evidenceRefs} data-stance={stance}>
       {refs.map((ref, idx) => (
         <li key={idx} className={styles.evidenceRef}>
           <span className={styles.evidenceSource}>
-            <span className={styles.evidenceStanceMark} aria-label={STANCE_LABEL[stance]}>
-              {STANCE_MARK[stance]}
+            <span className={styles.evidenceStanceMark} aria-label={label}>
+              {mark}
             </span>
             <SourceLink refKey={ref} />
             {/* 인용 앵커(#339). recordRef는 내부 식별자라 노출하지 않는다.
@@ -1040,7 +1043,6 @@ function EvidenceRefList({
   );
 }
 
-const STANCE_LABEL = { support: '지지', conflict: '상충' } as const;
 
 /**
  * 출처 논문 — **제목을 링크로** 건다.
@@ -1056,7 +1058,7 @@ function SourceLink({ refKey: ref }: { refKey: EvidenceSourceRef }) {
   if (!href) {
     return <span className={styles.evidencePaperTitle}>{label}</span>;
   }
-  const external = isExternalSource(ref);
+  const external = href.startsWith('http');
   return (
     <a
       className={styles.evidencePaperTitle}
@@ -1248,13 +1250,13 @@ function ExperimentPlanView({ plan }: { plan: Record<string, unknown> }) {
     <div className={styles.noveltyPlan}>
       {hypothesis ? (
         <>
-          <span className={styles.evidenceLabel}>가설</span>
+          <span className={styles.fieldLabel}>가설</span>
           <p className={styles.noveltyPlanQuestion}>{hypothesis}</p>
         </>
       ) : null}
       {angle ? (
         <>
-          <span className={styles.evidenceLabel}>차별화 포인트</span>
+          <span className={styles.fieldLabel}>차별화 포인트</span>
           <p className={styles.noveltyPlanAngle}>{angle}</p>
         </>
       ) : null}
@@ -1380,7 +1382,9 @@ function AgentProgressTimeline({
   const steps = withStepDurations(displayEvents);
   if (steps.length === 0) return null;
   const running = steps.some((step) => step.state === 'running');
-  const total = totalElapsedMs(displayEvents);
+  // 누적은 **단계 합에서 파생한다**. 따로 재면 간격 규칙을 손댈 때 둘이 조용히 어긋나
+  // "3단계 · 24.5초"인데 단계 합은 21.5초인 상태가 된다 — 아무 검사도 그 불일치를 안 본다.
+  const total = steps.reduce((sum, step) => sum + (step.durationMs ?? 0), 0) || undefined;
   return (
     <details
       className={styles.timeline}
@@ -1400,7 +1404,7 @@ function AgentProgressTimeline({
       </summary>
       <div className={styles.timelineSteps}>
         {steps.map((step) => (
-          <AgentTimelineItem key={step.id} event={step} durationMs={step.durationMs} />
+          <AgentTimelineItem key={step.id} event={step} />
         ))}
       </div>
     </details>
@@ -1422,18 +1426,12 @@ export function withStepDurations(
     const durationMs =
       at !== undefined && previous !== undefined && at >= previous ? at - previous : undefined;
     if (at !== undefined) previous = at;
-    steps.push(durationMs !== undefined ? { ...event, durationMs } : { ...event });
+    steps.push({ ...event, durationMs });
   }
   return steps;
 }
 
 const TIMELINE_ACCEPTED_STAGE = 'accepted';
-
-function totalElapsedMs(events: AgentTimelineEvent[]): number | undefined {
-  const stamps = events.map(msOf).filter((ms): ms is number => ms !== undefined);
-  if (stamps.length < 2) return undefined;
-  return Math.max(...stamps) - Math.min(...stamps);
-}
 
 function msOf(event?: AgentTimelineEvent): number | undefined {
   if (!event?.at) return undefined;
@@ -1537,13 +1535,8 @@ function noveltySseUrl(sessionId: string, afterEventId: string | null): string |
 // SSE 파서는 evidence 동기 턴 스트리밍(US-EV2)과 공유하도록 lib로 이동 — 테스트 호환 재노출.
 export { parseNoveltySseEvents } from '@/lib/agentChat/sse';
 
-function AgentTimelineItem({
-  event,
-  durationMs,
-}: {
-  event: AgentTimelineEvent;
-  durationMs?: number;
-}) {
+function AgentTimelineItem({ event }: { event: AgentTimelineEvent & { durationMs?: number } }) {
+  const { durationMs } = event;
   return (
     <div
       className={styles.timelineEvent}

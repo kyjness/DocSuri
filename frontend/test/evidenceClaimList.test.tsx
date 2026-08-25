@@ -16,11 +16,7 @@ import {
   EvidenceClaimList,
   EvidenceResultView,
 } from '@/components/agent/AgentChatScreen';
-import {
-  isExternalSource,
-  sourceHref,
-  sourceLabel,
-} from '@/lib/agentChat/evidenceResult';
+import { sourceHref, sourceLabel } from '@/lib/agentChat/evidenceResult';
 import type { EvidenceSourceRef } from '@/lib/agentChat/evidenceResult';
 
 function ref(over: Partial<EvidenceSourceRef>): EvidenceSourceRef {
@@ -29,27 +25,31 @@ function ref(over: Partial<EvidenceSourceRef>): EvidenceSourceRef {
 
 describe('sourceHref', () => {
   it('sends a corpus paper to our own detail page, where the full text lives', () => {
-    // arxiv.org로 내보내면 본문·요약·번역이 다 여기 있는데 밖으로 내보내는 셈이다.
+    // 네임스페이스가 없는 것이 곧 "코퍼스 논문"이다. arxiv.org로 내보내면 본문·요약·번역이
+    // 다 여기 있는데 밖으로 내보내는 셈이라, 이 목적지 판단만은 프론트에 남는다.
     expect(sourceHref(ref({ paperId: '2401.01234' }))).toBe('/paper/2401.01234');
-    expect(isExternalSource(ref({ paperId: '2401.01234' }))).toBe(false);
   });
 
   it('sends a live-lookup paper outside — it has no detail page here', () => {
-    expect(sourceHref(ref({ paperId: 'arxiv:2405.09876v1' }))).toBe(
-      'https://arxiv.org/abs/2405.09876v1',
-    );
-    expect(sourceHref(ref({ paperId: 'doi:10.1145/3580305' }))).toBe(
-      'https://doi.org/10.1145/3580305',
-    );
+    expect(
+      sourceHref(ref({ paperId: 'arxiv:2405.09876v1', namespace: 'arxiv' })),
+    ).toBe('https://arxiv.org/abs/2405.09876v1');
+    expect(
+      sourceHref(ref({ paperId: 'doi:10.1145/3580305', namespace: 'doi' })),
+    ).toBe('https://doi.org/10.1145/3580305');
   });
 
   it('refuses to build a link for an uploaded document — that URL would be fabricated', () => {
     // 스키마가 "실재 arXiv id 없음, arxiv.org URL 조립 금지"라고 못 박은 자리다.
-    expect(sourceHref(ref({ paperId: 'userdoc:9c1f' }))).toBeNull();
+    expect(sourceHref(ref({ paperId: 'userdoc:9c1f', namespace: 'userdoc' }))).toBeNull();
   });
 
-  it('refuses an unknown namespace rather than sending it to a route that must 404', () => {
-    expect(sourceHref(ref({ paperId: 'pmid:123456' }))).toBeNull();
+  it('reads the namespace the backend sent rather than re-parsing the prefix', () => {
+    // 어휘를 아는 쪽이 판정한다. 프론트가 접두어를 직접 자르면 어휘가 두 벌이 되고,
+    // 접두어가 하나 늘 때 이쪽만 안 고쳐져 화면이 조용히 링크를 잃는다.
+    // 저장된 옛 턴에는 이 필드가 없다. 없는 값을 "코퍼스"로 단정하면 `/paper/arxiv%3A…`로
+    // 보내 반드시 404다 — 접두어가 보이면 링크를 만들지 않는다.
+    expect(sourceHref(ref({ paperId: 'arxiv:2405.09876v1' }))).toBeNull();
     expect(sourceHref(ref({ paperId: '  ' }))).toBeNull();
   });
 });

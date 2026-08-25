@@ -30,7 +30,6 @@ import logging
 import re
 from typing import Any
 
-from docsuri_shared._generated.dtos.evidence_schema import AnswerSegmentRole
 from docsuri_shared.bedrock import (
     ANTHROPIC_VERSION,
     dropped_call_note,
@@ -207,16 +206,13 @@ def parse_json_sentences(text: str) -> tuple[AnswerSentence, ...]:
 
 
 def _coerce_role(value: Any) -> str | None:
-    """어휘 밖·미선언은 None이다 — 검사기가 evidence로 읽는다.
+    """모양만 다듬는다 — **무엇이 유효한지는 도메인이 정한다.**
 
-    여기서 버리지 않고 None으로 두는 이유는 추출·refs와 같다: 무엇이 유효한지는 도메인이
-    정한다. 모양 관용은 파싱이지 판정이 아니다.
+    종전에는 여기서 어휘 멤버십까지 봤다. 그러면 판정 지점이 둘이 되어(도메인의 `_role_of`가
+    다시 본다) 어휘 밖 값의 행동이 두 곳에 나뉜다 — 이 모듈들이 refs·추출에서 명시적으로
+    피하는 형태다. 모양 관용은 파싱이지 판정이 아니다.
     """
-    text = str(value or "").strip().lower()
-    return text if text in _ANSWER_ROLES else None
-
-
-_ANSWER_ROLES = frozenset(role.value for role in AnswerSegmentRole)
+    return str(value or "").strip().lower() or None
 
 
 _INLINE_REF = re.compile(r"\s*\[\s*(\d+(?:\s*,\s*\d+)*)\s*\]")

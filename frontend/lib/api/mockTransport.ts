@@ -669,7 +669,9 @@ function progressWire(event: AgentTimelineEvent) {
       // 같은 순간이 되어 소요 시간 경로가 로컬에서 **한 번도 안 돈다**(0ms만 나온다).
       ...(event.at ? { at: event.at } : {}),
     },
-    createdAt: event.at ?? new Date().toISOString(),
+    // 실 백엔드는 트레이스 시각을 `payload.at`에만 싣고 `createdAt`은 프레임을 집어 든
+    // 시각이다. 목이 둘 다 같은 값으로 채우면 "어느 쪽을 읽는가"를 검증하는 힘을 잃는다.
+    createdAt: new Date().toISOString(),
   };
 }
 

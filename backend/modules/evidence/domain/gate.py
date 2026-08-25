@@ -25,6 +25,7 @@ figure       선택      **필수**    (인용문이 아니라 해석 — 숫자
 
 from __future__ import annotations
 
+import logging
 import re
 from collections import Counter
 from dataclasses import dataclass, field
@@ -33,11 +34,14 @@ from typing import Any
 from docsuri_shared._generated.dtos.evidence_schema import (
     AnchorType,
     EvidenceItem,
+    PaperIdNamespace,
     SourceRef,
     SourceScope,
 )
 
 from .projection import normalize
+
+log = logging.getLogger("docsuri.evidence.gate")
 
 __all__ = [
     "MIN_QUOTE_CHARS",
@@ -47,6 +51,7 @@ __all__ = [
     "RejectReason",
     "id_key",
     "numbers_in",
+    "paper_id_namespace",
     "run_gate",
 ]
 
@@ -113,6 +118,27 @@ class GateOutcome:
     @property
     def rejected_count(self) -> int:
         return sum(self.rejections.values())
+
+
+def paper_id_namespace(paper_id: str) -> PaperIdNamespace | None:
+    """`{namespace}:{id}`의 앞부분. 접두어가 없으면 **코퍼스 논문**이라 None이다.
+
+    어휘를 아는 쪽이 판정해서 실어 보낸다. 소비자(화면)가 접두어를 직접 자르면 어휘가 두
+    벌이 되고, 접두어가 하나 늘 때 한쪽만 고쳐져 화면이 조용히 링크를 잃는다 — 값이 실려
+    오면 소비자의 분기가 컴파일에서 막힌다.
+
+    어휘 밖 접두어도 None이 아니라 **모르는 것**으로 두면 소비자가 코퍼스 논문으로 오인한다.
+    지금은 `PaperIdNamespace`가 닫힌 어휘이므로 여기 없는 접두어는 있을 수 없다 — 생기면
+    이 함수가 그것을 None으로 떨어뜨리는 것이 아니라 어휘에 추가되어야 한다.
+    """
+    prefix, sep, _ = paper_id.partition(":")
+    if not sep:
+        return None
+    try:
+        return PaperIdNamespace(prefix)
+    except ValueError:
+        log.warning("evidence: unknown paperId namespace %r", prefix)
+        return None
 
 
 def numbers_in(text: str) -> set[str]:
@@ -300,6 +326,7 @@ def _validate_ref(
     ref = SourceRef(
         paperId=source.paper_id,
         recordRef=source.record_ref,
+        namespace=paper_id_namespace(source.paper_id),
         title=source.title or None,
         anchor=anchor,
         quote=quote or None,
