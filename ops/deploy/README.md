@@ -117,6 +117,11 @@ DOCSURI_CONTACT_EMAIL=you@example.com
 
 # 코퍼스가 얇으므로 켠다. 조회는 외부 API 호출뿐이라 파싱 스택이 없어도 돈다.
 DOCSURI_EVIDENCE_LIVE_LOOKUP_ENABLED=true
+
+# 가입 없이 둘러보기. **프론트 게이트와 짝이다** — `compose.prod.yml`의 빌드 인자
+# `NEXT_PUBLIC_DOCSURI_DEMO_LOGIN_ENABLED`도 함께 켜야 버튼이 보인다. 한쪽만 켜면
+# 버튼이 404를 받거나(프론트만), 버튼 없이 엔드포인트만 열린다(백엔드만).
+DOCSURI_DEMO_LOGIN_ENABLED=1
 ```
 
 **`DOCSURI_GATEWAY_URL`은 여기 없다** — 프론트 컨테이너의 런타임 env이고 `compose.prod.yml`이

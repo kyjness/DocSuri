@@ -84,6 +84,14 @@
     min-width: 160px;
     padding: 0 28px;
   }
+
+  /* 데스크톱에서 위 둘은 가로로 서지만 이 버튼은 **아래 줄**에 남는다 — 셋을 나란히 두면
+     "가입 없이"가 회원가입·로그인과 같은 급으로 보인다. 보조 수단이라는 것이 자리로 드러나야
+     한다. flex-basis 100%가 그 줄바꿈을 만든다. */
+  .tertiary,
+  .demoError {
+    flex-basis: 100%;
+  }
 }
 
 .primary {
@@ -135,4 +143,32 @@
 
 .legalLink:hover {
   text-decoration: underline;
+}
+
+/* 3순위 동작 — 테두리도 배경도 없다. 회원가입(채운 버튼)·로그인(테두리 버튼) 아래에서
+   시각적 무게가 한 단계 더 가벼워야 셋의 순서가 읽힌다. */
+.tertiary {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: none;
+  color: var(--color-text-muted, var(--color-text));
+  font-size: 14px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.tertiary:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.demoError {
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-danger, #c0392b);
+  text-align: center;
 }

@@ -6,6 +6,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from typing import Protocol
+from uuid import uuid4
 
 from backend.middleware.rate_limit import get_shared_limiter
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
@@ -874,6 +875,68 @@ async def signup(
     except Exception:
         db.rollback()
         raise HTTPException(status_code=500, detail="회원가입 처리 중 알 수 없는 장애가 발생했습니다. (Fail-Closed)") from None
+
+
+_DEMO_LOGIN_ENABLED = (os.getenv("DOCSURI_DEMO_LOGIN_ENABLED") or "").lower() in {
+    "1", "true", "yes", "on"
+}
+# 데모 계정의 이메일 도메인. 실제로 메일이 가지 않는 예약 TLD를 쓴다(RFC 2606) — 오타로
+# 진짜 주소가 만들어져 남의 메일함으로 인증 메일이 나가는 일을 구조적으로 막는다.
+_DEMO_EMAIL_DOMAIN = "demo.invalid"
+
+
+@router.post("/demo")
+async def demo_login(
+    response: Response,
+    repo: CredentialRepository = Depends(get_credential_repo),
+    session_mgr: SessionManager = Depends(get_session_manager),
+    db: Session = Depends(get_db_session),
+):
+    """가입 없이 둘러보기 — **방문자마다 새 임시 계정**을 만들고 바로 세션을 발급한다.
+
+    **왜 공유 계정이 아닌가.** 에이전트 경로에는 사용자별 일일 쿼터가 있다
+    (`middleware/agent_quota.py` — evidence 30턴/일). 계정 하나를 공유하면 먼저 온 한 명이
+    그날의 30턴을 다 쓰고 나머지는 429를 받는다. 검색 기록·저장 논문도 서로 섞여 보인다.
+
+    **왜 새 코드가 아니라 소셜 경로를 재사용하나.** `create_social_account`이 이미
+    "비밀번호 없는 ACTIVE 계정"을 만든다 — 이메일 인증을 건너뛰는 유일하게 검증된 자리이고,
+    `password_hash`가 매칭 불가 센티넬이라 **이 계정으로는 비밀번호 로그인이 불가능하다.**
+    데모 계정이 비밀번호로 다시 열리면 안 되므로 그 성질이 그대로 필요하다.
+
+    **기본은 꺼져 있다**(`DOCSURI_DEMO_LOGIN_ENABLED`). 켜는 것은 배포의 결정이다 —
+    가입 장벽을 없애는 공개 표면이라 실서비스에 켜진 채 나가면 안 된다.
+
+    정리는 하지 않는다(데모 배포는 3개월 한시이고, 계정 행은 가볍다). 박스를 내릴 때 함께
+    사라진다 — 만료 정리 작업을 만드는 비용이 그 값을 못 한다.
+    """
+    if not _DEMO_LOGIN_ENABLED:
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    email = f"demo-{uuid4().hex[:12]}@{_DEMO_EMAIL_DOMAIN}"
+    try:
+        account = repo.create_social_account(email)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise HTTPException(
+            status_code=500, detail="데모 계정을 만들지 못했습니다. (Fail-Closed)"
+        ) from None
+
+    principal = Principal(user_id=account.id, role=UserRole.USER, mfa_verified=False)
+    try:
+        session = await session_mgr.issue(principal)
+    except SessionStoreUnavailableException as e:
+        raise HTTPException(
+            status_code=503, detail="일시적으로 로그인할 수 없습니다. 잠시 후 다시 시도해 주세요."
+        ) from e
+
+    # 로그인과 **같은 쿠키 속성**이어야 한다 — 여기만 다르면 데모 세션이 다르게 만료되거나
+    # SameSite가 갈려 조용히 끊긴다.
+    response.set_cookie(
+        key="session_id", value=session.handle, httponly=True, secure=True,
+        samesite="lax", max_age=30 * 24 * 60 * 60,
+    )
+    return {"status": "success", "message": "데모 계정으로 로그인했습니다."}
 
 
 @router.post("/login")
