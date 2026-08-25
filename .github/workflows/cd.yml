@@ -10,8 +10,10 @@
 name: CD
 
 on:
-  push:
-    tags: ["v*"] # manual/hotfix path — pushing a v* tag deploys that tagged release
+  # **`push: tags` 트리거를 껐다(2026-08-25)** — release.yml과 같은 이유다: 대상 계정
+  # (028317349537)이 은퇴해 OIDC assume-role이 성립하지 않는다. reusable 호출 경로는
+  # 남긴다 — release.yml을 수동 실행하면 그대로 쓰인다.
+  workflow_dispatch:
   workflow_call: {} # auto path — release.yml calls this after auto-tagging a push to main
 
 # Two entry points, both 1:1 with a release:
