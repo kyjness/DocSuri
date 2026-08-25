@@ -166,10 +166,19 @@ class SqlS3FigureReader:
         s3_client: Any | None = None,
         region_name: str | None = None,
         breaker: SourceBreaker | None = None,
+        bucket: str | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._s3 = s3_client
         self._region = region_name
+        # **저장된 참조의 버킷은 참고값이다.** `object_ref`가 `s3://{bucket}/{key}` 형태라
+        # 수집한 배포의 버킷 이름이 행에 박힌다 — 코퍼스를 다른 배포로 옮기면 그 이름이
+        # 따라와 프리사인 URL이 없는 버킷을 가리키고, **자산 API는 200에 목록을 정상으로
+        # 돌려주는데** 이미지만 403이 된다(2026-08-25 배포에서 실측, SQL로 손수 고쳤다).
+        #
+        # 버킷은 논문의 신원이 아니라 **배포 설정**이다. 그래서 여기서 아는 값이 있으면 그것을
+        # 쓰고, 없을 때만 행의 값을 따른다 — 이관에 SQL이 필요 없어진다.
+        self._bucket = bucket or os.getenv("DOCSURI_DOCMODEL_BUCKET") or None
         # 외부 연동 규칙(재시도 1회 + 반복 실패 시 자동 차단) — 다른 외부 도구와
         # 동일 정책. 부재(NoSuchKey)는 실패로 집계하지 않는다.
         self._breaker = breaker or SourceBreaker()
@@ -224,7 +233,8 @@ class SqlS3FigureReader:
         parsed = _split_s3_ref(object_ref)
         if parsed is None:
             return None
-        bucket, key = parsed
+        stored_bucket, key = parsed
+        bucket = self._bucket or stored_bucket
         media_type = _media_type_for(key)
         if media_type is None:
             return None
