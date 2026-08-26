@@ -104,7 +104,12 @@ class EvidenceSettings:
             cap_read_paper=_env_int('DOCSURI_EVIDENCE_CAP_READ_PAPER', 8),
             cap_view_figure=_env_int('DOCSURI_EVIDENCE_CAP_VIEW_FIGURE', 6),
             cap_extract_evidence=_env_int('DOCSURI_EVIDENCE_CAP_EXTRACT_EVIDENCE', 8),
-            token_cost_limit_usd=_env_float('DOCSURI_EVIDENCE_TURN_COST_LIMIT_USD', 0.50),
+            # 0.50 → 1.50 (2026-08-26). 종전 값은 **추출 비용이 장부 밖에 있을 때** 정해진
+            # 것이라 사실상 안 걸렸다. 계상을 고치고 재보니 평범한 턴 하나가 $0.269 — 옛
+            # 상한의 54%다. 그대로 두면 지금까지 완주하던 턴이 중간에 끊겨 "이어서 확인할까요?"가
+            # 뜬다. 상한의 목적은 정상 턴을 자르는 것이 아니라 폭주를 막는 것이므로 실측
+            # 최대치의 약 5배로 둔다.
+            token_cost_limit_usd=_env_float('DOCSURI_EVIDENCE_TURN_COST_LIMIT_USD', 1.50),
             local_turn_workers=_env_int('DOCSURI_EVIDENCE_LOCAL_TURN_WORKERS', 2),
             turn_stale_seconds=_env_int('DOCSURI_EVIDENCE_TURN_STALE_SECONDS', 600),
             checkpoint_retention_days=_env_int('DOCSURI_EVIDENCE_CHECKPOINT_RETENTION_DAYS', 7),

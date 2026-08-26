@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import logging
 import re
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from itertools import zip_longest
 from typing import Any
@@ -38,6 +37,7 @@ from backend.modules.paper_assets import parse_record_ref
 
 from ..domain.projection import normalize
 from ..ports.sources import LiveLookupResult, PaperCandidate, SearchUnavailable
+from .fanout import fan_out
 
 __all__ = ["ARXIV_ENDPOINT", "LiveLookup", "OPENALEX_ENDPOINT", "S2_ENDPOINT"]
 
@@ -133,19 +133,27 @@ class LiveLookup:
         # 승자 우선순위(arXiv > S2 > OpenAlex)는 그대로다 — 그 규칙을 지키는 것은 호출 순서가
         # 아니라 `_dedupe`가 `records` **리스트 순서**를 걷는 것이고, 아래 루프가 완료 순서가
         # 아닌 제출 순서로 `extend`하므로 리스트가 순차 실행과 바이트째로 같다.
-        with ThreadPoolExecutor(max_workers=len(sources)) as pool:
-            futures = [
-                (name, pool.submit(_guarded, breaker, fetch, query))
+        # **실패를 버리지 않는다.** `_guarded`는 `SourceUnavailable`만 잡으므로 그 밖의 오류는
+        # 여기로 온다. 무시하면 그 소스가 `per_source`에도 `degraded`에도 안 들어가
+        # "전부 죽었다" 판정이 영원히 성립하지 않고, 턴이 저하 표시 없는 "논문 없음"을 낸다 —
+        # 사용자가 할 일이 정반대인 두 상황이 같은 화면이 된다(§7).
+        outcomes, failures = fan_out(
+            [
+                (lambda n=name, b=breaker, f=fetch: (n, _guarded(b, f, query)))
                 for name, breaker, fetch in sources
-            ]
-            per_source: list[list[_LiveRecord]] = []
-            for name, future in futures:
-                rows = future.result()
-                if rows is None:
-                    degraded.append(name)
-                else:
-                    per_source.append(rows)
-            records = _interleave(per_source)
+            ],
+            max_workers=len(sources),
+        )
+        per_source: list[list[_LiveRecord]] = []
+        for name, rows in outcomes:
+            if rows is None:
+                degraded.append(name)
+            else:
+                per_source.append(rows)
+        for exc in failures:
+            log.warning("live lookup source raised", exc_info=exc)
+            degraded.append("unknown")
+        records = _interleave(per_source)
 
         if len(degraded) == len(sources):
             # **구성된 소스가 전부 죽었을 때만** 실패다(§7). "0건인데 한 소스가 죽었다"를

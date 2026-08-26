@@ -23,6 +23,7 @@ __all__ = [
     "EvidenceAnswerPort",
     "EvidenceExtractionPort",
     "EvidenceLlmPort",
+    "ExtractionDraft",
     "LlmDecision",
     "LlmUnavailable",
     "LoopObservation",
@@ -147,11 +148,16 @@ class EvidenceExtractionPort(Protocol):
 
     반환은 검증 전 원시 항목이다(`{statement, supporting[], conflicting[]}`) —
     게이트가 판정할 몫을 어댑터가 미리 걸러내면 판정 지점이 둘이 된다.
+
+    **비용을 함께 돌려준다.** 종전에는 항목만 돌려줘서, 턴에서 가장 큰 LLM 소비자가 예산
+    장부 밖에 있었다 — 배포본 트레이스에서 추출 행의 비용이 전부 $0.0000이었고, 화면상
+    $0.02인 턴의 실제 비용은 그보다 훨씬 컸다(논문 여러 편의 본문을 통째로 싣는다).
+    예산의 존재 이유가 "턴 하나의 비용을 묶는 것"인데 상한이 사실상 안 걸렸다.
     """
 
     def extract(
         self, *, topic: str, focus: str, papers: tuple[Any, ...]
-    ) -> list[dict[str, Any]]: ...
+    ) -> ExtractionDraft: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,6 +205,21 @@ class AnswerSentence:
     text: str
     refs: tuple[int, ...] = ()
     role: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ExtractionDraft:
+    """추출 1회의 산출 — 검증 전 원시 항목 + 그 호출의 비용.
+
+    `AnswerDraft`와 같은 모양이다. 비용을 못 재면(대역·usage 미제공) None이고, 그때는
+    장부에 아무것도 더하지 않는다 — 0으로 더하면 "쟀는데 공짜"와 "못 쟀다"가 같아진다.
+    """
+
+    items: list[dict[str, Any]]
+    cost_estimate_usd: float | None = None
+    # 추출이 **못 읽은** 논문. 팬아웃에서 일부가 죽어도 나머지는 살리는데, 그 사실을 안
+    # 실으면 도구 결과가 `ok=True`라 모델은 그 논문을 안 읽은 줄 모르고 재시도도 안 한다.
+    failed: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

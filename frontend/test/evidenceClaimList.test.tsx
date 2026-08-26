@@ -6,20 +6,20 @@
  * 여기서 고정하는 것은 그 목록이 지켜야 할 세 가지다 — 번호는 안 흔들린다, 접힌 근거도
  * 링크 대상으로 남는다, 갈 곳 없는 출처는 링크를 만들지 않는다.
  */
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { useState } from 'react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 
 import {
-  EVIDENCE_VISIBLE_CLAIMS,
+  EVIDENCE_VISIBLE_PER_PAPER,
   EvidenceClaimList,
   EvidenceResultView,
 } from '@/components/agent/AgentChatScreen';
-import { sourceHref, sourceLabel } from '@/lib/agentChat/evidenceResult';
+import { groupClaimsByPaper, sourceHref, sourceLabel } from '@/lib/agentChat/evidenceResult';
 import type { EvidenceSourceRef } from '@/lib/agentChat/evidenceResult';
 
-function ref(over: Partial<EvidenceSourceRef>): EvidenceSourceRef {
+function ref(over: Partial<EvidenceSourceRef> = {}): EvidenceSourceRef {
   return { paperId: '2401.01234', recordRef: 'rec-1', ...over };
 }
 
@@ -64,89 +64,151 @@ describe('sourceLabel', () => {
   });
 });
 
-describe('folding a long evidence list', () => {
+describe('folding inside a paper block', () => {
   const claims = Array.from({ length: 9 }, (_, i) => ({
     statement: `근거 명제 ${i + 1}`,
-    supporting: [ref({ title: `논문 ${i + 1}` })],
+    supporting: [ref({ title: '논문 하나', anchor: `s1.p${i}`, quote: `원문 ${i + 1}` })],
     conflicting: [],
   }));
 
-  it('shows the first six and keeps the rest addressable behind "더 보기"', async () => {
+  function Host() {
+    const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
+    return (
+      <EvidenceClaimList
+        grouped={groupClaimsByPaper(claims)}
+        scope="msg-1"
+        expandedPapers={open}
+        onExpandPaper={(id) => setOpen((prev) => new Set(prev).add(id))}
+      />
+    );
+  }
+
+  it('shows the first three per paper and keeps the rest addressable', async () => {
     const user = userEvent.setup();
-    function Host() {
-      const [expanded, setExpanded] = useState(false);
-      return (
-        <EvidenceClaimList
-          claims={claims}
-          scope="msg-1"
-          expanded={expanded}
-          onExpand={() => setExpanded(true)}
-        />
-      );
-    }
     render(<Host />);
 
     const rows = screen.getAllByTestId('evidence-row');
     expect(rows).toHaveLength(claims.length);
-    // **접힌 근거도 DOM에 남는다.** 판단 산문의 `[9]`가 가리킬 대상이 사라지면 링크가 죽는다.
-    expect(rows.filter((row) => !row.hasAttribute('hidden'))).toHaveLength(
-      EVIDENCE_VISIBLE_CLAIMS,
+    // **접힌 줄도 DOM에 남는다.** 판단 산문의 `[9]`가 가리킬 대상이 사라지면 링크가 죽는다.
+    expect(rows.filter((r) => !r.hasAttribute('hidden'))).toHaveLength(
+      EVIDENCE_VISIBLE_PER_PAPER,
     );
     // 번호는 접기와 무관하다 — 조립이 정한 순서가 곧 `[n]`이다(BR-EV-5).
     expect(rows[8]).toHaveAttribute('id', 'evidence-msg-1-row-9');
 
     await user.click(screen.getByTestId('evidence-show-more'));
     expect(
-      screen.getAllByTestId('evidence-row').filter((row) => !row.hasAttribute('hidden')),
+      screen.getAllByTestId('evidence-row').filter((r) => !r.hasAttribute('hidden')),
     ).toHaveLength(claims.length);
+  });
+
+  it('does not offer "더 보기" when a paper already fits', () => {
+    render(<EvidenceClaimList
+        grouped={groupClaimsByPaper(claims.slice(0, 3))} scope="msg-2" />);
+
     expect(screen.queryByTestId('evidence-show-more')).not.toBeInTheDocument();
   });
 
-  it('does not offer "더 보기" when everything already fits', () => {
-    render(<EvidenceClaimList claims={claims.slice(0, EVIDENCE_VISIBLE_CLAIMS)} scope="msg-2" />);
+  it('names the paper once instead of once per evidence line', () => {
+    render(<EvidenceClaimList
+        grouped={groupClaimsByPaper(claims)} scope="msg-4" />);
 
-    expect(screen.queryByTestId('evidence-show-more')).not.toBeInTheDocument();
-    expect(
-      screen.getAllByTestId('evidence-row').filter((row) => !row.hasAttribute('hidden')),
-    ).toHaveLength(EVIDENCE_VISIBLE_CLAIMS);
+    // 종전에는 근거마다 제목이 붙어 논문 2편짜리 턴에서 같은 이름이 일곱 번 찍혔다.
+    expect(screen.getAllByRole('link', { name: /논문 하나/ })).toHaveLength(1);
   });
-});
 
-describe('a citation number pointing into the folded part', () => {
-  it('opens the fold — otherwise the jump silently does nothing', async () => {
-    // 감춰진 요소로는 스크롤되지 않는다. 접기 상태를 목록 안에 두면 산문이 그것을 못 건드리고,
-    // `[9]`를 눌러도 화면이 그대로 있는다 — 링크가 있는데 죽어 있는 가장 나쁜 모양이다.
-    const claims = Array.from({ length: 9 }, (_, i) => ({
-      statement: `근거 명제 ${i + 1}`,
-      supporting: [ref({ title: `논문 ${i + 1}` })],
-      conflicting: [],
-    }));
-    const user = userEvent.setup();
+  it('writes the quote on the line, not the Korean statement the prose already said', () => {
+    render(<EvidenceClaimList
+        grouped={groupClaimsByPaper(claims.slice(0, 1))} scope="msg-5" />);
+
+    expect(screen.getByText(/원문 1/)).toBeInTheDocument();
+    expect(screen.queryByText('근거 명제 1')).not.toBeInTheDocument();
+  });
+
+  it('falls back to the statement when the quote is a table cell dump', () => {
+    // 실측: `PPL | 8.08 | 11.44 | …` — 명제 없이는 무슨 말인지 모른다.
     render(
-      <EvidenceResultView
-        scope="msg-3"
-        result={{
-          state: 'ok',
-          claims,
-          coverage: { paperCount: 9 },
-          answer: {
-            segments: [{ text: '아홉 번째 근거가 핵심이다', refs: [9], kind: 'cited' }],
-            checks: { demoted: 0, regenerated: false, fallback: false },
+      <EvidenceClaimList
+        scope="msg-6"
+        grouped={groupClaimsByPaper([
+          {
+            statement: '정확도가 12%p 오른다',
+            supporting: [
+              ref({ anchor: 's4.tbl1', anchorType: 'table', quote: 'PPL | 8.08 | 11.44' }),
+            ],
+            conflicting: [],
           },
-        }}
+        ])}
       />,
     );
 
-    const hiddenBefore = screen
-      .getAllByTestId('evidence-row')
-      .filter((row) => row.hasAttribute('hidden'));
-    expect(hiddenBefore).toHaveLength(claims.length - EVIDENCE_VISIBLE_CLAIMS);
+    expect(screen.getByText('정확도가 12%p 오른다')).toBeInTheDocument();
+    expect(screen.queryByText(/PPL \| 8\.08/)).not.toBeInTheDocument();
+  });
+});
 
-    await user.click(screen.getByTestId('evidence-answer-ref'));
+describe('the row head', () => {
+  function renderRow(over: Partial<EvidenceSourceRef>) {
+    render(
+      <EvidenceClaimList
+        scope="msg-head"
+        grouped={groupClaimsByPaper([
+          { statement: '명제', supporting: [ref(over)], conflicting: [] },
+        ])}
+      />,
+    );
+  }
 
-    expect(
-      screen.getAllByTestId('evidence-row').filter((row) => row.hasAttribute('hidden')),
-    ).toHaveLength(0);
+  it('carries the stance on the mark itself, not on an ancestor', () => {
+    // 조상 선택자에 색을 걸면 그 조상이 없는 자리에서 조용히 색을 잃는다 — 논문 그룹의 ✓가
+    // 실제로 그랬다(쟁점 블록에서만 색이 나왔다). CSS 모듈은 목이라 계산된 색을 못 보므로,
+    // **색을 고르는 근거가 마크에 실려 있는지**를 본다.
+    renderRow({ anchor: 's1.p1', quote: '원문' });
+
+    expect(screen.getByLabelText('지지')).toHaveAttribute('data-stance', 'support');
+  });
+
+  it('shows the anchor value next to its type, not the type alone', () => {
+    // 종전 칩은 `표 · 표 3`이었다. 칩을 다시 쓰면서 `표`만 남아 **어느 표인지가 사라졌다.**
+    renderRow({ anchor: '표 3', anchorType: 'table', quote: 'PPL | 8.08' });
+
+    expect(screen.getByText('표 · 표 3')).toBeInTheDocument();
+  });
+
+  it('falls back to § when the block has no type', () => {
+    renderRow({ anchor: '4.2절', quote: '원문' });
+
+    expect(screen.getByText('§ 4.2절')).toBeInTheDocument();
+  });
+});
+
+describe('a contested claim', () => {
+  const claims = [
+    {
+      statement: '갈리는 명제',
+      supporting: [ref({ paperId: 'p-a', title: '논문 A', quote: 'A says' })],
+      conflicting: [ref({ paperId: 'p-b', title: '논문 B', quote: 'B says' })],
+    },
+    { statement: '안 갈리는 명제', supporting: [ref({ title: '논문 A', quote: 'more' })], conflicting: [] },
+  ];
+
+  it('is lifted into 쟁점 so the disagreement stays in one place', () => {
+    render(<EvidenceClaimList
+        grouped={groupClaimsByPaper(claims)} scope="msg-7" />);
+
+    const contested = screen.getByTestId('evidence-contested');
+    expect(within(contested).getByText('갈리는 명제')).toBeInTheDocument();
+    expect(within(contested).getByRole('link', { name: /논문 A/ })).toBeInTheDocument();
+    expect(within(contested).getByRole('link', { name: /논문 B/ })).toBeInTheDocument();
+  });
+
+  it('appears exactly once — a duplicated DOM id breaks the citation jump', () => {
+    render(<EvidenceClaimList
+        grouped={groupClaimsByPaper(claims)} scope="msg-8" />);
+
+    const ids = screen.getAllByTestId('evidence-row').map((r) => r.id);
+    expect(ids).toEqual([...new Set(ids)]);
+    expect(ids.filter((id) => id.endsWith('row-1'))).toHaveLength(1);
   });
 });
 
@@ -183,9 +245,9 @@ describe('answer prose roles', () => {
       .getAllByText(/LoRA가 낫다|1만 배|분포 안이냐다/)
       .map((node) => node.closest('[data-segment-role]')?.getAttribute('data-segment-role'));
     expect(roles).toEqual(['conclusion', 'evidence', 'divergence']);
-    // 라벨은 결론·갈림 지점에만 — 근거 서술까지 달면 신호가 소음이 된다.
+    // 라벨은 **갈림 지점에만** 붙는다. 결론은 크고 굵게 맨 위에 오는 것으로 충분하고,
+    // "결론"을 적으면 매 답변에 고정으로 붙는 절 머리표가 된다(§2.1이 금지한 구획 라벨).
     expect(screen.getAllByTestId('evidence-answer-role').map((n) => n.textContent)).toEqual([
-      '결론',
       '갈리는 지점',
     ]);
   });
@@ -214,5 +276,43 @@ describe('answer prose roles', () => {
       .getAllByText(/먼저 온 근거|나중 온 결론/)
       .map((node) => node.textContent);
     expect(texts).toEqual(['먼저 온 근거', '나중 온 결론']);
+  });
+});
+
+describe('a citation number pointing into a folded group', () => {
+  it('opens the group that actually holds the anchor, not merely the first match', () => {
+    // 같은 번호가 여러 그룹에 나온다(두 논문이 함께 지지). DOM id는 `anchor`인 행에만 있으므로
+    // 그냥 첫 그룹을 펴면 **엉뚱한 쪽이 열리고 점프 대상은 접힌 채** 남는다 — 감춰진 요소로는
+    // 스크롤되지 않으니 클릭이 아무 일도 안 한다. 상태를 위로 올린 이유가 그것이었다.
+    const claims = [
+      { statement: 'A만', supporting: [ref({ paperId: 'p-a', quote: 'a' })], conflicting: [] },
+      ...Array.from({ length: 5 }, (_, i) => ({
+        statement: `B가 먼저 ${i}`,
+        supporting: [ref({ paperId: 'p-b', quote: `b${i}` }), ref({ paperId: 'p-a', quote: 'a' })],
+        conflicting: [],
+      })),
+    ];
+    render(
+      <EvidenceResultView
+        scope="msg-jump"
+        result={{
+          state: 'ok',
+          claims,
+          coverage: { paperCount: 2 },
+          answer: {
+            segments: [{ text: '여섯 번째가 핵심이다', refs: [6], kind: 'cited' }],
+            checks: { demoted: 0, regenerated: false, fallback: false },
+          },
+        }}
+      />,
+    );
+
+    const target = () => document.getElementById('evidence-msg-jump-row-6');
+    expect(target()).toBeTruthy();
+    expect(target()).toHaveAttribute('hidden');
+
+    fireEvent.click(screen.getByTestId('evidence-answer-ref'));
+
+    expect(target()).not.toHaveAttribute('hidden');
   });
 });

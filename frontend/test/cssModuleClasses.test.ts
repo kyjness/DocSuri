@@ -39,9 +39,12 @@ function walk(dir: string, out: string[] = []): string[] {
 }
 
 /** 주석 속 산문이 클래스를 언급하면(`.screen fills the frame …`) 정의로 잡힌다. */
+function readCss(cssPath: string): string {
+  return readFileSync(cssPath, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+}
+
 function definedClasses(cssPath: string): Set<string> {
-  const css = readFileSync(cssPath, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
-  return new Set([...css.matchAll(DEFINITION)].map((m) => m[1]));
+  return new Set([...readCss(cssPath).matchAll(DEFINITION)].map((m) => m[1]));
 }
 
 /** `@/`는 tsconfig paths 별칭(프로젝트 루트)이다. */
@@ -68,9 +71,11 @@ function bindings(): Array<{ name: string; file: string; alias: string; sheet: s
   return found;
 }
 
-describe('CSS module classes exist for every consumer that reads them', () => {
-  const all = bindings();
+// 모듈 스코프에 한 번 — `describe` 둘이 나눠 쓴다(안 그러면 `app`·`components`·`lib`
+// 전체 walk가 두 번 돈다).
+const all = bindings();
 
+describe('CSS module classes exist for every consumer that reads them', () => {
   it('finds the consumer/stylesheet bindings to check', () => {
     // 하나도 못 찾으면 아래 검사가 **공집합을 통과**한다 — 초록이 무의미해진다.
     expect(all.length).toBeGreaterThan(20);
@@ -90,4 +95,63 @@ describe('CSS module classes exist for every consumer that reads them', () => {
 
     expect(missing).toEqual([]);
   });
+});
+
+/**
+ * `hidden` 속성으로 접는 요소는 **`display`를 세우면 안 되거나, 세웠으면 가드를 함께 둬야
+ * 한다.** UA 시트의 `[hidden] { display: none }`은 author 규칙에 무조건 진다 — 특이도가
+ * 아니라 캐스케이드 원점 문제라 클래스 하나로 통째로 무력해진다.
+ *
+ * 실제로 그랬다(2026-08-26): 근거 줄을 논문 단위로 묶으며 `.evidenceRow`에 `display: grid`를
+ * 줬더니 접힌 근거가 전부 보였다. 종전 `.evidenceClaim`이 display를 안 세워서 접기가 **우연히**
+ * 동작하고 있었을 뿐이다. jsdom은 CSS 모듈을 아이덴티티로 목하므로 렌더 테스트가 계산된
+ * 스타일을 못 보고, 그래서 이 결함은 화면을 열어야만 보인다.
+ */
+describe('classes rendered with the hidden attribute', () => {
+  // `\b`를 쓰면 `aria-hidden=`도 잡힌다(`-`와 `h` 사이가 단어 경계다) — 그쪽은 접기가
+  // 아니라 접근성 표시라 무관하다. 앞이 공백이거나 `{`인 것만 본다.
+  const HIDDEN_PROP = /className=\{styles\.(\w+)\}[^>]*?[\s{]hidden=/gs;
+
+  it.each(all)('$name', ({ file, sheet }) => {
+    const body = readFileSync(file, 'utf8');
+    const css = readCss(sheet);
+    for (const [, name] of body.matchAll(HIDDEN_PROP)) {
+      // **`display`를 세웠는지 따지지 않는다.** `composes:`로 물려받으면 자기 블록에 그
+      // 선언이 없어 검사가 그냥 넘어간다 — 실제로 `.evidenceRow`를 `composes: evidenceRef`로
+      // 정리하면서 이 검사가 조용히 무력해졌다(가드를 지워도 초록이었다). 가드는 공짜이므로
+      // `hidden`으로 접는 클래스면 **무조건** 요구한다.
+      expect(css, `\`${name}\` needs a [hidden] guard`).toMatch(
+        new RegExp(`\\.${name}\\[hidden\\]`),
+      );
+    }
+  });
+});
+
+/**
+ * `composes:` 대상은 **쓰이는 자리보다 먼저** 정의돼야 한다 — css-loader가 소스 순서로
+ * 해석해서, 뒤에 있으면 `referenced class name … not found`로 빌드가 깨진다.
+ *
+ * **vitest도 tsc도 CSS 모듈을 컴파일하지 않는다.** 그래서 로컬에서 테스트·타입·린트가 전부
+ * 초록인 채 CI의 `next build`에서만 터졌다(2026-08-26, 중복 규칙을 `composes`로 정리하다가
+ * 셋이 한꺼번에). 빌드보다 훨씬 싼 검사로 같은 것을 여기서 막는다.
+ */
+describe('composes targets are declared before use', () => {
+  const COMPOSES_AT = /^[ \t]*composes:\s*([^;]+);/gm;
+
+  it.each([...new Set(all.map((b) => b.sheet))].map((sheet) => ({ sheet })))(
+    '$sheet',
+    ({ sheet }) => {
+      const css = readCss(sheet);
+      const late: string[] = [];
+      for (const match of css.matchAll(COMPOSES_AT)) {
+        // `composes: a b from "./x.css"` — 다른 파일에서 가져오는 것은 순서와 무관하다.
+        if (/\sfrom\s/.test(match[1])) continue;
+        for (const name of match[1].trim().split(/\s+/)) {
+          const declared = css.search(new RegExp(`^[ \\t]*\\.${name}(?=[\\s,{:.])`, 'm'));
+          if (declared < 0 || declared > match.index!) late.push(name);
+        }
+      }
+      expect([...new Set(late)]).toEqual([]);
+    },
+  );
 });
