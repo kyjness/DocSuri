@@ -30,6 +30,16 @@ def trace_row(record: ToolCallRecord) -> dict[str, Any]:
 
     화면으로 나가는 키는 이보다 좁다(`repository.trace_wire_row`) — `stance`는 §7 트레이스로
     남기지만 진행 표시에 실을 것이 아니다(§5.3: 단계명·논문 제목·건수만).
+
+    `at`은 **루프가 그 호출을 기록한 시각**이고 여기서 한 번만 정해진다. 종전에는 SQL 스토어가
+    삽입 시각을 따로 찍고 인메모리는 아무것도 안 찍어서, 같은 트레이스가 스토어에 따라 시각을
+    갖기도 하고 안 갖기도 했다 — 화면이 단계별 소요 시간을 그 값으로 재므로, 갈리면 로컬에서는
+    시간이 안 보이고 배포에서만 보인다(그리고 그 차이는 아무 데도 안 나타난다).
+
+    **datetime 그대로 싣는다.** 이 dict는 저장소로 바로 넘어가는 내부 값이지 wire가 아니다
+    (사이에 JSON 경계가 없다). 여기서 문자열로 만들면 SQL 스토어가 컬럼에 넣으려고 되파싱하고
+    읽을 때 다시 문자열로 만든다 — 도구 호출마다 왕복이 한 번씩 돈다. 문자열화는 화면으로
+    나가는 단일 투영 지점(`repository.trace_wire_row`)이 한 번만 한다.
     """
     return {
         "seq": record.seq,
@@ -39,6 +49,7 @@ def trace_row(record: ToolCallRecord) -> dict[str, Any]:
         "resultSummary": record.result_summary,
         "costUsd": record.cost_usd,
         "stance": record.stance,
+        "at": record.at,
     }
 
 

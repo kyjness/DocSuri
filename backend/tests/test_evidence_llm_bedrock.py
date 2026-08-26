@@ -13,11 +13,13 @@ Anthropic use-case 양식이 이 계정에 아직 제출되지 않아 **실호�
 from __future__ import annotations
 
 import json
+import threading
 
 import pytest
 
 from backend.modules.evidence.adapters.llm_bedrock import (
     IMAGE_BOUNDARY_BANNER,
+    MAX_EXTRACT_CONCURRENCY,
     BedrockAnswerWriter,
     BedrockDecider,
     BedrockExtractor,
@@ -32,6 +34,7 @@ from backend.modules.evidence.ports.llm import (
     ToolResultView,
 )
 from backend.modules.evidence.ports.tools import ImageAttachment, ToolSpec
+from backend.modules.novelty.adapters.external.base import SourceBreaker
 from backend.tests.evidence_fakes import doc_model, observation, paper_handle
 
 
@@ -140,13 +143,17 @@ def test_tool_choice_forces_a_call():
     decider.decide(observation(), (ToolSpec("corpus_search", "d", {}),))
 
     body = client.calls[0]
-    assert body["tool_choice"] == {"type": "any"}
+    # **병렬도 함께 끈다.** `any`는 "최소 1개"만 강제하고 개수를 안 막는다 — 모델이 여러 개를
+    # 함께 내면 루프는 첫 개만 쓰고 나머지를 버리는데, 버리는 것이 아니라 **생성한 것이
+    # 비용**이다(출력 토큰은 이미 냈다). 실측: 같은 프롬프트에서 켜기 전 3·3·3개, 켠 뒤 1·1·1개.
+    assert body["tool_choice"] == {"type": "any", "disable_parallel_tool_use": True}
     assert {t["name"] for t in body["tools"]} == {"corpus_search", "finish"}
 
 
 def test_extra_parallel_calls_are_noted_not_silently_dropped():
-    """tool_choice는 최소 1개를 강제할 뿐 1개로 제한하지 않는다. 루프는 턴당 하나만
-    실행하므로 나머지는 버려지는데, 기록이 없으면 모델이 시킨 일이 그냥 사라진다."""
+    """방어선은 둘이다. 요청에서 병렬을 끄지만(`disable_parallel_tool_use`), 그것이 없는
+    프로바이더·모델에서도 **버려진 사실은 기록에 남아야** 한다 — 기록이 없으면 모델이 시킨
+    일이 그냥 사라진다. 이 검사는 그 두 번째 방어선을 본다."""
     decider, _ = _decider(
         {
             "content": [
@@ -189,14 +196,15 @@ def test_extractor_returns_raw_items_for_the_gate_to_judge():
     payload = '{"items": [{"statement": "s", "supporting": [], "conflicting": []}]}'
     extractor = _extractor(_text_response(payload))
 
-    assert len(extractor.extract(topic="q", focus="", papers=(paper_handle(doc_model()),))) == 1
+    draft = extractor.extract(topic="q", focus="", papers=(paper_handle(doc_model()),))
+    assert len(draft.items) == 1
 
 
 @pytest.mark.parametrize("payload", ["", "not json", '{"items": "nope"}', "{}"])
 def test_unparseable_extraction_yields_no_items_instead_of_raising(payload):
     extractor = _extractor(_text_response(payload))
 
-    assert extractor.extract(topic="q", focus="", papers=()) == []
+    assert extractor.extract(topic="q", focus="", papers=()).items == []
 
 
 def test_extraction_reads_every_text_block():
@@ -209,7 +217,7 @@ def test_extraction_reads_every_text_block():
         "usage": {},
     }
 
-    assert len(_extractor(response).extract(topic="q", focus="", papers=())) == 1
+    assert len(_extractor(response).extract(topic="q", focus="", papers=()).items) == 1
 
 
 def test_extraction_tolerates_a_code_fenced_object():
@@ -217,7 +225,158 @@ def test_extraction_tolerates_a_code_fenced_object():
     fenced = '```json\n{"items": [{"statement": "s"}]}\n```'
     extractor = _extractor(_text_response(fenced))
 
-    assert len(extractor.extract(topic="q", focus="", papers=())) == 1
+    assert len(extractor.extract(topic="q", focus="", papers=()).items) == 1
+
+
+# --- 추출 병렬화 --------------------------------------------------------------
+
+
+class _PerPaperBedrock:
+    """논문 id를 프롬프트에서 읽어 그 논문의 항목만 돌려주는 대역.
+
+    호출을 **동시에** 받으므로 기록에 락을 건다 — 안 걸면 이 테스트가 드물게 흔들리고,
+    그 흔들림은 검사 대상(순서)과 구분되지 않는다.
+    """
+
+    def __init__(self, order: list[str]) -> None:
+        self._order = order
+        self.prompts: list[str] = []
+        self._lock = threading.Lock()
+
+    def invoke_model(self, *, modelId, body, accept, contentType):  # noqa: N803 — boto3 어휘
+        prompt = json.loads(body.decode("utf-8"))["messages"][0]["content"][0]["text"]
+        with self._lock:
+            self.prompts.append(prompt)
+        pid = next(p for p in self._order if f"[PAPER {p}]" in prompt)
+        payload = {"items": [{"statement": pid, "supporting": [], "conflicting": []}]}
+        return {
+            "body": json.dumps(
+                {"content": [{"type": "text", "text": json.dumps(payload)}],
+                 "usage": {"input_tokens": 100, "output_tokens": 50}}
+            ).encode("utf-8")
+        }
+
+
+def test_the_whole_fan_out_counts_as_one_breaker_failure():
+    """**한 장애는 한 번 세어야 한다.**
+
+    호출마다 회로를 세면 논문 3편 동시 실패가 실패 3회가 되어 임계값(3)을 즉시 채운다.
+    브레이커는 decide·answer와 공유하므로(`real_wiring`) 그 한 번의 스로틀이 60초 동안 턴의
+    판단까지 죽인다 — 이 저장소가 이미 데인 모양이다.
+    """
+    from backend.modules.novelty.adapters.external.base import SourceBreaker
+
+    breaker = SourceBreaker(failure_threshold=3, retry_backoff_seconds=0)
+    papers = tuple(paper_handle(doc_model(), paper_id=pid) for pid in ("p1", "p2", "p3"))
+    extractor = BedrockExtractor(
+        model="anthropic.x",
+        client=FakeBedrock(error=RuntimeError("throttled")),
+        breaker=breaker,
+        **_RATES,
+    )
+
+    with pytest.raises(LlmUnavailable):
+        extractor.extract(topic="q", focus="", papers=papers)
+
+    # **관측 가능한 것으로 본다**: 회로가 열렸으면 다음 시도는 엔드포인트를 아예 안 친다.
+    # 예외 문구로 보면 팬아웃이 자기 예외로 감싸서 두 경우가 같아 보인다(실제로 그랬다).
+    client = extractor._client  # noqa: SLF001 — 대역이 센 호출 수가 유일한 관측점이다
+    before = len(client.calls)
+    with pytest.raises(LlmUnavailable):
+        extractor.extract(topic="q", focus="", papers=papers)
+
+    # 실패를 3회로 셌다면 임계값을 이미 채워 회로가 열리고, 여기서 호출이 0이 된다.
+    assert len(client.calls) > before
+
+
+def test_a_partially_failed_extraction_names_the_papers_it_could_not_read():
+    """로그로만 남기면 도구 결과가 `ok=True`라 모델은 그 논문을 건너뛴 줄 모른다."""
+
+    class _OneFails(_PerPaperBedrock):
+        def invoke_model(self, **kw):
+            body = json.loads(kw["body"].decode("utf-8"))
+            if "[PAPER p2]" in body["messages"][0]["content"][0]["text"]:
+                raise RuntimeError("throttled")
+            return super().invoke_model(**kw)
+
+    papers = tuple(paper_handle(doc_model(), paper_id=pid) for pid in ("p1", "p2", "p3"))
+    extractor = BedrockExtractor(
+        model="anthropic.x", client=_OneFails(["p1", "p2", "p3"]), **_RATES
+    )
+
+    draft = extractor.extract(topic="q", focus="", papers=papers)
+
+    assert draft.failed == ("p2",)
+    assert [item["statement"] for item in draft.items] == ["p1", "p3"]
+
+
+def test_extraction_concurrency_has_a_ceiling():
+    """논문은 최대 10편이다. 같은 모델 엔드포인트에 10요청이 한꺼번에 나가면 스로틀을 부른다 —
+    이 저장소는 **직렬 호출로도** 거기 물린 이력이 있다."""
+    assert MAX_EXTRACT_CONCURRENCY < 10
+
+
+def test_extraction_splits_papers_into_one_call_each():
+    """추출은 턴 시간의 3분의 2 이상을 먹고, 여러 편을 한 프롬프트에 묶은 호출이 가장 느리다
+    (배포본 실측: 3편 35.8초 · 4편 33.5초 — 1편은 22초). 나눠 던지면 가장 느린 한 편으로 준다.
+
+    추출은 논문 간 대조를 하지 않으므로(그건 조립·판단의 몫이다) 나눠도 근거를 안 잃는다.
+    """
+    papers = tuple(paper_handle(doc_model(), paper_id=pid) for pid in ("p1", "p2", "p3"))
+    client = _PerPaperBedrock(["p1", "p2", "p3"])
+    extractor = BedrockExtractor(model="anthropic.x", client=client, **_RATES)
+
+    draft = extractor.extract(topic="q", focus="", papers=papers)
+
+    assert len(client.prompts) == 3, "논문 수만큼 나가야 한다"
+    # **제출 순서로 모은다.** 완료 순서로 모으면 근거 번호가 실행마다 흔들리고, 그 번호는
+    # 판단 산문이 가리키는 값이다(BR-EV-5).
+    assert [item["statement"] for item in draft.items] == ["p1", "p2", "p3"]
+    # 비용은 호출별로 합산된다 — 나누면 시스템 프롬프트가 논문 수만큼 반복된다.
+    # 입력 100 · 출력 50 토큰 × 3회 (단가는 _RATES).
+    one = 100 / 1e6 * 3.0 + 50 / 1e6 * 15.0
+    assert draft.cost_estimate_usd == pytest.approx(3 * one)
+
+
+def test_extraction_does_not_split_a_single_paper():
+    """나눌 것이 없으면 스레드풀을 만들지 않는다."""
+    client = FakeBedrock(_text_response('{"items": [{"statement": "s"}]}'))
+    extractor = BedrockExtractor(model="anthropic.x", client=client, **_RATES)
+
+    extractor.extract(topic="q", focus="", papers=(paper_handle(doc_model()),))
+
+    assert len(client.calls) == 1
+
+
+def test_one_paper_failing_does_not_discard_the_others():
+    """부분 실패를 전면 실패로 삼으면 논문 한 편의 스로틀이 턴 전체의 근거를 날린다."""
+
+    class _OneFails(_PerPaperBedrock):
+        def invoke_model(self, **kw):
+            body = json.loads(kw["body"].decode("utf-8"))
+            if "[PAPER p2]" in body["messages"][0]["content"][0]["text"]:
+                raise RuntimeError("throttled")
+            return super().invoke_model(**kw)
+
+    papers = tuple(paper_handle(doc_model(), paper_id=pid) for pid in ("p1", "p2"))
+    extractor = BedrockExtractor(
+        model="anthropic.x", client=_OneFails(["p1", "p2"]), **_RATES
+    )
+
+    draft = extractor.extract(topic="q", focus="", papers=papers)
+
+    assert [item["statement"] for item in draft.items] == ["p1"]
+
+
+def test_every_paper_failing_is_still_a_failure():
+    """전부 죽었으면 조용히 빈 결과를 내지 않는다 — 근거 0건과 구분되지 않는다."""
+    papers = tuple(paper_handle(doc_model(), paper_id=pid) for pid in ("p1", "p2"))
+    extractor = BedrockExtractor(
+        model="anthropic.x", client=FakeBedrock(error=RuntimeError("down")), **_RATES
+    )
+
+    with pytest.raises(LlmUnavailable):
+        extractor.extract(topic="q", focus="", papers=papers)
 
 
 # --- 판단 어댑터(§4.2) ---------------------------------------------------------
@@ -333,3 +492,42 @@ def test_answer_absorbs_an_inline_marker_into_refs_and_strips_it_from_text():
 
     assert sentence.text == "데이터가 적을 때는 LoRA가 낫다"
     assert sentence.refs == (2, 1)
+
+
+def test_answer_normalises_the_declared_role_without_judging_the_vocabulary():
+    """역할은 **모델이 선언한다**(refs에서 유도할 수 없다).
+
+    어댑터는 **모양만** 다듬는다 — 대소문자·공백을 정규화하고 빈 값을 None으로 만든다.
+    어휘 밖(`summary`)을 여기서 버리지 않는 이유는 refs·추출과 같다: 무엇이 유효한지는
+    도메인이 정한다. 판정을 양쪽에서 하면 어휘 밖 값의 행동이 두 곳에 나뉜다.
+    최종 세그먼트에서 `summary`가 evidence로 읽히는 것은 `test_evidence_answer_checks`가 본다.
+    """
+    sentences = parse_json_sentences(
+        '{"sentences":['
+        '{"text":"a","refs":[1],"role":"conclusion"},'
+        '{"text":"b","refs":[1],"role":"  DIVERGENCE "},'
+        '{"text":"c","refs":[1],"role":"summary"},'
+        '{"text":"d","refs":[1]}]}'
+    )
+
+    assert [s.role for s in sentences] == ["conclusion", "divergence", "summary", None]
+
+
+def test_a_fully_failed_fan_out_keeps_the_original_error_so_backoff_can_see_it():
+    """일반 문구로 감싸면 브레이커의 `rate_limited`가 스로틀을 못 알아본다.
+
+    그 백오프는 2026-08-25 스로틀 사고 때문에 생겼고, 브레이커 재시도가 **팬아웃 전체**를
+    다시 던지므로 백오프가 안 걸리면 논문 N편 × 2회가 연달아 나가 그 사고를 재현한다.
+    """
+    waits: list[float] = []
+    breaker = SourceBreaker(retry_backoff_seconds=2.0, sleep=waits.append, jitter=lambda: 0.0)
+    papers = tuple(paper_handle(doc_model(), paper_id=pid) for pid in ("p1", "p2"))
+    throttle = RuntimeError("ThrottlingException: Too many requests")
+    extractor = BedrockExtractor(
+        model="anthropic.x", client=FakeBedrock(error=throttle), breaker=breaker, **_RATES
+    )
+
+    with pytest.raises(LlmUnavailable):
+        extractor.extract(topic="q", focus="", papers=papers)
+
+    assert waits, "스로틀이면 재시도 전에 기다려야 한다"

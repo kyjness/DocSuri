@@ -21,6 +21,9 @@ INTRO = "Protein structure prediction has progressed rapidly in recent years."
 LATEX = "L = -\\sum_i y_i \\log p_i"
 
 
+PAPER_TITLE = "Highly accurate protein structure prediction with AlphaFold"
+
+
 def doc_model() -> SimpleNamespace:
     """구조 동형 DocModel 스탠드인 — 문단·표·그림·수식 각 1블록.
 
@@ -51,17 +54,24 @@ def doc_model() -> SimpleNamespace:
     section = SimpleNamespace(
         id="s1", title="Introduction", blocks=[paragraph, table, figure, formula], sections=[]
     )
-    return SimpleNamespace(sections=[section])
+    # `meta`가 빠져 있던 동안 본문에서 제목을 가져오는 경로가 **검사에 안 걸렸다** — 대역이
+    # 실물보다 좁으면 그 필드를 읽는 코드는 항상 빈 값을 보고, 테스트는 초록으로 지나간다.
+    meta = SimpleNamespace(paperId="2107.06xxx", version=1, title=PAPER_TITLE, abstract=None)
+    return SimpleNamespace(meta=meta, sections=[section])
 
 
 def principal() -> Principal:
     return Principal(user_id=str(uuid4()), role=UserRole.USER)
 
 
-def paper_handle(doc_model=None, abstract: str = "") -> PaperHandle:
-    """확보한 논문 1편 — 프로바이더 중립이라 어댑터 테스트가 공유한다."""
+def paper_handle(doc_model=None, abstract: str = "", *, paper_id: str = "p1") -> PaperHandle:
+    """확보한 논문 1편 — 프로바이더 중립이라 어댑터 테스트가 공유한다.
+
+    `paper_id`를 열어 둔 것은 **여러 편을 서로 구분해야 하는** 검사 때문이다(추출 병렬화가
+    논문마다 한 호출을 내는지, 결과를 제출 순서로 모으는지).
+    """
     return PaperHandle(
-        paper_id="p1",
+        paper_id=paper_id,
         record_ref="r1",
         origin=PaperOrigin.CORPUS,
         title="AlphaFold2",

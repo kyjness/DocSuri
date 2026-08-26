@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import timedelta
+from datetime import UTC, timedelta
 from uuid import uuid4
 
 from docsuri_shared.authz import Principal, UserRole
@@ -140,13 +140,17 @@ def test_events_stream_replays_trace_then_validated_terminal(monkeypatch) -> Non
 
     assert [event for event, _ in frames[:-1]] == ['progress'] * (len(frames) - 1)
     stages = [data.get('stage') for event, data in frames if event == 'progress']
-    assert stages == ['accepted', 'tool', 'tool']
+    # **단계는 도구 이름이다.** 종전에는 전부 'tool'이라 화면에 "도구 실행"만 쌓였다 —
+    # 진행 표시가 진행을 안 알려주고 "뭔가 돌고 있다"만 알려줬다.
+    assert stages == ['accepted', 'corpus_search', 'extract_evidence']
+    labels = [data.get('message') for event, data in frames if event == 'progress']
+    assert labels == ['질문 접수', '논문 검색', '근거 추출']
     first = frames[0][1]
     assert first['eventId'] == f'{turn_id}:accepted'
     assert first['payload']['sessionId'] == accepted.json()['sessionId']
     assert first['payload']['turnId'] == turn_id
 
-    feed = [data for event, data in frames if event == 'progress' and data.get('stage') == 'tool']
+    feed = [data for event, data in frames if event == 'progress' and data['payload'].get('tool')]
     assert [item['payload']['tool'] for item in feed] == ['corpus_search', 'extract_evidence']
     assert [item['eventId'] for item in feed] == [f'{turn_id}:1', f'{turn_id}:2']
     assert [item['payload']['seq'] for item in feed] == [1, 2]
@@ -171,7 +175,10 @@ def test_events_stream_after_cursor_skips_what_the_client_already_has(monkeypatc
 
     frames = _parse_sse(client.get(f'/api/evidence/turns/{turn_id}/events?after=1').text)
 
-    assert [(e, d.get('stage')) for e, d in frames] == [('progress', 'tool'), ('result', None)]
+    assert [(e, d.get('stage')) for e, d in frames] == [
+        ('progress', 'extract_evidence'),
+        ('result', None),
+    ]
     assert frames[0][1]['eventId'] == f'{turn_id}:2'
 
 
@@ -230,7 +237,7 @@ def test_events_stream_does_not_lose_a_trace_row_committed_just_before_the_resul
 
     frames = _parse_sse(client.get(f'/api/evidence/turns/{turn_id}/events').text)
     tool_seqs = [
-        d['payload']['seq'] for e, d in frames if e == 'progress' and d.get('stage') == 'tool'
+        d['payload']['seq'] for e, d in frames if e == 'progress' and d['payload'].get('tool')
     ]
     assert tool_seqs == [1, 2]
     assert frames[-1][0] == 'result'
@@ -335,3 +342,65 @@ def test_stream_failure_yields_error_frame_without_internals() -> None:
     assert 'secret-dsn-123' not in chunks[-1]
     assert 'RuntimeError' not in chunks[-1]
     assert 'evidence.stream.error' in hub.names()
+
+
+# ---------------------------------------------------------------------------
+# 트레이스 시각 — 두 스토어가 같은 값을 내는가(§5.3 소요 시간의 재료)
+
+
+def test_both_stores_project_the_trace_time_the_same_way(monkeypatch) -> None:
+    """저장은 datetime, wire는 오프셋 붙은 ISO 문자열 — **변환 지점은 하나다.**
+
+    화면은 이 값의 차이로 단계별 소요 시간을 만든다. 스토어마다 변환하면 한쪽이 tz를
+    빠뜨리는 식으로 갈리는데, 그 차이는 소요 시간에만 나타난다 — SQLite는 naive datetime을
+    돌려주므로 오프셋 없는 문자열이 나가고, 브라우저의 `Date.parse`는 그것을 **로컬 시각**
+    으로 읽는다. KST에서는 트레이스 행이 accepted보다 9시간 앞으로 계산되어 첫 단계 시간이
+    사라지거나 누적에 "9시간"이 뜬다. Postgres에서는 정상이라 로컬에서만 틀린다.
+    """
+    from datetime import datetime
+
+    from backend.modules.evidence.repository import trace_wire_row
+
+    naive = datetime(2026, 8, 25, 0, 0, 12, 500000)
+    aware = naive.replace(tzinfo=UTC)
+    row = {"seq": 1, "tool": "corpus_search", "argsSummary": "", "outcome": "ok",
+           "resultSummary": "", "costUsd": None}
+
+    # SQLite가 돌려주는 naive와 Postgres가 돌려주는 aware가 **같은 문자열**이 되어야 한다.
+    assert trace_wire_row({**row, "at": naive})["at"] == trace_wire_row({**row, "at": aware})["at"]
+    assert trace_wire_row({**row, "at": naive})["at"].endswith("+00:00")
+
+
+def test_trace_row_carries_a_datetime_not_a_string(monkeypatch) -> None:
+    """`trace_row → append_trace` 사이에는 JSON 경계가 없다 — 문자열로 만들면 SQL 스토어가
+    컬럼에 넣으려고 되파싱하고 읽을 때 다시 문자열로 만든다(도구 호출마다 왕복 1회)."""
+    from backend.modules.evidence.turn_control import trace_row
+
+    record = ToolCallRecord(
+        seq=1, tool='corpus_search', args_summary='query=x', outcome=ToolCallOutcome.OK
+    )
+
+    assert trace_row(record)["at"] is record.at
+
+
+def test_every_trace_producer_has_a_korean_label() -> None:
+    """트레이스 행을 남기는 것은 도구만이 아니다 — 판단 노드도 남기고, 그것도 화면에 뜬다.
+
+    라벨 맵에서 빠진 이름은 폴백이 stage 문자열을 그대로 내보내므로, 한국어 단계 사이에
+    영어 한 줄이 낀다(배포본에서 `answer`가 실제로 그랬다). 도구 어휘는 `ports.tools`가
+    정본이고 그 밖의 생산자는 여기 목록이 전부다.
+    """
+    from backend.modules.evidence import ports
+    from backend.modules.evidence.streaming import STAGE_LABELS
+
+    tools = {
+        value
+        for name, value in vars(ports.tools).items()
+        if name.startswith("TOOL_") and isinstance(value, str)
+    }
+    producers = tools | {"answer"}
+
+    missing = sorted(name for name in producers if name not in STAGE_LABELS)
+    assert missing == []
+    # 라벨은 사용자 어휘여야 한다 — 영어 stage 이름을 그대로 둔 항목이 없다.
+    assert [k for k, v in STAGE_LABELS.items() if k == v] == []

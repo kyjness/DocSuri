@@ -252,7 +252,7 @@ export function agentReducer(state: AgentChatState, action: AgentChatAction): Ag
 export function createDraftSession(mode: AgentMode, createdAt = new Date().toISOString()) {
   return {
     id: `agent-${mode}-${Date.now()}`,
-    title: mode === 'evidence' ? 'Research' : 'Novelty',
+    title: mode === 'evidence' ? 'Evidence' : 'Novelty',
     mode,
     state: 'idle' as const,
     updatedAt: createdAt,
@@ -320,6 +320,8 @@ function mergeTimelineEvent(
     ...next,
     detail: next.detail ?? prev.detail,
     sequence: next.sequence ?? prev.sequence,
+    // 소요 시간의 t0 재료 — 얕은 스냅샷이 덮으면 같은 단계가 시간을 잃는다.
+    at: next.at ?? prev.at,
   };
 }
 

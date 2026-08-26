@@ -26,6 +26,7 @@ from docsuri_shared._generated.dtos.evidence_schema import (
     AnswerChecks,
     AnswerSegment,
     AnswerSegmentKind,
+    AnswerSegmentRole,
     EvidenceAnswer,
     EvidenceItem,
 )
@@ -167,6 +168,11 @@ def check_answer(
                 text=sentence.text,
                 refs=refs,
                 kind=AnswerSegmentKind.cited if refs else AnswerSegmentKind.synthesis,
+                # 역할은 **검사하지 않고 통과시킨다**(§4.2). 강등(A1·A2)은 "기계가 확인했는가"를
+                # 낮추는 것이지 문장이 무엇을 하는지를 바꾸지 않는다 — 강등된 결론은 여전히
+                # 결론이고, 화면은 그것을 앞에 세우되 '종합' 배지를 함께 붙인다. 여기서 역할을
+                # 지우면 강등된 답변만 문단 구조를 잃는다.
+                role=_role_of(sentence),
             )
         )
 
@@ -192,6 +198,15 @@ def check_answer(
         ),
         demotion_reasons=reasons,
     )
+
+
+# 역할 어휘의 **유일한 판정 지점**. 어댑터는 모양만 다듬고 여기로 넘긴다.
+_ROLES = {role.value: role for role in AnswerSegmentRole}
+
+
+def _role_of(sentence: AnswerSentence) -> AnswerSegmentRole:
+    """선언이 없거나 어휘 밖이면 evidence — 산문은 그대로 나가고 구조만 평평해진다."""
+    return _ROLES.get(sentence.role or "", AnswerSegmentRole.evidence)
 
 
 def _without_paper_ids(text: str) -> str:

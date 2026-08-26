@@ -142,6 +142,34 @@ def test_fetch_paper_reads_docmodel_for_corpus_papers():
     assert result.content["blockKinds"]["table"] == 1
 
 
+def test_fetch_paper_adopts_the_title_so_a_named_paper_is_not_shown_as_an_id():
+    """explicit scope로 **사용자가 이름을 대서 고른** 논문이 정작 이름 없이 보였다.
+
+    제목은 지금까지 검색 결과에서만 왔다(`_register`). explicit·mixed scope의 논문은 검색을
+    안 거치고 후보로 올라오므로(`runner._seed_explicit`) 제목이 빈 채였고, 근거 목록에
+    `2106.09685` 같은 식별자가 그대로 찍혔다 — 제목 필드를 만든 이유를 정확히 배반한다.
+    """
+    doc = doc_model()
+    state = LoopState(topic="q")
+    state.discovered["p1"] = PaperHandle("p1", "r1", PaperOrigin.CORPUS)
+    tool = FetchPaperTool(doc_models=FakeDocModels(doc), promotion=None, state=state)
+
+    tool.invoke({"paper_id": "p1"}, CTX)
+
+    assert state.papers["p1"].title == doc.meta.title
+
+
+def test_fetch_paper_keeps_a_title_the_search_already_gave():
+    """검색 결과의 제목이 먼저 온 값이다 — 둘이 다르면 사용자가 화면에서 본 이름을 유지한다."""
+    state = LoopState(topic="q")
+    state.discovered["p1"] = PaperHandle("p1", "r1", PaperOrigin.CORPUS, title="검색이 준 이름")
+    tool = FetchPaperTool(doc_models=FakeDocModels(doc_model()), promotion=None, state=state)
+
+    tool.invoke({"paper_id": "p1"}, CTX)
+
+    assert state.papers["p1"].title == "검색이 준 이름"
+
+
 def test_fetch_paper_promotes_external_papers():
     state = LoopState(topic="q")
     state.discovered["arxiv:2401.10001v1"] = PaperHandle(
@@ -252,6 +280,32 @@ def test_extract_evidence_accumulates_only_gate_survivors():
     assert result.content["accepted"] == 1
     assert result.content["rejected"] == 2  # 인용 1건 + 그 항목의 supporting 0
     assert len(state.accumulator.items) == 1
+
+
+def test_extract_evidence_reports_its_cost_so_the_turn_budget_can_see_it():
+    """**턴에서 가장 큰 LLM 소비자다.**
+
+    종전에는 항목만 돌려줘 비용이 장부 밖에 있었다 — 배포본 트레이스에서 추출 행의 비용이
+    전부 $0.0000이었고, 예산 상한 $0.50이 사실상 안 걸렸다. 논문 여러 편의 본문을 통째로
+    싣는 호출이라 실제 비용은 나머지를 합친 것보다 크다.
+    """
+    state = _state_with_full_text()
+    port = NoItems(items=[_raw_item()], cost_usd=0.42)
+
+    result = ExtractEvidenceTool(port, state).invoke({"paper_ids": ["p1"]}, CTX)
+
+    assert result.cost_usd == 0.42
+
+
+def test_extract_evidence_leaves_the_cost_unknown_rather_than_zero_when_it_cannot_be_measured():
+    """0으로 떨어뜨리면 "쟀는데 공짜"와 "못 쟀다"가 같아진다 — 장부가 조용히 낙관적이 된다."""
+    state = _state_with_full_text()
+
+    result = ExtractEvidenceTool(NoItems(items=[_raw_item()]), state).invoke(
+        {"paper_ids": ["p1"]}, CTX
+    )
+
+    assert result.cost_usd is None
 
 
 def test_extract_evidence_returns_reason_distribution_not_details():

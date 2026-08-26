@@ -8,6 +8,7 @@ v1 대비 신설된 두 검사가 실제로 막는지를 중심으로 본다:
 from __future__ import annotations
 
 import pytest
+from docsuri_shared._generated.dtos.evidence_schema import PaperIdNamespace
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -31,10 +32,11 @@ from backend.tests.evidence_fakes import (
 
 PAPER = "2107.06xxx"
 RECORD = "rec-1"
+TITLE = "Highly accurate protein structure prediction with AlphaFold"
 
 
 
-def _source(scope: str = "fulltext") -> PaperEvidenceSource:
+def _source(scope: str = "fulltext", *, title: str = TITLE) -> PaperEvidenceSource:
     doc = doc_model()
     blocks = {bid: (kind, text) for bid, kind, text in iter_blocks(doc)}
     return PaperEvidenceSource(
@@ -43,6 +45,7 @@ def _source(scope: str = "fulltext") -> PaperEvidenceSource:
         scope=scope,
         text=paper_projection(doc),
         blocks=blocks,
+        title=title,
     )
 
 
@@ -451,3 +454,46 @@ def test_paper_id_notation_drift_is_absorbed_but_unknown_papers_are_not():
     ghost = _item(anchor="s4.tbl1", quote=TABLE_ROW)
     ghost["supporting"][0]["paperId"] = "9999.99999"
     assert run_gate([ghost], {PAPER: _source()}).rejections[RejectReason.UNKNOWN_PAPER] == 1
+
+
+# --- 표시용 제목 -------------------------------------------------------------
+
+
+def test_passing_ref_carries_the_paper_title_so_the_screen_can_name_the_source() -> None:
+    """제목이 없으면 근거 목록에 `arxiv:2106.09685v2` 같은 식별자만 남는다.
+
+    출처를 만드는 자리는 게이트 하나다 — 조립 단계에서 다시 붙이면 핸들 맵을 한 벌 더 들고
+    다녀야 하고, 그 맵이 비면 **제목만** 조용히 사라진다(화면에서는 id로 보인다).
+    """
+    outcome = run_gate([_item(anchor="s4.tbl1", quote=TABLE_ROW)], {PAPER: _source()})
+
+    assert outcome.items
+    assert outcome.items[0].supporting[0].title == TITLE
+
+
+def test_a_paper_without_a_title_carries_none_rather_than_an_empty_string() -> None:
+    """빈 문자열을 실으면 화면이 "제목이 있다"로 읽고 빈 링크를 그린다."""
+    outcome = run_gate(
+        [_item(anchor="s4.tbl1", quote=TABLE_ROW)], {PAPER: _source(title="")}
+    )
+
+    assert outcome.items
+    assert outcome.items[0].supporting[0].title is None
+
+
+def test_every_namespace_the_runner_produces_is_in_the_vocabulary() -> None:
+    """어휘 밖 접두어는 **정상 흐름에서 나오면 안 된다.**
+
+    `attachment:`가 실제로 그랬다 — 첨부 문서에 doc-model id가 없으면 러너가 그 접두어를
+    만드는데(`runner._seed_attachments`), 어휘에 없어서 정상 첨부를 인용할 때마다 경고가 한
+    줄씩 쌓였다. 화면은 안 깨졌지만("모르는 접두어"도 링크를 안 만든다) 로그가 정상 동작을
+    이상으로 보고하면 진짜 이상이 묻힌다.
+    """
+    from backend.modules.evidence.domain.gate import paper_id_namespace
+
+    assert paper_id_namespace("attachment:notes.md") is PaperIdNamespace.attachment
+    assert paper_id_namespace("arxiv:2106.09685v2") is PaperIdNamespace.arxiv
+    assert paper_id_namespace("doi:10.1145/3580305") is PaperIdNamespace.doi
+    assert paper_id_namespace("userdoc:9c1f") is PaperIdNamespace.userdoc
+    # 접두어가 없으면 코퍼스 논문이다 — "모르는 것"이 아니라 확정된 사실이다.
+    assert paper_id_namespace("2106.09685") is None

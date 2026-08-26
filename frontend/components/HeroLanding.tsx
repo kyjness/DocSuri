@@ -19,7 +19,7 @@ import { useSession } from './session/SessionContext';
 const DEMO_LOGIN_ENABLED = process.env.NEXT_PUBLIC_DOCSURI_DEMO_LOGIN_ENABLED === '1';
 
 export function HeroLanding() {
-  const { status } = useSession();
+  const { status, refresh } = useSession();
   const router = useRouter();
   const [demoPending, setDemoPending] = useState(false);
   const [demoError, setDemoError] = useState('');
@@ -35,6 +35,10 @@ export function HeroLanding() {
       // 미들웨어 단계에서 끊긴다. 다른 인증 호출(`/auth/signup`·`/auth/login`)도 전부 `/auth`다.
       const res = await fetch('/bff/auth/demo', { method: 'POST' });
       if (!res.ok) throw new Error(String(res.status));
+      // **세션을 먼저 갱신한다.** 쿠키는 응답에 실려 오지만 컨텍스트는 아직 anonymous라,
+      // 그대로 이동하면 `/search`의 가드가 로그인 화면으로 되돌린다 — 화면에서는 "버튼을
+      // 눌렀는데 로그인 페이지로 간다"로 보인다. 로그인 폼도 같은 순서다(refresh → 이동).
+      await refresh();
       // `replace`다 — 뒤로 가기로 랜딩에 돌아와 다시 계정을 만드는 것을 막는다.
       router.replace('/search');
     } catch {

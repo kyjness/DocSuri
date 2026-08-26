@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Callable
 from typing import Any
 
 from docsuri_shared.bedrock import (
@@ -48,6 +49,7 @@ from ..ports.llm import (
     AnswerDraft,
     AnswerRequest,
     AnswerSentence,
+    ExtractionDraft,
     LlmDecision,
     LlmUnavailable,
     LoopObservation,
@@ -55,6 +57,7 @@ from ..ports.llm import (
     ToolCallProposal,
 )
 from ..ports.tools import ToolSpec
+from .fanout import fan_out
 from .prompts import build_answer_messages, build_decide_messages, build_extraction_messages
 
 __all__ = ["BedrockAnswerWriter", "BedrockDecider", "BedrockExtractor", "IMAGE_BOUNDARY_BANNER"]
@@ -197,8 +200,22 @@ def parse_json_sentences(text: str) -> tuple[AnswerSentence, ...]:
         inline = [int(n) for m in _INLINE_REF.finditer(body) for n in m.group(1).split(",")]
         body = _INLINE_REF.sub("", body).strip()
         numbers = _coerce_refs(row.get("refs")) + tuple(inline)
-        sentences.append(AnswerSentence(text=body, refs=tuple(dict.fromkeys(numbers))))
+        sentences.append(
+            AnswerSentence(
+                text=body, refs=tuple(dict.fromkeys(numbers)), role=_coerce_role(row.get("role"))
+            )
+        )
     return tuple(sentences)
+
+
+def _coerce_role(value: Any) -> str | None:
+    """모양만 다듬는다 — **무엇이 유효한지는 도메인이 정한다.**
+
+    종전에는 여기서 어휘 멤버십까지 봤다. 그러면 판정 지점이 둘이 되어(도메인의 `_role_of`가
+    다시 본다) 어휘 밖 값의 행동이 두 곳에 나뉜다 — 이 모듈들이 refs·추출에서 명시적으로
+    피하는 형태다. 모양 관용은 파싱이지 판정이 아니다.
+    """
+    return str(value or "").strip().lower() or None
 
 
 _INLINE_REF = re.compile(r"\s*\[\s*(\d+(?:\s*,\s*\d+)*)\s*\]")
@@ -283,8 +300,17 @@ class _BedrockBase:
 
     def _invoke(self, body: dict[str, Any]) -> dict[str, Any]:
         """전송은 공유 봉투가, 실패 계약(재시도 1회 + 브레이커 → `LlmUnavailable`)은 여기가."""
+        return self._breaker_call(lambda: self._invoke_raw(body))
+
+    def _invoke_raw(self, body: dict[str, Any]) -> dict[str, Any]:
+        """브레이커 **밖**의 전송. 팬아웃처럼 여러 호출이 한 시도인 자리가 쓴다 —
+        호출마다 회로를 세면 한 장애가 팬아웃 폭만큼 세어져 임계값을 즉시 채운다."""
+        return invoke_model(self._client, self._model, body)
+
+    def _breaker_call(self, fn: Callable[[], Any]) -> Any:
+        """회로차단기 permit 하나 — **무엇을 한 시도로 볼지는 호출자가 정한다.**"""
         try:
-            return self._breaker.call(lambda: invoke_model(self._client, self._model, body))
+            return self._breaker.call(fn)
         except SourceUnavailable as exc:
             raise LlmUnavailable(str(exc)[:300]) from exc
 
@@ -312,7 +338,12 @@ class BedrockDecider(_BedrockBase):
                     *(tool_schema(s.name, s.description, s.parameters) for s in tools),
                     tool_schema(FINISH_TOOL, FINISH_DESCRIPTION, FINISH_PARAMETERS),
                 ],
-                tool_choice={"type": "any"},
+                # **병렬 호출을 끈다.** `any`는 "최소 1개"만 강제하고 개수를 안 막는다 —
+                # 모델이 3~4개를 함께 내면 루프는 첫 개만 쓰고 나머지를 버리는데, **버리는
+                # 것이 아니라 생성한 것이 비용**이다(출력 토큰은 이미 냈다). 2층 심판
+                # 16문항 **전부**에서 문항당 2~11회 났다(2026-08-25).
+                # 계획을 반으로 잘라 버리는 것이라 응답 시간에도 얹힌다.
+                tool_choice={"type": "any", "disable_parallel_tool_use": True},
             )
         )
         return decision_from_tool_calls(tool_calls(response), self._usage_cost(response))
@@ -334,20 +365,95 @@ class BedrockAnswerWriter(_BedrockBase):
         )
 
 
+# 추출 동시 호출 상한. 실측 구간이 논문 3~4편이라 그 구간에서 손실이 0이고, 그 위로는
+# **같은 모델 엔드포인트에 몰리는 요청 수**가 문제가 된다 — 이 저장소는 직렬 호출로도 스로틀에
+# 물린 이력이 있다(novelty external/base 독스트링). botocore 연결 풀(아래 `real_wiring`의
+# `max_pool_connections`)도 이 값과 함께 봐야 한다: 따로 놀면 팬아웃 폭이 조용히 풀에 잘린다.
+MAX_EXTRACT_CONCURRENCY = 4
+
+
 class BedrockExtractor(_BedrockBase):
-    """`extract_evidence` 뒤의 추출 — 검증 전 원시 항목을 돌려준다."""
+    """`extract_evidence` 뒤의 추출 — 검증 전 원시 항목을 돌려준다.
+
+    **논문이 여럿이면 논문별로 나눠 동시에 던진다.** 추출은 턴 시간의 3분의 2 이상을 먹고
+    (배포본 실측: 68초 중 46초 · 108초 중 86초), 그중 여러 편을 한 프롬프트에 묶은 호출이
+    가장 느리다(3편 35.8초 · 4편 33.5초 — 1편은 22초). 나눠 던지면 그 호출이 **가장 느린 한
+    편의 시간**으로 떨어진다. 근거는 하나도 안 잃는다 — 논문마다 자기 본문만 보면 되고,
+    추출은 논문 간 대조를 하지 않는다(그건 게이트 뒤 조립과 판단 층의 몫이다).
+
+    **회로차단기는 팬아웃 전체에 한 번만 건다.** 호출마다 걸면 논문 3편 동시 실패가 실패
+    3회로 세어져 임계값(3)을 즉시 채운다 — 브레이커는 decide·answer와 공유하므로 그 한 번의
+    장애가 60초 동안 턴의 판단까지 죽인다. HALF-OPEN에서는 반대로 무너진다: 프로브가 하나라
+    3편 중 1편만 통과하고 나머지는 즉시 거절돼 **회복 창에서 근거가 늘 1편치만 나온다.**
+    permit 하나 안에서 던지면 한 장애가 한 번 세어지고, 회로가 반쯤 열렸을 때는 팬아웃이
+    통째로 거절된다.
+    """
 
     def extract(
         self, *, topic: str, focus: str, papers: tuple[Any, ...]
-    ) -> list[dict[str, Any]]:
+    ) -> ExtractionDraft:
+        if not papers:
+            # 빈 입력도 브레이커·`LlmUnavailable` 계약 안이다 — 밖으로 빼면 botocore 오류가
+            # 날것으로 새어 도구의 `except LlmUnavailable`이 못 잡고 턴이 하드 실패한다.
+            return self._breaker_call(
+                lambda: self._extract_one(topic=topic, focus=focus, papers=())
+            )
+        return self._breaker_call(lambda: self._fan_out(topic=topic, focus=focus, papers=papers))
+
+    def _fan_out(
+        self, *, topic: str, focus: str, papers: tuple[Any, ...]
+    ) -> ExtractionDraft:
+        # **각 호출이 자기 논문을 들고 결과를 낸다.** 실패 목록만 받아 나중에 짝을 되짚으면
+        # 순서에 기대게 되고, 어느 논문이 빠졌는지가 배열 인덱스에 숨는다.
+        errors: list[Exception] = []
+
+        def one(paper: Any) -> tuple[Any, ExtractionDraft | None]:
+            try:
+                return paper, self._extract_one(topic=topic, focus=focus, papers=(paper,))
+            except Exception as exc:  # noqa: BLE001 — 부분 실패는 정상 결과다(아래에서 판정)
+                log.warning("evidence extraction failed for one paper", exc_info=True)
+                errors.append(exc)
+                return paper, None
+
+        outcomes, _ = fan_out(
+            [(lambda p=paper: one(p)) for paper in papers], max_workers=MAX_EXTRACT_CONCURRENCY
+        )
+        drafts = [draft for _, draft in outcomes if draft is not None]
+        if not drafts:
+            # 전부 죽었을 때만 실패다 — 한 편이 죽었다고 나머지 논문의 근거를 버리지 않는다
+            # (실시간 조회의 부분 저하와 같은 판정). 브레이커가 이 예외를 실패 1회로 센다.
+            #
+            # **원래 예외를 살려서 올린다.** 일반 문구로 감싸면 브레이커의 `rate_limited`가
+            # 스로틀을 못 알아보고 백오프를 건너뛴다 — 그 백오프는 2026-08-25 스로틀 사고
+            # 때문에 생긴 것이고, 재시도가 팬아웃 전체를 다시 던지므로 없으면 그 사고를
+            # 정확히 재현한다(논문 N편 × 2회가 연달아 나간다).
+            raise errors[0]
+        costs = [d.cost_estimate_usd for d in drafts if d.cost_estimate_usd is not None]
+        return ExtractionDraft(
+            items=[item for draft in drafts for item in draft.items],
+            # 하나도 못 쟀으면 None이다 — 0으로 두면 "쟀는데 공짜"와 구분이 안 된다.
+            cost_estimate_usd=sum(costs) if costs else None,
+            # **어느 논문이 빠졌는지 도구가 알아야 한다.** 로그로만 남기면 도구 결과가
+            # `ok=True`라 모델은 그 논문을 안 읽은 줄 모르고 재시도도 안 한다.
+            failed=tuple(
+                str(getattr(paper, "paper_id", "")) for paper, draft in outcomes if draft is None
+            ),
+        )
+
+    def _extract_one(
+        self, *, topic: str, focus: str, papers: tuple[Any, ...]
+    ) -> ExtractionDraft:
         system, messages = _split_system(
             build_extraction_messages(topic=topic, focus=focus, papers=papers)
         )
-        response = self._invoke(self._body(system, messages))
+        response = self._invoke_raw(self._body(system, messages))
         # Join every text block: a preface block before the JSON block would otherwise make the
         # first block parse to [] with no error, and an extraction turn that yields nothing is
         # indistinguishable from papers that carried no evidence.
-        return parse_json_items("\n".join(text_blocks(response)))
+        return ExtractionDraft(
+            items=parse_json_items("\n".join(text_blocks(response))),
+            cost_estimate_usd=self._usage_cost(response),
+        )
 
 
 def _attach_images(

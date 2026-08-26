@@ -1,0 +1,318 @@
+/**
+ * 근거 목록(v3 §2.1) — 출처 링크와 **접기**.
+ *
+ * 표를 목록으로 바꾼 이유는 두 가지다: 가장 흔한 턴이 논문 한두 편이라 3열 격자가 같은
+ * id를 반복하는 껍데기가 됐고, 폰에서는 가로 스크롤 안에 인용문까지 들어가 못 읽었다.
+ * 여기서 고정하는 것은 그 목록이 지켜야 할 세 가지다 — 번호는 안 흔들린다, 접힌 근거도
+ * 링크 대상으로 남는다, 갈 곳 없는 출처는 링크를 만들지 않는다.
+ */
+import { fireEvent, render, screen, within } from '@testing-library/react';
+import { useState } from 'react';
+import userEvent from '@testing-library/user-event';
+import { describe, expect, it } from 'vitest';
+
+import {
+  EVIDENCE_VISIBLE_PER_PAPER,
+  EvidenceClaimList,
+  EvidenceResultView,
+} from '@/components/agent/AgentChatScreen';
+import { groupClaimsByPaper, sourceHref, sourceLabel } from '@/lib/agentChat/evidenceResult';
+import type { EvidenceSourceRef } from '@/lib/agentChat/evidenceResult';
+
+function ref(over: Partial<EvidenceSourceRef> = {}): EvidenceSourceRef {
+  return { paperId: '2401.01234', recordRef: 'rec-1', ...over };
+}
+
+describe('sourceHref', () => {
+  it('sends a corpus paper to our own detail page, where the full text lives', () => {
+    // 네임스페이스가 없는 것이 곧 "코퍼스 논문"이다. arxiv.org로 내보내면 본문·요약·번역이
+    // 다 여기 있는데 밖으로 내보내는 셈이라, 이 목적지 판단만은 프론트에 남는다.
+    expect(sourceHref(ref({ paperId: '2401.01234' }))).toBe('/paper/2401.01234');
+  });
+
+  it('sends a live-lookup paper outside — it has no detail page here', () => {
+    expect(
+      sourceHref(ref({ paperId: 'arxiv:2405.09876v1', namespace: 'arxiv' })),
+    ).toBe('https://arxiv.org/abs/2405.09876v1');
+    expect(
+      sourceHref(ref({ paperId: 'doi:10.1145/3580305', namespace: 'doi' })),
+    ).toBe('https://doi.org/10.1145/3580305');
+  });
+
+  it('refuses to build a link for an uploaded document — that URL would be fabricated', () => {
+    // 스키마가 "실재 arXiv id 없음, arxiv.org URL 조립 금지"라고 못 박은 자리다.
+    expect(sourceHref(ref({ paperId: 'userdoc:9c1f', namespace: 'userdoc' }))).toBeNull();
+  });
+
+  it('reads the namespace the backend sent rather than re-parsing the prefix', () => {
+    // 어휘를 아는 쪽이 판정한다. 프론트가 접두어를 직접 자르면 어휘가 두 벌이 되고,
+    // 접두어가 하나 늘 때 이쪽만 안 고쳐져 화면이 조용히 링크를 잃는다.
+    // 저장된 옛 턴에는 이 필드가 없다. 없는 값을 "코퍼스"로 단정하면 `/paper/arxiv%3A…`로
+    // 보내 반드시 404다 — 접두어가 보이면 링크를 만들지 않는다.
+    expect(sourceHref(ref({ paperId: 'arxiv:2405.09876v1' }))).toBeNull();
+    expect(sourceHref(ref({ paperId: '  ' }))).toBeNull();
+  });
+});
+
+describe('sourceLabel', () => {
+  it('falls back to the identifier only when there is no title', () => {
+    expect(sourceLabel(ref({ title: 'Attention Is All You Need' }))).toBe(
+      'Attention Is All You Need',
+    );
+    expect(sourceLabel(ref({ title: '   ' }))).toBe('2401.01234');
+    expect(sourceLabel(ref({}))).toBe('2401.01234');
+  });
+});
+
+describe('folding inside a paper block', () => {
+  const claims = Array.from({ length: 9 }, (_, i) => ({
+    statement: `근거 명제 ${i + 1}`,
+    supporting: [ref({ title: '논문 하나', anchor: `s1.p${i}`, quote: `원문 ${i + 1}` })],
+    conflicting: [],
+  }));
+
+  function Host() {
+    const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
+    return (
+      <EvidenceClaimList
+        grouped={groupClaimsByPaper(claims)}
+        scope="msg-1"
+        expandedPapers={open}
+        onExpandPaper={(id) => setOpen((prev) => new Set(prev).add(id))}
+      />
+    );
+  }
+
+  it('shows the first three per paper and keeps the rest addressable', async () => {
+    const user = userEvent.setup();
+    render(<Host />);
+
+    const rows = screen.getAllByTestId('evidence-row');
+    expect(rows).toHaveLength(claims.length);
+    // **접힌 줄도 DOM에 남는다.** 판단 산문의 `[9]`가 가리킬 대상이 사라지면 링크가 죽는다.
+    expect(rows.filter((r) => !r.hasAttribute('hidden'))).toHaveLength(
+      EVIDENCE_VISIBLE_PER_PAPER,
+    );
+    // 번호는 접기와 무관하다 — 조립이 정한 순서가 곧 `[n]`이다(BR-EV-5).
+    expect(rows[8]).toHaveAttribute('id', 'evidence-msg-1-row-9');
+
+    await user.click(screen.getByTestId('evidence-show-more'));
+    expect(
+      screen.getAllByTestId('evidence-row').filter((r) => !r.hasAttribute('hidden')),
+    ).toHaveLength(claims.length);
+  });
+
+  it('does not offer "더 보기" when a paper already fits', () => {
+    render(<EvidenceClaimList
+        grouped={groupClaimsByPaper(claims.slice(0, 3))} scope="msg-2" />);
+
+    expect(screen.queryByTestId('evidence-show-more')).not.toBeInTheDocument();
+  });
+
+  it('names the paper once instead of once per evidence line', () => {
+    render(<EvidenceClaimList
+        grouped={groupClaimsByPaper(claims)} scope="msg-4" />);
+
+    // 종전에는 근거마다 제목이 붙어 논문 2편짜리 턴에서 같은 이름이 일곱 번 찍혔다.
+    expect(screen.getAllByRole('link', { name: /논문 하나/ })).toHaveLength(1);
+  });
+
+  it('writes the quote on the line, not the Korean statement the prose already said', () => {
+    render(<EvidenceClaimList
+        grouped={groupClaimsByPaper(claims.slice(0, 1))} scope="msg-5" />);
+
+    expect(screen.getByText(/원문 1/)).toBeInTheDocument();
+    expect(screen.queryByText('근거 명제 1')).not.toBeInTheDocument();
+  });
+
+  it('falls back to the statement when the quote is a table cell dump', () => {
+    // 실측: `PPL | 8.08 | 11.44 | …` — 명제 없이는 무슨 말인지 모른다.
+    render(
+      <EvidenceClaimList
+        scope="msg-6"
+        grouped={groupClaimsByPaper([
+          {
+            statement: '정확도가 12%p 오른다',
+            supporting: [
+              ref({ anchor: 's4.tbl1', anchorType: 'table', quote: 'PPL | 8.08 | 11.44' }),
+            ],
+            conflicting: [],
+          },
+        ])}
+      />,
+    );
+
+    expect(screen.getByText('정확도가 12%p 오른다')).toBeInTheDocument();
+    expect(screen.queryByText(/PPL \| 8\.08/)).not.toBeInTheDocument();
+  });
+});
+
+describe('the row head', () => {
+  function renderRow(over: Partial<EvidenceSourceRef>) {
+    render(
+      <EvidenceClaimList
+        scope="msg-head"
+        grouped={groupClaimsByPaper([
+          { statement: '명제', supporting: [ref(over)], conflicting: [] },
+        ])}
+      />,
+    );
+  }
+
+  it('carries the stance on the mark itself, not on an ancestor', () => {
+    // 조상 선택자에 색을 걸면 그 조상이 없는 자리에서 조용히 색을 잃는다 — 논문 그룹의 ✓가
+    // 실제로 그랬다(쟁점 블록에서만 색이 나왔다). CSS 모듈은 목이라 계산된 색을 못 보므로,
+    // **색을 고르는 근거가 마크에 실려 있는지**를 본다.
+    renderRow({ anchor: 's1.p1', quote: '원문' });
+
+    expect(screen.getByLabelText('지지')).toHaveAttribute('data-stance', 'support');
+  });
+
+  it('shows the anchor value next to its type, not the type alone', () => {
+    // 종전 칩은 `표 · 표 3`이었다. 칩을 다시 쓰면서 `표`만 남아 **어느 표인지가 사라졌다.**
+    renderRow({ anchor: '표 3', anchorType: 'table', quote: 'PPL | 8.08' });
+
+    expect(screen.getByText('표 · 표 3')).toBeInTheDocument();
+  });
+
+  it('falls back to § when the block has no type', () => {
+    renderRow({ anchor: '4.2절', quote: '원문' });
+
+    expect(screen.getByText('§ 4.2절')).toBeInTheDocument();
+  });
+});
+
+describe('a contested claim', () => {
+  const claims = [
+    {
+      statement: '갈리는 명제',
+      supporting: [ref({ paperId: 'p-a', title: '논문 A', quote: 'A says' })],
+      conflicting: [ref({ paperId: 'p-b', title: '논문 B', quote: 'B says' })],
+    },
+    { statement: '안 갈리는 명제', supporting: [ref({ title: '논문 A', quote: 'more' })], conflicting: [] },
+  ];
+
+  it('is lifted into 쟁점 so the disagreement stays in one place', () => {
+    render(<EvidenceClaimList
+        grouped={groupClaimsByPaper(claims)} scope="msg-7" />);
+
+    const contested = screen.getByTestId('evidence-contested');
+    expect(within(contested).getByText('갈리는 명제')).toBeInTheDocument();
+    expect(within(contested).getByRole('link', { name: /논문 A/ })).toBeInTheDocument();
+    expect(within(contested).getByRole('link', { name: /논문 B/ })).toBeInTheDocument();
+  });
+
+  it('appears exactly once — a duplicated DOM id breaks the citation jump', () => {
+    render(<EvidenceClaimList
+        grouped={groupClaimsByPaper(claims)} scope="msg-8" />);
+
+    const ids = screen.getAllByTestId('evidence-row').map((r) => r.id);
+    expect(ids).toEqual([...new Set(ids)]);
+    expect(ids.filter((id) => id.endsWith('row-1'))).toHaveLength(1);
+  });
+});
+
+describe('answer prose roles', () => {
+  const segment = (over: Record<string, unknown>) => ({
+    text: '문장',
+    refs: [] as number[],
+    kind: 'synthesis' as const,
+    ...over,
+  });
+
+  function renderAnswer(segments: ReturnType<typeof segment>[]) {
+    return render(
+      <EvidenceResultView
+        scope="msg-role"
+        result={{
+          state: 'ok',
+          claims: [{ statement: '명제', supporting: [ref({ title: '논문' })], conflicting: [] }],
+          coverage: { paperCount: 1 },
+          answer: { segments, checks: { demoted: 0, regenerated: false, fallback: false } },
+        }}
+      />,
+    );
+  }
+
+  it('sets the conclusion and the divergence apart from the supporting sentences', () => {
+    renderAnswer([
+      segment({ text: '데이터가 적을 때는 LoRA가 낫다', refs: [1], kind: 'cited', role: 'conclusion' }),
+      segment({ text: '파라미터를 1만 배 줄인다', refs: [1], kind: 'cited', role: 'evidence' }),
+      segment({ text: '갈리는 지점은 분포 안이냐다', role: 'divergence' }),
+    ]);
+
+    const roles = screen
+      .getAllByText(/LoRA가 낫다|1만 배|분포 안이냐다/)
+      .map((node) => node.closest('[data-segment-role]')?.getAttribute('data-segment-role'));
+    expect(roles).toEqual(['conclusion', 'evidence', 'divergence']);
+    // 라벨은 **갈림 지점에만** 붙는다. 결론은 크고 굵게 맨 위에 오는 것으로 충분하고,
+    // "결론"을 적으면 매 답변에 고정으로 붙는 절 머리표가 된다(§2.1이 금지한 구획 라벨).
+    expect(screen.getAllByTestId('evidence-answer-role').map((n) => n.textContent)).toEqual([
+      '갈리는 지점',
+    ]);
+  });
+
+  it('keeps every sentence when the model declared no role — structure is lost, text is not', () => {
+    // 옛 턴·폴백 답변·어휘 밖 선언이 전부 이 경로다. 여기서 문장을 버리면 판단이 사라진다.
+    renderAnswer([
+      segment({ text: '역할 없는 문장 하나', refs: [1], kind: 'cited' }),
+      segment({ text: '역할 없는 문장 둘' }),
+    ]);
+
+    expect(screen.getByText('역할 없는 문장 하나')).toBeInTheDocument();
+    expect(screen.getByText('역할 없는 문장 둘')).toBeInTheDocument();
+    expect(screen.queryByTestId('evidence-answer-role')).not.toBeInTheDocument();
+  });
+
+  it('renders in array order — a role must not reorder the argument', () => {
+    // 프롬프트가 결론을 맨 앞에 두라고 하지만, 순서를 화면이 바꾸면 모델이 의도한 논지
+    // 전개가 어긋난다. 결론이 뒤에 오면 뒤에 그린다.
+    renderAnswer([
+      segment({ text: '먼저 온 근거', refs: [1], kind: 'cited', role: 'evidence' }),
+      segment({ text: '나중 온 결론', refs: [1], kind: 'cited', role: 'conclusion' }),
+    ]);
+
+    const texts = screen
+      .getAllByText(/먼저 온 근거|나중 온 결론/)
+      .map((node) => node.textContent);
+    expect(texts).toEqual(['먼저 온 근거', '나중 온 결론']);
+  });
+});
+
+describe('a citation number pointing into a folded group', () => {
+  it('opens the group that actually holds the anchor, not merely the first match', () => {
+    // 같은 번호가 여러 그룹에 나온다(두 논문이 함께 지지). DOM id는 `anchor`인 행에만 있으므로
+    // 그냥 첫 그룹을 펴면 **엉뚱한 쪽이 열리고 점프 대상은 접힌 채** 남는다 — 감춰진 요소로는
+    // 스크롤되지 않으니 클릭이 아무 일도 안 한다. 상태를 위로 올린 이유가 그것이었다.
+    const claims = [
+      { statement: 'A만', supporting: [ref({ paperId: 'p-a', quote: 'a' })], conflicting: [] },
+      ...Array.from({ length: 5 }, (_, i) => ({
+        statement: `B가 먼저 ${i}`,
+        supporting: [ref({ paperId: 'p-b', quote: `b${i}` }), ref({ paperId: 'p-a', quote: 'a' })],
+        conflicting: [],
+      })),
+    ];
+    render(
+      <EvidenceResultView
+        scope="msg-jump"
+        result={{
+          state: 'ok',
+          claims,
+          coverage: { paperCount: 2 },
+          answer: {
+            segments: [{ text: '여섯 번째가 핵심이다', refs: [6], kind: 'cited' }],
+            checks: { demoted: 0, regenerated: false, fallback: false },
+          },
+        }}
+      />,
+    );
+
+    const target = () => document.getElementById('evidence-msg-jump-row-6');
+    expect(target()).toBeTruthy();
+    expect(target()).toHaveAttribute('hidden');
+
+    fireEvent.click(screen.getByTestId('evidence-answer-ref'));
+
+    expect(target()).not.toHaveAttribute('hidden');
+  });
+});

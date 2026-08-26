@@ -94,3 +94,10 @@
 .anchor:not(:disabled):hover {
   background: var(--color-mockup-bg);
 }
+
+/* 재현성 칸이 비어 있을 때 — "논문에 언급 없음"(모델이 확인한 사실)과 달리, 이것은 모델이
+   답을 안 했다는 뜻이다. 본문과 같은 무게로 그리면 둘이 구분되지 않는다. */
+.repUnknown {
+  color: var(--color-text-muted, #6b7280);
+  font-style: italic;
+}

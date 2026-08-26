@@ -125,7 +125,12 @@ def build_evidence_runner(
 
     from backend.modules.novelty.adapters.external.base import SourceBreaker
 
-    from .adapters.llm_bedrock import BedrockAnswerWriter, BedrockDecider, BedrockExtractor
+    from .adapters.llm_bedrock import (
+        MAX_EXTRACT_CONCURRENCY,
+        BedrockAnswerWriter,
+        BedrockDecider,
+        BedrockExtractor,
+    )
 
     rates = {
         "input_usd_per_mtok": settings.input_usd_per_mtok,
@@ -139,7 +144,15 @@ def build_evidence_runner(
     client = boto3.client(
         "bedrock-runtime",
         region_name=settings.region_name,
-        config=Config(connect_timeout=5, read_timeout=90, retries={"max_attempts": 1}),
+        config=Config(
+            connect_timeout=5,
+            read_timeout=90,
+            retries={"max_attempts": 1},
+            # 추출이 논문별로 동시에 던진다. botocore 기본 풀이 10인데 decide·answer가 같은
+            # 클라이언트를 쓰므로 실제 여유는 그보다 작고, 초과분은 매번 새 TLS 핸드셰이크다.
+            # 팬아웃 상한보다 넉넉히 둔다 — 두 숫자가 따로 놀면 팬아웃 폭이 조용히 풀에 잘린다.
+            max_pool_connections=MAX_EXTRACT_CONCURRENCY * 2 + 4,
+        ),
     )
     # 셋이 같은 엔드포인트를 친다 — 회로차단기도 하나를 나눈다. 따로 들면 decide가 스로틀로
     # 죽은 직후 answer가 닫힌 회로에서 시작해 같은 엔드포인트를 두 번 더 친다.

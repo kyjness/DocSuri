@@ -166,6 +166,7 @@ class PaperHandle:
                 record_ref=self.record_ref,
                 scope=SourceScope.abstract.value,
                 text=normalize(self.abstract_text),
+                title=self.title,
             )
         else:
             source = PaperEvidenceSource(
@@ -176,6 +177,7 @@ class PaperHandle:
                 # 재정규화하지 않도록(E3) 대조는 항상 정규화형끼리 한다.
                 text=normalize(paper_projection(self.doc_model)),
                 blocks={bid: (kind, text) for bid, kind, text in self.blocks()},
+                title=self.title,
             )
         self._source_cache = source
         return source

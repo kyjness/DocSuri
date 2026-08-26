@@ -7,9 +7,17 @@
  */
 export type EvidenceResult = EvidenceResult1 | EvidenceAbstainResult;
 /**
+ * `SourceRef.paperId`의 네임스페이스(`{namespace}:{id}`). **생략이면 코퍼스 논문**이고 paperId는 IndexRecord.arxivId 그대로다 — 그래서 이 목록은 "코퍼스 밖" 어휘다. arxiv = 실시간 조회로 찾은 arXiv 논문(버전 포함) · doi = arXiv에 없어 DOI로 실려온 논문 · userdoc = 사용자가 올린 문서 · attachment = 이번 턴에 첨부한 문서 중 doc-model id가 없는 것(`attachment:{파일명}` — 검색으로 도달할 수 없는 사적 영역이라 링크가 없다). **파생값을 굳이 싣는 이유**: 접두어를 만드는 곳(live_sources·user_docmodel)과 그것을 보고 링크 목적지를 정하는 곳(FE)이 각자 문자열을 적으면, 접두어가 하나 늘 때 한쪽만 고쳐지고 화면은 조용히 링크를 잃는다. 어휘를 아는 쪽이 판정해서 실어 보내면 소비자는 되파싱하지 않고, 어휘가 늘면 소비자의 분기가 컴파일에서 막힌다. Trace: FR-5, §8.
+ */
+export type PaperIdNamespace = "arxiv" | "doi" | "userdoc" | "attachment";
+/**
  * cited = refs의 근거로 기계가 확인한 문장 · synthesis = 모델이 근거들을 종합해 쓴 문장(기계가 확인할 수 없다). Trace: v3 §2.1, §4.3.
  */
 export type AnswerSegmentKind = "cited" | "synthesis";
+/**
+ * 문장이 판단 안에서 맡은 역할(선택, v3 §4.2). conclusion = 질문에 대한 답 그 자체 · evidence = 그 답을 받치는 서술 · divergence = 문헌이 갈리는 지점(§2.2가 "갈림 지점을 한 문장으로 밝혀라"고 정한 그 문장). **kind와 다른 축이다**: kind는 "기계가 확인했는가"이고 도메인이 refs에서 유도한다. role은 "문장이 무엇을 하는가"이고 모델이 선언한다. 역할은 판정에 쓰이지 않는다 — §4.3 검사 5종은 role을 보지 않고, 화면이 결론을 앞에 세우고 갈림 지점을 따로 떼어 보여주기 위한 것이다. 선언이 없거나 어휘 밖이면 evidence로 읽어 산문이 그대로 나간다. confidence(Q3=B로 배제)와 혼동하지 말 것 — 그쪽은 모델이 근거의 세기를 스스로 매기는 값이고, role은 세기가 아니라 문장의 자리다(틀려도 문단 순서가 어색해질 뿐 근거의 강도를 날조하지 않는다). Trace: v3 §2.2, §4.2, §8.
+ */
+export type AnswerSegmentRole = "conclusion" | "evidence" | "divergence";
 /**
  * 비기술 기권 사유(내부 위반 상세·점수 비노출 — SEC-9). 앞 다섯은 근거형성이 낸 기권, 뒤 넷은 턴 실패가 fail-closed로 수렴한 것(BR-EV-12). **닫힌 어휘다** — 그냥 string이던 동안 백엔드 생산자와 화면 라벨 맵이 조용히 갈렸다(2026-08-24: llm_unavailable 라벨을 지웠는데 생산자가 남아 있어 진짜 LLM 실패가 일반 문구로 떨어졌다). 여기 없는 코드는 unknown으로 수렴하고 원래 값은 로그에 남는다. Trace: FR-5, SEC-9.
  */
@@ -64,13 +72,18 @@ export interface EvidenceItem {
  */
 export interface SourceRef {
   /**
-   * 출처 문서 id. arXiv: 표시용 arXiv ID(버전 포함 가능, Source: IndexRecord.arxivId). 사용자 업로드: "userdoc:{uuid}" 네임스페이스 — 실재 arXiv id 없음, arxiv.org URL 조립 금지(무날조). Trace: FR-5, vector-spec §2.
+   * 출처 문서 id. 접두어 없음 = 코퍼스 논문(표시용 arXiv ID, 버전 포함 가능, Source: IndexRecord.arxivId). 접두어가 있으면 코퍼스 밖이고 그 어휘는 PaperIdNamespace다(`{namespace}:{id}`). 사용자 업로드는 "userdoc:{uuid}" — 실재 arXiv id 없음, arxiv.org URL 조립 금지(무날조). Trace: FR-5, vector-spec §2.
    */
   paperId: string;
   /**
    * IndexRecord 식별자(실재성 검증 핸들). 사용자 업로드: "upload:{ownerId}:{jobId}:{attachmentId}". 내부 벡터·청크 정보 미포함. Trace: FR-5, vector-spec §2.
    */
   recordRef: string;
+  namespace?: PaperIdNamespace;
+  /**
+   * 출처 논문의 제목(선택). 화면이 출처를 **사람이 알아볼 수 있는 이름**으로 보여주기 위한 것 — 이것이 없으면 근거 목록에 `arxiv:2106.09685v2` 같은 식별자만 남고, 사용자는 눌러 보기 전까지 무슨 논문인지 모른다. 루프가 확보한 PaperHandle.title이 원천이고, 제목을 확보하지 못한 논문(초록만 받았고 제목이 빈 경우)에서는 생략한다. 인용의 실재를 검증하는 핸들은 여전히 paperId·recordRef다 — 제목은 표시용이라 판정에 쓰지 않는다. Trace: FR-5, §2.1, §8.
+   */
+  title?: string;
   /**
    * DocModel Section/Block 결정적 id(선택). 요약 AnchorTarget 계약과 동일 방식. Trace: summarization.schema.json.
    */
@@ -140,6 +153,7 @@ export interface AnswerSegment {
    */
   refs: number[];
   kind: AnswerSegmentKind;
+  role?: AnswerSegmentRole;
 }
 /**
  * §4.3 기계 검사의 결과 요약 — 화면 표시가 아니라 지표·디버깅용이다. Trace: v3 §4.3, §6.3.

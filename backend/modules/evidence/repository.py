@@ -143,7 +143,18 @@ _TRACE_WIRE_KEYS = ("seq", "tool", "argsSummary", "outcome", "resultSummary", "c
 
 
 def trace_wire_row(row: dict) -> dict:
-    return {key: row.get(key) for key in _TRACE_WIRE_KEYS}
+    """저장 행 → 화면 행. **시각의 문자열화도 여기서만 한다.**
+
+    저장은 datetime이고 wire는 ISO 문자열이다. 그 변환을 스토어마다 하면 한쪽이 tz를 빠뜨리는
+    식으로 갈리는데, 그 차이는 화면의 단계별 소요 시간에만 나타난다 — SQLite는 naive datetime을
+    돌려주므로 오프셋 없는 문자열이 나가고, 브라우저의 `Date.parse`는 그것을 **로컬 시각**으로
+    읽는다. Postgres에서는 정상이라 로컬에서만 틀린다. 이 파일이 이름 붙인 "두 스토어가 조용히
+    갈린다"의 전형이다.
+    """
+    projected = {key: row.get(key) for key in _TRACE_WIRE_KEYS}
+    at = projected.get("at")
+    projected["at"] = _ensure_utc(at).isoformat() if isinstance(at, datetime) else at
+    return projected
 
 
 
@@ -694,7 +705,10 @@ class SqlEvidenceRepository:
                 result_summary=str(row.get("resultSummary", "")),
                 cost_usd=row.get("costUsd"),
                 stance=row.get("stance"),
-                created_at=_utc_now(),
+                # 시각의 권위는 `trace_row`(루프가 기록한 순간)다 — 여기서 삽입 시각을 다시
+                # 찍으면 인메모리 스토어와 값이 갈리고, 그 차이는 화면의 단계별 소요 시간에만
+                # 나타난다. `ToolCallRecord.at`이 항상 채워지므로 폴백은 두지 않는다.
+                created_at=row["at"],
             )
         )
         self._s.flush()
@@ -719,7 +733,11 @@ class SqlEvidenceRepository:
                     "outcome": row.outcome,
                     "resultSummary": row.result_summary,
                     "costUsd": row.cost_usd,
-                    "at": row.created_at.isoformat() if row.created_at else None,
+                    # datetime 그대로 넘긴다 — tz 보정과 문자열화는 `trace_wire_row` 하나가
+                    # 한다. 여기서 `.isoformat()`을 부르면 SQLite의 naive datetime이 오프셋
+                    # 없이 나가고, 화면이 그것을 로컬 시각으로 읽어 첫 단계 소요 시간이
+                    # 사라지거나 누적에 9시간이 뜬다(KST).
+                    "at": row.created_at,
                 }
             )
             for row in rows

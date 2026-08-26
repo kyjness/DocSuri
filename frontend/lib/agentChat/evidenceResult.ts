@@ -1,7 +1,10 @@
 import type {
   AbstainReason,
   EvidenceAnswer as GeneratedAnswer,
+  PaperIdNamespace,
 } from '@/types/generated/evidence';
+
+import { docModelHref, isAbstractAnchor } from '@/lib/docModelHref';
 
 import { isNoveltyResultPayload } from './noveltyResult';
 import type { NoveltyResultPayload } from './noveltyResult';
@@ -26,6 +29,10 @@ export type EvidenceSourceScope = 'fulltext' | 'abstract' | 'figure';
 export interface EvidenceSourceRef {
   paperId: string;
   recordRef: string;
+  /** 코퍼스 밖 논문의 출처 네임스페이스. **없으면 코퍼스 논문이다**(백엔드가 판정해 싣는다). */
+  namespace?: PaperIdNamespace | null;
+  /** 출처 논문의 제목. 없으면 화면이 paperId를 그대로 쓴다(그때만 식별자가 보인다). */
+  title?: string | null;
   anchor?: string | null;
   quote?: string | null;
   anchorType?: EvidenceAnchorType | null;
@@ -188,11 +195,6 @@ export function sourceScopeBadge(
   return null;
 }
 
-/** 앵커가 없는 출처는 이동 링크를 렌더하지 않는다 — 깨진 링크를 만들지 않는다. */
-export function canJumpToSource(ref: EvidenceSourceRef): boolean {
-  return Boolean(ref.anchor);
-}
-
 /**
  * 확인 범위 문장(FR-37 v2). 내부 용어를 쓰지 않고 수치로 말한다.
  * 탐색이 완결됐으면(sufficient) 아무것도 표시하지 않는다.
@@ -235,3 +237,177 @@ function truncationSentence(
   return `관련 논문 ${candidates}편 중 ${examined}편을 확인했습니다. 일부 논문은 본문을 가져오지 못했습니다.`;
 }
 
+
+/**
+ * 출처 논문으로 가는 링크. **없으면 null이고, 그때는 링크를 그리지 않는다** — 깨진 링크는
+ * 링크가 없는 것보다 나쁘다.
+ *
+ * 목적지는 백엔드가 실어 보낸 `namespace`가 정한다(계약은 evidence.schema.json). 종전에는
+ * 여기서 `paperId`의 접두어를 직접 잘랐는데, 그러면 어휘가 두 벌이 되어 접두어가 하나 늘 때
+ * 이쪽만 안 고쳐지고 화면이 조용히 링크를 잃는다. 이제 어휘가 늘면 아래 switch가 컴파일에서
+ * 막힌다 — 지금은 화면 정책이 어휘를 **읽기만** 한다.
+ *
+ * - 없음 = 코퍼스 논문 → 우리 논문 상세. 본문·요약·번역이 거기 있으므로 arxiv.org로
+ *   내보내는 것보다 사용자가 할 수 있는 일이 많다(그래서 이 판단은 프론트에 남는다).
+ * - `arxiv` = 실시간 조회로 찾은 논문 → arxiv.org. 우리 상세 페이지가 없다.
+ * - `doi` = arXiv에 없어 DOI로 실려온 논문 → doi.org.
+ * - `userdoc` = 사용자가 올린 문서 → **링크 없음.** 실재 arXiv id가 없으므로 URL을 조립하면
+ *   그것이 날조다(스키마가 "arxiv.org URL 조립 금지"라고 못 박는다).
+ */
+export function sourceHref(ref: EvidenceSourceRef): string | null {
+  const id = ref.paperId?.trim();
+  if (!id) return null;
+  switch (ref.namespace ?? null) {
+    case 'arxiv':
+      return `https://arxiv.org/abs/${encodeURIComponent(stripNamespace(id))}`;
+    case 'doi':
+      return `https://doi.org/${stripNamespace(id)}`;
+    case 'userdoc':
+      return null;
+    case null:
+      // **저장된 옛 턴에는 `namespace`가 없다**(이 필드 이전에 만들어진 행). 그때 접두어가
+      // 붙은 id를 코퍼스로 읽으면 `/paper/arxiv%3A…`로 보내 반드시 404다 — 없는 값을
+      // "코퍼스"로 단정하지 않고, 접두어가 보이면 링크를 만들지 않는다.
+      return id.includes(':') ? null : `/paper/${encodeURIComponent(id)}`;
+    default:
+      // 어휘가 늘었는데 목적지를 안 정한 경우 — 컴파일에서 막히지만, 저장된 옛 턴이 어휘 밖
+      // 값을 들고 있을 수 있으므로 런타임은 링크 없음으로 떨어진다(404로 보내지 않는다).
+      return null;
+  }
+}
+
+/** `{namespace}:{id}` → `{id}`. 네임스페이스는 이미 별도 필드로 왔다. */
+function stripNamespace(paperId: string): string {
+  const colon = paperId.indexOf(':');
+  return colon < 0 ? paperId : paperId.slice(colon + 1);
+}
+
+/** 출처의 표시 이름 — 제목이 있으면 제목, 없으면 식별자. */
+export function sourceLabel(ref: EvidenceSourceRef): string {
+  return ref.title?.trim() || ref.paperId;
+}
+
+
+/** 논문 하나에 묶인 근거 줄. `number`는 **근거 번호**이지 논문 번호가 아니다. */
+export interface EvidenceRow {
+  number: number;
+  /**
+   * 이 줄만의 키. **번호로는 부족하다** — 게이트가 `supporting`을 논문으로 중복 제거하지
+   * 않으므로 한 명제가 같은 논문의 두 블록을 인용하면 같은 번호의 행이 둘 생긴다(배포본
+   * 실측: 근거 19건 중 10건). 번호를 React key로 쓰면 충돌한다.
+   */
+  key: string;
+  /**
+   * 이 줄이 `[n]`의 이동 대상인가 — 그 번호를 **통틀어 처음** 들고 나온 행에만 true다.
+   * 같은 번호가 한 논문 안에서도, 논문을 건너서도 여러 번 나올 수 있는데 DOM id는 하나여야
+   * 한다(중복 id는 유효하지 않은 HTML이고 점프가 첫 번째로만 간다).
+   */
+  anchor: boolean;
+  /** 이 줄이 속한 명제. 번호를 인덱스로 되돌려 원본을 다시 찾지 않게 함께 싣는다. */
+  statement: string;
+  ref: EvidenceSourceRef;
+}
+
+export interface EvidencePaperGroup {
+  paperId: string;
+  ref: EvidenceSourceRef;
+  rows: EvidenceRow[];
+}
+
+export interface GroupedEvidence {
+  /** 상충이 있는 근거 — 논문 그룹에서 **빠진다**(두 블록으로 갈라지지 않게). */
+  contested: Array<{ number: number; claim: EvidenceClaim }>;
+  papers: EvidencePaperGroup[];
+}
+
+/**
+ * 근거를 논문 단위로 묶는다.
+ *
+ * 종전에는 근거 하나가 블록 하나였다. 논문이 한두 편인 흔한 턴에서는 같은 제목이 근거마다
+ * 반복돼(실측: 논문 2편에 근거 10건 → 제목이 일곱 번) 화면이 이름으로 덮였다.
+ *
+ * **상충 근거는 빼내 위에 따로 둔다.** 논문으로 묶으면 "한 논문이 지지하고 다른 논문이
+ * 상충하는" 근거가 두 블록으로 갈라져, 엇갈림을 한자리에서 못 본다 — 표가 있던 이유가
+ * 그것이다(BR-EV-5). 빼내면 DOM id 중복도 안 생긴다.
+ *
+ * **순서는 조립이 정한 것을 따른다.** 논문 순서는 근거 순서에서 처음 등장한 순이고, 논문 안
+ * 줄은 근거 번호 순이다. 여기서 다시 정렬하면 판단 산문의 번호가 다른 것을 가리킨다.
+ */
+export function groupClaimsByPaper(claims: EvidenceClaim[]): GroupedEvidence {
+  const contested: GroupedEvidence['contested'] = [];
+  const byPaper = new Map<string, EvidencePaperGroup>();
+  // 번호마다 이동 대상은 하나다. 여기서 세어 두면 화면이 다시 셀 필요가 없고, 유일성이
+  // 순수 함수 안에 있어 검사가 된다.
+  const anchored = new Set<number>();
+
+  claims.forEach((claim, index) => {
+    const number = index + 1;
+    if (claim.conflicting.length > 0) {
+      contested.push({ number, claim });
+      anchored.add(number);
+      return;
+    }
+    claim.supporting.forEach((ref, refIndex) => {
+      const group = byPaper.get(ref.paperId) ?? { paperId: ref.paperId, ref, rows: [] };
+      const anchor = !anchored.has(number);
+      anchored.add(number);
+      group.rows.push({
+        number,
+        key: `${number}-${refIndex}`,
+        anchor,
+        statement: claim.statement,
+        ref,
+      });
+      byPaper.set(ref.paperId, group);
+    });
+  });
+
+  return { contested, papers: [...byPaper.values()] };
+}
+
+/**
+ * 근거 줄에 **무엇을** 쓰나 — 원문이냐 명제냐.
+ *
+ * 기본은 원문이다: 한국어 명제는 위의 판단 산문이 거의 그대로 말하므로, 둘 다 두면 같은
+ * 사실이 세 번 나온다(산문 → 명제 → 인용문).
+ *
+ * 단 **표·그림·식 인용은 명제로 간다.** 그쪽 원문은 `PPL | 8.08 | 11.44 | …` 같은 셀 덤프라
+ * (실측: LoRA 턴 출처 13개 중 2개) 명제 없이는 읽히지 않는다. 판정은 `anchorType` 하나로
+ * 기계가 한다 — 인용문 모양을 눈으로 보고 고르지 않는다.
+ *
+ * 인용문이 없는 출처(계약상 `sourceScope='figure'`는 quote 없이 가능)도 같은 길로 떨어진다.
+ */
+export function evidenceLine(
+  ref: EvidenceSourceRef,
+  statement: string,
+): { kind: 'quote' | 'statement'; text: string } {
+  const label = anchorTypeLabel(ref);
+  if (label || !ref.quote) return { kind: 'statement', text: statement };
+  return { kind: 'quote', text: ref.quote };
+}
+
+/**
+ * 인용 앵커로 가는 링크. 지금까지 앵커 칩은 **죽은 텍스트**였다.
+ *
+ * 라우팅은 이미 있다 — 논문 상세가 본문 뷰어를 열 때 쓰는 형태와 같다
+ * (`PaperDetailIsland.openBody`). 여기서 새로 만드는 것은 없다.
+ *
+ * 두 가지가 링크를 못 만든다:
+ * - **코퍼스 밖 논문**(namespace가 있는 것) — 우리 doc-model이 없다.
+ * - **초록 앵커(`s0.*`)** — 본문 뷰어가 `s0` 섹션을 목록에서 제외해서 그 id로는 스크롤이
+ *   조용히 안 된다. 초록이 보이는 논문 상세로 보낸다(실측 43개 중 7개가 여기 해당).
+ */
+export function anchorHref(ref: EvidenceSourceRef): string | null {
+  const base = sourceHref(ref);
+  // 코퍼스 밖(namespace 있음)은 우리 doc-model이 없다. 만든 URL을 `startsWith('http')`로
+  // 되파싱하면 입력에 이미 있는 사실을 되찾는 것이고, https 아닌 절대 URL이 하나 늘면
+  // 조용히 doc-model 링크를 만들어 404를 낸다.
+  if (!base || ref.namespace || !ref.anchor) return base;
+  // 초록 앵커는 본문 뷰어가 그 섹션을 목록에서 빼서 스크롤이 조용히 안 된다 — 초록이
+  // 보이는 상세로 보낸다.
+  if (isAbstractAnchor(ref.anchor)) return base;
+  // **`anchorLabel`을 함께 싣는다.** 블록 id가 그 문서에 없으면 뷰어가 라벨로 떨어지는데,
+  // 안 실으면 폴백이 죽어 스크롤이 조용히 안 된다. 근거의 앵커는 `표 3`·`4.2절` 같은
+  // 라벨꼴이 흔해서 그 폴백이 가장 필요한 쪽이다.
+  return docModelHref(ref.paperId, { blockId: ref.anchor, label: ref.anchor });
+}

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from docsuri_shared._generated.dtos.evidence_schema import (
     AnswerSegmentKind,
+    AnswerSegmentRole,
     EvidenceItem,
 )
 from hypothesis import given
@@ -253,3 +254,56 @@ def test_a2_ignores_an_inline_citation_marker():
 
     assert isinstance(result, CheckedAnswer)
     assert result.answer.checks.demoted == 0
+
+
+def test_role_passes_through_unchecked_and_survives_demotion():
+    """§4.2 — 검사 5종은 role을 보지 않는다.
+
+    강등은 "기계가 확인했는가"를 낮추는 것이지 문장이 무엇을 하는지를 바꾸지 않는다.
+    강등된 결론은 여전히 결론이고, 화면은 그것을 앞에 세우되 '종합' 배지를 함께 붙인다 —
+    여기서 역할을 지우면 **강등된 답변만** 문단 구조를 잃는다.
+    """
+    checked = check_answer(
+        [
+            # refs가 없는 번호(A1) → 강등. 역할 선언은 그대로여야 한다.
+            AnswerSentence(text="결론이지만 번호가 틀렸다", refs=(9,), role="conclusion"),
+            AnswerSentence(text="받치는 근거", refs=(1,), role="evidence"),
+            # 번호 붙은 문장을 하나 더 둔다 — 종합 비율이 A5(50%)를 넘으면 답변째로 거부되어
+            # 이 테스트가 재는 것(역할 통과)에 닿지도 못한다.
+            AnswerSentence(text="또 다른 근거", refs=(1,), role="evidence"),
+            AnswerSentence(text="갈리는 지점", refs=(), role="divergence"),
+        ],
+        [_claim("근거 명제")],
+    )
+
+    assert isinstance(checked, CheckedAnswer)
+    assert [s.role.value for s in checked.answer.segments] == [
+        "conclusion",
+        "evidence",
+        "evidence",
+        "divergence",
+    ]
+    assert checked.answer.segments[0].kind is AnswerSegmentKind.synthesis
+    assert checked.answer.checks.demoted == 1
+
+
+def test_a_sentence_without_a_role_reads_as_evidence_rather_than_vanishing():
+    """선언이 없으면 산문이 평평해질 뿐이다 — 구조를 못 얻는 것과 문장이 사라지는 것은 다르다."""
+    checked = check_answer([AnswerSentence(text="역할 없는 문장", refs=(1,))], [_claim("명제")])
+
+    assert isinstance(checked, CheckedAnswer)
+    assert checked.answer.segments[0].role is AnswerSegmentRole.evidence
+
+
+def test_a_role_outside_the_vocabulary_reads_as_evidence_here_not_in_the_adapter():
+    """어휘 판정은 **도메인 하나**다 — 어댑터는 모양만 다듬어 넘긴다.
+
+    양쪽에서 판정하면 어휘 밖 값의 행동이 두 곳에 나뉘고, 한쪽만 고쳐졌을 때 어느 쪽이
+    맞는지 코드에 안 적혀 있다.
+    """
+    checked = check_answer(
+        [AnswerSentence(text="어휘 밖 역할", refs=(1,), role="summary")], [_claim("명제")]
+    )
+
+    assert isinstance(checked, CheckedAnswer)
+    assert checked.answer.segments[0].role is AnswerSegmentRole.evidence

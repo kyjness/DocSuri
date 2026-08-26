@@ -161,7 +161,7 @@ describe('ApiClient agent chat mapping', () => {
     });
   });
 
-  it('blocks real research sends until the research worker is enabled', async () => {
+  it('blocks real evidence sends until the evidence worker is enabled', async () => {
     const previousReal = process.env.NEXT_PUBLIC_DOCSURI_REAL_API;
     const previousEvidenceFlag = process.env.NEXT_PUBLIC_DOCSURI_EVIDENCE_AGENT_ENABLED;
     process.env.NEXT_PUBLIC_DOCSURI_REAL_API = '1';
@@ -170,11 +170,11 @@ describe('ApiClient agent chat mapping', () => {
     try {
       await expect(
         new ApiClient(t, fast).acceptEvidenceTurn('agent-evidence-local', {
-          content: 'research check',
+          content: 'evidence check',
           mode: 'evidence',
         }),
       ).rejects.toMatchObject({
-        message: 'Research는 아직 실배포에서 사용할 수 없습니다.',
+        message: 'Evidence는 아직 실배포에서 사용할 수 없습니다.',
       });
       expect(t.calls).toBe(0);
     } finally {
@@ -251,7 +251,7 @@ describe('ApiClient agent chat mapping', () => {
     expect(snapshot.events[0].detail).not.toContain('internal detail');
   });
 
-  it('uploads research PDFs before sending attachment metadata to the job', async () => {
+  it('uploads evidence PDFs before sending attachment metadata to the job', async () => {
     const requests: TransportRequest[] = [];
     const uploadRef = {
       id: 'a1',
@@ -513,7 +513,7 @@ describe('ApiClient agent chat mapping', () => {
       // 분류(스티어링/온디맨드)는 서버가 한다 — 프론트는 같은 엔드포인트로 보낸다.
       const posted = requests.find((req) => req.method === 'POST');
       expect(posted?.path).toBe('/api/novelty/jobs/n1/messages');
-      // novelty 대화 스키마는 content만 받는다(extra=forbid) — research와 달리
+      // novelty 대화 스키마는 content만 받는다(extra=forbid) — evidence와 달리
       // 첨부 키를 실으면 매 전송이 422가 되어 기능 전체가 죽는다. 키 존재를 못 박는다.
       expect(posted?.body).toEqual({ content: 'follow up' });
     } finally {
