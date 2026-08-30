@@ -200,7 +200,12 @@ def _paper_from_doc(doc: DocModel, meta: dict | None) -> ParsedPaper:
         arxiv_url=f"https://arxiv.org/abs/{pid}v{version}" if _is_arxiv_id(pid) else "",
         full_text=doc.fullText or "",
         license_url="",
-        display_arxiv_id=pid if _is_arxiv_id(pid) else "",
+        # 개정판 접미사를 반드시 붙인다 — 이것이 카드의 arxivId가 되고, 상세 화면은 그 id에서
+        # 판을 읽어 doc-model/full-text/assets를 찾는다(`frontend/lib/arxivVersion.ts`). bare로
+        # 두면 접미사 없는 id가 v1로 해석돼, v1이 아닌 논문은 없는 키를 조회하고 전문·요약·
+        # 번역·그림이 한꺼번에 "원문을 가져올 수 없어요"가 된다. 바로 위 arxiv_url이 이미
+        # 같은 조합을 쓰는데 여기만 빠져 있었다(배포 색인 3,248편 중 1,023편이 그렇게 됐다).
+        display_arxiv_id=f"{pid}v{version}" if _is_arxiv_id(pid) else "",
     )
 
 

@@ -47,6 +47,7 @@ from ..domain.models import (
 from ..domain.refiner import InputRefiner
 from ..domain.source_selector import SourceSelector
 from ..domain.structured_translator import StructuredTranslator, iter_text_fields
+from ..domain.version_fallback import fallback_version
 from ..ports.ports import (
     AssetReadPort,
     DocModelBuildQueuePort,
@@ -437,6 +438,15 @@ class SummarizationOrchestrationService:
         if self._docmodel_reader is None:
             return DocModelLookup()
         doc = self._docmodel_reader.get_doc_model(paper_id, version)
+        if doc is None:
+            # 요청한 판이 없으면 실제로 저장된 판으로 한 번 더 본다(``version_fallback``).
+            # ``version``도 함께 옮겨 둔다 — 아래 자가치유 enqueue가 없는 판을 다시 빌드하러
+            # 가면 폴백으로 살린 화면이 매번 재빌드를 부르고도 영원히 안 낫는다.
+            stored = fallback_version(self._docmodel_reader, paper_id, version)
+            if stored is not None:
+                doc = self._docmodel_reader.get_doc_model(paper_id, stored)
+                if doc is not None:
+                    version = stored
         if doc is not None:
             # Serve the clean doc now. If an older parser built it, ALSO enqueue a background
             # rebuild so it heals to the current parser (BR-30 self-heal) — otherwise accepting
@@ -460,8 +470,18 @@ class SummarizationOrchestrationService:
         is applied at the router (parallel to full_text)."""
         if self._asset_reader is None:
             return None
+        manifest = self._asset_reader.list_assets(paper_id, version)
+        if not manifest:
+            # 전문과 같은 판 유실을 여기서도 받는다(``version_fallback``). 어느 판이 실제로
+            # 있는지는 doc-model 스토어가 안다 — 자산 행은 doc-model을 만든 그 실행이 같은
+            # (paperId, version)으로 함께 쓴 것이라, 그 판이 자산의 판이기도 하다.
+            # 빈 목록으로 판정하는 것이 맞다: 자산 API의 `[]`는 "그림 없음"과 "그림을 못
+            # 찾았음"을 구분하지 못하고, 화면에는 둘 다 그림 없는 논문으로 보인다.
+            stored = fallback_version(self._docmodel_reader, paper_id, version)
+            if stored is not None:
+                manifest = self._asset_reader.list_assets(paper_id, stored)
         refs: list[AssetRef] = []
-        for a in self._asset_reader.list_assets(paper_id, version):
+        for a in manifest:
             url = self._asset_reader.presign(a.object_ref)
             if url is None:
                 # Non-presignable ref (not an S3 URI): skip rather than leak the raw
