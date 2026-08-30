@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { SearchScreen } from '@/components/SearchScreen';
-import { clearSearchSnapshot } from '@/lib/search/searchCache';
+import { clearSearchSnapshot, getSearchSnapshot } from '@/lib/search/searchCache';
 
 // SearchScreen drives the real MockTransport (mock-first), so these exercise the
 // full state machine without a backend.
@@ -134,5 +134,40 @@ describe('SearchScreen result persistence (back-navigation)', () => {
     render(<SearchScreen />);
     expect(screen.queryByTestId('result-list')).not.toBeInTheDocument();
     expect(screen.getByTestId('search-input')).toHaveValue('');
+  });
+
+  // 목록만 되살리고 스크롤을 빼면 화면은 복원되는데 매번 맨 위로 올라간다 — 스무 번째
+  // 카드를 눌렀다 돌아온 사람이 그때마다 다시 내려와야 한다.
+  it('returns to the position the list was left at', async () => {
+    const first = render(<SearchScreen />);
+    await submit('transformer attention');
+    expect(await screen.findByTestId('result-list')).toBeInTheDocument();
+
+    // 스크롤 → 카드 진입(언마운트). 위치는 스크롤 이벤트로 적히므로 언마운트 타이밍과 무관하다.
+    window.scrollY = 640;
+    window.dispatchEvent(new Event('scroll'));
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+    expect(getSearchSnapshot()?.scrollY).toBe(640);
+    first.unmount();
+
+    const scrollTo = vi.spyOn(window, 'scrollTo').mockImplementation(() => {});
+    render(<SearchScreen />);
+    expect(scrollTo).toHaveBeenCalledWith(0, 640);
+    scrollTo.mockRestore();
+  });
+
+  it('starts a new search at the top instead of the old position', async () => {
+    render(<SearchScreen />);
+    await submit('transformer attention');
+    expect(await screen.findByTestId('result-list')).toBeInTheDocument();
+
+    window.scrollY = 640;
+    window.dispatchEvent(new Event('scroll'));
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+    expect(getSearchSnapshot()?.scrollY).toBe(640);
+
+    await submit('graph neural network');
+    expect(await screen.findByTestId('result-list')).toBeInTheDocument();
+    expect(getSearchSnapshot()?.scrollY).toBe(0);
   });
 });

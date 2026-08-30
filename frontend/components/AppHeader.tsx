@@ -24,9 +24,17 @@ interface AppHeaderProps {
   title?: string;
   /** Show a back arrow to this fixed destination instead of the brand. */
   backHref?: string;
+  /**
+   * 목적지가 **자기 스크롤을 스스로 복원**할 때 켠다(검색 화면이 그렇다). 라우터의 기본
+   * 동작은 이동 후 맨 위로 스크롤하는 것인데, 그 처리가 화면의 복원보다 뒤에 돌아 복원한
+   * 위치를 덮는다. `scroll={false}`로 라우터를 비켜 두면 화면이 자기 위치를 되돌린다.
+   * 목적지가 복원하지 않는 화면(본문 → 상세 등)에서는 켜면 안 된다 — 이전 화면의 스크롤이
+   * 그대로 남아 엉뚱한 위치에서 열린다.
+   */
+  backRestoresScroll?: boolean;
 }
 
-export function AppHeader({ title, backHref }: AppHeaderProps) {
+export function AppHeader({ title, backHref, backRestoresScroll = false }: AppHeaderProps) {
   const { status } = useSession();
   const pathname = usePathname() ?? '';
   // Authenticated users treat the brand as the app home (search); anonymous /
@@ -40,6 +48,7 @@ export function AppHeader({ title, backHref }: AppHeaderProps) {
         {backHref ? (
           <Link
             href={backHref}
+            scroll={!backRestoresScroll}
             className={styles.back}
             aria-label="뒤로"
             data-testid="app-header-back"

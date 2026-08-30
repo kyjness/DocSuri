@@ -1,12 +1,13 @@
 'use client';
 
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import styles from './SearchScreen.module.css';
 import {
   clearSearchSnapshot,
   getSearchSnapshot,
+  setSearchScrollY,
   setSearchSnapshot,
   type SearchSort,
 } from '@/lib/search/searchCache';
@@ -75,6 +76,33 @@ export function SearchScreen() {
       setSearchSnapshot({ query: executedQuery, executedQuery, outcome: state.outcome, sort });
     }
   }, [state, executedQuery, sort]);
+
+  // 떠날 때의 위치를 계속 적어 둔다. 언마운트에서 읽으면 늦다 — 클라이언트 내비게이션은
+  // 같은 커밋에서 이미 맨 위로 스크롤한 뒤일 수 있다. 스크롤될 때마다 적으면 카드·저장·
+  // 각주 어느 경로로 떠나든 마지막 값이 남는다. rAF로 묶어 프레임당 한 번만 쓴다.
+  useEffect(() => {
+    let frame = 0;
+    const onScroll = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        setSearchScrollY(window.scrollY);
+      });
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      window.removeEventListener('scroll', onScroll);
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }, []);
+
+  // 최초 마운트에서 한 번만 되돌린다. 결과는 위 useState 초기화에서 스냅샷으로 이미 그려져
+  // 있으므로 되돌릴 높이가 있다. 레이아웃 단계여야 사용자가 맨 위로 튄 화면을 보지 않는다.
+  // 정렬 변경 등으로 다시 돌리면 읽던 자리를 뺏으므로 의존성은 빈 배열이다.
+  useLayoutEffect(() => {
+    const restoreTo = getSearchSnapshot()?.scrollY ?? 0;
+    if (restoreTo > 0) window.scrollTo(0, restoreTo);
+  }, []);
 
   const clearQuery = useCallback(() => {
     // ✕ dismisses the whole search — input, results, sort, and the saved snapshot — so a later
