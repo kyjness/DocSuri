@@ -67,9 +67,21 @@ function buildTransport(req: NextRequest, upstreamPath: string): Transport | nul
   return new MockTransport();
 }
 
+// 게이트웨이가 보는 "클라이언트"는 이 홉을 넘어서면 프론트 컨테이너다. 브라우저는 백엔드를
+// 직접 안 부르고 여기를 거치므로, XFF를 안 넘기면 백엔드의 레이트 리미터가 **모든 방문자의
+// 모든 요청을 컨테이너 IP 하나**로 보고 사이트 전체가 한 버킷을 나눠 쓴다(배포본 실측:
+// API 요청 271건 중 429가 43건, 상세 페이지 헤더가 통째로 백지가 됐다).
+//
+// Caddy가 스탬프한 값을 **그대로** 넘긴다. 백엔드의 `_forwarded_client`가 오른쪽에서
+// `TRUSTED_PROXY_COUNT`만큼 세므로 클라이언트가 XFF를 위조해 보내도(Caddy는 지우지 않고
+// append한다) 잡히는 것은 Caddy가 본 실제 주소다. 여기서 hop을 더 붙이면 그 셈이 어긋난다.
 function forwardedHeaders(req: NextRequest): Record<string, string> | undefined {
+  const headers: Record<string, string> = {};
   const recaptchaToken = req.headers.get('x-recaptcha-token');
-  return recaptchaToken ? { 'X-Recaptcha-Token': recaptchaToken } : undefined;
+  if (recaptchaToken) headers['X-Recaptcha-Token'] = recaptchaToken;
+  const forwardedFor = req.headers.get('x-forwarded-for');
+  if (forwardedFor) headers['X-Forwarded-For'] = forwardedFor;
+  return Object.keys(headers).length ? headers : undefined;
 }
 
 // 두 에이전트의 진행 이벤트는 같은 모양이다 — `GET /api/{module}/{collection}/{id}/events`.
@@ -122,6 +134,11 @@ async function proxyEventStream(
   const headers = new Headers({ accept: 'text/event-stream' });
   const cookie = req.headers.get('cookie');
   if (cookie) headers.set('cookie', cookie);
+  // 이벤트 스트림도 같은 홉을 넘는다 — XFF를 빼면 이 경로만 컨테이너 IP로 키잉된다
+  // (forwardedHeaders 주석 참고).
+  for (const [name, value] of Object.entries(forwardedHeaders(req) ?? {})) {
+    headers.set(name, value);
+  }
 
   const controller = new AbortController();
   // 타이머는 헤더 도착까지만 유효하다(finally에서 해제) — 본문 스트리밍은 끊지 않는다.

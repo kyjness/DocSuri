@@ -151,6 +151,74 @@ describe('BFF proxy (app/bff/[...path]/route)', () => {
     expect(res.headers.get('content-type') ?? '').not.toContain('text/event-stream');
   });
 
+  // 이 홉을 넘으면 게이트웨이가 보는 클라이언트는 프론트 컨테이너다. XFF를 안 넘기면
+  // 백엔드의 레이트 리미터가 전 방문자를 IP 하나로 묶어 사이트 전체가 한 버킷을 나눠 쓴다
+  // (배포본 실측: API 271건 중 429가 43건 — 화면에는 헤더가 통째로 빠진 상세 페이지로 보였다).
+  it('forwards the client address Caddy stamped (JSON proxy)', async () => {
+    process.env.DOCSURI_GATEWAY_URL = 'https://api.example.test';
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) => new Response('{}', { status: 200 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { GET } = await import('@/app/bff/[...path]/route');
+    const req = new NextRequest('http://localhost/bff/api/papers/1706.03762v7', {
+      method: 'GET',
+      headers: { cookie: 'sid=abc', 'x-forwarded-for': '203.0.113.9' },
+    });
+    await GET(req, {
+      params: Promise.resolve({ path: ['api', 'papers', '1706.03762v7'] }),
+    });
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(new Headers(init?.headers).get('x-forwarded-for')).toBe('203.0.113.9');
+  });
+
+  it('passes a spoofed hop through untouched so the backend can count from the right', async () => {
+    // Caddy는 클라이언트가 보낸 XFF를 지우지 않고 append한다. 백엔드가 오른쪽에서 세므로
+    // 위조 hop이 앞에 붙어 있어도 잡히는 것은 실제 주소다 — 여기서 hop을 더 붙이거나
+    // 앞부분을 잘라내면 그 셈이 어긋난다.
+    process.env.DOCSURI_GATEWAY_URL = 'https://api.example.test';
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) => new Response('{}', { status: 200 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { GET } = await import('@/app/bff/[...path]/route');
+    const req = new NextRequest('http://localhost/bff/api/search', {
+      method: 'GET',
+      headers: { 'x-forwarded-for': '10.0.0.1, 203.0.113.9' },
+    });
+    await GET(req, { params: Promise.resolve({ path: ['api', 'search'] }) });
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(new Headers(init?.headers).get('x-forwarded-for')).toBe('10.0.0.1, 203.0.113.9');
+  });
+
+  it('forwards the client address on the SSE hop too', async () => {
+    process.env.DOCSURI_GATEWAY_URL = 'https://api.example.test';
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response('event: progress\ndata: {}\n\n', {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { GET } = await import('@/app/bff/[...path]/route');
+    const req = new NextRequest('http://localhost/bff/api/evidence/turns/t-1/events', {
+      method: 'GET',
+      headers: { cookie: 'sid=abc', 'x-forwarded-for': '203.0.113.9' },
+    });
+    await GET(req, {
+      params: Promise.resolve({ path: ['api', 'evidence', 'turns', 't-1', 'events'] }),
+    });
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect((init?.headers as Headers).get('x-forwarded-for')).toBe('203.0.113.9');
+  });
+
   it('fails closed in production when the gateway URL is missing', async () => {
     const previous = process.env.NODE_ENV;
     vi.stubEnv('NODE_ENV', 'production');
