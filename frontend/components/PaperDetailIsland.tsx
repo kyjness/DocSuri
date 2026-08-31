@@ -180,11 +180,35 @@ export function PaperDetailIsland({ paperId, version, arxivUrl }: PaperDetailIsl
             ) : null}
           </p>
         </header>
-      ) : meta.status === 'loading' ? (
+      ) : meta.status !== 'done' ? (
+        // idle(첫 렌더)과 loading을 함께 받는다 — idle을 실패 쪽으로 흘리면 조회가 시작되기도
+        // 전에 "불러오지 못했어요"가 한 틱 깜빡인다.
         <p className={styles.metaLoading} data-testid="paper-meta-loading">
           논문 정보를 불러오는 중…
         </p>
-      ) : null}
+      ) : (
+        // 메타 조회가 실패하면(404 / 429 / 게이트웨이 오류) 지금까지는 제목·저자·초록 블록을
+        // 통째로 렌더하지 않아 화면이 액션 바만 남은 백지가 됐다 — 사용자에게는 "이 논문은
+        // 초록도 없다"로 보이고 로그에는 아무것도 안 남는다. usePaperMeta의 계약대로
+        // arXiv id + link-out까지는 언제나 내놓는다(그건 라우트가 이미 아는 값이다).
+        <header className={styles.meta} data-testid="paper-meta-fallback">
+          <p className={styles.metaLoading}>논문 정보를 불러오지 못했어요.</p>
+          <p className={styles.idline}>
+            <span data-testid="paper-source">{isArxiv ? `arXiv:${paperId}` : sourceName}</span>
+            {sourceUrl ? (
+              <a
+                className={styles.link}
+                href={sourceUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                data-testid="paper-source-link"
+              >
+                {isArxiv ? 'arXiv에서 원문 보기' : `${sourceName}에서 원문 보기`}
+              </a>
+            ) : null}
+          </p>
+        </header>
+      )}
 
       {/* Phone: body access as buttons below the metadata — each opens a full-screen route
           (본문 = doc-model rich view, 본문 번역 = full-text translation). */}

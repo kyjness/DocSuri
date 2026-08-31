@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { SearchScreen } from '@/components/SearchScreen';
-import { clearSearchSnapshot } from '@/lib/search/searchCache';
+import { clearSearchSnapshot, getSearchSnapshot } from '@/lib/search/searchCache';
 
 // SearchScreen drives the real MockTransport (mock-first), so these exercise the
 // full state machine without a backend.
@@ -134,5 +134,69 @@ describe('SearchScreen result persistence (back-navigation)', () => {
     render(<SearchScreen />);
     expect(screen.queryByTestId('result-list')).not.toBeInTheDocument();
     expect(screen.getByTestId('search-input')).toHaveValue('');
+  });
+
+  // 목록만 되살리고 스크롤을 빼면 화면은 복원되는데 매번 맨 위로 올라간다 — 스무 번째
+  // 카드를 눌렀다 돌아온 사람이 그때마다 다시 내려와야 한다.
+  it('returns to the position the list was left at', async () => {
+    const first = render(<SearchScreen />);
+    await submit('transformer attention');
+    expect(await screen.findByTestId('result-list')).toBeInTheDocument();
+
+    // 스크롤 → 카드 진입(언마운트). 위치는 스크롤 이벤트로 적히므로 언마운트 타이밍과 무관하다.
+    window.scrollY = 640;
+    window.dispatchEvent(new Event('scroll'));
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+    expect(getSearchSnapshot()?.scrollY).toBe(640);
+    first.unmount();
+
+    const scrollTo = vi.spyOn(window, 'scrollTo').mockImplementation(() => {});
+    render(<SearchScreen />);
+    expect(scrollTo).toHaveBeenCalledWith(0, 640);
+    scrollTo.mockRestore();
+  });
+
+  // 링크를 누르면 전환 과정에서 브라우저가 스크롤을 0으로 되돌리는데, 그 이벤트가 언마운트보다
+  // 먼저 도착한다. 그것을 그대로 적으면 복원할 값이 사라진다 — 배포본에서 "됐다 안 됐다"로 났고,
+  // 경합이라 그 모양이 된다. e2e(search-scroll-restore.spec.ts)가 실제 브라우저로 잡지만
+  // CI의 frontend lane은 e2e를 안 돌리므로 같은 불변식을 여기서도 고정한다.
+  it('keeps the position a link click captured, not the transition reset that follows', async () => {
+    render(<SearchScreen />);
+    await submit('transformer attention');
+    expect(await screen.findByTestId('result-list')).toBeInTheDocument();
+
+    window.scrollY = 640;
+    window.dispatchEvent(new Event('scroll'));
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+    expect(getSearchSnapshot()?.scrollY).toBe(640);
+
+    // 카드 링크 클릭 — jsdom이 href를 따라가지 않게 기본 동작만 막고 이벤트는 그대로 흘린다.
+    const card = screen.getAllByTestId('result-card-title')[0];
+    const swallow = (e: Event) => e.preventDefault();
+    document.addEventListener('click', swallow);
+    card.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    document.removeEventListener('click', swallow);
+
+    // 전환이 스크롤을 0으로 되돌린다.
+    window.scrollY = 0;
+    window.dispatchEvent(new Event('scroll'));
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+
+    expect(getSearchSnapshot()?.scrollY).toBe(640);
+  });
+
+  it('starts a new search at the top instead of the old position', async () => {
+    render(<SearchScreen />);
+    await submit('transformer attention');
+    expect(await screen.findByTestId('result-list')).toBeInTheDocument();
+
+    window.scrollY = 640;
+    window.dispatchEvent(new Event('scroll'));
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+    expect(getSearchSnapshot()?.scrollY).toBe(640);
+
+    await submit('graph neural network');
+    expect(await screen.findByTestId('result-list')).toBeInTheDocument();
+    expect(getSearchSnapshot()?.scrollY).toBe(0);
   });
 });

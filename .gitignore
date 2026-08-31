@@ -45,3 +45,4 @@ ops/cdk/cdk.out/
 reports/restale-*.txt
 reports/reparse-*.txt
 reports/*-targets.txt
+.claude/settings.local.json

@@ -15,6 +15,7 @@ from collections.abc import Callable
 
 from ..ports.ports import DocModelReadPort, FullTextSourcePort
 from .models import Scope, SourceKind, SourceText, SummaryRequest, Task
+from .version_fallback import fallback_version
 
 
 class SourceSelector:
@@ -42,12 +43,33 @@ class SourceSelector:
 
         # summary, or translate scope=full → full text with abstract fallback (Q1/NFR-R2).
         # (D2) Prefer the structured doc-model; degrade to legacy plain text, then abstract.
+        #
+        # 두 소스 모두 요청한 판이 비면 실제로 저장된 판으로 한 번 더 본다(``version_fallback``).
+        # 판은 한 번만 구해 둘에 함께 쓴다 — 요약 입력이 doc-model과 평문 사이에서 서로 다른
+        # 개정판을 섞으면 안 되고, 조회는 미스일 때만 도는 프리픽스 목록 1회다.
+        stored: int | None = None
+        looked_up = False
+
         if self._doc_model_reader is not None:
             doc = self._doc_model_reader.get_doc_model(request.paper_id, request.version)
+            if doc is None:
+                stored = fallback_version(
+                    self._doc_model_reader, request.paper_id, request.version
+                )
+                looked_up = True
+                if stored is not None:
+                    doc = self._doc_model_reader.get_doc_model(request.paper_id, stored)
             if doc is not None:
                 return SourceText(kind=SourceKind.FULL_TEXT, doc_model=doc)
 
         raw = self._full_text.get_full_text(request.paper_id, request.version)
+        if not raw:
+            if not looked_up:
+                stored = fallback_version(
+                    self._doc_model_reader, request.paper_id, request.version
+                )
+            if stored is not None:
+                raw = self._full_text.get_full_text(request.paper_id, stored)
         if raw:
             return SourceText(kind=SourceKind.FULL_TEXT, raw=raw)
 
