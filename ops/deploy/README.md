@@ -109,6 +109,16 @@ DOCSURI_OPENSEARCH_INDEX=docsuri-deploy-v1
 # 없으면 summarization이 `assets=False`로 붙어 상세보기가 [그림] 자리표시자로만 뜬다.
 DOCSURI_MULTIMODAL_ASSETS_ENABLED=1
 
+# **셋은 함께 넣는다.** 브라우저는 백엔드를 직접 안 부르고 `/bff/*`(Next 서버 라우트)를 치므로,
+# 백엔드가 보는 클라이언트는 기본 설정에서 **프론트 컨테이너 하나**다. 그러면 전 방문자가
+# 기본값 60요청/60초짜리 버킷 **하나**를 나눠 쓰고, 상세 페이지 한 번이 meta·doc-model·assets·
+# 각주트리·개인화 이벤트로 4~5요청이라 혼자 둘러봐도 429가 난다. 화면에는 오류가 아니라
+# 제목·저자·초록이 통째로 빠진 상세 페이지로 보인다(2026-08-31 실측: API 271건 중 429가 43건).
+# TRUST_PROXY_HEADERS 없이 상한만 올리면 여전히 한 버킷이고, 상한 없이 키만 고치면 계속 걸린다.
+TRUST_PROXY_HEADERS=1
+TRUSTED_PROXY_COUNT=1
+DOCSURI_GATEWAY_RATE_LIMIT_MAX_REQUESTS=300
+
 CITATION_GRAPH_ENABLED=1
 DOCSURI_LOCAL_SUMMARY_WORKER=1
 DOCSURI_CORPUS_SOURCES=ARXIV,SEMANTIC_SCHOLAR,OPENALEX
@@ -245,6 +255,15 @@ docker compose ... exec -T opensearch curl -s -XPOST \
 | 4 | 모드 선택에 **Novelty가 없는가** | 빌드 인자로 막았다 — 보이면 재빌드가 필요하다 |
 | 5 | **테스트 계정이 남아 있지 않은가** | 덤프에 로컬 스모크 계정이 딸려 온다(실측 4건) |
 | 6 | `cat /opt/docsuri/DEPLOYED_REV` | 무엇이 떠 있는지 박스만 봐서는 알 방법이 없다(`.git`이 안 간다) |
+| 7 | 액세스 로그의 **429 건수** | 레이트 리밋에 걸린 화면은 오류가 아니라 **일부만 빠진 화면**으로 보인다 |
+
+7번은 상세 페이지를 몇 번 열어 본 뒤 센다. 0이어야 한다:
+
+```bash
+docker exec docsuri-caddy-1 sh -c "cat /data/access.log" \
+  | python3 -c "import sys,json,collections; \
+c=collections.Counter(json.loads(l).get('status') for l in sys.stdin if l.strip()); print(c)"
+```
 
 0번이 가장 값싸고 가장 크다. 한 줄로 다 보인다:
 

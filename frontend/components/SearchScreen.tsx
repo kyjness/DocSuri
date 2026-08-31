@@ -1,12 +1,13 @@
 'use client';
 
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import styles from './SearchScreen.module.css';
 import {
   clearSearchSnapshot,
   getSearchSnapshot,
+  setSearchScrollY,
   setSearchSnapshot,
   type SearchSort,
 } from '@/lib/search/searchCache';
@@ -75,6 +76,54 @@ export function SearchScreen() {
       setSearchSnapshot({ query: executedQuery, executedQuery, outcome: state.outcome, sort });
     }
   }, [state, executedQuery, sort]);
+
+  // 떠나는 중에 들어오는 스크롤은 무시한다 — 아래 두 리스너가 공유하는 래치.
+  const leaving = useRef(false);
+
+  // 보고 있는 위치를 계속 적어 둔다. rAF로 묶어 프레임당 한 번만 쓴다.
+  useEffect(() => {
+    let frame = 0;
+    const onScroll = () => {
+      if (leaving.current || frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        if (!leaving.current) setSearchScrollY(window.scrollY);
+      });
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      window.removeEventListener('scroll', onScroll);
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }, []);
+
+  // **떠나기 시작하는 순간의 자리를 못으로 박는다.** 링크를 누르면 전환 과정에서 브라우저가
+  // 스크롤을 0으로 되돌리는데, 그 이벤트가 언마운트보다 **먼저** 도착한다. 위 리스너만 두면
+  // 그 0이 스냅샷을 덮어 복원할 값이 사라진다(언마운트에서 읽어도 이미 0이라 같다). 실제로
+  // 배포본에서 "됐다 안 됐다"로 났다 — 언마운트와 그 스크롤 이벤트의 경합이기 때문이다.
+  //
+  // 클릭 시점에는 아직 아무것도 안 움직였으므로 그때 값이 사용자가 보던 자리다. 캡처 단계라
+  // 카드 제목·발췌·개인화 끄기 등 어느 링크로 떠나든 한자리에서 잡힌다. 링크가 아닌 클릭
+  // (정렬·저장·✕)은 무시한다 — 화면을 안 떠나므로 래치를 걸면 이후 스크롤을 못 적는다.
+  // 새 창으로 여는 외부 링크도 래치가 걸리지만, 링크 클릭마다 값을 다시 적으므로 낡지 않는다.
+  useEffect(() => {
+    const onClickCapture = (e: MouseEvent) => {
+      const link = e.target instanceof Element ? e.target.closest('a[href]') : null;
+      if (!link) return;
+      setSearchScrollY(window.scrollY);
+      leaving.current = true;
+    };
+    document.addEventListener('click', onClickCapture, { capture: true });
+    return () => document.removeEventListener('click', onClickCapture, { capture: true });
+  }, []);
+
+  // 최초 마운트에서 한 번만 되돌린다. 결과는 위 useState 초기화에서 스냅샷으로 이미 그려져
+  // 있으므로 되돌릴 높이가 있다. 레이아웃 단계여야 사용자가 맨 위로 튄 화면을 보지 않는다.
+  // 정렬 변경 등으로 다시 돌리면 읽던 자리를 뺏으므로 의존성은 빈 배열이다.
+  useLayoutEffect(() => {
+    const restoreTo = getSearchSnapshot()?.scrollY ?? 0;
+    if (restoreTo > 0) window.scrollTo(0, restoreTo);
+  }, []);
 
   const clearQuery = useCallback(() => {
     // ✕ dismisses the whole search — input, results, sort, and the saved snapshot — so a later

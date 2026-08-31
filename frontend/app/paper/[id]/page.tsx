@@ -22,7 +22,9 @@ export default async function PaperPage({ params }: { params: Promise<{ id: stri
   return (
     <RouteGuard redirectTo={`/paper/${id}`}>
       <div className={styles.screen}>
-        <AppHeader backHref="/search" />
+        {/* 검색 화면은 결과와 스크롤 위치를 스스로 되돌린다(searchCache) — 라우터가 맨 위로
+            스크롤하면 그 복원을 덮으므로 여기서만 비켜 준다. */}
+        <AppHeader backHref="/search" backRestoresScroll />
         <main className={header.main}>
           <PaperDetailIsland paperId={id} version={version} arxivUrl={arxivUrl} />
         </main>
