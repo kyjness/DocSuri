@@ -353,7 +353,9 @@ def build_worker_deps() -> WorkerDeps:
     queue = build_queue(settings, for_consumer=True)
     llm = build_llm(settings)
     orchestrator, grounding_hook = _build_corpus_deps()
-    evidence_port = _build_evidence_port()
+    # 같은 오케스트레이터를 중첩 근거형성에도 넘긴다 — 안 넘기면 이 프로세스가 OpenSearch
+    # 클라이언트와 임베더를 두 벌 세운다(임베딩 캐시도 둘로 갈린다).
+    evidence_port = _build_evidence_port(orchestrator)
     # 자산 리더는 형제 wrapper들과 달리 try/except가 없다 — 다른 서브프로젝트를
     # import하지도, I/O를 하지도 않아서 잡을 실패가 없다(boto3·sqlalchemy는 메서드
     # 안에서 lazy import).
@@ -388,16 +390,29 @@ def _build_observability() -> Any | None:
 
 
 def _build_corpus_deps() -> tuple[Any | None, Any | None]:
-    """U2 full 검색 의존성 — discovery 설정이 있을 때만(없으면 도구 미노출)."""
+    """U2 full 검색 의존성 — discovery 설정이 있을 때만(없으면 도구 미노출).
+
+    **cost_guard와 observability를 반드시 넘긴다.** 안 넘기면 `build_real_orchestrator`가
+    `StubCostGuard`(항상 `degrade_mode="normal"`)와 `NoopObservabilityHub`로 채운다. 그러면
+    U6가 `rerank-off`로 내려보낸 동안에도 크로스인코더 재랭킹이 **매 호출 나가고**(한 번에
+    최대 100문서), 그 사실을 보여줄 `discovery.search.rerank` 메트릭은 허공으로 간다 —
+    예산이 닫힌 줄 아무도 모르는 지출이다. 이 오케스트레이터는 novelty의 `corpus_search`와
+    중첩 근거형성(U11)이 **함께** 쓴다.
+    """
     try:
         from discovery.adapters.settings import DiscoverySettings
         from discovery.real_wiring import build_real_orchestrator
+        from docsuri_ops.cost_guard import CostGuardCircuitBreaker
         from docsuri_ops.grounding import GroundingEnforcementHook
 
         discovery_settings = DiscoverySettings.from_env()
         if not discovery_settings.search_enabled:
             return None, None
-        bundle = build_real_orchestrator(discovery_settings)
+        bundle = build_real_orchestrator(
+            discovery_settings,
+            observability=_build_observability(),
+            cost_guard=CostGuardCircuitBreaker(),
+        )
         return bundle.orchestrator, GroundingEnforcementHook()
     except EnvConfigError:
         raise  # 설정 오타는 부재가 아니다 — 도구만 줄이고 계속 돌면 오타가 어디에도 안 남는다
@@ -406,7 +421,7 @@ def _build_corpus_deps() -> tuple[Any | None, Any | None]:
         return None, None
 
 
-def _build_evidence_port() -> Any | None:
+def _build_evidence_port(search_orchestrator: Any | None = None) -> Any | None:
     """U11 EvidenceFormationPort — evidence 설정이 있을 때만."""
     try:
         from backend.modules.evidence.real_wiring import build_evidence_runner
@@ -418,7 +433,9 @@ def _build_evidence_port() -> Any | None:
             return None
         # 판단 층은 붙이지 않는다 — 이 포트의 소비자(`_to_result`)는 answer를 읽지 않고,
         # 그 비용은 이 잡의 상한에 잡히지 않는다.
-        runner = build_evidence_runner(evidence_settings, with_answer=False)
+        runner = build_evidence_runner(
+            evidence_settings, with_answer=False, search_orchestrator=search_orchestrator
+        )
         return EvidenceFormationService(runner=runner)
     except EnvConfigError:
         raise  # 위와 같다

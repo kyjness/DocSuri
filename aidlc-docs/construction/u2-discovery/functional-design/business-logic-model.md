@@ -45,6 +45,34 @@ U2 동기 읽기 경로의 단일 도메인 오케스트레이터. 요청→응�
 9. (응답 후, 비차단)     publishSearchExecuted(userId, requestId, query, timestamp, resultCount)  — Q11=A
 ```
 
+### 1.1a 에이전트 진입점 `retrieveRanked` (U11 근거형성 `corpus_search`)
+
+같은 프로세스 안의 에이전트 호출자용 진입점. §1.1의 **1~5단계를 그대로** 수행하고
+(validate/normalize → degradation 파생 → expand → retrieve → **재랭킹** → rank) 6~9단계는
+수행하지 않는다.
+
+```
+입력: query, scope(에이전트는 full), years?(발표 연도 필터), topN?
+출력: RankedResults (각 Candidate.record = IndexRecord)
+```
+
+- **왜 별 진입점인가**: 재랭킹은 `HybridRetriever`가 아니라 그 위 오케스트레이션 단계에 있다.
+  리트리버를 직접 부르는 호출자는 RRF 순서까지만 받고 **그 사실을 알 길이 없다** — U11이
+  실제로 그 상태로 돌고 있었다(2026-10-06 수정). 진입점을 두어 "U2의 랭킹을 끝까지 쓴다"를
+  구조로 만든다.
+- **카드 DTO를 돌려주지 않는 이유**: 에이전트는 초록을 읽고 본문을 확보할 논문을 고른다.
+  `ResultCardVM.abstractSnippet`은 폰 카드용으로 색인 시점에 절단된 값이라(SEC-9) 이
+  호출자에게는 손실이다. 내부 `IndexRecord`를 그대로 넘긴다.
+- **수행하지 않는 것과 그 이유**: `enforce`/`assemble`(6~8)은 응답 엣지의 일이고 에이전트는
+  자기 근거 게이트를 따로 돌린다 · US-D6 no-match floor는 사람에게 빈 페이지를 주는 장치이고
+  에이전트는 약한 실재 이웃이 더 쓸모 있다 · `publishSearchExecuted`(9)는 사람 질의의
+  **검색 이력**이다.
+- `years`는 `QueryPlan.years`로 주입되어 **스토어 질의로 내려간다**(상위 k 사후 필터 금지 —
+  0건이 "그런 논문이 없다"와 구분되지 않는다).
+- 검증은 공개 경로와 **같은 기준**(FR-1/SEC-5)이되 실패는 전용 `InvalidQuery` 예외다 —
+  내부 호출자에게는 인라인 오류를 실을 DTO가 없고, `ValueError`로 올리면 무관한 설정
+  오류(`EnvConfigError` 등)까지 같은 "검색어가 잘못됐다" 분기로 들어온다.
+
 ### 1.2 근거화 invocation 경계 (INV-1)
 - **U2는 `enforce`를 직접 호출하지 않는다.** 유일 invocation site = **U6.GatewayPipelineService가 U2 라우트 응답 엣지(post-handler)에서 단일 적용.**
 - U2 역할: `toGroundingInput`(입력 정형) + `mapDecision`(verdict→결과/기권 매핑). 독자 차단·인시던트 발행 없음(할루시네이션 인시던트 발행은 U6 단독).

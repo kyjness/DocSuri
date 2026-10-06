@@ -101,6 +101,17 @@ class EvidenceStack(Stack):
                 # U2 discovery 재사용 검색 경로 활성화에 필수 — 없으면 hosts=[None]으로
                 # OpenSearch 클라이언트가 만들어져 검색이 전부 실패한다(PR #338 리뷰 Blocking #6).
                 'DOCSURI_OPENSEARCH_ENDPOINT': f'https://{opensearch_domain.domain_endpoint}',
+                # **네 값이 한 벌이다.** 엔드포인트만 주고 나머지를 빼 두면 `search_enabled`가
+                # False라 코퍼스 검색의 **벡터 leg가 통째로 off**가 된다 — 이 워커가 배포된 내내
+                # BM25만으로 코퍼스를 검색하고 있었고, 임베딩 호출 실패가 lexical-only 저하로
+                # 흡수돼 어디에도 남지 않았다(2026-10-06 발견). 리더는 writer와 **같은 공간**을
+                # 써야 하므로 값은 compute_stack의 리더·ingestion_stack의 writer와 동일해야
+                # 한다(vector-spec §4) — 세 자리가 갈리면 질의가 다른 공간에서 채점된다.
+                'DOCSURI_BEDROCK_MODEL_ID': 'cohere.embed-multilingual-v3',
+                'DOCSURI_OPENSEARCH_INDEX': 'docsuri-corpus-c3ml',
+                # v3는 ap-northeast-2(도메인 리전)에 없어 질의 임베딩은 크로스리전이다.
+                'DOCSURI_BEDROCK_REGION': 'ap-northeast-1',
+                'DOCSURI_AWS_REGION': self.region,
                 'CLOUDWATCH_NAMESPACE': 'DocSuri/Production',
                 'CLOUDWATCH_LOG_GROUP': '/docsuri/ops',
             },
@@ -178,6 +189,36 @@ class EvidenceStack(Stack):
                 resources=[
                     f'arn:aws:bedrock:{self.region}::foundation-model/anthropic.*',
                     f'arn:aws:bedrock:{self.region}:{account}:inference-profile/*',
+                ],
+            )
+        )
+        # U2 리더 질의 임베딩 — **위의 anthropic 정책이 이것을 덮지 않는다.** 그쪽은
+        # `{self.region}`의 `anthropic.*`이고, 질의 임베딩은 ap-northeast-1의 Cohere다.
+        # 이것이 없으면 embed가 AccessDenied → EmbeddingUnavailable → lexical-only 저하로
+        # 흡수돼, 벡터 leg가 꺼진 채로도 검색이 "그냥 결과가 적은" 모양으로 돈다.
+        # 자원 목록은 compute_stack의 리더 정책과 **같은 벌**이어야 한다(같은 공간·같은 모델).
+        task_def.add_to_task_role_policy(
+            iam.PolicyStatement(
+                actions=['bedrock:InvokeModel'],
+                resources=[
+                    'arn:aws:bedrock:*::foundation-model/cohere.embed-multilingual-v3',
+                    # v4 롤백 대비(compute_stack과 동일) — 모델 id를 v4로 되돌릴 때 쓴다.
+                    f'arn:aws:bedrock:{self.region}:{account}:inference-profile/global.cohere.embed-v4:0',
+                    'arn:aws:bedrock:*::foundation-model/cohere.embed-v4:0',
+                ],
+            )
+        )
+        # U2 리더 cross-encoder 재랭킹(FR-3). 리랭크 모델은 이 리전(서울)에 없어 크로스리전
+        # (도쿄)으로 호출하므로 리전 와일드카드다 — compute_stack의 API 태스크와 같은 벌.
+        # **활성화는 `DOCSURI_RERANK_MODEL_ARN`(도쿄 ARN) 하나**이고 그 값은 코드가 아니라
+        # 운영이 넣는다(compute_stack도 ENV에 두지 않는다). 권한만 있고 ARN이 없으면
+        # reranker=None으로 baseline RRF — 안전한 무동작이다.
+        task_def.add_to_task_role_policy(
+            iam.PolicyStatement(
+                actions=['bedrock:Rerank'],
+                resources=[
+                    'arn:aws:bedrock:*::foundation-model/cohere.rerank-v3-5:0',
+                    'arn:aws:bedrock:*::foundation-model/amazon.rerank-v1:0',
                 ],
             )
         )

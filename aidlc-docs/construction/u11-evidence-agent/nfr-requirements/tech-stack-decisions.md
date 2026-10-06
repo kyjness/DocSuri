@@ -39,9 +39,11 @@
 - **전환 비용**: SQS 큐 + 워커 배포 단위 추가(Infra slice — CDK). 중간.
 
 ## TD-E7 — 논문 검색 (PaperSearchTool)
-- **결정**: **U2 OpenSearch 클라이언트 재사용**(U2 소유 vector store·U11은 dependency). 직접 OpenSearch client 호출(U2 HTTP API 경유 아님 — 동일 백엔드 내).
-- **근거**: U2가 인덱싱·쿼리 소유 → U11은 소비자. 동일 모노레포 내 직접 클라이언트 호출이 레이턴시 최소(HTTP hop 제거). scope 분기(auto/explicit/mixed)는 U11 로직(BR-EV-2).
-- **의존 계약**: `shared/vector-spec`의 `IndexRecord`. U11 재정의 금지.
+- **결정**: **U2 검색 오케스트레이터 재사용**(`SearchOrchestrationService.retrieveRanked`, scope=full). 동일 백엔드 내 직접 호출(U2 HTTP API 경유 아님). 정확 문구(phrase) 검색만 U2 렉시컬 인덱스 어댑터를 직접 호출한다.
+- **근거**: U2가 인덱싱·쿼리·**랭킹**을 소유 → U11은 소비자. 동일 모노레포 내 직접 호출이 레이턴시 최소(HTTP hop 제거). scope 분기(auto/explicit/mixed)는 U11 로직(BR-EV-2).
+- **개정 (2026-10-06)**: 원안은 "OpenSearch 클라이언트 재사용"이라고만 적었고, U11은 그 말대로 `HybridRetriever`를 직접 들었다. 그런데 **cross-encoder 재랭킹은 리트리버가 아니라 오케스트레이터 단계에 있어서** 코퍼스 검색이 RRF 순서까지만 받고 있었다 — 넘기던 `rerankEnabled=true`는 리트리버가 읽지 않는 인자라 아무것도 알려주지 않았다. "전용 인덱스·랭킹 금지"(BR-EV-2)는 **U2의 랭킹을 끝까지 쓴다**는 뜻이므로 재사용 지점을 오케스트레이터로 올린다. 진입점 정의는 U2 `business-logic-model.md §1.1a`.
+- **phrase를 오케스트레이터에 안 태우는 이유**: 정확 문구는 매치/비매치 필터라 재랭킹이 다시 줄 세울 순서가 없고, cross-encoder가 채점하는 것은 title+abstract(U2 `rerank_text`)여서 본문 문구 일치를 흐트러뜨린다.
+- **의존 계약**: `shared/vector-spec`의 `IndexRecord`. U11 재정의 금지. 카드 DTO(`ResultCardVM`)는 쓰지 않는다 — 초록이 색인 시점에 절단돼(SEC-9) 본문 확보 판단에 모자라다.
 
 ## TD-E8 — DocModel 블록 읽기 (EvidenceDocModelTool)
 - **결정**: **S3 read-only**(U1 단일 writer, U11 소비자). `paperId + recordRef` → S3 키 매핑 → `DocModelBlock[]` 읽기. 실패 → 해당 논문 건너뜀.

@@ -39,9 +39,11 @@ from ..domain.models import (
     DegradeMode,
     GroundingInput,
     NoMatchResult,
+    QueryPlan,
     RankedResults,
     RequestContext,
     SearchScope,
+    YearRange,
 )
 from ..domain.ranker import TOP_N, RelevanceRanker, apply_boosts
 from ..domain.reranker import apply_rerank, rerank_text, rerank_width
@@ -51,6 +53,7 @@ from ..ports.search_ports import (
     EmbeddingUnavailable,
     EventPublisher,
     IndexUnavailable,
+    InvalidQuery,
     RerankAdapter,
     SearchUnavailable,
 )
@@ -79,6 +82,26 @@ class SearchOutcome:
 
     response: SearchResponse | None = None
     pending: GroundingPending | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _RetrievalStage:
+    """The front half both entry points share: normalize → degrade → expand → retrieve.
+
+    One value rather than a tuple because the ORDER of those stages is load-bearing and easy to
+    get subtly wrong when copied: the cost degrade has to be derived before expand (it decides
+    lexical-only), and the embedding fallback has to re-expand with the flipped signal.
+    """
+
+    normalized_text: str
+    plan: QueryPlan
+    candidates: CandidateSet
+    degrade_mode: DegradeMode
+    degradation: DegradationSignal
+    # 메트릭 차원. 에이전트 호출(`retrieve_ranked`)과 사람 검색이 같은 `scope=full`로
+    # 섞이면 사람 검색의 P50 분포(NFR-P1)가 사람 쪽 변경 없이 움직이고, 그 메트릭을 보고
+    # 예산을 맞추는 쪽이 엉뚱한 단계를 튜닝한다.
+    caller: str = "search"
 
 
 def _derive_degradation(budget) -> tuple[DegradeMode, DegradationSignal]:
@@ -154,15 +177,16 @@ class SearchOrchestrationService:
         # false-abstain real queries, which is worse than the current false-match behavior.
         self._no_match_knn_floor = no_match_knn_floor
 
-    def plan_and_retrieve(self, request: SearchRequest, ctx: RequestContext) -> SearchOutcome:
-        validation = self._validator.validate(request.query)
-        if not validation.ok:
-            error = ValidationErrorDTO(field=validation.field, message=_VALIDATION_MESSAGE)
-            return SearchOutcome(response=SearchResponse(error))
-
-        normalized = self._validator.normalize(request.query)
-        # Caller-requested breadth; the human search box default is lite (no k-NN, P50<3s).
-        scope = SearchScope.FULL if request.scope == "full" else SearchScope.LITE
+    def _retrieve(
+        self,
+        query: str,
+        scope: SearchScope,
+        years: YearRange | None,
+        caller: str = "search",
+    ) -> _RetrievalStage:
+        """normalize → derive degrade → expand (embedding fallback) → retrieve. See
+        ``_RetrievalStage`` for why this is one shared step rather than copied into both callers."""
+        normalized = self._validator.normalize(query)
         budget = self._cost_guard.get_budget_state()  # U6 single authority (read-only)
         degrade_mode, degradation = _derive_degradation(budget)
 
@@ -185,7 +209,13 @@ class SearchOrchestrationService:
             degrade_mode = DegradeMode.LEXICAL_ONLY
             degradation = DegradationSignal(llm_enabled=False, rerank_enabled=False)
             plan = self._expander.expand(normalized, degradation, scope)
-        self._emit_stage_ms("expand", t_stage, scope)
+        self._emit_stage_ms("expand", t_stage, scope, caller)
+
+        if years is not None:
+            # ``QueryPlan.years`` exists for exactly this caller (U11 evidence ``corpus_search``)
+            # but the expander never sets it, so the bound is injected here — and it reaches the
+            # store query rather than the returned page, which is what YearRange requires.
+            plan = replace(plan, years=years)
 
         t_stage = perf_counter()
         try:
@@ -193,7 +223,74 @@ class SearchOrchestrationService:
         except IndexUnavailable as exc:
             # No fallback for the index → fail-closed (INV-3/SEC-15).
             raise SearchUnavailable("search index unavailable") from exc
-        self._emit_stage_ms("retrieve", t_stage, scope)
+        self._emit_stage_ms("retrieve", t_stage, scope, caller)
+        return _RetrievalStage(
+            normalized_text=normalized.text,
+            plan=plan,
+            candidates=candidates,
+            degrade_mode=degrade_mode,
+            degradation=degradation,
+            caller=caller,
+        )
+
+    def _rank(self, stage: _RetrievalStage, top_n: int) -> RankedResults:
+        """rerank (cross-encoder, gated) → rank. The rerank lives HERE and not in the retriever,
+        so anything that calls ``HybridRetriever`` directly gets fused-but-unreranked order."""
+        scope = stage.plan.scope
+        t_stage = perf_counter()
+        candidates = self._maybe_rerank(
+            stage.normalized_text, stage.candidates, stage.degradation, scope, stage.caller
+        )
+        self._emit_stage_ms("rerank", t_stage, scope, stage.caller)
+        return self._ranker.rank(candidates, stage.plan, stage.degradation, top_n)
+
+    def retrieve_ranked(
+        self,
+        query: str,
+        *,
+        scope: SearchScope,
+        years: YearRange | None = None,
+        top_n: int | None = None,
+    ) -> RankedResults:
+        """Ranked candidates for an IN-PROCESS agent caller (U11 evidence ``corpus_search``).
+
+        Runs the same stages as ``plan_and_retrieve`` up to the ranker, so it has the same ranking
+        quality — including the cross-encoder rerank, which is the point of this entry existing:
+        an agent that reaches for ``HybridRetriever`` directly gets RRF order and nothing says so.
+
+        Returns the internal ``RankedResults`` (each ``Candidate.record`` is its IndexRecord), NOT
+        the card page. An agent reads abstracts to decide which papers are worth fetching full
+        text for, and ``ResultCardVM.abstractSnippet`` is truncated at index time for the phone
+        card (SEC-9) — the card projection is lossy for this caller, not just differently shaped.
+
+        Deliberately NOT done here, because both belong to the user-facing response: the U6
+        grounding ``enforce``/assemble pass (the agent runs its own evidence gate over quotes it
+        extracts, a different layer) and the US-D6 no-match k-NN floor (an agent is better served
+        by a weak-but-real neighbour than by an empty page it cannot ask again about). No
+        SearchExecuted event is published either — that is search *history* for a human's query.
+
+        ``query`` is validated exactly as the public path validates it (FR-1/SEC-5), but a failure
+        raises ``InvalidQuery``: an internal caller has no inline DTO to render the error into.
+        """
+        validation = self._validator.validate(query)
+        if not validation.ok:
+            raise InvalidQuery(f"invalid query: {validation.reason}")
+        stage = self._retrieve(query, scope, years, caller="agent")
+        if not stage.candidates.candidates:
+            return RankedResults(ranked=())
+        return self._rank(stage, self._top_n if top_n is None else top_n)
+
+    def plan_and_retrieve(self, request: SearchRequest, ctx: RequestContext) -> SearchOutcome:
+        validation = self._validator.validate(request.query)
+        if not validation.ok:
+            error = ValidationErrorDTO(field=validation.field, message=_VALIDATION_MESSAGE)
+            return SearchOutcome(response=SearchResponse(error))
+
+        # Caller-requested breadth; the human search box default is lite (no k-NN, P50<3s).
+        scope = SearchScope.FULL if request.scope == "full" else SearchScope.LITE
+        stage = self._retrieve(request.query, scope, None)
+        degrade_mode = stage.degrade_mode
+        candidates = stage.candidates
         if candidates.best_knn_score is not None:
             # The floor's calibration feed (US-D6): per-query best raw k-NN score. Ops reads
             # this distribution in CloudWatch to pick DISCOVERY_NO_MATCH_KNN_FLOOR.
@@ -213,12 +310,9 @@ class SearchOrchestrationService:
             self._publish(ctx.auth_session.user_id, ctx.request_id, request.query, 0)
             return SearchOutcome(response=response)
 
-        t_stage = perf_counter()
-        candidates = self._maybe_rerank(normalized.text, candidates, degradation, scope)
-        self._emit_stage_ms("rerank", t_stage, scope)
-        ranked = self._ranker.rank(candidates, plan, degradation, self._top_n)
+        ranked = self._rank(stage, self._top_n)
         ranked = self._apply_search_boosts(ctx.auth_session.user_id, ranked)
-        grounding_input = self._grounding_adapter.to_grounding_input(ranked, plan)
+        grounding_input = self._grounding_adapter.to_grounding_input(ranked, stage.plan)
         self._observability.emit_metric(
             "discovery.search.candidates", float(len(ranked.ranked)), {"mode": degrade_mode.value}
         )
@@ -249,6 +343,7 @@ class SearchOrchestrationService:
         candidates: CandidateSet,
         degradation: DegradationSignal,
         scope: SearchScope,
+        caller: str = "search",
     ) -> CandidateSet:
         """Cross-encoder rerank of the top-M fused candidates (FR-3 quality). Gated HERE (the I/O
         decision, not in the pure ranker): skipped when no reranker is wired (feature off) or the
@@ -260,7 +355,7 @@ class SearchOrchestrationService:
         if self._reranker is None or not candidates.candidates:
             return candidates  # feature off, or nothing to rerank
         if not degradation.rerank_enabled:
-            self._emit_rerank_metric(0.0, "budget-off", scope)
+            self._emit_rerank_metric(0.0, "budget-off", scope, caller)
             return candidates
         width = min(rerank_width(scope), len(candidates.candidates))
         documents = [rerank_text(c.record) for c in candidates.candidates[:width]]
@@ -278,9 +373,9 @@ class SearchOrchestrationService:
                 scope.value,
                 exc,
             )
-            self._emit_rerank_metric(0.0, "failed", scope)
+            self._emit_rerank_metric(0.0, "failed", scope, caller)
             return candidates
-        self._emit_rerank_metric(1.0, "applied", scope)
+        self._emit_rerank_metric(1.0, "applied", scope, caller)
         return replace(candidates, candidates=reranked)
 
     def _below_no_match_floor(self, candidates: CandidateSet) -> bool:
@@ -296,14 +391,16 @@ class SearchOrchestrationService:
         self._emit_guarded("discovery.search.no_match_floor", 1.0, {})
         return True
 
-    def _emit_stage_ms(self, stage: str, started: float, scope: SearchScope) -> None:
+    def _emit_stage_ms(
+        self, stage: str, started: float, scope: SearchScope, caller: str = "search"
+    ) -> None:
         """Per-stage latency (QA 2026-07-10 F1): the cold-path seconds hide in expand (Bedrock
         embed), retrieve (OpenSearch cold k-NN graph load), or rerank — CloudWatch needs the
         split to tune the right budget."""
         self._emit_guarded(
             "discovery.search.stage_ms",
             (perf_counter() - started) * 1000.0,
-            {"stage": stage, "scope": scope.value},
+            {"stage": stage, "scope": scope.value, "caller": caller},
         )
 
     def _emit_guarded(self, name: str, value: float, dims: dict[str, str]) -> None:
@@ -313,12 +410,16 @@ class SearchOrchestrationService:
         except Exception:  # noqa: BLE001
             pass
 
-    def _emit_rerank_metric(self, value: float, status: str, scope: SearchScope) -> None:
+    def _emit_rerank_metric(
+        self, value: float, status: str, scope: SearchScope, caller: str = "search"
+    ) -> None:
         """Guarded rerank metric — observability is advisory and MUST NOT raise, otherwise a
         failed-rerank branch (already fail-soft) would re-raise and sink the whole search."""
         try:
             self._observability.emit_metric(
-                "discovery.search.rerank", value, {"scope": scope.value, "status": status}
+                "discovery.search.rerank",
+                value,
+                {"scope": scope.value, "status": status, "caller": caller},
             )
         except Exception:  # noqa: BLE001
             pass

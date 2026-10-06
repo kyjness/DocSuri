@@ -25,6 +25,7 @@ from ..ports.llm import EvidenceExtractionPort, LlmUnavailable
 from ..ports.sources import (
     CorpusSearchPort,
     DocModelReadPort,
+    InvalidQuery,
     LivePaperLookupPort,
     PaperPromotionPort,
     SearchUnavailable,
@@ -205,6 +206,19 @@ class CorpusSearchTool:
                 "코퍼스 검색을 쓸 수 없음",
                 "코퍼스 검색을 쓸 수 없다 — 같은 검색을 반복하지 말고 "
                 "live_lookup으로 진행하거나 확보한 논문에서 근거를 추출하라",
+            )
+        except InvalidQuery as exc:
+            # U2가 공개 경로와 **같은 기준**으로 검색어를 검증한다(제어문자·길이). 모델이
+            # 보낸 값이 거기서 걸리면 장애가 아니라 수리 가능한 입력 오류다 — 사유를 알려야
+            # 같은 문자열을 그대로 다시 보내지 않는다(BR-EV-18).
+            #
+            # **전용 타입만 잡는다.** `ValueError`로 받으면 U2 스택 깊은 곳의 아무 `ValueError`
+            # (그리고 그 하위인 `EnvConfigError`)가 "검색어가 잘못됐다"로 보고되고, 모델은
+            # 멀쩡한 질의를 고치러 가고 진짜 결함은 어디에도 안 남는다.
+            log.warning("corpus search rejected the query: %s", exc)
+            return _fail(
+                "검색어를 쓸 수 없음",
+                "검색어가 거부됐다 — 제어문자를 빼고 500자 안으로 줄여 다시 검색하라",
             )
         return _register(
             self._state,
