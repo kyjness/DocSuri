@@ -7,9 +7,15 @@ v1 `tools.py`의 검색·DocModel 로직을 이식하되 **포트 형태로** �
 껍데기이고 여기가 구현이다.
 
 이식하면서 유지한 것: 하이브리드 검색은 U2를 재사용하고 전용 인덱스·랭킹을 만들지
-않는다(BR-EV-2), 임베딩 실패는 lexical-only로 저하한다, 색인의 paperId는 버전
-없는 bare id인데 evidence가 나르는 것은 버전 붙은 arxivId라 phrase 필터에는 버전을
-떼고 넘긴다(안 그러면 좁히기가 항상 0건이 된다).
+않는다(BR-EV-2), 임베딩 실패는 lexical-only로 저하한다(지금은 오케스트레이터가 한다),
+색인의 paperId는 버전 없는 bare id인데 evidence가 나르는 것은 버전 붙은 arxivId라
+phrase 필터에는 버전을 떼고 넘긴다(안 그러면 좁히기가 항상 0건이 된다).
+
+**재사용 지점은 U2의 오케스트레이터다**(`retrieve_ranked`). 전에는 `HybridRetriever`를
+직접 들었는데, 리랭크는 리트리버가 아니라 오케스트레이터 단계에 있어서 코퍼스 검색이
+RRF 순서까지만 받고 있었다 — 넘기던 `rerank_enabled=True`는 리트리버가 읽지 않는 인자라
+아무것도 알려주지 않았다. "전용 랭킹을 만들지 않는다"는 U2의 랭킹을 **끝까지** 쓴다는
+뜻이다.
 """
 
 from __future__ import annotations
@@ -21,7 +27,7 @@ from summarization.adapters._paper_ref import bare_paper_id
 
 from backend.modules.paper_assets import parse_record_ref
 
-from ..ports.sources import PaperCandidate, SearchUnavailable, YearBound
+from ..ports.sources import InvalidQuery, PaperCandidate, SearchUnavailable, YearBound
 
 __all__ = [
     "CorpusSearch",
@@ -30,37 +36,26 @@ __all__ = [
 
 log = logging.getLogger("docsuri.evidence.sources")
 
-_TOP_K = 50
 _PHRASE_TOP_K = 200
 _MAX_PAPERS = 20
 
 
 @runtime_checkable
-class EmbeddingPort(Protocol):
-    def embed_query(self, text: str) -> list[float]: ...
+class RankedSearchPort(Protocol):
+    """U2 오케스트레이터가 에이전트 호출자에게 내주는 랭킹 진입점(`retrieve_ranked`)."""
 
-
-@runtime_checkable
-class VectorStorePort(Protocol):
-    def knn_search(
+    def retrieve_ranked(
         self,
-        vector: list[float],
-        top_k: int,
-        abstract_only: bool = False,
+        query: str,
+        *,
+        scope: Any,
         years: Any | None = None,
-    ) -> list[Any]: ...
+        top_n: int | None = None,
+    ) -> Any: ...
 
 
 @runtime_checkable
 class LexicalIndexPort(Protocol):
-    def bm25_search(
-        self,
-        terms: list[str],
-        top_k: int,
-        fields: tuple[str, ...] = ...,
-        years: Any | None = None,
-    ) -> list: ...
-
     def phrase_search(
         self,
         phrase: str,
@@ -76,23 +71,30 @@ class CorpusSearch:
     def __init__(
         self,
         *,
-        embedding: EmbeddingPort,
-        vector_store: VectorStorePort,
+        orchestrator: RankedSearchPort,
         lexical_index: LexicalIndexPort,
     ) -> None:
-        self._embedding = embedding
-        self._vector_store = vector_store
+        self._orchestrator = orchestrator
+        # phrase 전용이다 — 하이브리드는 오케스트레이터가 자기 어댑터로 질의한다.
         self._lexical_index = lexical_index
 
     def search(
         self, query: str, *, phrase: bool = False, years: YearBound | None = None
     ) -> tuple[PaperCandidate, ...]:
         from discovery.ports.search_ports import IndexUnavailable
+        from discovery.ports.search_ports import InvalidQuery as U2InvalidQuery
+        from discovery.ports.search_ports import SearchUnavailable as U2SearchUnavailable
 
         try:
             records = self._phrase(query, years) if phrase else self._hybrid(query, years)
-        except IndexUnavailable as exc:
+        except (IndexUnavailable, U2SearchUnavailable) as exc:
+            # 두 벌을 다 받는다: 오케스트레이터는 인덱스 장애를 자기 `SearchUnavailable`로
+            # 올리고(fail-closed), phrase는 어댑터를 직접 불러 `IndexUnavailable`이 그대로 온다.
             raise SearchUnavailable("corpus index unavailable") from exc
+        except U2InvalidQuery as exc:
+            # U2의 어휘를 포트의 어휘로 옮긴다 — 도메인·도구가 discovery 예외를 들면 두 모듈이
+            # 한 몸이 된다(`PaperCandidate`를 따로 둔 것과 같은 이유).
+            raise InvalidQuery(str(exc)) from exc
 
         seen: dict[str, PaperCandidate] = {}
         for record in records:
@@ -104,37 +106,26 @@ class CorpusSearch:
         return tuple(seen.values())
 
     def _hybrid(self, query: str, years: YearBound | None) -> list[Any]:
-        from discovery.domain.models import (
-            DegradationSignal,
-            QueryPlan,
-            RetrievalMode,
-            SearchScope,
-        )
-        from discovery.domain.retriever import HybridRetriever
+        """U2 오케스트레이터의 랭킹 경로 — expand → retrieve → **리랭크** → rank.
 
-        try:
-            vector = self._embedding.embed_query(query)
-            mode = RetrievalMode.HYBRID
-        except Exception:  # noqa: BLE001 — 임베딩 부재는 저하이지 실패가 아니다
-            log.warning("embedding unavailable — falling back to lexical-only")
-            vector = None
-            mode = RetrievalMode.LEXICAL_ONLY
+        건수 상한을 여기서 따로 걸지 않는다: `ranker`의 `TOP_N`이 이미 20이고 그것이
+        `_MAX_PAPERS`와 같은 값이다. 한 벌을 더 두면 둘 중 작은 쪽이 조용히 실효 상한이 된다.
+        """
+        from discovery.domain.models import SearchScope
 
-        plan = QueryPlan(
-            lexical_terms=tuple(query.split()),
-            mode=mode,
-            embedding_vector=tuple(vector) if vector else None,
-            scope=SearchScope.FULL,
-            years=_year_range(years),
+        ranked = self._orchestrator.retrieve_ranked(
+            query, scope=SearchScope.FULL, years=_year_range(years)
         )
-
-        retriever = HybridRetriever(self._vector_store, self._lexical_index)
-        candidate_set = retriever.retrieve(
-            plan, DegradationSignal(llm_enabled=True, rerank_enabled=True)
-        )
-        return [c.record for c in candidate_set.candidates[:_TOP_K]]
+        return [c.record for c in ranked.ranked]
 
     def _phrase(self, phrase: str, years: YearBound | None) -> list[Any]:
+        """정확 문구 검색은 **오케스트레이터를 거치지 않는다.**
+
+        리랭크가 개선할 순서가 없다: phrase는 "본문에 글자 그대로 있나"만 보는 필터라
+        매치/비매치뿐이고, 크로스인코더가 채점하는 것은 title+abstract다(U2 `rerank_text`).
+        즉 본문에서 문구를 찾아 준 논문들을 초록 유사도로 다시 줄 세우는 셈이라, 사용자가
+        그 문장을 찾아달라고 한 의도에서 멀어진다.
+        """
         hits = self._lexical_index.phrase_search(
             phrase, top_k=_PHRASE_TOP_K, years=_year_range(years)
         )

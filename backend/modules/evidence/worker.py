@@ -358,7 +358,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     checkpoints = TurnCheckpoints(checkpointer)
     runner = build_evidence_runner(
-        ev_settings, cost_guard=CostGuardCircuitBreaker(), checkpoints=checkpoints
+        ev_settings,
+        cost_guard=CostGuardCircuitBreaker(),
+        checkpoints=checkpoints,
+        # U2 검색 메트릭의 실제 배선 — 없으면 리랭크가 fail-soft로 안 걸리는 것이
+        # 정상 동작과 구분되지 않는다(novelty 워커와 같은 패턴).
+        observability=_build_observability(),
     )
 
     def repo_factory() -> EvidenceRepository:
@@ -403,6 +408,22 @@ def main(argv: list[str] | None = None) -> int:
     close_checkpointer()
     log.info('evidence agent worker shut down gracefully')
     return 0
+
+
+def _build_observability():
+    """앱쉘과 동일한 U6 관측 허브 — 이 워커가 내는 U2 검색 메트릭의 실제 배선.
+
+    novelty 워커와 같은 패턴이다. 계측 조립 실패로 워커를 막지 않는다(허브가 없으면
+    `NoopObservabilityHub`로 떨어진다 — 메트릭만 사라지고 검색은 돈다).
+    """
+    try:
+        from backend.app import _build_observability as build
+
+        observability, _telemetry_store = build()
+        return observability
+    except Exception:  # noqa: BLE001 — 계측 조립 실패가 워커를 막지 않는다
+        log.warning('evidence worker: observability unavailable', exc_info=True)
+        return None
 
 
 def _attachment_inputs(

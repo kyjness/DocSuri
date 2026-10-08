@@ -1,10 +1,14 @@
-"""evidence real_wiring — the second reader must share discovery's embedding space (⑤a(b)-1).
+"""evidence 코퍼스 검색 — U2의 랭킹을 **끝까지** 쓰는지 고정한다.
 
-The evidence agent reads discovery's index with its own wiring. These tests pin that it builds
-the same embedder AND applies the same-space guard, so a same-dimension/different-model swap
-disables the vector leg instead of scoring queries against a foreign embedding space. The live
-case is Cohere Embed Multilingual v3 vs Embed v4 — both 1024-dimensional, so no shape check
-catches the swap.
+리랭크는 `HybridRetriever`가 아니라 그 위 오케스트레이터 단계에 있다. 그래서 리트리버를
+직접 들면 RRF 순서까지만 받고도 아무 신호가 없다 — 실제로 그 상태로 돌고 있었고, 넘기던
+`rerank_enabled=True`는 리트리버가 읽지 않는 인자였다. 여기서 고정하는 것은 어댑터가
+`retrieve_ranked`(리랭크 포함 경로)로 묶여 있다는 사실이다.
+
+같은 파일에 있던 임베딩 동일공간 가드 테스트 셋은 지웠다. evidence가 자기 임베더를 더는
+세우지 않기 때문이다 — 오케스트레이터가 discovery의 읽기 경로와 **같은 팩토리**로 조립하므로
+"두 번째 리더가 같은 공간을 쓰는가"는 미러링된 배선을 검사할 일이 아니라 구조로 참이 됐다.
+가드 자체의 동작은 discovery 쪽 테스트가 본다.
 """
 
 from __future__ import annotations
@@ -12,65 +16,129 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from discovery.adapters.bedrock_embedding import BedrockCohereQueryEmbedder
-from discovery.adapters.space_guard import MismatchedSpaceEmbedder
-from discovery.ports.search_ports import EmbeddingUnavailable
-from docsuri_shared.vector_spec import DIMENSIONS
+from discovery.ports.search_ports import SearchUnavailable as U2SearchUnavailable
 
-from backend.modules.evidence.real_wiring import _build_guarded_query_embedder
-
-_INDEX = "docsuri-corpus-v1"
-_MODEL = "cohere.embed-v4:0"
+from backend.modules.evidence.adapters.sources import CorpusSearch
+from backend.modules.evidence.ports.sources import SearchUnavailable, YearBound
 
 
-def _d_settings(model_id: str = _MODEL) -> SimpleNamespace:
-    return SimpleNamespace(
-        bedrock_model_id=model_id,
-        bedrock_region="us-west-2",
-        opensearch_index=_INDEX,
-    )
+def _record(paper_id: str, *, abstract: str = "") -> SimpleNamespace:
+    return SimpleNamespace(arxivId=paper_id, title=f"title {paper_id}", abstract=abstract)
 
 
-def _client(manifest: dict | None) -> SimpleNamespace:
-    """OpenSearch client stub whose get_mapping returns (or omits) an _meta.embedding stamp."""
+class _Orchestrator:
+    """`retrieve_ranked`만 가진 대역 — 호출 인자를 그대로 적어 둔다."""
 
-    class _Indices:
-        def get_mapping(self, index: str) -> dict:  # noqa: ARG002
-            meta = {"_meta": {"embedding": manifest}} if manifest is not None else {}
-            return {_INDEX: {"mappings": meta}}
+    def __init__(self, records: list[SimpleNamespace]) -> None:
+        self._records = records
+        self.calls: list[dict] = []
 
-    return SimpleNamespace(indices=_Indices())
-
-
-def _manifest(model: str) -> dict:
-    return {"provider": "bedrock", "model": model, "dimensions": DIMENSIONS}
-
-
-def test_matching_manifest_keeps_the_embedder() -> None:
-    emb = _build_guarded_query_embedder(
-        _d_settings(), _client(_manifest(_MODEL)), "ap-northeast-2"
-    )
-    assert isinstance(emb, BedrockCohereQueryEmbedder)
+    def retrieve_ranked(self, query, *, scope, years=None, top_n=None):
+        self.calls.append({"query": query, "scope": scope, "years": years, "top_n": top_n})
+        return SimpleNamespace(
+            ranked=tuple(SimpleNamespace(record=r) for r in self._records)
+        )
 
 
-def test_same_dimension_model_swap_disables_the_vector_leg() -> None:
-    # Index stamped with v3, reader compiled against v4 — same vendor, same 1024 dimensions,
-    # incompatible spaces. Nothing but the manifest can tell these apart.
-    emb = _build_guarded_query_embedder(
-        _d_settings(_MODEL),
-        _client(_manifest("cohere.embed-multilingual-v3")),
-        "ap-northeast-2",
-    )
-    assert isinstance(emb, MismatchedSpaceEmbedder)
-    with pytest.raises(EmbeddingUnavailable):
-        emb.embed_query("some query")
+class _LexicalIndex:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def phrase_search(self, phrase, top_k, paper_ids=None, years=None):
+        self.calls.append({"phrase": phrase, "top_k": top_k, "years": years})
+        return [(_record("2106.09685"), 1.0)]
 
 
-def test_absent_manifest_passes_through() -> None:
-    # Legacy index without the _meta.embedding stamp → guard can't verify, serves anyway
-    # (logged, not failed) so pre-manifest local indices keep working.
-    emb = _build_guarded_query_embedder(_d_settings(), _client(None), "ap-northeast-2")
-    assert isinstance(emb, BedrockCohereQueryEmbedder)
+def test_hybrid_search_goes_through_the_ranked_path() -> None:
+    """리트리버가 아니라 오케스트레이터를 부른다 — 이것이 리랭크가 걸리는 유일한 경로다."""
+    orch = _Orchestrator([_record("1706.03762", abstract="attention is all you need")])
+    search = CorpusSearch(orchestrator=orch, lexical_index=_LexicalIndex())
+
+    candidates = search.search("transformer attention")
+
+    assert len(orch.calls) == 1
+    assert orch.calls[0]["query"] == "transformer attention"
+    # 본문 청크까지 보는 breadth. lite로 내려가면 에이전트가 초록에만 걸린다.
+    assert orch.calls[0]["scope"].value == "full"
+    assert [c.paper_id for c in candidates] == ["1706.03762"]
+    # 초록은 **전체**가 실려야 한다 — 카드의 abstractSnippet(색인 시 절삭)이 아니다.
+    assert candidates[0].abstract == "attention is all you need"
+
+
+def test_year_bound_reaches_the_orchestrator() -> None:
+    """연도는 필터다 — 후처리로 깎으면 0건이 '그런 논문이 없다'와 구분되지 않는다."""
+    orch = _Orchestrator([_record("2304.10557")])
+    search = CorpusSearch(orchestrator=orch, lexical_index=_LexicalIndex())
+
+    search.search("rlhf", years=YearBound(start=2023, end=2024))
+
+    years = orch.calls[0]["years"]
+    assert (years.start, years.end) == (2023, 2024)
+
+
+def test_phrase_search_bypasses_the_orchestrator() -> None:
+    """정확 문구는 매치/비매치뿐이라 크로스인코더가 다시 줄 세울 순서가 없다."""
+    orch = _Orchestrator([_record("1706.03762")])
+    lexical = _LexicalIndex()
+    search = CorpusSearch(orchestrator=orch, lexical_index=lexical)
+
+    candidates = search.search("attention is all you need", phrase=True)
+
+    assert orch.calls == []
+    assert lexical.calls[0]["phrase"] == "attention is all you need"
+    assert [c.paper_id for c in candidates] == ["2106.09685"]
+
+
+def test_record_ref_is_the_bare_paper_id() -> None:
+    """버전·청크가 섞이면 자산 조회(view_figure)가 전량 미스된다(INV-EV-5)."""
+    orch = _Orchestrator([_record("1706.03762v7")])
+    search = CorpusSearch(orchestrator=orch, lexical_index=_LexicalIndex())
+
+    candidates = search.search("transformer")
+
+    assert candidates[0].record_ref == "1706.03762"
+
+
+def test_index_failure_surfaces_as_the_evidence_search_error() -> None:
+    """U2는 인덱스 장애를 자기 예외로 올린다 — 도구가 아는 형태로 번역돼야 턴이 계속된다."""
+
+    class _Down:
+        def retrieve_ranked(self, query, *, scope, years=None, top_n=None):
+            raise U2SearchUnavailable("search index unavailable")
+
+    search = CorpusSearch(orchestrator=_Down(), lexical_index=_LexicalIndex())
+
+    with pytest.raises(SearchUnavailable):
+        search.search("transformer")
+
+
+def test_real_orchestrator_reranks_what_the_adapter_returns() -> None:
+    """대역이 아니라 **실제 `SearchOrchestrationService`**에 붙여 순서가 바뀌는지 본다.
+
+    위의 테스트들은 "어댑터가 `retrieve_ranked`를 부른다"는 호출 계약을 고정한다. 그것만으로는
+    리랭크가 실제로 걸리는지 알 수 없다 — 이 결함이 처음 생긴 방식이 바로 "맞는 이름의 인자를
+    넘기지만 아무도 읽지 않는" 것이었다. 여기서는 U2가 자기 목 배선으로 세운 진짜
+    오케스트레이터에 리랭커를 물려, 어댑터가 돌려주는 후보 순서가 RRF 순서와 달라지는지 센다.
+    """
+    from collections.abc import Sequence
+
+    from discovery.testing import build_mock_orchestrator
+
+    class _ReverseRerank:
+        def rerank(self, query: str, documents: Sequence[str]) -> list[float]:
+            return [float(i) for i in range(len(documents))]
+
+    def _ids(reranker) -> list[str]:
+        orch = build_mock_orchestrator(reranker=reranker).orchestrator
+        search = CorpusSearch(orchestrator=orch, lexical_index=_LexicalIndex())
+        return [c.paper_id for c in search.search("diffusion models for protein structure")]
+
+    baseline = _ids(None)
+    reranked = _ids(_ReverseRerank())
+
+    assert baseline, "목 코퍼스가 0건을 줬다 — 픽스처 쪽 문제다"
+    assert baseline != reranked, "리랭커를 물렸는데 순서가 그대로다 — 경로가 안 닿았다"
+    assert set(baseline) == set(reranked)
 
 
 def test_app_shell_calls_the_runner_builder_with_the_arguments_it_accepts() -> None:

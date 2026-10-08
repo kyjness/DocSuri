@@ -169,20 +169,28 @@ jobs:
           enable-cache: true
       - name: Lint
         run: uv run ruff check .
-      # Started as a step, not a `services:` entry: minio needs the `server /data` command and
-      # service containers cannot set one. Pinned by digest — the tag is mutable.
-      - name: Start MinIO (S3 stand-in)
+      # S3 대역은 **로컬 스택과 같은 s3proxy**다(`backend/docker-compose.yml`). MinIO를 쓰던
+      # 동안 두 환경이 갈려 있었고, 2026-10-06 `minio/minio`가 익명 pull을 막으면서
+      # (`pull access denied ... repository does not exist`) 셋업 단계에서 exit 125로 죽어
+      # 테스트가 한 줄도 돌지 않았다. 핀 고정된 다이제스트라 태그를 올려도 안 풀린다.
+      # quay.io 쪽도 401이다 — 레지스트리 교체가 아니라 대역 교체가 답이다.
+      #
+      # 컨테이너 포트가 **80이다**(MinIO는 9000이었다). 테스트가 보는
+      # `AWS_ENDPOINT_URL_S3`는 그대로 9000이므로 매핑으로 맞춘다.
+      # `S3PROXY_AUTHORIZATION: none` — 서명을 무시하므로 아래 가짜 AWS 키로 충분하다.
+      - name: Start s3proxy (S3 stand-in)
         run: |
-          docker run -d --name minio -p 9000:9000 \
-            -e MINIO_ROOT_USER=docsuri -e MINIO_ROOT_PASSWORD=docsuri123 \
-            minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e \
-            server /data
+          docker run -d --name s3proxy -p 9000:80 \
+            -e S3PROXY_AUTHORIZATION=none \
+            -e JCLOUDS_PROVIDER=filesystem \
+            -e JCLOUDS_FILESYSTEM_BASEDIR=/data \
+            andrewgaul/s3proxy@sha256:87662b2a5afcdfa5f478a1c61650bae4c87bbd15f6ff2823236bcfd66ef7fe04
           for i in $(seq 1 30); do
-            curl -sf http://localhost:9000/minio/health/live && echo "minio ready" && exit 0
+            curl -sf -o /dev/null http://localhost:9000/ && echo "s3proxy ready" && exit 0
             sleep 2
           done
-          echo "minio failed to start" >&2
-          docker logs minio >&2
+          echo "s3proxy failed to start" >&2
+          docker logs s3proxy >&2
           exit 1
       # --all-extras, not `--extra api` like discovery: test_docmodel_endpoint.py imports the S3
       # adapter (botocore, from the `real` extra) at collection time and does NOT self-skip when

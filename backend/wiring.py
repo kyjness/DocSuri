@@ -724,6 +724,13 @@ def _mount_evidence(app: FastAPI, settings: Settings, result: MountResult) -> No
             # 앱쉘이 이미 가진 세션 팩토리 재사용 — 없으면 러너가 자체 생성한다.
             session_factory=evidence_session_factory,
             checkpoints=checkpoints,
+            # U2 검색 오케스트레이터도 같이 재사용한다(코퍼스 검색의 리랭크·랭커 경로).
+            # 앱쉘이 세운 쪽은 CloudWatch 관측과 실 cost_guard가 물려 있고, 없을 때만
+            # 러너가 자체 조립한다 — 마운트 순서에 안 묶이도록 app.state에서 읽는다.
+            search_orchestrator=getattr(
+                getattr(app.state, "discovery_bundle", None), "orchestrator", None
+            ),
+            observability=getattr(app.state, "observability", None),
         )
     else:
         log.info("app-shell: evidence real path not configured — running in repo-only mode")

@@ -10,7 +10,7 @@
 | **TD-EV2-1** | 루프는 **프레임워크 없이 직접 구현** | 구현 당시 전제(arch Q5). 프레임워크 채택은 2026-08-15 재개방·미정이므로 이 항목도 새 질문지의 답에 따라 재판단 대상 |
 | **TD-EV2-2** | LLM 호출은 **포트 뒤 어댑터** — 현행 구현은 Bedrock Anthropic(2026-08-16 정정; 당시 OpenAI), 프로바이더 교체는 어댑터 교체 | 헥사고날 원칙. novelty가 같은 형태로 이미 돌고 있다 |
 | **TD-EV2-3** | 도구 레지스트리는 **allowlist deny-by-default** | novelty `ports/tools.py` 선례 — 어휘 밖 도구가 구조적으로 등록 불가 |
-| **TD-EV2-4** | 검색은 **U2 discovery 재사용**(하이브리드 + phrase) | BR-EV-2. 전용 인덱스·랭킹 금지 |
+| **TD-EV2-4** | 검색은 **U2 discovery 재사용**(하이브리드 + phrase) | BR-EV-2. 전용 인덱스·랭킹 금지. **재사용 지점은 오케스트레이터**(`retrieveRanked`)다 — 2026-10-06까지 `HybridRetriever`를 직접 들어 재랭킹이 빠진 RRF 순서로 돌고 있었다(u11 TD-E7 개정) |
 | **TD-EV2-5** | 온디맨드 승격은 **기존 `BUILD_DOC_MODEL` 큐 경로 재사용**(enqueue + bounded polling) | 요구사항 게이트 Q15 재결정(2026-07-28). 큐 계약·워커·reader-triggered 우선순위 큐가 이미 있고 u7이 쓰고 있다. backend 의존성 closure를 늘리지 않고, 파싱 CPU가 ingestion 워커에 이미 격리돼 있다. 코디네이터는 `backend/modules/user_docmodel.py`의 enqueue+poll 패턴을 따른다. **운영 전제**: ingestion 워커 미가동 시 폴링 시간 초과 → 초록 범위로 수렴 |
 | **TD-EV2-6** | 승격 취득 경로는 u1의 사다리를 그대로 탄다(ar5iv HTML 우선 → PDF+GROBID 폴백) | u1 `adapters/arxiv.py`. **GROBID는 로컬 compose에 있으나 `profiles: ["ingest"]` 옵트인**이라 기본 `up`에서 빠진다 — `docker compose --profile ingest up -d grobid` + `DOCSURI_GROBID_URL`로 켜야 폴백이 동작하고, 켜지 않으면 초록 범위로 수렴한다 |
 | **TD-EV2-7** | 백그라운드 색인은 **기존 잡 큐(redis)** 경유 | 응답 경로와 분리. 실패해도 답변 무영향 |

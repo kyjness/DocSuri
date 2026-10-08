@@ -1,9 +1,8 @@
 """build_evidence_runner — U11 v2 실 어댑터 조립 (real-first).
 
-Discovery(U2) 어댑터 재사용:
-  BedrockCohereQueryEmbedder → EvidencePaperSearchTool.EmbeddingPort
-  OpenSearchVectorStoreAdapter → VectorStorePort
-  OpenSearchLexicalIndexAdapter → LexicalIndexPort
+Discovery(U2) 재사용:
+  SearchOrchestrationService.retrieve_ranked → CorpusSearch (하이브리드 — 리랭크 포함)
+  OpenSearchLexicalIndexAdapter → LexicalIndexPort (phrase 전용)
   OpenSearchPaperLookupAdapter → PaperLookupPort
 
 Summarization(U7) 어댑터 재사용:
@@ -15,6 +14,7 @@ Summarization(U7) 어댑터 재사용:
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 
@@ -23,38 +23,7 @@ from docsuri_shared.env import env_float
 from .runner import EvidenceTurnRunner, RunnerDeps
 from .settings import EvidenceSettings
 
-
-def _build_guarded_query_embedder(
-    d_settings: Any, os_client: Any, fallback_region: str | None
-) -> Any:
-    """Query embedder + same-space guard, built the same way discovery's read path builds it.
-
-    The evidence agent is a SECOND reader over the SAME index, so it must resolve the same model
-    AND validate the index's embedding manifest against the reader identity — the dimension guard
-    cannot catch a same-dimension/different-model swap, and Cohere Embed Multilingual v3 and
-    Embed v4 are both 1024-dimensional.
-
-    Returns the real embedder when the space matches (or can't be verified — logged), else a
-    MismatchedSpaceEmbedder that raises EmbeddingUnavailable per request; EvidencePaperSearchTool.
-    _hybrid_search catches that and degrades to lexical-only instead of scoring a foreign space.
-    Extracted from build_evidence_runner so the guard wiring is unit-testable in isolation.
-    """
-    from discovery.adapters.bedrock_embedding import BedrockCohereQueryEmbedder
-    from discovery.adapters.space_guard import guard_embedding_space
-    from docsuri_shared.vector_spec import DIMENSIONS
-
-    embedding = BedrockCohereQueryEmbedder(
-        model_id=d_settings.bedrock_model_id,
-        # Bedrock region decoupled from region_name (OpenSearch SigV4): Cohere v3 isn't in
-        # ap-northeast-2, so query embedding goes cross-region. Mirrors discovery real_wiring.
-        region_name=d_settings.bedrock_region or fallback_region,
-    )
-    reader_identity = {
-        'provider': 'bedrock',
-        'model': d_settings.bedrock_model_id,
-        'dimensions': DIMENSIONS,
-    }
-    return guard_embedding_space(os_client, d_settings.opensearch_index, reader_identity, embedding)
+log = logging.getLogger("docsuri.evidence.wiring")
 
 
 def build_evidence_runner(
@@ -64,6 +33,8 @@ def build_evidence_runner(
     session_factory: Any | None = None,
     checkpoints: Any | None = None,
     with_answer: bool = True,
+    search_orchestrator: Any | None = None,
+    observability: Any | None = None,
 ) -> EvidenceTurnRunner:
     """실 어댑터 조립 — DOCSURI_DOCMODEL_BUCKET + OpenSearch 설정 필요.
 
@@ -74,39 +45,72 @@ def build_evidence_runner(
     `with_answer=False`는 판단 층(§4.2)을 붙이지 않는다 — novelty의 중첩 근거형성처럼
     `answer`를 **읽지 않는** 호출자용이다. 붙이면 턴마다 가장 큰 프롬프트를 한두 번 더
     보내고 그 비용은 바깥 잡의 상한에 잡히지 않는다.
+
+    `search_orchestrator`(U2)를 주면 하이브리드 검색이 그것을 쓴다 — 앱쉘은 이미 세운 것을
+    넘겨 임베더·임베딩 캐시·OpenSearch 서킷을 한 벌로 유지한다. 안 주면 여기서 세운다
+    (워커 단독 실행). phrase 경로용 렉시컬 클라이언트는 어느 경우에도 여기서 따로 만든다 —
+    오케스트레이터가 자기 어댑터를 노출하지 않으므로 커넥션 풀 한 벌은 중복된다.
     """
     # --- Discovery 어댑터 (U2 재사용) ---
     from discovery.adapters.opensearch_index import (
         OpenSearchClientFactory,
         OpenSearchLexicalIndexAdapter,
-            OpenSearchVectorStoreAdapter,
     )
     from discovery.adapters.settings import DiscoverySettings
 
     d_settings = DiscoverySettings.from_env()
-    os_client = OpenSearchClientFactory.build(
-        endpoint=d_settings.opensearch_endpoint,
-        region_name=settings.region_name,
-        username=d_settings.opensearch_username,
-        password=d_settings.opensearch_password,
-        use_ssl=d_settings.opensearch_use_ssl,
-        verify_certs=d_settings.opensearch_verify_certs,
-    )
 
-    # Query-embedding: same embedder as U2 + same-space guard. The evidence agent is a
-    # SECOND reader over the SAME index, so it must resolve the same model and validate the
-    # embedding space exactly as discovery's read path does (see helper for the why).
-    embedding = _build_guarded_query_embedder(d_settings, os_client, settings.region_name)
-    vector_store = OpenSearchVectorStoreAdapter(os_client, d_settings.opensearch_index)
-    lexical_index = OpenSearchLexicalIndexAdapter(os_client, d_settings.opensearch_index)
+    # 코퍼스 하이브리드 검색은 U2 오케스트레이터가 끝까지 수행한다(리랭크·랭커 포함) —
+    # 임베더·동일공간 가드·벡터스토어도 그쪽이 조립하므로 여기서 다시 세우지 않는다.
+    # cost_guard를 함께 넘기는 이유: U6가 rerank-off로 내려보낸 턴은 검색도 같이 내려가야
+    # 한다(한쪽만 보면 예산이 닫힌 동안에도 리랭크 호출이 계속 나간다).
+    if search_orchestrator is None and d_settings.search_enabled:
+        from discovery.real_wiring import build_real_orchestrator
+
+        # observability를 빼면 U2 메트릭이 `NoopObservabilityHub`로 간다 — 그중
+        # `discovery.search.rerank`(status=failed/budget-off)는 **리랭크가 조용히 안 걸리는
+        # 것을 보여주는 유일한 신호**다. 권한이나 ARN이 틀리면 fail-soft로 baseline RRF가
+        # 나가는데, 그게 정상 동작과 구분되지 않는다.
+        search_orchestrator = build_real_orchestrator(
+            d_settings, observability=observability, cost_guard=cost_guard
+        ).orchestrator
 
     from .adapters.sources import CorpusSearch, DocModelReader
 
-    corpus_search = CorpusSearch(
-        embedding=embedding,
-        vector_store=vector_store,
-        lexical_index=lexical_index,
-    )
+    corpus_search = None
+    if search_orchestrator is not None:
+        # phrase(정확 문구) 검색만 렉시컬 인덱스를 직접 쓴다 — 어댑터 docstring에 이유가 있다.
+        # **리전은 discovery 설정에서 읽는다.** 오케스트레이터의 클라이언트가 그렇게 서명하므로
+        # (`real_wiring`의 `settings.aws_region`), 여기서 evidence의 `region_name`
+        # (`AWS_REGION`/`AWS_DEFAULT_REGION`)을 쓰면 두 클라이언트가 **다른 리전으로 SigV4
+        # 서명**을 하게 된다 — 하이브리드는 되는데 phrase만 403이 나는 모양이고, 두 값이
+        # 같은 환경에서는 안 보인다.
+        os_client = OpenSearchClientFactory.build(
+            endpoint=d_settings.opensearch_endpoint,
+            region_name=d_settings.aws_region or settings.region_name,
+            username=d_settings.opensearch_username,
+            password=d_settings.opensearch_password,
+            use_ssl=d_settings.opensearch_use_ssl,
+            verify_certs=d_settings.opensearch_verify_certs,
+        )
+        corpus_search = CorpusSearch(
+            orchestrator=search_orchestrator,
+            lexical_index=OpenSearchLexicalIndexAdapter(os_client, d_settings.opensearch_index),
+        )
+    else:
+        # 도구가 등록되지 않고 목록이 자연 축소된다(러너 규약) — **왜** 빠졌는지는 말한다.
+        # 코퍼스만 빠지고 실시간 조회·지정 논문 경로는 그대로 돈다.
+        #
+        # 여기서 예외를 던지지 않는 이유: 같은 설정으로 `_mount_discovery`가 이미
+        # `skip_unconfigured`로 넘어간다(그 설정의 **소유자**가 고른 거동이다). evidence가
+        # 더 엄격하면 변수 하나가 accounts·library·summarization까지 함께 떨어뜨린다.
+        # 운영 신호는 기동 로그의 `mounted=[...] skipped=[...]`에 이미 있다(deploy 런북).
+        log.warning(
+            "evidence: U2 검색이 구성되지 않아 corpus_search 도구가 빠진다 — "
+            "DOCSURI_OPENSEARCH_ENDPOINT와 DOCSURI_BEDROCK_MODEL_ID가 **함께** 있어야 한다"
+            "(엔드포인트만 있으면 벡터 leg 없이 도는 것이 아니라 코퍼스 검색 자체가 없다). "
+            "live_lookup과 지정 논문 경로만 쓴다"
+        )
 
     # --- S3 DocModel 리더 (U7 재사용) ---
     from summarization.adapters.s3_docmodel import S3DocModelReader
