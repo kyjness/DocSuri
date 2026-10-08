@@ -25,7 +25,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from ..ports.search_ports import RerankUnavailable
+from ..ports.search_ports import RerankThrottled, RerankUnavailable
 
 # Module-level so the latency-budget contract test (test_latency_budget.py) can assert the
 # search cold-path sum stays inside the BFF's 30s search hop (QA 2026-07-10 F1).
@@ -83,6 +83,11 @@ class BedrockRerankAdapter:
                 },
             )
         except Exception as exc:  # noqa: BLE001 — any Bedrock/transport error → fail-soft
+            # Read the botocore ClientError shape without importing botocore (lazy `real` extra).
+            response = getattr(exc, "response", None)
+            error = response.get("Error") if isinstance(response, dict) else None
+            if isinstance(error, dict) and error.get("Code") == "ThrottlingException":
+                raise RerankThrottled("Bedrock rerank throttled") from exc
             raise RerankUnavailable("Bedrock rerank failed") from exc
 
         # The API returns results sorted by score; map each back to its input position so the

@@ -71,7 +71,7 @@ LLM이 다음 행동(도구 + 인자) 또는 종료를 고른다. 고정 단계 
 
 | 도구 | 하는 일 | 경계 |
 |---|---|---|
-| `corpus_search(query, mode?)` | 내부 코퍼스 하이브리드 검색(U2 재사용). `mode="phrase"`면 정확 문구 검색 | 전용 인덱스·랭킹 금지. 점수 미노출(INV-EV-5) |
+| `corpus_search(query, mode?)` | 내부 코퍼스 하이브리드 검색(U2 오케스트레이터 `retrieveRanked` — 재랭킹까지 포함). `mode="phrase"`면 정확 문구 검색(렉시컬 인덱스 직접) | 전용 인덱스·랭킹 금지 = U2 랭킹을 **끝까지** 쓴다. 점수 미노출(INV-EV-5) |
 | `external_search(query)` | 코퍼스 밖 논문 검색 — **제목·초록만** 확보 | payload allowlist(질의·키워드만). 결과는 아직 근거가 아니다 |
 | `fetch_paper(paperRef)` | **온디맨드 승격** — 본문 취득 + DocModel 생성 요청 | DocModel writer는 U1 — U11은 요청만 한다. 실패는 `abstract` 범위 유지 |
 | `read_paper(paperRef, section?)` | 확보 논문의 DocModel 블록 읽기 | 읽기 전용 |

@@ -26,6 +26,7 @@ from ..domain.models import YearRange
 __all__ = [
     "EmbeddingUnavailable",
     "IndexUnavailable",
+    "InvalidQuery",
     "SearchUnavailable",
     "RerankUnavailable",
     "ScoredRecord",
@@ -50,12 +51,32 @@ class SearchUnavailable(Exception):
     """Fail-closed search outcome surfaced to the edge as a generic error (SEC-15/NFR-R1)."""
 
 
+class InvalidQuery(Exception):
+    """The query failed FR-1/SEC-5 validation on an in-process entry (``retrieve_ranked``).
+
+    Its own type, NOT ``ValueError``: the caller turns this into a repair instruction for a model
+    ("rewrite the query"), so anything else that merely happens to be a ``ValueError`` deeper in
+    the stack must not land in that branch — a real fault would be reported to the model as a bad
+    query, and the model would dutifully "fix" a query that was fine while the fault stayed
+    invisible. ``plan_and_retrieve`` has a DTO for this and does not raise.
+    """
+
+
 class RerankUnavailable(Exception):
     """Cross-encoder rerank dependency failed — fail-soft to the baseline RRF order (BR-5).
 
     Distinct from ``EmbeddingUnavailable``/``IndexUnavailable``: rerank is a ranking-QUALITY
     enhancement, not a retrieval dependency, so its failure NEVER degrades the response mode —
     the orchestrator simply keeps the un-reranked order and search proceeds normally."""
+
+
+class RerankThrottled(RerankUnavailable):
+    """The rerank request-rate quota rejected the call (Bedrock ``ThrottlingException``).
+
+    Split out because it is the one rerank failure that waiting fixes, and under the current
+    quota it is the routine one, not the rare one. Human search still treats it as any other
+    ``RerankUnavailable`` (fail fast to RRF — P50 budget); the agent caller backs off and
+    retries."""
 
 
 # A store result: a real record plus its (internal) store relevance score, in rank order.

@@ -14,6 +14,7 @@ __all__ = [
     "ContinuationSeedPort",
     "CorpusSearchPort",
     "DocModelReadPort",
+    "InvalidQuery",
     "LiveLookupResult",
     "LivePaperLookupPort",
     "PaperCandidate",
@@ -27,6 +28,19 @@ __all__ = [
 
 class SearchUnavailable(RuntimeError):
     """검색 인덱스·외부 소스 장애 — 해당 도구만 실패하고 루프는 계속한다."""
+
+
+class InvalidQuery(RuntimeError):
+    """검색어가 검증(제어문자·길이)에 걸렸다 — 장애가 아니라 **수리 가능한** 입력 오류다.
+
+    `SearchUnavailable`과 나누는 이유는 도구가 모델에게 줄 지시가 반대이기 때문이다:
+    장애는 "같은 검색을 반복하지 말고 다른 경로로 가라"이고, 이것은 "검색어를 고쳐 다시
+    하라"다(BR-EV-18). 한 타입으로 묶으면 둘 중 하나가 늘 틀린 지시를 받는다.
+
+    전용 타입인 것도 같은 이유다 — 어댑터가 `ValueError`로 받아 넘기면 스택 깊은 곳의
+    무관한 `ValueError`가 "검색어가 잘못됐다"로 보고되고, 모델은 멀쩡한 질의를 고치러
+    가고 진짜 결함은 어디에도 남지 않는다.
+    """
 
 
 @dataclass(frozen=True, slots=True)
