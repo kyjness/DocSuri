@@ -70,6 +70,15 @@ class RerankUnavailable(Exception):
     the orchestrator simply keeps the un-reranked order and search proceeds normally."""
 
 
+class RerankThrottled(RerankUnavailable):
+    """The rerank request-rate quota rejected the call (Bedrock ``ThrottlingException``).
+
+    Split out because it is the one rerank failure that waiting fixes, and under the current
+    quota it is the routine one, not the rare one. Human search still treats it as any other
+    ``RerankUnavailable`` (fail fast to RRF — P50 budget); the agent caller backs off and
+    retries."""
+
+
 # A store result: a real record plus its (internal) store relevance score, in rank order.
 ScoredRecord = tuple[IndexRecord, float]
 

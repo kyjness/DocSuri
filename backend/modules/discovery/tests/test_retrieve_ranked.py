@@ -15,8 +15,11 @@ from collections.abc import Sequence
 
 import pytest
 
+from discovery.adapters.bedrock_rerank import BedrockRerankAdapter
 from discovery.domain.models import SearchScope, YearRange
-from discovery.ports.search_ports import InvalidQuery
+from discovery.ports.search_ports import InvalidQuery, RerankThrottled, RerankUnavailable
+from discovery.service import orchestrator as orchestrator_module
+from discovery.service.orchestrator import _AGENT_RERANK_BACKOFF_S
 from discovery.testing import build_mock_orchestrator
 
 _QUERY = "diffusion models for protein structure"
@@ -188,3 +191,120 @@ def test_top_n_override_bounds_the_result() -> None:
     bundle = build_mock_orchestrator()
     ranked = bundle.orchestrator.retrieve_ranked(_QUERY, scope=SearchScope.FULL, top_n=1)
     assert len(ranked.ranked) == 1
+
+
+# --- rerank throttling: the agent backs off, human search does not --------------------------
+#
+# The rerank quota throttles routinely (35–50% even at 5–6s spacing), and a throttled rerank is
+# silent: RRF order, 200. The agent is a caller that can afford to wait, so it retries on
+# throttling only; human search keeps failing fast under its P50 budget.
+
+
+class _ThrottleThen:
+    """Throttles the first ``n`` calls, then reverses the head order like ``_ReverseRerank``."""
+
+    def __init__(self, n: int, exc: type[Exception] = RerankThrottled) -> None:
+        self.n = n
+        self.exc = exc
+        self.calls = 0
+
+    def rerank(self, query: str, documents: Sequence[str]) -> list[float]:
+        self.calls += 1
+        if self.calls <= self.n:
+            raise self.exc("throttled")
+        return [float(i) for i in range(len(documents))]
+
+
+@pytest.fixture
+def waits(monkeypatch) -> list[float]:
+    slept: list[float] = []
+    monkeypatch.setattr(orchestrator_module, "_sleep", slept.append)
+    return slept
+
+
+def test_agent_rerank_recovers_from_throttling(waits) -> None:
+    baseline = build_mock_orchestrator().orchestrator.retrieve_ranked(
+        _QUERY, scope=SearchScope.FULL
+    )
+    flaky = _ThrottleThen(2)
+    ranked = build_mock_orchestrator(reranker=flaky).orchestrator.retrieve_ranked(
+        _QUERY, scope=SearchScope.FULL
+    )
+
+    assert flaky.calls == 3
+    assert len(waits) == 2
+    # Recovered means the reranked order was served, not the RRF fallback.
+    assert _ids(ranked) != _ids(baseline)
+
+
+def test_agent_rerank_gives_up_after_the_schedule(waits) -> None:
+    baseline = build_mock_orchestrator().orchestrator.retrieve_ranked(
+        _QUERY, scope=SearchScope.FULL
+    )
+    stuck = _ThrottleThen(99)
+    ranked = build_mock_orchestrator(reranker=stuck).orchestrator.retrieve_ranked(
+        _QUERY, scope=SearchScope.FULL
+    )
+
+    assert stuck.calls == len(_AGENT_RERANK_BACKOFF_S) + 1
+    # Each wait is jittered inside [d/2, d] of its slot — bounded worst case.
+    assert all(d / 2 <= w <= d for w, d in zip(waits, _AGENT_RERANK_BACKOFF_S, strict=True))
+    assert _ids(ranked) == _ids(baseline)  # still fail-soft
+
+
+def test_agent_does_not_retry_failures_waiting_cannot_fix(waits) -> None:
+    denied = _ThrottleThen(99, exc=RerankUnavailable)
+    build_mock_orchestrator(reranker=denied).orchestrator.retrieve_ranked(
+        _QUERY, scope=SearchScope.FULL
+    )
+    assert denied.calls == 1
+    assert waits == []
+
+
+def test_human_search_does_not_wait_on_throttling(waits) -> None:
+    from docsuri_shared.dtos import SearchRequest
+
+    from discovery.api import run_search
+    from discovery.domain.models import AuthSession, RequestContext
+
+    throttled = _ThrottleThen(99)
+    bundle = build_mock_orchestrator(reranker=throttled)
+    run_search(
+        bundle.orchestrator,
+        bundle.grounding_hook,
+        SearchRequest(query=_QUERY, scope="full"),
+        RequestContext(auth_session=AuthSession(user_id="u1"), request_id="req-1"),
+    )
+    assert throttled.calls == 1
+    assert waits == []
+
+
+class _ClientError(Exception):
+    """botocore ``ClientError`` shape (``.response['Error']['Code']``) without importing it."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.response = {"Error": {"Code": code}}
+
+
+class _RaisingClient:
+    def __init__(self, exc: Exception) -> None:
+        self.exc = exc
+
+    def rerank(self, **_kwargs):
+        raise self.exc
+
+
+@pytest.mark.parametrize(
+    ("exc", "throttled"),
+    [
+        (_ClientError("ThrottlingException"), True),
+        (_ClientError("AccessDeniedException"), False),
+        (TimeoutError("read timeout"), False),
+    ],
+)
+def test_adapter_marks_only_throttling_as_retryable(exc: Exception, throttled: bool) -> None:
+    adapter = BedrockRerankAdapter(model_arn="arn:test", client=_RaisingClient(exc))
+    with pytest.raises(RerankUnavailable) as raised:
+        adapter.rerank(_QUERY, ["doc"])
+    assert isinstance(raised.value, RerankThrottled) is throttled

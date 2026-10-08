@@ -15,7 +15,9 @@ fallback (degraded); index failure → ``SearchUnavailable`` (fail-closed, INV-3
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+import random
+import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from time import perf_counter
@@ -55,6 +57,7 @@ from ..ports.search_ports import (
     IndexUnavailable,
     InvalidQuery,
     RerankAdapter,
+    RerankThrottled,
     SearchUnavailable,
 )
 
@@ -62,6 +65,14 @@ _log = logging.getLogger(__name__)
 
 # Generic, non-technical messages (SEC-9/SEC-15 — no internal detail).
 _VALIDATION_MESSAGE = "Your search could not be processed. Please revise and try again."
+
+# Agent-caller rerank retry on throttling: one wait per retry, doubling, each jittered to
+# [d/2, d] so concurrent agent turns do not retry in lockstep. The rerank quota measured at
+# 35–50% throttled even at 5–6s spacing (2026-08-15), so sub-second waits would mostly burn
+# attempts; ~10s worst case is noise against an agent turn measured in tens of seconds. Human
+# search never waits here — it fails fast to RRF under its P50 budget.
+_AGENT_RERANK_BACKOFF_S = (1.5, 3.0, 6.0)
+_sleep = time.sleep  # module-level so tests can replace the wait
 
 
 @dataclass(frozen=True, slots=True)
@@ -360,7 +371,10 @@ class SearchOrchestrationService:
         width = min(rerank_width(scope), len(candidates.candidates))
         documents = [rerank_text(c.record) for c in candidates.candidates[:width]]
         try:
-            scores = self._reranker.rerank(query, documents)
+            if caller == "agent":
+                scores = _rerank_with_backoff(self._reranker, query, documents)
+            else:
+                scores = self._reranker.rerank(query, documents)
             reranked = apply_rerank(candidates.candidates, scores, width)
         except Exception as exc:  # noqa: BLE001 — best-effort: keep baseline order, never block
             # Log as well as emit. The metric alone made this invisible outside a dashboard, and
@@ -509,3 +523,19 @@ class SearchOrchestrationService:
             self._event_publisher.publish_search_executed(event)
         except Exception:  # noqa: BLE001 — non-blocking history write (off the P50<3s path)
             pass
+
+
+def _rerank_with_backoff(
+    reranker: RerankAdapter, query: str, documents: Sequence[str]
+) -> list[float]:
+    """Agent-caller rerank: retry ONLY on ``RerankThrottled``, per ``_AGENT_RERANK_BACKOFF_S``.
+
+    Any other failure (access, model, timeout) is not cured by waiting and propagates at once;
+    the last throttle propagates after the schedule is spent. Either way the caller's fail-soft
+    branch serves RRF and logs it."""
+    for delay in _AGENT_RERANK_BACKOFF_S:
+        try:
+            return reranker.rerank(query, documents)
+        except RerankThrottled:
+            _sleep(random.uniform(delay / 2, delay))
+    return reranker.rerank(query, documents)
