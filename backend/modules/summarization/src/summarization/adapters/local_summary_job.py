@@ -39,15 +39,26 @@ logger = logging.getLogger(__name__)
 # that the user is not locked out of retrying for the rest of the session.
 _DEFAULT_DEDUP_TTL_SECONDS = 900
 
+# Jobs run at once. One thread put every generation in a single line: a user who opened 요약 and
+# 전문 번역 together waited for the summary (~40s) before the translation (~130s) even started,
+# and a second user waited behind both (deploy log, 2026-10-20: one translation ~3.5 min end to
+# end, ~75s of it queued). Several at once cost nothing extra — Bedrock bills tokens, not
+# concurrency — and the same artifact is still never generated twice (the claim below is per
+# key). The orchestrator is already called concurrently by the API's request threads; its shared
+# state is config, a locked circuit breaker, a connection pool and boto3 clients.
+_DEFAULT_MAX_WORKERS = 3
+
 
 class LocalSummaryJobQueue:
-    def __init__(self, *, dedup_ttl_seconds: int = _DEFAULT_DEDUP_TTL_SECONDS) -> None:
-        # A single worker thread. The queue exists to lift the long generation OFF the request
-        # thread (so the API can answer ``pending``), not to run generations in parallel — one
-        # background thread does that. Running several at once would call the one shared
-        # orchestrator concurrently from multiple pool threads, a concurrency the deployed
-        # separate-process worker never exercised and whose safety is unaudited; so it stays 1.
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="summary-job")
+    def __init__(
+        self,
+        *,
+        dedup_ttl_seconds: int = _DEFAULT_DEDUP_TTL_SECONDS,
+        max_workers: int = _DEFAULT_MAX_WORKERS,
+    ) -> None:
+        self._executor = ThreadPoolExecutor(
+            max_workers=max_workers, thread_name_prefix="summary-job"
+        )
         self._ttl = dedup_ttl_seconds
         # Both request threads (enqueue) and pool threads (release) touch these, unlike the SQS
         # adapter where only the request path does — hence the lock.

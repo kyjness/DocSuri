@@ -119,3 +119,27 @@ def test_enqueue_never_raises_at_the_caller() -> None:
     q.enqueue(_req(), "u1")
     assert orch.runs == []
     assert q._inflight == {}  # claim released, not leaked
+
+
+def test_different_jobs_run_at_the_same_time() -> None:
+    # One worker thread put every generation in a single line: a translation opened with its
+    # summary waited the whole summary out before starting. Distinct jobs must overlap.
+    orch = _Orch()  # every run blocks until release
+    entered = threading.Semaphore(0)
+    blocking_run = orch.run
+
+    def run(request, ctx, *, allow_enqueue=True):
+        entered.release()
+        blocking_run(request, ctx, allow_enqueue=allow_enqueue)
+
+    orch.run = run
+    q = _queue(orch)
+    q.enqueue(_req(), "u1")
+    q.enqueue(_req(version=2), "u1")  # same user, another artifact
+    q.enqueue(_req(), "u2")
+    # All three are inside run() while none has been released — serial execution would stall
+    # after the first.
+    assert all(entered.acquire(timeout=1) for _ in range(3))
+    orch.release.set()
+    q._executor.shutdown(wait=True)
+    assert len(orch.runs) == 3

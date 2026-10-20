@@ -4,7 +4,10 @@
   gap: 0.5rem;
 }
 
-/* Paper metadata header (title / authors / abstract). */
+/* Paper metadata header (title / authors / abstract). The text is the source's own, so it can
+   carry an unbreakable run (a code URL at the end of an abstract); `overflow-wrap: anywhere` on
+   each field lets it wrap. Without it the run widens the page past the phone, and the browser
+   then lays out the fixed modals against that wider page, pushing them off screen. */
 .meta {
   display: flex;
   flex-direction: column;
@@ -25,12 +28,14 @@
   font-weight: 700;
   line-height: 1.35;
   color: var(--color-text);
+  overflow-wrap: anywhere;
 }
 
 .authors {
   margin: 0;
   font-size: 0.875rem;
   color: var(--color-text-muted);
+  overflow-wrap: anywhere;
 }
 
 .year {
@@ -42,6 +47,7 @@
   font-size: 0.9375rem;
   line-height: 1.6;
   color: var(--color-text);
+  overflow-wrap: anywhere;
 }
 
 .metaLoading {
