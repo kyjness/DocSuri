@@ -6,7 +6,8 @@ tool call** (structured output): ``tool_choice`` pins the model to ``emit_summar
 schema-shaped JSON object the model can't wrap in prose or corrupt with unescaped quotes / raw
 LaTeX backslashes (the old free-text-JSON failure mode that abstained whole summaries). The full
 input is buffered before parsing so the U7 grounding gate can validate the complete structured
-output before exposure (Q5/BR-S8). Explicit timeout + ONE retry; persistent failure raises
+output before exposure (Q5/BR-S8). Explicit timeout + ONE retry (throttling waits separately,
+``_THROTTLE_BACKOFF_S``); persistent failure raises
 ``LlmUnavailable`` so the orchestrator abstains (Q1/RES-9). No Production Mock — the shipped impl.
 """
 
@@ -14,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import re
 import time
 from collections.abc import Sequence
@@ -41,6 +43,28 @@ from ..prompts import (
 )
 
 log = logging.getLogger("docsuri.summarization.bedrock")
+
+# Waits on Bedrock throttling, separate from the one generic retry: one wait per throttle, doubling,
+# each jittered to [d/2, d] so concurrent chunks do not retry in lockstep. A full translation fans
+# out several chunks per job and several jobs at once, so a throttle is routine, not rare — and the
+# generic path turned two of them into ``LlmUnavailable``, which failed the WHOLE translation (fail-
+# fast map) and had the orchestrator redo every chunk, the finished (already billed) ones included.
+# Waiting is cheap here: these calls run in the background job, with no request deadline.
+_THROTTLE_BACKOFF_S = (2.0, 4.0, 8.0, 16.0)
+_sleep = time.sleep  # module-level so tests can replace the wait
+
+
+class _Throttled(RuntimeError):
+    """A throttle that arrived inside the response stream (not as the call's ``ClientError``)."""
+
+
+def _is_throttle(exc: BaseException) -> bool:
+    if isinstance(exc, _Throttled):
+        return True
+    # Read the botocore ClientError shape without importing botocore (lazy `real` extra).
+    response = getattr(exc, "response", None)
+    error = response.get("Error") if isinstance(response, dict) else None
+    return isinstance(error, dict) and error.get("Code") == "ThrottlingException"
 
 
 class BedrockLlmGateway:
@@ -146,9 +170,9 @@ class BedrockLlmGateway:
                 "tool_choice": {"type": "tool", "name": tool["name"]},
             }
             last_exc: Exception | None = None
-            for attempt in range(self._max_retries + 1):
-                if attempt > 0:
-                    time.sleep(2 ** attempt * 0.5)
+            attempt = 0
+            throttles = 0
+            while attempt <= self._max_retries:
                 try:
                     text, truncated = self._stream_tool_input(model_id, body)
                     try:
@@ -173,13 +197,26 @@ class BedrockLlmGateway:
                     return payload
                 except Exception as exc:  # noqa: BLE001 — any Bedrock/transport/parse error → retry/abstain
                     last_exc = exc
+                    if _is_throttle(exc) and throttles < len(_THROTTLE_BACKOFF_S):
+                        delay = _THROTTLE_BACKOFF_S[throttles]
+                        throttles += 1
+                        # Counted after deploy to judge the fan-out against the quota.
+                        log.warning(
+                            "Bedrock throttled (wait %d/%d)", throttles, len(_THROTTLE_BACKOFF_S)
+                        )
+                        _sleep(random.uniform(delay / 2, delay))  # noqa: S311 — jitter, not crypto
+                        continue  # a throttle does not spend the generic retry
+                    attempt += 1
+                    if attempt <= self._max_retries:
+                        _sleep(2 ** attempt * 0.5)
             # Surface the swallowed root cause: without this the orchestrator only logs a
             # generic ``generation_unavailable`` abstain, so a paper-specific transport/parse
             # failure (e.g. a math-heavy translate batch) is invisible on the request path and
             # undiagnosable.
             log.warning(
-                "Bedrock generation failed after %d attempt(s): %s: %s",
+                "Bedrock generation failed after %d attempt(s), %d throttle wait(s): %s: %s",
                 self._max_retries + 1,
+                throttles,
                 type(last_exc).__name__ if last_exc else "None",
                 last_exc,
             )
@@ -211,6 +248,8 @@ class BedrockLlmGateway:
                 # the caller's retry→LlmUnavailable→abstain path handles it with the root cause.
                 # Membership (not truthiness) so a present-but-empty chunk stays benign (skipped).
                 kind = next(iter(event), "unknown")
+                if kind == "throttlingException":
+                    raise _Throttled(f"Bedrock stream throttled: {event.get(kind)}")
                 raise RuntimeError(f"Bedrock stream error event: {kind}: {event.get(kind)}")
             raw = (event.get("chunk") or {}).get("bytes")
             if not raw:

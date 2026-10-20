@@ -44,9 +44,12 @@ logger = logging.getLogger(__name__)
 _DEFAULT_CHUNK_BUDGET_TOKENS = 3_500
 
 # Concurrent chunk translations per request (map-only → chunks are independent, BR-S18). Bounded
-# so a many-chunk full-text translation does not fan out unbounded Bedrock calls (throttle/cost).
-# Translate chunks are small (output-capped ~3.5K tok), so a modest fan-out is safe; 1 = serial.
-_DEFAULT_MAX_WORKERS = 4
+# so a many-chunk full-text translation does not fan out unbounded Bedrock calls. Each chunk is a
+# ~30-60s streamed generation, so the fan-out sets the wall time: at 4 a 115-field paper took
+# ~130s (deploy log, 2026-10-20). Tokens — and so cost — are the same at any fan-out; the risk is
+# throttling, which the gateway now waits out per call instead of failing the whole translation
+# (BedrockLlmGateway). 1 = serial.
+_DEFAULT_MAX_WORKERS = 8
 
 # Bounded retries when the model DROPS a masked standard-term token (BR-S4). A dropped token is a
 # vanished concept that no read-time step can resurrect (unlike a merely corrupted token, which the
