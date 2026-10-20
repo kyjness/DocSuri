@@ -1,7 +1,8 @@
 'use client';
 
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
+import { canGoBackInApp } from '@/lib/navHistory';
 import styles from './AppHeader.module.css';
 import { useSession } from './session/SessionContext';
 
@@ -16,13 +17,15 @@ const NAV_LINKS = [
 
 // AppHeader (LC-1) — minimal top bar. Default: brand link (+ desktop nav links). Sign-out
 // lives in 마이페이지 → 설정, not here.
-// Back mode (`backHref`): a left back-arrow to a FIXED destination instead of the brand, for
-// full-screen sub-routes (paper detail → /search, 본문 / 본문 번역 → the detail page). A fixed
-// destination (not history back) is deliberate: these are app routes (not browser tabs), and
-// history back is fragile after an interleaved login redirect (session expiry) or a deep link.
+// Back mode (`backHref`): a left back-arrow instead of the brand, for full-screen sub-routes.
+// It goes BACK — to the screen the user came from, popping the history entry — whenever the entry
+// behind is an app screen (lib/navHistory). Only when it is not (a deep link, or arrival through
+// a login redirect) does it fall back to the fixed parent `backHref`, and then by REPLACING the
+// entry: pushing the parent stacked an entry per tap, which the phone's back gesture later
+// replayed as every paper opened earlier.
 interface AppHeaderProps {
   title?: string;
-  /** Show a back arrow to this fixed destination instead of the brand. */
+  /** Show a back arrow; this is its parent screen when there is no in-app screen to go back to. */
   backHref?: string;
   /**
    * 목적지가 **자기 스크롤을 스스로 복원**할 때 켠다(검색 화면이 그렇다). 라우터의 기본
@@ -37,6 +40,7 @@ interface AppHeaderProps {
 export function AppHeader({ title, backHref, backRestoresScroll = false }: AppHeaderProps) {
   const { status } = useSession();
   const pathname = usePathname() ?? '';
+  const router = useRouter();
   // Authenticated users treat the brand as the app home (search); anonymous /
   // first-time visitors land on the hero. The nav flow is silent on this, so
   // this is a code-level navigation choice.
@@ -49,6 +53,13 @@ export function AppHeader({ title, backHref, backRestoresScroll = false }: AppHe
           <Link
             href={backHref}
             scroll={!backRestoresScroll}
+            onClick={(e) => {
+              // Leave modified clicks (new tab/window) to the link itself.
+              if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+              e.preventDefault();
+              if (canGoBackInApp()) router.back();
+              else router.replace(backHref, { scroll: !backRestoresScroll });
+            }}
             className={styles.back}
             aria-label="뒤로"
             data-testid="app-header-back"

@@ -6,8 +6,8 @@ import { FullTranslationIsland } from '@/components/FullTranslationIsland';
 import { arxivVersion } from '@/lib/arxivVersion';
 
 // Full-text translation route /paper/[id]/translate (FR-13, scope=full) — a full-screen in-app
-// route reached from the detail page's 본문 번역 action. The header's ← goes to a FIXED
-// destination (the detail page), not history back, mirroring the 본문 route. protected
+// route reached from the detail page's 본문 번역 action. The header's ← goes back to where the
+// user came from, or to the detail page when there is no such screen (AppHeader). protected
 // (RouteGuard). version comes from the ?version link, falling back to the id's arXiv revision.
 export default async function TranslatePage({
   params,

@@ -6,6 +6,7 @@ import { ThemeProvider } from '@/components/theme/ThemeContext';
 import { SavedLibraryProvider } from '@/lib/library/savedLibrary';
 import { PhoneMockupFrame } from '@/components/PhoneMockupFrame';
 import { ViewModePreview } from '@/components/ViewModePreview';
+import { NavHistoryTracker } from '@/components/NavHistoryTracker';
 import { THEME_INIT_SCRIPT } from '@/lib/theme';
 
 // AppShell (LC-1) — SSR root layout: phone-mockup frame + session context.
@@ -39,6 +40,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         <ThemeProvider>
           <SessionProvider>
             <SavedLibraryProvider>
+              <NavHistoryTracker />
               <ViewModePreview />
               <PhoneMockupFrame>{children}</PhoneMockupFrame>
             </SavedLibraryProvider>

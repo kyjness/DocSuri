@@ -15,6 +15,16 @@ const META: Record<string, PaperMetaVM> = {
       'Topic modeling is traditionally applied to word counts without accounting for the context in which words appear. Recent advancements in large language models (LLMs) offer contextualized word embeddings, which capture deeper meaning and relationships between words. We use a pre-trained LLM to convert each document into a sequence of word embeddings. This sequence is then modeled as a Poisson point process, with its intensity measure expressed as a convex combination of $K$ base measures, each corresponding to a topic. Assuming each topic is a $β$-Hölder smooth intensity measure on the embedded space, we establish the rate of convergence of our method. We also provide a minimax lower bound and show that the rate of our method matches with the lower bound when $β\\leq 1$.',
     arxivUrl: 'https://arxiv.org/abs/2503.17809',
   },
+  // Unbreakable-run repro: the abstract ends in two code URLs, the longer wider than a phone.
+  '2103.00112v3': {
+    arxivId: '2103.00112v3',
+    title: 'Transformer in Transformer',
+    authors: ['Kai Han', 'An Xiao', 'Enhua Wu', 'Jianyuan Guo', 'Chunjing Xu', 'Yunhe Wang'],
+    year: 2021,
+    abstract:
+      'Transformer is a new kind of neural architecture which encodes the input data as powerful features via the attention mechanism. Basically, the visual transformers first divide the input images into several local patches and then calculate both representations and their relationship. Since natural images are of high complexity with abundant detail and color information, the granularity of the patch dividing is not fine enough for excavating features of objects in different scales and locations. In this paper, we point out that the attention inside these local patches are also essential for building visual transformers with high performance and we explore a new architecture, namely, Transformer iN Transformer (TNT). Specifically, we regard the local patches (e.g., 16$\times$16) as "visual sentences" and present to further divide them into smaller patches (e.g., 4$\times$4) as "visual words". The attention of each word will be calculated with other words in the given visual sentence with negligible computational costs. Features of both words and sentences will be aggregated to enhance the representation ability. Experiments on several benchmarks demonstrate the effectiveness of the proposed TNT architecture, e.g., we achieve an 81.5% top-1 accuracy on the ImageNet, which is about 1.7% higher than that of the state-of-the-art visual transformer with similar computational cost. The PyTorch code is available at https://github.com/huawei-noah/CV-Backbones, and the MindSpore code is available at https://gitee.com/mindspore/models/tree/master/research/cv/TNT.',
+    arxivUrl: 'https://arxiv.org/abs/2103.00112',
+  },
   '1706.03762v5': {
     arxivId: '1706.03762v5',
     title: 'Attention Is All You Need',
