@@ -7,9 +7,8 @@ import { arxivVersion } from '@/lib/arxivVersion';
 import type { AnchorTargetVM } from '@/types/generated';
 
 // Doc-model rich-view route /paper/[id]/doc-model (D4, FD §2.10) — a full-screen in-app route
-// reached from the detail page's 본문 action. The header's ← goes to a FIXED destination (the
-// detail page), not history back, so it is robust against an interleaved login redirect or a
-// deep link. protected (RouteGuard). A summary source anchor is carried via ?anchorLabel (and
+// reached from the detail page's 본문 action. The header's ← goes back to where the user came
+// from, or to the detail page after a deep link or a login redirect (AppHeader). protected (RouteGuard). A summary source anchor is carried via ?anchorLabel (and
 // optional ?anchorSpan) so the page scrolls to the matching block. version comes from the
 // ?version link, falling back to the id's arXiv revision.
 export default async function DocModelPage({
